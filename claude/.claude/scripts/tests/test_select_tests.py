@@ -1251,6 +1251,19 @@ class TestSelectPytestTargets:
         assert {_mod.SCRIPTS_TESTS_DIR, _mod.REVIEW_PR_SKILL_TESTS_DIR} <= set(review_pr_result.target_paths)
         assert _mod.SCRIPTS_TESTS_DIR not in other_skill_result.target_paths
 
+    def test_period_cost_report_skill_md_change_also_selects_scripts_tests(self):
+        """test_transcript_period_cost.py (SCRIPTS_TESTS_DIR) reads
+        period-cost-report/SKILL.md by path, for its notice-tag and prose
+        tripwire. Without this cross-domain exception, a SKILL.md change
+        selects none of SCRIPTS_TESTS_DIR, so that coverage goes unrun. A
+        different skill's SKILL.md is the contrast case."""
+        period_cost_result = _mod.select_pytest_targets([_mod.PERIOD_COST_REPORT_SKILL_MD])
+        other_skill_result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
+        assert period_cost_result.is_full_suite is False
+        assert other_skill_result.is_full_suite is False
+        assert _mod.SCRIPTS_TESTS_DIR in period_cost_result.target_paths
+        assert _mod.SCRIPTS_TESTS_DIR not in other_skill_result.target_paths
+
     def test_skills_test_tree_change_selects_skills_tests(self):
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts
         domains' own blanket `_is_under()` rules, so a file anywhere under
@@ -1987,6 +2000,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MARKER_CLEAR_STALE_PY,
     _mod.REVIEW_PR_AUDIT_SCRIPT,
     _mod.REVIEW_PR_SKILL_MD,
+    _mod.PERIOD_COST_REPORT_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,

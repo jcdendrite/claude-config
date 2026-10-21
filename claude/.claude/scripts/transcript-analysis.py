@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
-pr-link is the only subcommand that touches the network (via gh).
-Every subcommand is read-only except an explicit write flag: judgment-pair
---out, pr-cost --record, and pr-cost-export --out each write a file.
+Every subcommand is a local read except the few that call gh and the few that
+write a file; docs/transcript-analysis.md lists both sets.
 """
 
 import argparse
@@ -19,12 +18,13 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-# cache_rebuild/cache_rebuild_rules/cost/cost_ledger/handoff_nudge/handoff_signal_response/
-# ledger_common/plan_boundary/pr_cost/pr_cost_export/pr_cost_ledger/pricing/redaction/
-# subagent_mix are read only via _mod.<module> from test files (unit-testing a private
-# helper, or patching module-owned state). corpus and scope are the two modules this
-# file's own code reads bare, as corpus.split_command_segments and scope.PROJECTS_DIR.
-# A module dropped from this list (e.g. audit_routing, denials, gh_cli) has no `_mod`
+# cache_rebuild/cache_rebuild_rules/cost/cost_ledger/gh_cli/handoff_nudge/
+# handoff_signal_response/ledger_common/period_cost/plan_boundary/pr_cost/pr_cost_export/
+# pr_cost_ledger/pricing/redaction/render/subagent_mix are read only via _mod.<module> from
+# test files (unit-testing a private helper, or patching module-owned state). corpus and
+# scope are the two modules this file's own code reads bare, as corpus.split_command_segments
+# and scope.PROJECTS_DIR.
+# A module dropped from this list (e.g. audit_routing, denials) has no `_mod`
 # reader left. Reintroducing a shim-loading test file for it without restoring its
 # binding here breaks that file's collection.
 from transcript_analysis import (  # noqa: F401
@@ -33,15 +33,18 @@ from transcript_analysis import (  # noqa: F401
     corpus,
     cost,
     cost_ledger,
+    gh_cli,
     handoff_nudge,
     handoff_signal_response,
     ledger_common,
+    period_cost,
     plan_boundary,
     pr_cost,
     pr_cost_export,
     pr_cost_ledger,
     pricing,
     redaction,
+    render,
     scope,
     subagent_mix,
 )
@@ -134,6 +137,11 @@ from transcript_analysis.judgment_pair import (
     # _mod.cmd_judgment_pair from test files.
     _add_judgment_pair_subparser,
     cmd_judgment_pair,  # noqa: F401
+)
+from transcript_analysis.period_cost import (
+    # Read bare by this file's own build_parser (the period-cost
+    # subcommand's own set_defaults).
+    cmd_period_cost,
 )
 from transcript_analysis.plan_boundary import (
     # Read bare by this file's own build_parser (the plan-boundary
@@ -3406,6 +3414,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost_counts.set_defaults(func=cmd_cost_counts)
 
+    p_period_cost = sub.add_parser(
+        "period-cost",
+        help=(
+            "Per-PR and per-review Claude Code spend for an inclusive UTC date range, grouped by repository, as"
+            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, for an account"
+            " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
+        ),
+    )
+    p_period_cost.add_argument(
+        "--since", metavar="DATE", type=_iso_date, help="Inclusive start date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
+    p_period_cost.add_argument(
+        "--until", metavar="DATE", type=_iso_date, help="Inclusive end date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
+    p_period_cost.add_argument(
+        "--sample", action="store_true",
+        help="Print the synthetic sample report; reads no transcript and runs no git or gh. Refuses --since and --until.",
+    )
+    p_period_cost.set_defaults(func=cmd_period_cost)
+
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
         help=(
@@ -3667,13 +3695,13 @@ def main() -> None:
         # subcommand actually resolves (this top-level one would validate
         # one account while the subcommand scans another). Most resolve
         # their own scan roots via their own --config-dir (_resolve_cost_roots);
-        # cost-counts is the one exception, registering no --config-dir flag
-        # of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        # cost-counts and period-cost are the two exceptions, each registering no
+        # --config-dir flag of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
         if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
             # hasattr, not a hardcoded subcommand list: True only when the
             # invoked subparser itself registered --config-dir (dest
             # extra_config_dirs), so the hint never recommends a flag that
-            # doesn't exist on cost-counts's own parser.
+            # doesn't exist on cost-counts's or period-cost's own parser.
             if hasattr(parsed, "extra_config_dirs"):
                 own_scope_clause = (
                     "this subcommand resolves its own scan roots via its own --config-dir "

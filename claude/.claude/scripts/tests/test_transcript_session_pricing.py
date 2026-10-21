@@ -23,12 +23,6 @@ from pathlib import Path
 import pytest
 from helpers import REPO_ROOT, SCRIPTS_DIR
 from transcript_analysis import corpus, pricing, session_pricing
-from transcript_analysis.session_pricing import (
-    SessionPricingError,
-    SessionPricingResult,
-    SessionSpend,
-    price_sessions_by_utc_day,
-)
 
 from .conftest import _agent_use, _asst, _priced, _user_msg, _write_jsonl, _write_subagent_jsonl
 
@@ -98,8 +92,10 @@ def _write_session(root: Path, index: int, records: list[dict]) -> Path:
     return path
 
 
-def _price(session_paths, *, start: date = _START, end: date = _END, as_of: date = _AS_OF) -> SessionPricingResult:
-    return price_sessions_by_utc_day(session_paths, start=start, end=end, as_of=as_of)
+def _price(
+    session_paths, *, start: date = _START, end: date = _END, as_of: date = _AS_OF
+) -> session_pricing.SessionPricingResult:
+    return session_pricing.price_sessions_by_utc_day(session_paths, start=start, end=end, as_of=as_of)
 
 
 def _turn(ts: str, **usage_tokens: int) -> dict:
@@ -246,7 +242,7 @@ class TestWindowAndDays:
         result = _price([out_of_window, in_window])
 
         assert len(result.sessions) == 2
-        assert result.sessions[0] == SessionSpend(
+        assert result.sessions[0] == session_pricing.SessionSpend(
             main_file_readable=True, micro_dollars_by_day={}, unpriced_tokens_by_day={}, undated_turn_count=0
         )
         assert result.sessions[1].micro_dollars_by_day == {date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS}
@@ -719,7 +715,7 @@ class TestUndatedTurns:
 
         result = _price([session])
 
-        assert result.sessions[0] == SessionSpend(
+        assert result.sessions[0] == session_pricing.SessionSpend(
             main_file_readable=True, micro_dollars_by_day={}, unpriced_tokens_by_day={}, undated_turn_count=0
         )
 
@@ -734,7 +730,7 @@ class TestUndatedTurns:
 
         result = _price([session])
 
-        assert result.sessions[0] == SessionSpend(
+        assert result.sessions[0] == session_pricing.SessionSpend(
             main_file_readable=True, micro_dollars_by_day={}, unpriced_tokens_by_day={}, undated_turn_count=0
         )
         assert result.total_micro_dollars == 0
@@ -750,7 +746,7 @@ class TestUndatedTurns:
 
         result = _price([session])
 
-        assert result.sessions[0] == SessionSpend(
+        assert result.sessions[0] == session_pricing.SessionSpend(
             main_file_readable=True, micro_dollars_by_day={}, unpriced_tokens_by_day={}, undated_turn_count=0
         )
 
@@ -1139,7 +1135,7 @@ class TestErrors:
         valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
         malformed = _write_session(tmp_path, 1, [_with_usage(_turn("2026-05-19T10:00:00.000Z"), usage)])
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([valid, malformed])
 
         assert raised.value.session_index == 1
@@ -1158,7 +1154,7 @@ class TestErrors:
 
         monkeypatch.setattr(corpus, "_read_session_file_partitioned", read_failing_on_the_second_path)
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([first, second])
 
         assert raised.value.session_index == 1
@@ -1170,7 +1166,7 @@ class TestErrors:
         with deeply_nested.open("a") as handle:
             handle.write("[" * 200_000 + "\n")
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([valid, deeply_nested])
 
         assert raised.value.session_index == 1
@@ -1186,7 +1182,7 @@ class TestErrors:
         valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
         overflowing = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z", input=token_count)])
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([valid, overflowing])
 
         assert raised.value.session_index == 1
@@ -1194,7 +1190,7 @@ class TestErrors:
     def test_malformed_usage_on_a_turn_outside_the_window_still_raises(self, tmp_path):
         session = _write_session(tmp_path, 0, [_with_usage(_turn("2026-07-19T10:00:00.000Z"), {"input_tokens": None})])
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([session])
 
         assert isinstance(raised.value.__cause__, ValueError)
@@ -1212,7 +1208,7 @@ class TestErrors:
     def test_record_shapes_outside_the_format_raise_with_the_matching_cause_type(self, tmp_path, bad_record, cause_type):
         session = _write_session(tmp_path, 0, [bad_record])
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([session])
 
         assert raised.value.session_index == 0
@@ -1239,7 +1235,7 @@ class TestErrors:
         malformed = _write_session(tmp_path, 1, [_with_field_sentinels(bad_record)])
         session_paths = [valid, malformed]
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price(session_paths)
 
         rendered = "".join(traceback.format_exception(raised.value))
@@ -1268,7 +1264,7 @@ class TestErrors:
         arguments = {"start": _START, "end": _END, "as_of": _AS_OF} | overrides
 
         with pytest.raises(error_type):
-            price_sessions_by_utc_day([missing, malformed], **arguments)
+            session_pricing.price_sessions_by_utc_day([missing, malformed], **arguments)
 
         assert reads == []
 
@@ -1382,7 +1378,7 @@ class TestErrors:
         monkeypatch.setattr(corpus, "_read_session_file_partitioned", counting_read)
         sessions = [_write_session(tmp_path, index, ["a bare string"]) for index in range(2)]
 
-        with pytest.raises(SessionPricingError) as raised:
+        with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price(sessions)
 
         assert raised.value.session_index == 0
@@ -1575,7 +1571,7 @@ def _architecture_doc_section() -> str:
 
 
 _PROMISED_RESULT_FIELD_TYPES = {
-    "sessions": tuple[SessionSpend, ...],
+    "sessions": tuple[session_pricing.SessionSpend, ...],
     "total_micro_dollars": int,
     "total_unpriced_tokens": int,
     "unpriced_models": tuple[str, ...],
@@ -1648,7 +1644,7 @@ class TestPublicSurfacePin:
         assert public_targets == set(), _PROMISE_HINT
 
     def test_function_signature_keeps_its_parameters(self):
-        parameters = list(inspect.signature(price_sessions_by_utc_day).parameters.values())
+        parameters = list(inspect.signature(session_pricing.price_sessions_by_utc_day).parameters.values())
 
         assert parameters[0].name == "session_paths", _PROMISE_HINT
         assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD, _PROMISE_HINT
@@ -1665,7 +1661,10 @@ class TestPublicSurfacePin:
 
     @pytest.mark.parametrize(
         ("result_type", "promised_field_types"),
-        [(SessionSpend, _PROMISED_SPEND_FIELD_TYPES), (SessionPricingResult, _PROMISED_RESULT_FIELD_TYPES)],
+        [
+            (session_pricing.SessionSpend, _PROMISED_SPEND_FIELD_TYPES),
+            (session_pricing.SessionPricingResult, _PROMISED_RESULT_FIELD_TYPES),
+        ],
         ids=["SessionSpend", "SessionPricingResult"],
     )
     def test_promised_fields_keep_their_types_and_every_field_is_keyword_only_and_documented(
@@ -1685,7 +1684,7 @@ class TestPublicSurfacePin:
             )
 
     def test_format_drift_detected_is_a_property_on_the_result(self):
-        assert isinstance(SessionPricingResult.__dict__["format_drift_detected"], property), _PROMISE_HINT
+        assert isinstance(session_pricing.SessionPricingResult.__dict__["format_drift_detected"], property), _PROMISE_HINT
 
     def test_result_fields_refuse_reassignment(self):
         result = _price([])
@@ -1700,13 +1699,13 @@ class TestPublicSurfacePin:
             spend.undated_turn_count = 1
 
     def test_error_type_and_its_index_survive_copy_and_pickle_with_an_index_only_message(self):
-        assert issubclass(SessionPricingError, Exception), _PROMISE_HINT
-        error = SessionPricingError(3)
+        assert issubclass(session_pricing.SessionPricingError, Exception), _PROMISE_HINT
+        error = session_pricing.SessionPricingError(3)
 
         assert error.session_index == 3
         assert str(error) == "session_paths[3] could not be priced"
         for clone in (pickle.loads(pickle.dumps(error)), copy.copy(error), copy.deepcopy(error)):
-            assert isinstance(clone, SessionPricingError)
+            assert isinstance(clone, session_pricing.SessionPricingError)
             assert clone.session_index == 3
             assert str(clone) == "session_paths[3] could not be priced"
 

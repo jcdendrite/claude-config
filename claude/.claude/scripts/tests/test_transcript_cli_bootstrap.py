@@ -879,6 +879,37 @@ def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp
     assert "--branches is required" in result.stderr
 
 
+def test_transcript_analysis_period_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "period-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since DATE" in result.stdout
+    assert "--sample" in result.stdout
+
+
+def test_transcript_analysis_period_cost_subprocess_refuses_without_since():
+    """Proves, in a fresh interpreter, that period_cost.py resolves through sys.path[0] alone and that real argparse
+    dispatches period-cost to cmd_period_cost through set_defaults(func=...). The refusal is the bootstrap proof for
+    the default path: argparse requires neither date flag, so the exit 2 and the flag name come from cmd_period_cost.
+    This mirrors the cost-counts pair above."""
+    result = _run("transcript-analysis.py", "period-cost")
+
+    assert result.returncode == 2
+    assert "--since" in result.stderr
+    assert result.stdout == ""
+
+
+def test_transcript_analysis_period_cost_sample_subprocess_prints_the_report_between_its_fixed_lines(tmp_path):
+    """The --sample run reads no transcript, so the config directory it is pointed at does not exist."""
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(tmp_path / "no-such-account"), "HOME": str(tmp_path)}
+
+    result = _run("transcript-analysis.py", "period-cost", "--sample", env=env)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("*Claude Code spend, ")
+    assert lines[-1].startswith("_Computed locally at API list price")
+
+
 def test_transcript_analysis_rearm_backtest_help_exits_zero():
     result = _run("transcript-analysis.py", "rearm-backtest", "--help")
     assert result.returncode == 0, result.stderr
