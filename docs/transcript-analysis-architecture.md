@@ -17,11 +17,12 @@ package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `revi
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
-`skill_invocation.py`, `skill_pair.py`, and `period_cost.py` are the only modules
+`skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
+`user_input.py`, `duration.py`, and `friction_count.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
-`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
-still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
-`hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
+`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. The
+still-unmigrated command-shape helper `_command_segment_is_mutating_git` likewise calls `denials.py`'s
+`_drop_denial_command_flag_values` by name from the shim.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 The still-unmigrated context-composition code separately reads `read_scope.py`'s
 `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
@@ -32,6 +33,8 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
 `_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
+`friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
+`STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -49,10 +52,12 @@ name from the shim.
 `build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary`,
 `handoff_signal_response.py`'s `cmd_handoff_signal_response`, and `period_cost.py`'s `cmd_period_cost`
 from the shim.
-`build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
+`build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
+user-input, duration, and friction-count by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
-The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, and `cmd_skill_pair`, and those
+The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
+`cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, and `cmd_user_input`, and those
 bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
 affordances: a test that needs to steer a moved command patches the module whose binding the
 handler reads at call time, not the shim name.
@@ -319,9 +324,9 @@ current-format `is_error` `tool_result`), the label/cause/command-shape classifi
 non-gate-friction classification (`_is_nongate_friction_kind`, `_friction_kind_label`). A leaf:
 imports `corpus` and `render` by module (attribute access), matching `cost.py`'s convention —
 `corpus._parse_ts` for the module-level `_TOOL_DENIAL_KIND_REGIME_START_TS` constant,
-`render._content_text` for `hook_denial_key`'s current-shape decode. `hook_denial_key` and
-`_drop_denial_command_flag_values` are the two names reached bare from still-unmigrated
-friction/command-shape helpers in the shim — see the exception noted above.
+`render._content_text` for `hook_denial_key`'s current-shape decode. `_drop_denial_command_flag_values`
+is the one name reached bare from a still-unmigrated command-shape helper in the shim — see the
+exception noted above. `friction_count.py` reads `hook_denial_key` as `denials.hook_denial_key`.
 
 ### `review_trace.py`
 
@@ -598,6 +603,61 @@ as `scope.config_dir` by attribute access, per the rule under `scope.py` above, 
 `docs/transcript-analysis.md` § "period-cost".
 `cmd_period_cost` is the one name reached bare from the shim, from `build_parser()`.
 
+### `buckets.py`
+
+The buckets command: `cmd_buckets`, the per-branch count of main-thread assistant turns by model
+family with project and session counts and the date range, and the `_add_buckets_subparser`
+registration. Imports `corpus`, `redaction`, `render`, and `scope` all by module (attribute access),
+matching `cost.py`'s convention. `_add_buckets_subparser` is the one name `build_parser()` reaches bare.
+
+### `fail_seq.py`
+
+The fail-seq command: `cmd_fail_seq`, each branch's ordered test-run failed-count sequence with its
+failing rate and longest failing streak (`_longest_fail_streak`), and the `_add_fail_seq_subparser`
+registration. Imports `render` and `scope` both by module (attribute access), matching `cost.py`'s
+convention. It is the one home of `TEST_RUNNER_RE` and `FAILED_RE`, which `friction_count.py` reads as
+`fail_seq.TEST_RUNNER_RE` and `fail_seq.FAILED_RE`. `_add_fail_seq_subparser` is the one name
+`build_parser()` reaches bare.
+
+### `struggle.py`
+
+The struggle command: `cmd_struggle`, each branch's count of user turns matching `STRUGGLE_PHRASES` by
+the preceding model family, and the `_add_struggle_subparser` registration. Imports `render` and
+`scope` both by module (attribute access), matching `cost.py`'s convention. It is the one home of
+`STRUGGLE_PHRASES`, which `user_input.py` and `friction_count.py` read as `struggle.STRUGGLE_PHRASES`.
+`_add_struggle_subparser` is the one name `build_parser()` reaches bare.
+
+### `user_input.py`
+
+The user-input command: `cmd_user_input`, the per-session narrative of fresh user prompts classified as
+initial, follow-up, or explicit correction, the prompt-classification helpers only it uses
+(`_is_fresh_user_prompt_for_narrative`, `_is_unrecognized_user_list_record`, `_classify_prompt`,
+`_attribute_model_to_prompt`, `_truncate_prompt_text`), and the `_add_user_input_subparser`
+registration. Imports `corpus`, `redaction`, `render`, `scope`, and `struggle` all by module
+(attribute access), matching `cost.py`'s convention; `_classify_prompt` reads
+`struggle.STRUGGLE_PHRASES`. It scans `scope.PROJECTS_DIR` only, ignoring declared roots. Its
+`--redact` map comes from `redaction._build_redact_map`'s default root. `_add_user_input_subparser`
+is the one name `build_parser()` reaches bare.
+
+### `duration.py`
+
+The duration command: `cmd_duration`, each branch's span, active, and idle minutes and activity-burst
+count, and the `_add_duration_subparser` registration. Imports `corpus` and `scope` both by module
+(attribute access), matching `cost.py`'s convention. `_add_duration_subparser` is the one name
+`build_parser()` reaches bare.
+
+### `friction_count.py`
+
+The friction-count command: `cmd_friction_count`, one transcript's composite of hook denials, failed
+test runs, and struggle-phrase user turns, its `--checkpoint` incremental byte-offset scan
+(`_read_friction_checkpoint`, `_write_friction_checkpoint`, `_consume_new_transcript_lines`), and the
+`_add_friction_count_subparser` registration. Imports `denials`, `fail_seq`, `render`, and `struggle`
+all by module (attribute access), matching `cost.py`'s convention: it reads `denials.hook_denial_key`,
+`fail_seq.TEST_RUNNER_RE`, `fail_seq.FAILED_RE`, and `struggle.STRUGGLE_PHRASES`. It reads no scope,
+since it takes one transcript path rather than a corpus. `nudge-error-mode-analysis.sh` runs it
+through the shim with `--checkpoint` and reads a bare integer from stdout.
+`_add_friction_count_subparser` is the one name `build_parser()` reaches bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -778,3 +838,16 @@ helpers more than one of those files, or `tests/test_transcript_analysis.py`, re
 imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
 why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
 `render.py`, not the judgment-pair command.
+
+The session-signal command group splits at command seams, one test file per module:
+`tests/test_transcript_buckets.py`, `tests/test_transcript_fail_seq.py`,
+`tests/test_transcript_struggle.py`, `tests/test_transcript_user_input.py`,
+`tests/test_transcript_duration.py`, and `tests/test_transcript_friction_count.py`. None of the six
+loads the shim: each imports its package module directly and relies on the loader-free
+`fake_projects` fixture. `TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration`
+covers buckets and duration from `tests/test_transcript_buckets.py`. `tests/_session_signal_helpers.py`,
+a plain module, not a test file itself, holds the helpers more than one of those files, or
+`tests/test_transcript_analysis.py`, reads. The legacy file imports it too, as
+`from ._session_signal_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
+`TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays in `tests/test_transcript_analysis.py`
+because it also spans judgment-pair and pr-link.

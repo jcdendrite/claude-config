@@ -35,6 +35,12 @@ PRODUCTION_MODULES = (
     "judgment_pair.py",
     "skill_invocation.py",
     "skill_pair.py",
+    "buckets.py",
+    "fail_seq.py",
+    "struggle.py",
+    "user_input.py",
+    "duration.py",
+    "friction_count.py",
     "period_cost.py",
 )
 TEST_FILES = (
@@ -72,6 +78,13 @@ TEST_FILES = (
     "test_transcript_judgment_pair.py",
     "test_transcript_skill_invocation.py",
     "test_transcript_skill_pair.py",
+    "test_transcript_buckets.py",
+    "test_transcript_fail_seq.py",
+    "test_transcript_struggle.py",
+    "test_transcript_user_input.py",
+    "test_transcript_duration.py",
+    "test_transcript_friction_count.py",
+    "test_transcript_analysis_branch_attribution.py",
     "test_transcript_pricing_session_helpers.py",
     "test_transcript_session_pricing.py",
 )
