@@ -1352,7 +1352,10 @@ class TestSelectPytestTargets:
         change this far outside their own scanned roots."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/transcript-analysis.py"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH}
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+        }
 
     def test_hooks_tests_dir_py_file_selects_claude_tests_dir(self):
         """A .py file anywhere under HOOKS_TESTS_DIR matches
@@ -1475,6 +1478,7 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
+            _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
         }
         # Hand-typed literal, independent of the constant: an emptied
         # SKILLS_TESTS_IMPORTING_CONFIG would otherwise satisfy the set above.
@@ -1488,6 +1492,7 @@ class TestSelectPytestTargets:
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
         A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
         REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
+        A sixth contributor, the TRANSCRIPT_ANALYSIS_SCRIPT row, adds NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
         assert result.is_full_suite is False
@@ -1498,6 +1503,7 @@ class TestSelectPytestTargets:
             *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
         }
 
     def test_transcript_analysis_package_module_change_selects_review_ledger_script_test(self):
@@ -1514,7 +1520,28 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
+            _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
         }
+
+    @pytest.mark.parametrize(
+        "changed_path",
+        [
+            _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
+            "claude/.claude/scripts/transcript_analysis/friction_count.py",
+            _mod.CONFIG_MODULE,
+            _mod.CONFIG_DIR_MODULE,
+        ],
+        ids=["script", "package-module", "config", "config-dir"],
+    )
+    def test_transcript_analysis_script_import_closure_selects_the_error_mode_nudge_test(self, changed_path):
+        """test_nudge_error_mode_analysis.py runs the real transcript-analysis.py, and through it the script's
+        first-party imports, as a subprocess of nudge-error-mode-analysis.sh. It builds that path inside a
+        function body, which TestCrossDomainReadCompleteness cannot see, so only this row selects it for
+        these paths. The test path is hand-typed so a constant retyped to another existing file fails here."""
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py" in result.target_paths
 
     def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
         """test_config_lib.py is a HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
@@ -1988,6 +2015,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
+    _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
 )
 
 # The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather
@@ -2008,6 +2036,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
+    _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR

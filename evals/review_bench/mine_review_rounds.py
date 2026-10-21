@@ -39,6 +39,7 @@ from review_bench.defects import (  # noqa: E402
     escape_for_terminal,
     guess_lens,
     is_markdown_path,
+    path_exists_at_commit,
 )
 
 
@@ -243,6 +244,7 @@ class _CommitResolution:
     fix_commit: str | None = None
     fix_date: str | None = None
     branch_commits: list[dict] = field(default_factory=list)
+    path_absent_at_introducing_commit: bool = False
 
 
 # The calls that use this timeout are local git (show-ref/merge-base/log/
@@ -439,6 +441,7 @@ class _BranchGit:
     touched_paths: frozenset[str] = frozenset()
     commits_by_path: dict[str, list[tuple[str, float | None]]] = field(default_factory=dict)
     introductions: dict[tuple[str, str], tuple[str, str, str] | None] = field(default_factory=dict)
+    path_absent_introductions: set[tuple[str, str]] = field(default_factory=set)
     resolutions: dict[tuple[str, float], _CommitResolution] = field(default_factory=dict)
 
 
@@ -460,7 +463,9 @@ def open_branch_git(repo_dir: Path, branch_ref: tuple[str, str | None]) -> _Bran
 
 def _introduction(repo_dir: Path, branch: _BranchGit, path: str, fix_commit: str) -> tuple[str, str, str] | None:
     """(head_commit, base_commit, fix_date) for `fix_commit`'s change to
-    `path`, or None when blame does not name exactly one introducing commit.
+    `path`, or None when blame does not name exactly one introducing commit,
+    a git call fails, or `path` does not exist at the introducing commit.
+    A path absent there is recorded in `branch.path_absent_introductions`.
     Blames `fix_commit` backward with `mine_szz.blame_fix_commit`;
     `base_commit` is the introducing commit's own parent. Blame runs once
     per (path, fix_commit)."""
@@ -474,7 +479,18 @@ def _introduction(repo_dir: Path, branch: _BranchGit, path: str, fix_commit: str
         base_commit = _rev_parse(repo_dir, f"{head_commit}^")
         fix_date = _commit_date(repo_dir, fix_commit)
         if base_commit is not None and fix_date is not None:
-            introduction = (head_commit, base_commit, fix_date)
+            # A file renamed after the introducing commit, or blamed in through
+            # `git blame -C` from another file, has no such path at head_commit.
+            # The `head_commit^` lookup above already resolved the commit, so a
+            # failed `cat-file -e` counts as an absent path.
+            try:
+                path_is_present = path_exists_at_commit(repo_dir, head_commit, path, env=None)
+            except _LOCAL_GIT_ERRORS:
+                path_is_present = None
+            if path_is_present:
+                introduction = (head_commit, base_commit, fix_date)
+            elif path_is_present is not None:
+                branch.path_absent_introductions.add(memo_key)
     branch.introductions[memo_key] = introduction
     return introduction
 
@@ -489,8 +505,9 @@ def resolve_defect_commits(
     after the later round's own timestamp -- the author's first response to
     that round. `head_commit` is derived by blaming the fix commit backward;
     `base_commit` is that introducing commit's own parent. A candidate this
-    cannot fully resolve is skipped by `mine()` and counted in its
-    `skipped_unresolved` figure.
+    cannot fully resolve is skipped by `mine()`. It is counted in
+    `skipped_path_absent` when `path_absent_at_introducing_commit` is set,
+    and in `skipped_unresolved` otherwise.
 
     `branch` comes from `open_branch_git`, which `mine()` opens once per
     branch; results are memoized on it per (path, after_ts).
@@ -511,7 +528,9 @@ def resolve_defect_commits(
         if after_round:
             fix_commit, _fix_ts = min(after_round, key=lambda commit: commit[1])
             introduction = _introduction(repo_dir, branch, path, fix_commit)
-            if introduction is not None:
+            if introduction is None:
+                resolution.path_absent_at_introducing_commit = (path, fix_commit) in branch.path_absent_introductions
+            else:
                 head_commit, base_commit, fix_date = introduction
                 resolution.base_commit = base_commit
                 resolution.head_commit = head_commit
@@ -664,6 +683,7 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
 
     candidates: list[Candidate] = []
     skipped_unresolved = 0
+    skipped_path_absent = 0
     skipped_empty_branch_rounds = 0
     ref_status_counts: dict[str, int] = {}
 
@@ -687,6 +707,9 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
             resolution = resolve_defect_commits(
                 repo_dir, path=path, after_ts=event.later_round_ts, branch=branch_git,
             )
+            if resolution.path_absent_at_introducing_commit:
+                skipped_path_absent += 1
+                continue
             if resolution.base_commit is None or resolution.head_commit is None or resolution.fix_commit is None:
                 skipped_unresolved += 1
                 continue
@@ -702,6 +725,7 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
     print(
         f"mine-rounds: ref_status counts per branch {dict(sorted(ref_status_counts.items()))}, "
         f"{skipped_unresolved} citation(s) skipped for unresolved commits, "
+        f"{skipped_path_absent} citation(s) skipped for a path absent at the introducing commit, "
         f"{skipped_empty_branch_rounds} round(s) skipped for an empty branch name",
         file=sys.stderr,
     )

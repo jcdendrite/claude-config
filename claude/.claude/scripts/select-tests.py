@@ -176,6 +176,16 @@ PERIOD_COST_REPORT_SKILL_MD = "claude-skills/skills/period-cost-report/SKILL.md"
 # TestCrossDomainReadCompleteness cannot see it.
 DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
 
+# nudge-error-mode-analysis.sh runs this script's friction-count subcommand by path.
+TRANSCRIPT_ANALYSIS_SCRIPT = "claude/.claude/scripts/transcript-analysis.py"
+
+# test_nudge_error_mode_analysis.py runs nudge-error-mode-analysis.sh, which runs
+# TRANSCRIPT_ANALYSIS_SCRIPT and so loads its first-party imports: the transcript_analysis
+# package, _config.py, and _config_dir.py.
+# The test builds the script's path inside a function body, so TestCrossDomainReadCompleteness
+# cannot see the read.
+NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH = "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -673,6 +683,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # REVIEW_PR_AUDIT_SCRIPT, REVIEW_PR_SKILL_MD, and PERIOD_COST_REPORT_SKILL_MD:
 # see each constant's own comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
+# NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
 # (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
 # picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
@@ -778,6 +789,11 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         )),
     ),
     (lambda p: _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR), tuple(sorted(HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS))),
+    (
+        lambda p: p in (TRANSCRIPT_ANALYSIS_SCRIPT, CONFIG_MODULE, CONFIG_DIR_MODULE)
+        or _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR),
+        (NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,),
+    ),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),

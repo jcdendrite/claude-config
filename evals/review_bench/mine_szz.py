@@ -12,7 +12,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from review_bench.defects import Candidate, assert_unique_ids, canonical_fix_date, guess_lens, is_markdown_path
+from review_bench.defects import (
+    Candidate,
+    assert_unique_ids,
+    canonical_fix_date,
+    guess_lens,
+    is_markdown_path,
+    path_exists_at_commit,
+)
 from review_bench.identifiers import validate_base_ref
 
 # A candidate fix commit's subject must mention fix/bug/regression to be considered.
@@ -69,6 +76,7 @@ class _MineStats:
     git_call_failures: int = 0
     non_fix_subject_commits: int = 0
     markdown_path_skips: int = 0
+    path_absent_at_introducing_commit: int = 0
 
 
 def _is_blank_or_comment(line: str) -> bool:
@@ -276,6 +284,22 @@ def _build_candidate(
     # Git always prints a parseable date for a real commit.
     # A bad value raises ValueError, which _GIT_CALL_ERRORS does not catch, so it aborts the sweep.
     fix_date = canonical_fix_date(author_date)
+    # The path comes from the fix commit's parent. A file renamed after the
+    # introducing commit, or blamed in through `-C` from another file, has no
+    # such path at head_commit.
+    # A defect must name a path the reviewer can open there.
+    # The parent lookup above resolved the commit, so any failed `cat-file -e`
+    # from here on counts as an absent path.
+    try:
+        path_is_present = path_exists_at_commit(repo_dir, introducing_sha, path, env=None)
+    except _GIT_CALL_ERRORS:
+        if stats is not None:
+            stats.git_call_failures += 1
+        return None
+    if not path_is_present:
+        if stats is not None:
+            stats.path_absent_at_introducing_commit += 1
+        return None
     pr_match = _PR_SUFFIX_RE.search(subject)
     return Candidate(
         id=f"szz:{fix_commit[:12]}:{introducing_sha[:12]}:{path}",
@@ -358,7 +382,8 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
     print(
         f"mine-szz: {len(ranked)} candidate(s), git_call_failures={stats.git_call_failures}, "
         f"non_fix_subject_commits={stats.non_fix_subject_commits}, "
-        f"markdown_path_skips={stats.markdown_path_skips}",
+        f"markdown_path_skips={stats.markdown_path_skips}, "
+        f"path_absent_at_introducing_commit={stats.path_absent_at_introducing_commit}",
         file=sys.stderr,
     )
     return ranked
