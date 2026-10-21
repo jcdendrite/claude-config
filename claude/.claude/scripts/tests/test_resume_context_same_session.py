@@ -995,6 +995,25 @@ class TestConsume:
         assert not outcome.has("LOAD")
 
     @pytest.mark.parametrize("moves_file", [False, True], ids=["file-untouched", "file-moved"])
+    def test_consumer_exiting_1_after_printing_a_valid_destination_never_loads(
+        self, sandbox: _Sandbox, moves_file: bool
+    ) -> None:
+        """The destination passes `is_usable_destination`, so only the consumer's exit status rejects it.
+        Twin of `test_a_valid_stub_destination_loads_proving_the_rejection_shapes_differ_in_one_property`."""
+        pending = sandbox.write_pending("mine", sandbox.worktree_a)
+        good_copy = sandbox.tmpdir_root / "resume-context.good"
+        good_copy.write_text("x\n")
+        good_copy.chmod(0o600)
+        move_line = f'mv "$2" "{sandbox.tmp_path}/moved-copy"' if moves_file else ""
+        stub = _write_consumer_stub(sandbox.tmp_path, f'{move_line}\nprintf "%s\\n" "{good_copy}"\nexit 1')
+
+        outcome = sandbox.run("mine", cwd=sandbox.worktree_a, env_extra={"RESUME_CONTEXT_CONSUMER": str(stub)})
+
+        assert not outcome.has("LOAD")
+        assert outcome.stop_code == ("consumed-elsewhere-or-partial" if moves_file else "consume-failed")
+        assert pending.exists() is (not moves_file)
+
+    @pytest.mark.parametrize("moves_file", [False, True], ids=["file-untouched", "file-moved"])
     @pytest.mark.parametrize(
         "stdout_shape",
         [

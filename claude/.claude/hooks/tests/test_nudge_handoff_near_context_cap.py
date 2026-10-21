@@ -3688,3 +3688,34 @@ class TestCheckMode:
         assert payload["session_id"] == SESSION_ID
         assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _log_path(tmp_path, config_dir=config_dir).exists()
+
+    @pytest.mark.parametrize(
+        "cache_read_tokens, marker_bytes",
+        [
+            pytest.param(ABOVE_LARGE + 0.5, None, id="fractional-no-marker"),
+            pytest.param(ABOVE_LARGE + 0.5, "1\n", id="fractional-marker-below-estimate"),
+            pytest.param(2**63, None, id="over-int64"),
+            pytest.param(-5, None, id="negative"),
+        ],
+    )
+    def test_estimate_not_comparable_as_a_positive_integer_reports_schema_drift_without_writes(
+        self, tmp_path, cache_read_tokens, marker_bytes
+    ):
+        """An estimate the shell cannot compare as a positive integer (a
+        fractional, negative or over-int64 sum) reports schema-drift, so no
+        comparison below the drift gate sees it. The marker state must not
+        matter, since the gate runs before the marker is read."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        record = _record_totalling(ABOVE_LARGE)
+        record["message"]["usage"]["cache_read_input_tokens"] = cache_read_tokens
+        _seed_transcript(config_dir, [record])
+        if marker_bytes is not None:
+            marker = _marker_path(tmp_path, config_dir=config_dir)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(marker_bytes)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload == {"status": "schema-drift", "session_id": SESSION_ID}
+        assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _log_path(tmp_path, config_dir=config_dir).exists()

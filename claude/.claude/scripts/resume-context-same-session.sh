@@ -286,6 +286,7 @@ load_file() {
   if [ -e "$file" ]; then
     stop consume-failed "the consume did not complete and the file is still pending; $shell_hint"
   fi
+  # A temp root that ignores chmod ends here, with the file already moved under the root.
   stop consumed-elsewhere-or-partial "the file is no longer pending but no usable copy was reported; look it up with $(find_hint "${file##*/}")"
 }
 

@@ -362,11 +362,22 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - A path means every own command that carries a `--cwd` names that one absolute path, which the script symlink-resolves.
   - `unknown` means the script could not resolve one directory from the file.
 
-  The script parses each pending file at most once per run. With no argument, a linked session parses every pending file, because the target decides selection and order, and nothing sweeps pending files, so that cost grows with the pending count. A `not-linked` or `unknown` session parses only the at most 5 files it lists. `_lib_resume_context_verdict` decides `load` or `shell`: a `linked` session loads only a file whose target equals its root, a `not-linked` session loads only a file with target `none`, and an `unknown` session never loads. A file whose target is `unknown` gets `SHELL_COMMAND` (without `--cwd`) in every session state, and `FILE_TARGET: unknown`. A main-checkout file whose command carries `--cwd <main root>` therefore gets `SHELL_COMMAND`.
+  The script parses each pending file at most once per run. With no argument, a linked session parses every pending file, because the target decides selection and order. Nothing sweeps pending files, so that cost grows with the pending count. A `not-linked` or `unknown` session parses only the at most 5 files it lists.
+
+  `_lib_resume_context_verdict` decides `load` or `shell` by session state:
+  - A `linked` session loads only a file whose target equals its root.
+  - A `not-linked` session loads only a file with target `none`.
+  - An `unknown` session never loads.
+
+  A file whose target is `unknown` gets `SHELL_COMMAND` (without `--cwd`) in every session state, and `FILE_TARGET: unknown`. A main-checkout file whose command carries `--cwd <main root>` therefore gets `SHELL_COMMAND`.
 
   `not-linked` is reported when `git rev-parse --git-dir` exits 128, which is also git's status for a dubious-ownership refusal, a working directory that no longer exists, and a linked worktree whose gitdir entry was pruned. Such a session loads a file whose target is `none`. That residual is accepted.
 
-  With no argument, the script loads a pending file only when exactly one pending file targets this worktree and is under 7 days old; stale matches do not count toward "exactly one". Otherwise it lists up to 5 candidates, target matches first and each group newest first. Age buckets are `<1d`, `1-7d` and `>7d`, computed with `find -mtime -1` and `-mtime -7` on the pending path, so a failing `find` reads as not fresh and `>7d`. An explicit argument loads a file of any age. A slug shared by a handoff and a brief lists both and moves neither.
+  With no argument, the script loads a pending file only when exactly one pending file targets this worktree and is under 7 days old. Stale matches do not count toward "exactly one". Otherwise it lists up to 5 candidates, target matches first and each group newest first.
+
+  Age buckets are `<1d`, `1-7d` and `>7d`. They are computed with `find -mtime -1` and `-mtime -7` on the pending path, so a failing `find` reads as not fresh and `>7d`.
+
+  An explicit argument loads a file of any age. A slug shared by a handoff and a brief lists both and moves neither.
 
   The load path requires the temp-dir root to be an absolute path that passes the allowlist, then runs `resume-context.sh --consume-only <file>`. It sets `RESUME_CONTEXT_EXACT_SOURCE` so the consumer skips its legacy-location fallback and moves exactly the enumerated path. It accepts the result only when the exit status is 0 and stdout is one line naming a regular, non-symlink file directly under the temp-dir root, owned by the caller with mode 0600. Any other result is a failure: the file still being pending reads `consume-failed`, and the file being gone reads `consumed-elsewhere-or-partial`. It never loads another candidate after a failure. The consume runs whether or not the `consume_durable_continuity` kill switch is set, as the shell `resume-context` does. A direct `Read` of a pending path stays covered by `consume-durable-continuity-file-on-read.sh`.
 

@@ -60,7 +60,7 @@ Both messages (the advisory nudge and the hard block) name `/handoff` and `/comp
 
 > Run /compact now rather than after a break: once the prompt cache expires, /compact reprocesses the full history as uncached input, which is when it costs the most.
 
-Only the user can run `/compact`, so the advisory nudge asks the agent to end with a paste-ready `/compact <focus>` line. The focus names the task, the next step, the skill in flight and its current step, the files to re-read first, the open decisions in the words the user used, and the irreversible actions not yet authorized. The hard block stops the loop before any model call, so its message names the bare `/compact`. Neither message tells the user how to resume after `/handoff`: the announce message after the write gives the route, which differs by worktree. Both messages state the next fire point (the estimate plus `HANDOFF_NUDGE_REARM_SPACING`), labeled "hard block" when that point is at or above `HANDOFF_NUDGE_BLOCK_AT`, otherwise "nudge". The label reads the point alone: the fire there is advisory on `Stop` or while a `/handoff` marker is live, and a fire that lands past `HANDOFF_NUDGE_BLOCK_AT` from a "nudge" point just below it blocks.
+Only the user can run `/compact`, so the advisory nudge asks the agent to end with a paste-ready `/compact <focus>` line. The focus names the task, the next step, the skill in flight and its current step, the files to re-read first, the open decisions in the words the user used, and the irreversible actions not yet authorized. The hard block stops the loop before any model call, so its message names the bare `/compact`. Neither message tells the user how to resume after `/handoff`: the announce message after the write gives the route, which differs by worktree. Both messages state the next fire point (the estimate plus `HANDOFF_NUDGE_REARM_SPACING`), labeled "hard block" when that point is at or above `HANDOFF_NUDGE_BLOCK_AT`, otherwise "nudge". The label reads the point alone: the fire there is advisory on `Stop` or while a `/handoff` marker is live. A fire that lands past `HANDOFF_NUDGE_BLOCK_AT` from a "nudge" point just below it blocks.
 
 ### Why each criterion
 
@@ -145,7 +145,7 @@ Refusing is a first-class outcome — a confident number for the wrong session i
 | `cannot-resolve` | `transcript-ambiguous` | More than one project directory holds a transcript for it |
 | `cannot-resolve` | `usage-block-missing` | The transcript has no assistant record carrying a usage block |
 | `cannot-resolve` | `jq-unavailable` | `jq` is missing, failed, or timed out, so no payload could be encoded |
-| `schema-drift` | — | A usage block was found but all four token fields were 0 or null |
+| `schema-drift` | — | A usage block was found but all four token fields were 0 or null, or their sum is not a positive integer |
 
 `handoff/SKILL.md` § "Before writing: is a handoff warranted?" is the canonical statement of how a skill reads this output; every caller cites that section rather than restating the field list here.
 

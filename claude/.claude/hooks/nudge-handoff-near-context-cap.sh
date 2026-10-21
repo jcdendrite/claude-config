@@ -72,6 +72,8 @@
 #     re-scanned — accurate as of that fire, not a live count.
 #   - A non-integer fire-path estimate (a fractional token count, or a corrupt
 #     incremental-scan state file) skips that fire with no log line.
+#   - --check reports schema-drift for any estimate the shell cannot compare as
+#     a positive integer, whatever its cause.
 #   - --check's number is advisory: its PID-reuse guard compares whole-second
 #     start times and it does not re-verify the process identity of the entry
 #     it resolves — see docs/handoff-nudge.md.
@@ -430,9 +432,10 @@ run_check_mode() {
     3) ;; # schema unreadable: intentional no-op, see comment above
   esac
 
-  # Same all-fields-zero condition the fire path logs as schema drift, minus
-  # the marker and log write.
-  if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
+  # Any estimate the shell cannot compare as a positive integer reads as schema drift.
+  # That covers all four fields 0 or null, and a fractional, negative, scientific or over-int64 sum.
+  # Every comparison below therefore gets a usable number.
+  if ! [ "$ESTIMATE" -gt 0 ] 2>/dev/null; then
     local drift_out
     # shellcheck disable=SC2016 # single-quoted on purpose: $session is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
     drift_out=$(_lib_capped_for 2 jq -n --arg session "$session_id" \
@@ -602,6 +605,8 @@ fi
 # A non-integer estimate cannot be spaced from, and `$(( ))` reads a
 # leading-zero constant as octal; stay silent rather than abort the arithmetic
 # below.
+# An all-digit estimate above int64 passes this guard; only a corrupt state
+# file or an impossible token count reaches it.
 case "$ESTIMATE" in ''|*[!0-9]*|0[0-9]*) exit 0 ;; esac
 
 # Already fired: suppress until the estimate has advanced REARM_SPACING
