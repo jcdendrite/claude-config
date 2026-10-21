@@ -2,34 +2,27 @@
 (_session_branch_context, _attributed_branch, _attribute_carried_branch): the pre-branch step that credits a session's leading
 default-branch records to the first branch it enters, and the timeline step
 that resolves every sidechain record against its dispatching main thread."""
-import importlib.util
 import re
-import sys
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 from helpers import REPO_ROOT
-from transcript_analysis import corpus, cost, pricing, review_rounds, review_trace, scope, subagent_mix
+from transcript_analysis import buckets, corpus, cost, period_cost, review_rounds, review_trace, scope, subagent_mix
 
 from .conftest import (
     _agent_use,
     _cost_args,
-    _priced,
+    _record_ids_in,
+    _record_ids_in_dollars,
+    _signed_priced_turn,
     _skill_use,
     _table_cols,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# _mod.cmd_buckets below lives in the shim, so this file loads the shim itself.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _iso(minute: int) -> str:
@@ -417,6 +410,7 @@ _AGREEMENT_MODEL = "claude-sonnet-5"
 _AGREEMENT_BRANCH = "feature-x"
 _AGREEMENT_SESSION = "sess"
 _AGREEMENT_DISPATCH_TOOL_USE_ID = "dispatch-1"
+_AGREEMENT_CWD = "/srv/agreement/checkout"
 
 
 class _Observation(NamedTuple):
@@ -439,26 +433,12 @@ def _agreement_ts(minute: int) -> str:
 
 
 def _signed_turn(record_id: int, *, branch: str, minute: int, content: list | None = None, sidechain: bool = False):
-    """A priced turn whose output-token count is its record id, a distinct power of two,
-    so any token or dollar total decodes back to the set of records that summed into it."""
-    rec = _priced(_AGREEMENT_MODEL, output=record_id, branch=branch, ts=_agreement_ts(minute), content=content)
-    if sidechain:
-        rec["isSidechain"] = True
-    return rec
-
-
-def _record_ids_in(total_output_tokens: int) -> frozenset[int]:
-    return frozenset(1 << bit for bit in range(total_output_tokens.bit_length()) if total_output_tokens >> bit & 1)
-
-
-def _dollars_per_output_token() -> float:
-    usage = _priced(_AGREEMENT_MODEL, output=1)["message"]["usage"]
-    dollars_by_class, _context, _unpriced = pricing._price_turn(_AGREEMENT_MODEL, usage)
-    return sum(dollars_by_class.values())
-
-
-def _record_ids_in_dollars(dollars: float) -> frozenset[int]:
-    return _record_ids_in(round(dollars / _dollars_per_output_token()))
+    """A signed priced turn (see conftest._signed_priced_turn) in the agreement model, with the one fixed `cwd` every
+    record of the fixture carries."""
+    return _signed_priced_turn(
+        record_id, model=_AGREEMENT_MODEL, branch=branch, ts=_agreement_ts(minute), cwd=_AGREEMENT_CWD, content=content,
+        sidechain=sidechain,
+    )
 
 
 class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
@@ -498,7 +478,7 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
             ),
             _signed_turn(self.BRANCH_ENTRY, branch=_AGREEMENT_BRANCH, minute=10),
             _signed_turn(self.LATE_FILED_PREFIX_TURN, branch="main", minute=4),
-            _user_msg("thanks", branch=_AGREEMENT_BRANCH, ts=_agreement_ts(11)),
+            {**_user_msg("thanks", branch=_AGREEMENT_BRANCH, ts=_agreement_ts(11)), "cwd": _AGREEMENT_CWD},
             _signed_turn(self.TURN_AFTER_RETURN_TO_DEFAULT, branch="main", minute=15),
         ]
         # Every subagent turn resolves to its spawn record's branch: review-round-cost prices a dispatch at its spawn
@@ -546,15 +526,27 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
     def _workstream_cost_observation(self, corpus_root) -> _Observation:
         per_branch = cost._compute_workstream_dollars(self._sessions(corpus_root, include_subagents=True))
         return _Observation(
-            self.EVERY_RECORD, _record_ids_in_dollars(per_branch[_AGREEMENT_BRANCH]["total_dollars"]),
+            self.EVERY_RECORD, _record_ids_in_dollars(per_branch[_AGREEMENT_BRANCH]["total_dollars"], _AGREEMENT_MODEL),
         )
+
+    def _period_cost_observation(self, corpus_root) -> _Observation:
+        """period-cost keys branch dollars by (own anchor, successor anchor, branch), so the observation sums every key
+        that carries the branch entered."""
+        totals = period_cost._period_stream_totals(
+            self._sessions(corpus_root, include_subagents=True),
+            since_ts=_ts(0) - 600, until_epoch=_ts(0) + 3600,
+        )
+        dollars_under_branch = sum(
+            dollars for key, dollars in totals.branch_dollars.items() if key.branch == _AGREEMENT_BRANCH
+        )
+        return _Observation(self.EVERY_RECORD, _record_ids_in_dollars(dollars_under_branch, _AGREEMENT_MODEL))
 
     def _review_round_cost_observation(self, corpus_root) -> _Observation:
         """Rounds price a whole dispatch at its spawn record's branch, so the subagent
         turns are observed through the dispatch, not as records of their own."""
         data = review_rounds.compute_review_round_costs(self._sessions(corpus_root, include_subagents=False))
         return _Observation(
-            self.EVERY_RECORD, _record_ids_in_dollars(data["branch_totals"][(None, _AGREEMENT_BRANCH)]),
+            self.EVERY_RECORD, _record_ids_in_dollars(data["branch_totals"][(None, _AGREEMENT_BRANCH)], _AGREEMENT_MODEL),
         )
 
     def _review_trace_observation(self, corpus_root) -> _Observation:
@@ -576,7 +568,7 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
         )
 
     def _buckets_observation(self, corpus_root, capsys) -> _CountObservation:
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": _AGREEMENT_BRANCH})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": _AGREEMENT_BRANCH})())
         row = _table_cols(capsys.readouterr().out, header_contains="Branch", row_contains=_AGREEMENT_BRANCH, max_labels=8)
         return _CountObservation(self.MAIN_THREAD_TURNS, int(row["Total"]))
 
@@ -614,6 +606,7 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
             "cost": self._cost_observation(corpus_root, capsys),
             "pr-cost": self._pr_cost_observation(corpus_root),
             "workstream-cost": self._workstream_cost_observation(corpus_root),
+            "period-cost": self._period_cost_observation(corpus_root),
             "review-round-cost": self._review_round_cost_observation(corpus_root),
             "review-trace": self._review_trace_observation(corpus_root),
         }

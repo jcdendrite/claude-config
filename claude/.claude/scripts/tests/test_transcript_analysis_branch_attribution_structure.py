@@ -159,7 +159,7 @@ _POSITIONAL_CARRY_FORWARD = {
 
 # Literal reads that sit beside an attributed read in the same function.
 _RAW_READ_BESIDE_ATTRIBUTION = {
-    "transcript-analysis.py:cmd_fail_seq": (
+    "transcript_analysis/fail_seq.py:cmd_fail_seq": (
         2, "a whole-session prefilter and the pending-pair reset mark a physical checkout change; "
            "only the filter and the runs key take the attributed branch",
     ),

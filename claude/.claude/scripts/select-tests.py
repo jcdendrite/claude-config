@@ -162,13 +162,29 @@ REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface
 
 # SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
 # compare its literal script invocations against the settings allow entries,
-# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
+# test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token, and
+# test_transcript_period_cost.py reads it for the acquire invocation and skill name.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
+
+# SCRIPTS_TESTS_DIR's test_transcript_period_cost.py reads this exact file by
+# path, to check it names every period-cost notice tag, the report's first-line
+# prefix, and the undetermined group label, and keeps its pinned prose.
+PERIOD_COST_REPORT_SKILL_MD = "claude-skills/skills/period-cost-report/SKILL.md"
 
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
 # in settings.json. The path is built in a function body, so
 # TestCrossDomainReadCompleteness cannot see it.
 DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
+
+# nudge-error-mode-analysis.sh runs this script's friction-count subcommand by path.
+TRANSCRIPT_ANALYSIS_SCRIPT = "claude/.claude/scripts/transcript-analysis.py"
+
+# test_nudge_error_mode_analysis.py runs nudge-error-mode-analysis.sh, which runs
+# TRANSCRIPT_ANALYSIS_SCRIPT and so loads its first-party imports: the transcript_analysis
+# package, _config.py, and _config_dir.py.
+# The test builds the script's path inside a function body, so TestCrossDomainReadCompleteness
+# cannot see the read.
+NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH = "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py"
 
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
@@ -309,7 +325,8 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
-# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path.
+# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path,
+# and test_transcript_period_cost.py reads the first for its golden sample.
 TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
 PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
 
@@ -663,9 +680,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
-# REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
-# comment above for its citation.
+# REVIEW_PR_AUDIT_SCRIPT, REVIEW_PR_SKILL_MD, and PERIOD_COST_REPORT_SKILL_MD:
+# see each constant's own comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
+# NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
 # (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
 # picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
@@ -771,6 +789,11 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         )),
     ),
     (lambda p: _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR), tuple(sorted(HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS))),
+    (
+        lambda p: p in (TRANSCRIPT_ANALYSIS_SCRIPT, CONFIG_MODULE, CONFIG_DIR_MODULE)
+        or _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR),
+        (NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,),
+    ),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
@@ -787,6 +810,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),

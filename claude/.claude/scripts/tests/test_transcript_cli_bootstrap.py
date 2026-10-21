@@ -19,9 +19,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from helpers import REPO_ROOT
 
-from .conftest import _table_cols
+from .conftest import _asst, _bash_use, _table_cols, _tool_result, _user_msg, _write_jsonl
 
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
@@ -501,6 +502,77 @@ def test_transcript_analysis_judgment_pair_subprocess_finds_seeded_review_skill(
     assert "Skill: code-review" in result.stdout
 
 
+def _seed_session_signal_account(tmp_path: Path) -> tuple[Path, Path]:
+    """Build a single-account config dir with one session that gives every session-signal command
+    something to print: a failed pytest run, an explicit-correction prompt, and timestamps (duration
+    prints `No timestamp data found.` without them). Returns (config_dir, transcript_path)."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    branch = "bootstrap-signal"
+    records = [
+        _user_msg("start the bootstrap work", branch=branch, ts="2026-05-19T10:00:00.000Z"),
+        _asst("claude-opus-4-7", branch=branch, ts="2026-05-19T10:01:00.000Z", content=[_bash_use("t1", "pytest")]),
+        _user_msg([_tool_result("t1", "1 failed, 2 passed")], branch=branch, ts="2026-05-19T10:02:00.000Z"),
+        _user_msg("that's wrong, try again", branch=branch, ts="2026-05-19T10:03:00.000Z"),
+        _asst("claude-sonnet-5", branch=branch, ts="2026-05-19T10:04:00.000Z"),
+        _asst("claude-sonnet-5", branch=branch, ts="2026-05-19T10:05:00.000Z"),
+    ]
+    for record in records:
+        record["sessionId"] = "bootstrap-s1"
+    transcript_path = proj / "s.jsonl"
+    _write_jsonl(transcript_path, records)
+    return config_dir, transcript_path
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_token"),
+    [
+        ("buckets", "--branches"),
+        ("fail-seq", "--branches"),
+        ("struggle", "--branches"),
+        ("user-input", "--corrections-only"),
+        ("duration", "--gap-minutes"),
+        ("friction-count", "--checkpoint"),
+    ],
+    ids=["buckets", "fail-seq", "struggle", "user-input", "duration", "friction-count"],
+)
+def test_transcript_analysis_session_signal_help_exits_zero(command, expected_token):
+    """Proves, in a fresh interpreter, that build_parser calls each session-signal registrar."""
+    result = _run("transcript-analysis.py", command, "--help")
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_token"),
+    [
+        (("fail-seq", "--branches", "bootstrap-signal"), "Sequence: 1"),
+        (("struggle",), "Unknown"),
+        (("duration",), "Span(min)"),
+        (("user-input",), "EXPLICIT_CORRECTION"),
+        (("friction-count", "--json", "--transcript", "{transcript}"), '"failed_test_runs"'),
+    ],
+    ids=["fail-seq", "struggle", "duration", "user-input", "friction-count"],
+)
+def test_transcript_analysis_session_signal_subprocess_finds_seeded_session(tmp_path, argv, expected_token):
+    """Proves, in a fresh interpreter, that real argparse dispatches each session-signal subcommand to its own
+    handler through set_defaults(func=...); each expected token is printed only by that handler."""
+    config_dir, transcript_path = _seed_session_signal_account(tmp_path)
+
+    result = _run(
+        "transcript-analysis.py", "--config-dir", str(config_dir),
+        *(arg.format(transcript=transcript_path) for arg in argv),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout, (
+        f"seeded session's {argv[0]} signal never surfaced in its output: {result.stdout!r}"
+    )
+    if argv[0] == "friction-count":
+        assert json.loads(result.stdout)["failed_test_runs"] == 1
+
+
 def test_transcript_analysis_read_scope_help_exits_zero():
     result = _run("transcript-analysis.py", "read-scope", "--help")
     assert result.returncode == 0, result.stderr
@@ -805,6 +877,37 @@ def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp
 
     assert result.returncode == 2
     assert "--branches is required" in result.stderr
+
+
+def test_transcript_analysis_period_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "period-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since DATE" in result.stdout
+    assert "--sample" in result.stdout
+
+
+def test_transcript_analysis_period_cost_subprocess_refuses_without_since():
+    """Proves, in a fresh interpreter, that period_cost.py resolves through sys.path[0] alone and that real argparse
+    dispatches period-cost to cmd_period_cost through set_defaults(func=...). The refusal is the bootstrap proof for
+    the default path: argparse requires neither date flag, so the exit 2 and the flag name come from cmd_period_cost.
+    This mirrors the cost-counts pair above."""
+    result = _run("transcript-analysis.py", "period-cost")
+
+    assert result.returncode == 2
+    assert "--since" in result.stderr
+    assert result.stdout == ""
+
+
+def test_transcript_analysis_period_cost_sample_subprocess_prints_the_report_between_its_fixed_lines(tmp_path):
+    """The --sample run reads no transcript, so the config directory it is pointed at does not exist."""
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(tmp_path / "no-such-account"), "HOME": str(tmp_path)}
+
+    result = _run("transcript-analysis.py", "period-cost", "--sample", env=env)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("*Claude Code spend, ")
+    assert lines[-1].startswith("_Computed locally at API list price")
 
 
 def test_transcript_analysis_rearm_backtest_help_exits_zero():
