@@ -433,6 +433,7 @@ Column legend:
 - Fail direction: only exit 0 from `_config_enabled` routes. Any other
   exit, including an unresolvable config dir, an unreadable schema or a
   missing row, allows the call, which leaves the round inline.
+
 ### `plugin_bootstrap`
 
 - Call site: `bootstrap-project-plugins.sh`, a single `_config_enabled

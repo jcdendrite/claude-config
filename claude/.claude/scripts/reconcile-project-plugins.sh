@@ -3,43 +3,17 @@
 # into the per-account plugin registry, in the background.
 #
 # Invoked as `reconcile-project-plugins.sh <resolved-repo-root>` by
-# bootstrap-project-plugins.sh's SessionStart hook (detached, with stdin/
-# stdout/stderr redirected to /dev/null, per that hook's own invocation
-# contract) once the hook's fast guard has already decided a launch is
-# warranted. This script never trusts that decision blindly: it re-reads
-# <resolved-repo-root>/.claude/settings.json and the registry itself via the
-# same _lib_missing_plugin_ids helper the hook calls, rather than accepting a
-# parsed id list over argv, so a hand-run or stale-hook invocation is still
-# safe and a future change to the missing-id logic can't silently diverge
-# between the two callers.
+# bootstrap-project-plugins.sh's SessionStart hook, detached with stdin, stdout,
+# and stderr redirected to /dev/null.
+# The script re-derives the missing-id set from the repo's settings and the
+# registry via _lib_missing_plugin_ids_for_content instead of accepting an id
+# list over argv, so a hand-run or stale-hook invocation still re-derives and re-validates every id itself.
+# Such an invocation performs no trust check, which is why the hook is the only supported caller.
+# docs/hooks.md § Utility hooks and docs/scripts.md describe the full contract.
 #
-# Mechanisms implemented here (see .claude/plans/project-plugin-registry-
-# bootstrap.md for the full design): M4 (marketplace-registered-and-source-
-# type precondition, restricted to github/directory/git sources, plus a
-# credential-bearing-plugin denylist), M5 (detached/capped/fd-isolated
-# invocation contract and a total per-run wall-clock ceiling), M6 (the
-# `-s local` scope ladder, gated on a runtime check-ignore-plus-not-already-
-# tracked guard), M7 (never passes -y/--yes/--accept-command), M8 (a
-# PID-plus-process-start-time lock, keyed on the config dir, that survives a
-# recycled-PID wraparound), M9 (a hash-keyed failure stamp plus a shared,
-# append-locked audit log), M10 (a `false` in the repo's sibling
-# settings.local.json drops that id; an unreadable local file installs
-# nothing).
-#
-# Known accepted gap (M9): a transient install failure suppresses retry for
-# that plugin id until the repo's settings file changes (which changes the
-# failure stamp's hash and so its filename) or the stamp file under
-# <config-dir>/plugin-bootstrap/ is deleted by hand. There is no attempt
-# counter or TTL -- a TTL is a guess about when the world changed, while the
-# settings-hash key is a fact about when the input changed.
-#
-# Known accepted gap (audit log): the audit-log append itself has no
-# timeout, unlike every `claude` subprocess call in this script -- a
-# filesystem that hangs I/O (e.g. a stale network mount under
-# <config-dir>) can block the write indefinitely. Unlike a `claude` call,
-# a blocking file write has no child process for _lib_capped_for's
-# timeout(1)/gtimeout(1) to kill, so the existing per-call and wall-clock
-# caps bound only the two `claude` subprocess calls, not this one.
+# The audit-log append and the lock-file open (`exec 9>>`) have no timeout.
+# A filesystem that hangs I/O can block either one indefinitely, because a blocking open or write has no child process for timeout(1) to kill.
+# The per-call and wall-clock caps bound only the `claude` subprocess calls.
 set -euo pipefail
 
 if ! resolved="$(readlink -f -- "$0" 2>/dev/null)"; then
@@ -50,13 +24,10 @@ fi
 
 TARGET_REPO_ROOT="${1:?reconcile-project-plugins.sh requires the resolved repo root as \$1}"
 
-# M5: refuse to launch anything at all when the two binaries every
-# downstream step depends on are missing, rather than letting the first
-# capped call fail with a generic "command not found".
-command -v claude >/dev/null 2>&1 || exit 0
-if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
-  exit 0
-fi
+# The runtime directory and files record the absolute path of every repo opened, so the umask makes them owner-only (0700 and 0600).
+# _reconciler_claude_call restores the original umask, so the files `claude` writes keep their usual modes.
+_RECONCILER_ORIGINAL_UMASK=$(umask)
+umask 077
 
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
@@ -67,39 +38,37 @@ mkdir -p -- "$BOOTSTRAP_DIR" 2>/dev/null || exit 0
 
 AUDIT_LOG="$BOOTSTRAP_DIR/audit.log"
 AUDIT_LOG_LOCK="$BOOTSTRAP_DIR/audit.log.lock"
-# _AUDIT_LOCK_ATTEMPTED is set by _audit_log the first time it tries
-# AUDIT_LOG_LOCK, so a run that calls _audit_log many times (once per id)
-# still calls _lib_acquire_append_lock at most once per process, per that
-# primitive's own documented contract. _AUDIT_LOCK_HELD is set only when that
-# attempt succeeded.
+# _audit_log sets _AUDIT_LOCK_ATTEMPTED the first time it tries AUDIT_LOG_LOCK, so many calls in one run take the lock at most once, as _lib_acquire_append_lock requires.
+# _AUDIT_LOCK_HELD is set only when that attempt succeeded.
 _AUDIT_LOCK_ATTEMPTED=""
 _AUDIT_LOCK_HELD=""
 RECONCILER_LOCK="$BOOTSTRAP_DIR/reconciler.lock"
 MARKER_FILE="$BOOTSTRAP_DIR/.reconciler-start"
 
-# M5's total wall-clock ceiling: 600s (10 minutes), 20x the per-call 30s cap
-# below -- see the plan's M5 mechanism text for the full grounding (repo
-# precedent, not a vendor SLA, since none documents this call's duration).
+# Wall-clock ceiling for one run: 600s (10 minutes), 20x the per-call cap below.
+# The ceiling is checked only before each id, so an install that starts just under it can still run past it, for its capped git checks and its 30s cap.
+# This is repo precedent, not a vendor figure, because no vendor documentation gives this call's duration.
 # Reaching the ceiling logs one line and ends the run.
 _RECONCILER_WALL_CLOCK_CEILING_SECONDS=600
-# 30s per capped `claude` call: double this repo's existing 15s cap for the
-# closest comparable network-fetching subprocess call (`git fetch` in
-# cleanup-merged-branches.sh), doubled because an install can involve both a
-# marketplace-metadata read and a plugin-content fetch.
+# 30s per capped `claude` call: double this repo's 15s cap for the closest comparable network-fetching call (`git fetch` in cleanup-merged-branches.sh).
+# An install can read marketplace metadata and fetch plugin content, hence the doubling.
 _RECONCILER_CLAUDE_CALL_CAP_SECONDS=30
 
-# M4's credential-bearing-plugin denylist. Nothing ties this to plugin
-# metadata -- a future credential-bearing plugin added anywhere is
-# auto-installable unless it's added here by hand too.
+# Plugins that carry credentials and so are never auto-installed.
+# Nothing ties this list to plugin metadata, so a future credential-bearing plugin must be added here by hand.
 _RECONCILER_CREDENTIAL_DENYLIST=("issue-triage@claude-config")
 
-_reconciler_is_denylisted() {
-  local id="$1" denied
+# _reconciler_is_denylisted PLUGIN_ID
+# Returns 0 when PLUGIN_ID matches a denylist entry, ignoring ASCII case.
+# The body is a subshell that sets LC_ALL=C, so the case fold touches only A-Z.
+_reconciler_is_denylisted() (
+  LC_ALL=C
+  folded_id="${1,,}"
   for denied in "${_RECONCILER_CREDENTIAL_DENYLIST[@]}"; do
-    [ "$id" = "$denied" ] && return 0
+    [ "$folded_id" = "${denied,,}" ] && exit 0
   done
-  return 1
-}
+  exit 1
+)
 
 # _audit_sanitize VALUE
 # Prints VALUE without C0, DEL, or C1 control characters. Used only for the
@@ -115,11 +84,11 @@ _audit_sanitize() {
 _AUDIT_REPO_FIELD=$(_audit_sanitize "$TARGET_REPO_ROOT") || _AUDIT_REPO_FIELD=""
 
 # _audit_id_field PLUGIN_ID_OR_DASH
-# Prints the audit-log text for a plugin id. "-" and an id that passes
-# _lib_validate_plugin_id (at most _LIB_PLUGIN_ID_MAX_LENGTH ASCII bytes from a
-# fixed alphabet, so no control characters) are printed verbatim. Any other value is repo-controlled text and prints as
-# `invalid-id(len=N)`, where N is its length in the shell's substring units
-# (bytes in the C locale, characters otherwise).
+# Prints the audit-log text for a plugin id.
+# "-" and an id that passes _lib_validate_plugin_id are printed verbatim.
+# That validator accepts at most _LIB_PLUGIN_ID_MAX_LENGTH ASCII bytes from a fixed alphabet, so a printed id has no control characters.
+# Any other value is repo-controlled text and prints as `invalid-id(len=N)`.
+# N is the value's length in the shell's substring units (bytes in the C locale, characters otherwise).
 _audit_id_field() {
   local plugin_id="$1"
   if [ "$plugin_id" = "-" ] || _lib_validate_plugin_id "$plugin_id"; then
@@ -130,21 +99,14 @@ _audit_id_field() {
 }
 
 # _audit_log PLUGIN_ID_OR_DASH DECISION OUTCOME
-# One JSON-lines entry per decision, matching track-permission-prompts.sh's
-# own JSON-lines log convention. PLUGIN_ID_OR_DASH is "-" for a decision
-# that isn't specific to one id (M4's marketplace-listing failure). The plugin
-# id is repo-controlled and reaches here unvalidated from
-# wall_clock_ceiling_reached and m3_invalid_id_skip, so it goes through
-# _audit_id_field; the repo root is the once-computed _AUDIT_REPO_FIELD.
+# Appends one JSON-lines entry per decision, matching track-permission-prompts.sh's JSON-lines log convention.
+# PLUGIN_ID_OR_DASH is "-" for a decision that is not specific to one id, such as a marketplace-listing failure.
+# The plugin id is repo-controlled and can reach here unvalidated, so it goes through _audit_id_field.
+# The repo root is the once-computed _AUDIT_REPO_FIELD.
 #
-# Acquires AUDIT_LOG_LOCK directly via _lib_acquire_append_lock, at most
-# once per process (guarded by _AUDIT_LOCK_ATTEMPTED), rather than through
-# _lib_append_line_locked -- that primitive's own lock helper is documented
-# to be called at most once per process, and this function is called many
-# times in one reconciler run (once per id). Every exit path returns 0: a
-# failing sanitize degrades to an empty repo root and a failing append to "this
-# one decision goes unlogged", never a set -e abort of the run, so every call
-# site above can stay a bare, unguarded statement.
+# AUDIT_LOG_LOCK is taken through _lib_acquire_append_lock, at most once per process, because that primitive sets the process's single EXIT trap.
+# Every exit path returns 0, so a call site can stay a bare statement under set -e.
+# A failing sanitize degrades to an empty repo root, and a failing append leaves that one decision unlogged.
 _audit_log() {
   local plugin_id="$1" decision="$2" outcome="$3"
   local id_field line
@@ -167,113 +129,131 @@ _audit_log() {
     fi
   fi
 
-  # M9's own size cap: truncate before appending once the log exceeds
-  # _LIB_SIZE_THRESHOLD_BYTES (_lib.sh, 5 MB -- the same threshold
-  # _lib_missing_plugin_ids already applies to SETTINGS_FILE), rather than
-  # letting a shared, multi-writer, never-swept log grow without bound. Only
-  # the lock holder truncates: an unlocked truncate could drop a concurrent
-  # holder's lines, so a writer that lost the lock leaves the log to the next
-  # locked writer.
-  if [ -n "$_AUDIT_LOCK_HELD" ]; then
-    local audit_log_size
-    audit_log_size=$(stat -c%s -- "$AUDIT_LOG" 2>/dev/null) \
-      || audit_log_size=$(stat -f%z -- "$AUDIT_LOG" 2>/dev/null) \
-      || audit_log_size=""
-    if [ -n "$audit_log_size" ] && [ "$audit_log_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
-      : 2>/dev/null > "$AUDIT_LOG" || true
-    fi
+  # Only the lock holder truncates, because an unlocked truncate could drop a concurrent holder's lines.
+  # A writer that lost the lock leaves an oversized log to the next locked writer.
+  if [ -n "$_AUDIT_LOCK_HELD" ] && [ -f "$AUDIT_LOG" ] && _lib_file_exceeds_size_cap "$AUDIT_LOG"; then
+    : 2>/dev/null > "$AUDIT_LOG" || true
   fi
 
-  if [ -f "$AUDIT_LOG" ] && grep -qFx -e "$line" -- "$AUDIT_LOG" 2>/dev/null; then
-    touch -- "$AUDIT_LOG" 2>/dev/null || true
-    return 0
-  fi
   printf '%s\n' "$line" 2>/dev/null >> "$AUDIT_LOG" || true
 }
 
-# _reconciler_pid_start_time PID
-# LC_ALL=C TZ=UTC is load-bearing, not cosmetic: `ps -o lstart=`'s format and
-# value are locale- and timezone-dependent, so two reconcilers launched
-# under different ambient LC_TIME/TZ would otherwise stamp and re-query
-# different strings for the same still-live holder.
-_reconciler_pid_start_time() {
-  LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null
-}
+# Refuse to run when a binary every later step depends on is missing, rather than failing the first capped call with "command not found".
+# The audit line is the only trace, so the bootstrap directory must already be writable.
+if ! command -v claude >/dev/null 2>&1; then
+  _audit_log "-" "preflight_failed" "missing_claude"
+  exit 0
+fi
+if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+  _audit_log "-" "preflight_failed" "missing_timeout_and_gtimeout"
+  exit 0
+fi
+# Failure stamps are keyed by a sha256 digest.
+if ! command -v sha256sum >/dev/null 2>&1; then
+  _audit_log "-" "preflight_failed" "missing_sha256sum"
+  exit 0
+fi
+
+# _RECONCILER_LOCK_HELD_STATUS is the exit status the flock probe uses for "another process holds the lock", distinct from python3's 1 for any other failure and the shell's 127 for a missing python3.
+_RECONCILER_LOCK_HELD_STATUS=3
 
 # _reconciler_acquire_lock
-# One lock per config dir (the contended resource is the per-account
-# registry, not the repo), keyed on PID plus process start time rather than
-# bare PID, so a PID recycled after wraparound to an unrelated live process
-# is correctly evicted instead of read as "still held" (M8). Deliberately
-# sets no EXIT trap of its own: _lib_acquire_append_lock (called by
-# _audit_log, at most once per process) sets its own `trap ... EXIT`
-# internally, and this repo has exactly one EXIT trap slot per process -- a
-# second `trap ... EXIT` silently replaces the first (shell-script-
-# conventions.md). The caller below cleans up this lock explicitly instead.
-# Returns 0 once acquired, 1 if held by a still-live process (own start time
-# re-queried and matches its stamp) or if this process's own start time
-# couldn't be determined at all.
+# One lock per config dir, because the contended resource is the per-account registry, not the repo.
+# Takes a non-blocking exclusive flock on RECONCILER_LOCK through fd 9, which stays open for the life of the process, so the kernel releases the lock at exit however the process ends.
+# The lock file is never unlinked and its content is never read, because the flock is the lock.
+# python3 makes the flock(2) call, because bash has no flock builtin. It shares fd 9 with the shell, so the lock outlives the python3 process.
+# This function sets no EXIT trap, because _audit_log's _lib_acquire_append_lock owns the process's single EXIT trap slot (shell-script-conventions.md).
+# Returns 0 once held, 1 when another process holds it, and 2 when the lock cannot be attempted: python3 is missing, or the lock file cannot be opened or locked.
 _reconciler_acquire_lock() {
-  local my_pid=$$ my_start
-  my_start=$(_reconciler_pid_start_time "$my_pid")
-  [ -n "$my_start" ] || return 1
+  { exec 9>> "$RECONCILER_LOCK"; } 2>/dev/null || return 2
+  local flock_status=0
+  # The probe runs from BOOTSTRAP_DIR, because a version-manager shim for python3 reads .python-version from the cwd, which is otherwise the repo.
+  # -I keeps PYTHONPATH, the user site directory, and the cwd entry out of Python startup, so a PYTHONPATH entry or a planted sitecustomize.py cannot replace fcntl.
+  # The subshell inherits fd 9.
+  # A failed cd (status 1) and a cap kill (124 or 137) both fall into the unavailable arm below.
+  ( cd -- "$BOOTSTRAP_DIR" && _lib_capped python3 -I -c 'import fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(int(sys.argv[1]))' "$_RECONCILER_LOCK_HELD_STATUS" ) 2>/dev/null || flock_status=$?
+  case "$flock_status" in
+    0) return 0 ;;
+    "$_RECONCILER_LOCK_HELD_STATUS") return 1 ;;
+    *) return 2 ;;
+  esac
+}
 
-  local attempt
-  for attempt in 1 2; do
-    if (set -o noclobber; printf '%s\t%s\n' "$my_pid" "$my_start" > "$RECONCILER_LOCK") 2>/dev/null; then
-      return 0
-    fi
-    local holder_pid="" holder_start=""
-    IFS=$'\t' read -r holder_pid holder_start < "$RECONCILER_LOCK" 2>/dev/null || true
-    if [ -z "$holder_pid" ]; then
-      # Empty read-back: either the winner already released the lock in the
-      # narrow window between our failed noclobber create and this read, or
-      # a write is still landing. Either way this is evidence the lock may
-      # already be free, not evidence it's held -- retry the noclobber
-      # create on the next attempt instead of giving up.
-      continue
-    fi
-    if kill -0 "$holder_pid" 2>/dev/null; then
-      local current_start
-      current_start=$(_reconciler_pid_start_time "$holder_pid")
-      if [ -n "$current_start" ] && [ "$current_start" = "$holder_start" ]; then
-        return 1  # genuinely still held by the same process
-      fi
-      # kill -0 succeeded but the start time no longer matches: the PID was
-      # recycled to an unrelated live process. Fall through and evict.
-    fi
-    rm -f -- "$RECONCILER_LOCK" 2>/dev/null
-  done
-  return 1
+# _reconciler_claude_call CLAUDE_ARGS...
+# Runs `claude CLAUDE_ARGS...` under the per-call cap and the umask this process started with, so the files the CLI writes keep their usual modes.
+# The body is a subshell, so the restored umask does not leak into the reconciler's own files.
+# This helper and _reconciler_git close the lock descriptor, so a child that outlives its call cannot keep the lock.
+# The subshell closes it first, before `claude` starts.
+_reconciler_claude_call() (
+  umask "$_RECONCILER_ORIGINAL_UMASK" || exit 1
+  exec 9>&-
+  _lib_capped_for "$_RECONCILER_CLAUDE_CALL_CAP_SECONDS" claude "$@"
+)
+
+# _reconciler_git GIT_ARGS...
+# Runs `git -C TARGET_REPO_ROOT GIT_ARGS...` under the default cap with the lock descriptor closed, so a daemon git starts cannot inherit the lock.
+# The redirection applies to the call's children only, so the shell keeps the lock.
+_reconciler_git() {
+  _lib_capped git -C "$TARGET_REPO_ROOT" "$@" 9>&-
 }
 
 # _reconciler_marker_epoch
-# Re-stats MARKER_FILE's mtime fresh on every call rather than caching it
-# once -- M5's own text computes each id's elapsed time as "now minus that
-# marker file's mtime" at the moment of that id's own attempt, not as of
-# the run's start, so a cached value would never reflect any change to the
-# file's mtime after it was first read.
+# Prints MARKER_FILE's mtime in epoch seconds.
+# The marker is touched once per run, at the start of `_reconciler_process_repo`, so the caller's now-minus-mtime is time since that touch, never a per-id time.
+# It re-stats on every call, so a marker removed mid-run yields an empty result and the caller fails closed.
 _reconciler_marker_epoch() {
   stat -c%Y -- "$MARKER_FILE" 2>/dev/null \
     || stat -f%m -- "$MARKER_FILE" 2>/dev/null \
     || printf ''
 }
 
+# _reconciler_stamp_file PLUGIN_ID
+# Prints the failure-stamp path for PLUGIN_ID under the current settings content, or nothing when the hash fails.
+# The name is a hash of the id plus the settings content hash, never repo-controlled text.
+# The name therefore changes, and the old stamp goes stale, when the repo's settings change.
+_reconciler_stamp_file() {
+  local stamp_key
+  stamp_key=$(_lib_hash_diff_text "${1}$(printf '\x1e')${_settings_hash}") || return 0
+  printf '%s' "$BOOTSTRAP_DIR/failure-stamp.$stamp_key"
+}
+
 # _reconciler_process_repo
-# The whole critical section, run only once M8's lock is held. Uses `return`
-# rather than `exit` throughout so the caller can unconditionally release
-# the lock exactly once, regardless of which branch below finishes the run.
+# The whole critical section, run only once the lock is held.
 _reconciler_process_repo() {
-  # M5: created only after the lock is won -- a losing contender never
-  # touches this file, so its mtime is never reset by ordinary contention.
+  # Created only after the lock is won, so a losing contender never resets the marker's mtime.
   touch -- "$MARKER_FILE" 2>/dev/null || return 0
   [ -n "$(_reconciler_marker_epoch)" ] || return 0
 
-  # M4: one marketplace listing per run, capped, fail-closed on any failure,
-  # timeout, unparseable output, or empty result -- these all skip every id
-  # for this run, distinct from a per-id "marketplace not registered" skip.
+  # Free local filters run first, so a repo whose ids are all unfixable never spawns the `claude` CLI.
+  local id stamp_file
+  local -a candidate_ids=()
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! _lib_validate_plugin_id "$id"; then
+      _audit_log "$id" "m3_invalid_id_skip" "skipped"
+      continue
+    fi
+    if _reconciler_is_denylisted "$id"; then
+      _audit_log "$id" "m4_credential_denylist_skip" "skipped"
+      continue
+    fi
+    stamp_file=$(_reconciler_stamp_file "$id")
+    if [ -n "$stamp_file" ] && [ -f "$stamp_file" ]; then
+      _audit_log "$id" "m9_stamp_suppressed" "skipped"
+      continue
+    fi
+    candidate_ids+=("$id")
+  done <<< "$_missing_ids"
+  [ "${#candidate_ids[@]}" -gt 0 ] || return 0
+
+  # One marketplace listing per run, fail-closed on a failure, timeout, unparseable output, or empty result.
+  # That skips every candidate for the run, which is distinct from a per-id "marketplace not registered" skip.
   local marketplace_json marketplace_names
-  marketplace_json=$(_lib_capped_for "$_RECONCILER_CLAUDE_CALL_CAP_SECONDS" claude plugin marketplace list --json 2>/dev/null) || marketplace_json=""
+  marketplace_json=$(_reconciler_claude_call plugin marketplace list --json 2>/dev/null) || marketplace_json=""
   marketplace_names=""
   if [ -n "$marketplace_json" ]; then
     marketplace_names=$(printf '%s' "$marketplace_json" | _lib_jq -r '.[].name' 2>/dev/null) || marketplace_names=""
@@ -283,14 +263,7 @@ _reconciler_process_repo() {
     return 0
   fi
 
-  local settings_content settings_hash
-  settings_content=$(cat -- "$SETTINGS_FILE" 2>/dev/null) || settings_content=""
-  settings_hash=$(_lib_hash_diff_text "$settings_content") || settings_hash=""
-
-  local id
-  while IFS= read -r id; do
-    [ -n "$id" ] || continue
-
+  for id in "${candidate_ids[@]}"; do
     local marker_epoch now_epoch
     marker_epoch=$(_reconciler_marker_epoch)
     now_epoch=$(date +%s) || now_epoch=""
@@ -300,19 +273,6 @@ _reconciler_process_repo() {
       break
     fi
 
-    # M3, re-validated here (the reconciler's own point of use) independent
-    # of whatever validation the hook already did -- catches a hand-run or
-    # stale-hook invocation too.
-    if ! _lib_validate_plugin_id "$id"; then
-      _audit_log "$id" "m3_invalid_id_skip" "skipped"
-      continue
-    fi
-
-    if _reconciler_is_denylisted "$id"; then
-      _audit_log "$id" "m4_credential_denylist_skip" "skipped"
-      continue
-    fi
-
     local marketplace_name
     marketplace_name="${id##*@}"
     if ! printf '%s\n' "$marketplace_names" | grep -qFx -- "$marketplace_name"; then
@@ -320,13 +280,8 @@ _reconciler_process_repo() {
       continue
     fi
 
-    # Confirmed live against this account's own registered marketplaces
-    # (2026-09-28, CLI 2.1.283): `claude plugin marketplace list --json`
-    # reports the source type as a plain top-level `.source` string on each
-    # entry; that attestation covers the field shape only, not which source
-    # types exist. A repo's own settings.json `extraKnownMarketplaces` uses a
-    # different, nested shape (`.value.source.source`) for the same concept --
-    # don't conflate the two when reading this filter.
+    # `claude plugin marketplace list --json` reports the source type as a plain top-level `.source` string on each entry (confirmed against CLI 2.1.283).
+    # A repo's settings.json `extraKnownMarketplaces` uses a different, nested shape (`.value.source.source`) for the same concept.
     local source_type
     # shellcheck disable=SC2016 # single-quoted on purpose: $name is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
     source_type=$(printf '%s' "$marketplace_json" | _lib_jq -r --arg name "$marketplace_name" '[.[] | select(.name == $name) | .source][0] // empty' 2>/dev/null) || source_type=""
@@ -339,66 +294,61 @@ _reconciler_process_repo() {
         ;;
     esac
 
-    # M6: `-s local` is the chosen scope, but only once a repo's own
-    # tracked tree is confirmed clean of the write it produces.
-    # check-ignore alone already fails closed here: git's own documented
-    # default behavior is that a tracked path is reported "not ignored"
-    # regardless of any matching .gitignore rule (git-check-ignore(1):
-    # "tracked files are not shown at all since they are not subject to
-    # exclude rules"), so check-ignore run alone would already skip an
-    # already-tracked-and-matching path via m6_not_ignored below. ls-files
-    # runs first as defense in depth, not because order changes whether the
-    # install proceeds -- it logs the more specific, more actionable
-    # "already tracked" decision instead of the generic "not ignored" one
-    # check-ignore alone would produce for the same case.
-    if _lib_capped git -C "$TARGET_REPO_ROOT" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1; then
+    # `-s local` writes the repo's .claude/settings.local.json, so the install runs only when that file is git-ignored and untracked.
+    # `ls-files` runs first only to log the specific "already tracked" decision; `check-ignore` alone also refuses a tracked path.
+    if _reconciler_git ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1; then
       _audit_log "$id" "m6_already_tracked" "skipped"
       continue
     fi
-    if ! _lib_capped git -C "$TARGET_REPO_ROOT" check-ignore -q -- .claude/settings.local.json 2>/dev/null; then
+    if ! _reconciler_git check-ignore -q -- .claude/settings.local.json 2>/dev/null; then
       _audit_log "$id" "m6_not_ignored" "skipped"
       continue
     fi
 
-    # M9: a hash-keyed failure stamp, never named from repo-controlled text
-    # directly -- the filename is a hash of the id plus the settings
-    # file's own content hash, so it changes (and the old stamp goes
-    # stale) the moment the repo's settings change, with no TTL guess
-    # involved.
-    local stamp_key stamp_file=""
-    stamp_key=$(_lib_hash_diff_text "${id}$(printf '\x1e')${settings_hash}") || stamp_key=""
-    if [ -n "$stamp_key" ]; then
-      stamp_file="$BOOTSTRAP_DIR/failure-stamp.$stamp_key"
-      if [ -f "$stamp_file" ]; then
-        _audit_log "$id" "m9_stamp_suppressed" "skipped"
-        continue
-      fi
-    fi
-
-    # M7: never -y/--yes/--accept-command. M3: -- immediately before the
-    # repo-controlled id, defense in depth against it being read as a flag.
-    # Row 2: `claude plugin install` has no cwd-override flag, so a
-    # project-/local-scope install must run with the target repo as cwd --
-    # a subshell `cd`, not the main script's own, so a later iteration's
-    # `git -C` calls above are never affected by where this one landed.
-    if (cd -- "$TARGET_REPO_ROOT" && _lib_capped_for "$_RECONCILER_CLAUDE_CALL_CAP_SECONDS" claude plugin install -s local -- "$id") >/dev/null 2>&1; then
+    # `claude plugin install` has no cwd-override flag, so a local-scope install must run with the target repo as cwd.
+    # The `cd` is in a subshell, so a later iteration's `git -C` calls are unaffected.
+    # `--` precedes the repo-controlled id so it cannot be read as a flag, and no -y/--yes/--accept-command is ever passed.
+    # stdin is /dev/null so a CLI that reads stdin cannot consume the remaining ids.
+    local install_status=0
+    (cd -- "$TARGET_REPO_ROOT" && _reconciler_claude_call plugin install -s local -- "$id") </dev/null >/dev/null 2>&1 || install_status=$?
+    if [ "$install_status" -eq 0 ]; then
       _audit_log "$id" "install_succeeded" "success"
+    elif _lib_status_consistent_with_cap_kill "$install_status"; then
+      # A cap kill is likely transient, so it writes no failure stamp and the next session retries.
+      _audit_log "$id" "install_timed_out" "failure exit=$install_status"
     else
-      [ -n "$stamp_file" ] && { touch -- "$stamp_file" 2>/dev/null || true; }
-      _audit_log "$id" "install_failed" "failure"
+      stamp_file=$(_reconciler_stamp_file "$id")
+      [ -z "$stamp_file" ] || touch -- "$stamp_file" 2>/dev/null || true
+      _audit_log "$id" "install_failed" "failure exit=$install_status"
     fi
-  done <<< "$_missing_ids"
+  done
 }
 
-# M1/M2-equivalent: independently re-derive the missing-id set rather than
-# trusting an argv-passed list (M5). The registry-corruption exit status (2)
-# is handled the same way the hook's own M2 rule would, and the unreadable-
-# local-opt-out status (3) fails closed the same way.
+# The lock is taken before the settings and registry reads, so the missing-id set is derived while no other reconciler can change the registry.
+_reconciler_lock_status=0
+_reconciler_acquire_lock || _reconciler_lock_status=$?
+case "$_reconciler_lock_status" in
+  0) ;;
+  2)
+    _audit_log "-" "lock_unavailable" "skipped"
+    exit 0
+    ;;
+  *)
+    _audit_log "-" "lock_held" "skipped"
+    exit 0
+    ;;
+esac
+
+# The settings bytes are read once. The same bytes feed the missing-id set and the failure-stamp hash.
+# A settings file the guard refuses is treated as absent, with no log line.
+_settings_content=$(_lib_read_guarded_settings "$SETTINGS_FILE") || exit 0
+_settings_hash=$(_lib_hash_diff_text "$_settings_content") || _settings_hash=""
+
 _missing_ids_status=0
-_missing_ids=$(_lib_missing_plugin_ids "$SETTINGS_FILE" "$REGISTRY_FILE") || _missing_ids_status=$?
+_missing_ids=$(_lib_missing_plugin_ids_for_content "$_settings_content" "$SETTINGS_FILE" "$REGISTRY_FILE") || _missing_ids_status=$?
 case "$_missing_ids_status" in
   0) ;;
-  1) exit 0 ;;  # symlinked/oversized settings file or too many enabled ids -- same as absent, no log (M1)
+  1) exit 0 ;;  # too many enabled ids or several top-level JSON values -- same as absent, no log
   2)
     _audit_log "-" "registry_unparseable_or_version_mismatch" "skipped"
     exit 0
@@ -412,9 +362,4 @@ case "$_missing_ids_status" in
 esac
 [ -n "$_missing_ids" ] || exit 0
 
-if _reconciler_acquire_lock; then
-  _reconciler_process_repo
-  rm -f -- "$RECONCILER_LOCK"
-else
-  _audit_log "-" "lock_held" "skipped"
-fi
+_reconciler_process_repo

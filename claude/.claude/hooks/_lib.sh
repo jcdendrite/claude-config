@@ -3499,10 +3499,52 @@ _lib_file_exceeds_size_cap() {
 # Most true-valued `enabledPlugins` ids _lib_missing_plugin_ids processes. Far above any real repo; it bounds the per-id `grep` forks and the validation work that follows.
 _LIB_ENABLED_PLUGIN_IDS_MAX=100
 
+# _lib_read_guarded_settings SETTINGS_FILE
+# Prints SETTINGS_FILE's content after refusing a symlink, a non-regular file, and a file over _LIB_SIZE_THRESHOLD_BYTES.
+# An absent SETTINGS_FILE prints nothing and returns 0.
+# The read is capped in bytes and in time, so a path swapped to a FIFO or a device after the checks cannot hang or exhaust the caller.
+# Returns 1 and prints nothing when a guard refuses, the capped read fails, or the content holds a NUL byte.
+# A NUL byte is refused because command substitution would drop it silently, leaving content that differs from the file and that a strict JSON parser rejects.
+# The body is a subshell that sets LC_ALL=C, so the length check counts bytes.
+# A caller that hashes or reuses the settings bytes uses this output instead of re-reading the path.
+_lib_read_guarded_settings() (
+  LC_ALL=C
+  set -o pipefail
+  settings_file="$1"
+  [ ! -L "$settings_file" ] || exit 1
+  if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
+    exit 1
+  fi
+  [ -f "$settings_file" ] || exit 0
+  ! _lib_file_exceeds_size_cap "$settings_file" || exit 1
+  # tr maps each NUL to \001, which raw JSON cannot contain, so a NUL survives the substitution as a refusable byte.
+  content=$(_lib_capped head -c "$((_LIB_SIZE_THRESHOLD_BYTES + 1))" -- "$settings_file" 2>/dev/null | tr '\0' '\001') || exit 1
+  [ "${#content}" -le "$_LIB_SIZE_THRESHOLD_BYTES" ] || exit 1
+  [[ "$content" != *$'\001'* ]] || exit 1
+  printf '%s' "$content"
+)
+
 # _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
 # Prints, one per line, every `true`-valued `enabledPlugins` id in
 # SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object and
 # not opted out in the `settings.local.json` beside SETTINGS_FILE.
+# Reads SETTINGS_FILE through _lib_read_guarded_settings and delegates to
+# _lib_missing_plugin_ids_for_content, whose header defines the output, the
+# exit statuses, and the local-file shape policy.
+# Returns 1 as well when _lib_read_guarded_settings refuses SETTINGS_FILE.
+# A caller that also needs the settings bytes (to hash them) calls those two
+# functions itself, so both uses see the same bytes.
+_lib_missing_plugin_ids() {
+  local settings_content
+  settings_content=$(_lib_read_guarded_settings "$1") || return 1
+  _lib_missing_plugin_ids_for_content "$settings_content" "$1" "$2"
+}
+
+# _lib_missing_plugin_ids_for_content SETTINGS_CONTENT SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in SETTINGS_CONTENT that is absent from REGISTRY_FILE and not locally opted out.
+# SETTINGS_CONTENT is SETTINGS_FILE's content as _lib_read_guarded_settings
+# printed it. SETTINGS_FILE is used only to locate the sibling
+# `settings.local.json`.
 # Presence is name-keyed only -- an id counts as installed regardless of
 # which `projectPath` its registry entry(ies) carry.
 #
@@ -3524,66 +3566,61 @@ _LIB_ENABLED_PLUGIN_IDS_MAX=100
 #   the file may hold an opt-out this function cannot see and reporting the id
 #   would override the user's explicit choice.
 #
-# Before any jq invocation, SETTINGS_FILE is checked against the same
-# symlink-and-size-cap guard this repo already applies to untrusted file
-# content in deny-data-file-reads.sh and ask-new-dependency-disclosure.sh --
-# a repo-controlled path that resolves to a symlink or exceeds
-# _LIB_SIZE_THRESHOLD_BYTES is never read by jq. REGISTRY_FILE gets no such
-# guard: it is per-account CLI-managed state written only by `claude plugin
-# install`, not repo-controlled input, so it carries none of the trust-
-# boundary risk SETTINGS_FILE does. A future caller passing a REGISTRY_FILE
-# value derived from something less trusted than the fixed per-account
-# registry path must add its own guard -- this function does not.
+# REGISTRY_FILE gets no symlink-and-size guard. It is per-account CLI-managed
+# state written only by `claude plugin install`, not repo-controlled input.
+# A caller passing a REGISTRY_FILE derived from something less trusted than the
+# fixed per-account registry path must add its own guard.
 #
 # Every printed id is a raw `enabledPlugins` key, not validated against
-# _lib_validate_plugin_id's `<name>@<marketplace>` shape. Every caller must
-# revalidate an id against that function before using it in a CLI argv or
-# any other sink.
+# _lib_validate_plugin_id's `<name>@<marketplace>` shape. A key that contains
+# a control character (a newline included) is dropped, so each printed line is
+# exactly one key. Every caller must revalidate an id against that function
+# before using it in a CLI argv or any other sink.
 #
 # Exit 0: success. Stdout holds each missing id, one per line (empty when
-# none -- including when SETTINGS_FILE is absent or has no true-valued
+# none -- including when SETTINGS_CONTENT is empty or has no true-valued
 # enabledPlugins). A missing REGISTRY_FILE is treated as an empty registry,
-# matching install.sh:732-735's "proceeding as if none are installed", so
-# every enabled id is reported missing.
-# Exit 1: SETTINGS_FILE is a symlink, not a regular file, exceeds
-# _LIB_SIZE_THRESHOLD_BYTES, or holds more than _LIB_ENABLED_PLUGIN_IDS_MAX
-# non-empty true-valued `enabledPlugins` ids. Stdout is empty. Both callers
-# treat this identically to a missing SETTINGS_FILE (nothing to install), but
-# it is a status distinguishable from exit 0 so a caller or test can tell
-# "skipped" apart from "genuinely nothing missing".
-# Exit 2: REGISTRY_FILE exists but is unparseable JSON, or its top-level
-# `version` is not 2 -- fail closed, distinct from a missing REGISTRY_FILE
-# (exit 0, empty registry). Stdout is empty. Takes precedence over exit 3.
+# matching install.sh's registry-read step ("proceeding as if none are
+# installed"), so every enabled id is reported missing.
+# Exit 1: SETTINGS_CONTENT holds more than one top-level JSON value, or holds
+# more than _LIB_ENABLED_PLUGIN_IDS_MAX non-empty true-valued `enabledPlugins`
+# ids. Stdout is empty. Both callers treat this identically to a missing
+# settings file (nothing to install), but it is a status distinguishable from
+# exit 0 so a caller or test can tell "skipped" apart from "genuinely nothing
+# missing". Content that is not valid JSON also yields exit 0 with empty
+# stdout.
+# The enabled-ids filter needs jq 1.6 or later for `halt_error`; on jq 1.5 it fails to compile, which reads as no ids.
+# jq also accepts the literals `nan` and `Infinity`, which a strict JSON parser rejects, so such content can yield ids Claude Code would not read.
+# Exit 2: REGISTRY_FILE exists but is unparseable JSON, holds more than one
+# top-level value, or is not an object whose `version` is the number 2 and
+# whose `plugins` is an object -- fail closed, distinct from a missing
+# REGISTRY_FILE (exit 0, empty registry). Stdout is empty. Takes precedence over
+# exit 3 and over exit 1's id-count branch, because the registry is read before
+# ids are counted. Exit 1's multiple-top-level-values branch still comes first.
 # Exit 3: at least one id is missing from the registry and the sibling
 # `settings.local.json` is unreadable per the shape policy above, so an
 # opt-out in it cannot be ruled out. Stdout is empty. Callers fail closed.
-_lib_missing_plugin_ids() {
-  local settings_file="$1" registry_file="$2"
+_lib_missing_plugin_ids_for_content() {
+  local settings_content="$1" settings_file="$2" registry_file="$3"
 
-  if [ -L "$settings_file" ]; then
-    return 1
-  fi
-  if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
-    return 1
-  fi
-  if [ -f "$settings_file" ] && _lib_file_exceeds_size_cap "$settings_file"; then
-    return 1
-  fi
-
-  local enabled_ids=""
-  if [ -f "$settings_file" ]; then
-    enabled_ids=$(_lib_jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' -- "$settings_file" 2>/dev/null) || enabled_ids=""
-  fi
+  # jq exit 7 is this filter's own signal for a second top-level value; every other jq failure leaves no ids.
+  local enabled_ids="" enabled_ids_status=0
+  enabled_ids=$(_lib_jq -r -s '
+    if length > 1 then ("multiple top-level JSON values" | halt_error(7))
+    else (.[0] // {}) | (.enabledPlugins // {}) | to_entries[]
+      | select(.value == true) | .key | select(test("\\p{Cc}") | not)
+    end' <<<"$settings_content" 2>/dev/null) || enabled_ids_status=$?
+  [ "$enabled_ids_status" -ne 7 ] || return 1
+  [ "$enabled_ids_status" -eq 0 ] || enabled_ids=""
   [ -z "$enabled_ids" ] && return 0
 
   local registry_ids=""
   if [ -f "$registry_file" ]; then
-    local registry_version
-    registry_version=$(_lib_jq -r '.version // empty' -- "$registry_file" 2>/dev/null) || registry_version=""
-    if [ "$registry_version" != "2" ]; then
-      return 2
-    fi
-    registry_ids=$(_lib_jq -r '.plugins // {} | keys[]' -- "$registry_file" 2>/dev/null) || return 2
+    registry_ids=$(_lib_jq -r -s '
+      if length == 1 and (.[0] | type == "object" and .version == 2 and (.plugins | type) == "object")
+      then .[0].plugins | keys[]
+      else error("registry is not a version-2 object with an object of plugins")
+      end' -- "$registry_file" 2>/dev/null) || return 2
   fi
 
   # Here-strings, not `printf | grep -q`: under pipefail a grep that exits

@@ -1,9 +1,9 @@
 """Tests for bootstrap-project-plugins.sh.
 
 The hook is a SessionStart hook (matcher: startup) that launches
-<config-dir>/scripts/reconcile-project-plugins.sh detached, with the resolved
-repo root as $1, when a trusted repo's checked-in settings enable a plugin the
-per-account registry lacks. It exits 0 on every path, prints nothing to stdout,
+reconcile-project-plugins.sh, found beside the hook's own directory
+(`../scripts/`), detached and with the resolved repo root as $1, when a trusted
+repo's checked-in settings enable a plugin the per-account registry lacks. It exits 0 on every path, prints nothing to stdout,
 and prints nothing to stderr except _config_enabled's config warnings (Sandbox.run
 asserts both; the cases that expect a warning name it).
 
@@ -29,20 +29,32 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR, HOOKS_DIR, _build_subprocess_env, init_git_repo
+from helpers import (
+    CLAUDE_DIR,
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    _build_subprocess_env,
+    ambient_umask,
+    file_mode,
+    git_isolation_env,
+    init_git_repo,
+    init_reconciler_repo,
+    install_log_entries,
+    make_reconciler_claude_shim,
+    plugin_registry_file,
+    reconciler_audit_lines,
+    run_reconciler,
+    symlink_hooks_lib_chain,
+    v2_registry_entry,
+    write_plugin_registry,
+)
 
 from .test_config_lib import _locale_that_widens_ascii_ranges
-
-# claude/.claude/ itself, so `scripts.tests...` below resolves, as in the sibling
-# scripts/tests files that import from `hooks.tests...`.
-sys.path.insert(0, str(CLAUDE_DIR))
-from scripts.tests import test_reconcile_project_plugins as reconciler_tests  # noqa: E402
 
 BOOTSTRAP_HOOK = HOOKS_DIR / "bootstrap-project-plugins.sh"
 
@@ -74,8 +86,6 @@ ENABLED_PLUGIN_IDS_MAX = 100
 # A valid-shaped key whose marketplace half is long enough that an unbounded `##*@` removal
 # takes many seconds, yet below the 128 KiB single-argument limit.
 LONG_MARKETPLACE_HALF_LENGTH = 96 * 1024
-# The hook returns in well under a second when the id bound holds.
-LONG_ID_HOOK_MAX_SECONDS = 3.0
 
 AUDIT_LINE_KEYS = {"timestamp", "pid", "repo_root", "plugin_id", "decision", "outcome"}
 AUDIT_TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -87,7 +97,8 @@ SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 
 
 class Sandbox:
-    """An isolated $HOME, config dir, git repo, and stub reconciler."""
+    """An isolated $HOME, config dir, git repo, and an install tree of symlinked
+    hooks with a stub reconciler in the sibling `scripts/` directory."""
 
     def __init__(
         self,
@@ -97,9 +108,15 @@ class Sandbox:
     ) -> None:
         self.no_launch_window_seconds = no_launch_window_seconds
         self.home = tmp_path / "home"
+        self.tmp_path = tmp_path
         self.config_dir = self.home / ".claude"
-        (self.config_dir / "scripts").mkdir(parents=True)
-        self.repo = init_git_repo((tmp_path / repo_name).resolve())
+        self.config_dir.mkdir(parents=True)
+        self.scripts_dir = tmp_path / "install" / "scripts"
+        self.scripts_dir.mkdir(parents=True)
+        self.hooks_dir = tmp_path / "install" / "hooks"
+        self.hook = self.install_hooks_dir(self.hooks_dir)
+        self.git_env = {**os.environ, **git_isolation_env(tmp_path)}
+        self.repo = init_git_repo((tmp_path / repo_name).resolve(), env=self.git_env)
         self.sentinel = tmp_path / "launch-sentinel"
         self.release = tmp_path / "release-stub"
         self.write_settings({MISSING_PLUGIN_ID: True})
@@ -114,12 +131,11 @@ class Sandbox:
         settings_file.write_text(json.dumps({"enabledPlugins": enabled_plugins}))
 
     def write_registry(self, plugin_ids: list[str], version: int | None = 2, project_path: str = "/elsewhere") -> None:
-        registry = {"plugins": {pid: [{"scope": "local", "projectPath": project_path}] for pid in plugin_ids}}
-        if version is not None:
-            registry["version"] = version
-        registry_file = self.config_dir / "plugins" / "installed_plugins.json"
-        registry_file.parent.mkdir(parents=True, exist_ok=True)
-        registry_file.write_text(json.dumps(registry))
+        write_plugin_registry(
+            plugin_registry_file(self.config_dir),
+            {pid: [v2_registry_entry(project_path)] for pid in plugin_ids},
+            version,
+        )
 
     def write_trust(self, repo: Path | None = None, accepted: object = True, trust_file: Path | None = None) -> None:
         target = trust_file or (self.config_dir / ".claude.json")
@@ -134,12 +150,26 @@ class Sandbox:
 
     def add_linked_worktree(self, worktree_path: Path) -> Path:
         """Commits the checked-in settings, then adds a linked worktree of the repo at worktree_path."""
-        subprocess.run(["git", "add", ".claude/settings.json"], cwd=self.repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "settings"], cwd=self.repo, check=True)
+        subprocess.run(["git", "add", ".claude/settings.json"], cwd=self.repo, check=True, env=self.git_env)
+        subprocess.run(["git", "commit", "-q", "-m", "settings"], cwd=self.repo, check=True, env=self.git_env)
         subprocess.run(
-            ["git", "worktree", "add", "-q", str(worktree_path), "-b", "feature"], cwd=self.repo, check=True
+            ["git", "worktree", "add", "-q", str(worktree_path), "-b", "feature"],
+            cwd=self.repo, check=True, env=self.git_env,
         )
         return worktree_path
+
+    def install_hooks_dir(self, hooks_dir: Path) -> Path:
+        """Populate hooks_dir with the real hook and its _lib.sh chain as symlinks, and point
+        the `scripts/` directory beside it at this sandbox's. Returns the hook's path there.
+        The hook finds the reconciler through its own location, so a hook copy elsewhere needs this sibling."""
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        symlink_hooks_lib_chain(hooks_dir)
+        hook = hooks_dir / BOOTSTRAP_HOOK.name
+        hook.symlink_to(BOOTSTRAP_HOOK)
+        scripts_link = hooks_dir.parent / "scripts"
+        if not scripts_link.exists():
+            scripts_link.symlink_to(self.scripts_dir)
+        return hook
 
     def install_stub(self, hold_until_release: bool = False) -> None:
         """Stub reconciler: records $1 atomically into the sentinel. With
@@ -155,7 +185,8 @@ class Sandbox:
                 "n=0",
                 f"while [ ! -e {shlex.quote(str(self.release))} ] && [ \"$n\" -lt 300 ]; do sleep 0.1; n=$((n+1)); done",
             ]
-        stub = self.config_dir / "scripts" / "reconcile-project-plugins.sh"
+        stub = self.scripts_dir / "reconcile-project-plugins.sh"
+        stub.unlink(missing_ok=True)
         stub.write_text("\n".join(lines) + "\n")
         stub.chmod(0o755)
 
@@ -196,7 +227,7 @@ class Sandbox:
         payload_cwd: Path | str | None = None,
         process_cwd: Path | None = None,
         source: str = "startup",
-        hook: Path = BOOTSTRAP_HOOK,
+        hook: Path | None = None,
         stdin: bytes | None = None,
         unset_home: bool = False,
         stderr_contains: bytes | None = None,
@@ -205,7 +236,7 @@ class Sandbox:
         """Runs the hook and asserts rc 0 and empty stdout. Stderr must be empty unless
         stderr_contains names the one warning the case expects."""
         result = subprocess.run(
-            [str(hook)],
+            [str(hook or self.hook)],
             input=self.payload(payload_cwd, source) if stdin is None else stdin,
             capture_output=True,
             cwd=process_cwd or self.repo,
@@ -325,7 +356,7 @@ class TestLaunchContract:
         subdir.mkdir(parents=True)
         process_cwd = tmp_path / process_cwd_kind
         if process_cwd_kind == "other-git-repo":
-            init_git_repo(process_cwd)
+            init_git_repo(process_cwd, env=sandbox.git_env)
         else:
             process_cwd.mkdir()
 
@@ -401,7 +432,7 @@ class TestLaunchContract:
             sandbox.release.write_text("")
 
     def test_unexecutable_reconciler_is_a_silent_no_launch(self, sandbox):
-        (sandbox.config_dir / "scripts" / "reconcile-project-plugins.sh").chmod(0o644)
+        (sandbox.scripts_dir / "reconcile-project-plugins.sh").chmod(0o644)
 
         sandbox.run()
 
@@ -449,8 +480,26 @@ class TestMissingIdDecision:
 
     @pytest.mark.parametrize(
         "invalid_id",
-        ["-flag@market-a", ".hidden@market-a", "_under@market-a", "plugin-a@npm", "no-marketplace-part", "a@-b"],
-        ids=["leading-dash", "leading-dot", "leading-underscore", "npm-marketplace", "no-at-sign", "marketplace-leading-dash"],
+        [
+            "-flag@market-a",
+            ".hidden@market-a",
+            "_under@market-a",
+            "plugin-a@npm",
+            "no-marketplace-part",
+            "a@-b",
+            "plugin-a@market-a\nplugin-b@market-a",
+            "plugin-a\x1b@market-a",
+        ],
+        ids=[
+            "leading-dash",
+            "leading-dot",
+            "leading-underscore",
+            "npm-marketplace",
+            "no-at-sign",
+            "marketplace-leading-dash",
+            "two-valid-ids-joined-by-a-newline",
+            "escape-character",
+        ],
     )
     def test_only_invalid_ids_missing_is_no_launch(self, sandbox, invalid_id):
         sandbox.write_settings({invalid_id: True})
@@ -459,16 +508,12 @@ class TestMissingIdDecision:
 
         sandbox.assert_not_launched()
 
-    def test_valid_shaped_id_with_a_long_marketplace_half_returns_promptly_and_never_launches(self, sandbox):
-        """The id length bound is checked before bash's super-linear `##*@` removal, which
-        would otherwise stall session start on one repo-controlled key."""
+    def test_valid_shaped_id_with_a_long_marketplace_half_never_launches(self, sandbox):
+        """The id length bound rejects it. The bound's cost is timed at the unit layer, in test_lib.py."""
         sandbox.write_settings({"a@" + "b" * LONG_MARKETPLACE_HALF_LENGTH: True})
 
-        started = time.monotonic()
         sandbox.run()
-        elapsed = time.monotonic() - started
 
-        assert elapsed < LONG_ID_HOOK_MAX_SECONDS, f"hook took {elapsed:.1f}s"
         sandbox.assert_not_launched()
 
     def test_enabled_id_count_at_the_cap_still_launches(self, sandbox):
@@ -534,6 +579,32 @@ class TestMissingIdDecision:
         assert entry["outcome"] == "skipped"
         sandbox.assert_not_launched_after_logged_refusal()
 
+    @pytest.mark.parametrize(
+        "registry_text",
+        ['{"version": 2}', '{"version": 2, "plugins": null}', '{"version": 2, "plugins": []}', '{"version": "2", "plugins": {}}'],
+        ids=["plugins-absent", "plugins-null", "plugins-array", "version-string"],
+    )
+    def test_registry_that_is_not_a_version_2_object_of_plugins_is_no_launch_and_logged(self, sandbox, registry_text):
+        registry_file = sandbox.config_dir / "plugins" / "installed_plugins.json"
+        registry_file.parent.mkdir(parents=True)
+        registry_file.write_text(registry_text)
+
+        sandbox.run()
+
+        [entry] = sandbox.audit_entries()
+        assert entry["decision"] == "registry_unparseable_or_version_mismatch"
+        sandbox.assert_not_launched_after_logged_refusal()
+
+    def test_two_top_level_json_values_in_settings_is_silent_no_launch(self, sandbox):
+        (sandbox.repo / ".claude" / "settings.json").write_text(
+            json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}) + json.dumps({"enabledPlugins": {}})
+        )
+
+        sandbox.run()
+
+        sandbox.assert_not_launched()
+        assert sandbox.audit_entries() == []
+
     def test_unparseable_registry_is_no_launch_and_logged(self, sandbox):
         registry_file = sandbox.config_dir / "plugins" / "installed_plugins.json"
         registry_file.parent.mkdir(parents=True)
@@ -561,9 +632,10 @@ class TestMissingIdDecision:
     ):
         """The shim prints an id with every status. Status 0 is the in-test control: it proves
         the shimmed hook can launch, so the other rows are no-launch for their status alone."""
-        shim_hooks_dir = tmp_path / "shim-hooks"
-        shim_hooks_dir.mkdir()
+        shim_hooks_dir = tmp_path / "shim" / "hooks"
+        shim_hooks_dir.mkdir(parents=True)
         shutil.copy2(BOOTSTRAP_HOOK, shim_hooks_dir / BOOTSTRAP_HOOK.name)
+        (shim_hooks_dir.parent / "scripts").symlink_to(sandbox.scripts_dir)
         (shim_hooks_dir / "_lib.sh").write_text(
             f'. "{HOOKS_DIR}/_lib.sh"\n'
             f'_lib_missing_plugin_ids() {{ printf "%s\\n" "{MISSING_PLUGIN_ID}"; return {helper_status}; }}\n'
@@ -634,7 +706,7 @@ class TestPayloadResolution:
         sandbox.assert_not_launched()
 
     def test_home_directory_that_is_a_git_repo_is_not_a_repo_root(self, sandbox):
-        init_git_repo(sandbox.home)
+        init_git_repo(sandbox.home, env=sandbox.git_env)
         (sandbox.home / "projects-dir").mkdir()
         (sandbox.config_dir / "settings.json").write_text(json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}))
         sandbox.write_trust(repo=sandbox.home)
@@ -1077,12 +1149,13 @@ class TestMachineLevelSwitch:
         assert not sandbox.audit_log.exists()
         sandbox.assert_not_launched()
 
-    def _hook_dir_with_schema(self, tmp_path: Path, psv_text: str) -> Path:
+    def _hook_dir_with_schema(self, sandbox: Sandbox, tmp_path: Path, psv_text: str) -> Path:
         """A hooks dir whose config-keys.psv is psv_text: _lib.sh sources _config.sh by its own
         location, which resolves the schema file beside the symlink, not beside its target."""
-        isolated_hooks_dir = tmp_path / "isolated-hooks"
-        isolated_hooks_dir.mkdir()
+        isolated_hooks_dir = tmp_path / "isolated" / "hooks"
+        isolated_hooks_dir.mkdir(parents=True)
         shutil.copy2(BOOTSTRAP_HOOK, isolated_hooks_dir / BOOTSTRAP_HOOK.name)
+        (isolated_hooks_dir.parent / "scripts").symlink_to(sandbox.scripts_dir)
         (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
         (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
         (isolated_hooks_dir / "config-keys.psv").write_text(psv_text)
@@ -1090,7 +1163,7 @@ class TestMachineLevelSwitch:
 
     def test_isolated_hooks_dir_with_the_real_schema_launches(self, sandbox, tmp_path):
         """Control for the schema-gap cases below: the copied hook launches when the schema is intact."""
-        isolated_hooks_dir = self._hook_dir_with_schema(tmp_path, (HOOKS_DIR / "config-keys.psv").read_text())
+        isolated_hooks_dir = self._hook_dir_with_schema(sandbox, tmp_path, (HOOKS_DIR / "config-keys.psv").read_text())
 
         sandbox.run(hook=isolated_hooks_dir / BOOTSTRAP_HOOK.name)
 
@@ -1101,7 +1174,7 @@ class TestMachineLevelSwitch:
             line for line in (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
             if not line.startswith("plugin_bootstrap|")
         ]
-        isolated_hooks_dir = self._hook_dir_with_schema(tmp_path, "\n".join(rows_without_plugin_bootstrap) + "\n")
+        isolated_hooks_dir = self._hook_dir_with_schema(sandbox, tmp_path, "\n".join(rows_without_plugin_bootstrap) + "\n")
         (sandbox.config_dir / ".claude.json").unlink()
 
         sandbox.run(hook=isolated_hooks_dir / BOOTSTRAP_HOOK.name, stderr_contains=b"no schema row for key")
@@ -1111,7 +1184,7 @@ class TestMachineLevelSwitch:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
     def test_unreadable_schema_exits_before_any_repo_read(self, sandbox, tmp_path):
-        isolated_hooks_dir = self._hook_dir_with_schema(tmp_path, (HOOKS_DIR / "config-keys.psv").read_text())
+        isolated_hooks_dir = self._hook_dir_with_schema(sandbox, tmp_path, (HOOKS_DIR / "config-keys.psv").read_text())
         schema_file = isolated_hooks_dir / "config-keys.psv"
         schema_file.chmod(0o000)
         (sandbox.config_dir / ".claude.json").unlink()
@@ -1134,13 +1207,169 @@ class TestMachineLevelSwitch:
         sandbox.assert_not_launched()
 
 
+class TestReconcilerLocation:
+    """The reconciler is found beside the hook, and a config dir inside the repo is refused:
+    a repo that chooses CLAUDE_CONFIG_DIR would otherwise choose both the trust record and the program run."""
+
+    ATTACKER_SENTINEL_NAME = "attacker-ran"
+
+    def _write_attacker_reconciler(self, config_dir: Path, sentinel: Path) -> None:
+        scripts_dir = config_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        attacker = scripts_dir / "reconcile-project-plugins.sh"
+        attacker.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(sentinel))}\n")
+        attacker.chmod(0o755)
+
+    def test_reconciler_beside_the_hook_is_launched_not_the_one_in_the_config_dir(self, sandbox, tmp_path):
+        attacker_sentinel = tmp_path / self.ATTACKER_SENTINEL_NAME
+        self._write_attacker_reconciler(sandbox.config_dir, attacker_sentinel)
+
+        sandbox.run()
+
+        sandbox.assert_launched_with_root()
+        assert not attacker_sentinel.exists()
+
+    @pytest.mark.parametrize(
+        "config_dir_kind",
+        ["subdirectory-of-repo", "repo-root-itself", "symlink-into-repo", "dot-dot-segment-back-into-repo", "trailing-slash"],
+    )
+    def test_config_dir_inside_the_repo_is_no_launch_even_with_a_self_trusting_record(
+        self, sandbox, tmp_path, config_dir_kind
+    ):
+        attacker_sentinel = tmp_path / self.ATTACKER_SENTINEL_NAME
+        in_repo_config_dir = sandbox.repo if config_dir_kind == "repo-root-itself" else sandbox.repo / ".attacker-config"
+        in_repo_config_dir.mkdir(exist_ok=True)
+        sandbox.write_trust(trust_file=in_repo_config_dir / ".claude.json")
+        self._write_attacker_reconciler(in_repo_config_dir, attacker_sentinel)
+        config_dir_env = str(in_repo_config_dir)
+        if config_dir_kind == "symlink-into-repo":
+            symlinked_config_dir = tmp_path / "config-dir-link"
+            symlinked_config_dir.symlink_to(in_repo_config_dir)
+            config_dir_env = str(symlinked_config_dir)
+        elif config_dir_kind == "dot-dot-segment-back-into-repo":
+            config_dir_env = f"{tmp_path}/elsewhere/../{sandbox.repo.name}/{in_repo_config_dir.name}"
+        elif config_dir_kind == "trailing-slash":
+            config_dir_env = f"{in_repo_config_dir}/"
+
+        sandbox.run(config_dir_env=config_dir_env)
+
+        sandbox.assert_not_launched()
+        assert not attacker_sentinel.exists()
+        assert not sandbox.audit_log.exists()
+        assert not (in_repo_config_dir / "plugin-bootstrap").exists()
+
+    def _prepare_home_with_a_symlinked_config_dir(self, sandbox, home: Path) -> None:
+        """A HOME whose `.claude` is the sandbox's real config dir, and whose `.claude.json` names the repo as trusted."""
+        home.mkdir(parents=True)
+        (home / ".claude").symlink_to(sandbox.config_dir)
+        sandbox.write_trust(trust_file=home / ".claude.json")
+
+    def test_home_inside_the_repo_holding_the_trust_record_is_no_launch_though_the_config_dir_is_outside(
+        self, sandbox
+    ):
+        """With CLAUDE_CONFIG_DIR unset the trust record is `$HOME/.claude.json`, a sibling of the config dir,
+        so a repo-chosen HOME could trust itself while its `.claude` symlink keeps the config dir outside the repo."""
+        self._prepare_home_with_a_symlinked_config_dir(sandbox, sandbox.repo / "fakehome")
+
+        sandbox.run(config_dir_env=None, extra_env={"HOME": str(sandbox.repo / "fakehome")})
+
+        sandbox.assert_not_launched()
+        assert not sandbox.audit_log.exists()
+
+    def test_home_dot_claude_symlinked_into_the_repo_is_no_launch_though_the_trust_record_is_outside(
+        self, sandbox, tmp_path
+    ):
+        """The mirror of the in-repo trust record: with CLAUDE_CONFIG_DIR unset the config dir is `$HOME/.claude`,
+        so a `.claude` symlink into the repo (a dotfiles checkout that is also the session's repo) puts the config dir
+        in the repo while the trust record beside it stays outside."""
+        in_repo_config_dir = sandbox.repo / ".attacker-config"
+        in_repo_config_dir.mkdir()
+        home_with_linked_config_dir = tmp_path / "home-with-linked-config-dir"
+        home_with_linked_config_dir.mkdir()
+        (home_with_linked_config_dir / ".claude").symlink_to(in_repo_config_dir)
+        sandbox.write_trust(trust_file=home_with_linked_config_dir / ".claude.json")
+
+        sandbox.run(config_dir_env=None, extra_env={"HOME": str(home_with_linked_config_dir)})
+
+        sandbox.assert_not_launched()
+        assert not (in_repo_config_dir / "plugin-bootstrap").exists()
+
+    def test_home_outside_the_repo_holding_the_trust_record_still_launches(self, sandbox, tmp_path):
+        """Allow control for the in-repo trust-record refusal: the same layout with HOME beside the repo launches."""
+        self._prepare_home_with_a_symlinked_config_dir(sandbox, tmp_path / "fakehome-outside-the-repo")
+
+        sandbox.run(config_dir_env=None, extra_env={"HOME": str(tmp_path / "fakehome-outside-the-repo")})
+
+        sandbox.assert_launched_with_root()
+
+    def test_config_dir_beside_the_repo_sharing_its_name_prefix_still_launches(self, sandbox, tmp_path):
+        """Allow control for the in-repo refusal: a sibling whose path merely starts with the repo's is not inside it."""
+        sibling_config_dir = Path(f"{sandbox.repo}-config")
+        sibling_config_dir.mkdir()
+        sandbox.write_trust(trust_file=sibling_config_dir / ".claude.json")
+
+        sandbox.run(config_dir_env=str(sibling_config_dir))
+
+        sandbox.assert_launched_with_root()
+
+
+class TestConvergence:
+    def test_hook_then_real_reconciler_then_hook_again_launches_once(self, sandbox, tmp_path):
+        """The hook launches the real reconciler, which installs through a shim that records a
+        version-2 registry entry. The next session then finds nothing missing, so it does not launch."""
+        real_reconciler = sandbox.scripts_dir / "reconcile-project-plugins.sh"
+        real_reconciler.unlink()
+        real_reconciler.symlink_to(SCRIPTS_DIR / "reconcile-project-plugins.sh")
+        (sandbox.repo / ".gitignore").write_text(".claude/settings.local.json\n")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        registry_file = plugin_registry_file(sandbox.config_dir)
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "market-a", "source": "directory"}],
+            install_log=install_log,
+            install_writes_registry=registry_file,
+        )
+        git_isolation = {
+            name: value for name, value in git_isolation_env(tmp_path).items() if name != "HOME"
+        }
+        session_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", **git_isolation}
+
+        sandbox.run(extra_env=session_env)
+        deadline = time.monotonic() + LAUNCH_DEADLINE_SECONDS
+        while time.monotonic() < deadline and not any(
+            entry["decision"] == "install_succeeded" for entry in sandbox.audit_entries()
+        ):
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        assert [entry["plugin"] for entry in install_log_entries(install_log)] == [MISSING_PLUGIN_ID]
+        assert MISSING_PLUGIN_ID in json.loads(registry_file.read_text())["plugins"]
+        sandbox.install_stub()
+        sandbox.run(extra_env=session_env)
+        sandbox.assert_not_launched()
+        assert [entry["decision"] for entry in sandbox.audit_entries()] == ["install_succeeded"], (
+            "the second session found nothing missing, so the hook logged no refusal of its own"
+        )
+
+
 class TestAuditLog:
+    def test_audit_directory_and_log_are_owner_only_under_a_permissive_umask(self, sandbox):
+        """The log records the absolute path of every repo that was refused, so group and world get no access."""
+        (sandbox.config_dir / ".claude.json").unlink()
+
+        with ambient_umask(0o022):
+            sandbox.run()
+
+        assert file_mode(sandbox.audit_log.parent) == 0o700
+        assert file_mode(sandbox.audit_log) == 0o600
+
     def test_concurrent_refusals_from_separate_sessions_all_land_intact_and_distinct(self, sandbox):
         (sandbox.config_dir / ".claude.json").unlink()
         concurrent_session_count = 4
         sessions = [
             subprocess.Popen(
-                [str(BOOTSTRAP_HOOK)],
+                [str(sandbox.hook)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1252,16 +1481,16 @@ class TestAuditLog:
         reconciler_config_dir = tmp_path / "reconciler-config"
         reconciler_bin_dir = tmp_path / "reconciler-bin"
         reconciler_bin_dir.mkdir()
-        reconciler_tests._init_repo(reconciler_repo, enabled_plugins={"foo@bar": True})
-        reconciler_tests._write_registry(reconciler_config_dir, {}, version=1)
-        reconciler_tests._make_reconciler_claude_shim(reconciler_bin_dir)
-        reconciler_tests._run_reconciler(
+        init_reconciler_repo(reconciler_repo, enabled_plugins={"foo@bar": True})
+        write_plugin_registry(plugin_registry_file(reconciler_config_dir), {}, version=1)
+        make_reconciler_claude_shim(reconciler_bin_dir)
+        run_reconciler(
             reconciler_repo,
             config_dir=reconciler_config_dir,
             bin_dir=reconciler_bin_dir,
             extra_env={"TZ": NON_UTC_TIMEZONE},
         )
-        [reconciler_entry] = reconciler_tests._audit_lines(reconciler_config_dir)
+        [reconciler_entry] = reconciler_audit_lines(reconciler_config_dir)
 
         assert list(hook_entry) == list(reconciler_entry)
         assert set(hook_entry) == AUDIT_LINE_KEYS

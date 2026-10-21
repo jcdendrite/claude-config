@@ -2,100 +2,13 @@
 # hook-class: informational
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # SessionStart hook: when the opened repo's checked-in .claude/settings.json
-# enables plugins that are missing from the per-account plugin registry, launch
-# reconcile-project-plugins.sh detached to install them, so later sessions in
-# that repo load the plugins' skills in the first snapshot instead of seconds
-# late. The install lands for the next session, never the current one.
-#
-# Silent: prints nothing to stdout on any path, and nothing to stderr except
-# _config_enabled's warnings (a malformed claude-config.toml line, a missing
-# config-keys.psv row, an unreadable config-keys.psv). Exit 0 always -- this hook
-# must not block session startup.
-#
-# Fast guard, no `claude` spawn. The hook launches the reconciler only when
-# every check below passes, in this order:
-# 1. Machine-level switch: `plugin_bootstrap` is not `false` in
-#    claude-config.toml (an unresolvable config dir also exits).
-# 2. The payload `.cwd` resolves to a repo root: `.cwd` itself when it holds a
-#    .claude/settings.json, else `git rev-parse --show-toplevel`. That root must
-#    hold a checked-in .claude/settings.json (a symlink counts as present) and
-#    must not be $HOME, whose .claude/settings.json is account-level. Otherwise
-#    the hook exits before reading the trust file and writes no audit line.
-# 3. Trust layer 1: the vendor's persisted per-repo trust record,
-#    `.projects["<repo-root>"].hasTrustDialogAccepted` in the account's
-#    .claude.json, is exactly `true`. A missing file, field, or any other
-#    shape is untrusted. The vendor's runtime trust check returns true for
-#    every non-interactive session, so only the persisted record is read.
-# 4. Trust layer 2: CLAUDE_CODE_ENTRYPOINT is exactly `cli` (an interactive
-#    session). Unset, empty, or any other value is no-launch. This stops the
-#    owner's own headless runs and scripts; it is not a defense against
-#    repo-controlled content, since a trusted repo can trigger an install in
-#    an interactive session too.
-# 5. _lib_missing_plugin_ids reports status 0 and at least one missing id
-#    that passes _lib_validate_plugin_id. That validator rejects an id over
-#    _LIB_PLUGIN_ID_MAX_LENGTH (256) bytes. Every other status is no-launch:
-#    1 (symlinked, non-regular, or oversized checked-in settings file, or more
-#    than _LIB_ENABLED_PLUGIN_IDS_MAX (100) enabled ids) is
-#    silent; 2 (registry present but unparseable, or version != 2) and 3
-#    (unreadable settings.local.json, so a local opt-out cannot be ruled out)
-#    are logged.
-#
-# Audit log: this hook's own refusals append one JSON line to
-# <config-dir>/plugin-bootstrap/audit.log, the log the reconciler also writes.
-# A layer-1 refusal is logged only for an interactive session, and a layer-2
-# refusal only after layer 1 passed, so scripted headless runs in untrusted
-# directories write no line. The repo root is stripped of C0, DEL, and C1
-# control characters. The observed CLAUDE_CODE_ENTRYPOINT is logged only when it
-# is at most 64 bytes of ASCII letters, digits, `.`, `_`, or `-`, else as
-# `unrecognized`.
-#
-# An `m1a_not_trusted` line has five causes: the trust record says untrusted,
-# the record is absent, the record is unreadable or torn mid-rewrite, the jq cap
-# killed the read, or the vendor keys trust under a string other than this
-# hook's exact repo-root string.
-#
-# Audit lock: the size check, truncation, and append run under
-# audit.log.lock, as in the reconciler. The reconciler takes the lock once and
-# holds it until it exits. This hook takes it for one append and releases it
-# at exit. When bounded retries fail, the hook appends without the lock and
-# does not truncate, leaving truncation to the next locked writer.
-#
-# Silent no-run: no audit line is written when `jq` is absent, when the
-# reconciler is not executable, when `mkdir -p` of the audit directory fails
-# (the hook's own refusals go unlogged; the reconciler exits), when the
-# reconciler's marker `touch` fails, or when the launched reconciler finds
-# `claude` or both `timeout` and `gtimeout` missing from PATH or the config dir
-# unusable. docs/hooks.md gives the check order.
-#
-# Uncapped calls: the stdin `cat`, the config-resolution reads, `git
-# rev-parse`, every `[ -e/-f/-x/-ef ]` test, `stat`, `grep`, the audit append
-# and truncate, and the in-process bash compute (the id-count and id-length
-# bounds in _lib.sh limit it). The `.claude.json` read and every other jq call
-# are capped only when `timeout` or `gtimeout` is on PATH, and no cap can bound
-# a process stuck in uninterruptible I/O. The settings.json registration has no
-# `timeout`, so a stalled project mount holds session start until the harness
-# default; that residual is accepted.
-#
-# Accepted residuals: the detached launch has no `setsid`, so a terminal hangup
-# may deliver SIGHUP to a running reconciler. The audit lock is keyed on a bare
-# PID, so after a killed holder whose PID is recycled the lock does not evict
-# and no writer truncates until that PID exits.
-#
-# Launch contract: the reconciler runs detached with stdin, stdout, and stderr
-# redirected to /dev/null and receives the resolved repo root as $1. A
-# detached child inherits the launching shell's cwd, not the payload `.cwd`,
-# so the root is passed explicitly.
-#
-# The account's .claude.json is read from $CLAUDE_CONFIG_DIR/.claude.json when
-# that variable is set, else from $HOME/.claude.json, the same rule
-# statusline-command.sh applies (the default config dir is $HOME/.claude).
-# A symlinked .claude.json is followed, since the vendor owns that file.
-# Layer 1 matches the exact repo-root string, so a trust record stored under
-# any other spelling of the path does not match and the hook stays inert.
-# Whether the vendor keys trust for a linked worktree or a repo subdirectory
-# under that worktree's or repo root's own path is unverified. If it keys
-# elsewhere, layer 1 fails closed and each interactive session writes one
-# m1a_not_trusted line.
+# enables plugins missing from the per-account plugin registry, launches
+# reconcile-project-plugins.sh detached to install them for the next session.
+# Prints nothing to stdout and always exits 0, so it never blocks session startup.
+# The reconciler receives the resolved repo root as $1, because a detached child
+# inherits the launching shell's cwd, not the payload `.cwd`.
+# The check order, trust layers, audit-log shape, and accepted residuals live in
+# docs/hooks.md § Utility hooks.
 
 set -uo pipefail
 
@@ -139,12 +52,42 @@ if [ "$REPO_ROOT" -ef "${HOME:-}" ]; then
 fi
 _checked_in_settings_present "$REPO_ROOT" || exit 0
 
+# _trust_record_path
+# Prints the file the persisted trust record is read from: the `.claude.json`
+# inside CLAUDE_CONFIG_DIR when it is set, else the one in HOME.
+_trust_record_path() {
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    printf '%s' "${CLAUDE_CONFIG_DIR%/}/.claude.json"
+  else
+    printf '%s' "${HOME:-}/.claude.json"
+  fi
+}
+
+RESOLVED_REPO_ROOT=$(_lib_realpath_m "$REPO_ROOT") || exit 0
+
+# _path_is_repo_controlled PATH
+# Returns 0 when PATH resolves to REPO_ROOT or below it, or does not resolve.
+# A path the repo can write is repo-controlled, so nothing read from it can vouch for the repo.
+_path_is_repo_controlled() {
+  local resolved_path
+  resolved_path=$(_lib_realpath_m "$1") || return 0
+  case "${resolved_path%/}/" in
+    "${RESOLVED_REPO_ROOT%/}/"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The config dir and the trust record are both read as account state, so a repo-controlled path for either refuses the launch.
+! _path_is_repo_controlled "$CONFIG_DIR" || exit 0
+! _path_is_repo_controlled "$(_trust_record_path)" || exit 0
+
 SETTINGS_FILE="$REPO_ROOT/.claude/settings.json"
 REGISTRY_FILE="$CONFIG_DIR/plugins/installed_plugins.json"
 BOOTSTRAP_DIR="$CONFIG_DIR/plugin-bootstrap"
 AUDIT_LOG="$BOOTSTRAP_DIR/audit.log"
 AUDIT_LOG_LOCK="$BOOTSTRAP_DIR/audit.log.lock"
-RECONCILER="$CONFIG_DIR/scripts/reconcile-project-plugins.sh"
+# Derived from this hook's own location, like _lib.sh, never from the config dir.
+RECONCILER="${0%/*}/../scripts/reconcile-project-plugins.sh"
 
 # _audit_sanitize VALUE
 # Prints VALUE without C0, DEL, or C1 control characters. Used only for the
@@ -156,14 +99,13 @@ _audit_sanitize() {
   _lib_jq -n -j --arg value "$1" '$value | gsub("\\p{Cc}"; "")' 2>/dev/null
 }
 
-# _audit_log DECISION OUTCOME
+# _audit_append_line DECISION OUTCOME
 # Appends one JSON line in the reconciler's audit-log shape, with "-" as the
 # plugin id since none of this hook's decisions is id-specific. The caller
-# exits right after, which releases the lock taken here. The log is emptied
-# past _LIB_SIZE_THRESHOLD_BYTES only while the lock is held, as the reconciler
-# does. A failed append leaves the decision unlogged and never changes the
-# exit status.
-_audit_log() {
+# exits right after, which releases the lock taken here.
+# The log is emptied past _LIB_SIZE_THRESHOLD_BYTES only while the lock is held, as the reconciler does.
+# A failed append leaves the decision unlogged and never changes the exit status.
+_audit_append_line() {
   local decision="$1" outcome="$2" line
   # shellcheck disable=SC2016 # single-quoted on purpose: $timestamp/$pid/$repo_root/$decision/$outcome are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them.
   line=$(_lib_jq -n -c \
@@ -184,17 +126,23 @@ _audit_log() {
   printf '%s\n' "$line" 2>/dev/null >> "$AUDIT_LOG" || true
 }
 
+# _audit_log DECISION OUTCOME
+# Runs _audit_append_line under umask 077, so the bootstrap directory and its files are owner-only, and restores the caller's umask.
+_audit_log() {
+  local original_umask
+  original_umask=$(umask)
+  umask 077
+  _audit_append_line "$@"
+  umask "$original_umask"
+}
+
 # _repo_is_trusted
 # Returns 0 only when the persisted trust record for REPO_ROOT is the boolean
 # `true`; a string "true", a missing file or field, and a malformed file all
 # return 1.
 _repo_is_trusted() {
   local trust_record_file
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    trust_record_file="${CLAUDE_CONFIG_DIR%/}/.claude.json"
-  else
-    trust_record_file="${HOME:-}/.claude.json"
-  fi
+  trust_record_file=$(_trust_record_path)
   [ -f "$trust_record_file" ] || return 1
   local trusted
   # shellcheck disable=SC2016 # single-quoted on purpose: $repo is a jq --arg binding, not a shell variable.
