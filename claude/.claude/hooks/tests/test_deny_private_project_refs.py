@@ -352,8 +352,8 @@ class TestDenyPrivateProjectRefs:
     )
     def test_time_zone_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo, message):
         """UTC and GMT are allowlisted by prefix, the same unbounded-digit
-        tradeoff GPT/AGPL/BSD above already accept — an implausible offset
-        is still allowed."""
+        tradeoff GPT/AGPL/BSD in OSS_ALLOWLIST already accept — an implausible
+        offset is still allowed."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -409,7 +409,7 @@ class TestDenyPrivateProjectRefs:
 
     def test_est_is_not_allowlisted(self, claude_config_repo):
         """EST is deliberately left off OSS_ALLOWLIST: EST-05 is not a
-        conventional offset. Re-adding it to the allowlist must fail this test."""
+        conventional offset. Adding it to OSS_ALLOWLIST must fail this test."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
