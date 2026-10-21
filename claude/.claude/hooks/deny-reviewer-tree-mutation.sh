@@ -76,18 +76,51 @@
 #     sets `fix = true`, or when the command passes `--config fix=true`.
 #     This gap is accepted permanently.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
-#     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
+#     catches a `cp`/`mv`/`tee` write target only when it is the
 #     fragment's sole or first command; a target behind a bare `&`
 #     background operator (`cp /tmp/scratch.txt src/tracked_file.txt &
 #     echo /tmp/x`) is not caught, because `_lib_split_fragments` does not
 #     split a fragment on a bare `&`, so the word-walk still resolves `cp`
 #     as the command word and reads a stale trailing word as the
 #     destination.
+#     A `>`/`>>` target behind a bare `&` is still caught, because the
+#     target scan walks every word of the fragment (`echo hi & echo x >
+#     src/y` denies).
 #   - GH-811 tracks that `_lib_split_fragments` limitation; see
 #     _fragment_raw_write_targets's own docstring below for its other
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #     Its symlinks entry is the /tmp link gap below.
+#   - The same unsplit bare `&` can hide a command after it from the checks
+#     that read a fragment's command word or first git subcommand:
+#       - The git subcommand check reads the first git word only, so a git
+#         write after the `&` passes when an earlier git word with an allowed
+#         subcommand precedes it (`git log & git checkout -- x` reads as
+#         `log`).
+#       - A git write after a non-git prefix still denies (`sleep 1 & git
+#         checkout -- x`), because the first git word is then the write.
+#       - The command-word arms (`sed -i`, `perl -i`, the formatters, `ruff`,
+#         `eslint`, `terraform fmt`, `worktree-ensure.sh`) read the
+#         fragment's resolved command word only, so a command after the `&`
+#         passes whatever precedes it (`echo hi & sed -i s/a/b/ x`).
+#   - A shell reserved word, `{`, `!`, a case-arm label (`x)`), `((` or
+#     `coproc` at the start of a fragment is not split from the command after
+#     it, so the fragment's command word is that word (`do sed -i s/a/b/ x`).
+#       - The evaders verified are `do`, `then`, `else`, `if`, `elif`, `while`,
+#         `until`, `!`, `{`, a case arm, `coproc` and `((`.
+#       - `time sed -i s/a/b/ x` still denies, because `time` is a runner word.
+#       - Only the first command after the keyword on the same line evades.
+#       - `do echo $f; sed -i s/a/b/ x` denies, as does a body command on its
+#         own line.
+#       - Every command-word arm misses it: `sed -i`, `perl -i`, the
+#         formatters, `ruff format`/`--fix`, `eslint --fix`, `terraform`/`tofu
+#         fmt`, `worktree-ensure.sh`, and the `cp`/`mv`/`tee` destinations.
+#       - A `>`/`>>` redirect in the same body is still caught.
+#       - The git scan reads any word of the fragment, so a git write there
+#         still denies.
+#   - The `tee` destination walk matches the lowercase word only, while the
+#     command-word gate is case-insensitive. `TEE src/x` and `Tee src/x`
+#     allow, while `CP scratch src/x` and `MV scratch src/x` deny.
 #   - These write shapes are not inspected on any fragment, and the hook
 #     allows each:
 #       - A redirect glued to the word before it (`echo x>src/y`), because
@@ -140,7 +173,7 @@
 #     word, after _lib.sh's command-word resolution, is not the script.
 #     That includes wrappers outside the runner skip list (`bash`, `sh`,
 #     `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment
-#     splitter does not unwrap (a brace group, `then`/`do` bodies, a bare `&`),
+#     splitter does not unwrap (the reserved-word and bare-`&` entries above),
 #     and glob- or variable-built command words.
 #     Each is undecidable here, the same as the `bash -c` gap below.
 #     The class is accepted.
@@ -286,11 +319,12 @@ _fragment_launches_venv_run_wrapper() {
 
 # Prints, one per line, every destination a `cp`/`mv`/`tee` invocation or a
 # bare `>`/`>>` shell redirect in $1 writes to.
-# Catches the target only when the cp/mv/tee/redirect is the fragment's
-# sole or first command — a target hidden behind a bare `&` background
-# operator in the same fragment is invisible (GH-811 tracks the underlying
+# Catches a cp/mv/tee target only when that command is the fragment's sole
+# or first command — a target hidden behind a bare `&` background operator
+# in the same fragment is invisible (GH-811 tracks the underlying
 # _lib_split_fragments limitation this depends on; see the header's "Known
 # gaps" section).
+# Catches a `>`/`>>` target anywhere in the fragment, a bare `&` included.
 # Does not resolve relative paths, symlinks, fd-numbered redirects
 # (`2>file`), or `&>`.
 # Does not resolve a `cp -t DIR` target-directory flag, whose destination
@@ -526,9 +560,10 @@ case "$TOOL_NAME" in
         # raw-write checks below.
       fi
 
-      # Closed in-place-edit family. Each tool word is matched the same way
-      # _lib_fragment_invokes_git matches "git": an exact word, or a word
-      # ending in "/<tool>" (absolute/relative path invocation).
+      # Closed in-place-edit family. Each tool word is matched against the
+      # fragment's resolved command word, not any word (the git word above is
+      # the any-word scan): a match ignoring case, or a word ending in
+      # "/<tool>" (absolute/relative path invocation), also ignoring case.
       # Pure code formatters. A review-only agent reads diffs; it never
       # reformats the tree under review, so these deny on ANY invocation —
       # no read-only mode is exempted. This is the deliberate simplification
