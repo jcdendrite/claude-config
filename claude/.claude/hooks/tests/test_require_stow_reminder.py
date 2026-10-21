@@ -54,12 +54,12 @@ def stow_repo(tmp_path):
         cwd=repo,
         check=True,
     )
-    # Existing top-level entry on main: claude/.claude/skills/foo.md.
-    # Tests can add a file inside `skills/` or a sibling like `agents/`; both
-    # trip the gate (a new file in `skills/`, a new top-level entry).
-    skills = repo / "claude" / ".claude" / "skills"
-    skills.mkdir(parents=True)
-    (skills / "foo.md").write_text("# existing skill\n")
+    # Existing top-level entry on main: claude/.claude/hooks/foo.md.
+    # Tests can add a file inside `hooks/` or a sibling like `agents/`; both
+    # trip the gate (a new file in `hooks/`, a new top-level entry).
+    hooks = repo / "claude" / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "foo.md").write_text("# existing hook doc\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
@@ -84,13 +84,13 @@ def commit_new_toplevel_file(repo: Path, name: str) -> None:
 
 
 def commit_inside_existing_toplevel(repo: Path) -> None:
-    """Add a new file inside the existing `skills/` directory. Must still
+    """Add a new file inside the existing `hooks/` directory. Must still
     trip the gate — a consumer whose config dir holds that directory as a
     real directory picks the file up only after a re-stow, so the gate does
     not depend on whether the parent directory existed on main."""
-    (repo / "claude" / ".claude" / "skills" / "bar.md").write_text("# new skill\n")
+    (repo / "claude" / ".claude" / "hooks" / "bar.md").write_text("# new hook doc\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add skill bar"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add hook doc bar"], cwd=repo, check=True)
 
 
 def commit_install_sh_change(repo: Path) -> None:
@@ -139,7 +139,7 @@ class TestRequireStowReminder:
         under a directory that already exists on main, as
         `claude/.claude/hooks/_config.sh` would be."""
         commit_inside_existing_toplevel(stow_repo)
-        cmd = "gh pr create --title T --body 'just a new skill'"
+        cmd = "gh pr create --title T --body 'just a new hook doc'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
     def test_new_toplevel_dir_without_marker_denied(self, stow_repo):

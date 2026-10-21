@@ -53,7 +53,7 @@ Alternatives set aside:
     Outside CHANGELOG it appears in design-decision records (`docs/design-decisions/stow-over-plugin-marketplace.md:5` states the top-level rule; `review-orchestrator-routing-gate.md:39` and `review-orchestrator-gate-release-decoupling.md:74` state the conditional) and in `docs/scripts.md:130`, which states one script's failure mode and its fix rather than the general rule. All of those stay as written. No current-behavior doc states the general rule. [verified: grep and reads by the platform and test reviewers this round]
 14. Those entries record past releases, so they stay as written. [verified: claude/.claude/CLAUDE.md § Scope discipline, Axis 3]
 15. `install.sh` skips stowing `claude-skills` and exits with a message when `~/.claude/skills` is a real directory. There a new skill never arrives, and re-running does not help until the engineer moves that directory. [verified: install.sh:301-304, :405-406]
-16. `README.md:113` already tells existing users that new wrappers and owner-only permissions need `./install.sh`. That sentence is accurate and stays untouched. [verified: README.md:113]
+16. The README "Existing users" paragraph (`README.md:113` before this PR, `README.md:133` after) claimed `git pull` never materializes new wrappers. The PR drops that unconditional claim. The paragraph keeps the owner-only-permissions claim and points at "Updating after git pull" for when new wrappers need `./install.sh`. [verified: `git diff origin/main...HEAD -- README.md`]
 17. An installer that stows into a non-default config dir maps the `.claude`-relative content of `claude/.claude/` and `claude-skills/` onto `<config-dir>/`. The CHANGELOG's "whichever installer stows the packages ... into the active config dir" wording assumes this. [unverified]
 18. Root `CLAUDE.md:56-57` stays untouched in this PR. [engineer-verified: "Leave it untouched (Recommended)"] (the selected option label; the reasoning attached to that option was the planner's proposal)
 19. The read-only checker script is too heavy for this problem. [engineer-verified: "I think the read-only script is WAY overengineered."]
@@ -102,7 +102,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
      - For an agent Bash call, use the literal path: `ls ~/.claude/<path>` on the default config dir, or the other config dir's own path. A literal `~/.claude` reads the wrong directory on a non-default config dir.
      - "No such file or directory" means re-run the installer. If `~/.claude/skills` is a real directory, `install.sh` stops with a message instead; follow that message.
      - "The installer" means `./install.sh` for `~/.claude`. For any other config dir, it means whichever installer stows the packages that `claude/.claude/scripts/stow-packages.sh` lists into that dir.
-   - `README.md:113` stays untouched (row 16).
+   - Edit the "Existing users" paragraph (`README.md:113`): drop the claim that `git pull` never materializes new wrappers, and point at "Updating after git pull" (row 16).
 
 4. **`docs/hooks.md`** (modify :143)
    - Describe the trigger correctly: any path added under `claude/.claude/`, not only an immediate child, or an `install.sh` change.
@@ -120,7 +120,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 2. Run `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`, because the plan edits a `.py`.
 3. Run `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`.
 4. Replay the incident on this machine: `ls ~/.claude/scripts/transcript_analysis/session_pricing.py` succeeds, showing the README check reports a live file where the old advice said to re-run.
-5. Sweep the whole false-premise family, not one sentence: `git grep -nEi "individually|alone (does not|doesn't|won't)|materializ|only appears"` over the hook, its tests, `docs/hooks.md`, and `README.md`. Every remaining hit must be a true statement (for example `README.md:113` on wrappers) or a record.
+5. Sweep the whole false-premise family, not one sentence: `git grep -nEi "individually|alone (does not|doesn't|won't)|materializ|only appears"` over the hook, its tests, `docs/hooks.md`, and `README.md`. Every remaining hit must be a true statement (for example the "Updating after git pull" section on wrappers) or a record.
 
 ## Out of scope
 
@@ -129,7 +129,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 - **Root `CLAUDE.md:56-57`.** Left untouched (row 18).
 - **The "could not source _lib.sh; run ./install.sh ..." deny repeated across about ten hooks' `_lib.sh` bootstrap.** It fires only when `_lib.sh` cannot be sourced, and in that case re-running the installer is a correct step.
 - **The exit-127 advice at `claude-skills/skills/branch-management/SKILL.md:100-101`.** A missing script means it is unlinked, so re-running the installer is correct.
-- **The `--adopt` sentences in `README.md:113`.** They describe a flag `install.sh` no longer passes (install.sh:335-336). This is real but unrelated; raise it to the reviewer.
+- **The `--adopt` sentences in the README "Existing users" paragraph.** They describe a flag `install.sh` no longer passes (install.sh:335-336). This is real but unrelated; raise it to the reviewer.
 - **The gate's possible rename blind spot.** It runs `--diff-filter=A` without `--no-renames`, so git's default rename detection may classify a moved file as `R` and skip it [unverified]. This is a separate trigger defect.
 - **The gate's documented `claude-skills/` gap.** Its own header records it.
 - **Deleted or renamed files** that leave dangling per-entry links in a real directory.

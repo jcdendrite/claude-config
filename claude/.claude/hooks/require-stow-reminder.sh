@@ -13,7 +13,8 @@
 # `install.sh` itself is not stowed and only takes effect when invoked, so
 # a change to it ships on `git pull` only if it removes stowed behavior,
 # with the replacement landing only after a manual re-run.
-# The PR body is a notice the gate can enforce for those consumers.
+# The PR body is the only notice the gate can enforce for consumers whose
+# config dir holds a real directory.
 # `README.md` § "Updating after git pull" states the rule.
 #
 # NOTE — `if`-dispatch is advisory; the real gate is the internal
