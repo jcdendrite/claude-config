@@ -6,6 +6,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **A dispatching session now hands an agent files by path, and sets inline relayed text in a blockquote under a lead-in naming its source.** The rule is a new Agent Briefing bullet in the global `CLAUDE.md`. A skill's own wording that the session passes on while running that skill counts as its own words and takes no blockquote.
+  - **`/review-pr`:** a plan from a ticket or a `diff-only` PR reaches each `/plan-review` reviewer under a lead-in naming the ticket or the PR.
+  - **Other dispatch sites** follow the convention when the dispatching session applies the bullet, with no skill edit. `docs/design-decisions/dispatch-prompts-mark-relayed-text-by-source.md` lists them. It also records why the convention uses no delimiter or fence and the convention's limits.
+  - **Replaced:** the Opus routing bullet's narrower rule to name the files a `plan-architect` consult should read.
+  - **Global `CLAUDE.md`:** it grows by 441 bytes, to 30,328, leaving 392 bytes under the 30,720-byte cap.
+  - **Takes effect** for a session only if that session started after you pulled this change.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
