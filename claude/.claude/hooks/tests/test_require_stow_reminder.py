@@ -531,20 +531,20 @@ class TestStowReminderDefersToReadme:
         assert EXAMPLE_BODY_LINE in reason
         assert f"README.md § {README_UPDATING_AFTER_GIT_PULL}" in reason
 
-    def test_deny_omits_the_retired_false_premise_phrasings(self, stow_repo):
-        """The deny defers to README for the rule; this list is a revert tripwire for the retired phrasings."""
+    def test_deny_states_no_unconditional_rerun_rule(self, stow_repo):
+        """The deny defers the rule to README, so it must not assert that every new file needs a re-run."""
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title T --body 'no marker here'"
         reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
         assert reason is not None
-        retired_phrasing_patterns = [
+        unconditional_rule_patterns = [
             r"individually",
             r"alone (does not|doesn't|won't)",
             r"only appears",
         ]
         found = [
             pattern
-            for pattern in retired_phrasing_patterns
+            for pattern in unconditional_rule_patterns
             if re.search(pattern, reason, re.IGNORECASE)
         ]
-        assert not found, f"deny reason contains retired phrasing: {found}"
+        assert not found, f"deny reason states an unconditional re-run rule: {found}"
