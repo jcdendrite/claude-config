@@ -1188,7 +1188,7 @@ class TestKnownGapBypass:
         )
 
     # The cases below pin the CURRENT (imperfect) allow verdicts for the
-    # keyword-body entry in the header's known-gaps list: a command right after
+    # reserved-word entry in the header's known-gaps list: a command right after
     # a reserved word or brace on the same line is not split from it, so the
     # command-word arms never see it. Each should flip to "deny" when that
     # limitation is fixed.
@@ -1237,7 +1237,7 @@ class TestKnownGapBypass:
         ids=["runner-word-before-command", "second-command-after-keyword", "body-command-on-own-line"],
     )
     def test_reviewer_command_word_arm_outside_keyword_body_denied(self, command):
-        # Boundaries of test_reviewer_command_word_arm_in_keyword_body_allowed, per the header's keyword-body entry.
+        # Boundaries of test_reviewer_command_word_arm_in_keyword_body_allowed, per the header's reserved-word entry.
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
     @pytest.mark.parametrize("command", ["echo x | TEE src/x", "echo x | Tee src/x"], ids=["upper-case", "title-case"])
