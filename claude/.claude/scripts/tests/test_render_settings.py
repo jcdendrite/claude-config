@@ -69,12 +69,11 @@ def _rule4_dotted_paths_from_render_settings() -> list[str]:
     """render-settings.sh's own RULE4_DOTTED_PATHS_JSON, via its print interface.
 
     Mirrors guard-settings-session-keys.sh's --print-guarded-keys mode --
-    both are drift-check interfaces only, not on the render's hot path (see
-    render-settings.sh's own comment on why it doesn't shell out to
-    guard-settings-session-keys.sh on every render). This is comparing two
-    independently-maintained literals for drift, not standing in for
-    actually exercising rule 4 (TestShallowCarryForward's rule-4 cases
-    already do that through the real script).
+    both are drift-check interfaces only, not on the render's hot path.
+    The render keeps its own literal rather than calling the guard hook.
+    This is comparing two independently-maintained literals for drift, not
+    standing in for actually exercising rule 4 (TestShallowCarryForward's
+    rule-4 cases already do that through the real script).
     """
     result = subprocess.run(
         [str(_SCRIPT), "--print-rule4-dotted-paths"],
@@ -1314,9 +1313,9 @@ class TestThemeTuiPreservation:
         assert "tui" not in rendered
 
     def test_prior_target_null_theme_is_omitted_while_tui_survives(self, tmp_path: Path) -> None:
-        """A null-valued carried key is treated as absent, matching this
-        mechanism's original theme/tui-only precedent, now applied to every
-        top-level key rule 3 might carry forward."""
+        """A null-valued carried key is treated as absent. This holds for
+        every top-level key rule 3 might carry forward, theme and tui
+        included."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -1348,9 +1347,8 @@ class TestThemeTuiPreservation:
     def test_malformed_prior_target_is_tolerated_not_treated_as_a_render_failure(
         self, tmp_path: Path
     ) -> None:
-        """$target is this script's own prior output, not user-supplied
-        input -- a corrupted prior file must not block producing a good
-        new one."""
+        """A corrupted prior file means nothing to carry forward. It must
+        not block producing a good new one."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -1490,7 +1488,7 @@ class TestSymlinkWriteThroughRefusal:
         replace the symlink itself -- never write through it. The canary
         file's own "canary" key is an unclaimed top-level key, so it
         carries forward under rule 3 like any other prior-render key --
-        that's the widened mechanism working as designed, not a leak."""
+        that is designed behavior, not a leak."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -1606,10 +1604,9 @@ class TestShallowCarryForward:
         assert result.returncode == 0, result.stderr
         assert json.loads((config_dir / "settings.json").read_text())[plugin_key] == {"example": True}
 
-    def test_theme_and_tui_still_preserved_under_the_widened_rule(self, tmp_path: Path) -> None:
-        """Rule 3: widening carry-forward from a hardcoded theme/tui pair to
-        every top-level key is not a regression on the original behavior --
-        see TestThemeTuiPreservation for the full theme/tui suite."""
+    def test_theme_and_tui_carry_forward_under_rule_3(self, tmp_path: Path) -> None:
+        """Rule 3: theme and tui carry forward like any other unclaimed key.
+        See TestThemeTuiPreservation for the full theme/tui suite."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})

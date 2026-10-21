@@ -113,7 +113,7 @@ Two bundled skills are name-only instead of fully disabled — they are availabl
 | `/run` | Launches and drives "this project's app" — claude-config is dotfiles, no app to drive. Out of scope. |
 | `/schedule` | Cron-scheduled remote agents (routines). Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
-| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); `model`/`theme` are set via `/config`/`/theme` and persist automatically across renders, and private `env` values belong in `settings.overlay.json` (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)). |
+| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); `model`/`theme` are set via `/config`/`/theme` and persist automatically across renders, and `settings.overlay.json` accepts only a short allowlist of `env` names (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)). |
 | `/verify` | Manual-verification skill that drives the app to confirm a change. Same scope mismatch as `/run` — claude-config skills and hooks are verified via `pytest claude/.claude/`. |
 
 ### Re-enable for your session

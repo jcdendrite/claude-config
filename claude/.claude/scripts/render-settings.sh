@@ -216,9 +216,9 @@ fi
 
 base_json="$(jq -c '.' -- "$base_file")"
 
-# $target here is this script's own prior output, not user-supplied input to
-# validate: a missing, empty, unparseable, or non-object prior file means
-# nothing to carry forward, not a render failure.
+# $target is written by this script, by Claude Code, and by hand. A missing,
+# empty, unparseable, or non-object prior file therefore means nothing to
+# carry forward, not a render failure.
 prev_json='{}'
 prior_is_object=false
 prior_unusable=false
