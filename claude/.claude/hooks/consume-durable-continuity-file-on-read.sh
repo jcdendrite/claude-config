@@ -10,6 +10,9 @@
 # this hook exists to keep the durable directory's steady state near empty
 # for that path too (resume-context.sh's own launch mode already handles
 # the fresh-process resume path).
+# A direct Read is the backstop path. /resume-context consumes through
+# resume-context.sh --consume-only first and then reads a temp path that
+# neither glob below matches, so this hook never fires for it.
 #
 # Fail-open, never blocks: PostToolUse cannot deny, and a crashed or
 # blocked consume must never break the Read call it followed. Any failure
@@ -80,11 +83,12 @@
 #   glob-matching path (rather than merely traversing through one) is a
 #   distinct case handled by resume-context.sh itself, which rejects a
 #   symlink source outright rather than moving-then-chmodding it.
-# - resume-context.sh moves the file, then chmods it, and only prints the
-#   destination once both succeed — so a chmod failure leaves the file
-#   moved with empty stdout here, and neither output channel reports it.
-#   Index append runs before the chmod, so a chmod failure alone doesn't
-#   stop the destination from being recorded (docs/scripts.md).
+# - resume-context.sh narrows the source's mode, moves it, then re-narrows
+#   the copy, and prints the destination only after all three succeed. A
+#   pre-move chmod failure leaves the file pending. A post-move one leaves
+#   it moved with empty stdout here, and neither output channel reports it.
+#   Index append runs before the post-move chmod, so a chmod failure alone
+#   doesn't stop the destination from being recorded (docs/scripts.md).
 #   Recoverability still requires the index write itself to succeed — it's
 #   a separate, best-effort step that can fail silently on its own guards.
 #

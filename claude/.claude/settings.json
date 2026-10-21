@@ -110,6 +110,7 @@
     "simplify": "name-only",
     "review-pr": "name-only",
     "period-cost-report": "name-only",
+    "resume-context": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",
