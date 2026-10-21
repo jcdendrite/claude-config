@@ -570,10 +570,13 @@ tracker IDs or carry hex digests, unless you accept rewording them. The tracker
 scan also denies ordinary technical terms shaped like uppercase letters, a
 hyphen, and digits, such as cipher, encoding, and time-zone names, when their
 prefix is not on the hook's allowlist. Those false positives go to the human,
-who extends the allowlist upstream in claude-config. On macOS, scanned text
-holding a byte invalid in the active UTF-8 locale also denies, because BSD sed
-aborts the quote-strip, and the remedy is to re-encode the file; the hook
-header's Known gaps has the rest.
+who extends the allowlist upstream in claude-config. Before opting in, and again
+whenever the hook's allowlist changes, compare the repo's own tracker key
+against `OSS_ALLOWLIST`. A key equal to an allowlisted prefix passes the
+tracker-ID scan, and "What denies there" lists the remaining controls. On
+macOS, scanned text holding a byte invalid in the active UTF-8 locale also
+denies, because BSD sed aborts the quote-strip, and the remedy is to re-encode
+the file; the hook header's Known gaps has the rest.
 
 **Coverage.** The gate catches a cooperative agent's honest mistakes. It is not
 a confidentiality control. The marker is a per-machine control, not a
