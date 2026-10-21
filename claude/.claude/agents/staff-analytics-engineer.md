@@ -140,18 +140,34 @@ When your invocation prompt includes `findings_path: <path>`:
    - Write is explicitly authorized to create this file despite the general .md-creation default.
    Structure the file as:
    - `# staff-analytics-engineer` (H1 title)
-   - One H2 per finding: `## <angle-name>`, then file:line, issue, production
-     failure mode, required property
-   - Final section: `## Recommendations` — severity-sorted bullets using
-     `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
+   - One H2 per finding, most severe first: `## R<n> [<severity>] <angle-name>`,
+     numbering findings from `R1`, with `<severity>` one of `BLOCKER`,
+     `CONCERN`, or `FYI`; then file:line, issue, production failure mode,
+     required property
+   - `R<n>` is local to this file: cite a finding in another file by that
+     file's name and its id
+   - With no findings, a line saying so
+   - No summary section — the parent reads the whole file
+   - `## Answers`, only when the dispatch prompt poses specific questions:
+     one or two lines per question, citing the `R<n>` finding or the
+     evidence (file:line, or the search you ran) it rests on. An answer
+     that needs more support than that is a finding: write it as one and
+     cite it.
+   - Prior decisions the prompt hands you (a ledger digest, disposition
+     records, assumption-ledger rows) that the current text still matches
+     with no new site, and earlier fixes you confirmed landed in full: name
+     them on one line, by id where one exists, without restating them.
+     Anything else about one is a finding that cites its id: a new site it
+     would cover, a contradiction, a reopened row, a missing or partial fix,
+     or a record you cannot parse.
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
+   `<N>` is the number of `R<n>` headings, FYIs included.
    Do not include findings inline when `findings_path` is present (the parent
    reads them from the file) — doing so is a defect.
-   If the dispatch prompt poses specific questions, answer them inside the
-   findings file (e.g. under an `## Answers` heading) — not in the inline
-   return. The inline summary stays one sentence regardless of how many
-   questions the prompt asks.
+   Answer the prompt's questions in the file, not in the inline return.
+   The inline summary stays one sentence regardless of how many questions
+   the prompt asks.
    **If the Write call fails**, do not report success. Instead, state the failure
    explicitly and fall back to the **Inline output** format.
 
