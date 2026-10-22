@@ -3962,8 +3962,7 @@ _lib_review_only_agents() {
 # crash.
 # An unset or empty array expanded via "${arr[@]}" under `set -u` flattens to
 # zero ITEMs on the supported bash floor, so the call site does not abort.
-# Shared by the three membership scans below, each over its own derived
-# array.
+# Shared by the membership scans below, each over its own array.
 _lib_list_contains() {
   local value="$1"
   shift
@@ -3984,17 +3983,38 @@ _lib_is_review_only_agent() {
   _lib_list_contains "$agent_type" "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
+# Plan-writer agents: identities that may edit plan files and nothing else.
+# Sourced by deny-plan-writer-off-plan-writes.sh. Closed enumeration, same
+# discipline as _LIB_REVIEW_ONLY_AGENTS above.
+_LIB_PLAN_WRITER_AGENTS=(
+  plan-architect
+)
+_lib_plan_writer_agents() {
+  printf '%s\n' "${_LIB_PLAN_WRITER_AGENTS[@]}"
+}
+
+# _lib_is_plan_writer_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_PLAN_WRITER_AGENTS. Empty input (agent_type absent from the
+# PreToolUse payload, e.g. the main session) never matches.
+_lib_is_plan_writer_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  _lib_list_contains "$agent_type" "${_LIB_PLAN_WRITER_AGENTS[@]}"
+}
+
 # Agent identities that may never release a review gate — every review-only
-# persona above, plus the code-writer implementer. Sourced by
-# enforce-marker-script-shape.sh to deny `marker.sh write` and
+# persona above, every plan-writer agent, plus the code-writer implementer.
+# Sourced by enforce-marker-script-shape.sh to deny `marker.sh write` and
 # `marker.sh activate` from these callers.
 #
 # The boundary rests on two different grounds, and conflating them misleads
 # whoever adds the next entry:
-#   - Every file-backed identity here (code-writer, the staff-* reviewers,
-#     ciso-reviewer, skill-fidelity-reviewer, and — as of the Explore.md
-#     same-named override — Explore) declares no `Skill` tool in its
-#     agents/*.md frontmatter, so it cannot invoke a review skill at all.
+#   - Every file-backed identity here (code-writer, plan-architect, the
+#     staff-* reviewers, ciso-reviewer, skill-fidelity-reviewer, and — as of
+#     the Explore.md same-named override — Explore) declares no `Skill` tool
+#     in its agents/*.md frontmatter, so it cannot invoke a review skill at
+#     all.
 #     test_agent_roster.py asserts that mechanically, so granting `Skill` to
 #     one of them fails a test rather than silently widening what a subagent
 #     can release.
@@ -4007,15 +4027,17 @@ _lib_is_review_only_agent() {
 # Either way a marker write from one of these identities is unearned rather
 # than merely unusual, which is what the deny turns on.
 #
-# Derived from _LIB_REVIEW_ONLY_AGENTS rather than re-enumerated, so a persona
-# added there is covered here automatically. `general-purpose` and `claude`
-# carry the full tool set and can genuinely run a review skill, so they are
-# deliberately absent — that is the documented delegation escape hatch.
+# Derived from _LIB_REVIEW_ONLY_AGENTS and _LIB_PLAN_WRITER_AGENTS rather than
+# re-enumerated, so an identity added to either is covered here automatically.
+# `general-purpose` and `claude` carry the full tool set and can genuinely run
+# a review skill, so they are deliberately absent — that is the documented
+# delegation escape hatch.
 # `review-orchestrator` is deliberately absent too, because it runs
 # /code-review itself and writes that skill's marker
 # (docs/design-decisions/review-orchestrator-gate-release-decoupling.md).
 _LIB_NO_GATE_RELEASE_AGENTS=(
   "${_LIB_REVIEW_ONLY_AGENTS[@]}"
+  "${_LIB_PLAN_WRITER_AGENTS[@]}"
   code-writer
 )
 _lib_no_gate_release_agents() {

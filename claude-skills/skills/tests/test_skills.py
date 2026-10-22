@@ -5774,6 +5774,185 @@ class TestResumeContextSkill:
         )
 
 
+# Step 5 holds these literals.
+_PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
+    "sed -n '1,/^## Approach$/p'",
+    "e3b0c442",
+    "the two digests differ",
+    "on every return",
+    "(pending: plan-architect)",
+    "absolute path as the prompt's second line",
+)
+
+_PLAN_HEADINGS_IN_ORDER = (
+    "## Approach",
+    "## Critical files",
+    "## Verification",
+    "## Out of scope",
+)
+
+_PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
+    "never call `Edit`, even when the prompt names a plan file"
+)
+
+_PLAN_ARCHITECT_PLAN_SECTIONS_HEADING = "## MODE=plan-sections"
+
+_PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE = (
+    "When your edits land, your return carries no `## ` heading lines"
+)
+_PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE = (
+    "Line 2 of the prompt is the plan file's absolute path."
+)
+
+_PLAN_IT_STEP5_HEADING = "## Step 5 — Architecture design"
+
+# Step 5's Context-hash command, as written in the skill: the one backticked
+# `sed ... | sha256sum` span, with the plan path left as a placeholder.
+_PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
+    r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
+)
+
+# Step 5's scaffold, as written in the skill: the backticked span after
+# "exactly these bytes:", with `\n` spelled as two characters.
+_PLAN_IT_SCAFFOLD_SPAN_PATTERN = re.compile(r"exactly these bytes: `([^`]+)`")
+
+# The title and Context a plan holds before its first dispatch.
+_PLAN_TITLE_AND_CONTEXT_TEXT = "# Title\n\n## Context\n\nAsk: x\n\n"
+
+_EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
+
+
+class TestPlanItStep5ContextCheckAndGrammarLiterals:
+    """Wiring-presence tripwires for plan-it/SKILL.md Step 5 and plan-architect.md,
+    which are LLM-consumed prose, plus an execution test of Step 5's hash command."""
+
+    @staticmethod
+    def _step5_context_hash_command() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its Context-hash command "
+            "in the pinned `sed ... | sha256sum` shape."
+        )
+        return match.group(1)
+
+    @staticmethod
+    def _step5_scaffold_text() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_SCAFFOLD_SPAN_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its scaffold bytes in the "
+            "pinned `exactly these bytes: `...`` shape."
+        )
+        return match.group(1).replace("\\n", "\n")
+
+    @classmethod
+    def _scaffolded_plan_text(cls) -> str:
+        return _PLAN_TITLE_AND_CONTEXT_TEXT + cls._step5_scaffold_text()
+
+    @classmethod
+    def _run_hash_command_result(cls, plan_path: Path) -> subprocess.CompletedProcess:
+        command = cls._step5_context_hash_command()
+        # The skill quotes the path as "<plan path>"; bind it through the environment.
+        runnable_command = command.replace('"<plan path>"', '"$PLAN_PATH"')
+        return subprocess.run(
+            ["bash", "-c", runnable_command],
+            env={**os.environ, "PLAN_PATH": str(plan_path)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @classmethod
+    def _run_hash_command(cls, plan_path: Path) -> str:
+        return cls._run_hash_command_result(plan_path).stdout.strip()
+
+    def test_step5_literals_match_live_text(self) -> None:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        missing = [
+            literal
+            for literal in _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS
+            if literal not in step5_text
+        ]
+        assert not missing, (
+            f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
+        )
+
+    def test_step5_scaffold_carries_the_four_headings_in_order(self) -> None:
+        scaffold_headings = [
+            line
+            for line in self._step5_scaffold_text().splitlines()
+            if line.startswith("## ")
+        ]
+        assert scaffold_headings == list(_PLAN_HEADINGS_IN_ORDER), (
+            "plan-it/SKILL.md Step 5's scaffold no longer carries the four "
+            "plan headings, in order."
+        )
+
+    def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
+        consult_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING
+        )
+        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in consult_section, (
+            "plan-architect.md's MODE=consult charter no longer carries its "
+            "never-call-Edit sentence."
+        )
+
+    def test_plan_sections_charter_return_carries_no_headings_when_edits_land(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer says the return "
+            "carries no `## ` heading lines once edits land, which Step 5's splice "
+            "relies on to avoid overwriting landed edits."
+        )
+
+    def test_plan_sections_charter_names_line_2_as_the_plan_path(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer names prompt "
+            "line 2 as the plan file's path, the contract plan-it/SKILL.md Step 5 "
+            "dispatches against."
+        )
+
+    def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        edited_plan_text = scaffolded_plan_text.replace("(pending: plan-architect)", "Approach text.")
+        assert edited_plan_text != scaffolded_plan_text
+        plan_path.write_text(edited_plan_text)
+
+        assert digest_before
+        assert not digest_before.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        assert self._run_hash_command(plan_path) == digest_before
+
+    def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        plan_path.write_text(scaffolded_plan_text.replace("Ask: x", "Ask: widened"))
+
+        assert self._run_hash_command(plan_path) != digest_before
+
+    def test_hash_command_yields_the_empty_input_digest_for_a_missing_path(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run_hash_command_result(tmp_path / "missing-plan.md")
+        assert result.stdout.strip().startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        # Step 5's stop rule treats any extra output as a stop, so sed's complaint
+        # must reach stderr while the pipeline still exits 0 on sha256sum's status.
+        assert result.returncode == 0
+        assert result.stderr.strip()
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1

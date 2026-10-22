@@ -400,6 +400,12 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-plan-writer-off-plan-writes.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking plan-writer scope..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
             "onFailure": "block",
             "statusMessage": "Checking gate-release authority..."
