@@ -271,8 +271,10 @@ RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
 ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
 READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
 SUBAGENT_DELEGATION_SKILL_MD = "claude-skills/skills/subagent-delegation/SKILL.md"
+RESUME_CONTEXT_SKILL_MD = "claude-skills/skills/resume-context/SKILL.md"
 AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
+BRIEF_SKILL_MD = "claude-skills/skills/brief/SKILL.md"
 
 # Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
 # domain membership. TestCrossDomainReadCompleteness
@@ -291,6 +293,7 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     SUBAGENT_DELEGATION_SKILL_MD,
     AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
     SKILL_REVIEW_SKILL_MD,
+    BRIEF_SKILL_MD,
 })
 
 # test_ci_path_filter.py reads this exact file by path.
@@ -676,6 +679,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
+# RESUME_CONTEXT_SKILL_MD: test_resume_context_same_session.py
+# (SCRIPTS_TESTS_DIR) reads resume-context/SKILL.md by path, to tie the keys and
+# the argument character set the skill names to the script's.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
@@ -805,6 +811,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_skill_md_change, (DOC_COUNTS_TEST_PATH,)),
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),

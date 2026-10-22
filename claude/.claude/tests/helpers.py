@@ -1250,6 +1250,28 @@ def init_git_repo_with_commit(
     return path
 
 
+def continuity_resume_section(kind: str, path: Path, resume_cwd: Path | str | None) -> str:
+    """The resume section in the shape handoff/SKILL.md (§7) or brief/SKILL.md (§7.5) prescribes.
+    `kind` is "handoff" or "brief"; `--cwd` is present only when `resume_cwd` is given."""
+    cwd_flag = f" --cwd {resume_cwd}" if resume_cwd else ""
+    command = f"`resume-context{cwd_flag} {path}`\n"
+    if kind == "handoff":
+        return f"## §7 Resume command\n{command}"
+    return f"## §7 Out of scope\nDo not touch resume-context.\n\n## §7.5 Resume command\n{command}"
+
+
+def write_continuity_body(path: Path, body: str) -> Path:
+    """Writes `body` to `path` with {file} replaced by the file's own path, creating parent directories."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.replace("{file}", str(path)))
+    return path
+
+
+def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: str = "handoff") -> Path:
+    """A continuity file at `path` holding only the resume section `continuity_resume_section` builds."""
+    return write_continuity_body(path, continuity_resume_section(kind, path, resume_cwd))
+
+
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
 

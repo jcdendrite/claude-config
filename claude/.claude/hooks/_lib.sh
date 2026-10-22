@@ -4628,6 +4628,249 @@ _lib_print_recovery_hint() {
   printf 'reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
 }
 
+# _lib_linked_worktree_root DIR
+# Prints the root of the linked worktree containing DIR. Three outcomes:
+#   - exit 0, root printed: DIR is in a linked worktree and the root passes
+#     _lib_passes_path_char_allowlist.
+#   - exit 0, empty stdout: git answered "not linked" -- the git dir equals the
+#     common dir, or `rev-parse --git-dir` exited 128 (not a repository).
+#   - exit 1, empty stdout: unknown -- an empty DIR (no git runs), any other git
+#     status (a fired cap, a missing git, a later call failing), a git dir or
+#     common dir that is not a single-line absolute path (git older than 2.31
+#     echoes --path-format=absolute as output and exits 0), or a linked root that
+#     fails the allowlist.
+# 128 is also git's status for other fatal errors, so each of these reads as
+# "not linked": a dubious-ownership refusal, a DIR that no longer exists, and a
+# linked worktree whose gitdir entry was pruned. A caller then loads a file that
+# names no worktree into such a session.
+# Callers capture it as `if root=$(...); then ...; else ...; fi`, which is safe
+# under `set -euo pipefail`.
+_lib_linked_worktree_root() {
+  local dir="${1-}" git_dir_status=0 absolute_git_dir common_git_dir root
+  [ -n "$dir" ] || return 1
+  _lib_capped git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || git_dir_status=$?
+  case "$git_dir_status" in
+    0) ;;
+    128) return 0 ;;
+    *) return 1 ;;
+  esac
+  absolute_git_dir=$(_lib_capped git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  common_git_dir=$(_lib_capped git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case "$absolute_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$common_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$absolute_git_dir$common_git_dir" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$absolute_git_dir" != "$common_git_dir" ] || return 0
+  root=$(_lib_capped git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  _lib_passes_path_char_allowlist "$root" || return 1
+  printf '%s' "$root"
+}
+
+# _lib_continuity_file_resume_cwd FILE
+# Prints what FILE's own `resume-context` commands say about --cwd. An own
+# command is a line holding a `resume-context` or `*/resume-context` word and a
+# word naming FILE's basename anywhere (handoff §7 and brief §7.5 are the last
+# numbered sections). On an own line, a `--cwd TOKEN` must be followed directly
+# by that basename, or the line's token is unusable. Three answers:
+#   - nothing: absent -- FILE holds no `--cwd` text anywhere, so it names no
+#     worktree. This is the only answer that rests on a whole-file search.
+#   - a path: usable -- FILE holds `--cwd` text and the scanned tail has own
+#     commands whose --cwd all name that one absolute path, with backticks and
+#     one trailing `/` stripped and the allowlist satisfied.
+#   - $_LIB_RESUME_CWD_UNUSABLE: anything else -- an own --cwd that cannot be
+#     used (`--cwd=/x`, a missing, quoted, relative, `~`, non-allowlisted or
+#     space-split token), two own --cwd tokens that disagree, FILE holds
+#     `--cwd` text but the tail has no own command carrying one, or FILE cannot
+#     be read or searched.
+# An own command without --cwd does not override an own command with one. A
+# line ending in a backslash joins the next non-empty line, so a blank line does not end
+# the command as it would in a shell; a trailing CR is ignored.
+# Only lines containing `resume-context` within the last
+# _LIB_RESUME_CWD_TAIL_BYTES of FILE are tokenized, so tokenizing is bounded.
+# The whole-file `--cwd` search is linear in the file's size.
+# Always exits 0. The body is a subshell so `set -f` (no globbing of the words
+# read from FILE) does not leak into the caller.
+_LIB_RESUME_CWD_UNUSABLE="unknown"
+_LIB_RESUME_CWD_TAIL_BYTES=8192
+_LIB_RESUME_CWD_LINE_TOKEN=""
+_LIB_RESUME_CWD_NORMALIZED=""
+_lib_continuity_file_resume_cwd() (
+  set +e
+  set -f
+  IFS=$' \t\n'
+  local file="${1-}" own_basename tail_text raw_line line carried="" backslash=$'\\' cwd_search_status=0
+  local file_token="" file_is_unusable=0
+  [ -f "$file" ] || { printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0; }
+  grep -q -F -e --cwd -- "$file" 2>/dev/null || cwd_search_status=$?
+  case "$cwd_search_status" in
+    0) ;;
+    1) exit 0 ;;
+    *) printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0 ;;
+  esac
+  own_basename="${file##*/}"
+  # Byte semantics, so ${#tail_text} counts bytes against _LIB_RESUME_CWD_TAIL_BYTES.
+  LC_ALL=C
+  # One byte beyond the window shows the file is longer; the `x` sentinel keeps trailing newlines.
+  # The group's `2>/dev/null` silences bash's "ignored null byte in input" warning for a NUL-bearing file.
+  { tail_text=$(tail -c "$((_LIB_RESUME_CWD_TAIL_BYTES + 1))" < "$file" 2>/dev/null && printf x); } 2>/dev/null || { printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0; }
+  tail_text="${tail_text%x}"
+  if [ "${#tail_text}" -gt "$_LIB_RESUME_CWD_TAIL_BYTES" ]; then
+    # The first line of the window may be cut mid-line, so it is dropped.
+    case "$tail_text" in
+      *$'\n'*) tail_text="${tail_text#*$'\n'}" ;;
+      *) tail_text="" ;;
+    esac
+  fi
+  # Splitting in memory avoids the per-byte reads of a `read` loop; the trailing
+  # empty argument flushes a final backslash continuation.
+  IFS=$'\n'
+  # shellcheck disable=SC2086 # splitting on newlines is intended; globbing is off via set -f.
+  set -- $tail_text ""
+  IFS=$' \t\n'
+  for raw_line; do
+    line="$carried${raw_line%$'\r'}"
+    carried=""
+    case "$line" in
+      *\\) carried="${line%"$backslash"} "; continue ;;
+      *resume-context*) ;;
+      *) continue ;;
+    esac
+    _lib_resume_cwd_scan_line "$line" "$own_basename" || continue
+    case "$_LIB_RESUME_CWD_LINE_TOKEN" in
+      "") ;;
+      "$_LIB_RESUME_CWD_UNUSABLE") file_is_unusable=1 ;;
+      *)
+        if [ -z "$file_token" ]; then
+          file_token="$_LIB_RESUME_CWD_LINE_TOKEN"
+        elif [ "$file_token" != "$_LIB_RESUME_CWD_LINE_TOKEN" ]; then
+          file_is_unusable=1
+        fi
+        ;;
+    esac
+  done
+  if [ "$file_is_unusable" -eq 1 ] || [ -z "$file_token" ]; then
+    printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"
+  else
+    printf '%s' "$file_token"
+  fi
+)
+
+# _lib_resume_cwd_scan_line LINE OWN_BASENAME
+# Exit 0 when LINE is an own command of OWN_BASENAME's file (see
+# _lib_continuity_file_resume_cwd), exit 1 otherwise. On exit 0 sets
+# _LIB_RESUME_CWD_LINE_TOKEN to "" (no --cwd on the line), to the one usable
+# token, or to $_LIB_RESUME_CWD_UNUSABLE. An accepted --cwd token must be
+# followed directly by OWN_BASENAME, else the line is unusable. Relies on the
+# caller's `set -f` and IFS.
+_lib_resume_cwd_scan_line() {
+  local line="$1" own_basename="$2" word trimmed backtick='`' previous_was_cwd_flag=0 word_is_own_file
+  local expects_own_file=0
+  local is_resume_command=0 names_own_file=0 line_token="" line_is_unusable=0
+  # shellcheck disable=SC2086 # word splitting is the tokenizer here; globbing is off via the caller's set -f.
+  for word in $line; do
+    word="${word//$backtick/}"
+    trimmed="$word"
+    while :; do
+      case "$trimmed" in
+        '('* | '"'* | "'"*) trimmed="${trimmed#?}" ;;
+        *'.' | *',' | *';' | *':' | *')' | *'"' | *"'") trimmed="${trimmed%?}" ;;
+        *) break ;;
+      esac
+    done
+    case "$trimmed" in
+      resume-context | */resume-context) is_resume_command=1 ;;
+    esac
+    word_is_own_file=0
+    case "$trimmed" in
+      "$own_basename" | */"$own_basename") word_is_own_file=1; names_own_file=1 ;;
+    esac
+    if [ "$expects_own_file" -eq 1 ]; then
+      expects_own_file=0
+      [ "$word_is_own_file" -eq 1 ] || line_is_unusable=1
+    fi
+    if [ "$previous_was_cwd_flag" -eq 1 ]; then
+      previous_was_cwd_flag=0
+      if [ "$word_is_own_file" -eq 0 ] && _lib_normalize_resume_cwd_token "$word"; then
+        expects_own_file=1
+        if [ -z "$line_token" ]; then
+          line_token="$_LIB_RESUME_CWD_NORMALIZED"
+        elif [ "$line_token" != "$_LIB_RESUME_CWD_NORMALIZED" ]; then
+          line_is_unusable=1
+        fi
+      else
+        line_is_unusable=1
+      fi
+      continue
+    fi
+    case "$word" in
+      --cwd) previous_was_cwd_flag=1 ;;
+      --cwd=*) line_is_unusable=1 ;;
+    esac
+  done
+  [ "$previous_was_cwd_flag" -eq 0 ] && [ "$expects_own_file" -eq 0 ] || line_is_unusable=1
+  [ "$is_resume_command" -eq 1 ] && [ "$names_own_file" -eq 1 ] || return 1
+  if [ "$line_is_unusable" -eq 1 ]; then
+    _LIB_RESUME_CWD_LINE_TOKEN="$_LIB_RESUME_CWD_UNUSABLE"
+  else
+    _LIB_RESUME_CWD_LINE_TOKEN="$line_token"
+  fi
+}
+
+# _lib_normalize_resume_cwd_token TOKEN
+# Sets _LIB_RESUME_CWD_NORMALIZED to TOKEN minus one trailing `/` and exits 0
+# when it is an absolute path passing _lib_passes_path_char_allowlist; exits 1
+# otherwise. Sets a global instead of printing so no command substitution forks.
+_lib_normalize_resume_cwd_token() {
+  local token="${1%/}"
+  _LIB_RESUME_CWD_NORMALIZED=""
+  case "$token" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  _lib_passes_path_char_allowlist "$token" || return 1
+  _LIB_RESUME_CWD_NORMALIZED="$token"
+}
+
+# _lib_resume_context_verdict STATE ROOT FILE_TARGET
+# Prints `load` when a continuity file belongs to this session's worktree and
+# `shell` when it must be resumed through the shell `resume-context` instead.
+# STATE is `linked`, `not-linked` or `unknown` (the three outcomes of
+# _lib_linked_worktree_root). ROOT is the linked root, FILE_TARGET the file's
+# own --cwd (_lib_continuity_file_resume_cwd, including its
+# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root), both already
+# canonicalized.
+#   - linked: load only when FILE_TARGET equals ROOT.
+#   - not-linked: load only when FILE_TARGET is empty.
+#   - unknown, or any other STATE: shell.
+# Always exits 0.
+_lib_resume_context_verdict() {
+  local state="${1-}" root="${2-}" file_target="${3-}"
+  case "$state" in
+    linked)
+      if [ -n "$root" ] && [ "$file_target" = "$root" ]; then
+        printf 'load\n'
+      else
+        printf 'shell\n'
+      fi
+      ;;
+    not-linked)
+      if [ -z "$file_target" ]; then
+        printf 'load\n'
+      else
+        printf 'shell\n'
+      fi
+      ;;
+    *) printf 'shell\n' ;;
+  esac
+}
+
 # _lib_sanitize_for_terminal VALUE
 # Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) stripped.
 # Tab (0x09) is preserved: it is a legitimate field separator in at least
