@@ -10,6 +10,7 @@ from helpers import HOOKS_DIR
 from transcript_analysis import (
     corpus,
     handoff_nudge,
+    handoff_signal_response,
     pricing,
 )
 
@@ -256,6 +257,28 @@ class TestParseNudgeLogEntriesRealHookLineContract:
         assert block_entry["ignored"] == 1
         assert isinstance(block_entry["ignored"], int)
         assert block_entry["skills"] == "-"
+
+    def test_real_hard_block_stderr_carries_the_detector_substring(self, tmp_path):
+        """handoff_signal_response.py recognises a hard block by this substring
+        of the hook's stderr message; a wording edit that drops it would zero
+        the audit's hard-block count with no other signal."""
+        threshold = 150_000
+        block_at = threshold + 80_000
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        for var in ("HANDOFF_NUDGE_ABS_CAP", "HANDOFF_NUDGE_REARM_SPACING", "HANDOFF_NUDGE_BLOCK_AFTER"):
+            env.pop(var, None)
+        env["HANDOFF_NUDGE_BLOCK_AT"] = str(block_at)
+
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [self._usage_record(threshold)])
+        assert self._fire(tmp_path, transcript, env).returncode == 0
+        with transcript.open("a") as f:
+            f.write(json.dumps(self._usage_record(block_at)) + "\n")
+        blocked = self._fire(tmp_path, transcript, env)
+
+        assert blocked.returncode == 2
+        assert handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK_TEXT in blocked.stderr
 
 
 class TestOperatorResponseLagFromLog:

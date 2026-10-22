@@ -559,11 +559,14 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   The protected-finding rule binds that fix too. A re-check or consult the
   human asks for after step 8 presents only proposes changes, which keeps
   the refusal fix the session's only change of its own.
-- **Residual.** The record is the session's own transcript, and every edit is
-  session-authored, because `plan-architect` holds no write tool. Nothing
-  mechanical detects a finding missing from the body. `marker.sh`'s body check
-  and `review-pr-post.sh`'s hash check prove only that the posted text equals
-  the marked text. The human's approval of the exact body is the backstop,
+- **Residual.** The record is the session's own transcript, and every edit to the body is
+  session-authored. `plan-architect`'s consult charter forbids `Edit`.
+  `enforce-marker-script-shape.sh` denies `plan-architect`'s `Edit` to the body on every install,
+  because the body sits under `.review-pr-active.d/` and the plan-writer registry
+  puts `plan-architect` on that gate's no-gate-release roster.
+  Nothing mechanical detects a finding missing from the body. `marker.sh`'s
+  body check and `review-pr-post.sh`'s hash check prove only that the posted
+  text equals the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
   any `Edit` made after the last consult, the human's reading of the presented
   text is the only content review. `marker.sh`'s attribution check and
@@ -579,6 +582,31 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
+
+## Why spawned reviewers write findings to a temporary directory
+
+`/code-review` and `/plan-review` give each reviewer a relative `findings_path` under `agent-reviews/`, which resolves in the tree the session stands in.
+
+A `/review-pr` session may stand in the main tree, and `diff-only` mode has no review worktree. In a repo with worktree discipline on, `require-worktree-for-file-writes.sh` denies that `Write` from the main tree.
+
+`review-pr-reviewer-findings-dir.sh` creates the session's directory and prints its path. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. The session puts that directory in place of `agent-reviews/` in each reviewer's `findings_path`.
+
+The path starts with a literal `/tmp/`. `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` under `/tmp` as written, and `TMPDIR` can point elsewhere.
+
+`/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
+
+The session still reads each findings file in full, whatever its count, so files do not shrink context for reviewers that found something. Files do persist through context compaction.
+
+The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
+
+Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path names a different file than the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+
+If the script fails, the session leaves each dispatcher's relative `findings_path` in place. From the main tree of a repo with worktree discipline on, that `Write` is denied and the reviewer returns inline. From a linked worktree, or in a repo without worktree discipline, the file lands in that tree's ignored `agent-reviews/`. `review-pr-finish.sh` removes it only when that tree is one of this session's review worktrees. Handing reviewers no `findings_path` instead would force every reviewer inline, including where the relative path works.
+
+Two other designs fail here:
+
+- A path under `<config-dir>/.review-pr-active.d/` is denied, because `deny-reviewer-tree-mutation.sh` denies a reviewer `Write` there.
+- Exempting an ignored `agent-reviews/` directory in the main-tree write gate fails, because it would relax `require-worktree-for-file-writes.sh`, a gate tiered `irreversible`, on false-positive cost alone, which `docs/hooks.md` § "Threat-model tiers" bars.
 
 ## Known gaps and operator choices
 
@@ -627,6 +655,25 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     empty one, is kept indefinitely.
   - Remove that file by hand, and the next sweep then evicts the session's
     other artifacts.
+- **A session that ends without `review-pr-finish.sh` leaves its reviewer
+  findings directory under `/tmp`.**
+  - The stale-marker sweep never reaches `/tmp`.
+  - To remove directories older than a day, run
+    `find -H /tmp -maxdepth 1 -type d -name 'review-pr-reviewer-findings-*' -mmin +1440 -exec rm -rf -- {} +`.
+  - Run it only when no `/review-pr` session is in flight. `-mmin` reads the
+    directory's own modification time, and rewriting a findings file does not
+    change it.
+  - macOS path handling is unverified.
+- **Prompting permission modes and synchronous reviewer spawns are untested for
+  the findings `Write` and `Read` under `/tmp`.**
+  - Only one background-spawned reviewer under the `auto` permission mode has
+    exercised them.
+  - In a mode that prompts for writes outside the project, each reviewer
+    `Write` and the session's `Read` may prompt.
+  - A declined `Write` sends the reviewer to its inline fallback.
+  - A `Read` the session cannot complete triggers the standing override's
+    re-dispatch.
+  - Both dispatchers spawn reviewers synchronously.
 - **The standing override's no-marker clause is prose only.** Nothing
   mechanical stops a completion-marker write for a skill other than
   `review-pr` while a review-pr session is in flight, because the main-tree

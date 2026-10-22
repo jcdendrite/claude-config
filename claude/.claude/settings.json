@@ -24,6 +24,7 @@
       "Bash(~/.claude/scripts/marker.sh check verification)",
       "Bash(~/.claude/scripts/review-pr-findings-path.sh)",
       "Bash(~/.claude/scripts/review-pr-finish.sh)",
+      "Bash(~/.claude/scripts/review-pr-reviewer-findings-dir.sh)",
       "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
@@ -110,6 +111,7 @@
     "simplify": "name-only",
     "review-pr": "name-only",
     "period-cost-report": "name-only",
+    "resume-context": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",
@@ -396,6 +398,12 @@
             "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
             "onFailure": "block",
             "statusMessage": "Checking reviewer read-only gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-plan-writer-off-plan-writes.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking plan-writer scope..."
           },
           {
             "type": "command",

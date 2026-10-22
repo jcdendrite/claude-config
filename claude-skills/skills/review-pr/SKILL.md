@@ -4,7 +4,12 @@ description: "Review a PR, yours or someone else's: audit for passive-execution 
 argument-hint: "[PR number or URL]"
 ---
 
-Review a pull request, whether authored by someone else or by the operator (the account `gh` runs as): acquire it, audit it for passive-execution risk, check it out (or fetch only its diff, for a restricted PR), delegate the line-level review to `/code-review`, run checks only with confirmation, and post findings only on explicit human approval. This is the reviewer-side mirror of `/respond-pr`. **Self-authored mode** applies when step 1's document carries `selfAuthored: true` (advisory; the post script re-checks). It changes only step 8's post route; every other step runs as written, with the same reviewers and depth. **Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own, in self-authored mode too: report findings, change nothing, write no completion marker, edit no PR body.**
+Review a pull request, whether authored by someone else or by the operator (the account `gh` runs as): acquire it, audit it for passive-execution risk, check it out (or fetch only its diff, for a restricted PR), delegate the line-level review to `/code-review`, run checks only with confirmation, and post findings only on explicit human approval. This is the reviewer-side mirror of `/respond-pr`. **Self-authored mode** applies when step 1's document carries `selfAuthored: true` (advisory; the post script re-checks). It changes only step 8's post route; every other step runs as written, with the same reviewers and depth.
+
+**Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own, in self-authored mode too: report findings, change nothing, write no completion marker, edit no PR body.** After step 1 and before any reviewer spawns, run the script below, and re-run it before a later spawn if you no longer hold the directory it printed (a re-run prints the same path). In every `findings_path` that `/code-review` or `/plan-review` gives a reviewer, replace the leading `agent-reviews` with the directory it prints, so each file is `<printed directory>/<agent-name>-<suffix>.md` (`REFERENCES.md` § "Why spawned reviewers write findings to a temporary directory"). If the script exits non-zero, leave each `findings_path` as the dispatcher gave it and tell the human once, quoting the script's stderr. `Read` only the path you handed that reviewer. A reviewer that reports a write whose file you cannot `Read`, or reports a path that names a different file, has not reviewed: re-dispatch it once with no `findings_path` and tell the human, naming any path it reported.
+```
+~/.claude/scripts/review-pr-reviewer-findings-dir.sh
+```
 
 ## Step 1 — Acquire PR context
 
@@ -79,7 +84,7 @@ Exit 4 restarts, and its second is final, as with checkout's exit 4. Any other n
 
 Invoke `/plan-review` only when the PR's own diff or the ticket step 4 confirms (read now, by step 4's rule) carries a genuine plan artifact meeting a checkable test: named steps and file references, or an explicit plan, RFC, or design-doc label. Any other plan source the PR names, such as a gist or an outside document, stays unread, so skip this pass and say why in step 8, outside the body. A PR description alone never qualifies — `/plan-review`'s structure checks (NO PLACEHOLDERS, BITE-SIZED STEPS) produce noise against one.
 
-Under the standing override above, give `/plan-review` the PR's plan, never a plan from this repo's own `.claude/plans/`: in `checkout` mode, pass the plan file's path inside the step-2 worktree as the argument; for a plan in the confirmed ticket, or in `diff-only` mode, put the plan's text in context, name it as the subject when invoking `/plan-review`, and have its closing line cite the ticket's bare identifier or the plan file's repo-relative path in place of a path.
+Under the standing override above, including its reviewer findings directory, give `/plan-review` the PR's plan, never a plan from this repo's own `.claude/plans/`: in `checkout` mode, pass the plan file's path inside the step-2 worktree as the argument; for a plan in the confirmed ticket, or in `diff-only` mode, put the plan's text in context, name it as the subject when invoking `/plan-review`, and have its closing line cite the ticket's bare identifier or the plan file's repo-relative path in place of a path. Have `/plan-review` relay a ticket's or a `diff-only` PR's plan text, which you put in context, in each reviewer prompt as `claude/.claude/CLAUDE.md` § "Agent Briefing" says, naming the ticket or the PR as its source.
 
 ## Step 4 — Foundation pass
 
@@ -87,7 +92,7 @@ Apply `/code-review` Step 1's implementation-fitness gate against the PR's state
 
 ## Step 5 — Line-level pass
 
-Invoke `/code-review` over the diff file step 2's script printed, under the standing override above, with args "unrouted <path>" naming that file without the quotation marks (`unrouted` keeps this pass in this session). It is a file because a diff passed through Bash stdout reaches the review cut short on a large PR. In `checkout` mode it is a local three-dot diff; in `diff-only` mode it is GitHub's own server-side merge-base diff (unverified), since there is no worktree to diff locally. `/code-review`'s Step 0.1 short-circuit does not apply: it compares this tree's staged diff, not the PR's. In `checkout` mode, a path the diff file renders as "Binary files ... differ" carries no reviewed content: read that path from the step-2 worktree or report it as unreviewed. Ask each reviewer to mark any claim it could not check and what would settle it, so step 7 can resolve the claim.
+Invoke `/code-review` over the diff file step 2's script printed, under the standing override above (including its reviewer findings directory), with args "unrouted <path>" naming that file without the quotation marks (`unrouted` keeps this pass in this session). It is a file because a diff passed through Bash stdout reaches the review cut short on a large PR. In `checkout` mode it is a local three-dot diff; in `diff-only` mode it is GitHub's own server-side merge-base diff (unverified), since there is no worktree to diff locally. `/code-review`'s Step 0.1 short-circuit does not apply: it compares this tree's staged diff, not the PR's. In `checkout` mode, a path the diff file renders as "Binary files ... differ" carries no reviewed content: read that path from the step-2 worktree or report it as unreviewed. Ask each reviewer to mark any claim it could not check and what would settle it, so step 7 can resolve the claim.
 
 **Base reads.** When step 2 printed the base commit as a full-hex line, read base content by that object ID, used in a command only while it is full hex, with `git show '<baseRefOid>:<path>'` and `git --literal-pathspecs grep -n -F -e '<literal>' <baseRefOid> -- '<path>'`. Both print plain blobs and run no configured driver. Put every PR-derived string (path, fixed string, log-filter literal) in single quotes as one argument. Never pass Bash a string containing `'`, a newline, or another control character, and treat the content it names as unread.
 
@@ -97,7 +102,7 @@ Base content counts as settled code (for same-file precedent, the pre-existing m
 - Without it the base is unsettled: it may be stacked, and a stacked base can still change before merge. Only content the PR's own hunks add can then close a claim or serve as precedent.
 - Base objects are read at `baseRefOid`, which may be a stacked parent. Worktree files the diff file does not name and unchanged regions of files it does name follow the merge base, which can differ from `baseRefOid`. Without the token, all of these may only add a finding or keep a claim open; with it, only the merge-base files carry that limit.
 
-**In `diff-only` mode**, the diff file is the *only* route to this PR's file contents — never `Read` a file by path, never assume local file state exists. Any `AUDIT_FINDING` `review-pr-diff.sh` reported on stderr in step 2 is a mandatory blocking finding here, not optional.
+**In `diff-only` mode**, the diff file is the *only* route to this PR's file contents — never `Read` a PR file by path (the findings file at the path you handed a reviewer is not one), never assume local file state exists. Any `AUDIT_FINDING` `review-pr-diff.sh` reported on stderr in step 2 is a mandatory blocking finding here, not optional.
 
 ## Step 6 — Run checks (checkout-only, unconditional confirmation)
 
@@ -191,10 +196,10 @@ For `request-changes`, the post script also refuses, leaving the marker in place
 
 If it reports that whether the review posted is unknown, this session must not post that body again. Tell the human. They check the PR on GitHub and, if the review is absent, either post the body shown above by hand or start a fresh `/review-pr`. Do not re-run the marker write or the post after that message.
 
-Then, on every exit path once step 1 has run — posted, declined, or aborted at any step, including a step 2 stop or a diff-only abort:
+Then, on every exit path once step 1 has run — posted, declined, or aborted at any step, including a step 2 stop or a diff-only abort — and before removing anything yourself, run the script below with no argument:
 ```
 ~/.claude/scripts/review-pr-finish.sh
 ```
-- Run it with no argument, before removing anything yourself, from the main tree or from a worktree that is not a review worktree. It removes every review worktree of this session, including one the shell stands in.
-- It also removes provenance, the findings body, the diff file (if any), the context backstop, and the completion marker.
+- Run it from the main tree or from a worktree that is not a review worktree. It removes every review worktree of this session, including one the shell stands in.
+- It also removes provenance, the findings body, the diff file (if any), the context backstop, the completion marker, and this session's reviewer findings directory.
 - Refs (`refs/review-pr/pr-<N>` and, for a stacked PR, `refs/review-pr/pr-<N>-default`) and fetched base objects outlive it.

@@ -1197,7 +1197,11 @@ PROMPT_GATED_SCRIPT_NAMES = (
 )
 # review-pr scripts SKILL.md invokes with no arguments, which settings.json
 # allowlists by exact match.
-ZERO_ARGUMENT_ALLOWED_SCRIPT_NAMES = ("review-pr-findings-path.sh", "review-pr-finish.sh")
+ZERO_ARGUMENT_ALLOWED_SCRIPT_NAMES = (
+    "review-pr-findings-path.sh",
+    "review-pr-finish.sh",
+    "review-pr-reviewer-findings-dir.sh",
+)
 # Commands that run another command, so an allow entry headed by one can reach
 # any gated script.
 SHELL_WRAPPER_HEADS = frozenset(

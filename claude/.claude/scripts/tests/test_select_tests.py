@@ -2002,6 +2002,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.REVIEW_PR_SKILL_MD,
     _mod.PERIOD_COST_REPORT_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
+    _mod.RESUME_CONTEXT_SKILL_MD,
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
@@ -2068,12 +2069,16 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_skill_review.py",
      "plugins/skill-management/skills/skill-review/SKILL.md"),
+    ("claude/.claude/hooks/tests/test_resume_command_template_contract.py",
+     "claude-skills/skills/brief/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
      "claude/.claude/settings.json"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
      "claude-skills/skills/code-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
      "claude-skills/skills/ready-for-review/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
+     "claude-skills/skills/resume-context/SKILL.md"),
 )
 
 

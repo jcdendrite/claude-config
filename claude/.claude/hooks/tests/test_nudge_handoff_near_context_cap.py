@@ -38,6 +38,7 @@ import pytest
 from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
+    REPO_ROOT,
     SKILLS_DIR,
     TRAVERSAL_SESSION_ID,
     assert_cap_engaged,
@@ -83,6 +84,28 @@ DEFAULT_BLOCK_AT = 470_000
 # with wide margin), while staying under the marker's own 9-digit
 # `?????????*` corrupt-value guard.
 REARM_MECHANICS_BLOCK_AT = "9000000"
+
+# Literal copies of the compaction text both nudge messages carry. They are
+# quoted, not derived from the hook, so a wording edit has to change the hook,
+# this file, and docs/handoff-nudge.md together. None may hold a `%`: the hard
+# block's printf receives them as arguments, but a `%` would still corrupt any
+# future edit that inlines one into its format string.
+COMPACT_CRITERIA_PHRASE = (
+    "the next step continues the current task without switching to another worktree or repository, "
+    "it needs files already read or edited in this conversation, "
+    "and Claude has not been corrected more than twice on the same issue"
+)
+COMPACT_TIMING_SENTENCE = (
+    "Run /compact now rather than after a break: once the prompt cache expires, "
+    "/compact reprocesses the full history as uncached input, which is when it costs the most."
+)
+COMPACT_TIE_BREAK_SOFT = (
+    "Recommend /compact only if all three clauses hold; otherwise, or if any is unclear, recommend /handoff."
+)
+COMPACT_TIE_BREAK_HARD = (
+    "If all three clauses hold, the user can run a bare /compact instead, and a focus line is optional."
+)
+HANDOFF_NUDGE_DOC = REPO_ROOT / "docs" / "handoff-nudge.md"
 
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
@@ -474,6 +497,42 @@ def _check_json(result: subprocess.CompletedProcess) -> dict:
 
 def _default_config_dir(tmp_path: Path) -> Path:
     return tmp_path / ".claude"
+
+
+NUDGE_MESSAGE_KINDS = ["soft nudge", "hard block"]
+
+
+def _fire_nudge_message(
+    tmp_path: Path,
+    kind: str,
+    *,
+    extra_env: dict | None = None,
+    rearm_spacing: int = DEFAULT_REARM_SPACING,
+) -> tuple[str, int]:
+    """Fire the hook until it emits the `kind` message; return (text, ESTIMATE at that fire).
+
+    The soft nudge is a first-ever crossing. The hard block is a re-arm
+    `rearm_spacing` past the first crossing, with HANDOFF_NUDGE_BLOCK_AT
+    pinned below it. `rearm_spacing` must match any
+    HANDOFF_NUDGE_REARM_SPACING the caller passes through `extra_env`.
+    """
+    transcript = tmp_path / "t.jsonl"
+    if kind == "soft nudge":
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        return context, ABOVE_LARGE
+    assert kind == "hard block"
+    env = {"HANDOFF_NUDGE_BLOCK_AT": "50000", **(extra_env or {})}
+    _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+    first = _run_hook(_base_payload(transcript), tmp_path, extra_env=env)
+    assert first.returncode == 0
+    blocked_estimate = LARGE_THRESHOLD + rearm_spacing
+    _append_to_transcript(transcript, [_record_totalling(blocked_estimate, model="claude-sonnet-5")])
+    blocked = _run_hook(_base_payload(transcript), tmp_path, extra_env=env)
+    assert blocked.returncode == 2
+    return blocked.stderr, blocked_estimate
 
 
 # The hook caps its ancestor walk at CHECK_MAX_ANCESTOR_HOPS. Hop 1 is the
@@ -2158,6 +2217,240 @@ class TestNudgeHandoffNearContextCap:
         assert second.returncode == 2, f"re-arm past HANDOFF_NUDGE_BLOCK_AT={block_at} must hard-block"
         assert "judge that by what the remaining work costs" not in second.stderr
 
+    # -----------------------------------------------------------------------
+    # Compaction as an alternative to /handoff: the text both messages carry
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(COMPACT_CRITERIA_PHRASE, id="criteria"),
+            pytest.param(COMPACT_TIMING_SENTENCE, id="timing"),
+            pytest.param(COMPACT_TIE_BREAK_SOFT, id="tie-break-soft"),
+            pytest.param(COMPACT_TIE_BREAK_HARD, id="tie-break-hard"),
+        ],
+    )
+    def test_compact_text_constants_hold_no_percent_sign(self, text):
+        """A `%` in any of these would be read as a printf conversion once an
+        edit moves the text into the hard block's format string."""
+        assert "%" not in text
+
+    @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
+    def test_message_carries_criteria_timing_and_user_only_statement(self, tmp_path, kind):
+        """Both messages give the agent the compaction criteria and the timing sentence
+        verbatim, and say only the user can run /compact (the harness has no
+        tool binding for it)."""
+        text, _ = _fire_nudge_message(tmp_path, kind)
+        assert COMPACT_CRITERIA_PHRASE in text
+        assert COMPACT_TIMING_SENTENCE in text
+        assert "Only the user can run /compact" in text
+        assert "/compact" in text
+        assert "/handoff" in text
+
+    def test_soft_nudge_carries_tie_break_and_paste_ready_focus_form(self, tmp_path):
+        """The soft nudge tells the agent to default to /handoff when any
+        criterion is unclear, and to end with a paste-ready `/compact <focus>`."""
+        text, _ = _fire_nudge_message(tmp_path, "soft nudge")
+        assert COMPACT_TIE_BREAK_SOFT in text
+        assert "`/compact <focus>`" in text
+        assert "Pass this on with it, as applying if the user chooses /compact: " + COMPACT_TIMING_SENTENCE in text
+
+    def test_hard_block_carries_inverse_tie_break_and_only_the_bare_form(self, tmp_path):
+        """No model composes a focus line at a hard block, so the message names
+        the bare /compact the user can type unaided, and keeps /handoff as the
+        default."""
+        text, _ = _fire_nudge_message(tmp_path, "hard block")
+        assert COMPACT_TIE_BREAK_HARD in text
+        assert "run /handoff now" in text
+        assert "/compact <focus>" not in text
+        assert "If you choose /compact: " + COMPACT_TIMING_SENTENCE in text
+
+    def test_hard_block_keeps_its_single_line_detector_substring(self, tmp_path):
+        """The production detector and test_doc_counts.py both match this exact
+        unwrapped substring."""
+        text, _ = _fire_nudge_message(tmp_path, "hard block")
+        assert "handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=50000)" in text
+
+    def test_hard_block_says_re_arms_not_ignored_re_arms(self, tmp_path):
+        """A compliant /compact still increments the counter, so the message
+        must not call every counted re-arm ignored."""
+        text, _ = _fire_nudge_message(tmp_path, "hard block")
+        assert "after 1 re-arms" in text
+        assert "ignored re-arms" not in text
+
+    @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
+    def test_message_leaves_resume_routing_to_the_announce_message(self, tmp_path, kind):
+        """Which resume route fits depends on the next worktree, so neither
+        message names /clear or /resume-context."""
+        text, _ = _fire_nudge_message(tmp_path, kind)
+        assert "/clear" not in text
+        assert "/resume-context" not in text
+
+    @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
+    def test_message_makes_no_cost_comparison_between_the_exits(self, tmp_path, kind):
+        """Nothing measures /compact against a handoff, so neither message may
+        call one cheaper."""
+        text, _ = _fire_nudge_message(tmp_path, kind)
+        for claim in ("cheaper", "less expensive", "costs less"):
+            assert claim not in text
+
+    @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
+    @pytest.mark.parametrize(
+        "rearm_spacing_env, rearm_spacing",
+        [
+            pytest.param(None, DEFAULT_REARM_SPACING, id="default"),
+            pytest.param("20000", 20_000, id="override"),
+            pytest.param("abc", DEFAULT_REARM_SPACING, id="malformed-falls-back-to-default"),
+        ],
+    )
+    def test_message_states_the_next_fire_point(self, tmp_path, kind, rearm_spacing_env, rearm_spacing):
+        """Both fixtures' next fire point sits at or above the block point (the
+        hard block's always does; the soft fixture's 650000 plus spacing is past
+        the default 470000), so both messages name it a hard block; the figure is
+        the fire's estimate plus the resolved spacing."""
+        extra_env = {"HANDOFF_NUDGE_REARM_SPACING": rearm_spacing_env} if rearm_spacing_env is not None else None
+        text, estimate = _fire_nudge_message(tmp_path, kind, extra_env=extra_env, rearm_spacing=rearm_spacing)
+        assert f"Next hard block at {estimate + rearm_spacing} tokens" in text
+        assert "Next nudge at" not in text
+
+    @pytest.mark.parametrize(
+        "block_at_offset, expected_kind",
+        [
+            pytest.param(0, "hard block", id="next-fire-at-block-at-is-a-hard-block"),
+            pytest.param(1, "nudge", id="next-fire-one-below-block-at-is-a-nudge"),
+        ],
+    )
+    def test_soft_nudge_names_its_next_fire_by_the_block_at_boundary(self, tmp_path, block_at_offset, expected_kind):
+        """A soft nudge's next fire hard-blocks exactly when its point reaches
+        HANDOFF_NUDGE_BLOCK_AT, so the label flips at equality."""
+        next_fire_at = ABOVE_LARGE + DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(next_fire_at + block_at_offset)}
+        text, _ = _fire_nudge_message(tmp_path, "soft nudge", extra_env=extra_env)
+        assert f"Next {expected_kind} at {next_fire_at} tokens" in text
+
+    @pytest.mark.parametrize(
+        "text, kind",
+        [
+            pytest.param(COMPACT_CRITERIA_PHRASE, "soft nudge", id="criteria-soft"),
+            pytest.param(COMPACT_CRITERIA_PHRASE, "hard block", id="criteria-hard"),
+            pytest.param(COMPACT_TIMING_SENTENCE, "soft nudge", id="timing-soft"),
+            pytest.param(COMPACT_TIMING_SENTENCE, "hard block", id="timing-hard"),
+            pytest.param(COMPACT_TIE_BREAK_SOFT, "soft nudge", id="tie-break-soft"),
+            pytest.param(COMPACT_TIE_BREAK_HARD, "hard block", id="tie-break-hard"),
+        ],
+    )
+    def test_docs_restate_the_compact_text_the_hook_emits(self, tmp_path, text, kind):
+        """docs/handoff-nudge.md, in "Compaction as an alternative to /handoff", quotes the
+        compaction text beside its vendor quotes; a wording edit to the live message must
+        reach the docs in the same change."""
+        emitted, _ = _fire_nudge_message(tmp_path, kind)
+        assert text in emitted
+        assert text in HANDOFF_NUDGE_DOC.read_text()
+
+    # -----------------------------------------------------------------------
+    # After a compaction the estimate falls below the last fire's: the fire
+    # path stays silent until fire + spacing, then counts the re-arm.
+    # -----------------------------------------------------------------------
+
+    def test_fire_path_stays_silent_after_a_compaction_until_the_last_fire_plus_spacing(self, tmp_path):
+        """The fire path does not reset on a dip. An estimate at or above the
+        threshold but below the last fire stays silent, as does the whole way up
+        to last fire + spacing; the first estimate at that point fires with
+        ignored=1, because the marker cannot tell a compliant /compact from a
+        dismissed nudge."""
+        transcript = tmp_path / "t.jsonl"
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
+        first_estimate = LARGE_THRESHOLD + 100_000
+        _write_transcript(transcript, [_record_totalling(first_estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+
+        dip_estimate = LARGE_THRESHOLD + 10_000
+        assert LARGE_THRESHOLD <= dip_estimate < first_estimate
+        _append_to_transcript(transcript, [_record_totalling(dip_estimate, model="claude-sonnet-5")])
+        after_dip = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert after_dip.stdout.strip() == ""
+
+        _append_to_transcript(
+            transcript, [_record_totalling(first_estimate + DEFAULT_REARM_SPACING - 1, model="claude-sonnet-5")]
+        )
+        just_below_rearm = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert just_below_rearm.stdout.strip() == ""
+
+        _append_to_transcript(
+            transcript, [_record_totalling(first_estimate + DEFAULT_REARM_SPACING, model="claude-sonnet-5")]
+        )
+        at_rearm = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert at_rearm.stdout.strip() != ""
+        nudged_lines = [line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")]
+        assert len(nudged_lines) == 2
+        assert " ignored=1 " in nudged_lines[-1]
+
+    def test_hard_block_stays_silent_after_a_compaction_then_blocks_again_with_the_incremented_count(self, tmp_path):
+        """The hard-block variant: after a block at B and a dip, silence holds
+        up to B + spacing, then PostToolBatch blocks again and the incremented
+        ignored count reaches the stderr message."""
+        transcript = tmp_path / "t.jsonl"
+        block_at = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+
+        _append_to_transcript(transcript, [_record_totalling(block_at, model="claude-sonnet-5")])
+        blocked = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert blocked.returncode == 2
+        assert "after 1 re-arms" in blocked.stderr
+
+        _append_to_transcript(transcript, [_record_totalling(LARGE_THRESHOLD + 10_000, model="claude-sonnet-5")])
+        after_dip = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert (after_dip.returncode, after_dip.stdout.strip(), after_dip.stderr.strip()) == (0, "", "")
+
+        _append_to_transcript(
+            transcript, [_record_totalling(block_at + DEFAULT_REARM_SPACING - 1, model="claude-sonnet-5")]
+        )
+        just_below_rearm = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert (just_below_rearm.returncode, just_below_rearm.stdout.strip()) == (0, "")
+
+        _append_to_transcript(transcript, [_record_totalling(block_at + DEFAULT_REARM_SPACING, model="claude-sonnet-5")])
+        blocked_again = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert blocked_again.returncode == 2
+        assert "after 2 re-arms" in blocked_again.stderr
+
+    @pytest.mark.parametrize(
+        "fractional_cache_read, planted_scan_estimate",
+        [
+            pytest.param(150_000.5, None, id="fractional-token-count"),
+            pytest.param(None, "abc", id="non-numeric-scan-state-estimate"),
+            pytest.param(None, "0190000", id="leading-zero-scan-state-estimate"),
+        ],
+    )
+    def test_fire_path_stays_silent_on_a_non_integer_estimate(
+        self, tmp_path, fractional_cache_read, planted_scan_estimate
+    ):
+        """An estimate the spacing arithmetic cannot read as decimal (a fractional
+        count, a non-numeric cached figure, or a leading-zero one that `$(( ))`
+        would read as octal) skips the fire silently: no abort, no output, no
+        fired marker, no log line. The scan-state cases plant an offset equal to
+        the transcript size, so the incremental path finds no new usage block
+        and reuses the planted estimate."""
+        transcript = tmp_path / "t.jsonl"
+        record = _record_totalling(ABOVE_LARGE, model="claude-sonnet-5")
+        if fractional_cache_read is not None:
+            record["message"]["usage"]["cache_read_input_tokens"] = fractional_cache_read
+        _write_transcript(transcript, [record])
+        if planted_scan_estimate is not None:
+            scan_state = _scan_state_path(tmp_path)
+            scan_state.parent.mkdir(parents=True, exist_ok=True)
+            scan_state.write_text(f"{transcript.stat().st_size}\n{planted_scan_estimate}\nclaude-sonnet-5\n")
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+
+        assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+        assert not _marker_path(tmp_path).exists()
+        log = _log_path(tmp_path)
+        assert not log.exists() or "nudged" not in log.read_text()
+
     def test_synthetic_model_all_zero_usage_takes_schema_drift_path(self, tmp_path):
         """A <synthetic> model with all-zero usage still takes the schema-drift path, not the window/threshold path."""
         transcript = tmp_path / "t.jsonl"
@@ -3220,10 +3513,10 @@ class TestCheckMode:
         assert payload["already_fired"] is True
 
     def test_already_fired_stays_true_even_when_due_for_rearm(self, tmp_path):
-        """already_fired reports marker existence only, not "no further nudge is
-        due" -- pins the contract docs/handoff-nudge.md's JSON-contract section now
-        documents: a session past its next re-arm band is still already_fired=true,
-        since --check doesn't compute a rearm-due boolean at all."""
+        """already_fired is not "no further nudge is due" -- pins the contract
+        docs/handoff-nudge.md's JSON-contract section documents: a session past its
+        next re-arm band is still already_fired=true, since --check doesn't compute
+        a rearm-due boolean at all."""
         config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD + DEFAULT_REARM_SPACING)
         marker = _marker_path(tmp_path, config_dir=config_dir)
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -3232,6 +3525,105 @@ class TestCheckMode:
         assert payload["status"] == "ok"
         assert payload["already_fired"] is True
         assert payload["over_threshold"] is True
+
+    def test_estimate_below_marker_and_threshold_reads_as_not_fired_and_not_over(self, tmp_path):
+        """After a compaction the estimate sits below the recorded fire and the
+        threshold: both booleans are false, so a consumer reads the session as
+        under threshold."""
+        config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD - 1)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{ABOVE_LARGE}\n")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["over_threshold"] is False
+        assert payload["already_fired"] is False
+
+    def test_estimate_between_threshold_and_marker_reads_as_over_but_not_fired(self, tmp_path):
+        """A compacted session that has grown back past the threshold, but not
+        to the earlier fire's estimate, is over threshold with no live fire."""
+        config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD + 10_000)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{ABOVE_LARGE}\n")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["over_threshold"] is True
+        assert payload["already_fired"] is False
+
+    def test_estimate_equal_to_marker_reads_as_fired(self, tmp_path):
+        """The comparison is >=: the estimate that recorded the fire has not
+        fallen below it."""
+        config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD + 10_000)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{LARGE_THRESHOLD + 10_000}\n")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["already_fired"] is True
+
+    @pytest.mark.parametrize(
+        "marker_bytes",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("0\n", id="zero"),
+            pytest.param("abc\n", id="non-digit"),
+            pytest.param("1e9\n", id="exponent"),
+            pytest.param("0999999\n", id="leading-zero"),
+            pytest.param("1234567890\n", id="ten-digits"),
+            pytest.param("999999", id="no-trailing-newline"),
+        ],
+    )
+    def test_malformed_marker_reads_as_fired(self, tmp_path, marker_bytes):
+        """A marker the fire path cannot trust reads as fired: --check fails
+        toward the nudge, as the fire path does. The estimate sits below every
+        value that parses except `0`, so only the malformed branch can report
+        true for those params. The `zero` param cannot discriminate its arm,
+        since `0` parses and the estimate is always at or above it;
+        test_literal_zero_marker_not_accepted_as_real_last_fired_at pins that
+        arm."""
+        config_dir = self._seeded(tmp_path, total=LARGE_THRESHOLD)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(marker_bytes)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["already_fired"] is True
+
+    def test_malformed_marker_fires_the_fire_path_and_reads_as_fired_in_check(self, tmp_path):
+        """The two readers fail toward the nudge in different shapes: the fire
+        path treats a malformed marker as absent and fires, --check reports
+        already_fired=true."""
+        config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("abc\n")
+        assert _check_json(_run_check(tmp_path))["already_fired"] is True
+
+        transcript = config_dir / "projects" / "-tmp-project" / f"{SESSION_ID}.jsonl"
+        fired = _run_hook(_base_payload(transcript), tmp_path)
+        assert fired.returncode == 0
+        assert fired.stdout.strip() != ""
+
+    def test_estimate_after_a_compaction_record_is_the_smaller_post_compaction_figure(self, tmp_path):
+        """A transcript holding a pre-compaction usage record, a compaction
+        summary record, then a smaller usage record reports the smaller figure,
+        so a fire from before the compaction no longer reads as live."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        post_compaction_total = 20_000
+        _seed_transcript(
+            config_dir,
+            [
+                _record_totalling(ABOVE_LARGE),
+                {"type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "summary"}},
+                _record_totalling(post_compaction_total),
+            ],
+        )
+        marker = _marker_path(tmp_path, config_dir=config_dir)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{ABOVE_LARGE}\n")
+        payload = _check_json(_run_check(tmp_path))
+        assert payload["estimate"] == post_compaction_total
+        assert payload["over_threshold"] is False
+        assert payload["already_fired"] is False
 
     def test_killswitch_reported_not_honoured(self, tmp_path):
         """The kill-switch suppresses notifying, not measuring — a session
@@ -3294,5 +3686,36 @@ class TestCheckMode:
         payload = _check_json(_run_check(tmp_path))
         assert payload["status"] == "schema-drift"
         assert payload["session_id"] == SESSION_ID
+        assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
+        assert not _log_path(tmp_path, config_dir=config_dir).exists()
+
+    @pytest.mark.parametrize(
+        "cache_read_tokens, marker_bytes",
+        [
+            pytest.param(ABOVE_LARGE + 0.5, None, id="fractional-no-marker"),
+            pytest.param(ABOVE_LARGE + 0.5, "1\n", id="fractional-marker-below-estimate"),
+            pytest.param(2**63, None, id="over-int64"),
+            pytest.param(-5, None, id="negative"),
+        ],
+    )
+    def test_estimate_not_comparable_as_a_positive_integer_reports_schema_drift_without_writes(
+        self, tmp_path, cache_read_tokens, marker_bytes
+    ):
+        """An estimate the shell cannot compare as a positive integer (a
+        fractional, negative or over-int64 sum) reports schema-drift, so no
+        comparison below the drift gate sees it. The marker state must not
+        matter, since the gate runs before the marker is read."""
+        config_dir = _default_config_dir(tmp_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        _seed_session(config_dir, os.getpid())
+        record = _record_totalling(ABOVE_LARGE)
+        record["message"]["usage"]["cache_read_input_tokens"] = cache_read_tokens
+        _seed_transcript(config_dir, [record])
+        if marker_bytes is not None:
+            marker = _marker_path(tmp_path, config_dir=config_dir)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(marker_bytes)
+        payload = _check_json(_run_check(tmp_path))
+        assert payload == {"status": "schema-drift", "session_id": SESSION_ID}
         assert not _drift_marker_path(tmp_path, config_dir=config_dir).exists()
         assert not _log_path(tmp_path, config_dir=config_dir).exists()

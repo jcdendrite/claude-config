@@ -224,6 +224,9 @@
 # - A referenced file that holds the list itself can therefore echo every entry.
 # - A match found only in the quote-stripped copy of the command echoes the
 #   joined form.
+# - A private tracker key equal to any OSS_ALLOWLIST prefix passes the tracker-ID
+#   scan, and the opt-in blocklist is its only backstop; see
+#   `docs/private-project-redaction.md` § "What to put in the file (and what NOT to)".
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -486,7 +489,7 @@ if [[ "$REMOTE_URL" != *claude-config* ]]; then
   STAGED_DIFF_PATHSPEC=':(top)'
 fi
 
-# Allowlist: prefixes that are NEVER private-project tracker IDs.
+# Allowlist: prefixes assumed not to be private-project tracker IDs.
 # Extend by prefix (no digits). Organized by category so it's obvious
 # what belongs here.
 #   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, IEEE, W3C,
@@ -497,15 +500,17 @@ fi
 #                                 a vendor brand, not a technical constant,
 #                                 so it accepts the same unbounded-digit
 #                                 tradeoff as GH/BUG rather than a fixed set)
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF, UTC, GMT
 #   happen to match [A-Z]{2,}-\d+:
+#                                 UTC and GMT accept the same unbounded-digit
+#                                 tradeoff as GH/BUG/GPT above.
 #   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
 #                                 as GH/BUG/GPT above rather than a fixed set.
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|UTC|GMT|AGPL|BSD|PROJ|TICKET)-'
 
 # The gh-pr, gh-issue, and git-commit source-path extractors are
 # _lib_gh_body_source_paths and _lib_git_commit_message_source_paths in

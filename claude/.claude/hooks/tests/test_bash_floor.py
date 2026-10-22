@@ -441,7 +441,7 @@ class TestCallersStopWhenConfigShFails:
     A script that reaches `_config.sh` through `hooks/_lib.sh` also gets the real `_lib.sh` copied."""
 
     _MARKER = "stub _config.sh was sourced"
-    _SCRIPTS_SOURCING_LIB_SH_FIRST = frozenset({"cleanup-merged-branches.sh"})
+    _SCRIPTS_SOURCING_LIB_SH_FIRST = frozenset({"cleanup-merged-branches.sh", "resume-context-same-session.sh"})
 
     @pytest.mark.parametrize(
         ("script_name", "expected_status"),
@@ -450,6 +450,7 @@ class TestCallersStopWhenConfigShFails:
             pytest.param("cleanup-idle-open-pr-worktrees.sh", 1, id="cleanup-idle-open-pr-worktrees"),
             pytest.param("cleanup-merged-branches.sh", 1, id="cleanup-merged-branches"),
             pytest.param("config-get.sh", 3, id="config-get"),
+            pytest.param("resume-context-same-session.sh", 1, id="resume-context-same-session"),
         ],
     )
     def test_script_stops_on_a_failed_config_sh_source(self, tmp_path: Path, script_name: str, expected_status: int) -> None:

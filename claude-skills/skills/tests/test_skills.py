@@ -5653,6 +5653,306 @@ class TestPlanItStep7PushConsent:
         )
 
 
+# Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
+# cannot match to this session, or from running on its own.
+_PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
+    "run_only_when_asked": (
+        "Run only when the engineer asked to resume in this session. Never run the "
+        "skill on your own, including right after writing a handoff or brief."
+    ),
+    "no_argument_rerun_guard": (
+        "If this conversation already loaded a file through this skill, run the "
+        "script again only with an explicit argument. With no argument, tell the "
+        "engineer and stop."
+    ),
+    "refuse_and_tell_on_unsafe_arguments": (
+        "If `$ARGUMENTS` starts with `-` or contains any character outside "
+        "`[A-Za-z0-9._/@+-]`, do not run the script; tell the engineer the accepted "
+        "forms: a slug, a file name, or an absolute path."
+    ),
+    "never_read_pending_path": (
+        "Never `Read` a path under `<config-dir>/handoffs/` or `<config-dir>/briefs/`, "
+        "because that `Read` consumes the file before any check runs."
+    ),
+    "session_target_comparison": (
+        "First compare `SESSION_TARGET:` with the worktree this session is anchored in: "
+        "the working directory the environment context shows, or the `EnterWorktree` "
+        "target. The script keys on the Bash `$PWD`, so an earlier `cd` into another "
+        "worktree yields a verdict for that worktree. When `SESSION_TARGET:` is `none`, "
+        "they match only if the anchored directory is not inside a linked worktree of any "
+        "repository. If they differ, say so and stop before any `Read`, without acting on "
+        "the file. Give the recovery text below."
+    ),
+    "file_target_none_check_then_stop": (
+        "Then check the target. When the script printed `FILE_TARGET: none` and the "
+        "file's §4 header (§3 in a brief) names a directory other than this session's, "
+        "say so and stop without acting on the file. Give the recovery text below."
+    ),
+    "consumed_file_recovery_text": (
+        "Recovery text: the file is already consumed, so tell the engineer to `cd` to "
+        "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
+        "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
+        "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
+        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
+        "header (§3 in a brief) names if you read the file and it is an absolute path made "
+        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
+        "say the directory is unknown and must come from the session that wrote the file; "
+        "name none."
+    ),
+    "unreadable_file_target_relay": (
+        "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
+        "directory from the file, so the printed command has none. The engineer "
+        "should check the resume command in the file itself, outside this session because "
+        "a `Read` here consumes it, and run that command in place of the printed one."
+    ),
+    "slash_form_only_for_matching_candidates": (
+        "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
+        "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
+        "when either is `unknown`. Any other candidate needs the shell command on its "
+        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+    ),
+    "unreadable_or_absent_candidate_target_caveat": (
+        "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
+        "that line appears, and, for each candidate with `target none` or `target unknown`, "
+        "the caveat for that `FILE_TARGET:` value beside its shell command."
+    ),
+    "read_only_after_session_target_matches": (
+        "Otherwise `Read` the `LOAD:` path in full. Tell the engineer which `SOURCE:` "
+        "file was consumed and its `AGE:`."
+    ),
+    "skipped_unprintable_relay": (
+        "Relay `SKIPPED_UNPRINTABLE:` whenever it appears, with or without candidates. "
+        "It means n pending files under `<config-dir>/handoffs/` or `<config-dir>/briefs/` "
+        "have names with a character outside `[A-Za-z0-9._/@+-]`, so the script does not "
+        "print them. The engineer can resume one with the shell `resume-context` and its "
+        "full path; do not list or name them yourself."
+    ),
+    "no_enter_worktree_no_section_seven": (
+        "Do not call `EnterWorktree`, and do not run the file's §7/§7.5 command. The "
+        "script already matched the file to this session."
+    ),
+    "absent_file_target_relay": (
+        "When `FILE_TARGET: none` appears, add that the file names no worktree, so the "
+        "command must be run from the directory the file was written in."
+    ),
+    "unknown_session_target_relay": (
+        "When `SESSION_TARGET: unknown` appears, add that this session's worktree "
+        "could not be determined (a path with a space or a failed git call), not that "
+        "the file names another worktree."
+    ),
+    "shell_command_relay_and_stop": (
+        "Relay the line verbatim as a command for a new terminal, not as a slash "
+        "command. The file is still pending. Stop."
+    ),
+}
+
+
+class TestResumeContextSkill:
+    """Pin the resume-context body's guards, so a reword that drops one fails here
+    instead of drifting silently. The tests check wording and the clause's right edge,
+    not behavior. On failure, re-read the guarantee and update the
+    constant only if the new wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_RESUME_CONTEXT_CLAUSES))
+    def test_pinned_clause_matches_live_text(self, clause_key: str) -> None:
+        body = _skill_file("resume-context").read_text()
+        pinned_text = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            body,
+            context=f"resume-context/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
+        )
+
+    def test_session_target_comparison_precedes_the_read(self) -> None:
+        """The comparison must come before the `Read` clause, or a mismatched file is consumed first."""
+        body = " ".join(_skill_file("resume-context").read_text().split())
+        comparison = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["session_target_comparison"].split())
+        read = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["read_only_after_session_target_matches"].split())
+        assert 0 <= body.find(comparison) < body.find(read), (
+            "resume-context/SKILL.md: the SESSION_TARGET comparison clause no longer starts before the `Read` clause."
+        )
+
+
+# Step 5 holds these literals.
+_PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
+    "sed -n '1,/^## Approach$/p'",
+    "e3b0c442",
+    "the two digests differ",
+    "on every return",
+    "(pending: plan-architect)",
+    "absolute path as the prompt's second line",
+)
+
+_PLAN_HEADINGS_IN_ORDER = (
+    "## Approach",
+    "## Critical files",
+    "## Verification",
+    "## Out of scope",
+)
+
+_PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
+    "never call `Edit`, even when the prompt names a plan file"
+)
+
+_PLAN_ARCHITECT_PLAN_SECTIONS_HEADING = "## MODE=plan-sections"
+
+_PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE = (
+    "When your edits land, your return carries no `## ` heading lines"
+)
+_PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE = (
+    "Line 2 of the prompt is the plan file's absolute path."
+)
+
+_PLAN_IT_STEP5_HEADING = "## Step 5 — Architecture design"
+
+# Step 5's Context-hash command, as written in the skill: the one backticked
+# `sed ... | sha256sum` span, with the plan path left as a placeholder.
+_PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
+    r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
+)
+
+# Step 5's scaffold, as written in the skill: the backticked span after
+# "exactly these bytes:", with `\n` spelled as two characters.
+_PLAN_IT_SCAFFOLD_SPAN_PATTERN = re.compile(r"exactly these bytes: `([^`]+)`")
+
+# The title and Context a plan holds before its first dispatch.
+_PLAN_TITLE_AND_CONTEXT_TEXT = "# Title\n\n## Context\n\nAsk: x\n\n"
+
+_EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
+
+
+class TestPlanItStep5ContextCheckAndGrammarLiterals:
+    """Wiring-presence tripwires for plan-it/SKILL.md Step 5 and plan-architect.md,
+    which are LLM-consumed prose, plus an execution test of Step 5's hash command."""
+
+    @staticmethod
+    def _step5_context_hash_command() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its Context-hash command "
+            "in the pinned `sed ... | sha256sum` shape."
+        )
+        return match.group(1)
+
+    @staticmethod
+    def _step5_scaffold_text() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_SCAFFOLD_SPAN_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its scaffold bytes in the "
+            "pinned `exactly these bytes: `...`` shape."
+        )
+        return match.group(1).replace("\\n", "\n")
+
+    @classmethod
+    def _scaffolded_plan_text(cls) -> str:
+        return _PLAN_TITLE_AND_CONTEXT_TEXT + cls._step5_scaffold_text()
+
+    @classmethod
+    def _run_hash_command_result(cls, plan_path: Path) -> subprocess.CompletedProcess:
+        command = cls._step5_context_hash_command()
+        # The skill quotes the path as "<plan path>"; bind it through the environment.
+        runnable_command = command.replace('"<plan path>"', '"$PLAN_PATH"')
+        return subprocess.run(
+            ["bash", "-c", runnable_command],
+            env={**os.environ, "PLAN_PATH": str(plan_path)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @classmethod
+    def _run_hash_command(cls, plan_path: Path) -> str:
+        return cls._run_hash_command_result(plan_path).stdout.strip()
+
+    def test_step5_literals_match_live_text(self) -> None:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        missing = [
+            literal
+            for literal in _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS
+            if literal not in step5_text
+        ]
+        assert not missing, (
+            f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
+        )
+
+    def test_step5_scaffold_carries_the_four_headings_in_order(self) -> None:
+        scaffold_headings = [
+            line
+            for line in self._step5_scaffold_text().splitlines()
+            if line.startswith("## ")
+        ]
+        assert scaffold_headings == list(_PLAN_HEADINGS_IN_ORDER), (
+            "plan-it/SKILL.md Step 5's scaffold no longer carries the four "
+            "plan headings, in order."
+        )
+
+    def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
+        consult_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING
+        )
+        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in consult_section, (
+            "plan-architect.md's MODE=consult charter no longer carries its "
+            "never-call-Edit sentence."
+        )
+
+    def test_plan_sections_charter_return_carries_no_headings_when_edits_land(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer says the return "
+            "carries no `## ` heading lines once edits land, which Step 5's splice "
+            "relies on to avoid overwriting landed edits."
+        )
+
+    def test_plan_sections_charter_names_line_2_as_the_plan_path(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer names prompt "
+            "line 2 as the plan file's path, the contract plan-it/SKILL.md Step 5 "
+            "dispatches against."
+        )
+
+    def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        edited_plan_text = scaffolded_plan_text.replace("(pending: plan-architect)", "Approach text.")
+        assert edited_plan_text != scaffolded_plan_text
+        plan_path.write_text(edited_plan_text)
+
+        assert digest_before
+        assert not digest_before.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        assert self._run_hash_command(plan_path) == digest_before
+
+    def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        plan_path.write_text(scaffolded_plan_text.replace("Ask: x", "Ask: widened"))
+
+        assert self._run_hash_command(plan_path) != digest_before
+
+    def test_hash_command_yields_the_empty_input_digest_for_a_missing_path(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run_hash_command_result(tmp_path / "missing-plan.md")
+        assert result.stdout.strip().startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        # Step 5's stop rule treats any extra output as a stop, so sed's complaint
+        # must reach stderr while the pipeline still exits 0 on sha256sum's status.
+        assert result.returncode == 0
+        assert result.stderr.strip()
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1
@@ -7887,28 +8187,70 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
 
 
 @pytest.mark.parametrize(
-    "phrase, heading",
+    "phrase, heading, consequence",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
             None,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
             _REVIEW_PR_STEP_7_HEADING,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="verify-before-apply-correction",
+        ),
+        pytest.param(
+            "replace the leading `agent-reviews` with the directory it prints, so each "
+            "file is `<printed directory>/<agent-name>-<suffix>.md`",
+            None,
+            "the guard against a reviewer spawned from the main tree being given a "
+            "relative `findings_path`, having its findings-file `Write` denied by the "
+            "worktree gate, and losing its findings (REFERENCES.md § 'Why spawned "
+            "reviewers write findings to a temporary directory').",
+            id="reviewer-findings-dir",
+        ),
+        pytest.param(
+            "reports a write whose file you cannot `Read`, or reports a path that "
+            "names a different file, has not reviewed: re-dispatch it once with no "
+            "`findings_path`",
+            None,
+            "the only fail-closed rule for a reviewer with no retrievable findings: "
+            "if any one of its two triggers (an unreadable file, a mismatched reported "
+            "path) or its re-dispatch action is lost, a reviewer whose findings cannot "
+            "be read is counted as having reviewed, so its findings are silently "
+            "absent from the review.",
+            id="reviewer-findings-fallback",
+        ),
+        pytest.param(
+            "`Read` only the path you handed that reviewer",
+            None,
+            "the guard against a steered reviewer's pointer line moving the session's "
+            "`Read` to a file of the reviewer's choosing.",
+            id="reviewer-findings-handed-path",
+        ),
+        pytest.param(
+            "before any reviewer spawns, run the script below",
+            None,
+            "the instruction that obtains the findings directory: without it the "
+            "session has no printed directory to put in place of `agent-reviews`, so "
+            "reviewers keep the relative `findings_path` the worktree gate denies "
+            "from the main tree.",
+            id="reviewer-findings-dir-creation",
         ),
     ],
 )
 def test_review_pr_skill_carries_retained_control(
-    phrase: str, heading: str | None
+    phrase: str, heading: str | None, consequence: str
 ) -> None:
     """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
-    standing override and the verify-before-apply rule. The override sits above
-    the first `##` heading, so it is checked file-wide; the verify rule is
-    checked in step 7's consult section. Claims presence only, not that the
-    agent obeys it."""
+    standing override, the reviewer-findings-directory creation and rewrite,
+    the re-dispatch rule, the handed-path `Read` rule, and the
+    verify-before-apply rule. The override and the four findings-directory
+    rules sit above the file's `##` headings, so they are checked file-wide;
+    the verify rule is checked in step 7's consult section. Claims presence
+    only, not that the agent obeys it."""
     skill_path = _skill_file("review-pr")
     if heading is None:
         searched_text = " ".join(skill_path.read_text().split())
@@ -7917,6 +8259,56 @@ def test_review_pr_skill_carries_retained_control(
         searched_text = _heading_section_text(skill_path, heading)
         searched_where = f"review-pr/SKILL.md's {heading!r} section"
     assert phrase in searched_text, (
-        f"{searched_where} no longer carries {phrase!r}, a control that "
-        "review-pr keeps itself rather than deferring to Agent Core."
+        f"{searched_where} no longer carries {phrase!r}, {consequence}"
+    )
+
+
+def test_review_pr_skill_mentions_findings_path_only_in_the_preamble() -> None:
+    """The literal `findings_path` token must appear somewhere above the first
+    `## ` heading of review-pr/SKILL.md, where the standing override sits. It
+    must appear on no line under a `## ` heading, because a step-level
+    instruction there could contradict the override's reviewer findings
+    directory. The rest of the preamble is unchecked. Only the literal token is
+    scanned, so a paraphrase without it passes."""
+    skill_lines = _skill_file("review-pr").read_text().splitlines()
+    first_section_index = next(
+        (index for index, line in enumerate(skill_lines) if line.startswith("## ")),
+        len(skill_lines),
+    )
+    preamble_lines = skill_lines[:first_section_index]
+    section_lines = skill_lines[first_section_index:]
+    assert any("findings_path" in line for line in preamble_lines), (
+        "review-pr/SKILL.md's preamble ahead of the first `## ` heading no longer "
+        "mentions `findings_path`. Either the standing override that hands "
+        "reviewers a findings file path is gone from the preamble, or a `## ` "
+        "heading now sits above it so it falls under a section."
+    )
+    stray_lines = [line for line in section_lines if "findings_path" in line]
+    assert not stray_lines, (
+        "review-pr/SKILL.md mentions `findings_path` under a `##` section: "
+        f"{stray_lines!r}. A step-level `findings_path` instruction can "
+        "contradict the override's reviewer findings directory."
+    )
+
+
+@pytest.mark.parametrize(
+    "dispatcher_name, dispatcher_path",
+    [
+        pytest.param("code-review/SKILL.md", _skill_file("code-review"), id="code-review"),
+        pytest.param("plan-review/ROUTING.md", _ROUTING_MD_PATH, id="plan-review"),
+    ],
+)
+def test_review_dispatchers_still_hand_reviewers_a_relative_agent_reviews_findings_path(
+    dispatcher_name: str, dispatcher_path: Path
+) -> None:
+    """review-pr/SKILL.md's standing override rewrites the leading
+    `agent-reviews` of the `findings_path` each dispatcher hands a reviewer. A
+    dispatcher reword away from `findings_path: agent-reviews/` would make that
+    rewrite a silent no-op, leaving a main-tree session's reviewers with a path
+    the worktree gate denies."""
+    dispatcher_text = " ".join(dispatcher_path.read_text().split())
+    assert "findings_path: agent-reviews/" in dispatcher_text, (
+        f"{dispatcher_name} no longer hands reviewers `findings_path: agent-reviews/`, "
+        "so review-pr/SKILL.md's override that replaces the leading `agent-reviews` "
+        "no longer applies to it."
     )
