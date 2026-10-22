@@ -52,6 +52,31 @@ def _install_cwd_recorder(tmp_path: Path) -> tuple[Path, Path, Path]:
     return stub, recorder, cwd_recorder
 
 
+def _destination_chmod_failure_env(tmp_path: Path) -> dict[str, str]:
+    """Install the recorder launcher plus a chmod shim that fails only on the mktemp
+    destination, and return the env that selects both."""
+    stub, _ = _install_recorder(tmp_path)
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    real_chmod = shutil.which("chmod")
+    assert real_chmod is not None
+    shim = shim_dir / "chmod"
+    # The index directory is resume-context-index-<uid> and the day-file is consumed.<date>.tsv,
+    # so only the mktemp destination matches resume-context.*.
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'last_argument="${@: -1}"\n'
+        'case "${last_argument##*/}" in resume-context.*) exit 1 ;; esac\n'
+        f'exec "{real_chmod}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return {
+        "RESUME_CONTEXT_LAUNCHER": str(stub),
+        "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+
+
 def _run(
     args: list[str], env_extra: dict | None = None, cwd: Path | None = None
 ) -> subprocess.CompletedProcess:
@@ -294,6 +319,46 @@ class TestLaunchMode:
         assert src.read_text() == "hello handoff\n"
         assert stat.S_IMODE(src.stat().st_mode) == 0o664
         assert [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")] == []
+
+    def test_destination_chmod_failure_exits_nonzero_after_the_move(self, tmp_path: Path) -> None:
+        """The destination is re-narrowed after the move: when that chmod fails, the script
+        must exit non-zero and name the destination rather than announce a consume it could
+        not secure."""
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(["--consume-only", str(src)], _destination_chmod_failure_env(tmp_path))
+        destinations = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(destinations) == 1
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert f"resume-context.sh: failed to set permissions on {destinations[0]}\n" in result.stderr
+        assert not src.exists()
+        assert destinations[0].read_text() == "hello handoff\n"
+        # The index row is appended before the destination chmod, so the failed consume stays recorded.
+        day_files = list(_index_dir(tmp_path).glob("consumed.*.tsv"))
+        assert len(day_files) == 1
+        rows = day_files[0].read_text().splitlines()
+        assert len(rows) == 1
+        _stamp, row_dest, row_src = rows[0].split("\t")
+        assert row_dest == str(destinations[0])
+        assert row_src == str(src)
+
+    def test_destination_chmod_failure_in_launch_mode_exits_without_announcing_or_launching(
+        self, tmp_path: Path
+    ) -> None:
+        """Launch mode must not announce the move or exec the launcher when the
+        destination chmod fails."""
+        _, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run([str(src)], _destination_chmod_failure_env(tmp_path))
+        destinations = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(destinations) == 1
+        assert result.returncode == 1
+        assert not recorder.exists()
+        assert "resume-context.sh: moved " not in result.stderr
+        assert "reload with:" not in result.stderr
+        assert f"resume-context.sh: failed to set permissions on {destinations[0]}\n" in result.stderr
 
     def test_every_chmod_succeeds_under_bsd_option_parsing(self, tmp_path: Path) -> None:
         """BSD chmod (macOS) stops option parsing at the mode operand, so a `--` after
