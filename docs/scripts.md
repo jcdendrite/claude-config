@@ -183,6 +183,8 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`review-pr-findings-path.sh`** — prints `<config-dir>/.review-pr-active.d/<session_id>.body`, the fixed findings-body path `/review-pr` Step 7's `Write` call declares, so the model gets it from a script rather than transcribing `$CONFIG_DIR`/`$SESSION_ID` by hand. Zero arguments. Exits 2, printing nothing, when this session has no provenance file (Step 1 has not run).
 
+- **`review-pr-reviewer-findings-dir.sh`** — creates `/tmp/review-pr-reviewer-findings-<session_id>` and prints its path, the directory `/review-pr` swaps in for `agent-reviews/` in each reviewer's `findings_path`. The root is a literal `/tmp`, never `$TMPDIR`. The `_lib_review_pr_reviewer_findings_dir` comment in `claude/.claude/hooks/_lib.sh` gives the reason. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. Zero arguments (any argument exits 2). Every other failure exits 1 with nothing on stdout.
+
 - **`review-pr-post.sh`** — the only code path `/review-pr` Step 8 may use to post a `gh pr review`; takes two arguments, the verdict `comment` or `request-changes` (a two-element `case`) and the target `<owner>/<repo>#<N>`, so `--approve` is not a reachable invocation. Exits 0 once the review posted, and 2 on any failed verification or failed post. The script's usage text owns the verification list.
 
 - **`review-pr-finish.sh`** — the single cleanup call `/review-pr` Step 8 runs on every exit path (posted, declined, or aborted). Zero arguments, idempotent, and exits 0 on every runtime path, whether or not anything was in flight. Any argument exits 2 with the usage text. The script's usage text owns the removal sequence.

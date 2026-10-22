@@ -983,6 +983,17 @@ _lib_review_pr_select_session_worktrees() {
   done <<< "$porcelain"
 }
 
+# _lib_review_pr_reviewer_findings_dir SESSION_ID
+# Prints /tmp/review-pr-reviewer-findings-<session-id> and returns 0, or
+# returns 1 with no output when SESSION_ID is not a valid path component.
+# The root is a literal /tmp, never $TMPDIR, because the /tmp allow in
+# deny-reviewer-tree-mutation.sh matches the literal /tmp/ prefix as written,
+# so a $TMPDIR root elsewhere falls outside it.
+_lib_review_pr_reviewer_findings_dir() {
+  _lib_valid_session_id_component "$1" || return 1
+  printf '/tmp/review-pr-reviewer-findings-%s\n' "$1"
+}
+
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
 # untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
 # byte-identical to HEAD is historical (its PR shipped) and is excluded.

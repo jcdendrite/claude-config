@@ -10,8 +10,10 @@ Usage: ~/.claude/scripts/review-pr-finish.sh
 
 Removes this session's provenance, findings-body, diff, and context-backstop
 files, and its completion marker (keyed to the main tree's root, so any tree
-of the repo resolves it). Then removes every review worktree this session's
-review-pr-checkout.sh runs created, found by the session-scoped directory
+of the repo resolves it), then its reviewer findings directory
+(/tmp/review-pr-reviewer-findings-$SESSION_ID, created by
+review-pr-reviewer-findings-dir.sh). Then removes every review worktree this
+session's review-pr-checkout.sh runs created, found by the session-scoped directory
 name in `git worktree list` rather than through provenance. Logs each match,
 and the match count with the .claude/worktrees directory it inspected (0
 included), on stderr. The file cleanup runs first, so a slow or stalled sweep
@@ -94,6 +96,20 @@ rm -f -- "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
   "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" body)" \
   "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" diff)" \
   "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" context.json)" || true
+
+# `rm -rf` on a path without a trailing slash unlinks a symlink rather than
+# following it. A failed removal is reported and a re-run retries it.
+if REVIEWER_FINDINGS_DIR=$(_lib_review_pr_reviewer_findings_dir "$SESSION_ID"); then
+  if [[ -e "$REVIEWER_FINDINGS_DIR" || -L "$REVIEWER_FINDINGS_DIR" ]]; then
+    if rm -rf -- "$REVIEWER_FINDINGS_DIR"; then
+      echo "review-pr-finish.sh: removed reviewer findings directory $REVIEWER_FINDINGS_DIR" >&2
+    else
+      echo "review-pr-finish.sh: could not remove reviewer findings directory $REVIEWER_FINDINGS_DIR; re-run this script, or remove it by hand." >&2
+    fi
+  fi
+else
+  echo "review-pr-finish.sh: session id '$SESSION_ID' is not a valid path component -- skipping reviewer findings directory removal." >&2
+fi
 
 if ! MAIN_REPO_ROOT=$(_lib_main_repo_root); then
   echo "review-pr-finish.sh: could not resolve this repository's main tree root (not inside a git repository, or git older than 2.31, which lacks rev-parse --path-format) -- skipping worktree removal." >&2

@@ -8580,6 +8580,33 @@ class TestLibReviewPrWorktreeNameIsReviewShaped:
         assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
 
 
+class TestLibReviewPrReviewerFindingsDir:
+    """_lib_review_pr_reviewer_findings_dir names the directory both
+    review-pr-reviewer-findings-dir.sh (creates it) and review-pr-finish.sh
+    (removes it) use, so the two cannot derive the path differently."""
+
+    @staticmethod
+    def _findings_dir(session_id: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_reviewer_findings_dir "$1"', "bash", session_id],
+            env={**os.environ, **(extra_env or {})}, capture_output=True, text=True, check=False,
+        )
+
+    def test_prints_the_literal_tmp_path_even_when_tmpdir_points_elsewhere(self, tmp_path: Path) -> None:
+        """A TMPDIR-derived root would leave the reviewers' findings_path outside
+        the reviewer gate's /tmp allow; see the comment on
+        _lib_review_pr_reviewer_findings_dir in _lib.sh."""
+        result = self._findings_dir("sess-1", {"TMPDIR": str(tmp_path)})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/tmp/review-pr-reviewer-findings-sess-1\n"
+
+    @pytest.mark.parametrize("session_id", ["", "../x"])
+    def test_invalid_session_id_fails_without_output(self, session_id: str) -> None:
+        result = self._findings_dir(session_id)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
 # --- _lib_config_lines -------------------------------------------------
 #
 # Shared by 5 hook files (deny-credential-bash-reads.sh,
