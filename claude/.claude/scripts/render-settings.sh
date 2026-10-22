@@ -91,7 +91,7 @@ OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 ACCEPTED_DEFAULT_MODES_JSON='["default", "plan"]'
 
 if [[ ! -f "$base_file" ]]; then
-  echo "render-settings.sh: $base_file not found -- cannot render settings.json without it; run whatever stows claude-config into $config_dir first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry lists the packages)" >&2
+  echo "render-settings.sh: $base_file not found -- cannot render settings.json without it; run whatever stows claude-config into $config_dir first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry describes the command that lists the stow packages)" >&2
   exit 1
 fi
 
@@ -339,8 +339,8 @@ merged_json="$(jq -c '.result' <<<"$render_output")"
 # - the overlay env keys newly applied or changed
 # - the other overlay keys newly applied or changed, by name only
 # - an overlay-set permissions.defaultMode
-# The line names its config dir when that dir is not ~/.claude, so one run that
-# renders several profiles stays attributable per line.
+# The line names its config dir when that dir is not ~/.claude, so a log that
+# collects several profiles' renders stays attributable per line.
 # It lists env keys by name only, never by value, since an env value can be a
 # credential. Dropped permissions entries print their rule text, which is what
 # lets a user recover a dropped rule.

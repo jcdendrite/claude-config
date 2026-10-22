@@ -2436,8 +2436,8 @@ class TestShellStartupIoContract:
 
 class TestDisclosureNamesNonDefaultProfile:
     """The disclosure line names its config dir unless that dir is the default
-    profile, $HOME/.claude, so one run that renders several profiles stays
-    attributable per line."""
+    profile, $HOME/.claude, so a log that collects several profiles' renders
+    stays attributable per line."""
 
     _DEFAULT_PROFILE_PREFIX = "render-settings.sh: this render changed settings.json -- "
 
