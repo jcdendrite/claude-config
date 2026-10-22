@@ -278,7 +278,7 @@ class TestReviewerFindingsDirectoryRemoval:
 
         assert result.returncode == 0, result.stderr
         assert not findings_dir.exists()
-        assert "reviewer findings directory" not in result.stderr
+        assert str(findings_dir) not in result.stderr, "any log line about the directory carries its path"
 
     def test_an_undeletable_directory_is_reported_and_the_artifacts_and_worktree_are_still_removed(
         self, isolated_home, tmp_path, reviewer_findings_session
