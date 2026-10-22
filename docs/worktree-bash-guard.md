@@ -116,7 +116,8 @@ same discipline a script gives you automatically, applied by hand.
 In place of `$CLAUDE_CONFIG_DIR`, write the active config dir's literal path. That path is
 `~/.claude` only on the default config dir. A hardcoded `~/.claude` is right for calling a
 tracked script or hook, but it lists the wrong directory when the call checks what a
-non-default config dir itself contains.
+non-default config dir itself contains. When the literal path is not known, report the check
+to the engineer instead of guessing `~/.claude`.
 
 ## Current status: does not reproduce on demand
 

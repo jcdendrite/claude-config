@@ -74,7 +74,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
      - The gate fires on any added path, because a new top-level entry always needs a re-run and a consumer whose config dir holds a directory as a real directory picks up a new file in it only after a re-stow.
      - README § Updating after git pull states the rule.
      - The trigger rationale appears once in the header, and the detection bullet says only that any depth trips the gate.
-     - **Known gaps:** a package-list edit in `claude/.claude/scripts/stow-packages.sh` is an `M`, so the `--diff-filter=A` diff misses it. A PR that adds a package gets no reminder, and a new package needs the installer.
+     - **Known gaps:** an edit to a file that `install.sh` copies, reads or runs is an `M`, so the `--diff-filter=A` diff misses it. The package list in `claude/.claude/scripts/stow-packages.sh` and `claude/.claude/scripts/relocate-claude-config.sh` are examples, not an exhaustive list. A PR making such an edit gets no reminder, and the change needs the installer.
    - **Deny text (:242):**
      - Keep `this PR $REASON_DETAIL.`
      - Replace the rest with: Whether a consumer must re-run `install.sh` after pulling depends on their config dir; README.md § Updating after git pull states the rule and the check.
@@ -101,8 +101,8 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 
 3. **`README.md`** (modify)
    - Add `### Updating after git pull` under `## Quickstart`, after line 90, and a TOC entry nested under Quickstart. It states these facts:
-     - An edit to an existing file that Claude Code reads from the config dir takes effect on `git pull`. A change to `install.sh` takes effect only when the installer runs.
-     - A package added to the list in `claude/.claude/scripts/stow-packages.sh` is linked only when the installer runs.
+     - An edit to an existing file that Claude Code reads from the config dir takes effect on `git pull`, though a running session may need a restart.
+     - Anything `install.sh` itself copies, links, registers or runs takes effect only when the installer runs, and so does a change to `install.sh`. The `relocate-claude-config` copy in `~/.local/bin`, a package added to the list in `claude/.claude/scripts/stow-packages.sh`, and marketplace and plugin registration are examples, not an exhaustive list.
      - A new file nested under a directory the config dir already links into this checkout is live after `git pull`. A new top-level entry directly under `claude/.claude/`, and any new wrapper under `claude/.local/bin/`, always needs the installer, because `install.sh` creates `~/.claude` and `~/.local/bin` as real directories.
      - Check a new file with `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`. For `claude-skills/skills/<x>` the path is `<config-dir>/skills/<x>`. For `claude/.local/bin/<x>` it is `~/.local/bin/<x>`.
      - For an agent Bash call, a one-line pointer to `docs/worktree-bash-guard.md` § "The fix: script-first, not prose-split", which owns the path guidance.
@@ -116,7 +116,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
    - Keep the `claude-skills/` gap sentence and the line-start bullet `test_hook_alignment.py` requires.
 
 5. **`docs/worktree-bash-guard.md`** (modify § "The fix: script-first, not prose-split" only)
-   - Append to the ad-hoc-call paragraph: in place of `$CLAUDE_CONFIG_DIR`, write the active config dir's literal path. That path is `~/.claude` only on the default config dir. A hardcoded `~/.claude` suits a call to a tracked script or hook, but lists the wrong directory when the call checks what a non-default config dir itself contains.
+   - Append to the ad-hoc-call paragraph: in place of `$CLAUDE_CONFIG_DIR`, write the active config dir's literal path. That path is `~/.claude` only on the default config dir. A hardcoded `~/.claude` suits a call to a tracked script or hook, but lists the wrong directory when the call checks what a non-default config dir itself contains. When the literal path is not known, report the check to the engineer instead of guessing `~/.claude`.
    - Leave the Site sweep table and Current status sections as written.
 
 6. **`CHANGELOG.md`** (modify `## [Unreleased]`)
