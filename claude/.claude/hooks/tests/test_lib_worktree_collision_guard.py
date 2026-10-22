@@ -1,6 +1,8 @@
-"""Unit tests for _lib.sh's worktree-collision-guard trio:
-_lib_worktree_collision_guard, _lib_worktree_lock_pid, and
-_lib_resolve_claude_pid. See .claude/plans/worktree-collision-guard.md.
+"""Unit tests for _lib.sh's worktree-collision-guard functions:
+_lib_worktree_collision_guard, _lib_worktree_lock_pid,
+_lib_resolve_claude_pid, _lib_worktree_lock_is_mine, and
+_lib_registered_live_sid. See .claude/plans/worktree-collision-guard.md and
+.claude/plans/worktree-lock-self-pid-after-clear.md.
 
 Hook-level (subprocess-of-a-hook) coverage of the same guard lives in
 test_require_worktree_for_git_writes.py's and
@@ -21,6 +23,13 @@ from helpers import HOOKS_DIR, init_git_repo_with_commit
 from .conftest import _dead_pid, _seed_session, _worktree_lock_reason
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+
+# A `TZ=UTC LC_ALL=C ps -o lstart=` shaped value that no live process carries.
+_FIXED_START_TIME = "Mon Jan  1 00:00:00 1970"
+
+# The caller-side pid argument for direct _lib_worktree_lock_is_mine rows.
+# The predicate takes it as data and never inspects the process behind it.
+_OTHER_CALLER_PID = "424242"
 
 # Generous but bounded wait for one racer in the 20-way concurrency tests
 # below: under heavy 20-way subprocess contention the guard's own
@@ -81,8 +90,13 @@ def _lock_worktree(worktree: Path, reason: str) -> None:
 
 
 def _run_collision_guard(
-    target_path: Path, repo_git_common_dir: str, home: Path, extra_env: dict | None = None
+    target_path: Path,
+    repo_git_common_dir: str,
+    home: Path,
+    extra_env: dict | None = None,
+    prelude: str = "",
 ) -> subprocess.CompletedProcess:
+    """`prelude` is shell text run before sourcing _lib.sh, e.g. `set -u;`."""
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
@@ -90,7 +104,7 @@ def _run_collision_guard(
     return subprocess.run(
         [
             "bash", "-c",
-            f'. "{LIB_SH}"; _lib_worktree_collision_guard "$1" "$2"',
+            f'{prelude} . "{LIB_SH}"; _lib_worktree_collision_guard "$1" "$2"',
             "_lib_worktree_collision_guard", str(target_path), repo_git_common_dir,
         ],
         capture_output=True,
@@ -123,6 +137,132 @@ def _run_resolve_claude_pid(home: Path) -> subprocess.CompletedProcess:
         env=env,
         check=False,
     )
+
+
+def _run_lock_is_mine(
+    home: Path,
+    locked_pid: str,
+    locked_session_id: str,
+    my_pid: str,
+    my_session_id: str,
+    config_dir_env: str | None = None,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """Run _lib_worktree_lock_is_mine under `set -eu`, exiting with its own
+    return code. The return code separates only a missing function (exit 127)
+    from a real return. Each row's empty-stderr assertion is what separates an
+    unbound-variable abort from `return 1`."""
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    if config_dir_env is not None:
+        env["CLAUDE_CONFIG_DIR"] = config_dir_env
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'set -eu; . "{LIB_SH}"; _lib_worktree_lock_is_mine "$@" && rc=0 || rc=$?; exit "$rc"',
+            "_lib_worktree_lock_is_mine", locked_pid, locked_session_id, my_pid, my_session_id,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _run_registered_live_sid(
+    home: Path, config_dir: Path, pid: int, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Run _lib_registered_live_sid under `set -eu`, exiting with its own
+    return code. The return code separates only a missing function (exit 127)
+    from a real return. Each row's empty-stderr assertion is what separates an
+    unbound-variable abort from `return 1`."""
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'set -eu; . "{LIB_SH}"; _lib_registered_live_sid "$@" && rc=0 || rc=$?; exit "$rc"',
+            "_lib_registered_live_sid", str(config_dir), str(pid),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _locked_file_bytes(worktree: Path) -> bytes:
+    return Path(_git_dir(worktree), "locked").read_bytes()
+
+
+def _install_failing_ps(tmp_path: Path) -> tuple[dict, Path]:
+    """Put a `ps` stub first on PATH that exits 1 with empty stdout and
+    touches a marker file. Returns the extra_env and the marker, so a row can
+    assert the stub was the `ps` that ran rather than pass vacuously."""
+    fake_bin = tmp_path / "_failing_ps_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "_failing_ps_invoked"
+    stub = fake_bin / "ps"
+    stub.write_text(f"""#!/bin/bash
+: > "{marker}"
+exit 1
+""")
+    stub.chmod(0o755)
+    return {"PATH": f"{fake_bin}:{os.environ['PATH']}"}, marker
+
+
+def _install_porcelain_counting_git(
+    tmp_path: Path,
+    wt_path: Path,
+    lock_rewrite: str | None = None,
+    lock_rewrite_at_read: int = 1,
+    rewriting_call_sees_rewrite: bool = False,
+) -> tuple[dict, Path]:
+    """Put a `git` wrapper first on PATH that counts `worktree list
+    --porcelain` calls against WT_PATH. Returns the extra_env for
+    _run_collision_guard and the file holding the running count.
+
+    LOCK_REWRITE, when given, is written verbatim (plus a newline) to
+    WT_PATH's `locked` file during the LOCK_REWRITE_AT_READ-th counted call.
+    That models a racing writer landing between two of the guard's reads. By
+    default the rewriting call echoes the output it captured before the
+    rewrite, so the rewrite first shows on the next call.
+    REWRITING_CALL_SEES_REWRITE makes the rewriting call itself report the
+    rewritten lock instead. None leaves every call untouched apart from the
+    count."""
+    real_git = shutil.which("git")
+    assert real_git is not None, "git must be on PATH to build the wrapper"
+    fake_bin = tmp_path / "_fake_bin"
+    fake_bin.mkdir()
+    counter_file = tmp_path / "_porcelain_read_count"
+    counter_file.write_text("0")
+    rewrite_block = ""
+    if lock_rewrite is not None:
+        capture_before_rewrite = "" if rewriting_call_sees_rewrite else f'    output=$("{real_git}" "$@")\n'
+        echo_before_rewrite = "" if rewriting_call_sees_rewrite else '    echo "$output"\n    exit 0\n'
+        rewrite_block = (
+            f'  if [ "$count" -eq {lock_rewrite_at_read} ]; then\n'
+            f"{capture_before_rewrite}"
+            f"""    printf '%s' "{lock_rewrite}" > "{_git_dir(wt_path)}/locked"\n"""
+            f"""    printf '\\n' >> "{_git_dir(wt_path)}/locked"\n"""
+            f"{echo_before_rewrite}"
+            "  fi\n"
+        )
+    wrapper = fake_bin / "git"
+    wrapper.write_text(f"""#!/bin/bash
+if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
+  count=$(cat "{counter_file}")
+  count=$((count + 1))
+  printf '%s' "$count" > "{counter_file}"
+{rewrite_block}fi
+exec "{real_git}" "$@"
+""")
+    wrapper.chmod(0o755)
+    return {"PATH": f"{fake_bin}:{os.environ['PATH']}"}, counter_file
 
 
 def _launch_collision_guard_racer(
@@ -502,8 +642,171 @@ exec "{real_git}" "$@"
             "exit via the first read's own self-lock fast path"
         )
 
+    def test_verification_reread_naming_own_pid_with_other_session_still_denies(self, isolated_home, tmp_path):
+        """Acquire-verify confirms the caller's own just-written content, so
+        it compares the lock's session_id exactly and never applies the
+        pid-based recognition of _lib_worktree_lock_is_mine. A lock that
+        names this process's pid with another session_id at the verification
+        reread is not the content this call wrote, and the guard denies.
+        Forced via a `git` wrapper that rewrites `locked` at the SECOND
+        `worktree list --porcelain` call (the verification reread, after the
+        guard's own write succeeded)."""
+        repo = tmp_path / "verify-other-session-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "verify-other-session-worktree"
+        _add_worktree(repo, wt_path, "verify-other-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "verify-other-session-session")
+
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path,
+            lock_rewrite=f"claude-code pid {os.getpid()} session some-other-session",
+            lock_rewrite_at_read=2,
+            rewriting_call_sees_rewrite=True,
+        )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+        assert result.returncode == 1
+        assert "could not be confirmed" in result.stdout, result.stdout
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the verification reread for this to "
+            "be a real test of the verification-reread branch"
+        )
+
+    def test_verification_reread_naming_own_pid_without_session_allows(self, isolated_home, tmp_path):
+        """Acquire-verify falls back to a pid comparison only for a lock with
+        no session_id. The session-less branch of the post-write reread judges
+        the lock by pid, so a session-less lock naming this process's pid is
+        accepted and the guard allows. Forced via a `git` wrapper that
+        rewrites `locked` at the SECOND `worktree list --porcelain` call (the
+        verification reread, after the guard's own write succeeded)."""
+        repo = tmp_path / "verify-no-session-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "verify-no-session-worktree"
+        _add_worktree(repo, wt_path, "verify-no-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "verify-no-session-session")
+
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path,
+            lock_rewrite=f"claude-code pid {os.getpid()}",
+            lock_rewrite_at_read=2,
+            rewriting_call_sees_rewrite=True,
+        )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the verification reread for this to "
+            "be a real test of the verification-reread branch"
+        )
+
+    def test_verification_reread_naming_other_pid_without_session_denies(self, isolated_home, tmp_path, live_pid):
+        """Acquire-verify falls back to a pid comparison only for a lock with
+        no session_id. A session-less lock naming a pid other than the
+        caller's at the verification reread is not the caller's own
+        just-written content, so the guard denies. The deny counterpart of
+        test_verification_reread_naming_own_pid_without_session_allows."""
+        repo = tmp_path / "verify-no-session-other-pid-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "verify-no-session-other-pid-worktree"
+        _add_worktree(repo, wt_path, "verify-no-session-other-pid")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "verify-no-session-other-pid-session")
+
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path,
+            lock_rewrite=f"claude-code pid {live_pid}",
+            lock_rewrite_at_read=2,
+            rewriting_call_sees_rewrite=True,
+        )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+        assert result.returncode == 1, result.stdout
+        assert "could not be confirmed after acquiring it" in result.stdout, result.stdout
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the verification reread for this to "
+            "be a real test of the verification-reread branch"
+        )
+
+    def test_cleared_session_self_race_allows_via_diagnostic_reread(self, isolated_home, tmp_path):
+        """The same-process counterpart of
+        test_self_race_on_write_attempt_still_allows_via_diagnostic_reread
+        for a cleared session: the racing lock names this process's pid with
+        the session_id the session carried before `/clear`. The diagnostic
+        reread must recognize it as this caller's own lock, as the first
+        read does, and leave the racing writer's content untouched."""
+        repo = tmp_path / "cleared-self-race-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "cleared-self-race-worktree"
+        _add_worktree(repo, wt_path, "cleared-self-race")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "cleared-successor-session")
+
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path,
+            lock_rewrite=f"claude-code pid {os.getpid()} session cleared-predecessor-session",
+        )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert _worktree_lock_reason(wt_path) == (
+            f"locked claude-code pid {os.getpid()} session cleared-predecessor-session"
+        )
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the diagnostic reread for this to be "
+            "a real test of the self-race branch, not an accidental early "
+            "exit via the first read's own self-lock fast path"
+        )
+
+    def test_resumed_session_lock_naming_dead_pid_recognized_on_diagnostic_reread(
+        self, isolated_home, tmp_path
+    ):
+        """The diagnostic reread after a failed write applies the same
+        recognition as the first read, session_id match included, not a bare
+        pid comparison. A racing writer lands a lock naming an exited pid
+        and the caller's own session_id between the guard's first read and
+        its write. The reread must allow it and leave the racing writer's
+        content untouched, with no reclaim: the claim file is what tells
+        recognition from a reclaim of the dead pid's lock."""
+        repo = tmp_path / "reread-resumed-session-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "reread-resumed-session-worktree"
+        _add_worktree(repo, wt_path, "reread-resumed-session")
+        common_dir = _git_common_dir(repo)
+        dead_pid = _dead_pid()
+        _seed_session(
+            isolated_home, "cleared-successor-session", pid=dead_pid, start_time=_FIXED_START_TIME
+        )
+        _seed_session(isolated_home, "resumed-session")
+        rewritten_lock = f"claude-code pid {dead_pid} session resumed-session"
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path, lock_rewrite=rewritten_lock
+        )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert _locked_file_bytes(wt_path) == f"{rewritten_lock}\n".encode()
+        claims = list(Path(_git_dir(wt_path)).glob("claude-evicted-lock-*"))
+        assert claims == [], f"recognizing the lock must not reclaim it, found {claims}"
+        assert int(counter_file.read_text()) == 2, (
+            "the wrapper's own counter must have observed both the "
+            "self-lock-check read and the diagnostic reread for this to be "
+            "a real test of the reread branch, not an accidental early exit "
+            "via the first read's own self-lock fast path"
+        )
+
     def test_reclaim_reread_shows_live_foreign_lock_still_denies(self, isolated_home, tmp_path, live_pid):
-        """A distinct, narrower race from the three above: the window
+        """A race that opens only after the guard's diagnosis read, unlike
+        the earlier races in this class, which land at or before it: the window
         between _lib_worktree_collision_guard's own diagnosis read and
         _lib_worktree_reclaim_dead_lock's merged raw-lock-file
         read-compare-unlink, which re-reads and validates the lock's
@@ -687,11 +990,12 @@ class TestCollisionGuardBranches:
 
     def test_self_lock_returns_immediately_without_reattempting_lock(self, isolated_home, tmp_path):
         """Pre-locking as self (bypassing the guard) and then calling the
-        guard proves the read-only fast path: if the guard mistakenly tried
-        to re-write an already self-held lock file, that noclobber write
-        would itself fail (file already exists) and the guard would
-        misdiagnose its own lock as a live foreign one — this would show up
-        as a nonzero exit here, not just as a wasted subprocess call."""
+        guard proves the read-only fast path. A guard that re-attempted the
+        write would fail the noclobber create, then recognize the lock on its
+        diagnostic reread and still exit 0, so the exit code alone cannot
+        tell the fast path from that fallback. The exactly-one-porcelain-read
+        assertion does: the fast path reads once, and the fallback reads
+        again."""
         repo = tmp_path / "selflock-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "selflock-worktree"
@@ -699,10 +1003,12 @@ class TestCollisionGuardBranches:
         common_dir = _git_common_dir(repo)
         _seed_session(isolated_home, "selflock-session")
         _lock_worktree(wt_path, f"claude-code pid {os.getpid()}")
+        counting_env, counter_file = _install_porcelain_counting_git(tmp_path, wt_path)
 
-        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
         assert result.returncode == 0
         assert result.stdout == ""
+        assert int(counter_file.read_text()) == 1
 
     def test_self_lock_not_last_worktree_still_recognized(self, isolated_home, tmp_path):
         """The exact shape of the incident this guard's own porcelain-parse
@@ -710,9 +1016,10 @@ class TestCollisionGuardBranches:
         target is no longer the last record in `git worktree list
         --porcelain`'s output. If the target's captured lock state were
         lost (the original bug), the guard would misdiagnose its own lock
-        as unlocked, attempt a doomed re-lock, and deny — same reasoning as
-        test_self_lock_returns_immediately_without_reattempting_lock above,
-        just with a second worktree in the repo to exercise the porcelain
+        as unlocked, attempt a doomed re-lock, and deny. The same parse bug
+        repeats on the diagnostic reread, which reports "already clear
+        again", so the deny is real and the exit code and empty stdout
+        suffice here. A second worktree in the repo exercises the porcelain
         parser's cross-record behavior."""
         repo = tmp_path / "notlast-repo"
         init_git_repo_with_commit(repo)
@@ -730,11 +1037,12 @@ class TestCollisionGuardBranches:
 
     def test_resumed_session_dead_pid_self_recognized_via_session_id(self, isolated_home, tmp_path):
         """A resumed session (`claude --continue`/`--resume`) keeps its
-        session_id but gets a new PID. A lock acquired under the
-        pre-resume PID, now dead, must still self-recognize via
-        session_id and never reach the kill -0 liveness check that would
-        otherwise report it 'no longer running' and ask for a manual
-        unlock -- the exact false deny this fix closes."""
+        session_id but gets a new PID. A lock naming the dead pre-resume pid,
+        with no registry entry for it and the caller's own session_id, is
+        recognized by session_id. A dead-pid lock that reached `kill -0` would
+        be reclaimed and the guard would also exit 0, so the exit code and
+        empty stdout alone cannot tell recognition from reclaim. The
+        byte-identical lock and the absent claim file do."""
         repo = tmp_path / "resume-dead-pid-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-dead-pid-worktree"
@@ -743,10 +1051,15 @@ class TestCollisionGuardBranches:
         _seed_session(isolated_home, "resume-dead-pid-session")
         pre_resume_pid = _dead_pid()
         _lock_worktree(wt_path, f"claude-code pid {pre_resume_pid} session resume-dead-pid-session")
+        lock_before = _locked_file_bytes(wt_path)
 
         result = _run_collision_guard(wt_path, common_dir, isolated_home)
-        assert result.returncode == 0
+
+        assert result.returncode == 0, result.stdout
         assert result.stdout == ""
+        assert _locked_file_bytes(wt_path) == lock_before
+        claims = list(Path(_git_dir(wt_path)).glob("claude-evicted-lock-*"))
+        assert claims == [], f"recognizing the lock must not reclaim it, found {claims}"
 
     def test_resumed_session_reused_live_pid_self_recognized_via_session_id(
         self, isolated_home, tmp_path, live_pid
@@ -768,6 +1081,138 @@ class TestCollisionGuardBranches:
         result = _run_collision_guard(wt_path, common_dir, isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
+
+    def test_cleared_session_same_pid_lock_recognized_without_rewrite(self, isolated_home, tmp_path):
+        """A lock recording the caller's own pid is the caller's, whatever
+        session_id it names: `/clear` gives the same process a new
+        session_id, so the pid is the identity that survives it. The lock is
+        read, never rewritten. The byte-identical lock shows nothing was
+        rewritten, and the single porcelain read shows the first read
+        recognized the lock, with no write attempt and no diagnostic reread.
+        The known-gaps bullet on PID reuse in _lib.sh names the input this
+        rule allows wrongly. Closing that bullet has to change this test."""
+        repo = tmp_path / "cleared-same-pid-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "cleared-same-pid-worktree"
+        _add_worktree(repo, wt_path, "cleared-same-pid")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "cleared-successor-session")
+        _lock_worktree(wt_path, f"claude-code pid {os.getpid()} session cleared-predecessor-session")
+        lock_before = _locked_file_bytes(wt_path)
+        counting_env, counter_file = _install_porcelain_counting_git(tmp_path, wt_path)
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
+
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert _locked_file_bytes(wt_path) == lock_before
+        assert int(counter_file.read_text()) == 1
+
+    def test_resumed_session_denied_while_old_pid_runs_another_session(
+        self, isolated_home, tmp_path, live_pid
+    ):
+        """A lock whose pid is a live registered Claude Code process is not
+        the caller's by session_id alone, even when the caller carries the
+        lock's session_id. Here the old process was cleared and still runs a
+        different session. The resumed session is denied while the lock's old
+        PID is a live Claude Code process, as the known-gaps list in _lib.sh
+        records; `git worktree unlock` clears it once no live process works in
+        the worktree."""
+        repo = tmp_path / "resume-old-pid-other-session-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "resume-old-pid-other-session-worktree"
+        _add_worktree(repo, wt_path, "resume-old-pid-other-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "cleared-successor-session", pid=live_pid)
+        _seed_session(isolated_home, "resumed-session")
+        _lock_worktree(wt_path, f"claude-code pid {live_pid} session resumed-session")
+        lock_before = _locked_file_bytes(wt_path)
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+
+        assert result.returncode == 1
+        assert f"live Claude Code session (pid {live_pid})" in result.stdout, result.stdout
+        assert _locked_file_bytes(wt_path) == lock_before
+
+    def test_resumed_session_denied_while_old_pid_runs_same_session(
+        self, isolated_home, tmp_path, live_pid
+    ):
+        """The old process still runs the lock's own conversation, and a
+        second process resumes it. Two live processes on one conversation
+        is the other shape of that denial, and the guard denies the resumed one
+        naming the old pid."""
+        repo = tmp_path / "resume-old-pid-same-session-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "resume-old-pid-same-session-worktree"
+        _add_worktree(repo, wt_path, "resume-old-pid-same-session")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "resumed-session", pid=live_pid)
+        _seed_session(isolated_home, "resumed-session")
+        _lock_worktree(wt_path, f"claude-code pid {live_pid} session resumed-session")
+        lock_before = _locked_file_bytes(wt_path)
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home)
+
+        assert result.returncode == 1
+        assert f"live Claude Code session (pid {live_pid})" in result.stdout, result.stdout
+        assert _locked_file_bytes(wt_path) == lock_before
+
+    def test_resumed_session_with_leftover_entry_for_exited_pid_keeps_lock_without_reclaim(
+        self, isolated_home, tmp_path
+    ):
+        """Nothing deletes `sessions/<pid>` on exit, so a resumed session's
+        old pid is typically dead with its registry entry still on disk. The
+        entry's two lines are non-empty and its only defect is the dead pid,
+        so the session_id match still recognizes the lock. The claim file is
+        what tells recognition from a reclaim: none may exist, and the lock
+        stays byte-identical. The single porcelain read shows the first read
+        recognized the lock, with no write attempt and no diagnostic reread."""
+        repo = tmp_path / "resume-leftover-entry-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "resume-leftover-entry-worktree"
+        _add_worktree(repo, wt_path, "resume-leftover-entry")
+        common_dir = _git_common_dir(repo)
+        dead_pid = _dead_pid()
+        _seed_session(
+            isolated_home, "cleared-successor-session", pid=dead_pid, start_time=_FIXED_START_TIME
+        )
+        _seed_session(isolated_home, "resumed-session")
+        _lock_worktree(wt_path, f"claude-code pid {dead_pid} session resumed-session")
+        lock_before = _locked_file_bytes(wt_path)
+        counting_env, counter_file = _install_porcelain_counting_git(tmp_path, wt_path)
+
+        result = _run_collision_guard(
+            wt_path, common_dir, isolated_home, extra_env=counting_env
+        )
+
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert _locked_file_bytes(wt_path) == lock_before
+        claims = list(Path(_git_dir(wt_path)).glob("claude-evicted-lock-*"))
+        assert claims == [], f"recognizing the lock must not reclaim it, found {claims}"
+        assert int(counter_file.read_text()) == 1
+
+    def test_resumed_session_with_old_pid_unregistered_allows_under_nounset(
+        self, isolated_home, tmp_path, live_pid
+    ):
+        """A lock from another PID carrying the caller's session_id makes the
+        guard read the registry for a pid that has no entry. The
+        git-writes hook runs `set -u` before sourcing _lib.sh, so the read must
+        not touch an unset variable: the lock stays the caller's, with no
+        error output."""
+        repo = tmp_path / "resume-unregistered-repo"
+        init_git_repo_with_commit(repo)
+        wt_path = tmp_path / "resume-unregistered-worktree"
+        _add_worktree(repo, wt_path, "resume-unregistered")
+        common_dir = _git_common_dir(repo)
+        _seed_session(isolated_home, "resumed-session")
+        _lock_worktree(wt_path, f"claude-code pid {live_pid} session resumed-session")
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, prelude="set -u;")
+
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == ""
+        assert result.stderr == ""
 
     def test_old_format_lock_no_session_field_falls_back_to_pid_match(self, isolated_home, tmp_path):
         """A pre-upgrade lock reason with no ` session <ID>` field still
@@ -1502,3 +1947,241 @@ class TestResolveClaudePid:
         result = _run_resolve_claude_pid(isolated_home)
         assert result.returncode == 2
         assert result.stdout == ""
+
+    def test_invalid_entry_at_parent_and_valid_entry_at_grandparent_prints_grandparent_pid(
+        self, isolated_home
+    ):
+        """The walk skips an untrusted entry at the immediate ancestor and
+        prints the pid of the deeper ancestor that validates, not the
+        starting $PPID. Same shape as test_marker_script.py's
+        test_skips_invalid_immediate_ancestor_and_resolves_deeper_one, at the
+        function level with the printed pid asserted."""
+        grandparent_pid = os.getppid()
+        if grandparent_pid <= 1:
+            pytest.skip("test runner was reparented; the resolver walk stops at pid 1")
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / str(os.getpid())).write_text(f"skipped-mismatch\n{_FIXED_START_TIME}\n")
+        sid = "grandparent-session"
+        _seed_session(isolated_home, sid, pid=grandparent_pid)
+
+        result = _run_resolve_claude_pid(isolated_home)
+
+        assert result.returncode == 0
+        assert result.stdout == f"{sid} {grandparent_pid}"
+
+
+def _assert_lock_is_mine_result(result: subprocess.CompletedProcess, expected_returncode: int) -> None:
+    """Exact return code with empty stdout and stderr: under `set -u` an
+    unbound-variable abort also exits 1, so a bare return-code check cannot
+    tell a deliberate "not mine" from a crash."""
+    assert result.returncode == expected_returncode, (result.returncode, result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+class TestWorktreeLockIsMine:
+    """Each row of _lib_worktree_lock_is_mine's decision matrix, run through
+    _run_lock_is_mine with a fresh $HOME. A row that needs a live "other"
+    pid uses this test process's own pid as the lock's pid, because the
+    predicate takes the caller's pid as an argument."""
+
+    def test_same_pid_with_different_session_is_mine(self, isolated_home):
+        own_pid = str(os.getpid())
+        result = _run_lock_is_mine(isolated_home, own_pid, "lock-session", own_pid, "caller-session")
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_same_pid_with_old_format_lock_without_session_is_mine(self, isolated_home):
+        own_pid = str(os.getpid())
+        result = _run_lock_is_mine(isolated_home, own_pid, "", own_pid, "caller-session")
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_other_pid_dead_unregistered_with_empty_sessions_is_not_mine(self, isolated_home):
+        result = _run_lock_is_mine(isolated_home, str(_dead_pid()), "", _OTHER_CALLER_PID, "")
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_other_pid_with_different_session_is_not_mine(self, isolated_home):
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "lock-session", _OTHER_CALLER_PID, "caller-session"
+        )
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_same_session_other_pid_dead_with_leftover_entry_is_mine(self, isolated_home):
+        dead_pid = _dead_pid()
+        _seed_session(isolated_home, "leftover-owner-session", pid=dead_pid, start_time=_FIXED_START_TIME)
+        result = _run_lock_is_mine(
+            isolated_home, str(dead_pid), "shared-session", _OTHER_CALLER_PID, "shared-session"
+        )
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_same_session_other_pid_live_registered_to_same_session_is_not_mine(self, isolated_home):
+        _seed_session(isolated_home, "shared-session")
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session"
+        )
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_same_session_other_pid_live_registered_to_another_session_is_not_mine(self, isolated_home):
+        _seed_session(isolated_home, "cleared-successor-session")
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session"
+        )
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_same_session_other_pid_live_with_stale_start_time_is_mine(self, isolated_home):
+        _seed_session(isolated_home, "stale-owner-session", start_time=_FIXED_START_TIME)
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session"
+        )
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_same_session_other_pid_live_with_one_line_entry_is_mine(self, isolated_home):
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(os.getpid())).write_text("one-line-entry-session\n")
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session"
+        )
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_same_session_other_pid_live_registered_but_ps_fails_is_mine(
+        self, isolated_home, tmp_path, live_pid
+    ):
+        """A `ps` failure leaves liveness unconfirmed, so the registered live
+        holder reads as gone. This is the fail-open outcome the known-gaps
+        list in _lib.sh records."""
+        _seed_session(isolated_home, "cleared-successor-session", pid=live_pid)
+        failing_ps_env, ps_invoked_marker = _install_failing_ps(tmp_path)
+        result = _run_lock_is_mine(
+            isolated_home, str(live_pid), "shared-session", _OTHER_CALLER_PID, "shared-session",
+            extra_env=failing_ps_env,
+        )
+        _assert_lock_is_mine_result(result, 0)
+        assert ps_invoked_marker.exists(), "the stub ps must have been the one the registry read ran"
+
+    def test_registry_under_non_default_config_dir_is_read(self, isolated_home, tmp_path):
+        alt_base = tmp_path / "alt-base"
+        _seed_session(alt_base, "shared-session")
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session",
+            config_dir_env=str(alt_base / ".claude"),
+        )
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_registry_only_under_home_is_not_read_when_config_dir_is_non_default(
+        self, isolated_home, tmp_path
+    ):
+        _seed_session(isolated_home, "shared-session")
+        alt_base = tmp_path / "alt-base"
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session",
+            config_dir_env=str(alt_base / ".claude"),
+        )
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_relative_config_dir_with_same_session_other_pid_is_not_mine(self, isolated_home):
+        """_lib_config_dir fails for a relative CLAUDE_CONFIG_DIR, and the
+        predicate treats a failed config-dir resolution as not mine."""
+        result = _run_lock_is_mine(
+            isolated_home, str(os.getpid()), "shared-session", _OTHER_CALLER_PID, "shared-session",
+            config_dir_env="relative/config-dir",
+        )
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_relative_config_dir_with_same_pid_is_mine_because_own_pid_check_precedes_config_read(
+        self, isolated_home
+    ):
+        own_pid = str(os.getpid())
+        result = _run_lock_is_mine(
+            isolated_home, own_pid, "lock-session", own_pid, "caller-session",
+            config_dir_env="relative/config-dir",
+        )
+        _assert_lock_is_mine_result(result, 0)
+
+    def test_both_pids_empty_is_not_mine(self, isolated_home):
+        result = _run_lock_is_mine(isolated_home, "", "shared-session", "", "shared-session")
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_empty_caller_pid_with_matching_session_and_dead_unregistered_lock_pid_is_not_mine(
+        self, isolated_home
+    ):
+        result = _run_lock_is_mine(isolated_home, str(_dead_pid()), "shared-session", "", "shared-session")
+        _assert_lock_is_mine_result(result, 1)
+
+    def test_empty_lock_pid_with_matching_session_is_not_mine(self, isolated_home):
+        result = _run_lock_is_mine(isolated_home, "", "shared-session", _OTHER_CALLER_PID, "shared-session")
+        _assert_lock_is_mine_result(result, 1)
+
+
+class TestRegisteredLiveSid:
+    """_lib_registered_live_sid prints the registered session_id and returns
+    0 only for a live, start-time-valid entry, and returns 1 with no stdout
+    for every case it cannot confirm."""
+
+    def test_valid_entry_for_live_pid_prints_session_id(self, isolated_home):
+        _seed_session(isolated_home, "registered-session")
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", os.getpid())
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "registered-session"
+        assert result.stderr == ""
+
+    def test_no_entry_returns_1(self, isolated_home):
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", os.getpid())
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_one_line_entry_for_dead_pid_returns_1(self, isolated_home):
+        dead_pid = _dead_pid()
+        sessions_dir = isolated_home / ".claude" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / str(dead_pid)).write_text("one-line-entry-session\n")
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", dead_pid)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_stale_start_time_for_live_pid_returns_1(self, isolated_home):
+        _seed_session(isolated_home, "stale-start-session", start_time=_FIXED_START_TIME)
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", os.getpid())
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_empty_session_id_with_live_start_time_returns_1(self, isolated_home):
+        _seed_session(isolated_home, "")
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", os.getpid())
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_valid_entry_confirmed_under_non_utc_caller_timezone(self, isolated_home):
+        """The registry read pins the `ps` timezone to UTC, so a caller
+        running under another TZ still matches the start time the entry
+        recorded."""
+        _seed_session(isolated_home, "non-utc-session")
+        result = _run_registered_live_sid(
+            isolated_home, isolated_home / ".claude", os.getpid(), extra_env={"TZ": "PST8"}
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "non-utc-session"
+        assert result.stderr == ""
+
+    def test_leftover_entry_for_dead_pid_returns_1(self, isolated_home):
+        dead_pid = _dead_pid()
+        _seed_session(isolated_home, "leftover-session", pid=dead_pid, start_time=_FIXED_START_TIME)
+        result = _run_registered_live_sid(isolated_home, isolated_home / ".claude", dead_pid)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_ps_failure_for_live_registered_pid_returns_1(self, isolated_home, tmp_path, live_pid):
+        _seed_session(isolated_home, "registered-session", pid=live_pid)
+        failing_ps_env, ps_invoked_marker = _install_failing_ps(tmp_path)
+        result = _run_registered_live_sid(
+            isolated_home, isolated_home / ".claude", live_pid, extra_env=failing_ps_env
+        )
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == ""
+        assert ps_invoked_marker.exists(), "the stub ps must have been the one the registry read ran"

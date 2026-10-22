@@ -73,15 +73,34 @@
 #     degrading gracefully.
 #   - The collision guard's liveness check (`kill -0` on a stored PID) can
 #     rarely false-deny if that PID is reused by an unrelated process after
-#     the original session exited — applies only to a foreign
-#     (different-session_id) or old-format lock, since a same-session resume
-#     recognizes its own lock by session_id before this check is ever
-#     reached; bounded and self-clearing once whatever now holds that PID
-#     number exits, not closed outright.
+#     the original session exited. A lock recording the caller's own PID is
+#     the caller's own and never reaches the check. A lock from another PID
+#     that carries the caller's session_id also never reaches it, unless that
+#     PID is a live registered Claude Code process, and the check then denies
+#     the caller naming that PID. Any other lock from another PID, old-format
+#     or not, reaches the check. The false deny is bounded and self-clearing
+#     once the process holding that PID number exits, not closed outright.
 #   - A `locked` file write killed mid-write (the 5s `_lib_capped` timeout)
-#     can leave a truncated `pid`/`session` field; a truncated session token
-#     fails the session-id character-class regex and is treated as
-#     unparseable, matching the guard's fail-closed default.
+#     can leave a truncated lock. A truncated lock reason that still matches
+#     the regex in `_lib_worktree_lock_pid` (`_lib.sh`) parses and is judged
+#     like any other lock. Any other truncation is unparseable and denied,
+#     matching the guard's fail-closed default.
+#   - A resumed session can be denied a worktree its own earlier process
+#     locked, while that process's PID is a live registered Claude Code
+#     process, whatever session it runs. See the bullet on a resumed session
+#     denied while the lock's old PID is live, in `_lib.sh`'s
+#     `_lib_worktree_collision_guard` known-gaps list.
+#   - A process can be allowed into a worktree that another process holds,
+#     when any of these applies:
+#     - The lock's PID is reused by a new Claude Code process.
+#     - The lock's PID is shared across PID namespaces.
+#     - The registry read does not confirm a live holder.
+#     - A resumed session's lock still names its exited old PID.
+#     See the bullets opening "A process whose PID equals the lock's PID",
+#     "Two live Claude Code processes in different PID namespaces",
+#     "A lock from another PID that carries the caller's session_id", and
+#     "A resumed session's worktree can be reclaimed" in
+#     `_lib.sh`'s `_lib_worktree_collision_guard` known-gaps list.
 #   - A dead-PID lock the collision guard detects gets one claim-gated
 #     reclaim attempt (`_lib_worktree_reclaim_dead_lock` in `_lib.sh`) before
 #     falling back to a deny. A claim burnt by an interrupted eviction
