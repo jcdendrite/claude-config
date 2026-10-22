@@ -27,7 +27,7 @@ BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 # requests, or carry credentials.
 # Declared ahead of the direct-invocation modes below for the same reason as
 # RULE4_DOTTED_PATHS_JSON.
-OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
+OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_FEEDBACK_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
 
 # Direct-invocation modes for tests: each prints one constant as JSON and exits
 # before any render logic runs, mirroring guard-settings-session-keys.sh's own
@@ -91,7 +91,7 @@ OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 ACCEPTED_DEFAULT_MODES_JSON='["default", "plan"]'
 
 if [[ ! -f "$base_file" ]]; then
-  echo "render-settings.sh: $base_file not found -- cannot render settings.json without it" >&2
+  echo "render-settings.sh: $base_file not found -- cannot render settings.json without it; run whatever stows claude-config into $config_dir first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry describes the command that lists the stow packages)" >&2
   exit 1
 fi
 
@@ -339,6 +339,8 @@ merged_json="$(jq -c '.result' <<<"$render_output")"
 # - the overlay env keys newly applied or changed
 # - the other overlay keys newly applied or changed, by name only
 # - an overlay-set permissions.defaultMode
+# The line names its config dir when that dir is not ~/.claude, so a log that
+# collects several profiles' renders stays attributable per line.
 # It lists env keys by name only, never by value, since an env value can be a
 # credential. Dropped permissions entries print their rule text, which is what
 # lets a user recover a dropped rule.
@@ -385,7 +387,14 @@ if [[ "$render_changed" == "true" ]]; then
   if [[ ${#segments[@]} -gt 0 ]]; then
     disclosure="$(printf '%s; ' "${segments[@]}")"
     disclosure="${disclosure%; }"
-    disclosure_line="render-settings.sh: this render changed settings.json -- $disclosure"
+    # -ef compares file identity, so a trailing slash or a symlink to ~/.claude
+    # still counts as the default profile. ${HOME:-} keeps an unset HOME from
+    # aborting under set -u.
+    profile_label=""
+    if [[ -z "${HOME:-}" || ! "$config_dir" -ef "$HOME/.claude" ]]; then
+      profile_label=" in $config_dir"
+    fi
+    disclosure_line="render-settings.sh: this render changed settings.json${profile_label} -- $disclosure"
   fi
 fi
 

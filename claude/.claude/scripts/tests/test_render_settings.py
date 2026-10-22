@@ -38,6 +38,7 @@ ENV_ALLOWED_NAMES = {
     "CLAUDE_CODE_EFFORT_LEVEL",
     "CLAUDE_CODE_ENABLE_TELEMETRY",
     "DISABLE_BUG_COMMAND",
+    "DISABLE_FEEDBACK_COMMAND",
     "DISABLE_ERROR_REPORTING",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "DISABLE_TELEMETRY",
@@ -51,13 +52,19 @@ def _write_json(path: Path, content: dict | list) -> None:
 def _run_script(
     *args: str,
     config_dir: Path,
-    extra_env: dict | None = None,
+    extra_env: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run the script with stdin held open, as the rc line does in a new shell."""
+    """Run the script with stdin held open, as the rc line does in a new shell.
+
+    An `extra_env` value of None removes that variable from the environment.
+    """
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
-    if extra_env:
-        env.update(extra_env)
+    for name, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     return run_with_open_stdin([str(_SCRIPT), *args], env=env, timeout=15)
 
 
@@ -885,6 +892,40 @@ class TestRefusalPreservesPriorRender:
         assert result.returncode != 0
         assert refusal_fragment in result.stderr
         assert target.read_text() == prior_content
+
+
+class TestMissingBaseNamesTheRemedy:
+    """A profile gets settings.base.json from the stow, not from this script,
+    so the not-found refusal tells the caller to stow into the profile."""
+
+    def test_missing_base_refusal_names_the_stow_remedy_and_writes_nothing(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 1
+        assert "settings.base.json not found" in result.stderr
+        assert f"whatever stows claude-config into {config_dir} first" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+        assert not (config_dir / "settings.json").is_symlink()
+
+    def test_missing_base_refusal_leaves_a_dangling_settings_json_symlink_dangling(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        target = config_dir / "settings.json"
+        missing_destination = tmp_path / "never-created.json"
+        target.symlink_to(missing_destination)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 1
+        assert target.is_symlink()
+        assert os.readlink(target) == str(missing_destination)
+        assert not target.exists()
+        assert not missing_destination.exists()
 
 
 class TestOverlayChmodHardening:
@@ -2391,3 +2432,89 @@ class TestShellStartupIoContract:
         assert result.returncode == 0, result.stderr
         assert "this render changed settings.json" in result.stderr
         assert result.stdout == ""
+
+
+class TestDisclosureNamesNonDefaultProfile:
+    """The disclosure line names its config dir unless that dir is the default
+    profile, $HOME/.claude, so a log that collects several profiles' renders
+    stays attributable per line."""
+
+    _DEFAULT_PROFILE_PREFIX = "render-settings.sh: this render changed settings.json -- "
+
+    @staticmethod
+    def _seed_carry_forward(config_dir: Path) -> None:
+        """Seeds a prior render holding a key base lacks, so the render discloses a carry-forward."""
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v1"})
+        _write_json(config_dir / "settings.json", {"theme": "dark", "otherKey": "v0"})
+
+    def test_non_default_target_is_named_in_the_disclosure_line(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        self._seed_carry_forward(config_dir)
+
+        result = _run_script(config_dir=config_dir, extra_env={"HOME": str(home)})
+
+        assert result.returncode == 0, result.stderr
+        assert f"this render changed settings.json in {config_dir} -- " in result.stderr
+
+    @pytest.mark.parametrize("spelling", ["plain", "trailing-slash", "symlink"])
+    def test_default_profile_keeps_the_unnamed_disclosure_line(
+        self, tmp_path: Path, spelling: str
+    ) -> None:
+        """Compares by file identity (-ef), so a spelling that string equality
+        would call different still counts as the default profile."""
+        home = tmp_path / "home"
+        default_profile = home / ".claude"
+        default_profile.mkdir(parents=True)
+        self._seed_carry_forward(default_profile)
+        spelled_config_dir = {
+            "plain": str(default_profile),
+            "trailing-slash": f"{default_profile}/",
+            "symlink": str(tmp_path / "profile-link"),
+        }[spelling]
+        if spelling == "symlink":
+            (tmp_path / "profile-link").symlink_to(default_profile)
+
+        # extra_env's CLAUDE_CONFIG_DIR overrides config_dir's, so the script sees the spelled path.
+        result = _run_script(
+            config_dir=default_profile,
+            extra_env={"HOME": str(home), "CLAUDE_CONFIG_DIR": spelled_config_dir},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert self._DEFAULT_PROFILE_PREFIX in result.stderr
+
+    def test_unset_config_dir_renders_the_home_default_profile_with_the_unnamed_disclosure_line(
+        self, tmp_path: Path
+    ) -> None:
+        """The single-profile consumer's shell exports no CLAUDE_CONFIG_DIR, so the
+        script falls back to $HOME/.claude and must not label it."""
+        home = tmp_path / "home"
+        default_profile = home / ".claude"
+        default_profile.mkdir(parents=True)
+        self._seed_carry_forward(default_profile)
+
+        result = _run_script(
+            config_dir=default_profile,
+            extra_env={"HOME": str(home), "CLAUDE_CONFIG_DIR": None},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert self._DEFAULT_PROFILE_PREFIX in result.stderr
+        assert json.loads((default_profile / "settings.json").read_text())["theme"] == "dark"
+
+    def test_unset_home_with_config_dir_set_renders_and_names_the_config_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """Removes HOME rather than blanking it: `${HOME:-}` must not abort under
+        `set -u`, and an empty HOME is a different case from an unset one."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        self._seed_carry_forward(config_dir)
+
+        result = _run_script(config_dir=config_dir, extra_env={"HOME": None})
+
+        assert result.returncode == 0, result.stderr
+        assert f"this render changed settings.json in {config_dir} -- " in result.stderr
