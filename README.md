@@ -88,13 +88,13 @@ cd ~/claude-config
 ./install.sh
 ```
 
-This symlinks `claude/.claude/` into `$HOME/.claude/`.
+This links the entries of `claude/.claude/` one by one into a real `$HOME/.claude/` directory. See "Updating after git pull" for what a later pull needs.
 
 ### Updating after git pull
 
 Whether a pull needs the installer depends on what changed and on how your config dir links into this checkout.
 
-- **Edited files.** An edit to an existing file that Claude Code reads from the config dir is on disk after `git pull`, though a running session may need a restart to read it. Anything `install.sh` itself copies, links, registers or runs takes effect only when the installer runs, and so does a change to `install.sh`. Examples, not an exhaustive list: the `relocate-claude-config` copy in `~/.local/bin` takes effect only when the installer runs. So does a package added to the list in `claude/.claude/scripts/stow-packages.sh`, and so does marketplace and plugin registration.
+- **Edited files.** An edit to an existing file that Claude Code reads from the config dir is on disk after `git pull`, though a running session may need a restart to read it. What the installer itself produces reaches a machine only when an installer runs: the `~/.local/bin` copy, marketplace and plugin registrations, migrations, the stow package list, and the stow links. A change to `install.sh` takes effect the same way. A file that Claude Code or a hook reads from the config dir is live on pull, even when `install.sh` also reads or runs it. Examples, not an exhaustive list: the `relocate-claude-config` copy in `~/.local/bin` and a package added to the list in `claude/.claude/scripts/stow-packages.sh` both need the installer.
 - **New files nested under a linked directory.** A new file under a directory the config dir already links into this checkout is on disk after `git pull`, with the same restart caveat. If the config dir holds that directory as a real directory rather than a link into this checkout, a new file under it needs the installer.
 - **New top-level entries and wrappers.** On a standard install, `~/.claude` and `~/.local/bin` are real directories, because `install.sh` ensures both with `mkdir -p`. There, a new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` always need the installer. `git pull` cannot add a link inside a real directory.
 

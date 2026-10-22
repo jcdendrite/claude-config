@@ -72,13 +72,13 @@
 #   touching `install.sh` gets no reminder either.
 #   A new wrapper needs the installer on a standard install.
 #   Both are standing, unclosed gaps.
-# - An edit to a file that `install.sh` copies, reads or runs is an `M`, so the
+# - An edit to a file whose effect only the installer delivers (`README.md`
+#   § "Updating after git pull" defines the class) is an `M`, so the
 #   `--diff-filter=A` diff misses it, and `install.sh` is the only modified
 #   path checked.
 #   Examples are the package list in `claude/.claude/scripts/stow-packages.sh`
 #   and `claude/.claude/scripts/relocate-claude-config.sh`.
-#   A PR making such an edit gets no reminder, and the change needs the
-#   installer.
+#   A PR making such an edit gets no reminder.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
