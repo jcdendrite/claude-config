@@ -29,12 +29,8 @@
 #   test deny-private-project-refs.sh also applies, without its
 #   .claude/private-projects-optin marker arm).
 # - Detects any file added under `claude/.claude/` between `main` and
-#   `HEAD` (`git diff --diff-filter=A`), regardless of whether its
-#   immediate parent directory already existed on `main`. A new file
-#   nested inside an existing directory (e.g. a new
-#   `claude/.claude/hooks/<file>` when `hooks/` itself predates this
-#   branch) trips the gate too, because a consumer whose config dir holds
-#   that directory as a real directory needs a re-stow for it.
+#   `HEAD` (`git diff --diff-filter=A`). Any depth trips the gate, whether
+#   or not the file's parent directory already existed on `main`.
 # - GH-465: also fires when `install.sh` itself differs between `main`
 #   and `HEAD` (any change, not only new content), independent of whether
 #   any new top-level entry exists.
@@ -76,6 +72,11 @@
 #   touching `install.sh` gets no reminder either.
 #   A new wrapper needs the installer on a standard install.
 #   Both are standing, unclosed gaps.
+# - A package-list edit in `claude/.claude/scripts/stow-packages.sh` is an
+#   `M`, so the `--diff-filter=A` diff misses it, and `install.sh` is the only
+#   modified path checked.
+#   A PR that adds a package gets no reminder, and a new package needs the
+#   installer.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
@@ -152,8 +153,8 @@ fi
 
 # Strip the claude/.claude/ prefix from every added path. `--diff-filter=A`
 # already guarantees each one is new relative to `main` — no further
-# existence check against `main` is needed or wanted (see header: a new
-# file inside an already-existing directory still needs the reminder).
+# existence check against `main` is needed or wanted (see header: any
+# depth trips the gate, whether or not the parent directory exists on main).
 NEW_ENTRIES=""
 while IFS= read -r added_path; do
   [ -z "$added_path" ] && continue

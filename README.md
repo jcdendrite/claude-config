@@ -94,14 +94,14 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 
 Whether a pull needs the installer depends on what changed and on how your config dir links into this checkout.
 
-- **Edited files.** An edit to an existing file that Claude Code reads from the config dir is on disk after `git pull`, though a running session may need a restart to read it. A change to `install.sh` takes effect only when `./install.sh` runs, as does a change to the `relocate-claude-config` copy in `~/.local/bin`.
+- **Edited files.** An edit to an existing file that Claude Code reads from the config dir is on disk after `git pull`, though a running session may need a restart to read it. A change to `install.sh` takes effect only when `./install.sh` runs, as does a change to the `relocate-claude-config` copy in `~/.local/bin`. A package added to the list in `claude/.claude/scripts/stow-packages.sh` is linked only when the installer runs.
 - **New files nested under a linked directory.** A new file under a directory the config dir already links into this checkout is on disk after `git pull`, with the same restart caveat. If the config dir holds that directory as a real directory rather than a link into this checkout, a new file under it needs the installer.
-- **New top-level entries and wrappers.** On a standard install, where `~/.claude` and `~/.local/bin` are real directories (`install.sh` ensures both with `mkdir -p`), a new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` always need the installer, because `git pull` cannot add a link inside them.
+- **New top-level entries and wrappers.** On a standard install, `~/.claude` and `~/.local/bin` are real directories, because `install.sh` ensures both with `mkdir -p`. There, a new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` always need the installer. `git pull` cannot add a link inside a real directory.
 
 To check one new file, list where it should appear: `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`.
 - For `claude-skills/skills/<x>`, the path is `<config-dir>/skills/<x>`.
 - For `claude/.local/bin/<x>`, the path is `~/.local/bin/<x>`.
-- In an agent Bash call, write the path literally instead: `ls ~/.claude/<path>` on the default config dir, or the other config dir's own path. A literal `~/.claude` reads the wrong directory on a non-default config dir.
+- For an agent Bash call, `docs/worktree-bash-guard.md` § "The fix: script-first, not prose-split" says how to write this path.
 
 "No such file or directory" means re-run the installer, once the change is in the checkout the config dir links to. Before the pull, or from a feature worktree, a missing file does not mean the installer is needed.
 
@@ -130,7 +130,7 @@ If `~/.claude/skills` is a real directory, `install.sh` stows `claude`, skips `c
 
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
-**Existing users:** `git pull` does not apply the owner-only permissions on `~/.claude` and `~/.claude.json`; that happens only when `./install.sh` runs, and "Updating after git pull" above says when new wrappers need it too. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+**Existing users:** `git pull` does not apply the owner-only permissions on `~/.claude` and `~/.claude.json`; that happens only when `./install.sh` runs, and "Updating after git pull" above says when new wrappers need it too. Re-run it once to apply the permissions. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
 Before pulling a change that raises the bash or Claude Code floor, update both from a terminal, restart any running Claude Code session, and pull from a separate terminal. `docs/hooks.md` § "Gate deadlock recovery" gives the full procedure, including what to do if gates deny after a pull.
 

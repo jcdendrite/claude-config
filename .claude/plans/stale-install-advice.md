@@ -37,7 +37,7 @@ Alternatives set aside:
 **Rows:**
 
 4. `require-stow-reminder.sh`'s deny says a new file "only appears there after re-running install.sh; git pull alone does not create the symlink". It offers the template "Post-merge: run `./install.sh` to pick up this change." [verified: require-stow-reminder.sh:242]
-5. The hook's header premise is "there is no 'already-stowed parent covers it' case to filter out". This contradicts `install.sh`, which pre-creates only `~/.claude` and `~/.local/bin`. A new top-level child of `claude/.claude/` is therefore never created by `git pull` and always needs a re-run, while a new file nested under an already-folded directory arrives on pull. [verified: require-stow-reminder.sh:30-38; install.sh:91-96]
+5. The hook's header premise is "there is no 'already-stowed parent covers it' case to filter out". That premise contradicts `install.sh`. `install.sh` pre-creates only `~/.claude` and `~/.local/bin`. A new top-level child of `claude/.claude/` is therefore never created by `git pull`, so it always needs a re-run. A new file nested under an already-folded directory arrives on pull. [verified: require-stow-reminder.sh:30-38; install.sh:91-96]
 6. `docs/hooks.md:143` says the gate fires on a new *immediate child* of `claude/.claude/`. The hook actually fires on an added path at any depth. [verified: docs/hooks.md:143; require-stow-reminder.sh:133-162]
 7. The prior session's two fixes are not the right solution. [engineer-verified: "none of your suggestions really seem like the right solution"]
 8. Those two fixes were a "when is a re-stow needed" note beside root `CLAUDE.md:56`, and dropping the conditional re-stow entry from `CHANGELOG.md`. [unverified: relayed by the dispatching session from the handoff, not quoted]
@@ -73,6 +73,8 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
    - **Header (:4-17 and :30-38):** remove the "Stow links each file individually" rationale and the "no 'already-stowed parent covers it' case" claim. Replace them with one-sentence facts:
      - The gate fires on any added path, because a new top-level entry always needs a re-run and a consumer whose config dir holds a directory as a real directory picks up a new file in it only after a re-stow.
      - README § Updating after git pull states the rule.
+     - The trigger rationale appears once in the header, and the detection bullet says only that any depth trips the gate.
+     - **Known gaps:** a package-list edit in `claude/.claude/scripts/stow-packages.sh` is an `M`, so the `--diff-filter=A` diff misses it. A PR that adds a package gets no reminder, and a new package needs the installer.
    - **Deny text (:242):**
      - Keep `this PR $REASON_DETAIL.`
      - Replace the rest with: Whether a consumer must re-run `install.sh` after pulling depends on their config dir; README.md § Updating after git pull states the rule and the check.
@@ -93,26 +95,34 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
      - The README heading `Updating after git pull` resolves, using `normalize_heading` and `heading_texts` from the `helpers` module this file already imports, as `test_bash_floor.py` `TestFloorMessageCitationsResolve` does.
      - The example body line, used verbatim as a PR body, is accepted by the marker for both a new-top-level shape (`commit_new_toplevel_dir`) and a nested shape (`commit_inside_existing_toplevel`).
      - The deny reason does not contain `git pull alone does not create the symlink`.
+     - A PR that only edits an existing stowed file, or only changes paths outside `claude/.claude/` and `install.sh`, is allowed without a marker.
+     - `install.sh` is seeded on `main`, so install.sh tests exercise a modification.
+     - The README-citation and example-line assertions run over every trigger shape: new top-level entry, nested, deeply nested, install.sh-only, and combined.
 
 3. **`README.md`** (modify)
    - Add `### Updating after git pull` under `## Quickstart`, after line 90, and a TOC entry nested under Quickstart. It states these facts:
      - An edit to an existing file that Claude Code reads from the config dir takes effect on `git pull`. A change to `install.sh` takes effect only when the installer runs.
+     - A package added to the list in `claude/.claude/scripts/stow-packages.sh` is linked only when the installer runs.
      - A new file nested under a directory the config dir already links into this checkout is live after `git pull`. A new top-level entry directly under `claude/.claude/`, and any new wrapper under `claude/.local/bin/`, always needs the installer, because `install.sh` creates `~/.claude` and `~/.local/bin` as real directories.
      - Check a new file with `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`. For `claude-skills/skills/<x>` the path is `<config-dir>/skills/<x>`. For `claude/.local/bin/<x>` it is `~/.local/bin/<x>`.
-     - For an agent Bash call, use the literal path: `ls ~/.claude/<path>` on the default config dir, or the other config dir's own path. A literal `~/.claude` reads the wrong directory on a non-default config dir.
+     - For an agent Bash call, a one-line pointer to `docs/worktree-bash-guard.md` § "The fix: script-first, not prose-split", which owns the path guidance.
      - "No such file or directory" means re-run the installer. If `~/.claude/skills` is a real directory, `install.sh` stops with a message instead; follow that message.
      - "The installer" means `./install.sh` for `~/.claude`. For any other config dir, it means whichever installer stows the packages that `claude/.claude/scripts/stow-packages.sh` lists into that dir.
-   - Edit the "Existing users" paragraph (`README.md:113`): drop the claim that `git pull` never materializes new wrappers, and point at "Updating after git pull" (row 16).
+   - Edit the "Existing users" paragraph (`README.md:113`): drop the claim that `git pull` never materializes new wrappers, point at "Updating after git pull" (row 16), and scope the closing "Re-run it once" to applying the owner-only permissions.
 
 4. **`docs/hooks.md`** (modify :143)
-   - Describe the trigger correctly: any path added under `claude/.claude/`, not only an immediate child, or an `install.sh` change.
+   - Describe the trigger correctly: any path added under `claude/.claude/` (a file at any depth), or an `install.sh` change.
    - Replace the "Reason:" restatement with a pointer to README § Updating after git pull and a mention of the deny's conditional template.
    - Keep the `claude-skills/` gap sentence and the line-start bullet `test_hook_alignment.py` requires.
 
-5. **`CHANGELOG.md`** (modify `## [Unreleased]`)
+5. **`docs/worktree-bash-guard.md`** (modify § "The fix: script-first, not prose-split" only)
+   - Append to the ad-hoc-call paragraph: in place of `$CLAUDE_CONFIG_DIR`, write the active config dir's literal path. That path is `~/.claude` only on the default config dir. A hardcoded `~/.claude` suits a call to a tracked script or hook, but lists the wrong directory when the call checks what a non-default config dir itself contains.
+   - Leave the Site sweep table and Current status sections as written.
+
+6. **`CHANGELOG.md`** (modify `## [Unreleased]`)
    - **Changed:** `require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`. It names README § Updating after git pull, and its example body line is conditional. The trigger is unchanged.
 
-6. **`.claude/plans/stale-install-advice.md`**: this plan.
+7. **`.claude/plans/stale-install-advice.md`**: this plan.
 
 ## Verification
 

@@ -113,6 +113,11 @@ For an ad-hoc orchestrator Bash call no script pre-covers, the fallback conventi
 one double-quoted statement, no nested `$(...)`, no `$CLAUDE_CONFIG_DIR` reference — the
 same discipline a script gives you automatically, applied by hand.
 
+In place of `$CLAUDE_CONFIG_DIR`, write the active config dir's literal path. That path is
+`~/.claude` only on the default config dir. A hardcoded `~/.claude` is right for calling a
+tracked script or hook, but it lists the wrong directory when the call checks what a
+non-default config dir itself contains.
+
 ## Current status: does not reproduce on demand
 
 Re-running all five triggers, plus the exact original pre-fix `handoff` compound recipe,
