@@ -3203,7 +3203,7 @@ class TestBaseBranchRetargetDuringReads:
         re-fetch asks for both values and parses the head first and the base second."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
+        result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], pr_view_base_ref_name_second="main",
         )
