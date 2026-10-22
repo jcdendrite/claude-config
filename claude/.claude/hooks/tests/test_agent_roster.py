@@ -717,11 +717,9 @@ class TestNoGateReleaseRosterSync:
     first kind is checkable here, so it is asserted rather than verified by
     hand at review time, and the second is pinned as a closed exemption set.
 
-    One test below guards a tool-absence boundary outside this scope:
-    plan-architect isn't in `_LIB_NO_GATE_RELEASE_AGENTS` (require-plan-review.sh
-    exempts a write targeting a `.claude/plans/` file and gates other in-repo
-    writes while an unreviewed plan is active), so it gets no roster-wide
-    coverage from the tests above — its own exact-tools test is its sole guard.
+    plan-architect is a roster member through `_LIB_PLAN_WRITER_AGENTS`, so the
+    roster-wide tests above cover it. Its exact-tools pin below is a second,
+    narrower guard: it keeps `Write` and `Bash` out of an agent that holds `Edit`.
     """
 
     def test_roster_members_have_agent_files_or_are_named_builtins(self):
@@ -808,17 +806,20 @@ class TestNoGateReleaseRosterSync:
             "own stated design (see Explore.md's body)."
         )
 
-    def test_plan_architect_tools_are_exactly_read_grep_glob(self):
-        """Pins plan-architect.md's own no-Write/Edit/Bash design guarantee.
+    def test_plan_architect_tools_are_exactly_read_grep_glob_edit(self):
+        """Edit is the only write tool: deny-plan-writer-off-plan-writes.sh confines it.
 
-        The gate-bypass argument for this agent rests entirely on tool
-        absence (no Write to trip require-plan-review.sh, no Skill, Agent or Task to
-        delegate a gate release). A future edit widening its tools would
-        pass every other test here while silently reopening that trap.
+        Write would reproduce the plan's Context. Bash would bypass every Edit-path gate.
+        Skill, Agent and Task stay excluded so it cannot delegate a gate release.
         """
-        assert self._declared_tools("plan-architect") == {"Read", "Grep", "Glob"}, (
+        assert self._declared_tools("plan-architect") == {
+            "Read",
+            "Grep",
+            "Glob",
+            "Edit",
+        }, (
             "plan-architect.md's tools: line changed. It must stay exactly "
-            "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
+            "Read, Grep, Glob, Edit — no Write and no Bash — per the agent's "
             "own stated design (see plan-architect.md's body)."
         )
 
@@ -941,6 +942,30 @@ class TestReviewOrchestratorRosterPlacement:
         )
 
 
+def _plan_writer_agents() -> list[str]:
+    """Read _LIB_PLAN_WRITER_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_plan_writer_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _declared_tool_names(path) -> set[str]:
+    """Tool names an agent file's frontmatter grants.
+
+    Returns `{""}` when `tools` is absent. An agent without a `tools:` line inherits
+    every tool, and the empty name matches no permitted-tool set, so the registry
+    test fails closed."""
+    declared = parse_frontmatter(path).get("tools") or ""
+    if isinstance(declared, str):
+        return {t.strip() for t in declared.split(",")}
+    return {str(t).strip() for t in declared}
+
+
 class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
     """docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
     rates the residual Low on the invariant that every current or future agent
@@ -953,13 +978,7 @@ class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
     def test_write_without_bash_agents_are_review_only_confined(self):
         review_only = set(_review_only_agents())
         for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
-            fm = parse_frontmatter(path)
-            declared = fm.get("tools") or ""
-            tools = (
-                {t.strip() for t in declared.split(",")}
-                if isinstance(declared, str)
-                else {str(t).strip() for t in declared}
-            )
+            tools = _declared_tool_names(path)
             if "Write" in tools and "Bash" not in tools:
                 assert path.stem in review_only, (
                     f"{path.name} declares Write without Bash but is not in "
@@ -969,6 +988,53 @@ class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
                     "rates Low. Add it to _LIB_REVIEW_ONLY_AGENTS if it is genuinely "
                     "review-only, or grant it Bash otherwise."
                 )
+
+
+class TestEditWithoutBashAgentsAreWriteScopeConfined:
+    """Every agent holding Edit or MultiEdit without Bash is write-scope confined.
+
+    The review-only roster is confined by the tree-mutation gate, and the
+    plan-writer registry by deny-plan-writer-off-plan-writes.sh. An Edit-holding
+    agent outside both would be an unconfined writer that no Bash-absence
+    argument covers, the same residual
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    rates Low only while every writer without Bash is confined."""
+
+    def test_edit_without_bash_agents_are_write_scope_confined(self):
+        confined = set(_review_only_agents()) | set(_plan_writer_agents())
+        for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
+            tools = _declared_tool_names(path)
+            if tools & {"Edit", "MultiEdit"} and "Bash" not in tools:
+                assert path.stem in confined, (
+                    f"{path.name} declares Edit or MultiEdit without Bash but is "
+                    "in neither _LIB_REVIEW_ONLY_AGENTS nor _LIB_PLAN_WRITER_AGENTS "
+                    "(_lib.sh). An Edit-without-Bash agent outside both rosters is "
+                    "unconfined by any write-scope gate. Add it to the roster whose "
+                    "gate fits it, or grant it Bash otherwise."
+                )
+
+
+class TestPlanWriterAgentsHoldOnlyPlanEditingTools:
+    """deny-plan-writer-off-plan-writes.sh denies a registry member's Write and
+    MultiEdit outright and never sees Bash or Task. The permitted set therefore
+    excludes dead grants and unseen writes, so the registry claims no
+    confinement it does not provide."""
+
+    PERMITTED_PLAN_WRITER_TOOLS = {"Read", "Grep", "Glob", "Edit"}
+
+    def test_every_plan_writer_declares_only_permitted_tools(self):
+        plan_writers = _plan_writer_agents()
+        assert plan_writers, "_LIB_PLAN_WRITER_AGENTS is empty"
+        agent_paths = {path.stem: path for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES}
+        for agent_name in plan_writers:
+            assert agent_name in agent_paths, f"{agent_name} has no agent file"
+            tools = _declared_tool_names(agent_paths[agent_name])
+            extra_tools = tools - self.PERMITTED_PLAN_WRITER_TOOLS
+            assert not extra_tools, (
+                f"{agent_name} is in _LIB_PLAN_WRITER_AGENTS (_lib.sh) but declares "
+                f"{sorted(extra_tools)}, which deny-plan-writer-off-plan-writes.sh "
+                "either denies outright or never sees. Drop the tools or remove the agent from the registry."
+            )
 
 
 # Pinned so a future edit to ciso-reviewer.md can't silently drop any of
