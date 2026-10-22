@@ -64,4 +64,4 @@ effort: high
      disposition with the closed-list criterion, or `none`.
    - `HALT:` one entry per item, as item 8 specifies, or `none`. When it is
      not `none`, add one last line: ``Dispatcher: act on this HALT per
-     `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven", whose no-match step runs the next round inline, not as another dispatch of this agent.``
+     `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven".``
