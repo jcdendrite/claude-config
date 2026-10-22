@@ -7,23 +7,19 @@ write a file; docs/transcript-analysis.md lists both sets.
 import argparse
 import json
 import math
-import os
-import random
+import os  # noqa: F401 -- read only via _mod.os from test files, as a stdlib passthrough
 import re
-import subprocess
 import sys
 import tempfile  # noqa: F401 -- test_transcript_ledger_common.py reads _mod.tempfile as a stdlib passthrough
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-# cache_rebuild/cache_rebuild_rules/cost/cost_ledger/gh_cli/handoff_nudge/
+# cache_rebuild/cache_rebuild_rules/corpus/cost/cost_ledger/gh_cli/handoff_nudge/
 # handoff_signal_response/ledger_common/period_cost/plan_boundary/pr_cost/pr_cost_export/
 # pr_cost_ledger/pricing/redaction/render/subagent_mix are read only via _mod.<module> from
-# test files (unit-testing a private helper, or patching module-owned state). corpus and
-# scope are the two modules this file's own code reads bare, as corpus.split_command_segments
-# and scope.PROJECTS_DIR.
+# test files (unit-testing a private helper, or patching module-owned state). scope is the
+# one module this file's own code reads bare, as scope.PROJECTS_DIR.
 # A module dropped from this list (e.g. audit_routing, denials) has no `_mod`
 # reader left. Reintroducing a shim-loading test file for it without restoring its
 # binding here breaks that file's collection.
@@ -71,8 +67,14 @@ from transcript_analysis.cache_rebuild import (
     _CACHE_REBUILD_DEFAULT_THRESHOLD,
     cmd_cache_rebuild,
 )
+from transcript_analysis.commit_gate import (
+    # _add_commit_gate_subparser is read bare by this file's own build_parser (the commit-gate
+    # subparser's registration). cmd_commit_gate is read only via _mod.cmd_commit_gate from test files.
+    _add_commit_gate_subparser,
+    cmd_commit_gate,  # noqa: F401
+)
 from transcript_analysis.corpus import (
-    SUBAGENT_SUBDIR,
+    SUBAGENT_SUBDIR,  # noqa: F401 -- read only via _mod.SUBAGENT_SUBDIR from test files
     _parse_ts,
     _read_session_file_partitioned,
     iter_sessions,  # noqa: F401 -- read only via _mod.iter_sessions from test files
@@ -97,10 +99,6 @@ from transcript_analysis.cost_ledger import (
     # subcommand's own set_defaults).
     cmd_cost_ledger,
 )
-from transcript_analysis.denials import (
-    # Read bare by this file's own _command_segment_is_mutating_git.
-    _drop_denial_command_flag_values,
-)
 from transcript_analysis.duration import (
     # _add_duration_subparser is read bare by this file's own build_parser (the duration
     # subparser's registration). cmd_duration is read only via _mod.cmd_duration from test files.
@@ -116,15 +114,6 @@ from transcript_analysis.fail_seq import (
 from transcript_analysis.friction_count import (
     # Read bare by this file's own build_parser (the friction-count subcommand's registration).
     _add_friction_count_subparser,
-)
-from transcript_analysis.gh_cli import (
-    # Read bare by pr-link: _classify_gh_error, _GH_ERROR_KIND_NETWORK, _gh_host_qualified_repo,
-    # _GH_CALL_TIMEOUT_S, _git_remote_origin_host_and_owner_repo.
-    _GH_CALL_TIMEOUT_S,
-    _GH_ERROR_KIND_NETWORK,
-    _classify_gh_error,
-    _gh_host_qualified_repo,
-    _git_remote_origin_host_and_owner_repo,
 )
 from transcript_analysis.handoff_signal_response import (
     # Read bare by this file's own build_parser (the handoff-signal-response
@@ -160,6 +149,12 @@ from transcript_analysis.pr_cost_export import (
     # Read bare by this file's own still-monolithic build_parser (the pr-cost-export
     # subcommand's own set_defaults).
     cmd_pr_cost_export,
+)
+from transcript_analysis.pr_link import (
+    # _add_pr_link_subparser is read bare by this file's own build_parser (the pr-link
+    # subparser's registration). cmd_pr_link is read only via _mod.cmd_pr_link from test files.
+    _add_pr_link_subparser,
+    cmd_pr_link,  # noqa: F401
 )
 from transcript_analysis.pricing import (
     _CACHE_READ_MULTIPLIER,
@@ -208,9 +203,8 @@ from transcript_analysis.redaction import (
 from transcript_analysis.render import (
     _content_text,
     _context_distribution_rows,
-    _fam,
+    _fam,  # noqa: F401 -- read only via _mod._fam from test files
     _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
-    _fmt_usd,
     _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
     _pct_of,
     _sanitize_table_cell,  # noqa: F401 -- read only via _mod._sanitize_table_cell from test files
@@ -236,8 +230,6 @@ from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _add_project_scope_args,
-    _attributed_branch,
-    _branch_filter,
     _iso_date,
     _iter_scoped_sessions,  # noqa: F401 -- read only via _mod._iter_scoped_sessions from test files
     _parse_absolute_window_args,  # noqa: F401 -- read only via _mod._parse_absolute_window_args from test files
@@ -250,10 +242,17 @@ from transcript_analysis.scope import (
     _resolved_scope_header,  # noqa: F401 -- read only via _mod._resolved_scope_header from test files
     _root_index_for_path,
     _scan_root_transcripts,
-    _session_branch_context,
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
-from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots
+
+# _resolve_scan_roots is read only via _mod._resolve_scan_roots from test files.
+from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots  # noqa: F401
+from transcript_analysis.sessions import (
+    # _add_sessions_subparser is read bare by this file's own build_parser (the sessions
+    # subparser's registration). cmd_sessions is read only via _mod.cmd_sessions from test files.
+    _add_sessions_subparser,
+    cmd_sessions,  # noqa: F401
+)
 from transcript_analysis.skill_invocation import (
     # _add_skill_invocation_subparser is read bare by this file's own build_parser (the
     # skill-invocation subcommand's registration). cmd_skill_invocation is read only via
@@ -292,6 +291,12 @@ from transcript_analysis.subagents import (
     _MCP_TOOL_BUCKET_LABEL,
     cmd_subagents,
 )
+from transcript_analysis.turn_shape import (
+    # Read bare by this file's own build_parser (each turn-shape subcommand's registration).
+    _add_turn_shape_holdout_samples_subparser,
+    _add_turn_shape_samples_subparser,
+    _add_turn_shape_subparser,
+)
 from transcript_analysis.user_input import (
     # _add_user_input_subparser is read bare by this file's own build_parser (the user-input
     # subparser's registration). cmd_user_input is read only via _mod.cmd_user_input from test files.
@@ -303,289 +308,6 @@ from transcript_analysis.workstream_cost import (
     # subcommand's own set_defaults).
     cmd_workstream_cost,
 )
-
-
-def _pr_link_gh_failure_kind(exc: Exception) -> str:
-    """This module's own label for why a pr-link gh call failed -- never gh's
-    raw stderr, which can echo the queried repo verbatim."""
-    if isinstance(exc, FileNotFoundError):
-        return "gh not found"
-    if isinstance(exc, json.JSONDecodeError):
-        return "unparseable gh output"
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return "timeout"
-    kind = _classify_gh_error(getattr(exc, "stderr", None) or "")
-    # _classify_gh_error falls through to "network" for any stderr it does
-    # not recognize, a wrong repo slug included.
-    return "network or unrecognized" if kind == _GH_ERROR_KIND_NETWORK else kind
-
-
-def _pr_link_report_gh_failure(branch: str, step: str, exc: Exception) -> None:
-    print(f"pr-link: {step} failed for branch {branch} ({_pr_link_gh_failure_kind(exc)})", file=sys.stderr)
-
-
-def cmd_pr_link(args: argparse.Namespace) -> None:
-    if not getattr(args, "branches", None):
-        print("--branches is required for pr-link", file=sys.stderr)
-        sys.exit(1)
-
-    branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
-    supplied_repo: str | None = getattr(args, "repo", None)
-    if supplied_repo:
-        repo = pr_list_repo = supplied_repo
-        api_host_args: list[str] = []
-    else:
-        # `gh pr list --repo` takes the host-qualified slug directly; `gh api`
-        # takes `--hostname` instead, since its path carries no host.
-        # Either way, a GHE origin reaches the right host regardless of the
-        # ambient GH_HOST.
-        origin_host, repo = _git_remote_origin_host_and_owner_repo(
-            subcommand="pr-link", failure_hint="pass --repo OWNER/REPO",
-        )
-        pr_list_repo = _gh_host_qualified_repo(origin_host, repo)
-        api_host_args = ["--hostname", origin_host]
-    author: str = getattr(args, "author", None) or ""
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "pr-link", roots=roots)
-
-    branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for _jsonl, records in session_iter:
-        branch_context = _session_branch_context(records)
-        for rec in records:
-            branch = _attributed_branch(rec, branch_context) or ""
-            if branch not in branches or rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-                continue
-            fam = _fam((rec.get("message") or {}).get("model", ""))
-            branch_models[branch][fam] += 1
-
-    _print_resolved_scope("pr-link", scope_label, roots)
-    print(f"{'Branch':<35} {'PR':>5} {'Opus':>6} {'Sonnet':>7} {'IssueCmt':>9} {'ReviewCmt':>10}")
-    print("-" * 80)
-
-    for branch in branches:
-        model_split = branch_models.get(branch, {})
-        opus_n = model_split.get("opus", 0)
-        sonnet_n = model_split.get("sonnet", 0)
-
-        try:
-            pr_result = subprocess.run(
-                [
-                    "gh", "pr", "list", "--head", branch, "--repo", pr_list_repo,
-                    "--state", "all", "--json", "number", "--limit", "1",
-                ],
-                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
-            )
-            prs = json.loads(pr_result.stdout or "[]")
-        except (
-            subprocess.CalledProcessError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired,
-        ) as exc:
-            _pr_link_report_gh_failure(branch, "gh pr list", exc)
-            print(f"{branch:<35} {'?':>5} {opus_n:>6} {sonnet_n:>7} {'gh-err':>9} {'':>10}")
-            continue
-
-        if not prs:
-            print(f"{branch:<35} {'none':>5} {opus_n:>6} {sonnet_n:>7} {'—':>9} {'—':>10}")
-            continue
-
-        pr_number = prs[0]["number"]
-        issue_comments = review_comments = 0
-
-        try:
-            ic = subprocess.run(
-                [
-                    "gh", "api", *api_host_args, f"repos/{repo}/issues/{pr_number}/comments",
-                    "--paginate", "--jq", ".[].user.login",
-                ],
-                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
-            )
-            issue_logins = [ln.strip() for ln in ic.stdout.splitlines() if ln.strip()]
-            issue_comments = sum(1 for ln in issue_logins if not author or ln == author)
-
-            rc = subprocess.run(
-                [
-                    "gh", "api", *api_host_args, f"repos/{repo}/pulls/{pr_number}/comments",
-                    "--paginate", "--jq", ".[].user.login",
-                ],
-                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
-            )
-            review_logins = [ln.strip() for ln in rc.stdout.splitlines() if ln.strip()]
-            review_comments = sum(1 for ln in review_logins if not author or ln == author)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-            _pr_link_report_gh_failure(branch, "gh api comments", exc)
-            issue_comments = review_comments = -1
-
-        print(f"{branch:<35} {pr_number:>5} {opus_n:>6} {sonnet_n:>7} {issue_comments:>9} {review_comments:>10}")
-
-
-# Matches `git commit` as a standalone command or after a shell separator,
-# but NOT `git commit-tree` or other `git commit`-prefixed subcommands.
-# Mirrors the regex in require-code-review.sh line 38.
-_GIT_COMMIT_RE = re.compile(r"(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)")
-_NO_VERIFY_RE = re.compile(r"\s--no-verify\b")
-
-
-def cmd_commit_gate(args: argparse.Namespace) -> None:
-    skill_name: str = args.skill
-    by_mode: bool = bool(getattr(args, "by_permission_mode", False))
-    branch_filter = _branch_filter(args)
-    exclude_glob: str | None = getattr(args, "exclude_projects", None) or None
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "commit-gate", roots=roots)
-    _print_resolved_scope("commit-gate", scope_label, roots)
-
-    # bin_mode_key -> aggregated counts
-    data: dict[tuple[str, str], dict] = defaultdict(lambda: {
-        "sessions": 0,
-        "turns": 0,
-        "skill_invocations": 0,
-        "commits": 0,
-        "commits_with_prior_skill": 0,
-        "commits_without_prior_skill": 0,
-        "commits_no_verify": 0,
-    })
-
-    for jsonl, records in session_iter:
-        # Apply --exclude-projects: skip if project dir basename matches the glob.
-        proj_dir_name = jsonl.parent.name
-        if exclude_glob and Path(proj_dir_name).match(exclude_glob):
-            continue
-
-        # --- per-session derivation ---
-
-        # 1. permissionMode: first record (any type) carrying a non-empty value.
-        # Empirically the field lives on `user` records (session-meta initial-user
-        # records), not on assistant records — filtering by type misses it.
-        permission_mode = "default"
-        for rec in records:
-            pm = rec.get("permissionMode") or ""
-            if pm:
-                permission_mode = pm
-                break
-
-        # 2. first_turn_ts for ISO-week binning (any record with a timestamp).
-        first_turn_ts: float | None = None
-        for rec in records:
-            ts = _parse_ts(rec.get("timestamp"))
-            if ts is not None:
-                first_turn_ts = ts
-                break
-        if first_turn_ts is None:
-            continue
-        iso_year, iso_week, _ = datetime.fromtimestamp(first_turn_ts, tz=UTC).isocalendar()
-        bin_label = f"{iso_year}-W{iso_week:02d}"
-
-        # 3. Branch filter — session contributes if ANY main-thread record is on an allowed branch.
-        if branch_filter:
-            session_branches = {
-                rec.get("gitBranch") or ""
-                for rec in records
-                if rec.get("type") == "assistant" and not bool(rec.get("isSidechain"))
-            }
-            if not (session_branches & branch_filter):
-                continue
-
-        # 4. Walk records: count turns, skill invocations, and commits with ordering.
-        #    Only main-thread (isSidechain != true) assistant records.
-        #
-        #    Commit gating is tracked by a "skill_since_last_commit" flag that
-        #    resets each time a commit is detected.  Within a single assistant
-        #    record, content-array index determines ordering between Skill and
-        #    Bash blocks.
-        session_turns = 0
-        session_skill_invocations = 0
-        session_commits = 0
-        session_commits_with_prior_skill = 0
-        session_commits_without_prior_skill = 0
-        session_commits_no_verify = 0
-
-        # Tracks whether a qualifying Skill invocation has occurred since the
-        # last commit (or session start).
-        skill_seen_since_last_commit = False
-
-        for rec in records:
-            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-                continue
-            session_turns += 1
-
-            content = (rec.get("message") or {}).get("content") or []
-
-            # Process each tool_use block in content-array order so that within
-            # a single record the Skill/Bash ordering determines gating.
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                block_name = block.get("name")
-                inp = block.get("input") or {}
-
-                if block_name == "Skill":
-                    if inp.get("skill") == skill_name:
-                        session_skill_invocations += 1
-                        skill_seen_since_last_commit = True
-
-                elif block_name == "Bash":
-                    cmd = inp.get("command", "")
-                    if _GIT_COMMIT_RE.search(cmd):
-                        session_commits += 1
-                        is_no_verify = bool(_NO_VERIFY_RE.search(cmd))
-                        if is_no_verify:
-                            session_commits_no_verify += 1
-                            # --no-verify bypasses the gate entirely; count in
-                            # commits and commits-no-verify but NOT in
-                            # commits-with-prior-skill.
-                            session_commits_without_prior_skill += 1
-                        elif skill_seen_since_last_commit:
-                            session_commits_with_prior_skill += 1
-                        else:
-                            session_commits_without_prior_skill += 1
-                        # Reset: the skill must fire again to gate the next commit.
-                        skill_seen_since_last_commit = False
-
-        bucket_key = (bin_label, permission_mode if by_mode else "all")
-        d = data[bucket_key]
-        d["sessions"] += 1
-        d["turns"] += session_turns
-        d["skill_invocations"] += session_skill_invocations
-        d["commits"] += session_commits
-        d["commits_with_prior_skill"] += session_commits_with_prior_skill
-        d["commits_without_prior_skill"] += session_commits_without_prior_skill
-        d["commits_no_verify"] += session_commits_no_verify
-
-    if not data:
-        print("No data found.")
-        return
-
-    if by_mode:
-        header = (
-            f"{'bin':<12} {'mode':<10} {'sessions':>8} {'turns':>7} "
-            f"{'skill-inv':>10} {'skill/1k':>9} {'commits':>7} "
-            f"{'w-skill':>8} {'wo-skill':>9} {'no-verify':>10}"
-        )
-    else:
-        header = (
-            f"{'bin':<12} {'sessions':>8} {'turns':>7} "
-            f"{'skill-inv':>10} {'skill/1k':>9} {'commits':>7} "
-            f"{'w-skill':>8} {'wo-skill':>9} {'no-verify':>10}"
-        )
-    print(header)
-    print("-" * len(header))
-
-    for (bin_label, mode) in sorted(data):
-        d = data[(bin_label, mode)]
-        skill_rate = f"{1000 * d['skill_invocations'] / d['turns']:.1f}" if d["turns"] else "—"
-        if by_mode:
-            print(
-                f"{bin_label:<12} {mode:<10} {d['sessions']:>8} {d['turns']:>7} "
-                f"{d['skill_invocations']:>10} {skill_rate:>9} {d['commits']:>7} "
-                f"{d['commits_with_prior_skill']:>8} {d['commits_without_prior_skill']:>9} "
-                f"{d['commits_no_verify']:>10}"
-            )
-        else:
-            print(
-                f"{bin_label:<12} {d['sessions']:>8} {d['turns']:>7} "
-                f"{d['skill_invocations']:>10} {skill_rate:>9} {d['commits']:>7} "
-                f"{d['commits_with_prior_skill']:>8} {d['commits_without_prior_skill']:>9} "
-                f"{d['commits_no_verify']:>10}"
-            )
 
 
 def cmd_context_distribution(args: argparse.Namespace) -> None:
@@ -2246,420 +1968,6 @@ def _cache_efficiency_report(args: argparse.Namespace, roots: Sequence[Path] | N
     _print_cache_efficiency_report(stats, per_account if multi_root else None)
 
 
-# ---------------------------------------------------------------------------
-# turn-shape / turn-shape-samples
-# ---------------------------------------------------------------------------
-
-# Mutating git subcommands, excluded wholesale from the delegation streak with
-# no read-only carve-out (e.g. "git tag -l" still excluded) -- matches
-# deny-reviewer-tree-mutation.sh's posture. See
-# .claude/plans/tool-call-compliance-enforcement.md for the enumeration's rationale.
-_TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
-    "commit", "push", "merge", "rebase", "cherry-pick", "reset", "revert",
-    "stash", "tag", "checkout", "switch", "restore", "add", "rm", "mv",
-    "branch", "clean", "remote", "fetch", "reflog", "symbolic-ref", "fsck",
-    "worktree",
-})
-
-
-# A single env-var-assignment token, e.g. "FOO=bar" -- the per-token form of
-# _DENIAL_COMMAND_ENV_PREFIX_RE's leading-assignment character classes, applied
-# per shell-operator segment (not just once at the start of the whole
-# command) so "cd dir && FOO=bar git commit" strips the second segment's own
-# env prefix too.
-_TURN_SHAPE_ENV_ASSIGNMENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
-
-
-def _command_segment_is_mutating_git(tokens: list[str]) -> bool:
-    """Return True iff one already-tokenized shell segment invokes a mutating git subcommand.
-
-    Strips this segment's own leading env-var-assignment tokens and a leading
-    "sudo", reuses _denial_command_shape's git repo-selection flag-value drop,
-    then checks the resulting subcommand token against
-    _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS.
-    """
-    while tokens and _TURN_SHAPE_ENV_ASSIGNMENT_TOKEN_RE.match(tokens[0]):
-        tokens = tokens[1:]
-    if tokens and os.path.basename(tokens[0]) == "sudo":
-        tokens = tokens[1:]
-    if not tokens:
-        return False
-    tokens[0] = os.path.basename(tokens[0])
-    tokens = _drop_denial_command_flag_values(tokens)
-    if len(tokens) < 2 or tokens[0] != "git":
-        return False
-    return tokens[1] in _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS
-
-
-def _bash_command_is_mutating_git(command: str) -> bool:
-    """Return True iff any &&/;/|/||-chained segment of `command` invokes a
-    mutating git subcommand (see _command_segment_is_mutating_git).
-    """
-    return any(
-        _command_segment_is_mutating_git(segment)
-        for segment in corpus.split_command_segments(command)
-    )
-
-
-_TURN_SHAPE_CALL_COUNT_BUCKETS: tuple[str, ...] = ("0", "1", "2-3", "4-7", "8+")
-_TURN_SHAPE_STREAK_BUCKETS: tuple[str, ...] = ("1", "2", "3-5", "6-10", "11+")
-
-
-def _turn_shape_call_count_bucket(call_count: int) -> str:
-    """Map a turn's tool-call count to its _TURN_SHAPE_CALL_COUNT_BUCKETS label."""
-    if call_count == 0:
-        return "0"
-    if call_count == 1:
-        return "1"
-    if call_count <= 3:
-        return "2-3"
-    if call_count <= 7:
-        return "4-7"
-    return "8+"
-
-
-def _turn_shape_streak_bucket(streak_len: int) -> str:
-    """Map a streak length to its _TURN_SHAPE_STREAK_BUCKETS label."""
-    if streak_len == 1:
-        return "1"
-    if streak_len == 2:
-        return "2"
-    if streak_len <= 5:
-        return "3-5"
-    if streak_len <= 10:
-        return "6-10"
-    return "11+"
-
-
-def _turn_shape_session_turns(records: list[dict], since_ts: float | None, session_id: str) -> list[dict]:
-    """Build one dict per qualifying assistant turn in `records`, post-dedup.
-
-    Population is every assistant turn with usage, across every model —
-    deliberately independent of cmd_audit_routing_shape's own Opus-only,
-    judgment-span-scoped population, which measures a different rule
-    entirely. isSidechain turns are excluded per-record after dedup, not via
-    iter_sessions' own include_subagents flag, so a sidechain record written
-    inline into the main transcript file is caught the same as one from a
-    split subagent file. Each entry carries enough to both aggregate
-    (call_count, dollars, unpriced_tokens) and, for a single-call turn,
-    render a sample (tool_name, command).
-    """
-    records = _dedup_turns_by_request_id(records)
-    turns: list[dict] = []
-    for rec in records:
-        if bool(rec.get("isSidechain")):
-            continue
-        if rec.get("type") != "assistant":
-            continue
-        msg = rec.get("message") or {}
-        usage = msg.get("usage")
-        if not usage:
-            continue
-        if since_ts is not None:
-            rec_ts = _parse_ts(rec.get("timestamp"))
-            if rec_ts is None or rec_ts < since_ts:
-                continue
-
-        content = msg.get("content") or []
-        tool_use_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
-        call_count = len(tool_use_blocks)
-        tool_name = tool_use_blocks[0].get("name", "") if call_count == 1 else ""
-        command = (tool_use_blocks[0].get("input") or {}).get("command", "") if tool_name == "Bash" else ""
-
-        dollars_by_class, _, turn_unpriced_tokens = _price_turn(msg.get("model", ""), usage)
-        dollars = sum(dollars_by_class.values()) if dollars_by_class is not None else 0.0
-
-        turns.append({
-            "session_id": session_id,
-            "branch": rec.get("gitBranch") or "",
-            "call_count": call_count,
-            "dollars": dollars,
-            "tool_name": tool_name,
-            "command": command,
-            "is_single_bash": tool_name == "Bash",
-            "is_mutating_git": tool_name == "Bash" and _bash_command_is_mutating_git(command),
-            "unpriced_tokens": turn_unpriced_tokens if dollars_by_class is None else 0,
-        })
-    return turns
-
-
-def _turn_shape_streaks(session_turns: list[dict], *, require_bash: bool) -> list[list[dict]]:
-    """Return each maximal streak of qualifying turns in session_turns, in order.
-
-    require_bash=False qualifies any single-call turn (the batching-rule
-    population); require_bash=True additionally requires that call be Bash and
-    excludes _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS (the delegation-rule
-    population) — this exclusion applies only here, not to the
-    require_bash=False streak. A gitBranch change or a non-qualifying turn
-    ends the current streak; an interleaved user-type record never reaches
-    this list at all (_turn_shape_session_turns keeps assistant turns only),
-    so it cannot break a streak either.
-    """
-    streaks: list[list[dict]] = []
-    current: list[dict] = []
-    prev_branch: str | None = None
-    for turn in session_turns:
-        if prev_branch is not None and turn["branch"] != prev_branch and current:
-            streaks.append(current)
-            current = []
-
-        qualifies = turn["call_count"] == 1 and (
-            not require_bash or (turn["is_single_bash"] and not turn["is_mutating_git"])
-        )
-        if qualifies:
-            current.append(turn)
-        else:
-            if current:
-                streaks.append(current)
-            current = []
-        prev_branch = turn["branch"]
-    if current:
-        streaks.append(current)
-    return streaks
-
-
-def cmd_turn_shape(args: argparse.Namespace) -> None:
-    """Per-turn tool-call-count distribution, plus streak-length distributions
-    for consecutive single-call turns (the batching-rule signal) and
-    consecutive Bash-only single-call turns excluding mutating-git commands
-    (the delegation-rule signal), each weighted by the turn's own priced
-    dollar cost.
-    """
-    since_ts, since_raw = _parse_since_nd_arg(args, "turn-shape")
-    since_label = since_raw or ""
-
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "turn-shape", roots=roots)
-
-    call_count_turns: dict[str, int] = {b: 0 for b in _TURN_SHAPE_CALL_COUNT_BUCKETS}
-    call_count_dollars: dict[str, float] = {b: 0.0 for b in _TURN_SHAPE_CALL_COUNT_BUCKETS}
-    batching_streaks: dict[str, int] = {b: 0 for b in _TURN_SHAPE_STREAK_BUCKETS}
-    batching_dollars: dict[str, float] = {b: 0.0 for b in _TURN_SHAPE_STREAK_BUCKETS}
-    delegation_streaks: dict[str, int] = {b: 0 for b in _TURN_SHAPE_STREAK_BUCKETS}
-    delegation_dollars: dict[str, float] = {b: 0.0 for b in _TURN_SHAPE_STREAK_BUCKETS}
-    unpriced_turns = 0
-    unpriced_tokens = 0
-
-    _print_resolved_scope("turn-shape", scope_label, roots)
-
-    for jsonl, records in session_iter:
-        session_turns = _turn_shape_session_turns(records, since_ts, jsonl.stem)
-
-        for turn in session_turns:
-            bucket = _turn_shape_call_count_bucket(turn["call_count"])
-            call_count_turns[bucket] += 1
-            call_count_dollars[bucket] += turn["dollars"]
-            if turn["unpriced_tokens"]:
-                unpriced_turns += 1
-                unpriced_tokens += turn["unpriced_tokens"]
-
-        for streak in _turn_shape_streaks(session_turns, require_bash=False):
-            bucket = _turn_shape_streak_bucket(len(streak))
-            batching_streaks[bucket] += 1
-            batching_dollars[bucket] += sum(t["dollars"] for t in streak)
-
-        for streak in _turn_shape_streaks(session_turns, require_bash=True):
-            bucket = _turn_shape_streak_bucket(len(streak))
-            delegation_streaks[bucket] += 1
-            delegation_dollars[bucket] += sum(t["dollars"] for t in streak)
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Turn shape ({title_since})\n")
-
-    print("### Tool calls per turn\n")
-    header = f"{'Bucket':<8} {'Turns':>8} {'$':>12}"
-    print(header)
-    print("─" * len(header))
-    for bkt in _TURN_SHAPE_CALL_COUNT_BUCKETS:
-        print(f"{bkt:<8} {call_count_turns[bkt]:>8,} {_fmt_usd(call_count_dollars[bkt]):>12}")
-
-    print("\n### Single-call streak length (batching rule)\n")
-    header = f"{'Bucket':<8} {'Streaks':>8} {'$':>12}"
-    print(header)
-    print("─" * len(header))
-    for bkt in _TURN_SHAPE_STREAK_BUCKETS:
-        print(f"{bkt:<8} {batching_streaks[bkt]:>8,} {_fmt_usd(batching_dollars[bkt]):>12}")
-
-    print("\n### Bash-only single-call streak length, excluding mutating git (delegation rule)\n")
-    header = f"{'Bucket':<8} {'Streaks':>8} {'$':>12}"
-    print(header)
-    print("─" * len(header))
-    for bkt in _TURN_SHAPE_STREAK_BUCKETS:
-        print(f"{bkt:<8} {delegation_streaks[bkt]:>8,} {_fmt_usd(delegation_dollars[bkt]):>12}")
-
-    if unpriced_turns:
-        print(f"\n  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
-
-
-# A length-1 "streak" has no adjacency to flag. This governs sampling for
-# manual calibration only; a downstream advisory mechanism reading this
-# subcommand's aggregate output sets its own threshold from the resulting
-# precision/recall figures, not from this constant.
-_TURN_SHAPE_SAMPLES_MIN_STREAK_LEN = 2
-
-# The unflagged (holdout) population is exactly the streaks turn-shape-samples
-# excludes — length == 1, not >= 2.
-_TURN_SHAPE_HOLDOUT_STREAK_LEN = 1
-
-
-def cmd_turn_shape_samples(args: argparse.Namespace) -> None:
-    """Emit a random sample of flagged turn-shape streaks (length >=
-    _TURN_SHAPE_SAMPLES_MIN_STREAK_LEN) as plain text, for manual calibration
-    of the batching and delegation rules against cmd_turn_shape's aggregate.
-
-    Plain text, not JSON, unlike audit-routing-samples: this output is
-    stamped with _DO_NOT_PUBLISH_BANNER, and prepending a banner line would
-    corrupt a JSON stream. (audit-routing-samples never stamps this banner at
-    all — a pre-existing gap in that subcommand, not addressed here.)
-    """
-    since_ts, _since_raw = _parse_since_nd_arg(args, "turn-shape-samples")
-    sample_n: int = getattr(args, "sample", 30) or 30
-    seed: int | None = getattr(args, "seed", None)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "turn-shape-samples", roots=roots)
-    # stderr, not stdout: stdout is this subcommand's plain-text data stream.
-    _print_resolved_scope("turn-shape-samples", scope_label, roots, file=sys.stderr)
-
-    candidates: list[dict] = []
-    for jsonl, records in session_iter:
-        session_turns = _turn_shape_session_turns(records, since_ts, jsonl.stem)
-        for rule, require_bash in (("batching", False), ("delegation", True)):
-            for streak in _turn_shape_streaks(session_turns, require_bash=require_bash):
-                if len(streak) >= _TURN_SHAPE_SAMPLES_MIN_STREAK_LEN:
-                    candidates.append({"rule": rule, "streak": streak})
-
-    rng = random.Random(seed)
-    rng.shuffle(candidates)
-    candidates = candidates[:sample_n]
-
-    print(_DO_NOT_PUBLISH_BANNER)
-    print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-    for candidate in candidates:
-        streak = candidate["streak"]
-        dollars = sum(t["dollars"] for t in streak)
-        print(
-            f"\n--- {candidate['rule']} streak, length={len(streak)}, "
-            f"{_fmt_usd(dollars)}, session={streak[0]['session_id']} ---"
-        )
-        for i, turn in enumerate(streak, 1):
-            detail = f": {turn['command']}" if turn["command"] else ""
-            print(f"  {i}. {turn['tool_name']}{detail}")
-
-
-def cmd_turn_shape_holdout_samples(args: argparse.Namespace) -> None:
-    """Emit a random sample of unflagged turn-shape streaks (length ==
-    _TURN_SHAPE_HOLDOUT_STREAK_LEN) as plain text, for manual recall
-    calibration of the batching and delegation rules — the complement of
-    cmd_turn_shape_samples's flagged population.
-
-    --seed defaults to a fixed constant (not None, unlike turn-shape-samples):
-    --offset pages this same shuffled population across repeated invocations,
-    which is only coherent if every invocation shuffles it identically.
-    """
-    since_ts, _since_raw = _parse_since_nd_arg(args, "turn-shape-holdout-samples")
-    sample_n: int = getattr(args, "sample", 30)
-    if sample_n is None:
-        sample_n = 30
-    seed: int = getattr(args, "seed", 0)
-    offset: int = getattr(args, "offset", 0)
-    if offset < 0:
-        print(
-            "turn-shape-holdout-samples: --offset must not be negative",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    if sample_n < 0:
-        print(
-            "turn-shape-holdout-samples: --sample must not be negative",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "turn-shape-holdout-samples", roots=roots)
-    # stderr, not stdout: stdout is this subcommand's plain-text data stream.
-    _print_resolved_scope("turn-shape-holdout-samples", scope_label, roots, file=sys.stderr)
-
-    candidates: list[dict] = []
-    for jsonl, records in session_iter:
-        session_turns = _turn_shape_session_turns(records, since_ts, jsonl.stem)
-        for rule, require_bash in (("batching", False), ("delegation", True)):
-            for streak in _turn_shape_streaks(session_turns, require_bash=require_bash):
-                if len(streak) == _TURN_SHAPE_HOLDOUT_STREAK_LEN:
-                    candidates.append({"rule": rule, "streak": streak})
-
-    rng = random.Random(seed)
-    rng.shuffle(candidates)
-    total_candidates = len(candidates)
-    window = candidates[offset:offset + sample_n]
-    # Keyed on offset vs. total_candidates, not on window emptiness: a
-    # window can also be empty because --sample=0, which is not "past the end".
-    if total_candidates and offset >= total_candidates:
-        print(
-            f"turn-shape-holdout-samples: --offset={offset} is past the end of the"
-            f" {total_candidates} unflagged candidates in scope",
-            file=sys.stderr,
-        )
-    print(
-        f"(offset={offset}, window={len(window)} of {total_candidates} unflagged candidates)",
-        file=sys.stderr,
-    )
-
-    print(_DO_NOT_PUBLISH_BANNER)
-    print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-    for candidate in window:
-        streak = candidate["streak"]
-        dollars = sum(t["dollars"] for t in streak)
-        print(
-            f"\n--- {candidate['rule']} streak, length={len(streak)}, "
-            f"{_fmt_usd(dollars)}, session={streak[0]['session_id']} ---"
-        )
-        for i, turn in enumerate(streak, 1):
-            detail = f": {turn['command']}" if turn["command"] else ""
-            print(f"  {i}. {turn['tool_name']}{detail}")
-
-
-# ---------------------------------------------------------------------------
-# sessions
-# ---------------------------------------------------------------------------
-
-def cmd_sessions(args: argparse.Namespace) -> None:
-    """Emit transcript file paths for the resolved scope, one absolute path per line.
-
-    --paths is required: it names the one action this subcommand supports today,
-    leaving room for a second sessions action later without a bare `sessions`
-    invocation silently doing nothing. Sourced from _resolve_scan_roots plus
-    _resolve_project_scope (not a flat glob), so a main session file only reaches
-    this repo's own worktrees under --this-repo the same way every other
-    subcommand does. --include-subagents additionally emits each split subagent
-    file's own path, found the same way read_session_file locates
-    them for its own record merge -- <session>/subagents/*.jsonl under the main
-    file's own directory -- rather than a flat glob across the whole scope, so a
-    caller that reads only the emitted paths gets exactly the same file set
-    read_session_file(include_subagents=True) would have merged, split back out
-    into individually readable files. The resolved-scope header goes to stderr,
-    matching audit-routing-samples' convention — stdout here is meant to be
-    piped to xargs/Read, not mixed with a header line.
-    """
-    if not bool(getattr(args, "paths", False)):
-        print("sessions: --paths is required (no other sessions action exists yet)", file=sys.stderr)
-        sys.exit(2)
-
-    include_subagents = bool(getattr(args, "include_subagents", False))
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(
-        args, "sessions", include_subagents=include_subagents, roots=roots
-    )
-    _print_resolved_scope("sessions", scope_label, roots, file=sys.stderr)
-    for jsonl, _records in session_iter:
-        print(jsonl)
-        if include_subagents:
-            subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
-            if subagent_dir.is_dir():
-                for sub_jsonl in sorted(subagent_dir.glob("*.jsonl")):
-                    print(sub_jsonl)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     # Top-level (not per-subcommand) so main() can reassign PROJECTS_DIR before
@@ -2787,35 +2095,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)
 
-    p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
-    p_pr.add_argument(
-        "--repo", metavar="OWNER/REPO",
-        help="GitHub repo to query (default: parsed from this checkout's origin remote, host-qualified)",
-    )
-    p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
-    p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
-    _add_project_scope_args(p_pr)
-    p_pr.set_defaults(func=cmd_pr_link)
-
+    _add_pr_link_subparser(sub)
     _add_skill_pair_subparser(sub)
-
-    p_gate = sub.add_parser(
-        "commit-gate",
-        help=(
-            "Per-commit gate-compliance: did <skill> precede each commit in the same session?"
-            " Optionally split by permissionMode."
-        ),
-    )
-    p_gate.add_argument("skill", help="Skill name to check (byte-equal match against Skill tool_use input.skill).")
-    p_gate.add_argument("--by-permission-mode", action="store_true", help="Split rows by permissionMode.")
-    _add_project_scope_args(p_gate)
-    p_gate.add_argument(
-        "--exclude-projects", default=None, metavar="GLOB",
-        help="Exclude project dirs whose basename matches this glob.",
-    )
-    p_gate.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
-    p_gate.set_defaults(func=cmd_commit_gate)
-
+    _add_commit_gate_subparser(sub)
     _add_skill_invocation_subparser(sub)
 
     p_review_trace = sub.add_parser(
@@ -3600,86 +2882,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit_samples.set_defaults(func=cmd_audit_routing_samples)
 
-    p_turn_shape = sub.add_parser(
-        "turn-shape",
-        help=(
-            "Per-turn tool-call-count distribution, plus streak-length distributions for"
-            " consecutive single-call turns (batching rule) and consecutive Bash-only"
-            " single-call turns excluding mutating git (delegation rule), dollar-weighted."
-        ),
-    )
-    _add_project_scope_args(p_turn_shape)
-    p_turn_shape.add_argument(
-        "--since", metavar="Nd",
-        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
-    )
-    p_turn_shape.set_defaults(func=cmd_turn_shape)
-
-    p_turn_shape_samples = sub.add_parser(
-        "turn-shape-samples",
-        help=(
-            "Emit a random sample of flagged turn-shape streaks (length >= 2) as plain text,"
-            " for manual calibration of the batching and delegation rules."
-        ),
-    )
-    _add_project_scope_args(p_turn_shape_samples)
-    p_turn_shape_samples.add_argument(
-        "--since", metavar="Nd",
-        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
-    )
-    p_turn_shape_samples.add_argument(
-        "--sample", type=int, default=30, metavar="N",
-        help="Maximum number of sample streaks to emit (default: 30).",
-    )
-    p_turn_shape_samples.add_argument(
-        "--seed", type=int, default=None, metavar="N",
-        help="Random seed for reproducible sampling.",
-    )
-    p_turn_shape_samples.set_defaults(func=cmd_turn_shape_samples)
-
-    p_turn_shape_holdout_samples = sub.add_parser(
-        "turn-shape-holdout-samples",
-        help=(
-            "Emit a random sample of unflagged turn-shape streaks (length == 1) as plain"
-            " text, for manual recall calibration of the batching and delegation rules."
-        ),
-    )
-    _add_project_scope_args(p_turn_shape_holdout_samples)
-    p_turn_shape_holdout_samples.add_argument(
-        "--since", metavar="Nd",
-        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
-    )
-    p_turn_shape_holdout_samples.add_argument(
-        "--sample", type=int, default=30, metavar="N",
-        help="Maximum number of sample streaks to emit (default: 30).",
-    )
-    p_turn_shape_holdout_samples.add_argument(
-        "--seed", type=int, default=0, metavar="N",
-        help=(
-            "Random seed for reproducible sampling (default: 0, not OS entropy — "
-            "so --offset pages the same shuffle across repeated invocations)."
-        ),
-    )
-    p_turn_shape_holdout_samples.add_argument(
-        "--offset", type=int, default=0, metavar="N",
-        help="Skip the first N candidates of the shuffled population (for paging).",
-    )
-    p_turn_shape_holdout_samples.set_defaults(func=cmd_turn_shape_holdout_samples)
-
-    p_sessions = sub.add_parser(
-        "sessions",
-        help="Emit transcript file paths for the resolved scope, one absolute path per line.",
-    )
-    _add_project_scope_args(p_sessions)
-    p_sessions.add_argument(
-        "--paths", action="store_true",
-        help="Print one absolute transcript path per line (the only sessions action today; required).",
-    )
-    p_sessions.add_argument(
-        "--include-subagents", action="store_true",
-        help="Also emit split subagent transcript paths under <session>/subagents/*.jsonl.",
-    )
-    p_sessions.set_defaults(func=cmd_sessions)
+    _add_turn_shape_subparser(sub)
+    _add_turn_shape_samples_subparser(sub)
+    _add_turn_shape_holdout_samples_subparser(sub)
+    _add_sessions_subparser(sub)
 
     _add_friction_count_subparser(sub)
 
