@@ -4621,7 +4621,7 @@ _lib_resume_context_index_dir() {
   # local user racing our directory entry, now that the guard above has
   # confirmed $tmpdir_root is not other- or group-writable without the
   # sticky bit.
-  chmod 700 -- "$dir" 2>/dev/null
+  chmod -- 700 "$dir" 2>/dev/null
   printf '%s\n' "$dir"
 }
 
