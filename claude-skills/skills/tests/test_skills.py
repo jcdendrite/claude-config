@@ -8084,20 +8084,30 @@ def test_review_pr_skill_carries_retained_control(
     )
 
 
-def test_review_pr_skill_mentions_findings_path_only_in_the_standing_override() -> None:
-    """The standing override is the only place review-pr/SKILL.md sets a
-    reviewer's `findings_path`. A mention on any other line is a step-level
-    instruction that can contradict the override's reviewer findings directory."""
+def test_review_pr_skill_mentions_findings_path_only_in_the_preamble() -> None:
+    """The literal `findings_path` token must appear somewhere above the first
+    `## ` heading of review-pr/SKILL.md, where the standing override sits. It
+    must appear on no line under a `## ` heading, because a step-level
+    instruction there could contradict the override's reviewer findings
+    directory. The rest of the preamble is unchecked. Only the literal token is
+    scanned, so a paraphrase without it passes."""
     skill_lines = _skill_file("review-pr").read_text().splitlines()
-    findings_path_lines = [line for line in skill_lines if "findings_path" in line]
-    assert findings_path_lines, (
-        "review-pr/SKILL.md no longer mentions `findings_path` at all, so the "
-        "standing override that hands reviewers a findings file path is gone."
+    first_section_index = next(
+        (index for index, line in enumerate(skill_lines) if line.startswith("## ")),
+        len(skill_lines),
     )
-    stray_lines = [line for line in findings_path_lines if not line.startswith("**Standing override.**")]
+    preamble_lines = skill_lines[:first_section_index]
+    section_lines = skill_lines[first_section_index:]
+    assert any("findings_path" in line for line in preamble_lines), (
+        "review-pr/SKILL.md's preamble ahead of the first `## ` heading no longer "
+        "mentions `findings_path`. Either the standing override that hands "
+        "reviewers a findings file path is gone from the preamble, or a `## ` "
+        "heading now sits above it so it falls under a section."
+    )
+    stray_lines = [line for line in section_lines if "findings_path" in line]
     assert not stray_lines, (
-        "review-pr/SKILL.md mentions `findings_path` outside the standing override "
-        f"line: {stray_lines!r}. A step-level `findings_path` instruction can "
+        "review-pr/SKILL.md mentions `findings_path` under a `##` section: "
+        f"{stray_lines!r}. A step-level `findings_path` instruction can "
         "contradict the override's reviewer findings directory."
     )
 
