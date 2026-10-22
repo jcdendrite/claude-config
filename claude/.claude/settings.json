@@ -24,6 +24,7 @@
       "Bash(~/.claude/scripts/marker.sh check verification)",
       "Bash(~/.claude/scripts/review-pr-findings-path.sh)",
       "Bash(~/.claude/scripts/review-pr-finish.sh)",
+      "Bash(~/.claude/scripts/review-pr-reviewer-findings-dir.sh)",
       "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",

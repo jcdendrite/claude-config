@@ -8187,28 +8187,70 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
 
 
 @pytest.mark.parametrize(
-    "phrase, heading",
+    "phrase, heading, consequence",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
             None,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
             _REVIEW_PR_STEP_7_HEADING,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="verify-before-apply-correction",
+        ),
+        pytest.param(
+            "replace the leading `agent-reviews` with the directory it prints, so each "
+            "file is `<printed directory>/<agent-name>-<suffix>.md`",
+            None,
+            "the guard against a reviewer spawned from the main tree being given a "
+            "relative `findings_path`, having its findings-file `Write` denied by the "
+            "worktree gate, and losing its findings (REFERENCES.md § 'Why spawned "
+            "reviewers write findings to a temporary directory').",
+            id="reviewer-findings-dir",
+        ),
+        pytest.param(
+            "reports a write whose file you cannot `Read`, or reports a path that "
+            "names a different file, has not reviewed: re-dispatch it once with no "
+            "`findings_path`",
+            None,
+            "the only fail-closed rule for a reviewer with no retrievable findings: "
+            "if any one of its two triggers (an unreadable file, a mismatched reported "
+            "path) or its re-dispatch action is lost, a reviewer whose findings cannot "
+            "be read is counted as having reviewed, so its findings are silently "
+            "absent from the review.",
+            id="reviewer-findings-fallback",
+        ),
+        pytest.param(
+            "`Read` only the path you handed that reviewer",
+            None,
+            "the guard against a steered reviewer's pointer line moving the session's "
+            "`Read` to a file of the reviewer's choosing.",
+            id="reviewer-findings-handed-path",
+        ),
+        pytest.param(
+            "before any reviewer spawns, run the script below",
+            None,
+            "the instruction that obtains the findings directory: without it the "
+            "session has no printed directory to put in place of `agent-reviews`, so "
+            "reviewers keep the relative `findings_path` the worktree gate denies "
+            "from the main tree.",
+            id="reviewer-findings-dir-creation",
         ),
     ],
 )
 def test_review_pr_skill_carries_retained_control(
-    phrase: str, heading: str | None
+    phrase: str, heading: str | None, consequence: str
 ) -> None:
     """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
-    standing override and the verify-before-apply rule. The override sits above
-    the first `##` heading, so it is checked file-wide; the verify rule is
-    checked in step 7's consult section. Claims presence only, not that the
-    agent obeys it."""
+    standing override, the reviewer-findings-directory creation and rewrite,
+    the re-dispatch rule, the handed-path `Read` rule, and the
+    verify-before-apply rule. The override and the four findings-directory
+    rules sit above the file's `##` headings, so they are checked file-wide;
+    the verify rule is checked in step 7's consult section. Claims presence
+    only, not that the agent obeys it."""
     skill_path = _skill_file("review-pr")
     if heading is None:
         searched_text = " ".join(skill_path.read_text().split())
@@ -8217,6 +8259,56 @@ def test_review_pr_skill_carries_retained_control(
         searched_text = _heading_section_text(skill_path, heading)
         searched_where = f"review-pr/SKILL.md's {heading!r} section"
     assert phrase in searched_text, (
-        f"{searched_where} no longer carries {phrase!r}, a control that "
-        "review-pr keeps itself rather than deferring to Agent Core."
+        f"{searched_where} no longer carries {phrase!r}, {consequence}"
+    )
+
+
+def test_review_pr_skill_mentions_findings_path_only_in_the_preamble() -> None:
+    """The literal `findings_path` token must appear somewhere above the first
+    `## ` heading of review-pr/SKILL.md, where the standing override sits. It
+    must appear on no line under a `## ` heading, because a step-level
+    instruction there could contradict the override's reviewer findings
+    directory. The rest of the preamble is unchecked. Only the literal token is
+    scanned, so a paraphrase without it passes."""
+    skill_lines = _skill_file("review-pr").read_text().splitlines()
+    first_section_index = next(
+        (index for index, line in enumerate(skill_lines) if line.startswith("## ")),
+        len(skill_lines),
+    )
+    preamble_lines = skill_lines[:first_section_index]
+    section_lines = skill_lines[first_section_index:]
+    assert any("findings_path" in line for line in preamble_lines), (
+        "review-pr/SKILL.md's preamble ahead of the first `## ` heading no longer "
+        "mentions `findings_path`. Either the standing override that hands "
+        "reviewers a findings file path is gone from the preamble, or a `## ` "
+        "heading now sits above it so it falls under a section."
+    )
+    stray_lines = [line for line in section_lines if "findings_path" in line]
+    assert not stray_lines, (
+        "review-pr/SKILL.md mentions `findings_path` under a `##` section: "
+        f"{stray_lines!r}. A step-level `findings_path` instruction can "
+        "contradict the override's reviewer findings directory."
+    )
+
+
+@pytest.mark.parametrize(
+    "dispatcher_name, dispatcher_path",
+    [
+        pytest.param("code-review/SKILL.md", _skill_file("code-review"), id="code-review"),
+        pytest.param("plan-review/ROUTING.md", _ROUTING_MD_PATH, id="plan-review"),
+    ],
+)
+def test_review_dispatchers_still_hand_reviewers_a_relative_agent_reviews_findings_path(
+    dispatcher_name: str, dispatcher_path: Path
+) -> None:
+    """review-pr/SKILL.md's standing override rewrites the leading
+    `agent-reviews` of the `findings_path` each dispatcher hands a reviewer. A
+    dispatcher reword away from `findings_path: agent-reviews/` would make that
+    rewrite a silent no-op, leaving a main-tree session's reviewers with a path
+    the worktree gate denies."""
+    dispatcher_text = " ".join(dispatcher_path.read_text().split())
+    assert "findings_path: agent-reviews/" in dispatcher_text, (
+        f"{dispatcher_name} no longer hands reviewers `findings_path: agent-reviews/`, "
+        "so review-pr/SKILL.md's override that replaces the leading `agent-reviews` "
+        "no longer applies to it."
     )
