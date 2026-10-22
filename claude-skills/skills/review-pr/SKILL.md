@@ -14,11 +14,9 @@ Review a pull request, whether authored by someone else or by the operator (the 
 ## Step 1 — Acquire PR context
 
 Form `<owner>/<repo>#<number>` from the argument. A URL supplies all three parts. A bare number takes this clone's `origin` owner/repo. The checkout and diff scripts refuse a PR whose repository is not `origin`'s.
-
 ```
 ~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<number>
 ```
-
 The script self-derives everything the later steps need from `gh` in one call and prints one JSON document on stdout.
 
 - It writes the identical document to `$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json`, a backstop against a harness-truncated stdout on a large PR. If stdout looks cut off, `Read` that file with `offset`/`limit`. The file is multi-line, and its path is printed on stderr before the document.
@@ -78,7 +76,7 @@ There is no checkout and no worktree. The script:
 - Rewrites provenance with mode `diff-only`.
 - Reports an execution-surface hit on stderr as an `AUDIT_FINDING` line, a mandatory finding and not a stop. Carry it into step 5 as blocking.
 
-Exit 4 restarts, and its second is final, as with checkout's exit 4. Any other non-zero exit status is final: report stderr and stop. After a stack, ancestor-PR, or lookup failure, tell the human they may re-run the script once under step 1's retry rule. Use no other acquisition route. A PR over 300 changed files is refused here too.
+`review-pr-diff.sh` exit 4 restarts, and its second is final, as with checkout's exit 4. Any other non-zero exit status from `review-pr-diff.sh` is final: report stderr and stop. After a stack, ancestor-PR, or lookup failure, tell the human they may re-run the script once under step 1's retry rule. Use no other acquisition route. `review-pr-diff.sh` refuses a PR over 300 changed files.
 
 ## Step 3 — Plan pass (conditional)
 
@@ -177,12 +175,9 @@ The write mechanically re-checks the prefix, the trailer, the mode-conditional d
 - The non-actionable notes, including findings step 7 moved out of the body as pre-existing and the reason step 3 skipped the plan pass. When step 1's stacked-target question redirected this review here, name every PR the redirects started from, to re-run once a review is posted here. Each may still be refused on other ancestors. When the engineer chose `proceed` over a stack, name each `baseStack.concerns` code (such as `changes-requested`) they proceeded over.
 - The `BASE_UNAVAILABLE` statement, if the diff-only run reported one.
 
-After presenting the body, change it only as the human's own message asks or to clear a `marker.sh write` refusal. Propose any other change beside the body, including what a re-check or consult finds, since a request to look is not a request to change. A change after presenting voids every earlier approval, including one given in the same message, until the human approves the body step 8 presents again. On explicit approval of the exact body to post:
+After presenting the body, change it only as the human's own message asks or to clear a `marker.sh write` refusal. Propose any other change beside the body, including what a re-check or consult finds, since a request to look is not a request to change. A change after presenting voids every earlier approval, including one given in the same message, until the human approves the body step 8 presents again. On explicit approval of the exact body to post, run exactly one of these two commands:
 ```
 ~/.claude/scripts/review-pr-post.sh request-changes <owner>/<repo>#<number>
-```
-or
-```
 ~/.claude/scripts/review-pr-post.sh comment <owner>/<repo>#<number>
 ```
 The post script re-verifies four things before posting:
