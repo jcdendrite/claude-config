@@ -2,7 +2,7 @@
 
 The hook is a SessionStart hook (matcher: startup) that launches
 reconcile-project-plugins.sh, found beside the hook's own directory
-(`../scripts/`), detached and with the resolved repo root as $1, when a trusted
+(`../scripts/`), detached and with the repo root as $1, when a trusted
 repo's checked-in settings enable a plugin the per-account registry lacks. It exits 0 on every path, prints nothing to stdout,
 and prints nothing to stderr except _config_enabled's config warnings (Sandbox.run
 asserts both; the cases that expect a warning name it).
@@ -39,6 +39,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     _build_subprocess_env,
+    _sourced_value,
     ambient_umask,
     file_mode,
     git_isolation_env,
@@ -79,10 +80,8 @@ LATENCY_PROBE_POLL_INTERVAL_SECONDS = 0.001
 
 # Matches ENTRYPOINT_LOGGED_MAX_LENGTH in the hook.
 ENTRYPOINT_LOGGED_MAX_LENGTH = 64
-# Matches _LIB_SIZE_THRESHOLD_BYTES in _lib.sh.
-SIZE_CAP_BYTES = 5242880
-# Matches _LIB_ENABLED_PLUGIN_IDS_MAX in _lib.sh.
-ENABLED_PLUGIN_IDS_MAX = 100
+SIZE_CAP_BYTES = int(_sourced_value("_LIB_SIZE_THRESHOLD_BYTES"))
+ENABLED_PLUGIN_IDS_MAX = int(_sourced_value("_LIB_ENABLED_PLUGIN_IDS_MAX"))
 # A valid-shaped key whose marketplace half is long enough that an unbounded `##*@` removal
 # takes many seconds, yet below the 128 KiB single-argument limit.
 LONG_MARKETPLACE_HALF_LENGTH = 96 * 1024
@@ -185,6 +184,19 @@ class Sandbox:
                 "n=0",
                 f"while [ ! -e {shlex.quote(str(self.release))} ] && [ \"$n\" -lt 300 ]; do sleep 0.1; n=$((n+1)); done",
             ]
+        stub = self.scripts_dir / "reconcile-project-plugins.sh"
+        stub.unlink(missing_ok=True)
+        stub.write_text("\n".join(lines) + "\n")
+        stub.chmod(0o755)
+
+    def install_environment_recording_stub(self) -> None:
+        """Stub reconciler: records its own environment atomically into the sentinel."""
+        sentinel_tmp = shlex.quote(str(self.sentinel) + ".tmp")
+        lines = [
+            "#!/bin/sh",
+            f"env > {sentinel_tmp}",
+            f"mv {sentinel_tmp} {shlex.quote(str(self.sentinel))}",
+        ]
         stub = self.scripts_dir / "reconcile-project-plugins.sh"
         stub.unlink(missing_ok=True)
         stub.write_text("\n".join(lines) + "\n")
@@ -430,6 +442,20 @@ class TestLaunchContract:
             sandbox.assert_launched_with_root()
         finally:
             sandbox.release.write_text("")
+
+    def test_ambient_git_location_variables_do_not_reach_the_launched_reconciler(self, sandbox, tmp_path):
+        """The toplevel lookup and the launch both run without the launching shell's GIT_DIR,
+        GIT_WORK_TREE and GIT_INDEX_FILE, so the reconciler resolves its repo from `$1` alone."""
+        git_location_names = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+        sandbox.install_environment_recording_stub()
+
+        sandbox.run(extra_env={name: str(tmp_path / f"ambient-{name}") for name in git_location_names})
+
+        assert sandbox.wait_for_launch(LAUNCH_DEADLINE_SECONDS), "reconciler stub was never launched"
+        recorded_names = {
+            line.partition("=")[0] for line in sandbox.sentinel.read_text(encoding="utf-8").splitlines()
+        }
+        assert recorded_names.isdisjoint(git_location_names)
 
     def test_unexecutable_reconciler_is_a_silent_no_launch(self, sandbox):
         (sandbox.scripts_dir / "reconcile-project-plugins.sh").chmod(0o644)
@@ -695,40 +721,188 @@ class TestPayloadResolution:
         [entry] = sandbox.audit_entries()
         assert entry["decision"] == "m1a_not_trusted"
 
-    def test_home_directory_with_account_level_settings_is_not_a_repo_root(self, sandbox):
-        """cwd $HOME holds ~/.claude/settings.json, the account's own file, even when trust for $HOME is recorded."""
+    def test_home_directory_with_account_level_settings_is_not_a_repo_root(self, sandbox, tmp_path):
+        """cwd $HOME is a git work tree whose `.claude/settings.json` is the account's own file. With the config dir
+        and a trust record for $HOME both outside it, only the `$HOME` identity guard refuses."""
+        init_git_repo(sandbox.home, env=sandbox.git_env)
+        account_config_dir = tmp_path / "account-config"
+        account_config_dir.mkdir()
         (sandbox.config_dir / "settings.json").write_text(json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}))
-        sandbox.write_trust(repo=sandbox.home)
+        sandbox.write_trust(repo=sandbox.home, trust_file=account_config_dir / ".claude.json")
 
-        sandbox.run(payload_cwd=sandbox.home, process_cwd=sandbox.home)
+        sandbox.run(payload_cwd=sandbox.home, process_cwd=sandbox.home, config_dir_env=str(account_config_dir))
 
-        assert not sandbox.audit_log.exists()
         sandbox.assert_not_launched()
+        assert not (account_config_dir / "plugin-bootstrap").exists()
 
-    def test_home_directory_that_is_a_git_repo_is_not_a_repo_root(self, sandbox):
+    def test_home_directory_that_is_a_git_repo_is_not_a_repo_root(self, sandbox, tmp_path):
+        """A payload `.cwd` below a git `$HOME` with no `.claude/settings.json` of its own falls back to the git toplevel,
+        which is $HOME. With the config dir and a trust record for that toplevel both outside it, only the `$HOME`
+        identity guard refuses."""
         init_git_repo(sandbox.home, env=sandbox.git_env)
         (sandbox.home / "projects-dir").mkdir()
+        account_config_dir = tmp_path / "account-config"
+        account_config_dir.mkdir()
         (sandbox.config_dir / "settings.json").write_text(json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}))
-        sandbox.write_trust(repo=sandbox.home)
+        sandbox.write_trust(repo=sandbox.home.resolve(), trust_file=account_config_dir / ".claude.json")
 
-        sandbox.run(payload_cwd=sandbox.home / "projects-dir", process_cwd=sandbox.home)
+        sandbox.run(
+            payload_cwd=sandbox.home / "projects-dir",
+            process_cwd=sandbox.home,
+            config_dir_env=str(account_config_dir),
+        )
 
-        assert not sandbox.audit_log.exists()
         sandbox.assert_not_launched()
+        assert not (account_config_dir / "plugin-bootstrap").exists()
 
     def test_home_reached_through_a_symlink_is_not_a_repo_root(self, sandbox, tmp_path):
-        """$HOME is compared by identity, not spelling: with $HOME a symlink to the real home and the
-        payload under the real path, trust is recorded for that path and the hook still must not launch."""
+        """$HOME is compared by identity, not spelling: with $HOME a symlink to the real home and the payload under
+        the real path, the config dir and trust record for that path sit outside the work tree, so only the
+        `$HOME` identity guard refuses."""
+        init_git_repo(sandbox.home, env=sandbox.git_env)
         home_alias = tmp_path / "home-alias"
         home_alias.symlink_to(sandbox.home)
         real_home = sandbox.home.resolve()
+        account_config_dir = tmp_path / "account-config"
+        account_config_dir.mkdir()
         (sandbox.config_dir / "settings.json").write_text(json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}))
-        sandbox.write_trust(repo=real_home)
+        sandbox.write_trust(repo=real_home, trust_file=account_config_dir / ".claude.json")
 
-        sandbox.run(payload_cwd=real_home, process_cwd=real_home, extra_env={"HOME": str(home_alias)})
+        sandbox.run(
+            payload_cwd=real_home,
+            process_cwd=real_home,
+            config_dir_env=str(account_config_dir),
+            extra_env={"HOME": str(home_alias)},
+        )
+
+        sandbox.assert_not_launched()
+        assert not (account_config_dir / "plugin-bootstrap").exists()
+
+    def test_non_git_directory_with_its_own_checked_in_settings_is_no_launch(self, sandbox, tmp_path):
+        """With no git work tree there is no control boundary to measure the config dir against, so the hook refuses.
+        GIT_CEILING_DIRECTORIES keeps an ambient work tree above tmp_path out of the lookup."""
+        plain_directory = (tmp_path / "plain-directory").resolve()
+        plain_directory.mkdir()
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=plain_directory)
+        sandbox.write_trust(repo=plain_directory)
+
+        sandbox.run(payload_cwd=plain_directory, extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)})
 
         assert not sandbox.audit_log.exists()
         sandbox.assert_not_launched()
+
+    def test_repo_subdirectory_with_its_own_checked_in_settings_is_the_repo_root_when_trust_is_keyed_by_it(
+        self, sandbox
+    ):
+        """The payload `.cwd` wins over the git toplevel whenever it holds its own `.claude/settings.json`."""
+        subdirectory = sandbox.repo / "nested"
+        subdirectory.mkdir()
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=subdirectory)
+        sandbox.write_trust(repo=subdirectory)
+
+        sandbox.run(payload_cwd=subdirectory)
+
+        sandbox.assert_launched_with_root(subdirectory)
+
+    def test_repo_subdirectory_with_its_own_checked_in_settings_is_untrusted_when_only_the_toplevel_is_trusted(
+        self, sandbox
+    ):
+        """Trust is looked up by the subdirectory, not the git toplevel, so a toplevel-only record does not cover it."""
+        subdirectory = sandbox.repo / "nested"
+        subdirectory.mkdir()
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=subdirectory)
+
+        sandbox.run(payload_cwd=subdirectory)
+
+        [entry] = sandbox.audit_entries()
+        assert entry["decision"] == "m1a_not_trusted"
+        assert entry["repo_root"] == str(subdirectory)
+        sandbox.assert_not_launched_after_logged_refusal()
+
+    @pytest.mark.parametrize(
+        "git_condition",
+        [
+            "git-answers-normally",
+            "core-worktree-names-another-directory",
+            "git-lookup-blocked-by-a-ceiling-below-the-toplevel",
+            "inherited-git-work-tree-env-names-another-directory",
+        ],
+    )
+    def test_config_dir_elsewhere_in_the_git_work_tree_is_no_launch_for_a_subdirectory_with_its_own_settings(
+        self, sandbox, tmp_path, git_condition
+    ):
+        """The repo-control boundary is the git work tree, not the subdirectory that holds its own settings,
+        so a config dir beside it in the same work tree cannot vouch for the subdirectory, however git answers.
+        The attacker dir's `plugin-bootstrap` stays absent only when the hook refuses before it logs."""
+        subdirectory = sandbox.repo / "nested"
+        subdirectory.mkdir()
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=subdirectory)
+        attacker_config_dir = sandbox.repo / ".attacker-config"
+        attacker_config_dir.mkdir()
+        sandbox.write_trust(repo=subdirectory, trust_file=attacker_config_dir / ".claude.json")
+        another_work_tree = tmp_path / "another-work-tree"
+        another_work_tree.mkdir()
+        extra_env = {
+            "git-answers-normally": None,
+            "core-worktree-names-another-directory": None,
+            "git-lookup-blocked-by-a-ceiling-below-the-toplevel": {"GIT_CEILING_DIRECTORIES": str(sandbox.repo)},
+            "inherited-git-work-tree-env-names-another-directory": {"GIT_WORK_TREE": str(another_work_tree)},
+        }[git_condition]
+        if git_condition == "core-worktree-names-another-directory":
+            subprocess.run(
+                ["git", "config", "core.worktree", str(another_work_tree)],
+                cwd=sandbox.repo, check=True, env=sandbox.git_env,
+            )
+
+        sandbox.run(payload_cwd=subdirectory, config_dir_env=str(attacker_config_dir), extra_env=extra_env)
+
+        sandbox.assert_not_launched()
+        assert not (attacker_config_dir / "plugin-bootstrap").exists()
+
+    def test_git_home_with_a_plain_project_directory_holding_its_own_settings_is_no_launch_and_silent(self, sandbox):
+        """With `$HOME` a git work tree, `~/.claude` lies inside it, so a project directory with no `.git` of its own
+        shares that boundary and the account's config dir cannot vouch for it."""
+        init_git_repo(sandbox.home, env=sandbox.git_env)
+        project_directory = sandbox.home / "plain-project"
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=project_directory)
+        sandbox.write_trust(repo=project_directory, trust_file=sandbox.home / ".claude.json")
+
+        sandbox.run(payload_cwd=project_directory, config_dir_env=None)
+
+        assert not sandbox.audit_log.exists()
+        sandbox.assert_not_launched()
+
+    def test_git_home_with_a_project_that_is_its_own_git_repo_still_launches(self, sandbox):
+        """Allow control for the git-`$HOME` refusal: the nearest work tree is the project, which does not contain `~/.claude`."""
+        init_git_repo(sandbox.home, env=sandbox.git_env)
+        project_repo = init_git_repo(sandbox.home / "own-repo-project", env=sandbox.git_env)
+        sandbox.write_settings({MISSING_PLUGIN_ID: True}, repo=project_repo)
+        sandbox.write_trust(repo=project_repo, trust_file=sandbox.home / ".claude.json")
+
+        sandbox.run(payload_cwd=project_repo, config_dir_env=None)
+
+        sandbox.assert_launched_with_root(project_repo)
+
+    def test_git_toplevel_lookup_runs_no_repo_configured_program_before_trust(self, sandbox, tmp_path):
+        """A repo can name a program in its own `core.fsmonitor`, so the lookup that runs before the trust check
+        must not be one git answers by running it. The `git status` control proves the marker can be written."""
+        fsmonitor_marker = tmp_path / "fsmonitor-ran"
+        fsmonitor_program = tmp_path / "fsmonitor-program.sh"
+        fsmonitor_program.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(fsmonitor_marker))}\n")
+        fsmonitor_program.chmod(0o755)
+        subprocess.run(
+            ["git", "config", "core.fsmonitor", str(fsmonitor_program)],
+            cwd=sandbox.repo, check=True, env=sandbox.git_env,
+        )
+        (sandbox.config_dir / ".claude.json").unlink()
+
+        sandbox.run()
+
+        assert not fsmonitor_marker.exists()
+        (sandbox.repo / "tracked.txt").write_text("content\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=sandbox.repo, check=True, env=sandbox.git_env)
+        subprocess.run(["git", "status"], cwd=sandbox.repo, check=True, env=sandbox.git_env, capture_output=True)
+        assert fsmonitor_marker.exists(), "the fsmonitor program was never run, so its absence above proves nothing"
 
     @pytest.mark.parametrize(
         ("stdin", "payload_cwd", "process_cwd_is_repo_parent"),
@@ -1257,6 +1431,53 @@ class TestReconcilerLocation:
         assert not attacker_sentinel.exists()
         assert not sandbox.audit_log.exists()
         assert not (in_repo_config_dir / "plugin-bootstrap").exists()
+
+    @staticmethod
+    def _write_path_resolution_shims(bin_dir: Path, failing_target: str) -> None:
+        """`realpath` and `grealpath` shims that exit 1 when their last argument is failing_target
+        and otherwise exec the real `realpath`, so only the one path's resolution fails."""
+        real_realpath = shutil.which("realpath")
+        if real_realpath is None:
+            reason = "no realpath on PATH to delegate the shims to"
+            if os.environ.get("CI"):
+                pytest.fail(f"{reason}; CI must provide one")
+            pytest.skip(reason)
+        bin_dir.mkdir()
+        shim_text = "\n".join(
+            [
+                "#!/bin/sh",
+                'for last_argument; do :; done',
+                f'[ "$last_argument" = {shlex.quote(failing_target)} ] && exit 1',
+                f"exec {shlex.quote(real_realpath)} \"$@\"",
+            ]
+        ) + "\n"
+        for shim_name in ("realpath", "grealpath"):
+            shim = bin_dir / shim_name
+            shim.write_text(shim_text)
+            shim.chmod(0o755)
+
+    @pytest.mark.parametrize("failing_path_kind", ["repo-root", "config-dir", "trust-record", "nothing"])
+    def test_unresolvable_repo_root_config_dir_or_trust_record_path_is_no_launch(
+        self, sandbox, tmp_path, failing_path_kind
+    ):
+        """The repo-control check cannot vouch for a path it cannot resolve, so it fails closed without a log line.
+        The `nothing` case targets no path the hook resolves, so a broken shim cannot pass the refusals by accident."""
+        failing_targets = {
+            "repo-root": str(sandbox.repo),
+            "config-dir": str(sandbox.config_dir),
+            "trust-record": str(sandbox.config_dir / ".claude.json"),
+            "nothing": str(tmp_path / "matches-no-resolved-path"),
+        }
+        bin_dir = tmp_path / "shim-bin"
+        self._write_path_resolution_shims(bin_dir, failing_targets[failing_path_kind])
+
+        sandbox.run(extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+        if failing_path_kind == "nothing":
+            sandbox.assert_launched_with_root()
+        else:
+            sandbox.assert_not_launched()
+            assert not sandbox.audit_log.exists()
 
     def _prepare_home_with_a_symlinked_config_dir(self, sandbox, home: Path) -> None:
         """A HOME whose `.claude` is the sandbox's real config dir, and whose `.claude.json` names the repo as trusted."""

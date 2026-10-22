@@ -27,6 +27,7 @@ import pytest
 from helpers import (
     RECONCILE_SH,
     REPO_ROOT,
+    _sourced_value,
     ambient_umask,
     assert_cap_engaged,
     file_mode,
@@ -58,6 +59,8 @@ _LOCK_PROBE_CAP_SECONDS = 5
 # A bounded-cost run finishes within this multiple of a control run on the same machine.
 # An unbounded sanitize or `##*@` pass over a hostile id costs orders of magnitude more.
 _HOSTILE_ID_COST_RATIO_LIMIT = 10
+# The size, in bytes, past which `_audit_log` empties the audit log before appending.
+_LIB_SIZE_THRESHOLD_BYTES = int(_sourced_value("_LIB_SIZE_THRESHOLD_BYTES"))
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +358,8 @@ class TestPreconditionRefusals:
         result = _run_with_exact_path(repo, config_dir=config_dir, bin_dir=bin_dir, home=tmp_path / "home")
 
         assert result.returncode == 0, repr(result)
-        assert "preflight_failed" not in [line["decision"] for line in reconciler_audit_lines(config_dir)]
+        # The exact PATH has no `python3`, so the run ends at the lock step, past every preflight guard.
+        assert [line["decision"] for line in reconciler_audit_lines(config_dir)] == ["lock_unavailable"]
 
     def test_uncreatable_bootstrap_directory_exits_zero_without_a_log(self, tmp_path: Path) -> None:
         """A directory that cannot be created leaves nowhere to log, so the run exits silently."""
@@ -664,6 +668,42 @@ class TestMarketplacePrecondition:
         assert [entry["plugin"] for entry in install_log_entries(install_log)] == ["foo@bar"]
         decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
         assert decisions == ["install_succeeded"]
+
+    @pytest.mark.parametrize("registered_first", ["good", "bad"])
+    def test_a_refused_id_does_not_stop_the_ids_after_it_whatever_the_marketplace_list_order(
+        self, tmp_path: Path, registered_first: str
+    ) -> None:
+        """One run mixes a failed install, an unregistered marketplace, a disallowed source type, and a
+        success. Each id gets its own decision and only the two admitted ids reach `plugin install`."""
+        repo = tmp_path / "repo"
+        init_reconciler_repo(
+            repo,
+            enabled_plugins={"a-fails@good": True, "b@unregistered": True, "c@bad": True, "d-ok@good": True},
+        )
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        marketplaces = {"good": "directory", "bad": "url"}
+        ordered_names = [registered_first] + [name for name in marketplaces if name != registered_first]
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": name, "source": marketplaces[name]} for name in ordered_names],
+            fail_install_ids=frozenset({"a-fails@good"}),
+            install_log=install_log,
+        )
+
+        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        assert sorted(entry["plugin"] for entry in install_log_entries(install_log)) == ["a-fails@good", "d-ok@good"]
+        decision_by_id = {line["plugin_id"]: line["decision"] for line in reconciler_audit_lines(config_dir)}
+        assert decision_by_id == {
+            "a-fails@good": "install_failed",
+            "b@unregistered": "m4_marketplace_not_registered",
+            "c@bad": "m4_source_type_not_allowed",
+            "d-ok@good": "install_succeeded",
+        }
 
     def test_credential_denylisted_id_is_skipped(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -1680,8 +1720,7 @@ _C1_CSI = "\u009b"
 _C0_ESC = "\x1b"
 _MULTIBYTE_LETTER = "\u00e9"
 _CONTROL_DENSE_FLOOD_SIZE = 6
-# Matches _LIB_PLUGIN_ID_MAX_LENGTH in _lib.sh.
-_PLUGIN_ID_MAX_LENGTH = 256
+_PLUGIN_ID_MAX_LENGTH = int(_sourced_value("_LIB_PLUGIN_ID_MAX_LENGTH"))
 
 # Each case is the set of enabledPlugins keys; distinct lengths keep the logged markers distinct.
 # These keys hold no control character, so they reach the reconciler and are logged as a length marker.
@@ -2026,7 +2065,7 @@ class TestAuditLogSizeCap:
         )
         audit_log = config_dir / "plugin-bootstrap" / "audit.log"
         audit_log.parent.mkdir(parents=True)
-        oversized_bytes = 5 * 1024 * 1024 + 1
+        oversized_bytes = _LIB_SIZE_THRESHOLD_BYTES + 1
         audit_log.write_text("x" * oversized_bytes)
 
         result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
@@ -2052,7 +2091,7 @@ class TestAuditLogSizeCap:
         )
         audit_log = config_dir / "plugin-bootstrap" / "audit.log"
         audit_log.parent.mkdir(parents=True)
-        oversized_line = "x" * (5 * 1024 * 1024 + 1)
+        oversized_line = "x" * (_LIB_SIZE_THRESHOLD_BYTES + 1)
         audit_log.write_text(oversized_line + "\n")
         lock_file = audit_log.parent / "audit.log.lock"
         lock_file.write_text(f"{os.getpid()}\n")
@@ -2080,7 +2119,7 @@ class TestAuditLogSizeCap:
         )
         audit_log = config_dir / "plugin-bootstrap" / "audit.log"
         audit_log.parent.mkdir(parents=True)
-        oversized_content = "x" * (5 * 1024 * 1024 + 1) + "\n"
+        oversized_content = "x" * (_LIB_SIZE_THRESHOLD_BYTES + 1) + "\n"
         audit_log.write_text(oversized_content)
         audit_log.chmod(0o444)
         try:

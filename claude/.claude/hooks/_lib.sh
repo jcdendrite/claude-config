@@ -3471,9 +3471,7 @@ _LIB_PLUGIN_ID_MAX_LENGTH=256
 # The body is a subshell that sets LC_ALL=C, so the length counts bytes and the
 # bracket ranges match only ASCII (see _lib_passes_path_char_allowlist for why
 # it avoids `local LC_ALL=C`).
-# Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so
-# neither can silently diverge from the other if this regex is ever
-# tightened again.
+# Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so the two callers cannot diverge.
 _lib_validate_plugin_id() (
   LC_ALL=C
   plugin_id="$1"
@@ -3578,28 +3576,27 @@ _lib_missing_plugin_ids() {
 # before using it in a CLI argv or any other sink.
 #
 # Exit 0: success. Stdout holds each missing id, one per line (empty when
-# none -- including when SETTINGS_CONTENT is empty or has no true-valued
-# enabledPlugins). A missing REGISTRY_FILE is treated as an empty registry,
-# matching install.sh's registry-read step ("proceeding as if none are
-# installed"), so every enabled id is reported missing.
+# none -- including when SETTINGS_CONTENT is empty, is not valid JSON, or has
+# no true-valued enabledPlugins). A missing REGISTRY_FILE is treated as an
+# empty registry, matching install.sh's registry-read step ("proceeding as if
+# none are installed"), so every enabled id is reported missing.
 # Exit 1: SETTINGS_CONTENT holds more than one top-level JSON value, or holds
 # more than _LIB_ENABLED_PLUGIN_IDS_MAX non-empty true-valued `enabledPlugins`
 # ids. Stdout is empty. Both callers treat this identically to a missing
 # settings file (nothing to install), but it is a status distinguishable from
 # exit 0 so a caller or test can tell "skipped" apart from "genuinely nothing
-# missing". Content that is not valid JSON also yields exit 0 with empty
-# stdout.
-# The enabled-ids filter needs jq 1.6 or later for `halt_error`; on jq 1.5 it fails to compile, which reads as no ids.
-# jq also accepts the literals `nan` and `Infinity`, which a strict JSON parser rejects, so such content can yield ids Claude Code would not read.
+# missing".
 # Exit 2: REGISTRY_FILE exists but is unparseable JSON, holds more than one
 # top-level value, or is not an object whose `version` is the number 2 and
 # whose `plugins` is an object -- fail closed, distinct from a missing
-# REGISTRY_FILE (exit 0, empty registry). Stdout is empty. Takes precedence over
-# exit 3 and over exit 1's id-count branch, because the registry is read before
-# ids are counted. Exit 1's multiple-top-level-values branch still comes first.
+# REGISTRY_FILE (exit 0, empty registry). Stdout is empty.
 # Exit 3: at least one id is missing from the registry and the sibling
 # `settings.local.json` is unreadable per the shape policy above, so an
 # opt-out in it cannot be ruled out. Stdout is empty. Callers fail closed.
+# Precedence: exit 1 for multiple top-level values, then exit 2, then exit 1 for the id count, then exit 3.
+# Caveats:
+# - The enabled-ids filter needs jq 1.6 or later for `halt_error`; on jq 1.5 it fails to compile, which reads as no ids.
+# - jq also accepts the literals `nan` and `Infinity`, which a strict JSON parser rejects, so such content can yield ids Claude Code would not read.
 _lib_missing_plugin_ids_for_content() {
   local settings_content="$1" settings_file="$2" registry_file="$3"
 

@@ -2,7 +2,7 @@
 # reconcile-project-plugins.sh — install a repo's still-missing enabledPlugins
 # into the per-account plugin registry, in the background.
 #
-# Invoked as `reconcile-project-plugins.sh <resolved-repo-root>` by
+# Invoked as `reconcile-project-plugins.sh <repo-root>` by
 # bootstrap-project-plugins.sh's SessionStart hook, detached with stdin, stdout,
 # and stderr redirected to /dev/null.
 # The script re-derives the missing-id set from the repo's settings and the
@@ -22,7 +22,7 @@ fi
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname -- "$resolved")/../hooks/_lib.sh"
 
-TARGET_REPO_ROOT="${1:?reconcile-project-plugins.sh requires the resolved repo root as \$1}"
+TARGET_REPO_ROOT="${1:?reconcile-project-plugins.sh requires the repo root as \$1}"
 
 # The runtime directory and files record the absolute path of every repo opened, so the umask makes them owner-only (0700 and 0600).
 # _reconciler_claude_call restores the original umask, so the files `claude` writes keep their usual modes.

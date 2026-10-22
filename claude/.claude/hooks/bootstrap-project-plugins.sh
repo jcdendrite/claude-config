@@ -5,7 +5,8 @@
 # enables plugins missing from the per-account plugin registry, launches
 # reconcile-project-plugins.sh detached to install them for the next session.
 # Prints nothing to stdout and always exits 0, so it never blocks session startup.
-# The reconciler receives the resolved repo root as $1, because a detached child
+# Every refusal and error path exits without launching the reconciler.
+# The reconciler receives the repo root as $1, because a detached child
 # inherits the launching shell's cwd, not the payload `.cwd`.
 # The check order, trust layers, audit-log shape, and accepted residuals live in
 # docs/hooks.md § Utility hooks.
@@ -18,6 +19,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
+# The .source check mirrors the `startup` matcher in settings.json, so the hook filters its own input.
 SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r '.source // empty' 2>/dev/null)
 [[ "$SOURCE" == "startup" ]] || exit 0
 
@@ -40,12 +42,32 @@ _checked_in_settings_present() {
   [ -e "$1/.claude/settings.json" ] || [ -L "$1/.claude/settings.json" ]
 }
 
+# _path_is_at_or_below RESOLVED_PATH RESOLVED_ROOT
+# Returns 0 when RESOLVED_PATH equals RESOLVED_ROOT or sits below it, by whole path components.
+_path_is_at_or_below() {
+  case "${1%/}/" in
+    "${2%/}/"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The hook and the reconciler it launches both run without the launching shell's GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE, so git derives those three from the payload `.cwd`.
+# Any git failure (not a repo, ownership refusal, ceiling, missing git, cap kill) refuses the launch, because a boundary narrower than the real work tree would trust repo-writable paths.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+GIT_TOPLEVEL=$(_lib_capped git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$GIT_TOPLEVEL" ] || exit 0
+
+# The control boundary is the whole git work tree, because the payload `.cwd` can be a subdirectory of it and the rest of the tree is equally repo-writable.
+RESOLVED_CONTROL_ROOT=$(_lib_realpath_m "$GIT_TOPLEVEL") || exit 0
+# `core.worktree` and a trailing newline in the path can make the toplevel name a directory that does not contain the `.cwd`; such a boundary protects nothing, so it refuses.
+RESOLVED_PAYLOAD_CWD=$(_lib_realpath_m "$PAYLOAD_CWD") || exit 0
+_path_is_at_or_below "$RESOLVED_PAYLOAD_CWD" "$RESOLVED_CONTROL_ROOT" || exit 0
+
 if _checked_in_settings_present "$PAYLOAD_CWD"; then
   REPO_ROOT="$PAYLOAD_CWD"
 else
-  REPO_ROOT=$(git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null) || exit 0
+  REPO_ROOT="$GIT_TOPLEVEL"
 fi
-[ -n "$REPO_ROOT" ] || exit 0
 # $HOME/.claude/settings.json is the account's own file, not a checked-in one.
 if [ "$REPO_ROOT" -ef "${HOME:-}" ]; then
   exit 0
@@ -63,18 +85,13 @@ _trust_record_path() {
   fi
 }
 
-RESOLVED_REPO_ROOT=$(_lib_realpath_m "$REPO_ROOT") || exit 0
-
 # _path_is_repo_controlled PATH
-# Returns 0 when PATH resolves to REPO_ROOT or below it, or does not resolve.
+# Returns 0 when PATH resolves to the git work tree root or below it, or does not resolve.
 # A path the repo can write is repo-controlled, so nothing read from it can vouch for the repo.
 _path_is_repo_controlled() {
   local resolved_path
   resolved_path=$(_lib_realpath_m "$1") || return 0
-  case "${resolved_path%/}/" in
-    "${RESOLVED_REPO_ROOT%/}/"*) return 0 ;;
-  esac
-  return 1
+  _path_is_at_or_below "$resolved_path" "$RESOLVED_CONTROL_ROOT"
 }
 
 # The config dir and the trust record are both read as account state, so a repo-controlled path for either refuses the launch.
