@@ -8033,11 +8033,15 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
             id="reviewer-findings-dir",
         ),
         pytest.param(
-            "re-dispatch it once with no `findings_path`",
+            "reports a write whose file you cannot `Read`, or reports a path that "
+            "names a different file, has not reviewed: re-dispatch it once with no "
+            "`findings_path`",
             None,
             "the only fail-closed rule for a reviewer with no retrievable findings: "
-            "without it a reviewer whose findings file cannot be read is counted as "
-            "having reviewed, so its findings are silently absent from the review.",
+            "if any one of its two triggers (an unreadable file, a mismatched reported "
+            "path) or its re-dispatch action is lost, a reviewer whose findings cannot "
+            "be read is counted as having reviewed, so its findings are silently "
+            "absent from the review.",
             id="reviewer-findings-fallback",
         ),
         pytest.param(
