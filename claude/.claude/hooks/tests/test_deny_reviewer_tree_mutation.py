@@ -1119,7 +1119,8 @@ class TestKnownGapBypass:
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
 
     # These pin the current allow verdicts for git write shapes the hook does not inspect.
-    # The header's Known gaps list names them, and `_fragment_raw_write_targets`'s docstring names the fd-numbered and `&>` redirects.
+    # The header's Known gaps list names them.
+    # `_fragment_raw_write_targets`'s docstring names the fd-numbered and `&>` redirects.
     @pytest.mark.parametrize(
         "command",
         [

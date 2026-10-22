@@ -2013,8 +2013,50 @@ def test_no_gate_release_set_includes_code_writer() -> None:
     assert "code-writer" in _no_gate_release_agents()
 
 
+def _plan_writer_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_plan_writer_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _is_plan_writer_agent(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_plan_writer_agent "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_no_gate_release_set_covers_every_plan_writer_agent() -> None:
+    """The set is a superset of the plan-writer registry, by derivation not by copy."""
+    plan_writers = _plan_writer_agents()
+    assert plan_writers, "plan-writer registry must not be empty"
+    assert set(plan_writers) <= set(_no_gate_release_agents())
+
+
+def test_plan_writer_predicate_accepts_every_registry_member() -> None:
+    for agent_type in _plan_writer_agents():
+        assert _is_plan_writer_agent(agent_type), agent_type
+
+
 @pytest.mark.parametrize(
-    "agent_type", ["code-writer", "staff-sdet", "ciso-reviewer", "Explore", "Plan"]
+    "agent_type",
+    ["", "plan-architect-x", "PLAN-ARCHITECT", "plan_architect", "code-writer", "general-purpose"],
+)
+def test_plan_writer_predicate_rejects_non_members(agent_type: str) -> None:
+    """Exact match only; an empty agent_type is the main session and must not match."""
+    assert not _is_plan_writer_agent(agent_type)
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    ["code-writer", "plan-architect", "staff-sdet", "ciso-reviewer", "Explore", "Plan"],
 )
 def test_no_gate_release_agent_matches_roster_members(agent_type: str) -> None:
     assert _is_no_gate_release_agent(agent_type)
@@ -8670,10 +8712,10 @@ class TestLengthRatchetExceeded:
 
 # --- _lib_list_contains ----------------------------------------------------
 #
-# Shared by _lib_is_review_only_agent, _lib_is_no_gate_release_agent, and
-# _lib_is_reviewer_persona -- three byte-identical membership scans over
-# three derived arrays, collapsed to one helper following
-# _lib_words_start_with's flatten-as-positional-args idiom.
+# Shared by the roster-membership predicates (_lib_is_review_only_agent,
+# _lib_is_no_gate_release_agent, _lib_is_reviewer_persona,
+# _lib_is_plan_writer_agent); the helper uses _lib_words_start_with's
+# flatten-as-positional-args idiom.
 
 
 def _list_contains(value: str, items: tuple[str, ...]) -> bool:
@@ -8729,7 +8771,7 @@ class TestListContains:
         assert not _list_contains("", ("a", "b"))
 
     def test_glob_metacharacter_item_does_not_spuriously_match(self) -> None:
-        """The three call sites rely on [ "$a" = "$b" ] string equality, not
+        """The call sites rely on [ "$a" = "$b" ] string equality, not
         a case glob match -- an ITEM shaped like a glob pattern must match
         only that literal string, never a value it would otherwise
         glob-match."""

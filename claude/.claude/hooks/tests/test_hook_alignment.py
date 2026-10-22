@@ -536,6 +536,20 @@ def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
     )
 
 
+def test_plan_writer_gate_wired_on_edit_write_multiedit() -> None:
+    """settings.json must register deny-plan-writer-off-plan-writes.sh on a
+    PreToolUse matcher spanning Edit, Write and MultiEdit. A matcher naming
+    only some of the three leaves the rest unscoped for the plan-writer
+    agent, whose only write tool is Edit.
+    """
+    matchers = pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "deny-plan-writer-off-plan-writes.sh")
+    assert _matchers_spanning_edit_write_multiedit(matchers), (
+        f"deny-plan-writer-off-plan-writes.sh: no PreToolUse matcher spanning "
+        f"Edit|Write|MultiEdit in settings.json (found {matchers!r}) -- Edit is "
+        f"the confined agent's only write tool"
+    )
+
+
 _SETTINGS_FILE_ASK_RULE = "Edit(//**/.claude/settings*.json)"
 
 
@@ -866,6 +880,8 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "guard-settings-session-keys.sh",
     "check-skill-length.sh",
     "check-claude-md-length.sh",
+    # An Edit|Write|MultiEdit gate that self-filters on tool name and `.agent_type`.
+    "deny-plan-writer-off-plan-writes.sh",
 )
 
 
@@ -2133,8 +2149,8 @@ def test_tier_table_keys_match_gate_hooks_exhaustive() -> None:
 def test_gate_header_tier_matches_table_row(hook: Path) -> None:
     """Each gate's own header value agrees with its docs/hooks.md table row
     -- a single parametrized case per gate reading the one comparator
-    result computed once above (_TIER_TABLE_DIFF), not 31 independent
-    comparator invocations, which would each run on a singleton list and
+    result computed once above (_TIER_TABLE_DIFF), not one independent
+    comparator invocation per gate, which would each run on a singleton list and
     lose the duplicate-/unexpected-detection the shared comparator exists
     to provide."""
     key = _tier_hook_key(hook)
@@ -2150,7 +2166,7 @@ def test_gate_header_tier_matches_table_row(hook: Path) -> None:
     )
 
 
-# The pinned floor from docs/hooks.md § "Threat-model tiers": the seven
+# The pinned floor from docs/hooks.md § "Threat-model tiers": the eight
 # gates that carry `untrusted-input`. One-sided by design: it fails loudly
 # if a pinned name stops being a hook-class: gate hook, is renamed, or
 # drops `untrusted-input` from its header, a security-class relaxation
@@ -2166,6 +2182,7 @@ _UNTRUSTED_INPUT_FLOOR: frozenset[str] = frozenset(
         "deny-credential-bash-reads.sh",
         "deny-credential-file-reads.sh",
         "deny-network-installs.sh",
+        "deny-plan-writer-off-plan-writes.sh",
     }
 )
 
@@ -2194,7 +2211,7 @@ def test_untrusted_input_floor_pinned(hook_name: str) -> None:
     )
 
 
-# The pinned floor from docs/hooks.md § "Threat-model tiers": the 14 gates
+# The pinned floor from docs/hooks.md § "Threat-model tiers": the 15 gates
 # that carry `irreversible`. One-sided by design: it fails loudly if a
 # pinned name stops being a hook-class: gate hook, is renamed, or drops
 # `irreversible` from its header, a security-class relaxation needing a
@@ -2211,6 +2228,7 @@ _IRREVERSIBLE_FLOOR: frozenset[str] = frozenset(
         "deny-invisible-commit-content.sh",
         "deny-network-installs.sh",
         "deny-pii-in-commits.sh",
+        "deny-plan-writer-off-plan-writes.sh",
         "deny-private-project-refs.sh",
         "deny-reviewer-tree-mutation.sh",
         "enforce-marker-script-shape.sh",
@@ -2275,6 +2293,12 @@ _TIER_RATIONALE_HOOK_SENTENCES: dict[str, tuple[str, ...]] = {
             "This gate's threat model includes a cooperative agent steered by "
             "injected content toward an install or curl-pipe-to-shell shape, "
             "not only an accidental one."
+        ),
+    ),
+    "deny-plan-writer-off-plan-writes.sh": (
+        (
+            "A plan-writer agent reads repository files that can carry content "
+            "from outside the session, so steered input is in scope."
         ),
     ),
     "require-ready-for-review.sh": (
@@ -3398,10 +3422,10 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 32
+_GATE_HOOK_COUNT = 33
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 33
+_SETTINGS_GATE_HANDLER_COUNT = 34
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"
