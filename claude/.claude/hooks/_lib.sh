@@ -670,7 +670,9 @@ _lib_review_pr_marker_repo_hash() {
 # the supplied prefixes holds EXPECTED_VALUE as a whole line.
 #
 # Completion markers are content-addressed: the stored value is a hash of
-# exactly the state that was reviewed. That content is the authorization, so
+# exactly the state that was reviewed, except `cumulative-review`, whose value
+# is a normalized key (docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md).
+# That content is the authorization, so
 # the read asks "has this state been reviewed?" rather than "did this filename
 # review it?" — the filename keys only namespace concurrent writers apart.
 #
@@ -1190,12 +1192,10 @@ _lib_active_plan_hash() {
 _LIB_PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
 
 # _lib_hash_diff_text TEXT
-# Hashes TEXT via the shared sha256 recipe every cumulative-review value must
-# use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
-# `write cumulative-review` arm, which hashes a recorded subject through this
-# same function rather than a second, possibly-drifting copy of the recipe.
+# Hashes TEXT with sha256. _lib_cumulative_review_value below hashes the
+# normalized cumulative-review text through it.
 # review-ledger.sh's site hash (_review_ledger_site_hash in
-# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# scripts/_review-ledger-lib.sh) is a consumer: it hashes a line range of
 # a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
@@ -1214,17 +1214,61 @@ _lib_hash_diff_text() {
   printf '%s' "$digest"
 }
 
+# _lib_normalize_cumulative_review_text TEXT
+# Prints TEXT with each hunk header reduced to its two line counts
+# (`@@ -,b +,d @@`) and each `index` line that a `--- ` line follows dropped.
+# Every other line passes through unchanged.
+# See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md.
+# Avoids interval expressions so BSD awk and mawk accept it.
+# Runs uncapped for the same reason as _lib_hash_diff_text.
+# It is a single linear pass over TEXT, so `status` latency grows with the diff's size and is not capped here.
+_lib_normalize_cumulative_review_text() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    held_index_line != "" {
+      if (substr($0, 1, 4) != "--- ") print held_index_line
+      held_index_line = ""
+    }
+    /^index [0-9a-f]+[.][.][0-9a-f]+( [0-7]+)?$/ { held_index_line = $0; next }
+    match($0, /^@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@/) &&
+        (RLENGTH == length($0) || substr($0, RLENGTH + 1, 1) == " ") {
+      split($0, header_fields, " ")
+      old_count = header_fields[2]; sub(/^-[0-9]+/, "", old_count)
+      new_count = header_fields[3]; sub(/^[+][0-9]+/, "", new_count)
+      print "@@ -" old_count " +" new_count " @@"
+      next
+    }
+    { print }
+    END { if (held_index_line != "") print held_index_line }
+  '
+}
+
+# _lib_cumulative_review_value TEXT
+# Prints the cumulative-review marker value: the sha256 of TEXT's normalized form.
+# marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash both call it.
+# Exit 0, non-empty stdout: the digest.
+# Exit 1, empty stdout: TEXT is empty, or awk or sha256sum failed.
+# The key is not content equality:
+# docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md lists what else shares a value.
+# It must not back a hook-enforced marker without a threat-model tier review.
+_lib_cumulative_review_value() {
+  local normalized_text
+  normalized_text=$(_lib_normalize_cumulative_review_text "$1") || return 1
+  [ -n "$normalized_text" ] || return 1
+  _lib_hash_diff_text "$normalized_text"
+}
+
 # _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
 # Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
 # the completion-marker value for the `cumulative-review` kind. Only `status`
 # calls this helper; `write cumulative-review` hashes a recorded subject via
-# _lib_hash_diff_text instead (design-decisions.md §50).
+# _lib_cumulative_review_value instead (design-decisions.md §50).
 #
 # Two-outcome contract, matching _lib_active_plan_hash:
-#   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
-#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
-#     killed by the cap. Callers MUST fail closed -- status degrades to
-#     reporting the marker absent rather than erroring the whole report.
+#   - exit 0, non-empty stdout: the _lib_cumulative_review_value of the diff.
+#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, was
+#     killed by the cap, or its value could not be computed. Callers MUST fail
+#     closed -- status degrades to reporting the marker absent rather than
+#     erroring the whole report.
 _lib_cumulative_diff_hash() {
   local repo_root="$1" pr_diff_script="$2"
   local diff_output
@@ -1233,7 +1277,7 @@ _lib_cumulative_diff_hash() {
   # `gh pr view`.
   diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
   [ -n "$diff_output" ] || return 1
-  _lib_hash_diff_text "$diff_output"
+  _lib_cumulative_review_value "$diff_output"
 }
 
 # _lib_head_tree_hash CAP_MODE REPO_ROOT

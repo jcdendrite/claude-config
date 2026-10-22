@@ -17,7 +17,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, cumulative_review_value
 
 from .conftest import _commit, _init_repo, _make_feature_branch, _make_repo_with_remote
 
@@ -242,6 +242,23 @@ class TestNormalPathAgainstMain:
         assert "diff --git a/file.txt b/file.txt" in result.stdout
         assert "+work on feat/add-thing" in result.stdout
 
+    def test_merge_base_diff_ignores_color_and_external_diff_config(self, tmp_path):
+        """Repo-local `color.ui=always` and `diff.external` must not reach the cumulative diff:
+        colored output would defeat the cumulative-review normalizer's header rule,
+        and an external diff driver prints text that is not a patch."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/user-diff-config")
+        subprocess.run(["git", "checkout", "-q", "feat/user-diff-config"], cwd=local, check=True)
+        subprocess.run(["git", "config", "color.ui", "always"], cwd=local, check=True)
+        subprocess.run(["git", "config", "diff.external", "false"], cwd=local, check=True)
+
+        env = _env_with_gh_shim(tmp_path, "main")
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("diff --git")
+        assert "\x1b[" not in result.stdout
+
 
 class TestGhPrViewFailureFallback:
     def test_gh_pr_view_failure_still_diffs_against_main(self, tmp_path):
@@ -414,17 +431,6 @@ class TestDefaultBranchUnresolvable:
         assert "no default branch resolved" in result.stderr
 
 
-def _lib_hash_diff_text(text: str) -> str:
-    """Shell out to the real _lib_hash_diff_text against `text`."""
-    result = subprocess.run(
-        ["bash", "-c", f'. "{_LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
 def _lib_cumulative_diff_hash(repo_root: str, pr_diff_script: str, env: dict) -> str:
     """Shell out to the real _lib_cumulative_diff_hash against `repo_root`,
     driving PR_DIFF_SCRIPT through `env`'s own gh shim so it resolves the
@@ -590,7 +596,7 @@ class TestRecordFlag:
 
     def test_recorded_content_hashes_identically_to_lib_cumulative_diff_hash(self, tmp_path):
         """The byte-equality property this comparison exists for: hashing
-        the recorded subject through _lib_hash_diff_text must equal
+        the recorded subject through _lib_cumulative_review_value must equal
         _lib_cumulative_diff_hash's own value for the same tree, so a
         second, independently-drifting hashing recipe can never make the
         write-side and read-side values silently disagree."""
@@ -606,9 +612,10 @@ class TestRecordFlag:
         # own stripping inside _lib_cumulative_diff_hash -- without it this
         # comparison would fail on the newline boundary alone, not on a
         # real recipe mismatch.
-        recorded_text = subject.read_bytes().rstrip(b"\n").decode()
+        recorded_text = subject.read_bytes().rstrip(b"\n")
 
-        from_subject = _lib_hash_diff_text(recorded_text)
+        subject_exit_status, from_subject = cumulative_review_value(recorded_text, tmp_path)
+        assert subject_exit_status == 0
 
         repo_root = subprocess.run(
             ["git", "-C", str(local), "rev-parse", "--show-toplevel"],

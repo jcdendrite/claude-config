@@ -81,7 +81,8 @@ else
     exit 1
   fi
 
-  if ! DIFF_TEXT=$(git diff "$MERGE_BASE...HEAD" 2>/dev/null); then
+  # The flags keep color and external-diff output out of the patch text.
+  if ! DIFF_TEXT=$(git diff --no-color --no-ext-diff "$MERGE_BASE...HEAD" 2>/dev/null); then
     printf 'pr-diff-against-base.sh: could not compute the diff against %s\n' "$MERGE_BASE" >&2
     exit 1
   fi
