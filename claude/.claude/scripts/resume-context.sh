@@ -171,7 +171,7 @@ record_consumed_destination() {                 # invoked as `... || true`
   # this costs no second `date` fork.
   day_file="$dir/consumed.${stamp%%T*}.tsv"
   [ -L "$day_file" ] && return 0
-  [ -e "$day_file" ] && chmod 600 -- "$day_file" 2>/dev/null
+  [ -e "$day_file" ] && chmod -- 600 "$day_file" 2>/dev/null
   row="$stamp"$'\t'"$dest"$'\t'"$src"
   # Byte count, not ${#row}: bash counts characters under a multi-byte
   # locale, so a non-ASCII $src can pass a character cap while the bytes
@@ -192,7 +192,7 @@ record_consumed_destination() {                 # invoked as `... || true`
   esac
   [ "$row_bytes" -gt 2048 ] && return 0
   ( umask 077; printf '%s\n' "$row" >> "$day_file" ) 2>/dev/null
-  chmod 600 -- "$day_file" 2>/dev/null
+  chmod -- 600 "$day_file" 2>/dev/null
   # 30-day retention, the same sweep every other self-sweeping state
   # directory in this repo uses. Unlinking a whole file is not a
   # read-modify-write, so concurrent sweeps cannot lose a row. Runs after
@@ -326,7 +326,7 @@ fi
 # mv carries SRC's inode, and so its mode, into the shared temp dir. Narrowing it
 # first leaves no moment at which another uid could open DEST.
 # A source filesystem that rejects chmod stops the consume here and leaves the file pending.
-if ! chmod 600 -- "$SRC"; then
+if ! chmod -- 600 "$SRC"; then
   printf 'resume-context.sh: failed to set permissions on %s\n' "$SRC_DISPLAY" >&2
   exit 1
 fi
@@ -349,7 +349,7 @@ record_consumed_destination "$SRC" "$DEST" || true
 # same-filesystem mv silently discards mktemp's protection. SRC was narrowed
 # above, and the explicit re-assert keeps the final mode independent of how mv
 # moved the file.
-if ! chmod 600 "$DEST"; then
+if ! chmod -- 600 "$DEST"; then
   printf 'resume-context.sh: failed to set permissions on %s\n' "$DEST" >&2
   exit 1
 fi
