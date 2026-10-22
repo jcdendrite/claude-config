@@ -1,4 +1,4 @@
-# Make per-profile rendering explicit, loud on failure, and documented
+# Narrow the per-profile render gap: document it, label its disclosure, and name the stow remedy
 
 ## Context
 
@@ -6,7 +6,7 @@ Goal: make rendering a non-default Claude Code profile (`CLAUDE_CONFIG_DIR`) a d
 
 Ask: the engineer's task "Close the non-default-profile settings.json gap before merging claude-config #744", as cited by earlier revisions of this plan. The engineer chose Option A: "Yeah A sounds the best to me." On detecting stale profiles: "yes treat the reminder as a separate follow-up". On rendering profiles other than the inherited one: "rendering profiles that don't correspond to the one that was inherited seem like a flawed design".
 
-Why now: #744 renames the tracked `settings.json` to `settings.base.json` and renders it locally. After the pull, a non-default profile whose `settings.json` was a stow symlink into the checkout dangles, and it silently loses `permissions.deny` and hooks. `install.sh` renders only `~/.claude`. `ensure-settings-render.sh` renders only the inherited profile, and only when that profile holds a `settings.base.json`.
+Why now: #744 renames the tracked `settings.json` to `settings.base.json` and renders it locally. After the pull, a non-default profile whose `settings.json` was a stow symlink into the checkout dangles, and it silently loses `permissions.deny` and hooks. `install.sh` renders only `~/.claude`. `ensure-settings-render.sh` renders only the inherited profile, `~/.claude` without a base check and any other profile only when it holds a `settings.base.json`.
 
 ## Approach
 
@@ -21,7 +21,7 @@ What changes:
 
 Coverage:
 - A provisioning tool that stows a profile and then runs the render command for it renders that profile (given 4).
-- A new shell renders its inherited profile when that profile holds a `settings.base.json`.
+- A new shell renders only its inherited profile, `~/.claude` without a base check and any other profile only when it holds a `settings.base.json`.
 - A stow user who runs no such tool gets the docs and the manual command.
 - A profile that no new shell inherits goes stale after a pull that changes base, until something renders it again.
 - A profile that was never stowed, whose `settings.json` dangles, or whose `settings.json` resolves to a file without base's floor (such as the stray tracked-path file a session recreated through a stow symlink), still starts Claude Code without that floor. This PR's render changes cannot prevent that for a profile nothing renders, because hooks are registered inside `settings.json` (row 9).
@@ -39,7 +39,7 @@ Stacking: this PR targets `settings-base-render`, #744's branch. The engineer se
 
 ### Assumption ledger
 
-**Root:** #744 makes a non-default profile's stow-linked `settings.json` dangle, and that profile runs with no `permissions.deny` floor and no hooks until something renders it. This affects every stow consumer who runs more than one profile. A single-profile consumer must see no change in output.
+**Root:** #744 makes a non-default profile's stow-linked `settings.json` dangle, and that profile runs with no `permissions.deny` floor and no hooks until something renders it. This affects every stow consumer who runs more than one profile. A single-profile consumer must see no change in output, except that a default profile with a missing base also prints M2's stow text before ensure's `./install.sh` hint.
 
 **Givens:**
 
@@ -74,7 +74,7 @@ Stacking: this PR targets `settings-base-render`, #744's branch. The engineer se
 **M2: the not-found refusal names the remedy.** `anchors: root, row10, row11`
 - At render-settings.sh:94 the message keeps its `<base_file> not found -- cannot render settings.json without it` prefix and appends: `; run whatever stows claude-config into <config_dir> first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry lists the packages)`.
 - No in-repo command stows into a non-`$HOME` profile: `stow-packages.sh`'s targets are `$HOME`-relative, so the docs describe the stow as an out-of-repo mechanism that consumes its rows and invent no command.
-- Emitters: a hand run, a provisioning tool, `install.sh` (`~/.claude` only) and `ensure-settings-render.sh` (gate keeps default-profile behavior). For the default profile `install.sh`'s and ensure's own `./install.sh` hint stays the remedy, and M2's text is not the primary message there.
+- Emitters: a hand run, a provisioning tool, `install.sh` (`~/.claude` only) and `ensure-settings-render.sh` (gate keeps default-profile behavior). For the default profile `install.sh`'s and ensure's own `./install.sh` hint stays the remedy. M2's text still prints first for the default profile, so that user sees two remedies; the wording change for that case is deferred as below current scale.
 - Other failing exits (overlay refusals, jq failures) keep their text. `render-settings.sh:119` says an existing `settings.json` keeps its rules, which is untrue for a never-rendered profile. Aligning those messages is a follow-up (Out of scope).
 - No other behavior changes. The exit status stays 1 and nothing is written.
 
@@ -94,7 +94,7 @@ It lands as its own commit, and both names stay. The doc line states only the do
 - The docs state the requirement for that tool: a profile must never start with no hooks. Because hooks live in `settings.json`, the tool needs a check outside it, such as managed settings or a launch check that refuses to start `claude` on a missing or dangling `settings.json`.
 - The fail-closed statement is about content, not presence: a profile's `settings.json` must carry base's `permissions.deny` and `hooks`. A launch check in a provisioning tool misses direnv and `CLAUDE_CONFIG_DIR=<dir> claude` launches. Only managed settings covers a bare `claude`. Whether to adopt managed settings, and its cost for stow consumers, is left to the follow-up.
 - The docs hedge: silence for a dangling `settings.json` is confirmed for `claude doctor` and `claude auto-mode reset`, and interactive startup is untested.
-- A provisioning tool must stop on a non-zero render exit before it registers or launches, because `register-marketplace.sh` exits 0 on a missing `settings.json`.
+- Whatever stows claude-config into a profile must not register or launch it until a render of it exits 0, because `register-marketplace.sh` exits 0 on a missing `settings.json`.
 - The docs use one render command form with an absolute `CLAUDE_CONFIG_DIR`.
 - The migration steps live in CHANGELOG. docs/scripts.md points at them.
 - `register-marketplace.sh`'s early exit is already stated in its own entry. Other sites point there.
@@ -120,7 +120,7 @@ Three `code-writer` dispatches, run in sequence, each one commit (row 21). Every
 **Dispatch 2: M2 and M6 with tests.**
 - `claude/.claude/scripts/render-settings.sh`: the M2 message and the M6 disclosure change.
 - `claude/.claude/scripts/tests/test_render_settings.py`: the new cases in Verification 2. Anchor edits by text, not line number.
-  - `_run_script` cannot unset `HOME`, and `{"HOME": ""}` is not the unset case. The unset-`HOME` case builds its environment by popping `HOME` from a copy of `os.environ` and calling `subprocess.run` directly.
+  - `{"HOME": ""}` is not the unset case. `_run_script` removes a variable whose `extra_env` value is `None`, and the unset-`HOME` case passes `{"HOME": None}` so it runs under the helper's open-stdin seam.
   - The dispatch prompt tells `code-writer` to run the new M2 and M6 non-default cases against the unmodified script first and confirm they fail.
 - `claude/.claude/scripts/render-settings.sh` also: the comment at :309-320.
 - `docs/auto-mode.md`: the stderr-disclosure bullet (near :190-194), one clause.
@@ -129,15 +129,15 @@ Three `code-writer` dispatches, run in sequence, each one commit (row 21). Every
 **Dispatch 3: docs (M8).**
 - `docs/scripts.md`, `render-settings.sh` entry. Anchor by text:
   - Replace the bullet that says the profile's directory "must already hold `settings.base.json`" with: the profile must be stowed from claude-config first, because the stow places `settings.base.json` there; otherwise the command exits with the stow-first message.
-  - Replace the "Render any other profile by hand" bullet with: `install.sh` renders `~/.claude` only, and a new shell renders only the profile it inherits; whatever stows claude-config into any other profile should run the command for it after each stow and after each pull that changes `settings.base.json`; with no such tool, run it by hand at those times.
+  - Replace the "Render any other profile by hand" bullet with: `install.sh` renders `~/.claude` only, and a new shell renders only the profile it resolves (the `ensure-settings-render.sh` entry below states which); whatever stows claude-config into any other profile should run the command for it after each stow and after each pull that changes `settings.base.json`; with no such tool, run it by hand at those times.
   - Add one sentence: a profile whose `settings.json` is a dangling symlink at its first render silently loses every key base does not ship; CHANGELOG's "Migration, other profiles" bullet gives the steps.
   - Add one sentence: render a profile before registering it, because `register-marketplace.sh` does nothing until the profile has a `settings.json`.
-- `docs/scripts.md`, `ensure-settings-render.sh` entry: no change.
+- `docs/scripts.md`, `ensure-settings-render.sh` entry: its profile bullet is rewritten to state which profile a new shell renders (the profile it resolves, `$CLAUDE_CONFIG_DIR` else `~/.claude`), and the other docs point there.
 - `CHANGELOG.md`, `[Unreleased]`:
-  - Replace the bullet that says `install.sh` renders only `~/.claude` (and any hedge about other profiles) with: `install.sh` renders only `~/.claude`; a new shell renders only the profile it inherits, when that profile holds a `settings.base.json`; whatever stows claude-config into another profile renders it.
-  - New **Migration, other profiles** sub-bullet. It applies to each non-default profile whose `settings.json` symlinks to the checkout's `claude/.claude/settings.json`:
-    - Order: pull; run `./install.sh` for `~/.claude`; then, for each other profile, steps 1 and 2 with `<dir>` in place of `~/.claude`; then step 3; then re-stow and render that profile. Step 3's `git checkout` discards edits any profile wrote through its symlink.
-    - All stow-linked profiles' `settings.json` symlinks point at the same tracked path. A session in any one of them can recreate a stray file there, and every other profile's first render then carries that file's keys forward. Check for the stray file before re-stowing (`git status` in the checkout).
+  - Replace the bullet that says `install.sh` renders only `~/.claude` (and any hedge about other profiles) with: `install.sh` renders only `~/.claude`; a new shell renders only the profile it resolves, `$CLAUDE_CONFIG_DIR` else `~/.claude`, and renders a non-default one only when it holds a `settings.base.json`; whatever stows claude-config into another profile renders it.
+  - New **Migration, other profiles** sub-bullet. It applies to each non-default profile whose `settings.json` symlinks to the checkout's `claude/.claude/settings.json` or is already a regular file:
+    - Order: save what each profile's first render would drop, decided by the profile's current state (a regular file does the overlay copy, an unpulled symlink is materialized, an already-pulled symlink with no stash or commit of the edit is skipped, and an edit kept in a stash or commit is written back with `git show`, which takes precedence over materializing or skipping); `git checkout` and pull; check for the stray file (for a symlinked `~/.claude`, put the saved copy back instead); run `env -u CLAUDE_CONFIG_DIR ./install.sh` for `~/.claude`; then re-stow and render each other profile. The `git checkout` discards edits any profile wrote through its symlink, so the save step comes first for every profile.
+    - All stow-linked profiles' `settings.json` symlinks point at the same tracked path. A session in any one of them can recreate a stray file there, and every other profile's first render then carries that file's keys forward. Check for the stray file before the first render, including `~/.claude`'s unless it is itself a symlink into the checkout, with `ls claude/.claude/settings.json` in the checkout, because the file is gitignored and `git status` does not list it.
     - A materialized profile keeps its old floor as a regular file until its first render.
     - A profile that was not materialized dangles until its first render. Claude Code's silence is confirmed for `claude doctor` and `claude auto-mode reset`, and interactive startup is untested, so it may run with no deny rules or hooks.
     - A profile's first render, when not materialized, drops every key base does not ship, including `enabledPlugins` and `extraKnownMarketplaces`, and names nothing it dropped.
@@ -147,7 +147,7 @@ Three `code-writer` dispatches, run in sequence, each one commit (row 21). Every
   - **Who renders a profile.** Stowing claude-config into a profile places `settings.base.json` there. A non-default profile is rendered only by a command run for it (a provisioning tool's or a hand render) or by a new shell that inherits it while it holds a `settings.base.json`.
   - **Before its first render.** A profile that was materialized keeps its old floor as a regular file. One that was not has no `settings.json` to enforce, and Claude Code's silence there is confirmed only for `claude doctor` and `claude auto-mode reset`.
   - **After a base change.** A profile that none of those three renders again keeps its previous floor, again with no diagnostic.
-  - **Fail closed.** No hook can fail closed when `settings.json` is missing or dangling, because hooks are registered in that file. A floor that must reach every profile regardless belongs in managed settings ("Enterprise rollout: managed settings"), and a provisioning tool should also refuse to launch `claude` on a missing or dangling `settings.json`.
+  - **Fail closed.** No hook can fail closed when `settings.json` is missing or dangling, because hooks are registered in that file. A floor that must reach every profile regardless belongs in managed settings ("Enterprise rollout: managed settings"), and whatever stows claude-config into a profile should also refuse to launch `claude` unless the profile's `settings.json` is a regular file carrying base's `permissions.deny` and hooks.
   - The existing `install.sh` warning sentence and the `ensure-settings-render.sh` hint sentence stay. Leave the rest of the bullet (near :652-656) as #744 wrote it unless it contradicts the points above.
   - Say a launch check misses direnv and `CLAUDE_CONFIG_DIR=<dir> claude` launches, and only managed settings covers a bare `claude`.
 
@@ -186,5 +186,6 @@ Reuse, don't reimplement: the `-ef` comparison at ensure-settings-render.sh:26; 
 - **A runtime signal in this repo for a multi-profile user who runs no provisioning tool.** `install.sh` cannot tell that user from a single-profile user (given 3), so for now the docs are the signal.
 - **Changing ensure's gate, `install.sh`'s diverged-profile warning, or where base is read from.**
 - **Aligning the other failing render exits' text** (overlay refusals, jq failures) with whether the profile has a floor. `render-settings.sh:119` is the clearest case.
+- **Rewording M2's text for the default profile.** `~/.claude` users who hit a missing base see the stow remedy and then ensure's `./install.sh` hint. This is a half-installed state, so the wording stays as is.
 - **`register-marketplace.sh` changes,** and `README.md`'s register-before-render ordering in its marketplace paragraph.
 - **Syncing #744's branch with main.**

@@ -644,9 +644,9 @@ to hold PII/PHI or live credentials:
   `permissions.deny`/hook enforcement and no diagnostic.
   Whatever stows claude-config into a profile places its
   `settings.base.json` there.
-  `install.sh` renders `~/.claude` only. A new shell renders `~/.claude`
-  regardless, and renders a non-default inherited profile only when it holds
-  a `settings.base.json`.
+  `install.sh` renders `~/.claude` only. A new shell renders only the profile
+  it resolves; `docs/scripts.md`'s `ensure-settings-render.sh` entry states
+  which.
   Any other profile is rendered only by a command run for it, either by
   whatever stows it or by hand; `docs/scripts.md`'s `render-settings.sh`
   entry covers when to run it.
@@ -654,21 +654,25 @@ to hold PII/PHI or live credentials:
   that holds a `settings.base.json`, and `ensure-settings-render.sh` prints a
   hint when that profile's render fails.
   - Before its first render, a profile whose `settings.json` is a regular
-    file keeps its old floor. A profile with no `settings.json` has no deny
-    rules or hooks active. Claude Code's silence for a dangling
-    `settings.json` is confirmed only for `claude doctor` and
-    `claude auto-mode reset`. Interactive startup is untested, and so is a
-    materialized profile whose hook scripts are missing.
-  - After a `settings.base.json` change, a profile that nothing renders
-    again keeps its previous floor, again with no diagnostic.
+    file copied from the old tracked `settings.json` keeps that file's
+    `permissions.deny` and hooks. A regular file with other content keeps
+    whatever `permissions.deny` and hooks it carries, possibly none. A profile
+    with no `settings.json` has no deny rules or hooks active. Claude Code's
+    silence for a dangling `settings.json` is confirmed only for
+    `claude doctor` and `claude auto-mode reset`. Interactive startup is
+    untested.
+  - After a `settings.base.json` change, a profile that nothing renders again
+    keeps its previous `permissions.deny` and hooks, again with no diagnostic.
   - Hooks are registered at user scope in `settings.json`, so no such hook can
     fail closed when that file is missing, dangling, or lacks base's
     `permissions.deny` and `hooks`. The requirement on whatever stows a
-    profile is to render it before the profile is first launched and to fail
-    non-zero otherwise. The profile's `settings.json` must then carry base's
-    `permissions.deny` and `hooks`.
-  - A launch check in the tool that provisions the profile, such as refusing
-    to start `claude` on a missing or dangling `settings.json`, misses
+    profile is that a render of it exits 0 before the profile is first
+    launched, and that the profile's `settings.json` then carries base's
+    `permissions.deny` and `hooks`. When no render has exited 0, including
+    when the tool skipped the render, the tool exits non-zero.
+  - A launch check in whatever stows claude-config into the profile, such as
+    refusing to start `claude` unless `settings.json` resolves to a regular
+    file whose `permissions.deny` and `hooks` match base's, misses
     direnv and `CLAUDE_CONFIG_DIR=<dir> claude` launches. Managed settings
     is the one documented mechanism that applies to a bare `claude`. This
     repo documents managed settings but does not deploy it; see "Enterprise

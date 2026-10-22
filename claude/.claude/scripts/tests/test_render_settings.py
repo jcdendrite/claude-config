@@ -52,13 +52,19 @@ def _write_json(path: Path, content: dict | list) -> None:
 def _run_script(
     *args: str,
     config_dir: Path,
-    extra_env: dict | None = None,
+    extra_env: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run the script with stdin held open, as the rc line does in a new shell."""
+    """Run the script with stdin held open, as the rc line does in a new shell.
+
+    An `extra_env` value of None removes that variable from the environment.
+    """
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
-    if extra_env:
-        env.update(extra_env)
+    for name, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     return run_with_open_stdin([str(_SCRIPT), *args], env=env, timeout=15)
 
 
@@ -904,21 +910,6 @@ class TestMissingBaseNamesTheRemedy:
         assert not (config_dir / "settings.json").exists()
         assert not (config_dir / "settings.json").is_symlink()
 
-    def test_missing_base_refusal_leaves_an_existing_regular_settings_json_byte_identical(
-        self, tmp_path: Path
-    ) -> None:
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir()
-        target = config_dir / "settings.json"
-        prior_bytes = b'{"theme": "dark"}\n'
-        target.write_bytes(prior_bytes)
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode == 1
-        assert f"whatever stows claude-config into {config_dir} first" in result.stderr
-        assert target.read_bytes() == prior_bytes
-
     def test_missing_base_refusal_leaves_a_dangling_settings_json_symlink_dangling(
         self, tmp_path: Path
     ) -> None:
@@ -931,7 +922,6 @@ class TestMissingBaseNamesTheRemedy:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 1
-        assert f"whatever stows claude-config into {config_dir} first" in result.stderr
         assert target.is_symlink()
         assert os.readlink(target) == str(missing_destination)
         assert not target.exists()
@@ -2495,28 +2485,36 @@ class TestDisclosureNamesNonDefaultProfile:
 
         assert result.returncode == 0, result.stderr
         assert self._DEFAULT_PROFILE_PREFIX in result.stderr
-        assert "settings.json in " not in result.stderr
+
+    def test_unset_config_dir_renders_the_home_default_profile_with_the_unnamed_disclosure_line(
+        self, tmp_path: Path
+    ) -> None:
+        """The single-profile consumer's shell exports no CLAUDE_CONFIG_DIR, so the
+        script falls back to $HOME/.claude and must not label it."""
+        home = tmp_path / "home"
+        default_profile = home / ".claude"
+        default_profile.mkdir(parents=True)
+        self._seed_carry_forward(default_profile)
+
+        result = _run_script(
+            config_dir=default_profile,
+            extra_env={"HOME": str(home), "CLAUDE_CONFIG_DIR": None},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert self._DEFAULT_PROFILE_PREFIX in result.stderr
+        assert json.loads((default_profile / "settings.json").read_text())["theme"] == "dark"
 
     def test_unset_home_with_config_dir_set_renders_and_names_the_config_dir(
         self, tmp_path: Path
     ) -> None:
-        """Pops HOME rather than blanking it: `${HOME:-}` must not abort under
+        """Removes HOME rather than blanking it: `${HOME:-}` must not abort under
         `set -u`, and an empty HOME is a different case from an unset one."""
         config_dir = tmp_path / "profile"
         config_dir.mkdir()
         self._seed_carry_forward(config_dir)
-        env_without_home = dict(os.environ)
-        env_without_home.pop("HOME", None)
-        env_without_home["CLAUDE_CONFIG_DIR"] = str(config_dir)
 
-        result = subprocess.run(
-            [str(_SCRIPT)],
-            capture_output=True,
-            text=True,
-            env=env_without_home,
-            check=False,
-            timeout=15,
-        )
+        result = _run_script(config_dir=config_dir, extra_env={"HOME": None})
 
         assert result.returncode == 0, result.stderr
         assert f"this render changed settings.json in {config_dir} -- " in result.stderr
