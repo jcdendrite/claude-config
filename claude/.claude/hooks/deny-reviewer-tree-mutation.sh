@@ -147,10 +147,6 @@
 #       - A cooperative agent can create such a link and then write through it without noticing, so this gap is not waived on cooperative grounds.
 #       - Tests in test_deny_reviewer_tree_mutation.py pin this gap's current
 #         allow verdicts for `Plan`.
-#   - The git branch skips the raw-write-target scan.
-#     A redirect or `--output` on an allowed git subcommand is therefore not judged.
-#     GH-1295 tracks this gap.
-#     Only `Plan` reaches it, with the qualifiers stated at the top of this header.
 #   - The Write arm accepts the caller's own `<agent>-*.md` file in an ignored directory named agent-reviews at any depth.
 #     The unanchored ignore pattern findings-path-suffix.sh writes ignores every directory of that name in the repository, so the reach is any such directory.
 #     That reach includes an agent-reviews directory under .claude/rules/, .claude/agents/ or .claude/plans/; whether Claude Code loads a file there is unverified.
@@ -265,6 +261,10 @@
 #         A symlinked own-name leaf or a hard-linked own-name leaf is not inspected by this hook.
 #         Only a persona that holds Bash can plant such a link.
 #         Whether the Write tool refuses a symlink leaf or a hard-linked leaf it did not read is unverified here.
+#       - An allowed git subcommand can run a command named by one of its own flags, or by a `-c <key>=<value>` config setting whose value git runs as a command.
+#         Examples: `git grep -O<cmd>`, `git ls-remote --upload-pack=<cmd>`, `git -c core.fsmonitor=<cmd> status`.
+#         The hook allows each example, because none carries a redirect word and each subcommand is in the allowed git set.
+#         Whether git actually runs the command is the unconfirmed part, because no run has tried it.
 
 set -uo pipefail
 

@@ -944,16 +944,16 @@ class TestRawWriteTargetGap:
             "grep -q x f >/dev/null",
             "echo x >>/tmp/scratch/x",
         ],
-        ids=["spaced-redirect-to-dev-null", "glued-redirect-to-dev-null", "glued-append-redirect-to-tmp"],
+        ids=["spaced-redirect-to-dev-null", "attached-redirect-to-dev-null", "attached-append-redirect-to-tmp"],
     )
-    def test_plan_non_git_redirect_to_exempt_target_allowed(self, command):
-        """`Plan` is the roster member that reaches the Bash arm. A non-git fragment reaches the
+    def test_plan_redirect_to_exempt_target_allowed(self, command):
+        """`Plan` is the roster member that reaches the Bash arm. Every fragment, git-led or not, reaches the
         raw-write-target scan, which exempts /dev/null (diagnostic noise, not a tracked-file write)
-        and a /tmp target, including the glued `>>` form."""
+        and a /tmp target, including the attached `>>` form."""
         assert run_hook(HOOK, bash_input(command, agent_type="Plan")) == "allow"
 
-    def test_plan_glued_append_redirect_to_tracked_path_denied(self):
-        """The glued `>>` form (no space before the target) is judged like the spaced form: a tracked-path target denies."""
+    def test_plan_attached_append_redirect_to_tracked_path_denied(self):
+        """The attached `>>` form (no space before the target) is judged like the spaced form: a tracked-path target denies."""
         assert run_hook(HOOK, bash_input("echo x >>src/x", agent_type="Plan")) == "deny"
 
     @pytest.mark.parametrize(
@@ -1529,8 +1529,9 @@ class TestKnownGapBypass:
     visibly instead of silently."""
 
     def test_reviewer_quoted_command_name_bypass_allowed(self):
-        # `bash -c "sed -i ..."`: the scan sees the glued token `"sed`, not
-        # `sed`. Documented as an accepted gap under the cooperative model.
+        # `bash -c "sed -i ..."`: the Bash arm strips the quote characters, leaving a bare `sed`.
+        # The fragment's command word resolves to `bash`, which is not a runner word, so the `sed -i` check never fires.
+        # This is the nested-shell gap the header accepts under the cooperative model.
         assert run_hook(HOOK, bash_input('bash -c "sed -i s/a/b/ x"', agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_sed_combined_short_option_cluster_allowed(self):
@@ -1571,6 +1572,24 @@ class TestKnownGapBypass:
         ],
     )
     def test_reviewer_git_write_shape_not_inspected_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    # Pins the header's waived entry for a command named by a flag of an allowed git subcommand.
+    # Values are single words on purpose: a multi-word `-c` value is split by the quote strip and takes a different code path.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git grep -Ocmd x",
+            "git ls-remote --upload-pack=cmd origin",
+            "git -c core.fsmonitor=cmd status",
+        ],
+        ids=[
+            "grep-open-files-flag",
+            "ls-remote-upload-pack-flag",
+            "config-fsmonitor-setting",
+        ],
+    )
+    def test_reviewer_git_flag_borne_command_allowed(self, command):
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     # GH-811: the first two tests below pin the CURRENT (imperfect) allow
@@ -1710,18 +1729,15 @@ class TestKnownGapBypass:
         session's /review-pr findings directory, which `/tmp/d/file` is not. Pins path shape only: no link is created."""
         _assert_write_arm_denied(write_input("/tmp/d/file", agent_type="ciso-reviewer"))
 
-    # GH-1295: these two pin the CURRENT (imperfect) allow verdicts for the header's "The git branch skips the
-    # raw-write-target scan" gap: a redirect or `--output` on an allowed git subcommand is not judged, so each form
-    # writes a tracked path for `Plan`. When GH-1295 closes the gap, flip both assertions to "deny".
-    def test_plan_git_diff_redirect_to_tracked_path_allowed(self):
-        assert run_hook(HOOK, bash_input("git diff > src/x", agent_type="Plan")) == "allow"
+    # Pins the deny boundary for `Plan`, the roster member that reaches the Bash arm. This `>` redirect form is not
+    # the `git diff --output=src/x` flag form that `test_reviewer_git_write_shape_not_inspected_allowed`'s
+    # `output-flag` case pins as allowed.
+    def test_plan_git_diff_redirect_to_tracked_path_denied(self):
+        reason = run_hook_reason(HOOK, bash_input("git diff > src/x", agent_type="Plan"))
+        assert reason is not None
+        assert "writes to 'src/x', which is outside /tmp." in reason
 
-    def test_plan_git_diff_output_flag_to_tracked_path_allowed(self):
-        assert run_hook(HOOK, bash_input("git diff --output=src/x", agent_type="Plan")) == "allow"
-
-    def test_reviewer_git_status_redirect_to_dev_null_allowed_by_git_branch_skip(self):
-        # The git branch `continue`s before the raw-write-target scan, so this allow does not exercise the
-        # scan's /dev/null exemption; test_plan_non_git_redirect_to_exempt_target_allowed pins that.
+    def test_reviewer_git_status_redirect_to_dev_null_allowed(self):
         assert run_hook(HOOK, bash_input("git status > /dev/null", agent_type="staff-sdet")) == "allow"
 
 

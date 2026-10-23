@@ -2,6 +2,8 @@
 
 *2026-10-22.*
 
+**Partly superseded (2026-10-23):** the hook now scans the `>`/`>>` targets of a git-led fragment, so the redirect half of the row-121 "Git-fragment scan" deferral no longer describes the hook. The hook header's Known gaps list what stays open.
+
 GH-1208 removes `Bash` from the eight reviewer personas that held it, so none of the ten holds it, and confines each persona's `Write` to its own findings file. It folds #1103 (the fix), #1104 (containment for `code-writer`, the main session, `Explore` and `Plan`) and #1099 (the motivating incident, in which a reviewer's scratch script wrote through a link under `/tmp` onto a shared interpreter). The sandbox spike behind the decision is `docs/case-studies/claude-code-sandbox-write-boundary.md`: the sandbox blocks the incident's symlink shape but not a pre-created hard link, cannot be scoped per subagent, and has an escape hatch that a bare `Bash` grant auto-approves. This file records how each agent is contained and what the design leaves open. The full reasoning and the engineer's answers are in `.claude/plans/reviewer-containment.md`; the row numbers below cite its assumption ledger.
 
 ## How each agent is contained
@@ -46,8 +48,7 @@ Each answer is quoted with the question it answered. The option text behind a la
 
 - **Fixed here:** the Write-arm's general `/tmp` exemption (a create-only, session-bound `/review-pr` findings case remains, recorded under Decisions), and the overclaim in the hook's "flip to deny" comment.
 - **Retained, owned by #1295, reaching only `Plan`:**
-  - the git-fragment redirect and `--output` mis-parse;
-  - the closed enumeration of write forms (`rm`, `ln`, the source of `mv`, interpreter writes, tools' output flags, `sed -ni`, `--in-place`, a bare `&`, attached and fd-numbered redirects);
+  - the closed enumeration of write forms (`rm`, `ln`, the source of `mv`, interpreter writes, tools' output flags such as `git diff --output`, `sed -ni`, `--in-place`, a bare `&`, a redirect glued to the word before it, fd-numbered redirects);
   - the `/tmp` link gap and the writability of all of `/tmp`, including `/tmp/$VAR` and `$(cmd)` targets;
   - the leaf hard-link half of that gap (the symlink half rests on the Write tool's refusal);
   - the `Plan` denial-text premise;
