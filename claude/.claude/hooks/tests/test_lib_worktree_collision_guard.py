@@ -1042,10 +1042,11 @@ class TestCollisionGuardBranches:
     ):
         """The other half of the resume regression: the pre-resume PID
         gets reused by an unrelated live process (live_pid stands in for
-        it). Self-recognition via session_id must short-circuit before
-        the kill -0 check, which would otherwise misreport this
-        live-but-foreign PID as 'already in use by a live Claude Code
-        session'."""
+        it). live_pid has no sessions/<pid> entry, so it stands for a
+        live process that is not Claude Code. Self-recognition via
+        session_id must short-circuit before the kill -0 check, which
+        would otherwise misreport this live-but-foreign PID as 'already
+        in use by a live Claude Code session'."""
         repo = tmp_path / "resume-live-pid-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-live-pid-worktree"

@@ -86,12 +86,7 @@
 #     locked, while that process's PID is a live registered Claude Code
 #     process, whatever session it runs. See `_lib.sh`'s
 #     `_lib_worktree_collision_guard` known-gaps list.
-#   - A process can be allowed into a worktree that another process holds,
-#     when any of these applies:
-#     - The lock's PID is reused by a new Claude Code process.
-#     - The lock's PID is shared across PID namespaces.
-#     - The registry read does not confirm a live holder.
-#     - A resumed session's lock still names its exited old PID.
+#   - A process can be allowed into a worktree that another process holds.
 #     See `_lib.sh`'s `_lib_worktree_collision_guard` known-gaps list.
 #   - A dead-PID lock the collision guard detects gets one claim-gated
 #     reclaim attempt (`_lib_worktree_reclaim_dead_lock` in `_lib.sh`) before

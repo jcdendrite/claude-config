@@ -22,7 +22,7 @@ The `session_id` match alone cannot see whether the old PID is still running. If
 
 ## Accepted costs
 
-The rule over-denies a resumed session while the lock's old PID is a live Claude Code process, whatever session that process runs. It also allows a lock held by another process in three cases: a PID reused by a new Claude Code process, equal PIDs across PID namespaces, and a registry read that cannot confirm a live holder. `_lib_worktree_collision_guard`'s known-gaps list in `_lib.sh` states each case with its trigger and, where one exists, its clearing condition, and is the canonical home for them.
+The rule over-denies a resumed session while the lock's old PID is a live Claude Code process, whatever session that process runs. It also lets some locks held by another process pass as the caller's. `_lib_worktree_collision_guard`'s known-gaps list in `_lib.sh` states each case with its trigger and, where one exists, its clearing condition, and is the canonical home for them.
 
 Reclaim of a resumed session's worktree does not depend on this rule, because a `session_id` match never re-stamps the lock. It is left for a follow-up, and the known-gaps list records it. The guard assumes one PID namespace and one config directory per worktree.
 

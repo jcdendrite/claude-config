@@ -3194,7 +3194,8 @@ _lib_worktree_reclaim_dead_lock() {
 # A lock from another PID is the caller's own only when it records the
 # caller's session_id, which `claude --continue`/`--resume` keeps across a PID
 # change.
-# Such a lock stops being the caller's while its PID is a live Claude Code
+# Such a lock stops being the caller's only when `_lib_config_dir` fails or
+# while `_lib_registered_live_sid` confirms its PID as a live registered
 # process, whatever session that process runs.
 # An old-format lock with no session_id matches by PID alone.
 _lib_worktree_lock_is_mine() {
@@ -3263,8 +3264,8 @@ _lib_worktree_lock_is_mine() {
 #   mislead a user into running `git worktree unlock` and stripping their
 #   own freshly-written lock.
 # - A write killed mid-write (the 5s `_lib_capped` timeout) can leave a
-#   truncated `locked` file, misdiagnosed as a foreign manual lock instead
-#   of our own timed-out write.
+#   truncated `locked` file that `_lib_worktree_lock_pid` cannot parse,
+#   misdiagnosed as a foreign manual lock instead of our own timed-out write.
 # - O_EXCL/`noclobber` exclusivity is not guaranteed atomic on older
 #   NFS-mounted git-dirs, which would silently defeat this function's core
 #   guarantee -- out of scope for this threat model.
@@ -3422,7 +3423,7 @@ _lib_worktree_collision_guard() {
   }
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  # A holder that won the write race is judged by _lib_worktree_lock_is_mine, as at the first read.
+  # Whichever lock the reread finds is judged by `_lib_worktree_lock_is_mine`, as at the first read.
   if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
     return 0
   fi
