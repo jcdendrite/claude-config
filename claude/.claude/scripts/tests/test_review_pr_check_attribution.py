@@ -165,10 +165,15 @@ class TestDetailsBalance:
         assert str(body) in result.stderr
         assert "no opener" in result.stderr
 
-    def test_closer_before_opener_exits_one(self, tmp_path):
+    @pytest.mark.parametrize(
+        "middle",
+        ["</details>\n\n<details>", "</details><details>"],
+        ids=["across-lines", "same-line"],
+    )
+    def test_closer_before_opener_exits_one(self, tmp_path, middle):
         """Equal counts are not enough -- a closer that precedes its opener
         leaves the later block unclosed on GitHub."""
-        body = _write(tmp_path, _body_with("</details>\n\n<details>"))
+        body = _write(tmp_path, _body_with(middle))
         result = _run([str(body), "checkout"])
         assert result.returncode == 1
         assert "no opener" in result.stderr
