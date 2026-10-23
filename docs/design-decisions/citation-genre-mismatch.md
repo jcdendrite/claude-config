@@ -2,6 +2,8 @@
 
 *2026-08-30. Formerly `docs/design-decisions.md` §33.*
 
+**Note (2026-10-22):** GH-1208 removed `Bash` from the `staff-*` reviewers, which now read diff files the orchestrator writes for them; they still cite the diff's own files, so the comparison below still holds.
+
 The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. [§9](reviewer-persona-roster-operations.md) established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not [§9](reviewer-persona-roster-operations.md), is the record's home for the cited-path reasoning below.
 
 **Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude-skills/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.

@@ -3891,6 +3891,7 @@ def _status_of(result: subprocess.CompletedProcess) -> int:
     return int(match.group(1))
 
 
+@pytest.mark.usefixtures("isolated_git_environment")
 class TestLibPathIgnoreStatus:
     def test_ignored_path_returns_0(self, tmp_path: Path) -> None:
         repo = _init_ignoring_repo(tmp_path / "repo")
@@ -3948,6 +3949,21 @@ class TestLibPathIgnoreStatus:
         (repo / "agent-reviews").symlink_to(tmp_path / "elsewhere")
 
         result = _path_ignore_status(str(repo), "agent-reviews/x.md")
+
+        assert _status_of(result) == 128
+
+    @pytest.mark.parametrize(
+        "pathspec_variable",
+        ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"],
+    )
+    def test_inherited_pathspec_mode_variable_fails_the_check_closed_with_128(
+        self, tmp_path: Path, pathspec_variable: str
+    ) -> None:
+        """git check-ignore dies on a pathspec-mode variable, so an ignored path reports 128 and not 0."""
+        repo = _init_ignoring_repo(tmp_path / "repo")
+        env = {**os.environ, pathspec_variable: "1"}
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md", env=env)
 
         assert _status_of(result) == 128
 

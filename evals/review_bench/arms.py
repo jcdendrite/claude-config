@@ -14,8 +14,8 @@ ARM_CURRENT_RULE = "current-rule"
 ARM_FUNCTION_CONTEXT = "function-context"
 KNOWN_ARMS: frozenset[str] = frozenset({ARM_CURRENT_RULE, ARM_FUNCTION_CONTEXT})
 
-# Every arm's tool allowlist: production's Read/Grep/Glob subset, with Bash
-# and Write removed. A `tools:` allowlist withholds an unlisted tool from the
+# Every arm's tool allowlist: production's Read/Grep/Glob subset, with Write
+# removed. A `tools:` allowlist withholds an unlisted tool from the
 # subagent outright. An arm therefore cannot run Bash or Write regardless of
 # ambient CLI permission behavior.
 ARM_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")

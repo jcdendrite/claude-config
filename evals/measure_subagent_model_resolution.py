@@ -412,7 +412,7 @@ def classify_agent_identity(
     Returns AGENT_IDENTITY_SUBSTITUTED_TO_PLAN only when a used tool is both
     outside the declared set AND in PLAN_DISCRIMINATING_TOOLS — a narrower
     bar than "any undeclared tool", since a requested agent that already
-    declares a broad toolset (e.g. staff-backend-engineer's Bash) can look
+    declares a broad toolset (e.g. one that includes Bash) can look
     identical to Plan on toolset alone; see PLAN_DISCRIMINATING_TOOLS above.
     """
     if requested_declared_tools is None:

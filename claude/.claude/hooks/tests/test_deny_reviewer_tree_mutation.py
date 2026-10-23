@@ -9,25 +9,47 @@ import textwrap
 
 import pytest
 from helpers import (
+    FINDING_CHECK_LABEL,
     HOOKS_DIR,
     bash_input,
     build_path_without,
     edit_input,
+    init_git_repo_with_commit,
     multiedit_input,
+    review_only_agents,
     run_hook,
     run_hook_reason,
+    run_hook_reason_and_stderr,
     write_input,
 )
 
-from .test_agent_roster import (
-    CANARY_AGENTS,
-    SCRATCH_LINK_SENTENCE,
-    SCRATCH_NEW_NAME_SENTENCE,
-    SCRATCH_NO_RETRY_SENTENCE,
-    SCRATCH_READ_TOOL_SENTENCE,
-)
+from .test_agent_roster import CANARY_AGENTS
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
+
+# The four sentences below are the denial discipline deny-reviewer-tree-mutation.sh
+# puts in its Bash-arm denial text. `Plan` is the only roster member that reaches
+# that arm, so they are its only discipline. The Write arm repeats only the
+# no-retry and read-tool sentences.
+DENIAL_LINK_SENTENCE = (
+    "A write through a symlink or hard link changes the linked file, "
+    "wherever it lives, so a /tmp path can still change a file outside /tmp."
+)
+
+DENIAL_NEW_NAME_SENTENCE = (
+    "Never overwrite or replace an existing path, even one you created; "
+    "write a new file under a new name instead."
+)
+
+DENIAL_NO_RETRY_SENTENCE = (
+    "Do not retry any other denied action through a script, another command "
+    "form, or another tool."
+)
+
+DENIAL_READ_TOOL_SENTENCE = "Use Read, Grep, or Glob for a read the hook misjudges."
+
+pytestmark = pytest.mark.usefixtures("isolated_git_environment")
+
 
 @pytest.fixture
 def repo_ignoring_agent_reviews(tmp_path):
@@ -36,15 +58,7 @@ def repo_ignoring_agent_reviews(tmp_path):
     # Distinct subdirectory name from repo_not_ignoring_agent_reviews below —
     # a test requesting both fixtures shares one tmp_path, and both used to
     # create "repo" under it, colliding.
-    repo = tmp_path / "ignoring-repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / ".gitignore").write_text("agent-reviews/\n")
-    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
+    return init_git_repo_with_commit(tmp_path / "ignoring-repo", file_name=".gitignore", content="agent-reviews/\n")
 
 
 @pytest.fixture
@@ -56,15 +70,29 @@ def repo_not_ignoring_agent_reviews(tmp_path):
     test_foreign_git_dir_env_does_not_launder_the_check instead, the one
     test that needs the real info/exclude-resident shape rather than this
     simpler "nothing ignores it" case."""
-    repo = tmp_path / "not-ignoring-repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "README.md").write_text("x\n")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
+    return init_git_repo_with_commit(tmp_path / "not-ignoring-repo", file_name="README.md")
+
+
+@pytest.fixture
+def repo_ignoring_agent_reviews_and_build(repo_ignoring_agent_reviews):
+    """repo_ignoring_agent_reviews with a second ignored directory, so a path
+    that resolves out of agent-reviews/ into build/ is still ignored and only
+    the hook's own parent and name rules can deny it."""
+    (repo_ignoring_agent_reviews / ".gitignore").write_text("agent-reviews/\nbuild/\n")
+    return repo_ignoring_agent_reviews
+
+
+# The Write, Edit and MultiEdit tools reach one case arm; each rule below holds for all three.
+_FILE_TOOL_BUILDERS = {"Write": write_input, "Edit": edit_input, "MultiEdit": multiedit_input}
+
+
+def _assert_write_arm_denied(payload):
+    """Assert the Write arm denies `payload` with its not-your-findings-file text and writes nothing to stderr
+    (a backtick in the denial constant would run a shell command substitution whose error lands there)."""
+    reason, stderr = run_hook_reason_and_stderr(HOOK, payload)
+    assert reason is not None, f"expected a deny for {payload}"
+    assert "which is not your own findings file" in reason, reason
+    assert stderr == "", f"a successful deny wrote to stderr: {stderr!r}"
 
 
 class TestFileWriteTools:
@@ -79,6 +107,11 @@ class TestFileWriteTools:
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
 
     def test_reviewer_write_to_nested_agent_reviews_path_allowed(self, repo_ignoring_agent_reviews):
+        """Accepted debt: the engineer answered "Accept nested depth as permanent debt (Recommended)", recorded in
+        docs/design-decisions/reviewer-personas-hold-no-bash.md. findings-path-suffix.sh writes an unanchored
+        ignore pattern, so a session started in a subdirectory relies on nested agent-reviews/ directories being
+        ignored, and the reach is any directory of that name. The caller's own-name rule is what limits a persona
+        to its own findings file there. Flip to deny only with a fresh stop-and-ask."""
         path = str(repo_ignoring_agent_reviews / "sub" / "agent-reviews" / "staff-sdet-1700000000-branch.md")
         cwd = str(repo_ignoring_agent_reviews)
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
@@ -89,8 +122,9 @@ class TestFileWriteTools:
         path = "/repo/agent-reviews-notes.md"
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "deny"
 
-    def test_reviewer_write_under_tmp_allowed(self):
-        assert run_hook(HOOK, write_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
+    def test_reviewer_write_under_tmp_denied(self):
+        """A reviewer has no scratch directory: its only write is its own findings file."""
+        _assert_write_arm_denied(write_input("/tmp/scratch/copy.py", agent_type="staff-sdet"))
 
     def test_reviewer_write_to_review_pr_findings_directory_under_tmp_allowed(self):
         """A narrowing of the /tmp arm (GH-1103) that stops admitting this path
@@ -121,22 +155,38 @@ class TestFileWriteTools:
     @pytest.mark.parametrize(
         "payload",
         [
-            write_input("/repo/src/main.py", agent_type="staff-sdet"),
             bash_input("sed -i s/a/b/ src/x", agent_type="staff-sdet"),
             bash_input("cat > src/x", agent_type="staff-sdet"),
             bash_input("~/.claude/scripts/worktree-ensure.sh x", agent_type="staff-sdet"),
         ],
-        ids=["write-arm", "bash-arm", "raw-write-target-arm", "worktree-ensure-arm"],
+        ids=["bash-arm", "raw-write-target-arm", "worktree-ensure-arm"],
     )
-    def test_deny_reason_names_sanctioned_alternative(self, payload):
+    def test_bash_arm_deny_reason_names_sanctioned_alternative(self, payload):
         reason = run_hook_reason(HOOK, payload)
         assert reason is not None
-        assert SCRATCH_LINK_SENTENCE in reason, "denial reason lost the link-hazard sentence"
-        assert SCRATCH_NEW_NAME_SENTENCE in reason, "denial reason lost the new-name sentence"
-        assert SCRATCH_NO_RETRY_SENTENCE in reason, "denial reason lost the no-retry sentence"
-        assert SCRATCH_READ_TOOL_SENTENCE in reason, "denial reason lost the read-tool sentence"
+        assert DENIAL_LINK_SENTENCE in reason, "denial reason lost the link-hazard sentence"
+        assert DENIAL_NEW_NAME_SENTENCE in reason, "denial reason lost the new-name sentence"
+        assert DENIAL_NO_RETRY_SENTENCE in reason, "denial reason lost the no-retry sentence"
+        assert DENIAL_READ_TOOL_SENTENCE in reason, "denial reason lost the read-tool sentence"
         assert "agent-reviews" in reason, "denial reason lost the findings-file path"
         assert "copy the file" not in reason, "denial reason sanctions a /tmp copy"
+
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_write_arm_deny_reason_names_only_the_findings_file(self, tool_name):
+        """The Write arm's denial keeps the no-retry and read-tool sentences, names agent-reviews, and offers no
+        scratch directory, link rule or `Check:` line, because a reviewer holds no Bash to use them with."""
+        payload = _FILE_TOOL_BUILDERS[tool_name]("/repo/src/main.py", agent_type="staff-sdet")
+        reason, stderr = run_hook_reason_and_stderr(HOOK, payload)
+        assert reason is not None
+        assert DENIAL_NO_RETRY_SENTENCE in reason
+        assert DENIAL_READ_TOOL_SENTENCE in reason
+        assert "agent-reviews" in reason
+        assert FINDING_CHECK_LABEL not in reason
+        assert DENIAL_LINK_SENTENCE not in reason
+        assert DENIAL_NEW_NAME_SENTENCE not in reason
+        assert "fresh directory you created under /tmp" not in reason
+        assert "Confirm a claim by reading and tracing the code before running anything" not in reason
+        assert stderr == "", f"a successful deny wrote to stderr: {stderr!r}"
 
     def test_skill_fidelity_reviewer_write_to_findings_allowed(self, repo_ignoring_agent_reviews):
         """skill-fidelity-reviewer is a Write-only reviewer (no Bash/Edit) added
@@ -159,17 +209,20 @@ class TestFileWriteTools:
 
 
 class TestAgentReviewsIgnoreVerification:
-    """The agent-reviews/* exemption is conditional on `git check-ignore`
+    """The own-findings-file exemption is conditional on `git check-ignore`
     confirming the path is actually ignored in the target repo (GH-512) — a
     stale worktree-local info/exclude, or a repo with no ignore entry at all,
     must deny rather than silently let an unignored findings file through."""
 
-    def test_not_ignored_path_denied(self, repo_not_ignoring_agent_reviews):
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_not_ignored_path_denied(self, repo_not_ignoring_agent_reviews, tool_name):
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
         cwd = str(repo_not_ignoring_agent_reviews)
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "deny"
+        payload = _FILE_TOOL_BUILDERS[tool_name](path, agent_type="staff-sdet", cwd=cwd)
+        assert run_hook(HOOK, payload) == "deny"
 
-    def test_not_ignored_deny_reason_directs_to_inline_fallback(self, repo_not_ignoring_agent_reviews):
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_not_ignored_deny_reason_directs_to_inline_fallback(self, repo_not_ignoring_agent_reviews, tool_name):
         """The deny message must send the reviewer to its documented inline
         fallback, and must NOT read as an invitation to fix the ignore state
         itself (e.g. a raw `printf ... >> .git/info/exclude`) — exactly the
@@ -177,7 +230,7 @@ class TestAgentReviewsIgnoreVerification:
         known gap. Locks the message shape, not just the decision."""
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
         cwd = str(repo_not_ignoring_agent_reviews)
-        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd))
+        reason = run_hook_reason(HOOK, _FILE_TOOL_BUILDERS[tool_name](path, agent_type="staff-sdet", cwd=cwd))
         assert reason is not None
         assert "not actually ignored" in reason
         assert "fall back to inline output" in reason.lower()
@@ -199,21 +252,69 @@ class TestAgentReviewsIgnoreVerification:
         assert reason is not None
         assert "not a git repo, or the check failed" in reason
 
-    def test_missing_cwd_denied(self):
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_missing_cwd_denied(self, tool_name):
         """No .cwd in the payload at all must deny, not silently check
         whatever directory the hook process happens to be running in. The
         hook's zero-length check denies it because, on bash 5.2, `cd ''`
         succeeds in place."""
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
-        reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet"))
+        reason = run_hook_reason(HOOK, _FILE_TOOL_BUILDERS[tool_name](path, agent_type="staff-sdet"))
         assert reason is not None
         assert "carried no .cwd" in reason
+
+    def test_tracked_own_findings_file_in_a_nested_directory_denied_as_not_ignored(
+        self, repo_ignoring_agent_reviews
+    ):
+        """git check-ignore reports a tracked path as not ignored whatever the rules say, so a force-added own-name
+        file in a nested agent-reviews/ directory still denies."""
+        nested = repo_ignoring_agent_reviews / "sub" / "agent-reviews"
+        nested.mkdir(parents=True)
+        (nested / "staff-sdet-1700000000-branch.md").write_text("x\n")
+        subprocess.run(
+            ["git", "add", "-f", "sub/agent-reviews/staff-sdet-1700000000-branch.md"],
+            cwd=repo_ignoring_agent_reviews,
+            check=True,
+        )
+        payload = write_input(
+            "sub/agent-reviews/staff-sdet-1700000000-branch.md",
+            agent_type="staff-sdet",
+            cwd=str(repo_ignoring_agent_reviews),
+        )
+        reason = run_hook_reason(HOOK, payload)
+        assert reason is not None
+        assert "not actually ignored" in reason
+
+    def test_pathspec_mode_variable_in_the_environment_denies_with_exit_128(self, repo_ignoring_agent_reviews):
+        """git check-ignore dies on a pathspec-mode variable, so the ignore check cannot confirm and the hook denies
+        instead of treating the failure as an ignored path."""
+        payload = write_input(
+            "agent-reviews/staff-sdet-1700000000-branch.md",
+            agent_type="staff-sdet",
+            cwd=str(repo_ignoring_agent_reviews),
+        )
+        reason = run_hook_reason(HOOK, payload, extra_env={"GIT_LITERAL_PATHSPECS": "1"})
+        assert reason is not None
+        assert "exit 128" in reason
+
+    def test_ignore_rule_in_a_linked_worktrees_shared_info_exclude_allows(self, tmp_path):
+        """A linked worktree reads the common directory's info/exclude, the ignore source GH-512 is about."""
+        main_repo = init_git_repo_with_commit(tmp_path / "main-repo", file_name="README.md")
+        linked_worktree = tmp_path / "linked-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "linked", str(linked_worktree)], cwd=main_repo, check=True
+        )
+        (main_repo / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
+
+        path = "agent-reviews/staff-sdet-1700000000-branch.md"
+        payload = write_input(path, agent_type="staff-sdet", cwd=str(linked_worktree))
+        assert run_hook(HOOK, payload) == "allow"
 
     def test_foreign_git_dir_env_does_not_launder_the_check(self, repo_not_ignoring_agent_reviews, tmp_path):
         """A GIT_DIR pointed at a different repo must not make an unrelated
         target repo's write look safe — regression test for the `unset
-        GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix (mirrors
-        require-worktree-for-git-writes.sh:100).
+        GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix (the same statement
+        require-worktree-for-git-writes.sh makes).
 
         The foreign repo's ignore rule MUST live in `.git/info/exclude`, not
         a tracked `.gitignore` — verified empirically that `git check-ignore`
@@ -225,14 +326,7 @@ class TestAgentReviewsIgnoreVerification:
         actually lives inside `GIT_DIR` and can be laundered this way — it's
         also the exact mechanism GH-512 itself is about (a worktree-local
         `info/exclude` file)."""
-        foreign = tmp_path / "foreign"
-        foreign.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
-        (foreign / "README.md").write_text("x\n")
-        subprocess.run(["git", "add", "README.md"], cwd=foreign, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=foreign, check=True)
+        foreign = init_git_repo_with_commit(tmp_path / "foreign", file_name="README.md")
         (foreign / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
 
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
@@ -254,14 +348,9 @@ class TestAgentReviewsIgnoreVerification:
         test_foreign_git_dir_env_does_not_launder_the_check, pinning the
         GIT_WORK_TREE vector specifically so a future edit that narrows the
         unset list to GIT_DIR alone doesn't silently reopen this bypass."""
-        foreign = tmp_path / "foreign-work-tree"
-        foreign.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
-        (foreign / ".gitignore").write_text("agent-reviews/\n")
-        subprocess.run(["git", "add", ".gitignore"], cwd=foreign, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=foreign, check=True)
+        foreign = init_git_repo_with_commit(
+            tmp_path / "foreign-work-tree", file_name=".gitignore", content="agent-reviews/\n"
+        )
 
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
         cwd = str(repo_not_ignoring_agent_reviews)
@@ -298,14 +387,7 @@ class TestAgentReviewsIgnoreVerification:
         location and false-allow here — verified empirically before this fix
         existed: -C repo reports the root-anchored path ignored regardless of
         which subdirectory the write actually targets)."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        (repo / ".gitignore").write_text("/agent-reviews/\n")
-        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        repo = init_git_repo_with_commit(tmp_path / "repo", file_name=".gitignore", content="/agent-reviews/\n")
         sub = repo / "sub"
         sub.mkdir()
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
@@ -625,7 +707,7 @@ class TestWorktreeEnsureDeniedByName:
         assert reason is not None
         assert "worktree-ensure.sh" in reason
         assert "does not apply to review-only agents" in reason
-        assert SCRATCH_NO_RETRY_SENTENCE in reason, "denial reason lost the sanctioned-alternative text"
+        assert DENIAL_NO_RETRY_SENTENCE in reason, "denial reason lost the sanctioned-alternative text"
 
     @pytest.mark.parametrize("agent_type", [None, "main", "code-writer", "general-purpose"])
     def test_non_review_only_caller_worktree_ensure_allowed(self, agent_type):
@@ -691,7 +773,7 @@ class TestRawWriteTargetGap:
         assert run_hook(HOOK, bash_input("echo x | tee src/x", agent_type="staff-sdet")) == "deny"
 
     def test_reviewer_cp_to_tmp_allowed(self):
-        # Copying one file into a /tmp scratch directory is the persona scratch-execution workflow; this gate must never deny it.
+        # The Bash arm's /tmp scratch allowance: copying one file into a /tmp scratch directory must not deny.
         assert run_hook(HOOK, bash_input("cp src/x /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_redirect_to_tmp_allowed(self):
@@ -700,10 +782,24 @@ class TestRawWriteTargetGap:
     def test_reviewer_tee_to_tmp_allowed(self):
         assert run_hook(HOOK, bash_input("echo x | tee /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
 
-    def test_reviewer_redirect_to_dev_null_allowed(self):
-        # Common diagnostic-noise destination, not a tracked-file write —
-        # must not false-deny an ordinary `... > /dev/null` invocation.
-        assert run_hook(HOOK, bash_input("git status > /dev/null", agent_type="staff-sdet")) == "allow"
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -q x f > /dev/null",
+            "grep -q x f >/dev/null",
+            "echo x >>/tmp/scratch/x",
+        ],
+        ids=["spaced-redirect-to-dev-null", "glued-redirect-to-dev-null", "glued-append-redirect-to-tmp"],
+    )
+    def test_plan_non_git_redirect_to_exempt_target_allowed(self, command):
+        """`Plan` is the roster member that reaches the Bash arm. A non-git fragment reaches the
+        raw-write-target scan, which exempts /dev/null (diagnostic noise, not a tracked-file write)
+        and a /tmp target, including the glued `>>` form."""
+        assert run_hook(HOOK, bash_input(command, agent_type="Plan")) == "allow"
+
+    def test_plan_glued_append_redirect_to_tracked_path_denied(self):
+        """The glued `>>` form (no space before the target) is judged like the spaced form: a tracked-path target denies."""
+        assert run_hook(HOOK, bash_input("echo x >>src/x", agent_type="Plan")) == "deny"
 
     @pytest.mark.parametrize(
         "command",
@@ -818,7 +914,7 @@ class TestRawWriteTargetGap:
     def test_reviewer_raw_write_to_agent_reviews_denied(self):
         """A raw-Bash `agent-reviews/*` write gets no exemption at all: the
         ignore-state confirmation the Write/Edit/MultiEdit arm's own
-        exemption depends on (git check-ignore) has no Bash-arm
+        exemption depends on (_lib_path_ignore_status) has no Bash-arm
         counterpart, so this denies like any other non-/tmp target rather
         than reproducing an unchecked exemption."""
         assert (
@@ -913,37 +1009,176 @@ class TestMalformedInput:
 
 class TestTraversalGuard:
     """A case glob matches the literal string and does not resolve `..`, so a
-    traversal path could satisfy the /tmp/* or agent-reviews/* prefix while
-    resolving to a tracked repo file. The guard rejects any `..` segment."""
+    traversal path could satisfy the agent-reviews/* prefix while resolving to
+    a tracked repo file. The guard rejects any `..` segment. Only the
+    `back-into-agent-reviews` case below isolates the guard: the other
+    agent-reviews traversal paths here also fail the parent predicate, and the
+    /tmp traversal path matches no exemption arm."""
 
-    def test_reviewer_write_tmp_traversal_denied(self):
+    def test_tmp_traversal_path_matches_no_exemption_arm_and_denies(self):
         path = "/tmp/../home/user/repo/src/main.py"
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "deny"
+        _assert_write_arm_denied(write_input(path, agent_type="staff-sdet"))
 
-    def test_reviewer_write_agent_reviews_traversal_denied(self):
+    def test_agent_reviews_traversal_path_denied_by_the_parent_predicate(self):
         path = "agent-reviews/../claude/.claude/hooks/deny-reviewer-tree-mutation.sh"
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "deny"
+        _assert_write_arm_denied(write_input(path, agent_type="staff-sdet"))
 
-    def test_reviewer_edit_nested_traversal_denied(self):
+    def test_nested_traversal_path_denied_by_the_parent_predicate(self):
         path = "/repo/agent-reviews/../../src/main.py"
-        assert run_hook(HOOK, edit_input(path, agent_type="ciso-reviewer")) == "deny"
+        _assert_write_arm_denied(edit_input(path, agent_type="ciso-reviewer"))
 
-    def test_double_dot_in_filename_not_treated_as_traversal(self):
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "agent-reviews/../build/staff-sdet-x.md",
+            "sub/agent-reviews/../build/staff-sdet-x.md",
+            # Discriminating case for the traversal guard: git check-ignore exits 0 on this path and its parent and
+            # name are both valid once `..` is resolved, so only the guard denies it. The parent rule also covers the
+            # two above.
+            "agent-reviews/../agent-reviews/staff-sdet-x.md",
+        ],
+        ids=["into-ignored-sibling", "nested-into-ignored-sibling", "back-into-agent-reviews"],
+    )
+    def test_traversal_into_an_ignored_directory_denied(self, repo_ignoring_agent_reviews_and_build, tool_name, path):
+        payload = _FILE_TOOL_BUILDERS[tool_name](
+            path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews_and_build)
+        )
+        _assert_write_arm_denied(payload)
+
+    def test_double_dot_in_filename_not_treated_as_traversal(self, repo_ignoring_agent_reviews):
         """`..` inside a filename (a..b), not as a path segment, is not a
-        traversal — a legitimate /tmp write must still be allowed."""
-        assert run_hook(HOOK, write_input("/tmp/a..b.py", agent_type="staff-sdet")) == "allow"
+        traversal — a legitimate findings write must still be allowed."""
+        path = "agent-reviews/staff-sdet-a..b.md"
+        cwd = str(repo_ignoring_agent_reviews)
+        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
+
+
+class TestWriteArmFindingsFileRule:
+    """The Write arm allows exactly the caller's own `<agent>-*.md` file directly inside an ignored
+    agent-reviews directory. Each deny case below isolates one predicate."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "agent-reviews/staff-backend-engineer-x.md",
+            "agent-reviews/review-ledger-x.md",
+            "agent-reviews/staff-sdet-x.index",
+            "agent-reviews/staff-sdet.md",
+            # The empty name after the trailing slash fails the name predicate.
+            "agent-reviews/",
+            # Valid own name in a wrong parent: the parent predicate's discriminating cases.
+            "agent-reviews/sub/staff-sdet-y.md",
+            "agent-reviews/staff-sdet-x/staff-sdet-y.md",
+            "agent-reviews//staff-sdet-x.md",
+        ],
+        ids=[
+            "other-agents-findings-file",
+            "ledger-file",
+            "lane-index-file",
+            "name-without-suffix",
+            "trailing-slash",
+            "own-name-in-subdirectory",
+            "own-name-nested-twice",
+            "double-slash-parent",
+        ],
+    )
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_write_arm_parent_and_name_predicates_deny(self, repo_ignoring_agent_reviews, tool_name, path):
+        payload = _FILE_TOOL_BUILDERS[tool_name](
+            path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews)
+        )
+        _assert_write_arm_denied(payload)
+
+    @pytest.mark.parametrize("path_location", ["literal-tmp", "second-checkout"])
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_own_name_file_outside_the_cwd_repository_denied_at_the_ignore_check(
+        self, repo_ignoring_agent_reviews, tmp_path, tool_name, path_location
+    ):
+        """The cwd's repository judges the ignore state, so an own-name path outside that repository makes
+        git check-ignore exit 128 and the hook denies, even when the path's own repository ignores agent-reviews/."""
+        if path_location == "literal-tmp":
+            path = "/tmp/agent-reviews/staff-sdet-x.md"
+        else:
+            other_checkout = init_git_repo_with_commit(
+                tmp_path / "other-checkout", file_name=".gitignore", content="agent-reviews/\n"
+            )
+            (other_checkout / "agent-reviews").mkdir()
+            path = str(other_checkout / "agent-reviews" / "staff-sdet-1700000000-branch.md")
+        payload = _FILE_TOOL_BUILDERS[tool_name](
+            path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews)
+        )
+        reason = run_hook_reason(HOOK, payload)
+        assert reason is not None
+        assert "not a git repo, or the check failed" in reason
+        assert "exit 128" in reason
+
+    @pytest.mark.parametrize("path_form", ["relative", "absolute"])
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_own_findings_file_allowed_for_every_file_tool(self, repo_ignoring_agent_reviews, tool_name, path_form):
+        """The production Write tool sends absolute paths, and the own-name rule allows that shape as well as the relative one."""
+        own_file = "agent-reviews/staff-sdet-1700000000-branch.md"
+        path = own_file if path_form == "relative" else str(repo_ignoring_agent_reviews / own_file)
+        payload = _FILE_TOOL_BUILDERS[tool_name](
+            path,
+            agent_type="staff-sdet",
+            cwd=str(repo_ignoring_agent_reviews),
+        )
+        assert run_hook(HOOK, payload) == "allow"
+
+    @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
+    def test_other_agents_findings_file_denied_for_every_file_tool_given_an_absolute_path(
+        self, repo_ignoring_agent_reviews, tool_name
+    ):
+        """The production Write tool sends absolute paths, and the own-name rule denies another agent's file in that shape."""
+        other_agents_file = repo_ignoring_agent_reviews / "agent-reviews" / "staff-backend-engineer-1700000000-branch.md"
+        payload = _FILE_TOOL_BUILDERS[tool_name](
+            str(other_agents_file),
+            agent_type="staff-sdet",
+            cwd=str(repo_ignoring_agent_reviews),
+        )
+        _assert_write_arm_denied(payload)
+
+    def test_roster_sweep_denies_tmp_writes_and_allows_own_findings_files(self, repo_ignoring_agent_reviews):
+        cwd = str(repo_ignoring_agent_reviews)
+        roster = review_only_agents()
+        assert roster, "the review-only roster read from _lib.sh is empty"
+        for agent_type in roster:
+            _assert_write_arm_denied(write_input("/tmp/scratch/ok.py", agent_type=agent_type, cwd=cwd))
+            own_file = f"agent-reviews/{agent_type}-1700000000-branch.md"
+            decision = run_hook(HOOK, write_input(own_file, agent_type=agent_type, cwd=cwd))
+            assert decision == "allow", f"{agent_type}: own findings file {own_file} was not allowed ({decision})"
+
+    def test_no_roster_name_followed_by_a_dash_is_a_prefix_of_another_members_name(self):
+        """The own-name predicate matches `<agent>-*.md`, so a roster name that begins with another member's name
+        and a dash would let the longer-named agent write the shorter-named agent's findings file."""
+        roster = review_only_agents()
+        clashes = [(a, b) for a in roster for b in roster if a != b and b.startswith(f"{a}-")]
+        assert not clashes, f"roster names where one prefixes another: {clashes}"
+
+    def test_write_arm_not_ignored_deny_emits_one_json_document(self, repo_not_ignoring_agent_reviews):
+        """run_hook parses the whole stdout as one JSON document; the extracted ignore helper must write nothing."""
+        payload = write_input(
+            "agent-reviews/staff-sdet-1700000000-branch.md",
+            agent_type="staff-sdet",
+            cwd=str(repo_not_ignoring_agent_reviews),
+        )
+        reason, stderr = run_hook_reason_and_stderr(HOOK, payload)
+        assert reason is not None
+        assert "not actually ignored" in reason
+        assert stderr == ""
 
 
 class TestExemptionPathsAllTools:
-    """The /tmp and agent-reviews/ exemptions live in one Write|Edit|MultiEdit
-    case arm; assert each tool exercises the allow direction so a future split
-    of that arm can't silently regress Edit/MultiEdit."""
+    """The own-findings-file exemption lives in one Write|Edit|MultiEdit case
+    arm; assert each tool exercises the allow and deny directions so a future
+    split of that arm can't silently regress Edit/MultiEdit."""
 
-    def test_reviewer_edit_under_tmp_allowed(self):
-        assert run_hook(HOOK, edit_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
+    def test_reviewer_edit_under_tmp_denied(self):
+        _assert_write_arm_denied(edit_input("/tmp/scratch/copy.py", agent_type="staff-sdet"))
 
-    def test_reviewer_multiedit_under_tmp_allowed(self):
-        assert run_hook(HOOK, multiedit_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
+    def test_reviewer_multiedit_under_tmp_denied(self):
+        _assert_write_arm_denied(multiedit_input("/tmp/scratch/copy.py", agent_type="staff-sdet"))
 
     def test_reviewer_edit_findings_path_allowed(self, repo_ignoring_agent_reviews):
         path = "agent-reviews/ciso-reviewer-1700000000-branch.md"
@@ -1295,25 +1530,46 @@ class TestKnownGapBypass:
         assert reason is not None
         assert "writes to 'src/x'" in reason
 
-    # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
-    # for the /tmp link gap in the header's known-gaps list. The hook matches
-    # `/tmp/*` as literal text and never resolves links, so each form launders
-    # a write onto a file outside /tmp. When GH-1103 closes the gap, flip the
-    # matching assertion to "deny" instead of silently accepting it.
-    def test_reviewer_hard_link_into_tmp_allowed(self):
-        assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"
+    # GH-1295: the three tests below pin the CURRENT (imperfect) allow verdicts
+    # for the /tmp link gap in the header's known-gaps list, for `Plan`, the
+    # only roster member that reaches the Bash arm. That `Plan` holds Bash is a
+    # harness premise this repo cannot pin: a consumer project's agent file
+    # with a roster persona's name can give that persona Bash again. The hook
+    # matches `/tmp/*` as literal text and never resolves links, so each form
+    # launders a write onto a file outside /tmp. No link exists on disk in these pins, so only a
+    # Bash arm that inspects `ln` flips the two `ln` assertions. The `cat > /tmp/d/file` assertion flips
+    # on neither kind of fix, and a fix that resolves links needs its own real-link test.
+    def test_plan_hard_link_into_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="Plan")) == "allow"
 
-    def test_reviewer_file_symlink_into_tmp_allowed(self):
-        assert run_hook(HOOK, bash_input("ln -s src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"
+    def test_plan_file_symlink_into_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("ln -s src/x /tmp/y", agent_type="Plan")) == "allow"
 
-    def test_reviewer_write_through_directory_symlink_allowed(self):
-        assert run_hook(HOOK, bash_input("ln -s src /tmp/d", agent_type="ciso-reviewer")) == "allow"
-        assert run_hook(HOOK, write_input("/tmp/d/file", agent_type="ciso-reviewer")) == "allow"
-        assert run_hook(HOOK, bash_input("cat > /tmp/d/file", agent_type="ciso-reviewer")) == "allow"
+    def test_plan_write_through_directory_symlink_allowed(self):
+        assert run_hook(HOOK, bash_input("ln -s src /tmp/d", agent_type="Plan")) == "allow"
+        assert run_hook(HOOK, bash_input("cat > /tmp/d/file", agent_type="Plan")) == "allow"
+
+    def test_persona_write_to_tmp_path_denied_by_path_shape(self):
+        """A persona's Write tool reaches the Write arm, which exempts no /tmp path. Pins path shape only: no link is created."""
+        _assert_write_arm_denied(write_input("/tmp/d/file", agent_type="ciso-reviewer"))
+
+    # GH-1295: these two pin the CURRENT (imperfect) allow verdicts for the header's "The git branch skips the
+    # raw-write-target scan" gap: a redirect or `--output` on an allowed git subcommand is not judged, so each form
+    # writes a tracked path for `Plan`. When GH-1295 closes the gap, flip both assertions to "deny".
+    def test_plan_git_diff_redirect_to_tracked_path_allowed(self):
+        assert run_hook(HOOK, bash_input("git diff > src/x", agent_type="Plan")) == "allow"
+
+    def test_plan_git_diff_output_flag_to_tracked_path_allowed(self):
+        assert run_hook(HOOK, bash_input("git diff --output=src/x", agent_type="Plan")) == "allow"
+
+    def test_reviewer_git_status_redirect_to_dev_null_allowed_by_git_branch_skip(self):
+        # The git branch `continue`s before the raw-write-target scan, so this allow does not exercise the
+        # scan's /dev/null exemption; test_plan_non_git_redirect_to_exempt_target_allowed pins that.
+        assert run_hook(HOOK, bash_input("git status > /dev/null", agent_type="staff-sdet")) == "allow"
 
 
-class TestScratchDirectoryWorkflow:
-    """The persona scratch-execution workflow: a mktemp directory under /tmp,
+class TestBashArmTmpScratchAllowance:
+    """The Bash arm's /tmp scratch allowance: a mktemp directory under /tmp,
     then writes spelled out literally under it."""
 
     @pytest.mark.parametrize(
@@ -1331,7 +1587,7 @@ class TestScratchDirectoryWorkflow:
             "git-no-optional-locks-status",
         ],
     )
-    def test_reviewer_scratch_workflow_command_allowed(self, command):
+    def test_scratch_allowance_command_allowed(self, command):
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     @pytest.mark.parametrize(
@@ -1342,7 +1598,7 @@ class TestScratchDirectoryWorkflow:
         ],
         ids=["variable-target", "relative-target-after-cd"],
     )
-    def test_reviewer_unliteral_write_target_denied_as_outside_tmp(self, command):
+    def test_unliteral_write_target_denied_as_outside_tmp(self, command):
         reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
         assert reason is not None
         assert "', which is outside /tmp." in reason
@@ -1486,31 +1742,18 @@ class TestFailClosedJqReads:
         assert "could not parse tool-input JSON" in reason
 
     def test_file_path_token_failure_denies_via_shared_parser(self, tmp_path):
-        # reviewer + Write to /tmp would normally allow (exempt path).
-        payload = write_input("/tmp/scratch/ok.py", agent_type="staff-sdet")
+        # code-writer + Write to a source path would normally allow (non-reviewer, fast-path exit).
+        payload = write_input("/repo/src/main.py", agent_type="code-writer")
         reason = _run_hook_with_jq_failing_on(payload, "file_path", tmp_path)
         assert reason is not None
         assert "could not parse tool-input JSON" in reason
-
-
-def _review_only_roster() -> list[str]:
-    """Read the closed review-only set from _lib.sh — the single source of
-    truth — so a persona rename/drop in _LIB_REVIEW_ONLY_AGENTS is caught."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib} && _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line.strip()]
 
 
 class TestFullRoster:
     def test_every_review_only_agent_denies_a_mutation(self):
         """Every member of _LIB_REVIEW_ONLY_AGENTS must deny a representative
         mutation — catches an untested member and future array drift."""
-        roster = _review_only_roster()
+        roster = review_only_agents()
         assert len(roster) == 12, f"roster changed: {roster}"
         for agent in roster:
             decision = run_hook(HOOK, bash_input("sed -i s/a/b/ src/x.ts", agent_type=agent))
@@ -1532,7 +1775,7 @@ class TestFullRoster:
         test_doc_counts) but forgotten in _LIB_REVIEW_ONLY_AGENTS would be
         un-gated and free to mutate the tree under review. This test turns
         that omission into a loud failure."""
-        gate_roster = set(_review_only_roster())
+        gate_roster = set(review_only_agents())
         file_backed_reviewers = {name.removesuffix(".md") for name in CANARY_AGENTS}
         missing = file_backed_reviewers - gate_roster
         assert not missing, (

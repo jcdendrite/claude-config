@@ -755,9 +755,10 @@ class TestClassifyAgentIdentity:
         )
 
     def test_already_broad_declared_toolset_hides_bash_substitution(self) -> None:
-        """staff-backend-engineer already declares Bash, so a Plan
-        substitution that only used Bash-or-narrower tools looks identical
-        to an as-requested run by this method alone — the documented limit
+        """With a synthetic declared set that includes Bash (no shipped
+        reviewer persona holds Bash), a Plan substitution that only used
+        Bash-or-narrower tools looks identical to an as-requested run by
+        this method alone — the documented limit
         named in plan M3's 'may never observe a true positive' validity
         threat."""
         declared = frozenset({"Read", "Grep", "Glob", "Bash", "Write"})
@@ -985,10 +986,9 @@ class TestAgentFrontmatterParsing:
     def test_staff_backend_engineer_declared_model_is_sonnet(self) -> None:
         assert msmr.declared_model_pin_for_dispatch(msmr.DISPATCH_STAFF_BACKEND_ENGINEER) == "sonnet"
 
-    def test_staff_backend_engineer_declared_tools_include_bash(self) -> None:
+    def test_staff_backend_engineer_declared_tools_are_exactly_read_grep_glob_write(self) -> None:
         tools = msmr.declared_tools_for_dispatch(msmr.DISPATCH_STAFF_BACKEND_ENGINEER)
-        assert tools is not None
-        assert "Bash" in tools
+        assert tools == frozenset({"Read", "Grep", "Glob", "Write"})
 
     def test_explore_haiku_override_declared_model_is_haiku(self) -> None:
         assert msmr.declared_model_pin_for_dispatch(msmr.DISPATCH_EXPLORE_HAIKU) == "haiku"

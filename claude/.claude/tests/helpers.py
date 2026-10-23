@@ -58,6 +58,20 @@ _LIB_SH = HOOKS_DIR / "_lib.sh"
 # A reviewer finding requests a check with a line that begins with this label.
 FINDING_CHECK_LABEL = "Check:"
 
+# A reviewer's Input contract states this sentence so a dispatch that handed it no input fails loudly instead of
+# reviewing a guessed scope; code-review/SKILL.md's spawn step halts on a return that says it.
+REVIEWER_INPUT_FAIL_LOUD_SENTENCE = "If you were handed none of these, say so and stop."
+
+# The docs/scripts.md heading that explains a --context-files halt; the persona sentence below cites it.
+CONTEXT_FILES_HALT_HEADING = "When --context-files halts"
+
+# The persona sentence for a denied Read of a lane file; code-review/SKILL.md halts the review on that return.
+REVIEWER_INPUT_DENIED_READ_SENTENCE = (
+    "If a `Read` of one of your lane files is denied, say so, name the path, and stop; look for no other route to "
+    "it, because the dispatcher halts the review and points the engineer to `docs/scripts.md` "
+    f"§ \"{CONTEXT_FILES_HALT_HEADING}\"."
+)
+
 # The field order of a lane index row, as docs/scripts.md states it; a rename or copy row appends its old path.
 LANE_INDEX_ROW_FIELDS = ("status", "lane", "base", "history", "notes", "path")
 
@@ -93,6 +107,17 @@ CHECK_NO_TEST_CLAUSE = (
     "If you do not run the test, or no such test can be written or run, remove any test or file you created for it, "
     "fix the code by reading and tracing it as for any finding, report `no regression test: <reason>` under "
     "**Still uncertain**, and continue with the other findings."
+)
+
+# The two sentences of a reviewer's Input contract that tell it when to request a check and what a mid-sentence label
+# means; the canonical specialist contract states them word for word.
+FINDING_CHECK_TRIGGER_SENTENCE = (
+    f"When a new test would settle it, add a line that begins `{FINDING_CHECK_LABEL}` and names that test: it asserts "
+    "the finding's required property, fails exactly when the finding holds, and stays inside its own fixtures and "
+    "temporary directory."
+)
+FINDING_CHECK_MID_SENTENCE_SENTENCE = (
+    f"A `{FINDING_CHECK_LABEL}` that appears mid-sentence is prose and requests nothing."
 )
 
 # About 320 KB in 32 lines. Append it after a command whose first line matches.
@@ -603,6 +628,25 @@ def run_hook_reason(
     extra_env: additional environment variables merged on top of the base env
     (applied after home override, so extra_env can also override HOME).
     """
+    return run_hook_reason_and_stderr(hook, tool_input, cwd=cwd, home=home, extra_env=extra_env)[0]
+
+
+def run_hook_reason_and_stderr(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> tuple[str | None, str]:
+    """Like `run_hook_reason` but also returns the hook's stderr, for tests that
+    assert a deny path wrote nothing there (a backtick in a double-quoted shell
+    string runs a command substitution whose error text lands on stderr).
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
     env = _build_subprocess_env(home, extra_env)
     result = subprocess.run(
         [str(hook)],
@@ -614,9 +658,9 @@ def run_hook_reason(
         check=False,
     )
     if not result.stdout.strip():
-        return None
+        return None, result.stderr
     payload = json.loads(result.stdout)
-    return payload["hookSpecificOutput"].get("permissionDecisionReason")
+    return payload["hookSpecificOutput"].get("permissionDecisionReason"), result.stderr
 
 
 def run_hook_context(
@@ -1208,6 +1252,32 @@ def assert_gate_handles_traversal_session_id(
     assert canary.read_text() == CANARY_CONTENT, (
         "a traversal session_id must not touch a file outside the marker dir"
     )
+
+
+def _lib_listed_names(lib_function: str) -> list[str]:
+    """Return the non-empty lines `lib_function` prints after sourcing _lib.sh."""
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; {lib_function}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def review_only_agents() -> list[str]:
+    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
+    return _lib_listed_names("_lib_review_only_agents")
+
+
+def no_gate_release_agents() -> list[str]:
+    """Read _LIB_NO_GATE_RELEASE_AGENTS from _lib.sh — the shipping source of truth."""
+    return _lib_listed_names("_lib_no_gate_release_agents")
+
+
+def reviewer_persona_agents() -> list[str]:
+    """Read the reviewer-persona roster _lib.sh derives from _LIB_REVIEW_ONLY_AGENTS — the shipping source of truth."""
+    return _lib_listed_names("_lib_reviewer_persona_agents")
 
 
 def git_toplevel(repo: Path) -> str:

@@ -5,10 +5,13 @@
 # non-specialist reviewers skill-fidelity-reviewer and
 # comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see
 # _lib.sh's _LIB_REVIEW_ONLY_AGENTS) must never mutate the tree they are
-# reviewing. Their sole sanctioned
-# writes are the findings file (agent-reviews/<agent>-<epoch>-<slug>.md,
-# via the Write tool) and anything under /tmp. Wired under both the Bash
-# and Edit|Write|MultiEdit PreToolUse matchers in settings.json.
+# reviewing.
+# Their Write tool's only sanctioned target is the caller's own findings file (its own <agent>-*.md file in an ignored agent-reviews directory; see the depth and path-form gaps in Known gaps below).
+# A Bash write is sanctioned only under /tmp.
+# /dev/null is also exempt from the Bash write-target scan.
+# Per the harness's own agent listing, which this repo cannot pin, `Plan` is the only roster member holding Bash.
+# A consumer project's agent file with a roster persona's name overrides the shipped tools line and can give that persona Bash again.
+# The gate is wired under both the Bash and Edit|Write|MultiEdit PreToolUse matchers in settings.json.
 #
 # Motivation: a transcript scan found review-only agents mutating the tree
 # under review across every persona in the roster — `terraform fmt` (no
@@ -73,7 +76,8 @@
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
 #     interpreter write such as `python3 -c`, a tool's own output flag, such
 #     as `git diff --output=<path>`) is not inspected.
-#     GH-1103 tracks the structural fix for this closed enumeration.
+#     GH-1295 tracks this closed enumeration.
+#     Only `Plan` reaches the Bash arm, with the qualifiers stated at the top of this header.
 #   - Plain `ruff check` writes to disk when the target repo's ruff config
 #     sets `fix = true`, or when the command passes `--config fix=true`.
 #     This gap is accepted permanently.
@@ -132,21 +136,31 @@
 #       - A redirect target built by command substitution, `$(...)` or
 #         backticks (`echo x > $(printf src/y)`), because _lib_split_fragments
 #         splits at both spellings.
-#   - A symlink or hard link under /tmp launders the /tmp exemption.
-#     GH-1103 tracks the structural fix. The facts of this one gap:
-#       - Both arms match the literal `/tmp/*` text without resolving links.
+#   - A symlink or hard link under /tmp launders the Bash arm's /tmp exemption.
+#     GH-1295 tracks it. The facts of this one gap:
+#       - The Bash arm matches the literal `/tmp/*` text without resolving links.
 #       - A write through such a link changes the linked file, which can be any
 #         file the user can write, not only a tracked one.
 #       - Resolving the path before the match would false-deny every legitimate
-#         macOS /tmp write, because /tmp is a symlink to /private/tmp there
-#         (see the macOS `/tmp` note below).
-#       - A cooperative reviewer can create such a link and then write
-#         through it without noticing, so this gap is not waived on
-#         cooperative grounds.
-#       - Each Bash-holding persona's "## Scratch execution" section is the
-#         current mitigation.
+#         macOS /tmp write, because /tmp is a symlink to /private/tmp there.
+#       - A cooperative agent can create such a link and then write through it without noticing, so this gap is not waived on cooperative grounds.
 #       - Tests in test_deny_reviewer_tree_mutation.py pin this gap's current
-#         allow verdicts.
+#         allow verdicts for `Plan`.
+#   - The git branch skips the raw-write-target scan.
+#     A redirect or `--output` on an allowed git subcommand is therefore not judged.
+#     GH-1295 tracks this gap.
+#     Only `Plan` reaches it, with the qualifiers stated at the top of this header.
+#   - The Write arm accepts the caller's own `<agent>-*.md` file in an ignored directory named agent-reviews at any depth.
+#     The unanchored ignore pattern findings-path-suffix.sh writes ignores every directory of that name in the repository, so the reach is any such directory.
+#     That reach includes an agent-reviews directory under .claude/rules/, .claude/agents/ or .claude/plans/; whether Claude Code loads a file there is unverified.
+#     The engineer accepted the any-depth reach as debt: "Keep, accept as debt (Recommended)".
+#     The reach also includes `<repo>/.git/refs/heads/agent-reviews/<agent>-*.md`, because `git check-ignore -q` exits 0 for it.
+#   - A Write path starting with `~` or `:/` passes the case globs and the name predicate unchanged.
+#     `git check-ignore -q` exits 0 for `~/agent-reviews/<agent>-x.md` and `:/agent-reviews/<agent>-x.md`, so the ignore check does not deny them.
+#     git check-ignore judges the literal string relative to the cwd, where git expands no `~` and reads a leading `:/` as pathspec magic.
+#     The ignore check therefore does not describe the file written.
+#     If the Write tool expands `~`, the file would land outside the repo.
+#     Whether the Write tool expands `~`, and whether the hook payload carries the raw string, is unverified.
 #   - Combined short-option clusters (`sed -ni`, `perl -pi`) and GNU sed's
 #     `--in-place` long form are not matched by the `-i`-prefix check below
 #     — only literal `-i`/`-i<suffix>` tokens are, a missed mutation for the
@@ -209,24 +223,30 @@
 #     backslash-newline continuation is caught, because the Bash arm also
 #     scans a copy of the stripped text with every backslash-newline pair
 #     deleted.
-#   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
-#     resolves `file_path` to its real path before invoking this hook, a
-#     legitimate reviewer write under `/tmp/...` would miss the literal
-#     `/tmp/*` exemption and be denied (fail-closed friction, not a safety
-#     gap). Not observed on the current harness, which passes the path as
-#     written.
-#   - The `agent-reviews/*` exemption above is no longer a pure string match:
-#     it now shells out to `git check-ignore` (via `_lib_capped`, so a
-#     coreutils-less machine runs it uncapped rather than failing) to
-#     confirm the path is actually ignored before allowing the write, a
-#     capability class this hook didn't have before. Any failure of that
-#     check — git absent, the resolved cwd not a repo, the timeout firing —
-#     denies rather than allows (fail-closed friction on an unusual
-#     environment, not a missed mutation).
+#   - The Write arm's findings-file exemption is not a pure string match:
+#     it checks that the file name starts with the caller's own agent type,
+#     that its parent directory is agent-reviews itself (so a file in any
+#     subdirectory of agent-reviews is denied), and, through
+#     `_lib_path_ignore_status`, that the path is actually ignored.
+#     Any failure of the ignore check — git absent, the resolved cwd not a
+#     repo, the timeout firing — denies rather than allows (fail-closed
+#     friction on an unusual environment, not a missed mutation).
+#     An exported GIT_LITERAL_PATHSPECS, GIT_GLOB_PATHSPECS, GIT_NOGLOB_PATHSPECS
+#     or GIT_ICASE_PATHSPECS in a reviewer session makes the ignore check exit 128,
+#     so every findings write denies and the reviewer returns inline.
+#     A symlinked agent-reviews directory also makes the ignore check exit 128
+#     (test_lib.py pins this on git 2.43.0), so the write denies.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
 #     exit status is checked and denies with an explicit message rather than
 #     falling through to this hook's normal "no gated fragment matched"
 #     allow path.
+#   - Waived under the cooperative tier:
+#       - A Write, Edit or MultiEdit payload with no file_path is allowed.
+#       - The Bash arm's denial text names the Write tool, which Plan may lack (GH-1295).
+#       - The Write arm judges the path string and the ignore check, never the inode.
+#         A symlinked own-name leaf or a hard-linked own-name leaf is not inspected by this hook.
+#         Only a persona that holds Bash can plant such a link.
+#         Whether the Write tool refuses a symlink leaf or a hard-linked leaf it did not read is unverified here.
 
 set -uo pipefail
 
@@ -265,7 +285,13 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to eval
 # regardless of tool or command.
 _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
-SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
+# Every double-quoted denial string in this hook must not hold a backtick: inside a double-quoted string it runs a command substitution.
+DENIAL_DISCIPLINE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool."
+# The Bash arm's denial text. `Plan` is the only roster member that reaches it.
+SANCTIONED_ALTERNATIVE="$DENIAL_DISCIPLINE Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
+
+# The Write arm's denial text: a reviewer has no scratch directory, so it names only the findings file.
+WRITE_ARM_ALTERNATIVE="$DENIAL_DISCIPLINE Your only write is your findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool). Put anything else you need to say in that file."
 
 # Local to this hook, not _lib.sh: this prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.
@@ -404,87 +430,66 @@ case "$TOOL_NAME" in
     case "$FILE_PATH" in
       # Traversal guard FIRST, mirroring require-worktree-for-file-writes.sh:
       # a case glob matches the literal string and does not resolve `..`, so
-      # `/tmp/../home/<username>/repo/src/x` or `agent-reviews/../src/x` would
-      # satisfy the `/tmp/*` or `agent-reviews/*` prefix below while actually
-      # resolving to a tracked repo file. Reject any path with a `..` segment
-      # (leading `../`, embedded `/../`, or trailing `/..`) before the
-      # exemptions — a traversal path falls through to the deny, never the
-      # exemption. `..` as a bare segment only; a filename like `a..b` is fine.
+      # `agent-reviews/../src/x` would satisfy the `agent-reviews/*` prefix
+      # below while actually resolving to a tracked repo file. Reject any path
+      # with a `..` segment (leading `../`, embedded `/../`, or trailing `/..`)
+      # before the exemption — a traversal path falls through to the deny.
+      # `..` as a bare segment only; a filename like `a..b` is fine.
       ../*|*/../*|*/..) ;;
-      /tmp/*) exit 0 ;;
       # Matched as a /-delimited path component (leading "agent-reviews/"
       # or a nested "*/agent-reviews/*"), not a substring — a file literally
       # named agent-reviews-notes.md must not be exempted.
       agent-reviews/*|*/agent-reviews/*)
-        # _lib_parse_tool_input_or_deny already reads .cwd fail-closed, so
-        # CWD is never empty here as a silent read failure — the
-        # zero-length check below is for a genuinely absent field.
-        # This zero-length check denies an empty CWD because, on bash 5.2,
-        # `cd ''` succeeds in place, so `cd "$CWD"` alone would silently check
-        # whatever directory the hook process happens to be running in instead
-        # of failing closed. Deliberately stricter
-        # than require-worktree-for-git-writes.sh:103's `[ -z "$CWD" ] &&
-        # CWD="$PWD"` fallback: that hook's invariant is "is this a git
-        # write inside a worktree," where an unresolvable cwd can safely
-        # default to allow (nothing to enforce). This hook's invariant is
-        # "the ignore state is confirmed," where an unresolvable cwd is
-        # itself the unconfirmed case — denying is the only fail-closed
-        # answer, not an oversight.
-        if [ -z "$CWD" ]; then
-          emit_deny "the tool payload carried no .cwd — refusing to check whether agent-reviews/ is ignored without knowing which repo to check."
-          exit 0
-        fi
-        # A findings-file write is only safe when agent-reviews/ is actually
-        # ignored in the target repo — a stale worktree-local info/exclude or
-        # a repo with no ignore entry at all must not silently let an
-        # unignored file through. `unset` first: an inherited GIT_DIR/
-        # GIT_WORK_TREE/GIT_INDEX_FILE would redirect the check to a
-        # different repo's ignore rules than the one actually being written
-        # to (mirrors require-worktree-for-git-writes.sh:100). `cd "$CWD"`
-        # rather than `-C` against a separately-resolved repo root puts the
-        # check in the same path-resolution frame the Write tool itself uses
-        # to resolve a relative FILE_PATH — `git -C <path>` would resolve
-        # FILE_PATH against <path>, not against $CWD, and the two diverge
-        # whenever $CWD is a subdirectory of the repo root.
-        # _lib_capped (not a bare `timeout 5`): on stock macOS without GNU
-        # coreutils, a bare `timeout 5 git ...` is "command not found" (127),
-        # which would permanently deny every agent-reviews/* write on that
-        # machine with a misleading message. _lib_capped runs uncapped
-        # instead of failing when `timeout` is absent, so the check still
-        # works correctly there — see its own comment in _lib.sh.
-        #
-        # `cd` is checked on its own line, separately from git's own exit
-        # status: `git check-ignore -q` genuinely returns 1 for "not
-        # ignored," and a failed `cd` (an unresolvable $CWD) also exits 1 —
-        # collapsing them into one exit code would report "not actually
-        # ignored" for a $CWD that was never checked at all. Sentinel exit 3
-        # marks a cd failure distinctly; git/timeout never produce 3 here
-        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: its
-        # own cap-kill statuses, or the wrapped command's own code).
-        (
-          unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
-          cd "$CWD" 2>/dev/null || exit 3
-          _lib_capped git check-ignore -q -- "$FILE_PATH" 2>/dev/null
-        )
-        IGNORE_CHECK_STATUS=$?
-        case "$IGNORE_CHECK_STATUS" in
-          0) exit 0 ;;
-          1)
-            emit_deny "'agent-reviews/' is not actually ignored in this repo — findings_path dispatch is unsafe here. Fall back to inline output; do not create or modify ignore rules yourself — that is the dispatching skill's job, not the reviewer's."
-            exit 0
-            ;;
-          3)
-            emit_deny "could not confirm 'agent-reviews/' is ignored — the payload's .cwd ('$CWD') does not resolve to a directory this process can enter."
-            exit 0
-            ;;
-          *)
-            emit_deny "could not confirm 'agent-reviews/' is ignored (exit $IGNORE_CHECK_STATUS — not a git repo, or the check failed) — refusing to allow the write under an unconfirmed invariant."
-            exit 0
+        # The nested case keeps the exemption to the caller's own findings
+        # file: the parent must be agent-reviews itself, and the name must
+        # start with the caller's agent type. Every non-matching arm is a
+        # bare `;;`, so control falls to the final deny below.
+        case "${FILE_PATH%/*}" in
+          agent-reviews|*/agent-reviews)
+            case "${FILE_PATH##*/}" in
+              "$AGENT_TYPE"-*.md)
+                # _lib_parse_tool_input_or_deny already reads .cwd fail-closed,
+                # so CWD is never empty here as a silent read failure — the
+                # zero-length check below is for a genuinely absent field.
+                # An empty CWD denies because, on bash 5.2, `cd ''` succeeds in
+                # place, so the ignore check would silently run in whatever
+                # directory the hook process happens to be in. Deliberately
+                # stricter than require-worktree-for-git-writes.sh's
+                # `[ -z "$CWD" ] && CWD="$PWD"` fallback: that hook can default
+                # an unresolvable cwd to allow, while this hook's invariant is
+                # "the ignore state is confirmed", which an unresolvable cwd
+                # leaves unconfirmed.
+                if [ -z "$CWD" ]; then
+                  emit_deny "the tool payload carried no .cwd — refusing to check whether agent-reviews/ is ignored without knowing which repo to check."
+                  exit 0
+                fi
+                # A findings file is only safe when agent-reviews/ is actually
+                # ignored in the target repo; _lib_path_ignore_status holds the
+                # check's status contract.
+                _lib_path_ignore_status "$CWD" "$FILE_PATH"
+                IGNORE_CHECK_STATUS=$?
+                case "$IGNORE_CHECK_STATUS" in
+                  0) exit 0 ;;
+                  1)
+                    emit_deny "'agent-reviews/' is not actually ignored in this repo — findings_path dispatch is unsafe here. Fall back to inline output; do not create or modify ignore rules yourself — that is the dispatching skill's job, not the reviewer's."
+                    exit 0
+                    ;;
+                  3)
+                    emit_deny "could not confirm 'agent-reviews/' is ignored — the payload's .cwd ('$CWD') does not resolve to a directory this process can enter."
+                    exit 0
+                    ;;
+                  *)
+                    emit_deny "could not confirm 'agent-reviews/' is ignored (exit $IGNORE_CHECK_STATUS — not a git repo, or the check failed) — refusing to allow the write under an unconfirmed invariant."
+                    exit 0
+                    ;;
+                esac
+                ;;
+            esac
             ;;
         esac
         ;;
     esac
-    emit_deny "$TOOL_NAME targets '$FILE_PATH', which is outside /tmp and outside an agent-reviews/ findings path. $SANCTIONED_ALTERNATIVE"
+    emit_deny "$TOOL_NAME targets '$FILE_PATH', which is not your own findings file. $WRITE_ARM_ALTERNATIVE"
     exit 0
     ;;
   Bash)
@@ -636,13 +641,12 @@ case "$TOOL_NAME" in
         fi
       fi
 
-      # GH-751: raw-write-target check, mirroring the Write/Edit/MultiEdit
-      # arm's own /tmp/* exemption above.
+      # GH-751: raw-write-target check against the Bash arm's /tmp scratch allowance.
       #   - Base rule: a cp/mv/tee destination or a `>`/`>>` shell redirect
       #     that does not literally start with /tmp/ writes outside the one
       #     sanctioned reviewer scratch location, and denies.
       #   - Does not exempt agent-reviews/*: the ignore-state confirmation
-      #     that exemption depends on (git check-ignore, above) has no
+      #     that exemption depends on (_lib_path_ignore_status) has no
       #     Bash-arm counterpart, so a Bash write there denies exactly like
       #     any other non-/tmp target — a stricter, sound default rather
       #     than reproducing an unchecked exemption.

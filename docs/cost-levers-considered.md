@@ -213,6 +213,41 @@ in the row above are unaffected. Each already fetches its own diff, scoped
 to its lane. Handing them the shared unscoped artifact instead would widen
 what each reads.
 
+**2026-10-22 follow-up:** the sentence above that each Bash-having reviewer
+"already fetches its own diff" is superseded, as are two other statements in
+this file. The "Replacing in-context diff reads with deterministic scripts"
+row says the seven `staff-*` agents and `ciso-reviewer` carry `Bash` and
+re-fetch the diff. The "File-path handoff of diff text to the reviewers that
+lack `Bash`" row assumes only some reviewers lack it; every reviewer persona is
+now handed files for containment, and that row's cost verdict has not been
+re-measured. No reviewer persona holds
+`Bash` any more, so `/code-review` makes two `pr-diff-against-base.sh
+--context-files` calls per round (a changed-path listing, then lanes by
+number) in place of one `git` turn per reviewer, and a claim a reviewer
+cannot settle by reading becomes a `Check:` finding. The costs this adds,
+none of them measured:
+
+- The orchestrator's output tokens scale with lanes times numbers, and the
+  listing adds a line per changed path (it is uncapped).
+- Each reviewer reads base and history files, and a whole-diff lane repeats
+  the `.diff` bytes (the diff is never truncated).
+- The two calls run serially before the first spawn. The cap constants bound
+  the worst case, over the slowest source and with each capped call's 2 s
+  kill grace, at 212 s for the listing and 508 s for the lanes call, each
+  under the Bash tool's 600 s maximum
+  (`test_worst_case_call_time_under_bash_timeout` sums them). That is a bound
+  from the script's per-call caps, not a measured latency.
+- A requested check runs nothing before the fix. An unsupported claim costs
+  one fix dispatch that changes nothing for it, counts toward the round cap,
+  and is the only requested-check outcome that interrupts the engineer; see
+  `claude-skills/skills/code-review/SKILL.md` § "Requested checks".
+- Lane files are never swept, and each whole-diff lane carries a full copy of
+  the diff.
+- No `permissions.allow` entry ships for the script, so each round asks
+  twice.
+
+Recurring unsupported-finding stops are the trigger to revisit this.
+
 ## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
 
 `plan-boundary` re-priced 95 Opus-anchored sessions' own post-plan-boundary

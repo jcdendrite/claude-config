@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES,
+    CONTEXT_FILES_HALT_HEADING,
     GITLINK_AFTER,
     GITLINK_BEFORE,
     HOOKS_DIR,
@@ -1692,8 +1693,7 @@ def test_unknown_argument_exits_before_any_git_work(tmp_path):
 _LIB_PR_DIFF_SH = _SCRIPT.parent / "_pr-diff-lib.sh"
 _SCRIPTS_DOC = _SCRIPT.parents[3] / "docs" / "scripts.md"
 _SUFFIX = "1700000000-gh1208"
-_HALT_POINTER = 'see docs/scripts.md § "When --context-files halts"'
-_HALT_HEADING = "When --context-files halts"
+_HALT_POINTER = f'see docs/scripts.md § "{CONTEXT_FILES_HALT_HEADING}"'
 
 _INDEX_HEADER_KEYS = (
     "lane-index", "mode", "root", "base", "head", "generated", "lane", "diff-file", "base-file", "history-file",
@@ -1703,22 +1703,25 @@ _ZERO_SHA = "0" * 40
 _HARNESS_OUTPUT_LIMIT_BYTES = 30000
 
 def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: tuple[Path, ...] = (), **extra_env: str) -> dict:
-    """An env for a --context-files run: a gh shim, a per-test TMPDIR/HOME/CLAUDE_CONFIG_DIR, no ambient git config.
+    """An env for a --context-files run: a gh shim, per-test TMPDIR/HOME/CLAUDE_CONFIG_DIR/XDG_CONFIG_HOME, no git config.
 
-    A fresh TMPDIR lets a test assert the private temp directory is gone; HOME and CLAUDE_CONFIG_DIR keep the
-    opt-in credential-file-guard.md lookup off the contributor's real files.
+    A fresh TMPDIR lets a test assert the private temp directory is gone; HOME and CLAUDE_CONFIG_DIR keep the opt-in
+    credential-file-guard.md lookup off the contributor's real files.
+    XDG_CONFIG_HOME keeps git off the contributor's global ignore file ($XDG_CONFIG_HOME/git/ignore), which an
+    inherited value would otherwise select despite the isolated HOME.
     """
     env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "DIRENV_"))}
     gh_dir = tmp_path / "gh_shim"
     gh_dir.mkdir(exist_ok=True)
     (gh_dir / "gh").write_text(_gh_shim_source(base_ref))
     (gh_dir / "gh").chmod(0o755)
-    for name in ("tmp", "home", "isolated-claude-config"):
+    for name in ("tmp", "home", "isolated-claude-config", "xdg-config"):
         (tmp_path / name).mkdir(exist_ok=True)
     env.update(
         TMPDIR=str(tmp_path / "tmp"),
         HOME=str(tmp_path / "home"),
         CLAUDE_CONFIG_DIR=str(tmp_path / "isolated-claude-config"),
+        XDG_CONFIG_HOME=str(tmp_path / "xdg-config"),
         GIT_CONFIG_GLOBAL=os.devnull,
         GIT_CONFIG_NOSYSTEM="1",
         PATH=os.pathsep.join([*(str(path) for path in extra_path), str(gh_dir), os.environ["PATH"]]),
@@ -5683,7 +5686,7 @@ def _step_names() -> list[str]:
 
 def _halts_section() -> str:
     text = _SCRIPTS_DOC.read_text()
-    start = text.index(f"## {_HALT_HEADING}")
+    start = text.index(f"## {CONTEXT_FILES_HALT_HEADING}")
     following = text.find("\n## ", start + 1)
     return text[start:] if following == -1 else text[start:following]
 
@@ -5693,11 +5696,12 @@ class TestScriptsDocHaltsSection:
         section = _halts_section()
 
         assert section.startswith(
-            f"## {_HALT_HEADING}\n\nAn agent that reaches this section stops and runs no recovery step; the engineer follows it"
+            f"## {CONTEXT_FILES_HALT_HEADING}\n\n"
+            "An agent that reaches this section stops and runs no recovery step; the engineer follows it"
         )
 
     def test_every_halt_pointer_the_script_prints_names_an_existing_heading(self):
-        assert f"\n## {_HALT_HEADING}\n" in _SCRIPTS_DOC.read_text()
+        assert f"\n## {CONTEXT_FILES_HALT_HEADING}\n" in _SCRIPTS_DOC.read_text()
 
     @pytest.mark.parametrize("step", _step_names())
     def test_the_section_holds_a_remedy_entry_for_each_step_name(self, step):
@@ -5708,7 +5712,9 @@ class TestScriptsDocHaltsSection:
         [
             "DIFF_MISMATCH:", "CONTEXT_NOT_IGNORED:", "LISTING_STALE:", "A `LANE_ROW:` mismatch", "A hook denial of either call",
             "A Bash-tool timeout", "A usage error",
-            "A refused permission prompt", "An unreconciled count", "A denied `Read` of a lane file",
+            "A refused permission prompt", "An unreconciled count",
+            "A reviewer whose return says it was handed no readable input",
+            "A denied `Read` of a lane file",
         ],
     )
     def test_the_section_holds_an_entry_for_each_non_step_halt(self, token):

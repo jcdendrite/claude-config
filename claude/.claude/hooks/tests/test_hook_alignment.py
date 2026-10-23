@@ -489,13 +489,15 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     )
 
 
-# enforce-marker-script-shape.sh declares, in its own header comment, that
-# closing its bypass class requires being wired on both the Bash and an
-# Edit|Write|MultiEdit PreToolUse matcher -- gating only the shell leaves a
-# direct file write as an open path to the same state.
+# Each hook below gates one write class through both the shell and the file
+# tools. Dropping either PreToolUse matcher, Bash or Edit|Write|MultiEdit,
+# reopens that tool's path to the same state.
 # test_gate_hook_registered_in_pretooluse_matcher above only proves "wired
 # into at least one matcher," not both surfaces.
-_DUAL_SURFACE_WRITE_GATE_HOOKS: tuple[str, ...] = ("enforce-marker-script-shape.sh",)
+_DUAL_SURFACE_WRITE_GATE_HOOKS: tuple[str, ...] = (
+    "enforce-marker-script-shape.sh",
+    "deny-reviewer-tree-mutation.sh",
+)
 
 
 def _matchers_spanning_edit_write_multiedit(matchers: list[str]) -> list[str]:
@@ -505,13 +507,12 @@ def _matchers_spanning_edit_write_multiedit(matchers: list[str]) -> list[str]:
 
 @pytest.mark.parametrize("hook_name", _DUAL_SURFACE_WRITE_GATE_HOOKS)
 def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: str) -> None:
-    """Both dual-surface write-gate hooks must carry a bare `Bash` PreToolUse
+    """Every dual-surface write-gate hook must carry a bare `Bash` PreToolUse
     entry AND an Edit|Write|MultiEdit-shaped one -- a settings.json edit
     that drops either surface would still pass
     test_gate_hook_registered_in_pretooluse_matcher (which only checks "at
-    least one") while silently reopening the direct-file-write or
-    shell-command bypass each hook's header names as the reason the second
-    surface exists.
+    least one") while silently reopening the shell or file-tool write path
+    that surface gates.
     """
     hook = _MAIN_HOOKS_DIR / hook_name
     matchers = pretooluse_matcher_groups_for(hook)
@@ -2321,6 +2322,12 @@ _TIER_RATIONALE_HOOK_SENTENCES: dict[str, tuple[str, ...]] = {
             "from outside the session, so steered input is in scope."
         ),
     ),
+    "deny-reviewer-tree-mutation.sh": (
+        (
+            "A cooperative agent can create such a link and then write through "
+            "it without noticing, so this gap is not waived on cooperative grounds."
+        ),
+    ),
     "require-ready-for-review.sh": (
         "This gate's threat model includes adversarial input, not only a",
         "The backstop against deliberate evasion is block-gh-pr-merge.sh blocking",
@@ -2348,6 +2355,26 @@ def test_tier_rationale_hook_sentence_pinned(
         f"{hook_name}: the sentence docs/hooks.md's tier table rests on for "
         "this hook's header changed -- see docs/hooks.md § "
         '"Threat-model tiers" before editing this text'
+    )
+
+
+def test_reviewer_tree_mutation_link_gap_sentence_is_quoted_in_the_tier_table_and_tracked_by_gh_1295() -> None:
+    """docs/hooks.md's tier-table row quotes the hook header's link-gap sentence verbatim, and both the row and the
+    hook header's link-gap bullet route the gap to GH-1295; a header that changes the sentence or the tracker without
+    the row (or the reverse) fails here."""
+    link_gap_tracker = "GH-1295"
+    hook_text = (_MAIN_HOOKS_DIR / "deny-reviewer-tree-mutation.sh").read_text()
+    (sentence,) = _TIER_RATIONALE_HOOK_SENTENCES["deny-reviewer-tree-mutation.sh"]
+    row = next(
+        line
+        for line in (_REPO_ROOT / "docs" / "hooks.md").read_text().splitlines()
+        if line.startswith("| `deny-reviewer-tree-mutation.sh`")
+    )
+    assert f'"{sentence}"' in row, "the tier-table row no longer quotes the header's link-gap sentence verbatim"
+    assert link_gap_tracker in row, f"the tier-table row no longer routes the link gap to {link_gap_tracker}"
+    link_gap_bullet = hook_text[hook_text.index("A symlink or hard link under /tmp launders") : hook_text.index(sentence)]
+    assert link_gap_tracker in link_gap_bullet, (
+        f"the hook header's link-gap bullet no longer routes the link gap to {link_gap_tracker}"
     )
 
 
