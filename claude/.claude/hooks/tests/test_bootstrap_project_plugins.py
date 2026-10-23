@@ -46,6 +46,7 @@ from helpers import (
     init_git_repo,
     init_reconciler_repo,
     install_log_entries,
+    installed_locale_where,
     make_reconciler_claude_shim,
     plugin_registry_file,
     reconciler_audit_lines,
@@ -54,8 +55,6 @@ from helpers import (
     v2_registry_entry,
     write_plugin_registry,
 )
-
-from .test_config_lib import _locale_that_widens_ascii_ranges
 
 BOOTSTRAP_HOOK = HOOKS_DIR / "bootstrap-project-plugins.sh"
 
@@ -508,26 +507,17 @@ class TestMissingIdDecision:
         "invalid_id",
         [
             "-flag@market-a",
-            ".hidden@market-a",
-            "_under@market-a",
-            "plugin-a@npm",
-            "no-marketplace-part",
-            "a@-b",
             "plugin-a@market-a\nplugin-b@market-a",
-            "plugin-a\x1b@market-a",
         ],
         ids=[
             "leading-dash",
-            "leading-dot",
-            "leading-underscore",
-            "npm-marketplace",
-            "no-at-sign",
-            "marketplace-leading-dash",
             "two-valid-ids-joined-by-a-newline",
-            "escape-character",
         ],
     )
     def test_only_invalid_ids_missing_is_no_launch(self, sandbox, invalid_id):
+        """`leading-dash` proves the launch loop calls `_lib_validate_plugin_id`.
+        The newline case proves `_lib_missing_plugin_ids_for_content` drops control-character keys before the loop splits lines.
+        The id-alphabet matrix lives in `test_lib.py::TestLibValidatePluginId`."""
         sandbox.write_settings({invalid_id: True})
 
         sandbox.run()
@@ -1214,17 +1204,11 @@ class TestTrustLayerTwo:
         """The logged alphabet is ASCII-only only because the check pins LC_ALL=C. Under a
         locale that widens the entrypoint `case` glob, an unpinned `[A-Za-z0-9]` admits the
         fullwidth digit and the value would be logged."""
-        widening_locale = _locale_that_widens_ascii_ranges()
         fullwidth_digit_entrypoint = "sdk\uff10"
-        glob_probe = subprocess.run(
-            ["bash", "-c", 'case "$1" in *[!A-Za-z0-9._-]*) exit 1 ;; esac', "bash", fullwidth_digit_entrypoint],
-            env={**os.environ, "LC_ALL": widening_locale}, capture_output=True, check=False,
+        widening_locale = installed_locale_where(
+            'case "$1" in *[!A-Za-z0-9._-]*) exit 1 ;; esac', fullwidth_digit_entrypoint,
+            absent_message="no installed locale widens the entrypoint `case` glob range",
         )
-        if glob_probe.returncode != 0:
-            reason = f"{widening_locale} does not widen the `case` glob range"
-            if os.environ.get("CI"):
-                pytest.fail(f"{reason}; CI must provide a locale that does")
-            pytest.skip(reason)
 
         sandbox.run(entrypoint=fullwidth_digit_entrypoint, extra_env={"LC_ALL": widening_locale})
 
@@ -1382,8 +1366,8 @@ class TestMachineLevelSwitch:
 
 
 class TestReconcilerLocation:
-    """The reconciler is found beside the hook, and a config dir inside the repo is refused:
-    a repo that chooses CLAUDE_CONFIG_DIR would otherwise choose both the trust record and the program run."""
+    """The reconciler is found beside the hook, so a repo that chooses CLAUDE_CONFIG_DIR cannot choose the program run.
+    A config dir inside the repo is refused, so that repo cannot choose the trust record the hook reads."""
 
     ATTACKER_SENTINEL_NAME = "attacker-ran"
 
@@ -1410,11 +1394,9 @@ class TestReconcilerLocation:
     def test_config_dir_inside_the_repo_is_no_launch_even_with_a_self_trusting_record(
         self, sandbox, tmp_path, config_dir_kind
     ):
-        attacker_sentinel = tmp_path / self.ATTACKER_SENTINEL_NAME
         in_repo_config_dir = sandbox.repo if config_dir_kind == "repo-root-itself" else sandbox.repo / ".attacker-config"
         in_repo_config_dir.mkdir(exist_ok=True)
         sandbox.write_trust(trust_file=in_repo_config_dir / ".claude.json")
-        self._write_attacker_reconciler(in_repo_config_dir, attacker_sentinel)
         config_dir_env = str(in_repo_config_dir)
         if config_dir_kind == "symlink-into-repo":
             symlinked_config_dir = tmp_path / "config-dir-link"
@@ -1428,7 +1410,6 @@ class TestReconcilerLocation:
         sandbox.run(config_dir_env=config_dir_env)
 
         sandbox.assert_not_launched()
-        assert not attacker_sentinel.exists()
         assert not sandbox.audit_log.exists()
         assert not (in_repo_config_dir / "plugin-bootstrap").exists()
 

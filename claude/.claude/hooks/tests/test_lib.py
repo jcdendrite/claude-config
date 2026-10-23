@@ -10847,6 +10847,40 @@ class TestLibValidatePluginId:
         result = _run_lib_call("_lib_validate_plugin_id foo", env=dict(os.environ))
         assert result.returncode == 1, repr(result)
 
+    @pytest.mark.parametrize(
+        "plugin_id",
+        [
+            "a b@c",
+            "a@b@c",
+            "",
+            "a;x@b",
+            "a$x@b",
+            "a`x@b",
+            "a/x@b",
+            "plugin-a\x1b@market-a",
+            "plugin-a@market-a\nplugin-b@market-a",
+        ],
+        ids=[
+            "space",
+            "second-at-sign",
+            "empty",
+            "semicolon",
+            "dollar-sign",
+            "backtick",
+            "slash",
+            "escape-character",
+            "two-valid-ids-joined-by-a-newline",
+        ],
+    )
+    def test_rejects_id_outside_the_name_at_marketplace_alphabet(self, plugin_id: str) -> None:
+        """Shell metacharacters, whitespace, control bytes, and a second `@` fall outside
+        the `name@marketplace` shape, so the validator rejects each one.
+        `TestPluginIdRevalidation` in `test_reconcile_project_plugins.py` pins that the reconciler skips an invalid id."""
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+        assert result.returncode == 1, repr(result)
+
     def test_accepts_id_of_exactly_the_max_length_with_a_long_marketplace_half(self) -> None:
         """The length bound is inclusive, so the longest accepted id is
         `a@` plus a marketplace half that fills the rest."""
