@@ -661,6 +661,94 @@ def test_transcript_analysis_git_and_sessions_subprocess_finds_seeded_session(
     assert_seeded_cells(result.stdout)
 
 
+@pytest.mark.parametrize(
+    ("command", "flag_tokens"),
+    [
+        # The usage-line form [--no-redact], because each registrar's --config-dir help also names --no-redact.
+        ("context-distribution", ("--since", "[--no-redact]")),
+        ("context-composition", ("--since", "[--no-redact]")),
+        ("cache-efficiency", ("[--no-redact]",)),
+    ],
+    ids=["context-distribution", "context-composition", "cache-efficiency"],
+)
+def test_transcript_analysis_context_and_cache_help_exits_zero(command, flag_tokens):
+    """Proves, in a fresh interpreter, that build_parser calls the context-distribution, context-composition, and
+    cache-efficiency registrars, and that each registrar still adds its --no-redact flag and, where it has one, its
+    --since flag."""
+    result = _run("transcript-analysis.py", command, "--help")
+    assert result.returncode == 0, result.stderr
+    assert f"transcript-analysis.py {command}" in result.stdout
+    for flag_token in flag_tokens:
+        assert flag_token in result.stdout
+
+
+def _assert_context_distribution_seeded_cells(stdout: str) -> None:
+    assert "Sessions in scope: 1   Total priced dollars: 2.00" in stdout, stdout
+
+
+def _assert_context_composition_seeded_cells(stdout: str) -> None:
+    assert "Sequences scanned: 1   Turns scanned: 1" in stdout, stdout
+
+
+def _assert_cache_efficiency_seeded_cells(stdout: str) -> None:
+    # Two roots print three `Thread` headers, one per table; occurrence=1 reads the all-roots table.
+    cols = _table_cols(stdout, header_contains="Thread", row_contains="main", occurrence=1)
+    assert cols["Turns"] == "1", cols
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_token", "resolved_root_token", "assert_seeded_cells"),
+    [
+        (
+            "context-distribution",
+            "## Context distribution report",
+            "context-distribution: account-2: scanned 0 transcripts",
+            _assert_context_distribution_seeded_cells,
+        ),
+        (
+            "context-composition",
+            "## Context composition report",
+            "context-composition: account-2: scanned 0 transcripts",
+            _assert_context_composition_seeded_cells,
+        ),
+        (
+            "cache-efficiency",
+            "## Cache efficiency by thread",
+            "### account-2",
+            _assert_cache_efficiency_seeded_cells,
+        ),
+    ],
+    ids=["context-distribution", "context-composition", "cache-efficiency"],
+)
+def test_transcript_analysis_context_and_cache_subprocess_finds_seeded_session(
+    tmp_path, command, expected_token, resolved_root_token, assert_seeded_cells
+):
+    """Proves, in a fresh interpreter, that real argparse dispatches context-distribution, context-composition, and
+    cache-efficiency each to its own cmd_* handler through set_defaults(func=...), and that the subcommand-level
+    --config-dir reaches _resolve_cost_roots. All three refuse the top-level --config-dir, so _isolated_config_env
+    pins the first account and the subcommand flag adds an empty second one."""
+    config_dir = _seed_priced_account(tmp_path)
+    # scope._redaction_ordinals numbers roots by sorted resolved path.
+    # "account2" sorts after the "account" directory _seed_priced_account creates.
+    # So the extra root is account-2 in all three resolved_root_token cases.
+    extra_config_dir = tmp_path / "account2"
+    (extra_config_dir / "projects").mkdir(parents=True)
+
+    result = _run(
+        "transcript-analysis.py", command, "--config-dir", str(extra_config_dir),
+        env=_isolated_config_env(config_dir, tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout, (
+        f"{command} never printed its own report heading {expected_token!r}: {result.stdout!r}"
+    )
+    assert resolved_root_token in result.stdout, (
+        f"{command} never resolved the --config-dir root through _resolve_cost_roots: {result.stdout!r}"
+    )
+    assert_seeded_cells(result.stdout)
+
+
 def test_transcript_analysis_read_scope_help_exits_zero():
     result = _run("transcript-analysis.py", "read-scope", "--help")
     assert result.returncode == 0, result.stderr
