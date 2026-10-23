@@ -5784,13 +5784,6 @@ _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
     "absolute path as the prompt's second line",
 )
 
-_PLAN_HEADINGS_IN_ORDER = (
-    "## Approach",
-    "## Critical files",
-    "## Verification",
-    "## Out of scope",
-)
-
 _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
     "never call `Edit`, even when the prompt names a plan file"
 )
@@ -5812,12 +5805,74 @@ _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
     r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
 )
 
-# Step 5's scaffold, as written in the skill: the backticked span after
-# "exactly these bytes:", with `\n` spelled as two characters.
-_PLAN_IT_SCAFFOLD_SPAN_PATTERN = re.compile(r"exactly these bytes: `([^`]+)`")
-
 # The title and Context a plan holds before its first dispatch.
 _PLAN_TITLE_AND_CONTEXT_TEXT = "# Title\n\n## Context\n\nAsk: x\n\n"
+
+# A plan after `plan-shape.py prepare`, spelled out as test data. plan-shape's own tests pin the scaffold's bytes.
+_SCAFFOLDED_PLAN_TEXT = (
+    _PLAN_TITLE_AND_CONTEXT_TEXT
+    + "## Approach\n\n(pending: plan-architect)\n\n## Critical files\n\n## Verification\n\n## Out of scope\n"
+)
+
+# plan-it Step 5 paragraphs and bullets the session follows itself; plan-shape.py's tests cover what the script computes.
+_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
+    "prepare_gates_the_first_dispatch": (
+        "Dispatch only when the command exits 0 and prints `PREPARE: ready`. Otherwise give "
+        "the engineer every `REASON` line, or the command's error if it printed none, through "
+        "`AskUserQuestion`, and make no edit or dispatch."
+    ),
+    "plan_mode_path_refusal_goes_to_the_engineer": (
+        "In plan mode, a `plan-path` line for the harness-provided plan path means the script's "
+        "path rule refuses that path. Through `AskUserQuestion`, offer the engineer Step 1's "
+        "recovery for a failed write as the way forward. In a git repository, that recovery "
+        "writes the plan to the repo-relative `.claude/plans/<topic-slug>.md` in a new worktree, "
+        "where `prepare` then runs on it."
+    ),
+    "script_runs_before_every_hash_and_dispatch": (
+        "**Before every dispatch.** Make your last edit above `## Approach` first, then run "
+        "`plan-shape.py`, then take the Context hash below, then dispatch. The run is `prepare` "
+        "before this run's first dispatch and `check` before every later one. A later dispatch "
+        "goes ahead only when that `check` exits 0 and prints a `STAGE` line, and any other "
+        "output is handled as a failed `check` below."
+    ),
+    "check_runs_after_hash_and_splice_and_completes_dispatch_only_on_pass": (
+        "**Check.** After every dispatch, once the Context hash and any splice with its own hash "
+        "are done, run `python3 ~/.claude/scripts/plan-shape.py check '<plan path>'`, passing the "
+        "path the same way. With or without a splice, the dispatch is complete only when the "
+        "command exits 0 and prints `CHECK: pass`."
+    ),
+    "failed_check_redispatches_only_with_stage": (
+        "A failed `check` that exits 0 and prints a `STAGE` line re-dispatches. It prints one "
+        "only when every `REASON` code is `placeholder`, `headings` or `empty-section`. Any "
+        "other output goes to the engineer through `AskUserQuestion`, with every `REASON` line "
+        "or the command's error if it printed none, and no further dispatch or edit of the plan "
+        "file follows."
+    ),
+    "engineer_stop_resumes_by_rerunning_the_stopped_mode": (
+        "Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, ends "
+        "the run until the engineer says the plan file is fixed. Then re-run the mode that "
+        "stopped and act on its new output. Plan mode's `plan-path` recovery above is the one "
+        "other way forward."
+    ),
+    "stage_line_decides_first_authoring": (
+        "Treat a dispatch as first authoring when the `prepare` or `check` run just before it "
+        "printed `STAGE: first-authoring`, and as a revision otherwise, including when that run "
+        "printed no `STAGE` line. When a dispatch ends without a normal return, judge its stage "
+        "by the run before it, not by the `check` after it."
+    ),
+    "effort_section_added_only_after_a_passed_check": (
+        "Effort sections are optional. Add one only after a dispatch has returned and passed "
+        "`check`, above `## Approach`. It describes review surface (file count, domain spread, "
+        "risk concentration), never hours or days."
+    ),
+    # Both bullets in one clause: the right-bound helper accepts a following line only when it starts with `-` or `#`,
+    # and the indented second bullet does not.
+    "no_return_redispatch_bullets": (
+        "At first authoring, re-dispatch when `check` then fails with a `STAGE` line. - On a "
+        "revision, re-dispatch when `check` then passes or fails with a `STAGE` line, because a "
+        "revision that died partway can pass it."
+    ),
+}
 
 _EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
 
@@ -5835,20 +5890,6 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
             "in the pinned `sed ... | sha256sum` shape."
         )
         return match.group(1)
-
-    @staticmethod
-    def _step5_scaffold_text() -> str:
-        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
-        match = _PLAN_IT_SCAFFOLD_SPAN_PATTERN.search(step5_text)
-        assert match is not None, (
-            "plan-it/SKILL.md Step 5 no longer carries its scaffold bytes in the "
-            "pinned `exactly these bytes: `...`` shape."
-        )
-        return match.group(1).replace("\\n", "\n")
-
-    @classmethod
-    def _scaffolded_plan_text(cls) -> str:
-        return _PLAN_TITLE_AND_CONTEXT_TEXT + cls._step5_scaffold_text()
 
     @classmethod
     def _run_hash_command_result(cls, plan_path: Path) -> subprocess.CompletedProcess:
@@ -5878,15 +5919,17 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
             f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
         )
 
-    def test_step5_scaffold_carries_the_four_headings_in_order(self) -> None:
-        scaffold_headings = [
-            line
-            for line in self._step5_scaffold_text().splitlines()
-            if line.startswith("## ")
-        ]
-        assert scaffold_headings == list(_PLAN_HEADINGS_IN_ORDER), (
-            "plan-it/SKILL.md Step 5's scaffold no longer carries the four "
-            "plan headings, in order."
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES))
+    def test_pinned_step5_script_clause_matches_live_text(self, clause_key: str) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        pinned_text = " ".join(_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=(
+                f"plan-it/SKILL.md: Step 5's {clause_key!r} clause no longer "
+                "matches its pinned clause."
+            ),
         )
 
     def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
@@ -5920,7 +5963,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
         plan_path = tmp_path / "plan.md"
-        scaffolded_plan_text = self._scaffolded_plan_text()
+        scaffolded_plan_text = _SCAFFOLDED_PLAN_TEXT
         plan_path.write_text(scaffolded_plan_text)
         digest_before = self._run_hash_command(plan_path)
 
@@ -5934,7 +5977,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
         plan_path = tmp_path / "plan.md"
-        scaffolded_plan_text = self._scaffolded_plan_text()
+        scaffolded_plan_text = _SCAFFOLDED_PLAN_TEXT
         plan_path.write_text(scaffolded_plan_text)
         digest_before = self._run_hash_command(plan_path)
 
