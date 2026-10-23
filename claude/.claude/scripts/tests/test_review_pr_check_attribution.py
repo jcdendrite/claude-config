@@ -21,10 +21,15 @@ DISCLOSURE_LINE = "Reviewed from the PR diff only — no checkout, no checks run
 _SUBPROCESS_TIMEOUT_SECONDS = 60
 
 
-def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str],
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
+    # DEVNULL stdin: a regression that makes awk read stdin fails fast instead of hanging.
     return subprocess.run(
         ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS, env=env,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
     )
 
 
@@ -241,18 +246,33 @@ class TestDetailsBalance:
             ("```html\n<details>\n```", "never closed"),
             ("```html\n</details>\n```", "no opener"),
             ("The PR leaves ``<details>`` open.", "never closed"),
+            ("It ends with a lone ` <details>", "never closed"),
         ],
-        ids=["fenced-lone-opener", "fenced-lone-closer", "double-backtick-span-opener"],
+        ids=[
+            "fenced-lone-opener",
+            "fenced-lone-closer",
+            "double-backtick-span-opener",
+            "unpaired-backtick-before-opener",
+        ],
     )
     def test_unbalanced_tag_outside_single_backtick_span_still_counts(self, tmp_path, middle, expected_message):
-        """Fence and double-backtick content is not skipped, so a quoted lone
-        tag refuses the body and the message tells the author to quote it in
-        single backticks."""
+        """Fence, double-backtick, and unpaired-backtick content is not
+        skipped, so a quoted lone tag refuses the body and the message tells
+        the author to quote it in single backticks."""
         body = _write(tmp_path, _body_with(middle))
         result = _run([str(body), "checkout"])
         assert result.returncode == 1
         assert expected_message in result.stderr
         assert "single backticks" in result.stderr
+
+    def test_findings_path_shaped_like_a_variable_assignment_is_still_scanned(self, tmp_path):
+        """awk treats a bare NAME=value operand as an assignment and reads
+        stdin instead, so the file must reach awk through a redirect."""
+        body = tmp_path / "a=b.md"
+        body.write_text(_body_with("<details>\nproof"))
+        result = _run(["a=b.md", "checkout"], cwd=tmp_path)
+        assert result.returncode == 1
+        assert "never closed" in result.stderr
 
     def test_unbalanced_tags_fail_in_diff_only_mode_too(self, tmp_path):
         body = _write(tmp_path, _body_with(f"{DISCLOSURE_LINE}\n\n<details>"))

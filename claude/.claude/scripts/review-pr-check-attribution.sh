@@ -80,6 +80,9 @@ fi
 # across lines still counts, so an unbalanced quote there refuses the body.
 # One accepted miss is a fenced quote that exactly offsets a real unbalanced tag.
 # A tag split across lines is another, since the scan matches one line at a time.
+# A line with thousands of `<details ` openers and no later `>` scans in
+# quadratic time, so a caller's time cap can kill the check first, which
+# fails closed.
 # awk exits 3 for a closing tag with no opener and 4 for an opener never
 # closed.
 DETAILS_STATUS=0
@@ -98,7 +101,7 @@ awk '
     }
   }
   END { exit (stray_closer ? 3 : (depth != 0 ? 4 : 0)) }
-' "$FINDINGS_BODY_PATH" || DETAILS_STATUS=$?
+' < "$FINDINGS_BODY_PATH" || DETAILS_STATUS=$?
 case "$DETAILS_STATUS" in
   0) ;;
   3)
