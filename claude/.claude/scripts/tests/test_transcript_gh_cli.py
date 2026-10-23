@@ -2,7 +2,6 @@
 preflight, effective-repo pinning, and merged/closed PR discovery)."""
 import json
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -2018,24 +2017,9 @@ class TestOriginIdentityAtFakedRun:
         assert captured.err == ""
 
 
-def _git_version_at_least(minimum: tuple[int, int]) -> bool:
-    if shutil.which("git") is None:
-        return False
-    try:
-        version_text = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout
-    except (subprocess.CalledProcessError, OSError):
-        return False
-    version_match = re.search(r"(\d+)\.(\d+)", version_text)
-    return version_match is not None and (int(version_match.group(1)), int(version_match.group(2))) >= minimum
-
-
 _ORIGIN_URL = "https://github.com/Acme/Widget.git"
 _ORIGIN_IDENTITY = ("github.com", "acme/widget")
 _OTHER_ORIGIN_URL = "https://github.com/Other/Elsewhere.git"
-_requires_safe_bare_repository = pytest.mark.skipif(
-    not _git_version_at_least((2, 38)),
-    reason="needs git 2.38 or later for safe.bareRepository; skipped here means the bare-layout deny path went unchecked",
-)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -2168,14 +2152,12 @@ class TestOriginIdentityAtRealGit:
         assert self._identity_at_silently(capfd, clone) == _ORIGIN_IDENTITY
         assert self._identity_at_silently(capfd, plain) is None
 
-    @_requires_safe_bare_repository
     def test_bare_repository_directory_itself_returns_none(self, capfd):
         bare = self._bare_repo_with_origin()
 
         assert self._direct_origin_url(bare) == _ORIGIN_URL, "control: with no -c pair the bare layout is read as a repository"
         assert self._identity_at_silently(capfd, bare) is None
 
-    @_requires_safe_bare_repository
     def test_bare_layout_committed_inside_a_clone_returns_none_from_itself_and_from_a_folder_inside_it(self, capfd):
         clone = self._clone_with_origin()
         embedded = clone / "embedded"

@@ -612,10 +612,10 @@ _lib_repo_root() {
 # directory from any linked worktree (git-worktree(1), "Details").
 # review-pr-checkout.sh, review-pr-finish.sh, and
 # _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
-# git before 2.31 echoes the unknown --path-format flag as an output line and
-# exits 0, so the result is accepted only when it is a single absolute path.
-# Exit 1, empty stdout: not inside a git repository, git is absent, the call
-# timed out, or git is older than 2.31.
+# The result is accepted only when it is a single-line absolute path, which
+# also rejects a failed call's empty output.
+# Exit 1, empty stdout: not inside a git repository, git is absent, or the call
+# timed out.
 _lib_main_repo_root() {
   local common_git_dir root
   common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -1425,7 +1425,7 @@ _lib_git_inprogress_state() {
 #   - exit 0, stdout = a tree OID: an in-progress state was detected, its
 #     OID reached a trusted anchor, and the reference tree was computed.
 #   - exit 1, stdout empty: no in-progress state, or one whose OID reached
-#     no anchor, or a topology/git-version this design computes no base
+#     no anchor, or a topology this design computes no base
 #     for. This is the correct answer, not a degraded one.
 #   - exit 2, stdout empty: undetermined -- a capped git call inside
 #     detection or tree computation timed out, was killed, or its binary
@@ -4764,8 +4764,7 @@ _lib_print_recovery_hint() {
 #     common dir, or `rev-parse --git-dir` exited 128 (not a repository).
 #   - exit 1, empty stdout: unknown -- an empty DIR (no git runs), any other git
 #     status (a fired cap, a missing git, a later call failing), a git dir or
-#     common dir that is not a single-line absolute path (git older than 2.31
-#     echoes --path-format=absolute as output and exits 0), or a linked root that
+#     common dir that is not a single-line absolute path, or a linked root that
 #     fails the allowlist.
 # 128 is also git's status for other fatal errors, so each of these reads as
 # "not linked": a dubious-ownership refusal, a DIR that no longer exists, and a

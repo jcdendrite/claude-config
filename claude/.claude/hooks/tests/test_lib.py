@@ -6095,27 +6095,6 @@ class TestLibLinkedWorktreeRoot:
         subdirectory.mkdir(parents=True)
         assert _linked_worktree_root(str(subdirectory)) == (0, str(worktree.resolve()))
 
-    def test_git_older_than_2_31_echoing_path_format_flag_is_unknown(
-        self, git_repo: Path, tmp_path: Path
-    ) -> None:
-        """git before 2.31 prints the unknown --path-format flag as an output
-        line and exits 0; the leading-`/` check rejects that shape."""
-        worktree = _add_linked_worktree(git_repo, tmp_path / "linked-wt", "linked-branch")
-        stub_bin = tmp_path / "old-git-bin"
-        stub_bin.mkdir()
-        old_git = stub_bin / "git"
-        old_git.write_text(
-            "#!/bin/bash\n"
-            'if [ "$4" = "--path-format=absolute" ]; then\n'
-            "  printf '%s\\n' --path-format=absolute\n"
-            '  exec "$REAL_GIT" -C "$2" rev-parse --git-common-dir\n'
-            "fi\n"
-            'exec "$REAL_GIT" "$@"\n'
-        )
-        old_git.chmod(0o755)
-        env = {"PATH": f"{stub_bin}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git") or "git"}
-        assert _linked_worktree_root(str(worktree), env) == (1, "")
-
     def test_git_common_dir_with_an_extra_absolute_line_is_unknown(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
@@ -9990,48 +9969,6 @@ def test_merge_tree_merge_base_flag_changes_computed_tree(tmp_path: Path) -> Non
     assert auto == _run_git(repo, "rev-parse", f"{tip}^{{tree}}").strip()
 
 
-def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
-    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
-    Every other subcommand proxies to the real git (resolved via
-    $REAL_GIT), matching test_check_branch_divergence.py's _make_fake_git
-    shim shape."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--write-tree" ]; then\n'
-        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
-        '    exit 129\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
-    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
-    is rejected."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    --merge-base=*)\n'
-        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
-        '      exit 129\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
     """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
     line to stdout then blocks past the 5s cap; every other subcommand
@@ -10143,55 +10080,82 @@ def _make_call_logging_git(bin_dir: Path, log_file: Path) -> Path:
     return shim
 
 
-class TestGateDiffBaseGitVersionFallback:
-    """Two stub-git fallback bands, run against a real conflicted,
-    HEAD-anchor-trusted fixture so the merge-tree call is actually reached,
-    plus a genuine (non-stubbed) git-primitive band below: a root commit
-    (no parent), where REBASE_HEAD^/CHERRY_PICK_HEAD^ is itself invalid
-    regardless of git version."""
+class TestGateDiffBaseMergeTreeFailure:
+    """A real merge-tree failure falls back to the empty base."""
 
-    def test_write_tree_rejected_outright_falls_back_to_empty_base(
-        self, tmp_path: Path
-    ) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo, branch="main")
-        build_conflicted_revert(repo)
-        bin_dir = tmp_path / "bin-reject-write-tree"
-        _make_git_rejecting_write_tree(bin_dir)
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
-        result = _gate_diff_base(repo, env=env)
-        assert result.returncode == 1
-        assert result.stdout == ""
-
-    def test_merge_base_flag_rejected_falls_back_to_empty_base(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo, branch="main")
-        build_conflicted_revert(repo)  # revert's merge-tree call uses --merge-base=
-        bin_dir = tmp_path / "bin-reject-merge-base"
-        _make_git_rejecting_merge_base_flag(bin_dir)
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
-        result = _gate_diff_base(repo, env=env)
-        assert result.returncode == 1
-        assert result.stdout == ""
-
-    @pytest.mark.parametrize("state", ["rebase", "cherry-pick"])
-    def test_root_commit_state_oid_falls_back_to_empty_base(
-        self, tmp_path: Path, state: str
-    ) -> None:
-        """REBASE_HEAD^/CHERRY_PICK_HEAD^ is invalid when the state ref
-        names a root commit (no parent) -- a git-primitive fact, not a
-        version-specific stub, so the merge-tree call this design issues
-        fails the same way the stubbed-rejection bands above do."""
+    @staticmethod
+    def _repo_with_a_root_commit_and_a_second_commit(tmp_path: Path) -> tuple[Path, str, str]:
         repo = tmp_path / "repo"
         init_git_repo_with_commit(repo, branch="main")
         root_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         _run_git(repo, "commit", "-qm", "second")
+        second_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        return repo, root_oid, second_oid
+
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
+    def test_root_commit_state_oid_falls_back_to_empty_base(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """REBASE_HEAD^/CHERRY_PICK_HEAD^/REVERT_HEAD^ is invalid when the
+        state ref names a root commit (no parent) -- a git-primitive fact,
+        so the merge-tree call this design issues fails."""
+        repo, root_oid, _ = self._repo_with_a_root_commit_and_a_second_commit(tmp_path)
         _forge_state_marker(repo / ".git", state, root_oid)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
         assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
+    def test_same_forge_with_a_state_oid_that_has_a_parent_computes_a_base(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """Control for the root-commit test above: the identical forged
+        marker, but naming the second commit, reaches merge-tree and gets
+        a tree back. So that test's exit 1 comes from the merge-tree
+        failure, not from an earlier return."""
+        repo, _, second_oid = self._repo_with_a_root_commit_and_a_second_commit(tmp_path)
+        _forge_state_marker(repo / ".git", state, second_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 0
+        _assert_valid_tree_oid(repo, result.stdout)
+
+    def test_merge_of_an_unrelated_history_falls_back_to_empty_base(self, tmp_path: Path) -> None:
+        """origin/<default> forged at an orphan commit makes MERGE_HEAD pass
+        the anchor check, and `merge-tree` then refuses to merge unrelated
+        histories."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        _run_git(repo, "checkout", "-q", "--orphan", "orphan")
+        (repo / "orphan.txt").write_text("z\n")
+        _run_git(repo, "add", "orphan.txt")
+        _run_git(repo, "commit", "-qm", "orphan commit")
+        orphan_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "update-ref", "refs/remotes/origin/main", orphan_oid)
+        _forge_state_marker(repo / ".git", "merge", orphan_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_same_merge_forge_with_a_related_history_computes_a_base(self, tmp_path: Path) -> None:
+        """Control for the unrelated-history merge test above: origin/<default>
+        and MERGE_HEAD forged at a commit descending from HEAD reach
+        merge-tree and get a tree back."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "side.txt").write_text("s\n")
+        _run_git(repo, "add", "side.txt")
+        _run_git(repo, "commit", "-qm", "side commit")
+        side_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "update-ref", "refs/remotes/origin/main", side_oid)
+        _forge_state_marker(repo / ".git", "merge", side_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 0
+        _assert_valid_tree_oid(repo, result.stdout)
 
 
 def _timeout_binary_present() -> bool:

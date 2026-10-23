@@ -747,7 +747,7 @@ case "$SUBCOMMAND" in
         # written from wherever the session stands. The remote headRefOid
         # re-check in review-pr-post.sh is the freshness binding.
         REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
-          printf 'marker.sh: not inside a git repository, git is older than 2.31 (which lacks rev-parse --path-format), or the repo hash could not be computed\n' >&2
+          printf 'marker.sh: not inside a git repository, or the repo hash could not be computed\n' >&2
           exit 2
         }
         # The findings-body path is derived here, never read from provenance,
