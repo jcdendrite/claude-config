@@ -134,7 +134,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
     - `show --out` shares `render --out`'s `_review_ledger_check_out`, whose ignore check fails closed: anything other than git's confirmation that the target is ignored refuses.
       - The check covers only the target's name. It covers the killed-write temporary `<path>.XXXXXX` only when the ignore entry is directory-form, as the `agent-reviews/` entry `findings-path-suffix.sh` writes is. A file-form entry such as `agent-reviews/*.md` leaves the temporary unignored.
     - The path check, the stale-target delete and `mkdir -p` all run before the session is resolved. `render` creates the directory only after the ledger resolves.
-    - The temporary file is moved into place with `mv`, at mode 0600.
+    - The write goes to a temporary file beside `<path>`, moved into place with `mv`, at mode 0600.
     - Two concurrent runs to the same path can remove each other's file, because each deletes the target first.
     - Under a rejected date `test()` construct (see jq version), `show --out` writes no file and exits 1 after deleting the stale target. The usage text states the exit.
     - The file copies full rows, engineer quotes included, and stays until a zero-row `show --out` to the same path, a failure after the delete, or the worktree's removal.
