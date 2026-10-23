@@ -92,7 +92,7 @@ awk '
   {
     remaining = tolower($0)
     gsub(/`[^`]*`/, "", remaining)
-    while (match(remaining, /<\/?details([[:space:]][^>]*)?>/)) {
+    while (match(remaining, /<\/?details([ \t][^>]*)?>/)) {
       tag = substr(remaining, RSTART, RLENGTH)
       remaining = substr(remaining, RSTART + RLENGTH)
       if (substr(tag, 2, 1) == "/") {
