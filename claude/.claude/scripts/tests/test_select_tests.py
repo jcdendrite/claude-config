@@ -2039,6 +2039,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
+    _mod.PLAN_SHAPE_TEST_PATH,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR

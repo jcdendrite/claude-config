@@ -67,7 +67,8 @@ File-level conditions, checked first in this order. Each of the first five ends 
 
 `check` conditions, one `REASON` line per failure, after the file-level conditions:
 - placeholder: the first non-blank line after the `## Approach` heading line, before the next
-  heading line, reads exactly `(pending: plan-architect)`.
+  heading line, reads exactly `(pending: plan-architect)`. Only that line is tested, byte for
+  byte, so trailing text or a placeholder line further down the section does not match.
 - headings: the heading lines from the `## Approach` heading line to the end of the file are not
   exactly the four, in order. A file with no `## Approach` heading line fails this, with no line
   cited.
@@ -95,7 +96,8 @@ Exit status:
 - 2 on usage: a wrong argument count or an unknown mode, `-h` and `--help` included. It prints
   one `REASON: usage:` line and no verdict.
 
-Nothing goes to stderr while stdout is writable.
+Nothing goes to stderr while stdout is writable. An unexpected exception intentionally leaves no
+locator: stderr stays empty and stdout carries only the exception's type name.
 """
 from __future__ import annotations
 
@@ -134,6 +136,7 @@ _STAGE_REVISION = "revision"
 
 _PLAN_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]*\.md"
 _PLANS_DIRECTORY_NAME = "plans"
+_READ_CHUNK_BYTES = 1 << 16
 _CLAUDE_DIRECTORY_NAME = ".claude"
 
 _HEADING_PREFIX = "## "
@@ -328,7 +331,7 @@ def _read_all(descriptor: int, mode: str) -> bytes:
     chunks = []
     try:
         while True:
-            chunk = os.read(descriptor, 1 << 16)
+            chunk = os.read(descriptor, _READ_CHUNK_BYTES)
             if chunk == b"":
                 return b"".join(chunks)
             chunks.append(chunk)

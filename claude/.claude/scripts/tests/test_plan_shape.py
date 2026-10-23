@@ -171,6 +171,13 @@ def _hash_range_cases() -> list[Case]:
             sed_last_line=6,
         ),
         Case(
+            "hash-range-and-foreign-heading-with-an-approach-heading-line",
+            "# Title\n\n## Context\n\n```\n## Approach\n```\n\n## Approach\n\nx\n\n## Effort\n\nx\n",
+            _stop(("hash-range", (6, 9)), ("foreign-heading", (13,))),
+            _fail(None, ("hash-range", (6, 9)), ("headings", (9, 13))),
+            sed_last_line=6,
+        ),
+        Case(
             "hash-range-line-1-heading-with-later-fenced-approach",
             "## Approach\n\nx\n\n```\n## Approach\n```\n",
             _stop(("hash-range", (1, 6))),
@@ -527,9 +534,6 @@ _CASE_MODE_PAIRS = [
 ]
 _SED_CASES = [pytest.param(case, id=case.name) for case in _CORPUS if case.sed_last_line is not None]
 
-# Codes the corpus cannot reach with a byte fixture at a valid path, each with its own test.
-_CODES_REACHED_OUTSIDE_THE_CORPUS = {"plan-path", "unreadable", "unwritable", "internal-error", "usage"}
-
 
 @pytest.fixture(scope="module")
 def script():
@@ -721,7 +725,16 @@ class TestCorpus:
             for code, _ in expected.reasons
         }
 
-        assert codes_in_corpus | _CODES_REACHED_OUTSIDE_THE_CORPUS == set(script._REASON_CODES)
+        # Each code the corpus cannot reach with a byte fixture at a valid path maps to the test that reaches it.
+        tests_reaching_codes_outside_the_corpus = {
+            "plan-path": TestPath.test_refuses_the_path_and_leaves_the_file_unchanged,
+            "unreadable": TestFileType.test_a_missing_file_is_unreadable,
+            "unwritable": TestPrepare.test_a_write_that_raises_is_unwritable_and_leaves_the_file_unchanged,
+            "internal-error": TestInternalError.test_prints_the_negative_verdict_and_only_the_exception_type_name,
+            "usage": TestContract.test_usage_error_exits_2_with_one_usage_line_and_no_stderr,
+        }
+
+        assert codes_in_corpus | tests_reaching_codes_outside_the_corpus.keys() == set(script._REASON_CODES)
 
 
 # Rows: file text, then the expected (fenced line numbers, opener line of a fence still open at the end).
@@ -746,6 +759,7 @@ _FENCE_ROWS = {
     "two-backtick-run-is-not-an-opener": (["``", "## P"], (set(), None)),
     "two-tilde-run-is-not-an-opener": (["~~", "## P"], (set(), None)),
     "tab-indented-opener-is-not-a-fence": (["\t```", "## P"], (set(), None)),
+    "second-fence-left-open-after-the-first-closes": (["```", "x", "```", "y", "~~~", "## P"], ({1, 2, 3, 5, 6}, 5)),
     "shorter-closer-does-not-close": (["````", "## P", "```", "## P"], ({1, 2, 3, 4}, 1)),
     "other-character-closer-does-not-close": (["```", "## P", "~~~", "## P"], ({1, 2, 3, 4}, 1)),
     "closer-with-trailing-text-does-not-close": (["```", "## P", "``` x", "## P"], ({1, 2, 3, 4}, 1)),
@@ -838,6 +852,30 @@ def _build_name_with_a_leading_dot(root: Path):
 
 
 @_path_refusal
+def _build_name_with_a_leading_hyphen(root: Path):
+    plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "-x.md")
+    return str(plan_path), plan_path
+
+
+@_path_refusal
+def _build_name_with_a_leading_underscore(root: Path):
+    plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "_x.md")
+    return str(plan_path), plan_path
+
+
+@_path_refusal
+def _build_name_with_a_non_ascii_letter(root: Path):
+    plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "\u00e9.md")
+    return str(plan_path), plan_path
+
+
+@_path_refusal
+def _build_name_with_a_non_ascii_letter_after_the_first_character(root: Path):
+    plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "a\u00e9.md")
+    return str(plan_path), plan_path
+
+
+@_path_refusal
 def _build_name_not_ending_in_md(root: Path):
     plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "x.txt")
     return str(plan_path), plan_path
@@ -856,6 +894,23 @@ def _build_parent_symlink_resolving_outside_a_claude_plans_directory(root: Path)
     plans.parent.mkdir(parents=True)
     plans.symlink_to(root / "elsewhere")
     return str(plans / "x.md"), elsewhere_plan
+
+
+@_path_refusal
+def _build_claude_plans_symlink_to_a_plans_directory_not_under_a_claude_directory(root: Path):
+    elsewhere_plan = _write_plan(root / "elsewhere" / "plans", _TITLE_AND_CONTEXT, "x.md")
+    plans = _plans_directory(root)
+    plans.parent.mkdir(parents=True)
+    plans.symlink_to(root / "elsewhere" / "plans")
+    return str(plans / "x.md"), elsewhere_plan
+
+
+@_path_refusal
+def _build_claude_directory_symlinked_to_a_differently_named_directory(root: Path):
+    # The name tests run on the resolved parent, so the link's own `.claude` name does not help.
+    dotfiles_plan = _write_plan(root / "dotfiles" / "plans", _TITLE_AND_CONTEXT, "x.md")
+    (root / ".claude").symlink_to(root / "dotfiles")
+    return str(_plans_directory(root) / "x.md"), dotfiles_plan
 
 
 @_path_refusal
@@ -895,6 +950,36 @@ class TestPath:
 
         assert _parse_output(result.stdout).verdict == "ready"
         assert real_plan.read_bytes().endswith(_SCAFFOLD.encode("utf-8"))
+
+    @pytest.mark.parametrize("mode", ["prepare", "check"])
+    @pytest.mark.parametrize(
+        "plan_name",
+        ["a.b.md", "a_b.md", "a-b.md", "A.md", "0.md", "aZ.md", "a9.md"],
+        ids=[
+            "dot-after-first-character",
+            "underscore-after-first-character",
+            "hyphen-after-first-character",
+            "uppercase-first-character",
+            "digit-first-character",
+            "uppercase-after-first-character",
+            "digit-after-first-character",
+        ],
+    )
+    def test_accepts_a_plan_file_name_within_the_allowed_character_set(
+        self, script, tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes], plan_name: str, mode: str
+    ) -> None:
+        plan_path = _write_plan(_plans_directory(tmp_path), _after_context(_AUTHORED_REGION), plan_name)
+        original = plan_path.read_bytes()
+
+        result = _run_in_process(script, capsysbinary, mode, str(plan_path))
+
+        parsed = _parse_output(result.stdout)
+        assert result.status == 0
+        assert result.stderr == ""
+        _assert_output_grammar(script, parsed)
+        assert parsed.verdict == ("ready" if mode == "prepare" else "pass")
+        assert parsed.reasons == []
+        assert plan_path.read_bytes() == original
 
 
 def _assert_unreadable_sentence_names_the_mode_access(stdout: str, mode: str) -> None:
@@ -1005,6 +1090,57 @@ class TestFileType:
         assert parsed.reasons == [("unreadable", ())]
         _assert_unreadable_sentence_names_the_mode_access(result.stdout, mode)
         assert plan_path.read_bytes() == _TITLE_AND_CONTEXT.encode("utf-8")
+
+
+_CONTEXT_OPENING = "# Title\n\n## Context\n\nAsk: "
+
+
+def _plan_with_context_filled_to_byte(byte_count: int, tail: str = "") -> bytes:
+    """A valid authored plan whose Context is padded with ASCII filler so that `tail` starts at file byte
+    `byte_count`, then the four headings."""
+    filler = "a" * (byte_count - len(_CONTEXT_OPENING))
+    return (_CONTEXT_OPENING + filler + tail + "\n\n" + _AUTHORED_REGION).encode("utf-8")
+
+
+def _plan_with_headings_after_the_first_read_chunk(chunk_bytes: int) -> bytes:
+    plan = _plan_with_context_filled_to_byte(chunk_bytes + 100)
+    assert plan.index(b"## Approach") > chunk_bytes
+    return plan
+
+
+def _plan_with_a_multibyte_character_across_the_read_chunk_boundary(chunk_bytes: int) -> bytes:
+    plan = _plan_with_context_filled_to_byte(chunk_bytes - 1, tail="\u00e9")
+    assert plan.index("\u00e9".encode()) == chunk_bytes - 1
+    return plan
+
+
+class TestLargeFile:
+    @pytest.mark.parametrize("mode", ["prepare", "check"])
+    @pytest.mark.parametrize(
+        "build_plan",
+        [
+            _plan_with_headings_after_the_first_read_chunk,
+            _plan_with_a_multibyte_character_across_the_read_chunk_boundary,
+        ],
+        ids=["headings-after-the-first-chunk", "multibyte-character-across-the-chunk-boundary"],
+    )
+    def test_reads_past_one_chunk_passes_and_leaves_the_bytes_unchanged(
+        self, script, tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes], build_plan, mode: str
+    ) -> None:
+        plan_path = _write_plan(_plans_directory(tmp_path), build_plan(script._READ_CHUNK_BYTES))
+        original = plan_path.read_bytes()
+        mtime_before = plan_path.stat().st_mtime_ns
+
+        result = _run_in_process(script, capsysbinary, mode, str(plan_path))
+
+        parsed = _parse_output(result.stdout)
+        assert result.status == 0
+        _assert_output_grammar(script, parsed)
+        assert parsed.verdict == ("ready" if mode == "prepare" else "pass")
+        assert parsed.stage == "revision"
+        assert parsed.reasons == []
+        assert plan_path.read_bytes() == original
+        assert plan_path.stat().st_mtime_ns == mtime_before
 
 
 class TestPrepare:
@@ -1183,6 +1319,7 @@ def _step5_section() -> str:
     return after_heading.split(_STEP6_START, 1)[0]
 
 
+# test_skills.py pins the verdict literals and the check command inside Step 5's clauses, so they have no test here.
 class TestSkillContract:
     def test_step5_names_every_output_key(self, script) -> None:
         section = _step5_section()
@@ -1191,19 +1328,19 @@ class TestSkillContract:
 
         assert missing == [], f"plan-it/SKILL.md Step 5 does not name {missing}"
 
-    @pytest.mark.parametrize("literal", ["`PREPARE: ready`", "`CHECK: pass`", "`STAGE: first-authoring`"])
-    def test_step5_names_the_verdict_literals_with_both_backticks(self, literal: str) -> None:
-        assert literal in _step5_section()
-
     def test_step5_names_the_placeholder_in_backticks(self, script) -> None:
         assert f"`{script._PLACEHOLDER}`" in _step5_section()
 
-    def test_step5_names_the_codes_it_routes_on(self, script) -> None:
-        section = _step5_section()
+    def test_step5_names_the_plan_path_code(self, script) -> None:
+        assert "plan-path" in script._REASON_CODES
+        assert "`plan-path`" in _step5_section()
 
-        missing = [code for code in ["plan-path", *sorted(script._REDISPATCH_CODES)] if f"`{code}`" not in section]
+    def test_step5_names_exactly_the_redispatch_codes_together(self, script) -> None:
+        section = " ".join(_step5_section().split())
+        sentence = re.search(r"every `REASON` code is ((?:`[a-z-]+`(?:, | or )?)+)", section)
 
-        assert missing == [], f"plan-it/SKILL.md Step 5 does not name {missing}"
+        assert sentence is not None, "plan-it/SKILL.md Step 5 no longer lists the codes that re-dispatch"
+        assert set(re.findall(r"`([a-z-]+)`", sentence.group(1))) == script._REDISPATCH_CODES
 
     def test_step5_names_the_context_heading_and_the_four_headings(self, script) -> None:
         section = _step5_section()
@@ -1213,9 +1350,8 @@ class TestSkillContract:
         assert f"`{script._CONTEXT_HEADING}`" in section
         assert four_heading_phrase in section
 
-    @pytest.mark.parametrize("mode", ["prepare", "check"])
-    def test_step5_gives_each_mode_command(self, mode: str) -> None:
-        assert f"python3 ~/.claude/scripts/plan-shape.py {mode} '<plan path>'" in _step5_section()
+    def test_step5_gives_the_prepare_command(self) -> None:
+        assert "python3 ~/.claude/scripts/plan-shape.py prepare '<plan path>'" in _step5_section()
 
     def test_step5_keeps_the_hash_range_the_differential_test_runs(self) -> None:
         assert f"sed -n '{_HASH_RANGE_ADDRESS}p'" in _step5_section()

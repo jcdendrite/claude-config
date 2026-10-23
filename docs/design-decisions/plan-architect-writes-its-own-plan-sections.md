@@ -32,7 +32,7 @@ The tier and the grounds for each component are in the gate's header and its row
 
 ## Fixed headings and the splice
 
-Every plan now ends with the same four headings, in the order `claude-skills/skills/plan-it/SKILL.md` § "Step 5 — Architecture design" defines. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: a successful return carries none, so a summary cannot overwrite edits that landed. Step 5 owns the splice conditions and the handling of a plan committed before this change: `plan-shape.py prepare` stops such a plan when its heading lines fail `prepare`'s conditions, which the script's docstring states, and Step 5 routes the stop to the engineer.
+Every plan now ends with the same four headings, in the order `claude-skills/skills/plan-it/SKILL.md` § "Step 5 — Architecture design" defines. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: a successful return carries none, so a summary cannot overwrite edits that landed. Step 5 owns the splice conditions and the handling of a plan committed before this change. `plan-shape.py prepare` stops a plan whose heading lines fail `prepare`'s conditions. The script's docstring states those conditions. Step 5 routes the stop to the engineer.
 
 ## Notes
 

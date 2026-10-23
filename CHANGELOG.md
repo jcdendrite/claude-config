@@ -8,8 +8,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **`/plan-it` Step 5 now runs one tested script, `plan-shape.py`, to scaffold a new plan's four headings and to check a plan's heading structure, instead of following prose rules.**
   - The headings, the placeholder and the Context hash are unchanged.
-  - These now stop and go to the engineer, before a dispatch or after one: a plan file not directly under a `.claude/plans/` directory or named outside the file-name rule (the name starts with an ASCII letter or digit, holds only ASCII letters, digits, `.`, `_` and `-`, and ends in lowercase `.md`), a plan path that is a symlink, a directory or another non-regular file, a carriage return, invalid UTF-8, an unclosed code fence, and a line reading exactly `## Approach` where Step 5's Context hash would end instead of at the heading.
-  - In plan mode under a config directory not named `.claude`, the harness plan path fails that path rule, so Step 5 stops and offers the engineer Step 1's repo-relative recovery.
+  - These now stop and go to the engineer, before a dispatch or after one:
+    - a plan file not directly under a `.claude/plans/` directory, or whose name breaks the file-name rule;
+    - a plan path whose last component is a symlink, a directory or another non-regular file;
+    - a carriage return;
+    - invalid UTF-8;
+    - an unclosed code fence;
+    - a line reading exactly `## Approach` where Step 5's Context hash would end instead of at the heading.
+  - The script tests the `plans` and `.claude` directory names on the symlink-resolved parent directory. A symlink is refused only at the last path component, so a symlinked parent is followed when it resolves to a `plans` directory directly under one named `.claude`.
+  - The file-name rule is that the name starts with an ASCII letter or digit, holds only ASCII letters, digits, `.`, `_` and `-`, and ends in lowercase `.md`.
+  - In plan mode, a harness plan path whose resolved `plans` directory is not directly under a directory named `.claude` fails the path rule, so Step 5 stops and offers the engineer Step 1's repo-relative recovery.
   - An unclosed code fence in the sections `plan-architect` writes now goes to the engineer instead of a re-dispatch. A failed Check still re-dispatches for a leftover placeholder, a heading-structure error or an empty section, except a plan left with no `## Approach` heading line, which goes to the engineer.
   - Step 5 now also runs the Check before every dispatch after the first, and that dispatch goes ahead only when the Check passes or fails only in ways that re-dispatch.
   - A new plan file whose heading lines are not exactly one `## Context` goes to the engineer before its first dispatch.
