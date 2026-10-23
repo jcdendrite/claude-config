@@ -733,6 +733,8 @@ Limits of the scan:
 - `skill-fidelity-reviewer`'s findings are excluded from the comparison, because the scan could not place them.
 - A citation with no path took the path of the finding's previous citation. That resolves the wrong file when a reviewer names the file in prose and then gives a bare line number.
 
+In the table below, an outside finding sits on a line the fix did not write. A ripple finding is an outside finding on a line the fix reached without editing it. An omission is an outside finding on a pre-existing issue a reviewer noticed on a line that predates the fix.
+
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Steering review fixes away from fix-written churn, by a `code-writer` rule to prefer deleting or rewording prose over adding it, or by a change to one reviewer's suggested-fix wording | Deferred for more data (measured) | - At the finding level, the direction turned on how uncertain findings were counted.<br>- At the pass level, the direction turned on how uncertain findings were counted.<br>- At the branch level, the direction turned on how uncertain findings were counted.<br>- Inside counts findings on lines a commit between the passes wrote.<br>- Outside mixes variance, ripple findings, and omissions anchored on older lines.<br>- The engineer selected "More data: the staged-round measurement", so that measurement is the next step. |
