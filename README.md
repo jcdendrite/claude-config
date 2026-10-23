@@ -98,7 +98,7 @@ A new entry directly under `claude/.claude/` and any new wrapper under `claude/.
 
 What only the installer produces needs it too: the `~/.local/bin` copy of `relocate-claude-config`, plugin registrations, migrations, the stow package list in `claude/.claude/scripts/stow-packages.sh`, and any change to `install.sh` itself.
 
-To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`. "No such file or directory" means re-run the installer once the change is in the checkout.
+To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`, which assumes no same-named local file of yours sits there. "No such file or directory" means re-run the installer once the change is in the checkout.
 
 ## Requirements
 

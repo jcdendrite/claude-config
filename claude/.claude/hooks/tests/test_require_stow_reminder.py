@@ -550,6 +550,26 @@ class TestRequireStowReminder:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
+    def test_missing_lib_sh_bootstrap_deny_points_at_install_sh_without_relink_premise(self, tmp_path):
+        """With `_lib.sh` absent, the bootstrap deny tells the engineer to run
+        ./install.sh and states no relink premise."""
+        # The copy sits alone in `tmp_path`, so the hook finds no `_lib.sh` beside it.
+        lonely_hook = tmp_path / STOW_REMINDER_HOOK.name
+        shutil.copy2(STOW_REMINDER_HOOK, lonely_hook)
+        lonely_hook.chmod(0o755)
+        result = subprocess.run(
+            [str(lonely_hook)],
+            input=json.dumps(bash_input("gh pr create --title T --body 'no marker here'")),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert "could not source _lib.sh" in result.stderr
+        assert "./install.sh" in result.stderr
+        assert not re.search(r"re-?link", result.stderr, re.IGNORECASE)
+
 
 class TestStowReminderDefersToReadme:
     """The deny offers an example PR-body line and cites the README heading."""

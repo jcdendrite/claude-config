@@ -27,6 +27,8 @@
 # - Detects any file added under `claude/.claude/` between `main` and
 #   `HEAD` (`git diff --diff-filter=A`). Any depth trips the gate, whether
 #   or not the file's parent directory already existed on `main`.
+#   The gate cannot see a consumer's layout, so it cannot tell which nested
+#   adds need a re-run.
 # - GH-465: also fires when `install.sh` itself differs between `main`
 #   and `HEAD` (any change, not only new content), independent of whether
 #   any new top-level entry exists.
