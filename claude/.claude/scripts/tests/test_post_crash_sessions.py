@@ -1009,9 +1009,10 @@ def test_find_scheduled_task_locks_prunes_library_trash_movies(tmp_path):
 def test_find_scheduled_task_locks_prune_does_not_match_by_basename_alone(tmp_path):
     """Regression guard: the -prune exclusion matches only the exact root-level
     Library/.Trash/Movies paths, not any directory sharing their basename elsewhere.
-    No injected run=, like test_boot_time_darwin_real_subprocess_returns_plausible_epoch
-    and test_find_scheduled_task_locks_prunes_library_trash_movies (same portability
-    rationale)."""
+    No injected run=, matching the real-subprocess precedent in
+    test_boot_time_darwin_real_subprocess_returns_plausible_epoch. This test shares
+    the prune-clause portability rationale stated in
+    test_find_scheduled_task_locks_prunes_library_trash_movies's docstring."""
     near_miss_lock = tmp_path / "LibraryBackup" / "proj" / ".claude" / "scheduled_tasks.lock"
     _write_lock(near_miss_lock)
     nested_lock = tmp_path / "proj" / "Library" / ".claude" / "scheduled_tasks.lock"
