@@ -715,7 +715,7 @@ No code, skill, hook, or test change ships from this investigation.
 
 The question is whether findings on `ready-for-review`'s cumulative re-passes after a fix land on lines that fix wrote more often than the fix's share of the branch's added prose lines predicts, and so whether steering fixes away from adding prose would cut review churn.
 
-The evidence is a one-off scan of locally retained `agent-reviews/` findings files and each branch's git history. Its method was committed before it ran, and it is not kept as a script. Two consecutive cumulative passes bracket a fix, and the later pass's cited line is inside the fix when `git blame` attributes the line to a commit between them. A reading's baseline is the fix's share of the branch's added prose lines. Prose means documentation, comments, and docstrings, skill and agent bodies included. Each reading was computed with uncertain findings counted against inside findings exceeding their baseline, and again with them counted for it. The engineer decided from these readings and their known leans, and the Reason cell quotes the label they selected from labels fixed before the run. This section names no account, branch, or time window.
+The evidence is a one-off scan of locally retained `agent-reviews/` findings files and each branch's git history. Its method was committed before it ran. It is not kept as a script. Two consecutive cumulative passes bracket a fix, and the later pass's cited line is inside the fix when `git blame` attributes the line to a commit between them. A reading's baseline is the fix's share of the branch's added prose lines. Prose means documentation, comments, and docstrings, skill and agent bodies included. Uncertain findings are those the scan could not place, those it could not classify as prose or code, and inside findings that may re-raise a line an earlier pass cited. Each reading was computed twice. The first time, every uncertain finding took the value that works against inside findings exceeding their baseline. The second time, every uncertain finding took the value that works for it. The engineer decided from these readings and the directional biases listed under the limits below. The Reason cell quotes the label the engineer selected from labels fixed before the run. This section names no account, branch, or time window.
 
 Because the scan is ad hoc rather than a scope-refusing subcommand, this section follows `docs/private-project-redaction.md` § "Publishing a tooling measurement". It names no figure from the scan and no share-like descriptor, and records which way each reading pointed.
 
@@ -723,8 +723,10 @@ The `review-loop-cost-levers.md` section above placed findings by token match fo
 
 Limits of the scan:
 
-- The sample is non-random. Findings files survive only in worktrees not yet removed, only files in the current heading format were read, and a pass counted as cumulative only when it left a disposition record.
-- Findings on lines the branch did not add count against the fix, while the baseline covers added lines alone. That leans the comparison toward not pursuing, and a tie leans it the same way, because findings landing inside at exactly the baseline do not exceed it. A finding counts as inside when a line it cites is, while the baseline is the chance for a single line, which leans the other way.
+- The sample is non-random. Findings files survive only in worktrees not yet removed. Files were read only where their findings carry `## R<n> [<severity>] <angle>` headings, the form the reviewer agents emit. A pass counted as cumulative only when it left a disposition record.
+- Findings on lines the branch did not add count against the fix, while the baseline covers added lines alone. That leans the comparison toward not pursuing.
+- A tie leans the comparison toward not pursuing, because findings landing inside at exactly the baseline do not exceed it.
+- A finding counts as inside when a cited line is inside, while the baseline is the chance for a single line. That leans the comparison toward pursuing.
 - Commits between two passes can include work beyond the fix, which counts as inside.
 - Counting uncertain findings both ways bounds placement uncertainty at the finding and pass level, not at the branch level, and not sampling error.
 - `comment-discipline-reviewer` sits outside the comparison, because its findings inside a fix are a first read of that text.
@@ -739,6 +741,7 @@ Reopening would need:
 
 - A record of which finding's suggested fix wrote each line, since one `code-writer` addresses all the findings a pass sends it.
 - A staged-round measurement that reads fix-written lines from `code-writer` edit calls, since repeated staged rounds on one commit are never committed apart.
-- A per-pass record of the commit each cumulative pass reviewed, and citations that carry repo-relative paths.
+- A per-pass record of the commit each cumulative pass reviewed.
+- Citations that carry repo-relative paths.
 
 No code, skill, hook, or test change ships from this investigation.
