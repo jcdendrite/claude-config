@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints the cumulative PR-vs-default-branch diff /ready-for-review's step 3
-# reviews to stdout: git diff <merge-base of origin/<base-branch> and HEAD>...HEAD.
+# reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
@@ -81,15 +81,24 @@ else
     exit 1
   fi
 
-  # The flags keep color and external-diff output out of the patch text.
-  if ! DIFF_TEXT=$(git diff --no-color --no-ext-diff "$MERGE_BASE...HEAD" 2>/dev/null); then
+  # The cumulative arm uses plumbing `git diff-tree`, so porcelain-only diff config
+  # (e.g. diff.relative, diff.submodule, diff.context) does not change the hashed text.
+  # Observed on git 2.56.0, and pinned by the tests in test_pr_diff_against_base.py.
+  # See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md for the residual inputs.
+  # GIT_DIFF_OPTS=-u3 fixes the context width at git's default of 3 lines: plumbing still reads GIT_DIFF_OPTS,
+  # so only setting the variable itself pins it.
+  # --ignore-submodules=none keeps a .gitmodules `ignore` setting from dropping a gitlink change.
+  # --no-color and --no-ext-diff are defense in depth: plumbing emits neither color nor external-diff output.
+  # The trailing `--` ends revision parsing, so git skips its revision-versus-filename ambiguity check.
+  # Without it, a file named `HEAD` in the cwd makes git exit 128 ("ambiguous argument").
+  if ! DIFF_TEXT=$(GIT_DIFF_OPTS=-u3 git diff-tree -r -p -M --no-color --no-ext-diff --ignore-submodules=none "$MERGE_BASE" HEAD -- 2>/dev/null); then
     printf 'pr-diff-against-base.sh: could not compute the diff against %s\n' "$MERGE_BASE" >&2
     exit 1
   fi
 fi
 
-# Command substitution strips trailing newlines; the printf below restores
-# exactly one, so stdout matches git diff's own output byte for byte.
+# Command substitution strips trailing newlines; the printf below restores exactly one.
+# Stdout matches git's own output apart from trailing newlines and NUL bytes, which command substitution drops.
 printf '%s\n' "$DIFF_TEXT"
 
 # Everything below writes optional artifacts (--record, --diff-file). Both

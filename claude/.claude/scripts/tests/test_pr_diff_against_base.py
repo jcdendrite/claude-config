@@ -17,7 +17,15 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, cumulative_review_value
+from helpers import (
+    GITLINK_AFTER,
+    GITLINK_BEFORE,
+    HOOKS_DIR,
+    cumulative_review_value,
+    isolated_git_diff,
+    isolated_git_env,
+    set_gitlink,
+)
 
 from .conftest import _commit, _init_repo, _make_feature_branch, _make_repo_with_remote
 
@@ -93,11 +101,11 @@ def _env_with_gh_shim_and_failing_mv(tmp_path: Path, base_ref: str | None, fail_
 
 
 def _git_diff_shim_source(fail_when_args_contain: str) -> str:
-    """Return source for a `git` shim that fails only a `git diff` call
-    whose arguments contain fail_when_args_contain, delegating to the real
-    git otherwise. Merge-base resolution, checkouts, and the fixture's own
-    setup calls all still hit the real git, so only the targeted `git diff`
-    call is forced to fail."""
+    """Return source for a `git` shim that fails only a `git diff` or
+    `git diff-tree` call whose arguments contain fail_when_args_contain,
+    delegating to the real git otherwise. Merge-base resolution, checkouts,
+    and the fixture's own setup calls all still hit the real git, so only
+    the targeted diff call is forced to fail."""
     real_git = shutil.which("git")
     assert real_git is not None
     return textwrap.dedent(f"""\
@@ -105,7 +113,7 @@ def _git_diff_shim_source(fail_when_args_contain: str) -> str:
         import subprocess
         import sys
         args = sys.argv[1:]
-        if args and args[0] == "diff" and any({fail_when_args_contain!r} in a for a in args):
+        if args and args[0] in ("diff", "diff-tree") and any({fail_when_args_contain!r} in a for a in args):
             sys.exit(1)
         sys.exit(subprocess.run([{real_git!r}] + args).returncode)
     """)
@@ -113,7 +121,8 @@ def _git_diff_shim_source(fail_when_args_contain: str) -> str:
 
 def _env_with_gh_shim_and_failing_git_diff(tmp_path: Path, base_ref: str | None, fail_when_args_contain: str) -> dict:
     """_env_with_gh_shim plus a PATH-prepended `git` shim that fails only
-    the `git diff` call whose arguments contain fail_when_args_contain."""
+    the `git diff` or `git diff-tree` call whose arguments contain
+    fail_when_args_contain."""
     env = _env_with_gh_shim(tmp_path, base_ref)
     git_shim_dir = tmp_path / "git_shim"
     git_shim_dir.mkdir()
@@ -223,6 +232,39 @@ def _seed_session(config_dir: Path, session_id: str, pid: int | None = None) -> 
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
+def _make_branch_for_porcelain_config_probe(tmp_path: Path, *, gitmodules_ignore_all: bool) -> Path:
+    """A repo on a pushed-base feature branch whose merge-base diff touches a file under `pkg/`, a file at
+    the root, and a gitlink at `sub`, so config that rewrites a plain `git diff` has something to rewrite.
+
+    `gitmodules_ignore_all` commits a `.gitmodules` entry for `sub` with `ignore = all`.
+    """
+    local, _bare = _make_repo_with_remote(tmp_path)
+    numbered_lines = "".join(f"line {number}\n" for number in range(1, 12))
+    (local / "pkg").mkdir()
+    (local / "pkg" / "numbers.txt").write_text(numbered_lines)
+    if gitmodules_ignore_all:
+        (local / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n')
+    subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+    set_gitlink(local, "sub", GITLINK_BEFORE)
+    subprocess.run(["git", "commit", "-q", "-m", "base: numbered lines and a gitlink"], cwd=local, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/porcelain-config-probe"], cwd=local, check=True)
+    (local / "pkg" / "numbers.txt").write_text(numbered_lines.replace("line 6\n", "line six\n"))
+    (local / "file.txt").write_text("edited at the root\n")
+    subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+    set_gitlink(local, "sub", GITLINK_AFTER)
+    subprocess.run(["git", "commit", "-q", "-m", "edit both files and move the gitlink"], cwd=local, check=True)
+    return local
+
+
+def _isolated_porcelain_diff(directory: Path, isolated_env: dict, *args: str) -> str:
+    """Stdout of a plain `git diff --no-ext-diff *args, origin/main...HEAD` run from `directory` under `isolated_env`."""
+    return subprocess.run(
+        ["git", "diff", "--no-ext-diff", *args, "origin/main...HEAD"],
+        cwd=directory, env=isolated_env, capture_output=True, text=True, check=True,
+    ).stdout
+
+
 class TestNormalPathAgainstMain:
     def test_diverged_feature_branch_diff_mentions_changed_file(self, tmp_path):
         """The simplest regression guard against an EXIT trap whose last
@@ -258,6 +300,242 @@ class TestNormalPathAgainstMain:
         assert result.returncode == 0, result.stderr
         assert result.stdout.startswith("diff --git")
         assert "\x1b[" not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("repo_config", "diff_opts_env", "run_from_subdirectory"),
+        [
+            pytest.param({"diff.relative": "true"}, None, True, id="diff-relative-from-a-subdirectory"),
+            pytest.param({"diff.submodule": "log"}, None, False, id="diff-submodule-log"),
+            pytest.param({"diff.context": "0"}, None, False, id="diff-context-zero"),
+            pytest.param({"diff.noprefix": "true"}, None, False, id="diff-noprefix"),
+            pytest.param({}, "-u0", False, id="git-diff-opts-zero-context"),
+        ],
+    )
+    def test_merge_base_diff_is_unchanged_by_porcelain_diff_config(
+        self, tmp_path, repo_config, diff_opts_env, run_from_subdirectory
+    ):
+        """The cumulative-review key hashes this text, so user-level diff config that rewrites a
+        plain `git diff` (paths relative to the cwd, a submodule log summary, a narrowed context
+        window) must not reach it."""
+        local = _make_branch_for_porcelain_config_probe(tmp_path, gitmodules_ignore_all=False)
+        run_directory = local / "pkg" if run_from_subdirectory else local
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        unconfigured = _run_script(run_directory, isolated_env)
+        assert unconfigured.returncode == 0, unconfigured.stderr
+        assert "Subproject commit" in unconfigured.stdout, "baseline carries the gitlink the config rewrites"
+        plain_porcelain_diff_before_config = _isolated_porcelain_diff(run_directory, isolated_env)
+
+        for key, value in repo_config.items():
+            subprocess.run(["git", "config", key, value], cwd=local, check=True)
+        if diff_opts_env is not None:
+            merge_base = subprocess.run(
+                ["git", "merge-base", "origin/main", "HEAD"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            plumbing_command = ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD", "--"]
+            plumbing_diff_without_variable = subprocess.run(
+                plumbing_command, cwd=run_directory, env=isolated_env,
+                capture_output=True, text=True, check=True,
+            ).stdout
+            plumbing_diff_with_variable = subprocess.run(
+                plumbing_command, cwd=run_directory, env={**isolated_env, "GIT_DIFF_OPTS": diff_opts_env},
+                capture_output=True, text=True, check=True,
+            ).stdout
+            assert plumbing_diff_with_variable != plumbing_diff_without_variable, (
+                "control: the variable changes plumbing output, so the script's -u3 pin is load-bearing"
+            )
+            isolated_env["GIT_DIFF_OPTS"] = diff_opts_env
+        plain_porcelain_diff_after_config = _isolated_porcelain_diff(run_directory, isolated_env)
+        assert plain_porcelain_diff_after_config != plain_porcelain_diff_before_config, (
+            "control: the config changes a plain git diff"
+        )
+
+        configured = _run_script(run_directory, isolated_env)
+
+        assert configured.returncode == 0, configured.stderr
+        assert configured.stdout == unconfigured.stdout
+        if run_from_subdirectory:
+            assert _run_script(local, isolated_env).stdout == unconfigured.stdout, (
+                "the repo-root run and the subdirectory run print the same text"
+            )
+
+    @pytest.mark.parametrize(
+        ("repo_config", "gitmodules_ignore_all"),
+        [
+            pytest.param({"diff.ignoreSubmodules": "all"}, False, id="diff-ignore-submodules-config"),
+            pytest.param({}, True, id="gitmodules-ignore-all"),
+        ],
+    )
+    def test_merge_base_diff_keeps_a_gitlink_change_under_ignore_submodules_setting(
+        self, tmp_path, repo_config, gitmodules_ignore_all
+    ):
+        """An ignore-all submodule setting must not drop a gitlink change from the hashed diff text,
+        or a PR that only moves a submodule pointer would hash like an empty diff."""
+        local = _make_branch_for_porcelain_config_probe(tmp_path, gitmodules_ignore_all=gitmodules_ignore_all)
+        for key, value in repo_config.items():
+            subprocess.run(["git", "config", key, value], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        porcelain_diff_with_ignore_overridden = _isolated_porcelain_diff(local, isolated_env, "--ignore-submodules=none")
+        assert "Subproject commit" in porcelain_diff_with_ignore_overridden, "control: the gitlink is in the range"
+        plain_porcelain_diff = _isolated_porcelain_diff(local, isolated_env)
+        assert "Subproject commit" not in plain_porcelain_diff, "control: the setting hides the gitlink from a plain git diff"
+        if gitmodules_ignore_all:
+            # Under a .gitmodules `ignore`, plumbing drops the gitlink too, so --ignore-submodules=none must keep it.
+            merge_base = subprocess.run(
+                ["git", "merge-base", "origin/main", "HEAD"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            plumbing_diff_without_override = subprocess.run(
+                ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD", "--"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout
+            assert "diff --git a/pkg/numbers.txt b/pkg/numbers.txt" in plumbing_diff_without_override, (
+                "control: the plumbing diff is real and only the gitlink is missing from it"
+            )
+            assert "Subproject commit" not in plumbing_diff_without_override, (
+                "control: the setting hides the gitlink from plumbing too, so --ignore-submodules=none is load-bearing"
+            )
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert f"-Subproject commit {GITLINK_BEFORE}" in result.stdout
+        assert f"+Subproject commit {GITLINK_AFTER}" in result.stdout
+
+    def test_default_config_output_equals_the_porcelain_diff_of_the_merge_base_range(self, tmp_path):
+        """Pins that rename detection is on and that plumbing output is byte-equal to the porcelain's for these eight
+        shapes, in a repo with no textconv driver: a rename with a content edit, a mode change, a binary file,
+        a non-ASCII path, a moved gitlink, a deleted file, a newly added empty file and a file edited to lose its
+        trailing newline."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / "rename-source.txt").write_text("".join(f"stable line {number}\n" for number in range(20)))
+        (local / "run.sh").write_text("#!/bin/sh\n")
+        (local / "image.bin").write_bytes(b"\x00base binary\x01")
+        (local / "caf\u00e9.txt").write_text("base\n")
+        (local / "deleted.txt").write_text("removed on the feature branch\n")
+        (local / "loses-newline.txt").write_text("first line\nlast line\n")
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        set_gitlink(local, "sub", GITLINK_BEFORE)
+        subprocess.run(["git", "commit", "-q", "-m", "base: eight shapes"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/eight-shapes"], cwd=local, check=True)
+        subprocess.run(["git", "mv", "rename-source.txt", "rename-target.txt"], cwd=local, check=True)
+        (local / "rename-target.txt").write_text(
+            "".join("edited line 10\n" if number == 10 else f"stable line {number}\n" for number in range(20))
+        )
+        (local / "image.bin").write_bytes(b"\x00feature binary\x02")
+        (local / "caf\u00e9.txt").write_text("feature\n")
+        (local / "deleted.txt").unlink()
+        (local / "empty.txt").write_text("")
+        (local / "loses-newline.txt").write_text("first line\nlast line")
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        set_gitlink(local, "sub", GITLINK_AFTER)
+        subprocess.run(["git", "update-index", "--chmod=+x", "run.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feature: edit all eight shapes"], cwd=local, check=True)
+
+        env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "rename from rename-source.txt" in result.stdout
+        assert "old mode 100644" in result.stdout
+        assert "Binary files a/image.bin and b/image.bin differ" in result.stdout
+        assert "caf\\303\\251.txt" in result.stdout, "the non-ASCII path prints in git's quoted form"
+        assert f"+Subproject commit {GITLINK_AFTER}" in result.stdout
+        assert "deleted file mode 100644" in result.stdout
+        assert "diff --git a/empty.txt b/empty.txt\nnew file mode 100644" in result.stdout
+        assert "\\ No newline at end of file" in result.stdout
+        assert result.stdout.encode().rstrip(b"\n") == isolated_git_diff(local, "origin/main...HEAD")
+
+    def test_stale_branch_diff_excludes_a_change_made_only_on_the_advanced_base(self, tmp_path):
+        """The diff runs from the merge-base, so a base commit the un-rebased branch lacks must not
+        print as a reversion of that commit."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/stale")
+        (local / "base-only.txt").write_text("added on the base after the branch forked\n")
+        subprocess.run(["git", "add", "base-only.txt"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: advance past the fork point"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/stale"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/file.txt b/file.txt" in result.stdout
+        assert "base-only.txt" not in result.stdout
+
+    def test_a_tracked_file_named_like_a_revision_does_not_break_the_diff(self, tmp_path):
+        """A file named `HEAD` in the cwd must not make `git diff-tree` exit 128 (ambiguous argument):
+        the trailing `--` ends revision parsing, so git skips the revision-versus-filename ambiguity check."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/file-named-head"], cwd=local, check=True)
+        (local / "HEAD").write_text("a file, not a revision\n")
+        subprocess.run(["git", "add", "HEAD"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add a root file named HEAD"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+        isolated_env = isolated_git_env(env, tmp_path / "empty-xdg-config-home")
+        merge_base = subprocess.run(
+            ["git", "merge-base", "origin/main", "HEAD"],
+            cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # LC_ALL=C keeps git's error message in English for the stderr phrase below.
+        diff_tree_without_terminator = subprocess.run(
+            ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD"],
+            cwd=local, env={**isolated_env, "LC_ALL": "C"}, capture_output=True, text=True,
+        )
+        assert diff_tree_without_terminator.returncode == 128, "control: without the terminator git rejects the ambiguous HEAD"
+        assert "ambiguous argument" in diff_tree_without_terminator.stderr
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/HEAD b/HEAD" in result.stdout
+
+    def test_textconv_driver_does_not_convert_the_text(self, tmp_path):
+        """The cumulative diff shows the raw bytes of a path with a `textconv` driver, never the driver's output."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / ".gitattributes").write_text("notes.txt diff=shout\n")
+        (local / "notes.txt").write_text("quiet base\n")
+        subprocess.run(["git", "config", "diff.shout.textconv", "sed s/quiet/CONVERTED/"], cwd=local, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a path with a textconv driver"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/textconv"], cwd=local, check=True)
+        (local / "notes.txt").write_text("quiet feature\n")
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "feature: edit the textconv path"], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        porcelain_diff = _isolated_porcelain_diff(local, isolated_env)
+        assert "CONVERTED" in porcelain_diff, "control: the driver converts a plain git diff"
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert "+quiet feature" in result.stdout
+        assert "CONVERTED" not in result.stdout
+
+    def test_binary_file_with_a_textconv_driver_prints_binary_files_differ_and_keeps_its_index_line(self, tmp_path):
+        """A binary path with a `textconv` driver prints `Binary files ... differ` with its `index` line,
+        never the driver's output."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / ".gitattributes").write_text("blob.bin diff=shout\n")
+        (local / "blob.bin").write_bytes(b"\x00quiet base")
+        subprocess.run(["git", "config", "diff.shout.textconv", "sed s/quiet/CONVERTED/"], cwd=local, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a binary path with a textconv driver"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/binary-textconv"], cwd=local, check=True)
+        (local / "blob.bin").write_bytes(b"\x00quiet feature")
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "feature: edit the binary textconv path"], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        textconv_porcelain_diff = _isolated_porcelain_diff(local, isolated_env, "--textconv")
+        assert "CONVERTED" in textconv_porcelain_diff, "control: the driver converts a plain git diff --textconv"
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert "Binary files a/blob.bin and b/blob.bin differ" in result.stdout
+        assert "\nindex " in result.stdout
+        assert "CONVERTED" not in result.stdout
 
 
 class TestGhPrViewFailureFallback:
@@ -320,7 +598,7 @@ class TestMergeBaseFailure:
 
 class TestCumulativeDiffFailure:
     def test_diff_against_merge_base_failure_produces_curated_message(self, tmp_path):
-        """A `git diff` failure after merge-base resolution already
+        """A `git diff-tree` failure after merge-base resolution already
         succeeded must produce this script's own curated message and exit
         1, not a bare set -e abort surfacing git's own stderr and exit
         status."""
@@ -331,7 +609,7 @@ class TestCumulativeDiffFailure:
             ["git", "merge-base", "origin/main", "HEAD"], cwd=local,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", "...HEAD")
+        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", merge_base)
 
         result = _run_script(local, env)
 

@@ -1251,6 +1251,18 @@ def init_git_repo_with_commit(
     return path
 
 
+GITLINK_BEFORE = "1" * 40
+GITLINK_AFTER = "2" * 40
+
+
+def set_gitlink(repo: Path, path: str, commit_sha: str) -> None:
+    """Stage a mode-160000 entry without a submodule checkout. `git add -A` would stage its removal, so call this after it."""
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{commit_sha},{path}"],
+        cwd=repo, check=True,
+    )
+
+
 def continuity_resume_section(kind: str, path: Path, resume_cwd: Path | str | None) -> str:
     """The resume section in the shape handoff/SKILL.md (§7) or brief/SKILL.md (§7.5) prescribes.
     `kind` is "handoff" or "brief"; `--cwd` is present only when `resume_cwd` is given."""
@@ -2799,36 +2811,43 @@ CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
 ]
 
 
+def isolated_git_env(base_env: dict, empty_xdg_config_home: Path | str) -> dict:
+    """`base_env` without the ambient git config a contributor's machine carries.
+
+    Isolated: the global and system config files (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), the
+    system attributes file (`GIT_ATTR_NOSYSTEM=1`), the default `core.attributesFile` (`XDG_CONFIG_HOME` set to
+    `empty_xdg_config_home`, which the caller keeps empty), the ambient `GIT_DIFF_OPTS` and `GIT_EXTERNAL_DIFF`,
+    and every ambient `GIT_CONFIG_*` variable (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`,
+    `GIT_CONFIG_PARAMETERS`), each dropped before the two config variables above are set.
+    Still passing through: a repo's own config and attributes, and every other environment variable.
+    Limit: `GIT_CONFIG_GLOBAL` needs git 2.32. Older git ignores it, so a contributor's global config can reach the caller.
+    """
+    ambient_diff_variables = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+    return {
+        **{
+            name: value
+            for name, value in base_env.items()
+            if name not in ambient_diff_variables and not name.startswith("GIT_CONFIG_")
+        },
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": str(empty_xdg_config_home),
+    }
+
+
 def isolated_git_diff(repo: Path, *args: str, config: tuple[str, ...] = ()) -> bytes:
     """Raw `git diff *args` bytes of `repo`, with trailing newlines stripped as `$( )` strips them.
 
-    Isolated, in the subprocess env only: the global and system config files (`GIT_CONFIG_GLOBAL=/dev/null`,
-    `GIT_CONFIG_NOSYSTEM=1`), the system attributes file (`GIT_ATTR_NOSYSTEM=1`), the default
-    `core.attributesFile` (an empty `XDG_CONFIG_HOME`), the ambient
-    `GIT_DIFF_OPTS` and `GIT_EXTERNAL_DIFF`, and every ambient `GIT_CONFIG_*` variable (`GIT_CONFIG_COUNT`,
-    `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`, `GIT_CONFIG_PARAMETERS`), each dropped before the two config
-    variables above are set.
-    Still passing through: `repo`'s own config and attributes, and every other environment variable.
+    Runs under `isolated_git_env(os.environ, ...)`, so ambient git config does not reach it.
     Each `key=value` in `config` is passed as `-c key=value`.
-    Limits: `GIT_CONFIG_GLOBAL` needs git 2.32, and the fixture commits that built `repo` are not isolated.
+    Limits: those of `isolated_git_env`, and the fixture commits that built `repo` are not isolated.
     """
     config_args = [flag for pair in config for flag in ("-c", pair)]
-    ambient_diff_variables = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
     with tempfile.TemporaryDirectory() as empty_xdg_config_home:
-        isolated_env = {
-            **{
-                name: value
-                for name, value in os.environ.items()
-                if name not in ambient_diff_variables and not name.startswith("GIT_CONFIG_")
-            },
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_ATTR_NOSYSTEM": "1",
-            "XDG_CONFIG_HOME": empty_xdg_config_home,
-        }
         completed = subprocess.run(
             ["git", *config_args, "diff", *args],
-            cwd=repo, env=isolated_env, capture_output=True, check=True,
+            cwd=repo, env=isolated_git_env(os.environ, empty_xdg_config_home), capture_output=True, check=True,
         )
     return completed.stdout.rstrip(b"\n")
 

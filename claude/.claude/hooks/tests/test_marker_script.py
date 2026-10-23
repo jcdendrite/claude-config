@@ -4483,6 +4483,39 @@ class TestMarkerScriptCumulativeReview:
         assert not marker_dir.exists() or list(marker_dir.iterdir()) == []
 
     @pytest.mark.parametrize("failure_mode", ["no-output", "partial-output"])
+    def test_write_leaves_an_existing_marker_byte_identical_when_normalization_fails(
+        self, isolated_home, cumulative_diff_repo, tmp_path, failure_mode
+    ):
+        """A failed hash must not truncate a marker written earlier: the value is computed
+        before the redirect, so the old marker survives and the new subject stays for a retry."""
+        _seed_session(isolated_home, self.SID)
+        gh_env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, gh_env).returncode == 0
+        first_write = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=gh_env
+        )
+        assert first_write.returncode == 0, first_write.stderr
+        marker_path = _cumulative_review_marker_path(isolated_home, cumulative_diff_repo, self.SID)
+        marker_bytes_before = marker_path.read_bytes()
+        assert marker_bytes_before
+        (cumulative_diff_repo / "second.txt").write_text("an edit that changes the cumulative diff\n")
+        subprocess.run(["git", "commit", "-q", "-am", "edit second file"], cwd=cumulative_diff_repo, check=True)
+        assert _record_subject(cumulative_diff_repo, isolated_home, gh_env).returncode == 0
+        subject_path = _cumulative_review_subject_path(isolated_home, cumulative_diff_repo, self.SID)
+        subject_bytes = subject_path.read_bytes()
+
+        awk_shim_dir = _write_awk_shim_failing_on_normalizer(tmp_path / "awk_shim", failure_mode)
+        failing_env = {"PATH": f"{awk_shim_dir}{os.pathsep}{gh_env['PATH']}"}
+        result = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=failing_env
+        )
+
+        assert result.returncode == 2
+        assert "could not hash the recorded cumulative-review subject" in result.stderr
+        assert marker_path.read_bytes() == marker_bytes_before
+        assert subject_path.read_bytes() == subject_bytes
+
+    @pytest.mark.parametrize("failure_mode", ["no-output", "partial-output"])
     def test_status_never_live_when_normalization_fails_with_marker_on_disk(
         self, isolated_home, cumulative_diff_repo, tmp_path, failure_mode
     ):

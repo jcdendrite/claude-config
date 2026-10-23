@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    GITLINK_AFTER,
+    GITLINK_BEFORE,
     HOOKS_DIR,
     assert_cap_engaged,
     build_path_without,
@@ -20,6 +22,7 @@ from helpers import (
     require_cumulative_review_value,
     require_normalized_cumulative_review_text,
     scaled_shim_sleep,
+    set_gitlink,
     write_scaled_timeout_shim,
 )
 
@@ -248,16 +251,6 @@ def _commit_all(repo: Path, message: str) -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
-def _set_gitlink(repo: Path, path: str, commit_sha: str) -> None:
-    """Stage a mode-160000 entry without a submodule checkout. `git add -A` would stage its removal, so call this after it."""
-    subprocess.run(
-        ["git", "update-index", "--add", "--cacheinfo", f"160000,{commit_sha},{path}"],
-        cwd=repo, check=True,
-    )
-
-
-GITLINK_BEFORE = "1" * 40
-GITLINK_AFTER = "2" * 40
 BODY_LOOKALIKE_PATH = "body-lookalikes.txt"
 
 
@@ -295,7 +288,7 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
         "\n".join(_body_lookalike_lines("7") + _body_lookalike_lines("5")) + "\n"
     )
     _commit_all(repo, "shape fixtures, before")
-    _set_gitlink(repo, "gitlink", GITLINK_BEFORE)
+    set_gitlink(repo, "gitlink", GITLINK_BEFORE)
     subprocess.run(["git", "commit", "-q", "-m", "gitlink, before"], cwd=repo, check=True)
 
     (repo / "text-edit.txt").write_text("alpha\nBETA\ngamma\n")
@@ -320,11 +313,12 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
         "\n".join(_body_lookalike_lines("5") + _body_lookalike_lines("3")) + "\n"
     )
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    _set_gitlink(repo, "gitlink", GITLINK_AFTER)
+    set_gitlink(repo, "gitlink", GITLINK_AFTER)
     subprocess.run(["git", "commit", "-q", "-m", "shape fixtures, after"], cwd=repo, check=True)
     return repo
 
 
+# The textconv shapes are normalizer inputs that `pr-diff-against-base.sh`'s `git diff-tree` no longer emits.
 TEXTCONV_CONFIG = ("diff.hexdump.textconv=od -A n -t x1",)
 SUPPRESS_BLANK_EMPTY_CONFIG = ("diff.suppressBlankEmpty=true",)
 
@@ -678,11 +672,12 @@ def _body_lines_that_read_as_structure(digit: str) -> list[tuple[str, tuple[str,
     The index rows carry a one-character prefix. The header rows carry a one-character prefix and a
     three-character prefix.
     """
-    # The prefix length is load-bearing. Without its `^` anchor the header match starts after the prefix, and
-    # the `RLENGTH`-based end check then reads position `RLENGTH + 1` of the whole line. That position is a
-    # space, so the mutant rewrites the line, only when the prefix length puts it on one of the header's
-    # three spaces (lengths 3, 6 and 9 for this header shape). The three-character prefix is the shortest
-    # such length, so it keeps a coincidence of length from hiding the mutant.
+    # The prefix length is load-bearing.
+    # Without the header regex's `^` anchor, the match starts after the prefix.
+    # The end check then reads position `RLENGTH + 1` of the whole line.
+    # A line is rewritten only when that position holds one of the header's three spaces.
+    # For this header shape that happens at prefix lengths 3, 6 and 9.
+    # The three-character prefix is the shortest such length, so a coincidence of length cannot hide the mutant.
     return [
         ("plus-prefixed-header", (f"+@@ -{digit} +1 @@",)),
         ("minus-prefixed-header", (f"-@@ -{digit} +1 @@",)),
@@ -709,6 +704,14 @@ def _unrecognized_form_pairs(digit: str) -> list[tuple[str, tuple[bytes, bytes]]
 
 VALUE_DIFFERS_ROWS = {
     "reindented-added-line": (_entry_pair(), _entry_pair(body=(" ctx", "+  added", " ctx2"))),
+    "tab-versus-spaces-on-added-line": (
+        _entry_pair(body=(" ctx", "+\tadded", " ctx2")),
+        _entry_pair(body=(" ctx", "+ added", " ctx2")),
+    ),
+    "deleted-line-that-reads-as-a-file-header": (
+        _entry_pair(body=(" ctx", "--- x", " ctx2")),
+        _entry_pair(body=(" ctx", "--- y", " ctx2")),
+    ),
     "trailing-whitespace-on-added-line": (_entry_pair(), _entry_pair(body=(" ctx", "+added ", " ctx2"))),
     "crlf-ending-on-added-line": (_entry_pair(), _entry_pair(body=(" ctx", "+added\r", " ctx2"))),
     "same-hunk-in-another-path": (_entry_pair(path="a.txt"), _entry_pair(path="b.txt")),
@@ -1201,13 +1204,13 @@ class TestLibCumulativeReviewValue:
         repo = init_git_repo(tmp_path / "gitlinks")
         (repo / "seed.txt").write_text("seed\n")
         _commit_all(repo, "seed")
-        _set_gitlink(repo, "gitlink", GITLINK_BEFORE)
+        set_gitlink(repo, "gitlink", GITLINK_BEFORE)
         subprocess.run(["git", "commit", "-q", "-m", "gitlink before"], cwd=repo, check=True)
         base_sha = _head_sha(repo)
 
         def bump_diff(branch: str, commit_sha: str) -> bytes:
             subprocess.run(["git", "checkout", "-q", "-b", branch, base_sha], cwd=repo, check=True)
-            _set_gitlink(repo, "gitlink", commit_sha)
+            set_gitlink(repo, "gitlink", commit_sha)
             subprocess.run(["git", "commit", "-q", "-m", branch], cwd=repo, check=True)
             return isolated_git_diff(repo, "HEAD~1", "HEAD")
 

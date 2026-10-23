@@ -2,7 +2,7 @@
 
 *2026-09-02. Formerly `docs/design-decisions.md` §44.*
 
-**Superseded in part by [cumulative-review-marker-keyed-on-normalized-diff.md](cumulative-review-marker-keyed-on-normalized-diff.md) (2026-10-22):** the marker value is now the sha256 of the diff with hunk headers and text entries' `index` lines normalized, not of its raw bytes, so a rebase that only shifts line numbers or text files' blob ids also reuses the prior review. The base-ref exclusion and both named residuals stand; the first named residual is widened as that file describes, and that file adds a PR-side relocation residual the original did not have.
+**Superseded in part by [cumulative-review-marker-keyed-on-normalized-diff.md](cumulative-review-marker-keyed-on-normalized-diff.md) (2026-10-22):** the marker value is the sha256 of the diff with hunk headers and text entries' `index` lines normalized. A rebase that only shifts line numbers or text files' blob ids therefore also reuses the prior review. The base-ref exclusion and both named residuals stand. That file widens the first named residual. It also adds a PR-side relocation residual.
 
 `ready-for-review` step 3 ran a mandatory, fully-unnarrowed `/code-review` pass over the entire PR-vs-base diff on every push to a branch with an open PR, including a push that only rebases or merge-syncs onto a moved default branch with zero conflicts and zero content change. The gating marker (`ready-for-review-markers`) is keyed on the exact HEAD SHA, not diff content, so a conflict-free rebase always re-arms it and forces a full specialist-reviewer re-run from scratch.
 

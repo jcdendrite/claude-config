@@ -1220,8 +1220,7 @@ _lib_hash_diff_text() {
 # Every other line passes through unchanged.
 # See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md.
 # Avoids interval expressions so BSD awk and mawk accept it.
-# Runs uncapped for the same reason as _lib_hash_diff_text.
-# It is a single linear pass over TEXT, so `status` latency grows with the diff's size and is not capped here.
+# Runs uncapped for the same reason as _lib_hash_diff_text (in-memory pipe that cannot hang), so `status` latency grows with diff size.
 _lib_normalize_cumulative_review_text() {
   printf '%s\n' "$1" | LC_ALL=C awk '
     held_index_line != "" {
