@@ -5863,6 +5863,9 @@ _PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
         "`check`, above `## Approach`. It describes review surface (file count, domain spread, "
         "risk concentration), never hours or days."
     ),
+    "failed_check_with_stage_line_redispatches_bullet": (
+        "A failed `check` that prints a `STAGE` line, as above."
+    ),
     # Both bullets in one clause: the right-bound helper accepts a following line only when it starts with `-` or `#`,
     # and the indented second bullet does not.
     "no_return_redispatch_bullets": (
