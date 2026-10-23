@@ -983,6 +983,17 @@ _lib_review_pr_select_session_worktrees() {
   done <<< "$porcelain"
 }
 
+# _lib_review_pr_reviewer_findings_dir SESSION_ID
+# Prints /tmp/review-pr-reviewer-findings-<session-id> and returns 0, or
+# returns 1 with no output when SESSION_ID is not a valid path component.
+# The root is a literal /tmp, never $TMPDIR, because the /tmp allow in
+# deny-reviewer-tree-mutation.sh matches the literal /tmp/ prefix as written,
+# so a $TMPDIR root elsewhere falls outside it.
+_lib_review_pr_reviewer_findings_dir() {
+  _lib_valid_session_id_component "$1" || return 1
+  printf '/tmp/review-pr-reviewer-findings-%s\n' "$1"
+}
+
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
 # untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
 # byte-identical to HEAD is historical (its PR shipped) and is excluded.
@@ -2958,6 +2969,37 @@ _lib_hook_claude_pid() {
   printf '%s\n' "$resolved_claude_pid"
 }
 
+# _lib_registered_live_sid CONFIG_DIR PID
+# Prints the session_id that CONFIG_DIR/sessions/PID registers for a live,
+# start-time-validated process and returns 0. Prints nothing and returns 1
+# otherwise.
+# PID must be all digits, because this function builds `sessions/<pid>` from it.
+# Return 1 is an ordinary outcome, so a caller under `set -e` calls this in a
+# conditional context.
+# Return 1 covers no entry, a short entry, a dead pid, a stale start time, and
+# a `ps` that fails or times out.
+# An entry with no recorded start time at all fails the start-time check.
+# A recorded start time that doesn't match the live process's current start
+# time means the entry cannot be tied to that process, so the entry is
+# untrusted.
+# PID reuse since the entry was written is the expected cause.
+# `lstart`'s one-second resolution leaves a residual false-positive window: a
+# reused PID whose new process starts within the same wall-clock second as the
+# stale entry's process still compares equal.
+_lib_registered_live_sid() {
+  local config_dir="$1" pid="$2"
+  local sid="" recorded_start current_start
+  [ -r "$config_dir/sessions/$pid" ] || return 1
+  {
+    IFS= read -r sid
+    IFS= read -r recorded_start
+  } < "$config_dir/sessions/$pid" 2>/dev/null
+  [ -n "$sid" ] && [ -n "$recorded_start" ] || return 1
+  current_start=$(TZ=UTC LC_ALL=C _lib_capped ps -o lstart= -p "$pid" 2>/dev/null)
+  [ "$current_start" = "$recorded_start" ] || return 1
+  printf '%s' "$sid"
+}
+
 # _lib_resolve_claude_pid
 # Prints "<session_id> <pid>" for the live Claude Code main-process PID that
 # is an ancestor of the calling process, and returns 0. Returns 2 with no
@@ -2971,33 +3013,15 @@ _lib_hook_claude_pid() {
 # capture-session-id.sh at $CONFIG_DIR/sessions/<pid>. Direct hook invocation
 # resolves in one step ($PPID = Claude Code PID); a Bash-tool script
 # invocation resolves in two steps ($PPID = Bash tool shell, grandparent =
-# Claude Code PID). The loop handles any depth. A recorded start time that
-# doesn't match the live process's current start time — including an entry
-# with no recorded start time at all — means the PID was reused since the
-# entry was written, so it is untrusted and treated as if the file were
-# absent. `lstart`'s one-second resolution leaves a residual false-positive
-# window: a reused PID whose new process starts within the same wall-clock
-# second as the stale entry's process still compares equal.
+# Claude Code PID). The loop handles any depth. Each ancestor's entry is
+# validated by _lib_registered_live_sid, whose header states the start-time
+# and PID-reuse rules.
 _lib_resolve_claude_pid() {
-  local config_dir pid
+  local config_dir pid sid
   config_dir=$(_lib_config_dir) || return 2
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
-    local sid recorded_start current_start
-    sid=""
-    if [ -r "$config_dir/sessions/$pid" ]; then
-      {
-        IFS= read -r sid
-        IFS= read -r recorded_start
-      } < "$config_dir/sessions/$pid" 2>/dev/null
-      if [ -n "$sid" ] && [ -n "$recorded_start" ]; then
-        current_start=$(TZ=UTC LC_ALL=C _lib_capped ps -o lstart= -p "$pid" 2>/dev/null)
-        [ "$current_start" = "$recorded_start" ] || sid=""
-      else
-        sid=""
-      fi
-    fi
-    if [ -n "$sid" ]; then
+    if sid=$(_lib_registered_live_sid "$config_dir" "$pid"); then
       printf '%s %s' "$sid" "$pid"
       return 0
     fi
@@ -3080,7 +3104,8 @@ _lib_worktree_lock_pid() {
 # Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet.
 # Every _lib_worktree_collision_guard call site runs this immediately
 # before calling the guard.
-# A pre-existing foreign *live* lock always denies, never allows.
+# A pre-existing lock held by another live process denies, except for the
+# cases in `_lib_worktree_collision_guard`'s known-gaps list.
 # A pre-existing foreign *dead* lock may now be reclaimed and allowed via
 # the guard's own eviction path (_lib_worktree_reclaim_dead_lock), which
 # this pre-check cannot see, since the lock file itself was never absent.
@@ -3098,7 +3123,9 @@ _lib_worktree_lock_absent() {
 
 # _lib_worktree_acquire_lock WORKTREE_ROOT WT_GIT_DIR MY_PID MY_SESSION_ID
 # Attempts the O_EXCL lock-file create in WT_GIT_DIR and, on success,
-# re-reads porcelain to confirm the write landed as MY_PID/MY_SESSION_ID.
+# re-reads porcelain to confirm the write landed as the caller's own lock.
+# That check compares the lock's session_id with MY_SESSION_ID when the lock
+# carries one, and its PID with MY_PID only when it carries none.
 # Prints nothing. Returns 0 when acquired and verified, 1 when the write
 # itself failed (contended -- caller diagnoses the current holder), 2 when
 # the write succeeded but the post-write reread could not confirm it
@@ -3155,6 +3182,33 @@ _lib_worktree_reclaim_dead_lock() {
   return 1
 }
 
+# _lib_worktree_lock_is_mine LOCKED_PID LOCKED_SESSION_ID MY_PID MY_SESSION_ID
+# Returns 0 when a parsed worktree lock belongs to the caller and 1 otherwise.
+# Prints nothing.
+# Return 1 is an ordinary outcome, so a caller under `set -e` calls this in a
+# conditional context.
+# LOCKED_PID must come from _lib_worktree_lock_pid's output, and an empty PID
+# argument is never the caller's, as defense in depth for direct callers.
+# A lock recording the caller's own PID is its own, because `/clear` starts a
+# new session_id in the same process.
+# A lock from another PID is the caller's own only when it records the
+# caller's session_id, which `claude --continue`/`--resume` keeps across a PID
+# change.
+# Such a lock stops being the caller's only when `_lib_config_dir` fails or
+# while `_lib_registered_live_sid` confirms its PID as a live registered
+# process, whatever session that process runs.
+# An old-format lock with no session_id matches by PID alone.
+_lib_worktree_lock_is_mine() {
+  local locked_pid="$1" locked_session_id="$2" my_pid="$3" my_session_id="$4"
+  local config_dir
+  [[ -n "$locked_pid" && -n "$my_pid" ]] || return 1
+  [[ "$locked_pid" == "$my_pid" ]] && return 0
+  [[ -n "$locked_session_id" && "$locked_session_id" == "$my_session_id" ]] || return 1
+  config_dir=$(_lib_config_dir) || return 1
+  _lib_registered_live_sid "$config_dir" "$locked_pid" >/dev/null && return 1
+  return 0
+}
+
 # _lib_worktree_collision_guard TARGET_PATH REPO_GIT_COMMON_DIR
 # Enforces that at most one live session holds write access to a given
 # linked worktree at a time. TARGET_PATH is any path inside the worktree to
@@ -3167,13 +3221,11 @@ _lib_worktree_reclaim_dead_lock() {
 # string's exact shape is documented at _lib_worktree_lock_pid's header, the
 # format's source of truth — not restated here.
 #
-# Self-recognition ("is this my own lock?") compares session_id, which
-# `claude --continue`/`--resume` keeps stable across the CLI process's PID
-# change, falling back to PID comparison only for an old-format lock that
-# carries no session_id (predates this fix, or was truncated mid-write).
+# Self-recognition ("is this my own lock?") is decided by
+# `_lib_worktree_lock_is_mine`, which states the rule.
 #
-# Read-only fast path: an already-self-held lock (from an earlier write this
-# session) returns 0 with no write attempt.
+# Read-only fast path: a lock `_lib_worktree_lock_is_mine` recognizes returns 0
+# with no write attempt.
 #
 # Otherwise acquires via an O_EXCL create (bash `noclobber`) against the
 # worktree's own `<git-dir>/locked` file, not `git worktree lock` -- git's
@@ -3181,8 +3233,9 @@ _lib_worktree_reclaim_dead_lock() {
 # .claude/plans/atomic-worktree-lock-acquisition.md). The write targets
 # git's own lock-file path and format, so `git worktree list --porcelain`/
 # `unlock`/`remove` all still read and act on it correctly. A successful
-# write is re-read via porcelain to confirm our own pid before returning 0,
-# fail-closed on mismatch. A failed write (contended) re-reads porcelain to
+# write is re-read via porcelain to confirm it landed as this caller's own
+# lock, using the exact check in `_lib_worktree_acquire_lock`, whose header
+# states the rule. A failed write (contended) re-reads porcelain to
 # diagnose the holder: a live holder denies; a dead holder gets one
 # claim-gated reclaim attempt (_lib_worktree_reclaim_dead_lock) before
 # falling back to today's manual-unlock deny. This function still never
@@ -3211,8 +3264,8 @@ _lib_worktree_reclaim_dead_lock() {
 #   mislead a user into running `git worktree unlock` and stripping their
 #   own freshly-written lock.
 # - A write killed mid-write (the 5s `_lib_capped` timeout) can leave a
-#   truncated `locked` file, misdiagnosed as a foreign manual lock instead
-#   of our own timed-out write.
+#   truncated `locked` file that `_lib_worktree_lock_pid` cannot parse,
+#   misdiagnosed as a foreign manual lock instead of our own timed-out write.
 # - O_EXCL/`noclobber` exclusivity is not guaranteed atomic on older
 #   NFS-mounted git-dirs, which would silently defeat this function's core
 #   guarantee -- out of scope for this threat model.
@@ -3230,12 +3283,78 @@ _lib_worktree_reclaim_dead_lock() {
 # - Its fixed component is 6 ordinary-path calls (3 rev-parse + self-check
 #   porcelain + write + confirm-porcelain) plus a reclaim delta of exactly
 #   +4 -- about 1.67x, not triple.
+# - A resumed session whose lock names its exited old PID takes the session_id
+#   match on every call, because nothing re-stamps the lock. An allowed call
+#   adds at most one extra capped `ps` in the steady state. It adds two when
+#   the old process exits between the guard's first read and its reread after
+#   a failed write. It adds none when that PID has no complete registry entry.
+#   A deny where that PID is a live registered process adds two, one per
+#   `_lib_worktree_lock_is_mine` call. The resolver walk stays excluded, as in
+#   the two bullets above.
 # - On a machine with neither `timeout` nor `gtimeout` on PATH,
 #   `_lib_capped_for`'s fallback runs every call uncapped (pre-existing
 #   gap).
 # - Narrows but does not eliminate the residual race described in
 #   docs/design-decisions.md §36 (a manual unlock racing this
 #   subprocess's own read-then-unlink).
+# - A resumed session is denied while the lock's old PID is a live Claude Code
+#   process, whatever session that process runs.
+#   - Shapes that cause it include:
+#     - The old process was cleared and still runs.
+#     - The old process still runs the same conversation.
+#     - The old process exited and an unrelated Claude Code process now holds
+#       its PID. This shape needs no `/clear` and no write by that process.
+#   - The deny clears once the old PID is gone from the process table. An exited
+#     but unreaped process is not gone from it.
+#   - `git worktree unlock <path>` also clears the deny. That unlock is safe
+#     only once no live process is working in the worktree.
+#   - The deny message "already in use by a live Claude Code session" is
+#     accurate for the first two shapes. It is inexact for the third, where it
+#     names a process that never held the worktree.
+# - A process whose PID equals the lock's PID is the lock's holder whatever
+#   session it runs. A new Claude Code process that reuses the PID of an
+#   exited holder can therefore write into the worktree, and can overwrite the
+#   uncommitted work of a resumed session already working there. The lock
+#   records no process start time, and `sessions/<pid>` is rewritten at every
+#   SessionStart. No single read of either tells a process that locked before
+#   `/clear` from an earlier process that held the same PID. Closing this
+#   takes a lock format that carries the holder's start time, a `sessions/*`
+#   scan (which would also deny a cleared process that holds the lock), or an
+#   elapsed-time comparison of the process against the lock file's age, whose
+#   availability in BSD `ps` is unverified.
+# - Two live Claude Code processes in different PID namespaces that share one
+#   worktree directory and hold the same PID each treat the other's lock as
+#   their own. The guard assumes one PID namespace per worktree.
+# - A lock from another PID that carries the caller's session_id is treated as
+#   the caller's when the registry read for the lock's PID cannot confirm a
+#   live process.
+#   - The read fails to confirm in every return-1 case
+#     `_lib_registered_live_sid`'s header lists, among them:
+#     - `ps` fails or times out.
+#     - `sessions/<pid>` is read between its own truncate and write.
+#     - The entry's recorded start time differs from the current
+#       `ps -o lstart=` output.
+#   - If that process is in fact live, the resumed session and the live holder
+#     can both write.
+#   - A holder whose recorded start time differs is denied on its own calls
+#     ("could not resolve this session's own process identity"). Its next
+#     SessionStart or SubagentStart rewrites its entry, which ends the denial.
+#     After the rewrite it passes by PID.
+# - A resumed session's worktree can be reclaimed while the resumed session
+#   works in it. A session_id match never re-stamps the lock, so the lock
+#   keeps naming the exited old PID. A third session's call then finds that
+#   PID dead and reclaims the lock.
+# - Two resumes of one conversation started after the old PID exited both pass
+#   the session_id match on every call.
+# - A resumed session that runs `/clear` carries a new session_id and the
+#   resume's own PID, which match the lock by neither. A dead old PID is then
+#   reclaimed.
+# - A resumed session that runs `/clear` while the lock's old PID is live but
+#   was not a registered Claude Code process is denied. The deny message is
+#   "already in use by a live Claude Code session". `git worktree unlock
+#   <path>` clears that deny once no live process is working in the worktree.
+# - The guard assumes one config dir per worktree, because the session_id
+#   match reads the registry under the caller's own `sessions/`.
 _lib_worktree_collision_guard() {
   local target_path="$1" repo_git_common_dir="$2"
   local worktree_root
@@ -3275,12 +3394,8 @@ _lib_worktree_collision_guard() {
   # compound list, which `-e` does not abort on.
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  if [ "$state" -eq 0 ]; then
-    if [ -n "$locked_session_id" ]; then
-      [ "$locked_session_id" = "$my_session_id" ] && return 0
-    elif [ "$locked_pid" = "$my_pid" ]; then
-      return 0
-    fi
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+    return 0
   fi
 
   local wt_git_dir
@@ -3308,18 +3423,9 @@ _lib_worktree_collision_guard() {
   }
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  # A concurrent self-race (e.g. two parallel subagents both writing into
-  # this worktree with no `isolation: worktree` between them, per this
-  # repo's own Agent Briefing) can land here after losing the lock attempt
-  # above to an earlier call from this SAME live pid — not a different
-  # session. Treat that identically to the first read's self-lock check
-  # rather than misreporting the caller's own pid as a foreign collision.
-  if [ "$state" -eq 0 ]; then
-    if [ -n "$locked_session_id" ]; then
-      [ "$locked_session_id" = "$my_session_id" ] && return 0
-    elif [ "$locked_pid" = "$my_pid" ]; then
-      return 0
-    fi
+  # Whichever lock the reread finds is judged by `_lib_worktree_lock_is_mine`, as at the first read.
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+    return 0
   fi
   case "$state" in
     1)

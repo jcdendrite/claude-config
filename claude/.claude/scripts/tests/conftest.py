@@ -23,8 +23,10 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -379,9 +381,9 @@ def _pythonpath_env_that_forges_a_clean_audit(poison_dir: Path, sentinel: Path) 
     return {"PYTHONPATH": str(poison_dir)}
 
 
-def _review_pr_audit_limit(name: str) -> int:
-    """The display bound `name` (REVIEW_PR_AUDIT_MATCH_LINE_LIMIT or
-    REVIEW_PR_AUDIT_PATH_ECHO_LIMIT) as _review-pr-lib.sh defines it, so a
+def _review_pr_lib_integer(name: str) -> int:
+    """The integer constant `name` (such as REVIEW_PR_AUDIT_MATCH_LINE_LIMIT
+    or REVIEW_PR_STACK_LOOKUP_LIMIT) as _review-pr-lib.sh defines it, so a
     test sizes its input from the production constant."""
     result = subprocess.run(
         ["bash", "-c", f'. "{SCRIPTS_DIR / "_review-pr-lib.sh"}"; printf "%s" "${name}"'],
@@ -495,6 +497,29 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
         timeout=60,  # same bound as the _SUBPROCESS_TIMEOUT_SECONDS the review-pr test modules declare
     ).stdout.rstrip("\n")
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
+@pytest.fixture
+def reviewer_findings_session() -> Iterator[tuple[str, Path]]:
+    """A fresh uuid4 session id and the directory
+    review-pr-reviewer-findings-dir.sh derives for it, removed on teardown.
+
+    The directory sits under the literal /tmp, never tmp_path, because the
+    helper hard-codes that root. The uuid keeps parallel workers sharing the
+    real /tmp apart. Fails with a message naming the precondition when a
+    throwaway directory cannot be created and removed under /tmp (for example
+    under a sandbox)."""
+    try:
+        os.rmdir(tempfile.mkdtemp(dir="/tmp"))
+    except OSError:
+        pytest.fail("this test needs a writable, unsandboxed literal /tmp directory")
+    session_id = str(uuid.uuid4())
+    findings_dir = Path(f"/tmp/review-pr-reviewer-findings-{session_id}")
+    yield session_id, findings_dir
+    if findings_dir.is_symlink() or findings_dir.is_file():
+        findings_dir.unlink()
+    else:
+        shutil.rmtree(findings_dir, ignore_errors=True)
 
 
 def _git_shim_that_fails_on_worktree_subcommand(

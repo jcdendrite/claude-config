@@ -32,6 +32,8 @@ from helpers import (
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
 
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
+
 
 @functools.cache
 def _real_timeout_is_gnu_coreutils() -> bool:
@@ -47,7 +49,9 @@ def _real_timeout_is_gnu_coreutils() -> bool:
     return "GNU coreutils" in result.stdout + result.stderr
 
 
-def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+def _seed_session(
+    home: Path, session_id: str, pid: int | None = None, *, start_time: str | None = None
+) -> None:
     """Write $HOME/.claude/sessions/<pid> in the two-line format
     capture-session-id.sh writes: the session id, then that pid's
     `TZ=UTC LC_ALL=C ps -o lstart=` start time. The start time is captured
@@ -59,17 +63,22 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     pid defaults to this test process's own pid: marker.sh resolves its
     session id by walking process ancestors, and when it runs as a
     subprocess of pytest, that walk reaches the pytest process itself.
+
+    start_time=None captures the live start time. A string is written
+    verbatim with no `ps` call, so an entry can name a dead pid (which `ps`
+    cannot report on) or carry a chosen start time.
     """
     target_pid = os.getpid() if pid is None else pid
     sessions_dir = home / ".claude" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    start_time = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(target_pid)],
-        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.rstrip("\n")
+    if start_time is None:
+        start_time = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(target_pid)],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.rstrip("\n")
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 

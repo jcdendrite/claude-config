@@ -18,11 +18,9 @@ package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `revi
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
-`user_input.py`, `duration.py`, and `friction_count.py` are the only modules
-the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
-`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. The
-still-unmigrated command-shape helper `_command_segment_is_mutating_git` likewise calls `denials.py`'s
-`_drop_denial_command_flag_values` by name from the shim.
+`user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`, and
+`sessions.py` are the only modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
+`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 The still-unmigrated context-composition code separately reads `read_scope.py`'s
 `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
@@ -35,6 +33,7 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
 `STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
+`turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -53,11 +52,13 @@ name from the shim.
 `handoff_signal_response.py`'s `cmd_handoff_signal_response`, and `period_cost.py`'s `cmd_period_cost`
 from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
-user-input, duration, and friction-count by calling each owning
+user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
+turn-shape-holdout-samples, and sessions by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
-`cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, and `cmd_user_input`, and those
+`cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, `cmd_user_input`, `cmd_commit_gate`, `cmd_pr_link`, and
+`cmd_sessions`, and those
 bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
 affordances: a test that needs to steer a moved command patches the module whose binding the
 handler reads at call time, not the shim name.
@@ -75,7 +76,8 @@ another subagent. `review_rounds.py`'s nested-dispatch descent reuses it. No dep
 resolution, redaction, or pricing — every other module (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
-as the single source of truth for two consumers: the shim's own mutating-git classifier, and
+as the single source of truth for two consumers: `turn_shape.py`'s mutating-git classifier
+(`_bash_command_is_mutating_git`), and
 `author_outcome.py`'s clean-marker-write matcher (`_is_clean_marker_write`).
 
 ### `scope.py`
@@ -332,9 +334,8 @@ current-format `is_error` `tool_result`), the label/cause/command-shape classifi
 non-gate-friction classification (`_is_nongate_friction_kind`, `_friction_kind_label`). A leaf:
 imports `corpus` and `render` by module (attribute access), matching `cost.py`'s convention —
 `corpus._parse_ts` for the module-level `_TOOL_DENIAL_KIND_REGIME_START_TS` constant,
-`render._content_text` for `hook_denial_key`'s current-shape decode. `_drop_denial_command_flag_values`
-is the one name reached bare from a still-unmigrated command-shape helper in the shim — see the
-exception noted above. `friction_count.py` reads `hook_denial_key` as `denials.hook_denial_key`.
+`render._content_text` for `hook_denial_key`'s current-shape decode. `turn_shape.py` reads
+`_drop_denial_command_flag_values` as `denials._drop_denial_command_flag_values`. `friction_count.py` reads `hook_denial_key` as `denials.hook_denial_key`.
 
 ### `review_trace.py`
 
@@ -385,8 +386,8 @@ host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth pref
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module — `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
 (`_PR_COST_STATUS_DEGRADED_RATE_LIMIT`/`_PR_COST_STATUS_DEGRADED_NETWORK`), keeping the ledger's own
-status enum a single source of truth rather than a duplicated pair of strings. The five names
-pr-link reaches bare from the shim: `_classify_gh_error`, `_GH_ERROR_KIND_NETWORK`,
+status enum a single source of truth rather than a duplicated pair of strings. `pr_link.py` reads five of its names by attribute access
+(`gh_cli.<name>`): `_classify_gh_error`, `_GH_ERROR_KIND_NETWORK`,
 `_git_remote_origin_host_and_owner_repo`, `_gh_host_qualified_repo`, and `_GH_CALL_TIMEOUT_S`.
 `workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
@@ -666,6 +667,41 @@ since it takes one transcript path rather than a corpus. `nudge-error-mode-analy
 through the shim with `--checkpoint` and reads a bare integer from stdout.
 `_add_friction_count_subparser` is the one name `build_parser()` reaches bare.
 
+### `turn_shape.py`
+
+The turn-shape commands: `cmd_turn_shape`, the per-turn tool-call-count and single-call streak-length
+distributions weighted by priced dollars; `cmd_turn_shape_samples` and `cmd_turn_shape_holdout_samples`,
+random samples of flagged and unflagged streaks; the mutating-git classifier the delegation-rule streak
+excludes (`_bash_command_is_mutating_git`); and the `_add_turn_shape_subparser`,
+`_add_turn_shape_samples_subparser`, and `_add_turn_shape_holdout_samples_subparser` registrations. The
+three commands share `_turn_shape_session_turns` and `_turn_shape_streaks`. Imports `corpus`, `denials`,
+`pricing`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s convention: the
+classifier reads `corpus.split_command_segments` and `denials._drop_denial_command_flag_values`. The three
+registrars are the only names `build_parser()` reaches bare.
+
+### `commit_gate.py`
+
+The commit-gate command: `cmd_commit_gate`, each ISO week's main-thread git commits with and without a
+prior invocation of a named skill, optionally split by permissionMode, and the
+`_add_commit_gate_subparser` registration. Imports `corpus` and `scope` both by module (attribute
+access), matching `cost.py`'s convention. `_add_commit_gate_subparser` is the one name `build_parser()`
+reaches bare.
+
+### `pr_link.py`
+
+The pr-link command: `cmd_pr_link`, each named branch's GitHub PR number, main-thread model split, and
+per-PR comment counts from gh, with its two failure-reporting helpers (`_pr_link_gh_failure_kind`,
+`_pr_link_report_gh_failure`) and the `_add_pr_link_subparser` registration. Imports `gh_cli`, `render`,
+and `scope` all by module (attribute access), matching `cost.py`'s convention. `_add_pr_link_subparser`
+is the one name `build_parser()` reaches bare.
+
+### `sessions.py`
+
+The sessions command: `cmd_sessions`, the resolved scope's transcript paths one per line, plus split
+subagent files under `--include-subagents`, and the `_add_sessions_subparser` registration. Imports
+`corpus` and `scope` both by module (attribute access), matching `cost.py`'s convention: it reads
+`corpus.SUBAGENT_SUBDIR`. `_add_sessions_subparser` is the one name `build_parser()` reaches bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -859,3 +895,15 @@ a plain module, not a test file itself, holds the helpers more than one of those
 `from ._session_signal_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays in `tests/test_transcript_analysis.py`
 because it also spans judgment-pair and pr-link.
+
+The turn-shape, commit-gate, and pr-link commands each have one test file:
+`tests/test_transcript_turn_shape.py`, `tests/test_transcript_commit_gate.py`, and
+`tests/test_transcript_pr_link.py`. None of the three loads the shim: each imports its package modules
+directly and relies on the loader-free `fake_projects` fixture. `tests/_commit_gate_helpers.py`, a plain
+module, not a test file itself, holds `_gate_args`, which the commit-gate file and
+`tests/test_transcript_analysis.py`'s cross-subcommand header table both read. The legacy file imports it
+too, as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
+`sessions.py` has no test file of its own. The cross-subcommand header table covers its header.
+`tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
+emission. No test covers the `--paths` refusal. The pr-link method of
+`TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).

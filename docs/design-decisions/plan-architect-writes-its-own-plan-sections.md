@@ -20,7 +20,7 @@ An arm inside `deny-reviewer-tree-mutation.sh` would save one hook process per c
 
 ## Why one agent
 
-Consults prescribed by `/code-review` (its fix-plan pilot only when `architect_fix_plan_pilot` is on) and `/ready-for-review` can pass a plan path, as can an engineer-asked consult. A consult-mode `Edit` there is possible, and at the `/code-review` and `/ready-for-review` sites the plan is already committed, so it re-arms the plan-review gate and the session's next non-plan write is denied. `/review-pr`'s consult passes no plan path but reads untrusted PR content. The gate limits such an `Edit` to repository plan files, and git recovers a committed one. A read-only consult agent would remove that residual, but it would add a second agent description to every session's base context, which is the cost [§37](plan-architect-consult-mode.md) rejected. The consult charter forbids `Edit` and a `test_skills.py` test pins that sentence.
+Consults prescribed by `/code-review` and `/ready-for-review` can pass a plan path, as can an engineer-asked consult. A consult-mode `Edit` there is possible, and at the `/code-review` and `/ready-for-review` sites the plan is already committed, so it re-arms the plan-review gate and the session's next non-plan write is denied. `/review-pr`'s consult passes no plan path but reads untrusted PR content. The gate limits such an `Edit` to repository plan files, and git recovers a committed one. A read-only consult agent would remove that residual, but it would add a second agent description to every session's base context, which is the cost [§37](plan-architect-consult-mode.md) rejected. The consult charter forbids `Edit` and a `test_skills.py` test pins that sentence.
 
 ## Tier
 

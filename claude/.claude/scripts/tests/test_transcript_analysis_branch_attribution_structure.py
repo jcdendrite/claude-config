@@ -171,10 +171,10 @@ _RAW_READ_BESIDE_ATTRIBUTION = {
 
 # Literal reads whose question is the checkout a record was written in, not the branch it counts toward.
 _RAW_BY_DESIGN = {
-    "transcript-analysis.py:cmd_commit_gate": (1, "a whole-session filter on any main-thread assistant record's tag"),
+    "transcript_analysis/commit_gate.py:cmd_commit_gate": (1, "a whole-session filter on any main-thread assistant record's tag"),
     "transcript_analysis/handoff_nudge.py:_session_matches_rearm_scope":
         (1, "a whole-session filter on the main-thread assistant records' tags"),
-    "transcript-analysis.py:_turn_shape_session_turns":
+    "transcript_analysis/turn_shape.py:_turn_shape_session_turns":
         (1, "a streak breaks where the checkout physically changed"),
 }
 

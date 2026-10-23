@@ -6632,6 +6632,18 @@ class TestCodeReviewFixPlanPilotRegionPin:
         )
 
 
+def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
+    """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
+    the exclusion list, a digest or history file would pass as a reviewer's findings file."""
+    round_cap_text = _normalized_anchor_text(
+        _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+    )
+    assert (
+        "never a `review-ledger-`, `review-history-`, `code-review-dispositions-` or `pr-body-` file"
+        in round_cap_text
+    )
+
+
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
     """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
     schema_keys = config_schema()
@@ -6980,6 +6992,90 @@ class TestReviewLedgerPublishAndInjectionControls:
 
         assert read_paths and read_paths == written_paths, (
             f"digest read at {sorted(read_paths)} but `render --out` writes {sorted(written_paths)}"
+        )
+
+
+_READY_FOR_REVIEW_STEP6_HEADING = "## 6. Final hygiene recheck (halt on fail)"
+
+# Step 6's behind-base bullet: no sync on a clean trial merge, a conflict returns
+# the gate to step 1, and a recipe failure is re-run once in place, then reported.
+_PINNED_STEP6_BEHIND_BASE_CLAUSE = (
+    "Branch has no merge conflict with the base branch. Re-run the divergence "
+    "detection recipe (`git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). Behind with `Trial merge: CLEAN` passes: report the "
+    "behind-count in the Completion summary. Do not sync here: a sync changes "
+    "the tree, so step 2 would re-run. Behind with `Trial merge: CONFLICT` "
+    "halts this step: return to step 1, whose in-sync precondition runs the "
+    "sync. A recipe failure (non-zero exit) halts this step: re-run the recipe "
+    "here once rather than restarting the gate, whose step 1 would sync; if it "
+    "fails again, report its stderr cause to the engineer and stop."
+)
+
+# Step 1's in-sync precondition: the bullet step 6 hands a conflict back to.
+# The pin also holds the sentence requiring step 7's completion marker to record
+# the post-resync HEAD SHA that the push-gate hook checks. No other test pins
+# that sentence, so trimming it needs a deliberate update here.
+_PINNED_STEP1_IN_SYNC_BULLET = (
+    "**Branch is in sync with `origin/<base>`.** Run the canonical detection "
+    "recipe (see `git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). If behind > 0, invoke `/git-feature-branch-sync`, then "
+    "re-run step 2 against the synced tree; step 7's completion marker must "
+    "record the post-resync HEAD SHA so it matches what the push-gate hook "
+    "checks."
+)
+
+
+class TestReadyForReviewStep6BehindBaseRule:
+    """Pin step 6's behind-base bullet as one whole clause, deliberately, and
+    check that no other step-6 text says "sync". That second check is a
+    lexical tripwire on the skill's own vocabulary (the "sync" stem, which
+    also matches the sync skill's name), not proof that no step-6 text moves
+    the branch. Fails when
+    step 6 syncs on a clean trial merge, stops returning a conflict to step 1,
+    or stops halting on a recipe failure. Step 1's in-sync precondition, which
+    runs the sync on that hand-off, is pinned separately, so both ends of the
+    step 6 to step 1 hand-off are checked.
+
+    A sync at step 6 changes the tree and forces step 2 to re-run; see
+    docs/design-decisions/ready-for-review-base-drift.md.
+    """
+
+    def test_step6_behind_base_bullet_is_the_only_sync_rule(self) -> None:
+        skill_md_path = _skill_file("ready-for-review")
+        pinned_text = " ".join(_PINNED_STEP6_BEHIND_BASE_CLAUSE.split())
+
+        # The negative check depends on the positive match, so both live here.
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 6's behind-base bullet has drifted from its pinned clause "
+                "(no sync on a clean trial merge, a conflict returns to step 1, a recipe failure is re-run "
+                "once in place then reported)"
+            ),
+        )
+
+        section_text = _heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING)
+        remainder = section_text.replace(pinned_text, "", 1)
+        # Over-matches benign words like "synchronously" and "in sync" (reword step 6 if it trips).
+        # Does not match unnamed branch-moving wording such as merge, rebase, or "Resync".
+        stray_sync = re.search(r"\bsync", remainder, re.IGNORECASE)
+        assert stray_sync is None, (
+            "ready-for-review/SKILL.md: step 6 says "
+            f"{stray_sync.group(0)!r} outside its behind-base bullet: "
+            f"{remainder[max(stray_sync.start() - 30, 0) : stray_sync.end() + 30]!r}"
+        )
+
+    def test_step1_in_sync_bullet_is_the_sync_the_step6_conflict_handoff_reaches(self) -> None:
+        pinned_text = " ".join(_PINNED_STEP1_IN_SYNC_BULLET.split())
+
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 1's in-sync precondition has drifted from its pinned clause "
+                "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
+            ),
         )
 
 
@@ -8187,28 +8283,70 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
 
 
 @pytest.mark.parametrize(
-    "phrase, heading",
+    "phrase, heading, consequence",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
             None,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
             _REVIEW_PR_STEP_7_HEADING,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="verify-before-apply-correction",
+        ),
+        pytest.param(
+            "replace the leading `agent-reviews` with the directory it prints, so each "
+            "file is `<printed directory>/<agent-name>-<suffix>.md`",
+            None,
+            "the guard against a reviewer spawned from the main tree being given a "
+            "relative `findings_path`, having its findings-file `Write` denied by the "
+            "worktree gate, and losing its findings (REFERENCES.md § 'Why spawned "
+            "reviewers write findings to a temporary directory').",
+            id="reviewer-findings-dir",
+        ),
+        pytest.param(
+            "reports a write whose file you cannot `Read`, or reports a path that "
+            "names a different file, has not reviewed: re-dispatch it once with no "
+            "`findings_path`",
+            None,
+            "the only fail-closed rule for a reviewer with no retrievable findings: "
+            "if any one of its two triggers (an unreadable file, a mismatched reported "
+            "path) or its re-dispatch action is lost, a reviewer whose findings cannot "
+            "be read is counted as having reviewed, so its findings are silently "
+            "absent from the review.",
+            id="reviewer-findings-fallback",
+        ),
+        pytest.param(
+            "`Read` only the path you handed that reviewer",
+            None,
+            "the guard against a steered reviewer's pointer line moving the session's "
+            "`Read` to a file of the reviewer's choosing.",
+            id="reviewer-findings-handed-path",
+        ),
+        pytest.param(
+            "before any reviewer spawns, run the script below",
+            None,
+            "the instruction that obtains the findings directory: without it the "
+            "session has no printed directory to put in place of `agent-reviews`, so "
+            "reviewers keep the relative `findings_path` the worktree gate denies "
+            "from the main tree.",
+            id="reviewer-findings-dir-creation",
         ),
     ],
 )
 def test_review_pr_skill_carries_retained_control(
-    phrase: str, heading: str | None
+    phrase: str, heading: str | None, consequence: str
 ) -> None:
     """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
-    standing override and the verify-before-apply rule. The override sits above
-    the first `##` heading, so it is checked file-wide; the verify rule is
-    checked in step 7's consult section. Claims presence only, not that the
-    agent obeys it."""
+    standing override, the reviewer-findings-directory creation and rewrite,
+    the re-dispatch rule, the handed-path `Read` rule, and the
+    verify-before-apply rule. The override and the four findings-directory
+    rules sit above the file's `##` headings, so they are checked file-wide;
+    the verify rule is checked in step 7's consult section. Claims presence
+    only, not that the agent obeys it."""
     skill_path = _skill_file("review-pr")
     if heading is None:
         searched_text = " ".join(skill_path.read_text().split())
@@ -8217,6 +8355,56 @@ def test_review_pr_skill_carries_retained_control(
         searched_text = _heading_section_text(skill_path, heading)
         searched_where = f"review-pr/SKILL.md's {heading!r} section"
     assert phrase in searched_text, (
-        f"{searched_where} no longer carries {phrase!r}, a control that "
-        "review-pr keeps itself rather than deferring to Agent Core."
+        f"{searched_where} no longer carries {phrase!r}, {consequence}"
+    )
+
+
+def test_review_pr_skill_mentions_findings_path_only_in_the_preamble() -> None:
+    """The literal `findings_path` token must appear somewhere above the first
+    `## ` heading of review-pr/SKILL.md, where the standing override sits. It
+    must appear on no line under a `## ` heading, because a step-level
+    instruction there could contradict the override's reviewer findings
+    directory. The rest of the preamble is unchecked. Only the literal token is
+    scanned, so a paraphrase without it passes."""
+    skill_lines = _skill_file("review-pr").read_text().splitlines()
+    first_section_index = next(
+        (index for index, line in enumerate(skill_lines) if line.startswith("## ")),
+        len(skill_lines),
+    )
+    preamble_lines = skill_lines[:first_section_index]
+    section_lines = skill_lines[first_section_index:]
+    assert any("findings_path" in line for line in preamble_lines), (
+        "review-pr/SKILL.md's preamble ahead of the first `## ` heading no longer "
+        "mentions `findings_path`. Either the standing override that hands "
+        "reviewers a findings file path is gone from the preamble, or a `## ` "
+        "heading now sits above it so it falls under a section."
+    )
+    stray_lines = [line for line in section_lines if "findings_path" in line]
+    assert not stray_lines, (
+        "review-pr/SKILL.md mentions `findings_path` under a `##` section: "
+        f"{stray_lines!r}. A step-level `findings_path` instruction can "
+        "contradict the override's reviewer findings directory."
+    )
+
+
+@pytest.mark.parametrize(
+    "dispatcher_name, dispatcher_path",
+    [
+        pytest.param("code-review/SKILL.md", _skill_file("code-review"), id="code-review"),
+        pytest.param("plan-review/ROUTING.md", _ROUTING_MD_PATH, id="plan-review"),
+    ],
+)
+def test_review_dispatchers_still_hand_reviewers_a_relative_agent_reviews_findings_path(
+    dispatcher_name: str, dispatcher_path: Path
+) -> None:
+    """review-pr/SKILL.md's standing override rewrites the leading
+    `agent-reviews` of the `findings_path` each dispatcher hands a reviewer. A
+    dispatcher reword away from `findings_path: agent-reviews/` would make that
+    rewrite a silent no-op, leaving a main-tree session's reviewers with a path
+    the worktree gate denies."""
+    dispatcher_text = " ".join(dispatcher_path.read_text().split())
+    assert "findings_path: agent-reviews/" in dispatcher_text, (
+        f"{dispatcher_name} no longer hands reviewers `findings_path: agent-reviews/`, "
+        "so review-pr/SKILL.md's override that replaces the leading `agent-reviews` "
+        "no longer applies to it."
     )

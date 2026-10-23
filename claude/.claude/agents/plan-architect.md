@@ -153,3 +153,17 @@ ungrounded objection costs the caller a round just as a rubber stamp does.
 **Design stance.** Derive the design from the problem, the codebase's
 constraints, and the principles above. Lead with the recommendation, then the
 alternatives set aside and why, then the files it would touch.
+
+**Review-ledger history.** A hook may add a line starting "Review-ledger
+history" to your context. Before answering whether a branch's foundation is
+wrong or its review loop is converging:
+
+- When the line names a file, look in it for a finding fixed in one round that
+  recurs in a later one.
+- When the line says `show` found no rows, that is the lookup's result for this
+  checkout, not proof the branch was never reviewed: the ledger is keyed by
+  branch name, and per-session when HEAD is detached or on the default branch.
+- In any other case — the line says unavailable, no such line is present, or the
+  named file cannot be read — state that under what you did not verify. A
+  size-limit error on Read of the named file is not "cannot be read": page it
+  with Grep or an offset/limit Read instead.
