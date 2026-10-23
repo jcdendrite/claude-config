@@ -3297,18 +3297,19 @@ _lib_worktree_lock_is_mine() {
 #   docs/design-decisions.md §36 (a manual unlock racing this
 #   subprocess's own read-then-unlink).
 # - A resumed session is denied while the lock's old PID is a live Claude Code
-#   process, whatever session that process runs. That covers three shapes:
-#   the old process was cleared and still runs, the old process still runs the
-#   same conversation, and the old process exited and an unrelated Claude Code
-#   process now holds its PID. The third shape needs no `/clear` and no write
-#   by that process. It is most likely after a reboot, because PIDs restart
-#   low while the lock survives in the git-dir. The deny clears once that PID
-#   is gone from the process table. An exited but unreaped process is not gone
-#   from it. `git worktree unlock <path>` also clears the deny. That unlock is
-#   safe only once no live process is working in the worktree. The deny message
-#   "already in use by a live Claude Code session" is accurate for the first
-#   two shapes and inexact for the third, where it names a process that never
-#   held the worktree.
+#   process, whatever session that process runs.
+#   - Shapes that cause it include:
+#     - The old process was cleared and still runs.
+#     - The old process still runs the same conversation.
+#     - The old process exited and an unrelated Claude Code process now holds
+#       its PID. This shape needs no `/clear` and no write by that process.
+#   - The deny clears once the old PID is gone from the process table. An exited
+#     but unreaped process is not gone from it.
+#   - `git worktree unlock <path>` also clears the deny. That unlock is safe
+#     only once no live process is working in the worktree.
+#   - The deny message "already in use by a live Claude Code session" is
+#     accurate for the first two shapes. It is inexact for the third, where it
+#     names a process that never held the worktree.
 # - A process whose PID equals the lock's PID is the lock's holder whatever
 #   session it runs. A new Claude Code process that reuses the PID of an
 #   exited holder can therefore write into the worktree, and can overwrite the
@@ -3325,25 +3326,32 @@ _lib_worktree_lock_is_mine() {
 #   their own. The guard assumes one PID namespace per worktree.
 # - A lock from another PID that carries the caller's session_id is treated as
 #   the caller's when the registry read for the lock's PID cannot confirm a
-#   live process. The read fails to confirm when `ps` fails or times out, when
-#   `sessions/<pid>` is read between its own truncate and write, and when the
-#   entry's recorded start time differs from the current `ps -o lstart=`
-#   output. If that process is in fact live, the resumed session and the live
-#   holder can both write. A holder whose recorded start time differs is
-#   denied on its own calls ("could not resolve this session's own process
-#   identity"). Its next SessionStart or SubagentStart rewrites its entry,
-#   which ends the denial. After the rewrite it passes by PID.
+#   live process.
+#   - The read fails to confirm in every return-1 case
+#     `_lib_registered_live_sid`'s header lists, among them:
+#     - `ps` fails or times out.
+#     - `sessions/<pid>` is read between its own truncate and write.
+#     - The entry's recorded start time differs from the current
+#       `ps -o lstart=` output.
+#   - If that process is in fact live, the resumed session and the live holder
+#     can both write.
+#   - A holder whose recorded start time differs is denied on its own calls
+#     ("could not resolve this session's own process identity"). Its next
+#     SessionStart or SubagentStart rewrites its entry, which ends the denial.
+#     After the rewrite it passes by PID.
 # - A resumed session's worktree can be reclaimed while the resumed session
 #   works in it. A session_id match never re-stamps the lock, so the lock
 #   keeps naming the exited old PID. A third session's call then finds that
-#   PID dead and reclaims the lock. Two resumes of one conversation started
-#   after the old PID exited both pass the session_id match on every call. A
-#   resumed session that then runs `/clear` carries a new session_id and the
+#   PID dead and reclaims the lock.
+# - Two resumes of one conversation started after the old PID exited both pass
+#   the session_id match on every call.
+# - A resumed session that runs `/clear` carries a new session_id and the
 #   resume's own PID, which match the lock by neither. A dead old PID is then
-#   reclaimed. A live old PID that was not a registered Claude Code process
-#   denies it. The deny message is "already in use by a live Claude Code
-#   session". `git worktree unlock <path>` clears that deny once no live
-#   process is working in the worktree.
+#   reclaimed.
+# - A resumed session that runs `/clear` while the lock's old PID is live but
+#   was not a registered Claude Code process is denied. The deny message is
+#   "already in use by a live Claude Code session". `git worktree unlock
+#   <path>` clears that deny once no live process is working in the worktree.
 # - The guard assumes one config dir per worktree, because the session_id
 #   match reads the registry under the caller's own `sessions/`.
 _lib_worktree_collision_guard() {

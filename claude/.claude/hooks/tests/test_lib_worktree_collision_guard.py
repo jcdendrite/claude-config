@@ -29,7 +29,9 @@ _FIXED_START_TIME = "Mon Jan  1 00:00:00 1970"
 
 # The caller-side pid argument for direct _lib_worktree_lock_is_mine rows.
 # The predicate takes it as data and never inspects the process behind it.
-_OTHER_CALLER_PID = "424242"
+# Rows pair it with this runner's own pid as the lock's pid, so it must differ
+# from os.getpid().
+_OTHER_CALLER_PID = str(os.getpid() + 1)
 
 # Generous but bounded wait for one racer in the 20-way concurrency tests
 # below: under heavy 20-way subprocess contention the guard's own
@@ -599,42 +601,16 @@ exec "{real_git}" "$@"
         wt_path = tmp_path / "self-race-worktree"
         _add_worktree(repo, wt_path, "self-race")
         common_dir = _git_common_dir(repo)
-        wt_git_dir = _git_dir(wt_path)
         _seed_session(isolated_home, "self-race-session")
 
-        real_git = shutil.which("git")
-        assert real_git is not None, "git must be on PATH to build the wrapper"
-        fake_bin = tmp_path / "_fake_bin"
-        fake_bin.mkdir()
-        counter_file = tmp_path / "_porcelain_read_count"
-        counter_file.write_text("0")
-        wrapper = fake_bin / "git"
-        wrapper.write_text(f"""#!/bin/bash
-if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
-  count=$(cat "{counter_file}")
-  count=$((count + 1))
-  printf '%s' "$count" > "{counter_file}"
-  if [ "$count" -eq 1 ]; then
-    output=$("{real_git}" "$@")
-    printf '%s' "claude-code pid {os.getpid()}" > "{wt_git_dir}/locked"
-    printf '\n' >> "{wt_git_dir}/locked"
-    echo "$output"
-    exit 0
-  fi
-fi
-exec "{real_git}" "$@"
-""")
-        wrapper.chmod(0o755)
-
-        result = _run_collision_guard(
-            wt_path, common_dir, isolated_home,
-            extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        counting_env, counter_file = _install_porcelain_counting_git(
+            tmp_path, wt_path, lock_rewrite=f"claude-code pid {os.getpid()}"
         )
+
+        result = _run_collision_guard(wt_path, common_dir, isolated_home, extra_env=counting_env)
         assert result.returncode == 0, result.stdout
         assert result.stdout == ""
-        reason = _worktree_lock_reason(wt_path)
-        assert reason is not None
-        assert f"pid {os.getpid()}" in reason
+        assert _locked_file_bytes(wt_path) == f"claude-code pid {os.getpid()}\n".encode()
         assert int(counter_file.read_text()) == 2, (
             "the wrapper's own counter must have observed both the "
             "self-lock-check read and the diagnostic reread for this to be "
@@ -1115,9 +1091,8 @@ class TestCollisionGuardBranches:
         the caller's by session_id alone, even when the caller carries the
         lock's session_id. Here the old process was cleared and still runs a
         different session. The resumed session is denied while the lock's old
-        PID is a live Claude Code process, as the known-gaps list in _lib.sh
-        records; `git worktree unlock` clears it once no live process works in
-        the worktree."""
+        PID is a live Claude Code process. The known-gaps list in _lib.sh
+        states when the deny clears."""
         repo = tmp_path / "resume-old-pid-other-session-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-old-pid-other-session-worktree"
@@ -1751,6 +1726,8 @@ class TestDeadLockReclaim:
         fake_bin.mkdir()
         counter_file = tmp_path / "_porcelain_read_count"
         counter_file.write_text("0")
+        # _lib_worktree_acquire_lock confirms a session-bearing lock by session alone, so only the stub's session must differ.
+        third_party_pid = os.getpid() + 1
         wrapper = fake_bin / "git"
         wrapper.write_text(f"""#!/bin/bash
 if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ] && [ "$5" = "--porcelain" ]; then
@@ -1758,7 +1735,7 @@ if [ "$1" = "-C" ] && [ "$2" = "{wt_path}" ] && [ "$3" = "worktree" ] && [ "$4" 
   count=$((count + 1))
   printf '%s' "$count" > "{counter_file}"
   if [ "$count" -eq 3 ]; then
-    printf 'worktree {wt_path}\\nlocked claude-code pid 424242 session unrelated-third-party-session\\n'
+    printf 'worktree {wt_path}\\nlocked claude-code pid {third_party_pid} session unrelated-third-party-session\\n'
     exit 0
   fi
 fi
@@ -1963,7 +1940,10 @@ class TestResolveClaudePid:
         sessions_dir.mkdir(parents=True, exist_ok=True)
         (sessions_dir / str(os.getpid())).write_text(f"skipped-mismatch\n{_FIXED_START_TIME}\n")
         sid = "grandparent-session"
-        _seed_session(isolated_home, sid, pid=grandparent_pid)
+        try:
+            _seed_session(isolated_home, sid, pid=grandparent_pid)
+        except subprocess.CalledProcessError:
+            pytest.skip("ps cannot observe the test runner's parent process")
 
         result = _run_resolve_claude_pid(isolated_home)
 
@@ -2185,3 +2165,30 @@ class TestRegisteredLiveSid:
         assert result.stdout == ""
         assert result.stderr == ""
         assert ps_invoked_marker.exists(), "the stub ps must have been the one the registry read ran"
+
+    @pytest.mark.skipif(
+        not hasattr(os, "waitid"),
+        reason="os.waitid, which observes a child's exit without reaping it, is unavailable on this platform",
+    )
+    def test_exited_but_unreaped_process_counts_as_live_registered(self, isolated_home):
+        """An exited child its parent has not yet waited on is still in the
+        process table, and `ps -o lstart=` still reports its start time. The
+        registry read therefore confirms it, which the known-gaps list in
+        _lib.sh records for a lock naming such a pid."""
+        unreaped_child = subprocess.Popen(["sleep", "3600"])
+        try:
+            _seed_session(isolated_home, "unreaped-session", pid=unreaped_child.pid)
+            unreaped_child.kill()
+            # WNOWAIT observes the exit without reaping, so the pid stays a zombie.
+            os.waitid(os.P_PID, unreaped_child.pid, os.WEXITED | os.WNOWAIT)
+
+            result = _run_registered_live_sid(
+                isolated_home, isolated_home / ".claude", unreaped_child.pid
+            )
+        finally:
+            unreaped_child.kill()
+            unreaped_child.wait()
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unreaped-session"
+        assert result.stderr == ""
