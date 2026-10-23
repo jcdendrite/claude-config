@@ -94,6 +94,24 @@ class TestBehindWithConflicts:
         assert "file.txt" in result.stdout
 
 
+class TestBehindWithUnrelatedHistories:
+    """HEAD is an orphan branch, so `git merge-tree` refuses to merge it with
+    origin/main and no verdict can be computed."""
+
+    def test_exits_nonzero_without_a_trial_merge_line_naming_the_failure_and_git(self, tmp_path):
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "--orphan", "orphan-feature"], cwd=local, check=True)
+        _commit(local, "orphan work")
+
+        result = _run_script(local)
+
+        assert result.returncode == 1
+        assert "Behind: 1" in result.stdout
+        assert "Trial merge:" not in result.stdout
+        assert "trial merge of origin/main into HEAD could not complete" in result.stderr
+        assert "git version" in result.stderr
+
+
 class TestNotAGitRepository:
     def test_exits_nonzero_with_message(self, tmp_path):
         not_a_repo = tmp_path / "not-a-repo"

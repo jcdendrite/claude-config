@@ -1312,6 +1312,46 @@ _lib_default_branch_from_origin_head() {
   printf '%s' "$default_branch"
 }
 
+# _lib_trial_merge_verdict UPSTREAM_REF
+# Print `Trial merge: CLEAN` or `Trial merge: CONFLICT in: <paths>` for merging
+# UPSTREAM_REF into HEAD, one line, paths sorted and joined by `, `.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the verdict line above.
+#   - exit 1, empty stdout: `git merge-tree` could not complete. One stderr line
+#     names its exit status, the running git and README.md's git floor.
+# A merge-tree exit of 1 counts as a conflict only with a tree OID on line 1,
+# because a bad ref also exits 1.
+_lib_trial_merge_verdict() {
+  local upstream_ref="$1"
+  local merge_output merge_status first_line conflict_paths git_version
+  if merge_output=$(git merge-tree --write-tree "$upstream_ref" HEAD 2>/dev/null); then
+    merge_status=0
+  else
+    merge_status=$?
+  fi
+  if [ "$merge_status" -eq 0 ]; then
+    printf 'Trial merge: CLEAN\n'
+    return 0
+  fi
+  first_line="${merge_output%%$'\n'*}"
+  if [ "$merge_status" -eq 1 ] && [[ "$first_line" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    # Stage lines read `<mode> <oid> <stage><TAB><path>`; the path may hold spaces.
+    conflict_paths=$(printf '%s\n' "$merge_output" \
+      | awk -F'\t' '$1 ~ /^[0-7]+ [0-9a-f]+ [1-3]$/ { print $2 }' \
+      | sort -u \
+      | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
+    if [ -n "$conflict_paths" ]; then
+      printf 'Trial merge: CONFLICT in: %s\n' "$conflict_paths"
+    else
+      printf 'Trial merge: CONFLICT\n'
+    fi
+    return 0
+  fi
+  git_version=$(git --version 2>/dev/null) || git_version="git version unreadable"
+  printf '%s\n' "_lib_trial_merge_verdict: git merge-tree exited $merge_status (running $git_version); an unsupported git is one cause, see README.md § \"Requirements\"" >&2
+  return 1
+}
+
 # _lib_default_branch_or_guess REPO_ROOT
 # Resolve REPO_ROOT's default branch: first via
 # _lib_default_branch_from_origin_head, then, on its failure, by falling

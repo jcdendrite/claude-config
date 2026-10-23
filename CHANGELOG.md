@@ -6,6 +6,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
+  - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
+  - The failure names the running git and `README.md` § "Requirements".
+  - A conflict line now lists each path once, joined by `, `, with spaces in a path kept.
+  - The change is live on `git pull`.
 - **`/ready-for-review` step 6 now hands off a branch that is behind the base without syncing it when its trial merge is clean.** It reports the behind-count in the Completion summary instead, so a base that keeps moving cannot force step 2's verification to re-run on a clean merge. The handed-off tree therefore holds the base only as of step 1's most recent check. A trial-merge conflict at step 6 returns the gate to step 1, which syncs before verification runs again. On the CI-watch path, a step-6 conflict returns to step 1, whose sync can rebase and force-push a pull request already handed off. A failed divergence check at step 6 halts the step: the check is re-run once in place, and a second failure is reported to the engineer. Step 6 now re-runs the divergence check on every gate run, where it previously re-ran only if steps 3-5 produced commits, which adds one fetch bounded at 2 seconds and a halt arm on a failed check.
 - **A dispatching session now hands an agent files by path, and sets inline relayed text in a blockquote under a lead-in naming its source.** The rule is a new Agent Briefing bullet in the global `CLAUDE.md`. A skill's own wording that the session passes on while running that skill counts as its own words and takes no blockquote.
   - **`/review-pr`:** a plan from a ticket or a `diff-only` PR reaches each `/plan-review` reviewer under a lead-in naming the ticket or the PR.
