@@ -298,8 +298,8 @@ class TestCmdTurnShape:
         """A turn priced under an unrecognized model contributes $0.00 silently to
         every bucket unless surfaced via the "(N unpriced turns / M tokens
         excluded from priced spend)" caveat every sibling dollar-weighted
-        subcommand prints — claude-opus-4-7 is deliberately unpriced (see _opus's
-        own docstring)."""
+        subcommand prints — claude-opus-4-7 is deliberately unpriced (see
+        conftest's _priced_opus docstring)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-opus-4-7", input=100, output=400, cache_read=0,
                      content=[_bash_use("b1", "ls")], request_id="r1"),
