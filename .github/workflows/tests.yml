@@ -120,6 +120,58 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # test_ci_git_equals_the_floor fails when the test steps run without this step.
+      - name: Install the pinned git package
+        id: pin-git
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          # README.md § "Tests" holds this pin's fetch date and bump procedure.
+          # test_git_floor.py ties the version to install.sh's GIT_MINIMUM_VERSION.
+          CI_GIT_PACKAGE_VERSION: "1:2.43.0-1ubuntu7.4"
+          CI_GIT_DEB_SHA256: "c79b7948ef9860c97ec74293a90178676e63368a0711c95c28a55af4edf1adab"
+          CI_GIT_MAN_DEB_SHA256: "77f57651734edc24b5a9e7863bc261bf302060ac3c12bbb08a459966ea4d30a6"
+        run: |
+          set -euo pipefail
+          : "${CI_GIT_PACKAGE_VERSION:?}"
+          : "${RUNNER_TEMP:?}"
+          for digest_key in CI_GIT_DEB_SHA256 CI_GIT_MAN_DEB_SHA256; do
+            if [[ ! "${!digest_key:-}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "$digest_key must be 64 lowercase hex characters." >&2
+              exit 1
+            fi
+          done
+
+          echo "The image's git, and the apt source it came from:"
+          git --version
+          apt-cache policy git
+
+          # The file names carry the Debian version without its epoch.
+          debian_version="${CI_GIT_PACKAGE_VERSION#*:}"
+          download_dir=$(mktemp -d "$RUNNER_TEMP/pinned-git.XXXXXX")
+
+          fetch_and_verify_deb() {
+            local deb_file="$1" pinned_digest="$2"
+            local url="https://launchpad.net/ubuntu/+archive/primary/+files/$deb_file"
+            echo "Fetching $url"
+            curl --fail --location --max-time 30 --retry 2 --output "$download_dir/$deb_file" "$url"
+            local actual_digest
+            actual_digest=$(sha256sum "$download_dir/$deb_file")
+            actual_digest="${actual_digest%% *}"
+            if [ "$actual_digest" != "$pinned_digest" ]; then
+              echo "SHA256 mismatch for $deb_file: pinned $pinned_digest, downloaded $actual_digest." >&2
+              exit 1
+            fi
+          }
+
+          git_deb_file="git_${debian_version}_amd64.deb"
+          git_man_deb_file="git-man_${debian_version}_all.deb"
+          fetch_and_verify_deb "$git_deb_file" "$CI_GIT_DEB_SHA256"
+          fetch_and_verify_deb "$git_man_deb_file" "$CI_GIT_MAN_DEB_SHA256"
+
+          sudo apt-get install -y --no-remove --allow-downgrades "$download_dir/$git_deb_file" "$download_dir/$git_man_deb_file"
+          sudo apt-mark hold git git-man
+          git --version
+
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
         run: nproc
