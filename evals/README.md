@@ -572,6 +572,15 @@ Run them in this order:
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
 
+`mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
+introducing commit, for example a file renamed after that commit or lines
+`git blame -C` followed in from another file. `mine-szz` prints that count on
+stderr as `path_absent_at_introducing_commit`. `mine-rounds` counts the
+citations it skips this way in its stderr summary. The drop does not reach an
+entry a `mine-rounds` rerun keeps from the prior shortlist, so `confirm`
+rejects such an entry on every run until it is deleted from
+`review_round_candidates.json`.
+
 Markdown files (skills, rules, `CLAUDE.md`, docs) are eligible through
 `review-round` and `pr-comment`. `defects.is_markdown_path` is the one
 markdown predicate. `mine-szz` skips markdown paths.
@@ -584,10 +593,12 @@ content into a committed file or another private-project-adjacent surface.
 `confirm` is the engineer's approval step. It reads every `.local/`
 candidate that is not yet in `defects.json`, ordered by source (`review-round`,
 then `pr-comment`, then `szz`) and then by the miner's own order, so an early
-`q` never starves the source whose transcripts age out. It suppresses no
-candidate. For each one it checks the schema and, when the candidate has a
-description, the description-provenance check against every `.local/`
-excerpt. It then prompts `[y/N/q]`. The prompt shows:
+`q` never starves the source whose transcripts age out. For each one it checks
+the schema, that its path exists at its introducing commit, and, when the
+candidate has a description, the description-provenance check against every
+`.local/` excerpt. It then prompts `[y/N/q]` for each candidate that passes,
+except one that `--source` or the declined IDs described below leave out. The
+prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
   subjects;
@@ -605,14 +616,25 @@ excerpt. It then prompts `[y/N/q]`. The prompt shows:
 
 A candidate that shares its head, fix, and path with a candidate from another
 source is annotated with that candidate's ID, source, and status (confirmed,
-accepted this run, skipped this run, rejected by checks, or pending). The
-annotation never suppresses either candidate, and the engineer's `y` or `N`
-decides.
+accepted this run, skipped this run, rejected by checks, declined in an earlier
+run, or pending). The annotation never suppresses either candidate, and the
+engineer's `y` or `N` decides.
 
 A candidate with no description is triaged first and described after `y`: `y`
 prompts for a one-line description, which runs through the same provenance
 check. An empty line, a rejected character, or a provenance rejection accepts
 nothing for that candidate, and the loop continues.
+
+After `y` and any description, `confirm` prompts `lens [<current lens>]:`. An
+empty line keeps the candidate's lens. A typed lens must be one that
+`_validate_lens` in `review_bench/defects.py` accepts. An invalid entry prints
+the allowed lenses and asks again, and the third invalid entry skips the
+candidate. End of input at this prompt stops the loop like `q`.
+
+`--source` restricts the prompts to the named sources and repeats to name
+several: `review-round`, `pr-comment`, `szz`. Every shortlist still loads and
+every candidate still runs the checks, so the provenance check still sees every
+excerpt.
 
 The description policy:
 
@@ -633,8 +655,18 @@ The description policy:
 
 `y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
 it, and it stays in `.local/`. `q` or end of input stops the loop and writes
-the candidates accepted so far. Ctrl-C during the prompts writes and pins
-nothing. After the last prompt, `confirm` pins each accepted candidate's fix
+the candidates accepted so far. Ctrl-C during the prompts writes, pins, and
+records nothing.
+
+When the prompts end, `confirm` appends the IDs it skipped to
+`.local/confirm_declined_ids.json`, a mode-0600 JSON list that the `.local/`
+ignore rule covers. A skipped ID is one answered with anything but `y` or `q`,
+or answered `y` and then given an empty description or three invalid lenses.
+Later runs do not prompt for those IDs and print how many they left out. `--include-declined` prompts for
+them again. A file that is not a JSON list of strings makes `confirm` exit 2
+before any prompt.
+
+After the last prompt, `confirm` pins each accepted candidate's fix
 commit under `refs/review-bench/`, then appends the candidates to
 `defects.json`, each with `file_is_markdown` and the candidate's own path (the
 head path for a `pr-comment`). An interrupt in that pin-and-write phase can
@@ -644,10 +676,10 @@ prints model-derived text with control characters as backslash escapes.
 
 `confirm` needs a terminal on stdin. Without one it runs every check that
 needs no typed input, prints the rejections, writes and pins nothing, prints
-how many candidates await the engineer at a terminal, and exits 2 when any do.
-A candidate with no description that passes the schema checks counts as
-awaiting. No flag or environment variable supplies an answer in place of a
-terminal.
+how many candidates await the engineer at a terminal after `--source` and the
+declined IDs narrow them, and exits 2 when any do. A candidate with no
+description that passes the schema checks counts as awaiting. No flag or
+environment variable supplies an answer in place of a terminal.
 
 ### Fixtures and judge input
 
@@ -661,15 +693,17 @@ terminal.
   `--no-ext-diff --no-textconv --no-color`:
   - every local git call in `review_bench/fixture_repo.py`;
   - the recall judge's `git show` and `git diff`;
-  - the `git show` that `confirm`'s provenance check runs.
+  - every git call `confirm` makes: the provenance check's `git show`, the
+    path check's `git cat-file -e`, the commit-subject `git log`, and the
+    pin's `git update-ref`.
 
   Calls that run in your own checkout, such as the recall judge's `git show`
-  and `git diff` and the provenance check's `git show`, still read that
+  and `git diff` and each of `confirm`'s git calls, still read that
   checkout's local config and attributes.
 
-  The miners' git calls, the environment and preflight reads in
-  `review_bench/runner.py`, and `defects.py`'s `pin_defect_commits` and
-  `commit_subjects` read the engineer's setup. `review_bench/local_git.py`
+  The miners' git calls (including `review_bench/mine_szz.py`'s own path
+  check) and the environment and preflight reads in `review_bench/runner.py`
+  read the engineer's setup. `review_bench/local_git.py`
   holds the mechanism.
 - **Recall judge's fix diff.** One fix commit can hold fixes for many
   comments, so the recall judge's input shows the fix diff limited to the

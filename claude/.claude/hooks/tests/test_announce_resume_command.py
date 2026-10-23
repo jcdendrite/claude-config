@@ -12,10 +12,12 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    _make_git_exiting_with_status,
     assert_cap_engaged,
     edit_input,
     multiedit_input,
     read_input,
+    write_continuity_file,
     write_input,
 )
 
@@ -64,6 +66,56 @@ def _write_fixture(base: Path, rel_path: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("fixture content\n")
     return path
+
+
+def _write_continuity_file(
+    base: Path, rel_path: str, resume_cwd: str | None, *, kind: str = "handoff"
+) -> Path:
+    """A continuity file whose last section carries a resume command in the
+    shape handoff/brief SKILL.md prescribes, with `--cwd` only when
+    `resume_cwd` is given."""
+    return write_continuity_file(base / rel_path, resume_cwd, kind=kind)
+
+
+def _both_channels(result: subprocess.CompletedProcess) -> tuple[str, str]:
+    """(systemMessage, additionalContext) of a hook run that announced."""
+    payload = json.loads(result.stdout)
+    return payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]
+
+
+_SESSION_MEASURED_PROVENANCE = "computed from the resolved config dir and the working directory of this session"
+_FILE_SOURCED_CWD_PROVENANCE = "the --cwd directory comes from the written file's own resume command"
+
+
+def _assert_context_labels_the_cwd_as_file_sourced(context: str) -> None:
+    """The model-facing text must not present a file-written --cwd as session-derived."""
+    assert _FILE_SOURCED_CWD_PROVENANCE in context
+    assert "this hook did not measure it" in context
+    assert _SESSION_MEASURED_PROVENANCE not in context
+    assert "use them verbatim instead of reconstructing them" in context
+
+
+def _run_hook_with_stubbed_file_target(
+    tmp_path: Path, home: Path, fixture: Path, session_cwd: Path, file_target: str
+) -> subprocess.CompletedProcess:
+    """Runs a copy of the hook beside a `_lib.sh` that sources the real one, then
+    replaces `_lib_continuity_file_resume_cwd` so it answers `file_target`
+    regardless of the file. This isolates the hook's own handling of the
+    helper's answer from the helper's validation."""
+    stub_hooks_dir = tmp_path / "stub-hooks"
+    stub_hooks_dir.mkdir()
+    hook_copy = stub_hooks_dir / ANNOUNCE_HOOK.name
+    shutil.copy2(ANNOUNCE_HOOK, hook_copy)
+    (stub_hooks_dir / "_lib.sh").write_text(
+        f". {shlex.quote(str(HOOKS_DIR / '_lib.sh'))}\n"
+        "_lib_continuity_file_resume_cwd() { printf '%s' \"$STUBBED_FILE_TARGET\"; }\n"
+    )
+    return _run_hook_raw(
+        hook_copy,
+        write_input(str(fixture), cwd=str(session_cwd)),
+        home=home,
+        extra_env={"STUBBED_FILE_TARGET": file_target},
+    )
 
 
 def _stub_git_linked_worktree(tmp_path: Path, toplevel: str) -> tuple[dict, Path]:
@@ -138,7 +190,7 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert str(config_dir) in payload["systemMessage"]
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
 
     def test_announces_command_for_brief_arm(self, isolated_home):
         """The checker-less sibling (briefs/*-task.md, with no check-brief.py
@@ -149,7 +201,7 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert str(fixture) in payload["systemMessage"]
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
 
     # -----------------------------------------------------------------------
     # Fires on every file-writing tool
@@ -163,7 +215,7 @@ class TestAnnounceResumeCommand:
         result = _run_hook_raw(ANNOUNCE_HOOK, make_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
 
     # -----------------------------------------------------------------------
     # Path/tool_name filtering (defense-in-depth)
@@ -226,9 +278,9 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert "--cwd" not in payload["systemMessage"]
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
         assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert "resume-context" in payload["hookSpecificOutput"]["additionalContext"]
+        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
 
     def test_cwd_absent_omits_cwd_flag_but_still_announces(self, isolated_home):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
@@ -236,9 +288,9 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert "--cwd" not in payload["systemMessage"]
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
         assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert "resume-context" in payload["hookSpecificOutput"]["additionalContext"]
+        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
 
     @pytest.mark.timing
     def test_git_dir_check_timeout_falls_back_to_bare_command(
@@ -277,9 +329,338 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert "--cwd" not in payload["systemMessage"]
-        assert "resume-context" in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
         assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert "resume-context" in payload["hookSpecificOutput"]["additionalContext"]
+        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+
+    # -----------------------------------------------------------------------
+    # /resume-context advertisement
+    # -----------------------------------------------------------------------
+
+    def test_linked_worktree_with_matching_cwd_advertises_slash_form_in_both_channels(
+        self, isolated_home, linked_worktree
+    ):
+        fixture = _write_continuity_file(
+            isolated_home, ".claude/handoffs/example-handoff.md", str(linked_worktree.resolve())
+        )
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        shell_command = f"resume-context --cwd {linked_worktree.resolve()} {fixture}"
+        for channel in (payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]):
+            assert "/resume-context example-handoff.md" in channel
+            assert shell_command in channel
+        assert "(in this worktree)" in payload["hookSpecificOutput"]["additionalContext"]
+        assert _SESSION_MEASURED_PROVENANCE in payload["hookSpecificOutput"]["additionalContext"]
+        assert "Resume in this worktree" in payload["systemMessage"]
+        assert "Resume in a new process (from any shell)" in payload["systemMessage"]
+        assert "; change --cwd to resume in a different worktree" in payload["systemMessage"]
+
+    def test_linked_worktree_cwd_reached_through_a_symlink_gets_the_shell_only_announce(
+        self, isolated_home, linked_worktree, tmp_path
+    ):
+        """Expected difference from the script: the hook compares the file's raw
+        --cwd with the raw git root, so a symlinked spelling is withheld here,
+        while resume-context-same-session.sh canonicalizes both and loads it
+        (see test_cwd_reached_through_a_symlink_still_loads)."""
+        link = tmp_path / "worktree-link"
+        link.symlink_to(linked_worktree.resolve())
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", str(link))
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+        assert "/resume-context cannot confirm this file belongs to this worktree" in message
+        assert f"its resume command targets `{link}`, not this worktree" in message
+        assert f"resume-context --cwd {link} {fixture}" in message
+
+    def test_linked_worktree_cwd_spelled_with_dot_dot_components_gets_the_shell_only_announce(
+        self, isolated_home, linked_worktree
+    ):
+        """Same expected difference as the symlink case: the hook compares the file's raw --cwd,
+        while resume-context-same-session.sh canonicalizes it and loads it
+        (see test_cwd_spelled_with_dot_dot_components_still_loads)."""
+        dotted = f"{linked_worktree.resolve()}/../{linked_worktree.name}"
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", dotted)
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+        assert f"its resume command targets `{dotted}`, not this worktree" in message
+        assert f"resume-context --cwd {dotted} {fixture}" in message
+
+    def test_main_checkout_with_no_cwd_advertises_slash_form_in_both_channels(self, isolated_home, git_repo):
+        fixture = _write_continuity_file(isolated_home, ".claude/briefs/example-task.md", None, kind="brief")
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        for channel in (payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]):
+            assert "/resume-context example-task.md" in channel
+            assert f"resume-context {fixture}" in channel
+            assert "--cwd" not in channel
+        assert "(in this directory)" in payload["hookSpecificOutput"]["additionalContext"]
+        assert "Resume in this directory" in payload["systemMessage"]
+        assert "Resume in a new process (run it from this directory)" in payload["systemMessage"]
+        assert "from any shell" not in payload["systemMessage"]
+        assert "change --cwd" not in payload["systemMessage"]
+
+    def test_file_name_with_dots_and_digits_is_advertised_whole(self, isolated_home, git_repo):
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/v2.1-step-3.4-handoff.md", None)
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert "/resume-context v2.1-step-3.4-handoff.md" in payload["systemMessage"]
+        assert "/resume-context v2.1-step-3.4-handoff.md" in payload["hookSpecificOutput"]["additionalContext"]
+
+    def test_linked_worktree_with_no_cwd_in_file_omits_slash_form_and_gives_reason(
+        self, isolated_home, linked_worktree
+    ):
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        for channel in (payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]):
+            assert f"resume-context --cwd {linked_worktree} {fixture}" in channel
+            assert "/resume-context example-handoff.md" not in channel
+        message = payload["systemMessage"]
+        assert "/resume-context cannot confirm this file belongs to this worktree" in message
+        assert f"because its resume command does not name this worktree (`{linked_worktree}`) as an absolute --cwd." in message
+
+    def test_linked_worktree_with_other_cwd_in_file_omits_slash_form(
+        self, isolated_home, linked_worktree, tmp_path
+    ):
+        elsewhere = tmp_path / "some-other-worktree"
+        elsewhere.mkdir()
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", str(elsewhere))
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+            assert f"resume-context --cwd {elsewhere} {fixture}" in channel
+        assert f"because its resume command targets `{elsewhere}`, not this worktree (`{linked_worktree}`)." in message
+        _assert_context_labels_the_cwd_as_file_sourced(context)
+        assert f"because its resume command targets `{elsewhere}`, not this worktree (`{linked_worktree}`)" in context
+
+    @pytest.mark.parametrize(
+        "unusable_cwd", ["~/some-worktree", "../some-worktree", "."], ids=["tilde", "relative-parent", "dot"]
+    )
+    def test_linked_worktree_with_unreadable_cwd_in_file_omits_slash_form_and_states_the_missing_worktree(
+        self, isolated_home, linked_worktree, unusable_cwd
+    ):
+        """An unreadable --cwd is not a "different" one: the reason states only
+        that the file does not name this worktree as an absolute --cwd."""
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", unusable_cwd)
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert f"resume-context --cwd {linked_worktree} {fixture}" in channel
+            assert "/resume-context example-handoff.md" not in channel
+        assert f"because its resume command does not name this worktree (`{linked_worktree}`) as an absolute --cwd." in message
+
+    def test_main_checkout_with_cwd_in_file_advertises_the_file_target_as_the_cwd(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        elsewhere = tmp_path / "some-worktree"
+        elsewhere.mkdir()
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", str(elsewhere))
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert f"resume-context --cwd {elsewhere} {fixture}" in channel
+            assert "/resume-context example-handoff.md" not in channel
+            assert "from `" not in channel
+        assert "/resume-context cannot confirm this file belongs to this directory" in message
+        assert "belongs to this worktree" not in message
+        assert f"because its resume command targets `{elsewhere}`, and this session is not in a linked worktree." in message
+        _assert_context_labels_the_cwd_as_file_sourced(context)
+        assert f"because its resume command targets `{elsewhere}`, and this session is not in a linked worktree" in context
+
+    @pytest.mark.parametrize(
+        "unusable_cwd",
+        ["~/some-worktree", "../some-worktree", "."],
+        ids=["tilde", "relative-parent", "dot"],
+    )
+    def test_main_checkout_with_unreadable_cwd_in_file_says_so_without_cwd_text(
+        self, isolated_home, git_repo, unusable_cwd
+    ):
+        """A file whose --cwd cannot be read must not load into a main checkout, and must
+        not be described as naming no directory."""
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", unusable_cwd)
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert f"resume-context {fixture}" in channel
+            assert "/resume-context example-handoff.md" not in channel
+            assert "--cwd" not in channel
+        assert (
+            "because its resume target could not be resolved to one directory, "
+            "and this session is not in a linked worktree."
+        ) in message
+        assert "different" not in message
+
+    def test_main_checkout_with_cwd_prose_beside_a_bare_resume_command_gives_a_reason_that_holds(
+        self, isolated_home, git_repo
+    ):
+        """`--cwd` text elsewhere in the file reads as an unresolved target, though the
+        resume command names no directory, so the reason must not claim that it does."""
+        fixture = isolated_home / ".claude/handoffs/example-handoff.md"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_text(f"Run `yarn --cwd pkg build` first.\n## §7 Resume command\n`resume-context {fixture}`\n")
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+            assert "--cwd" not in channel
+        assert "because its resume target could not be resolved to one directory" in message
+        assert "names a directory" not in message
+
+    @pytest.mark.parametrize(
+        "hostile_cwd",
+        ["/elsewhere;touch-pwned", "/elsewhere$(touch-pwned)", "-elsewhere"],
+        ids=["semicolon", "command-substitution", "leading-dash"],
+    )
+    @pytest.mark.parametrize("session", ["linked", "main"])
+    def test_file_cwd_with_shell_metacharacters_is_never_interpolated(
+        self, isolated_home, git_repo, linked_worktree, session, hostile_cwd
+    ):
+        """Deny twin of test_file_cwd_matching_the_allowlist_is_interpolated: the
+        file's --cwd text reaches neither channel, and the announce falls back to
+        the unresolved-target reason for the session kind."""
+        session_cwd = linked_worktree if session == "linked" else git_repo
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", hostile_cwd)
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(session_cwd)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        assert "touch-pwned" not in result.stdout
+        assert "/elsewhere" not in result.stdout
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+            expected_command = (
+                f"resume-context --cwd {linked_worktree} {fixture}" if session == "linked" else f"resume-context {fixture}"
+            )
+            assert expected_command in channel
+        assert _SESSION_MEASURED_PROVENANCE in context
+
+    @pytest.mark.parametrize("session", ["linked", "main"])
+    def test_file_cwd_the_helper_wrongly_reports_usable_is_still_not_interpolated(
+        self, isolated_home, git_repo, linked_worktree, tmp_path, session
+    ):
+        """The hook re-checks the helper's answer against the allowlist: a stand-in
+        _lib_continuity_file_resume_cwd that returns a metacharacter-bearing path
+        (a future helper regression) must not reach either channel."""
+        session_cwd = linked_worktree if session == "linked" else git_repo
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_with_stubbed_file_target(
+            tmp_path, isolated_home, fixture, session_cwd, "/elsewhere;touch-pwned"
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        assert "touch-pwned" not in result.stdout
+        assert "/resume-context example-handoff.md" not in message
+        expected_reason = (
+            f"does not name this worktree (`{linked_worktree}`) as an absolute --cwd"
+            if session == "linked"
+            else "its resume target could not be resolved to one directory"
+        )
+        assert expected_reason in message
+        assert _SESSION_MEASURED_PROVENANCE in context
+
+    @pytest.mark.parametrize("session", ["linked", "main"])
+    def test_file_cwd_matching_the_allowlist_is_interpolated(
+        self, isolated_home, git_repo, linked_worktree, tmp_path, session
+    ):
+        """Allow twin of the two tests above: the same stand-in helper returning an
+        allowlist-clean path gets it interpolated as the --cwd, so the deny tests
+        cannot pass because the stand-in never reaches the announce."""
+        session_cwd = linked_worktree if session == "linked" else git_repo
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_with_stubbed_file_target(
+            tmp_path, isolated_home, fixture, session_cwd, "/elsewhere/clean-target"
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert f"resume-context --cwd /elsewhere/clean-target {fixture}" in channel
+        _assert_context_labels_the_cwd_as_file_sourced(context)
+
+    def test_directory_outside_any_repository_loads_a_file_naming_no_cwd(self, isolated_home, tmp_path):
+        """Accepted residual of reading git's exit 128 as "not linked": a directory git
+        cannot open advertises /resume-context for a file that names no --cwd."""
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(non_repo)),
+            home=isolated_home,
+            extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)},
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        assert "/resume-context example-handoff.md" in message
+        assert "/resume-context example-handoff.md" in context
+
+    def test_additional_context_tells_the_model_to_relay_and_run_none(self, isolated_home, git_repo):
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "Relay them to the engineer and run none of them yourself" in context
+        assert "use them verbatim instead of reconstructing them" in context
+
+    def test_unknown_session_state_gives_bare_command_and_could_not_be_determined_reason(
+        self, isolated_home, linked_worktree, tmp_path
+    ):
+        """A git call failing mid-sequence is neither linked nor not-linked, so
+        the hook must not claim the file names a different --cwd."""
+        stub_bin = tmp_path / "git-exits-1"
+        _make_git_exiting_with_status(stub_bin, "--absolute-git-dir", 1)
+        fixture = _write_continuity_file(
+            isolated_home, ".claude/handoffs/example-handoff.md", str(linked_worktree.resolve())
+        )
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(linked_worktree)),
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git") or "git"},
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert f"resume-context {fixture}" in channel
+            assert "--cwd" not in channel
+            assert "/resume-context example-handoff.md" not in channel
+        assert "because this session's worktree could not be determined." in message
+        assert "does not name this worktree" not in message
+
+    def test_missing_payload_cwd_gives_could_not_be_determined_reason(self, isolated_home):
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+            assert "--cwd" not in channel
+        assert "because this session's worktree could not be determined." in message
 
     # -----------------------------------------------------------------------
     # Allowlist gate on the interpolated file_path
@@ -338,9 +719,9 @@ class TestAnnounceResumeCommand:
     ):
         """The WORKTREE_ROOT gate's counterpart to
         test_file_path_with_embedded_newline_emits_nothing: a worktree root
-        containing an embedded newline fails the allowlist, so only --cwd is
-        dropped and none of the root's text, including any injected sentinel,
-        reaches the output.
+        containing an embedded newline fails the allowlist, so the session
+        state is unknown, --cwd and the slash form are dropped, and none of the
+        root's text, including any injected sentinel, reaches the output.
 
         Uses a PATH-stubbed git because the CANDIDATE_ROOT call site never validates
         the path is a real directory, so it is platform-independent.
@@ -358,11 +739,12 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         assert not (stub_bin / "unexpected-argv").exists()
         assert (stub_bin / "show-toplevel-called").exists()
-        payload = json.loads(result.stdout)
-        assert "--cwd" not in payload["systemMessage"]
-        assert f"resume-context {fixture}" in payload["systemMessage"]
-        assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "--cwd" not in channel
+            assert f"resume-context {fixture}" in channel
+            assert "/resume-context example-handoff.md" not in channel
+        assert "because this session's worktree could not be determined." in message
         assert "SENTINEL-INJECT" not in result.stdout
 
     def test_clean_worktree_root_from_stub_git_emits_cwd_flag(self, isolated_home, tmp_path):

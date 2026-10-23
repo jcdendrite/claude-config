@@ -330,6 +330,18 @@ main-conversation bucket's TTL directly in `settings.json` — is unaffected.
 | `CLAUDE.md` guidance telling the agent to `/clear` at a phase boundary and `/compact` before idling (that plan's Phase 4) | Rejected, written then dropped | `/clear` and `/compact` are harness built-in CLI commands with no tool binding, so `CLAUDE.md`'s only reader cannot execute either. The `/clear` half also re-proposed blanket reset-at-a-boundary advice already rejected as mispriced above (`handoff-boundary-decision-rule.md`); the `/compact` half contradicted that plan's own `[engineer-verified]` compaction stance. Full rationale in that plan's Phase 4 entry. |
 | The idle-gap cache rebuild | Named, not solved | Two events, ~910K tokens at cache-write rates, ~$9 of PR #609 as recorded by the source plan. The prompt-cache TTL cannot exceed 1 hour by any exposed setting, so an idle gap past it forces a full cache-write rebuild. The rejected Phase 4 guidance was the only thing aimed at it; nothing replaced it, and nothing agent-side can, because only the operator decides when a session sits idle. |
 
+**2026-10-18 follow-up:** the `/compact` row above is narrowed, not reversed.
+The handoff nudge now recommends `/compact` under the criteria in
+[`handoff-nudge.md`](handoff-nudge.md) "Compaction as an alternative to
+/handoff", and otherwise recommends `/handoff`. That narrows the compaction
+stance the row cites, which `.claude/plans/token-cost-reduction.md` records as
+"Compaction is not an acceptable mechanism in this workflow", to a conditional
+one. `CLAUDE.md` guidance telling the agent to
+`/compact` stays rejected for the reason the row gives: the agent has no tool
+binding for either command, so only the nudge's text to the user can act on it.
+The cost of a `/compact` against a handoff plus a resume is unmeasured, so
+neither nudge message claims one is cheaper.
+
 ## From `handoff-nudge-cap-recalibration.md` — "Re-ground the handoff-nudge absolute cap against cost-per-work, not nudge frequency" (2026-08-22)
 
 | Lever | Verdict | Measured reason |

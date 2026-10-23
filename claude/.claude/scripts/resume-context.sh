@@ -11,9 +11,10 @@
 #   resume-context.sh --consume-only <continuity-file-path>
 #
 # --consume-only performs the move only, without resolving or launching a
-# launcher. Used by consume-durable-continuity-file-on-read.sh so the same
-# move logic is never duplicated between the explicit-resume path and the
-# same-session (`/clear` + manual Read) resume path.
+# launcher. Used by consume-durable-continuity-file-on-read.sh and by
+# resume-context-same-session.sh so the same move logic is never duplicated
+# between the explicit-resume path and the same-session (`/clear` + manual
+# Read, or /resume-context) resume paths.
 #
 # --cwd <dir> launches the new session with <dir> as its working directory
 # instead of inheriting the invoking shell's. handoff/SKILL.md §7 and
@@ -39,6 +40,10 @@
 #                            real shell to front `claude` with a wrapper, e.g.
 #                            RESUME_CONTEXT_LAUNCHER=claude-auto resumes in
 #                            auto mode.
+#   RESUME_CONTEXT_EXACT_SOURCE
+#                            when non-empty, skips the legacy-location fallback
+#                            below, so the file moved is exactly the path given.
+#                            Set by resume-context-same-session.sh.
 #   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}. Tests
 #                            only — never touch the real shared /tmp otherwise.
 #                            Local-filesystem precondition: the lock-free
@@ -166,7 +171,7 @@ record_consumed_destination() {                 # invoked as `... || true`
   # this costs no second `date` fork.
   day_file="$dir/consumed.${stamp%%T*}.tsv"
   [ -L "$day_file" ] && return 0
-  [ -e "$day_file" ] && chmod 600 -- "$day_file" 2>/dev/null
+  [ -e "$day_file" ] && chmod -- 600 "$day_file" 2>/dev/null
   row="$stamp"$'\t'"$dest"$'\t'"$src"
   # Byte count, not ${#row}: bash counts characters under a multi-byte
   # locale, so a non-ASCII $src can pass a character cap while the bytes
@@ -187,7 +192,7 @@ record_consumed_destination() {                 # invoked as `... || true`
   esac
   [ "$row_bytes" -gt 2048 ] && return 0
   ( umask 077; printf '%s\n' "$row" >> "$day_file" ) 2>/dev/null
-  chmod 600 -- "$day_file" 2>/dev/null
+  chmod -- 600 "$day_file" 2>/dev/null
   # 30-day retention, the same sweep every other self-sweeping state
   # directory in this repo uses. Unlinking a whole file is not a
   # read-modify-write, so concurrent sweeps cannot lose a row. Runs after
@@ -275,7 +280,7 @@ TMPDIR_ROOT=$(_lib_resume_context_tmpdir_root)
 # to match _lib_config_dir's ${VAR%/} convention (_lib.sh:114).
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CONFIG_DIR="${CONFIG_DIR%/}"
-if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ]; then
+if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ] && [ -z "${RESUME_CONTEXT_EXACT_SOURCE:-}" ]; then
   case "$SRC" in
     "$CONFIG_DIR"/handoffs/*|"$CONFIG_DIR"/briefs/*)
       LEGACY_SRC="$HOME/.claude${SRC#"$CONFIG_DIR"}"
@@ -318,6 +323,14 @@ if [ "$CONSUME_ONLY" -eq 0 ]; then
   fi
 fi
 
+# mv carries SRC's inode, and so its mode, into the shared temp dir. Narrowing it
+# first leaves no moment at which another uid could open DEST.
+# A source filesystem that rejects chmod stops the consume here and leaves the file pending.
+if ! chmod -- 600 "$SRC"; then
+  printf 'resume-context.sh: failed to set permissions on %s\n' "$SRC_DISPLAY" >&2
+  exit 1
+fi
+
 DEST=$(mktemp "$TMPDIR_ROOT/resume-context.XXXXXX")
 
 if ! mv -- "$SRC" "$DEST"; then
@@ -332,11 +345,11 @@ fi
 record_consumed_destination "$SRC" "$DEST" || true
 
 # mv/rename(2) replaces DEST's inode with SRC's, so DEST ends up with SRC's
-# permissions (whatever the writing skill left them at), not mktemp's 0600
-# placeholder mode — verified empirically: a same-filesystem mv silently
-# discards mktemp's protection. Re-assert 0600 explicitly rather than relying
-# on mktemp's initial mode surviving the move.
-if ! chmod 600 "$DEST"; then
+# permissions, not mktemp's 0600 placeholder mode — verified empirically: a
+# same-filesystem mv silently discards mktemp's protection. SRC was narrowed
+# above, and the explicit re-assert keeps the final mode independent of how mv
+# moved the file.
+if ! chmod -- 600 "$DEST"; then
   printf 'resume-context.sh: failed to set permissions on %s\n' "$DEST" >&2
   exit 1
 fi

@@ -17,11 +17,12 @@ package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `revi
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
-`skill_invocation.py`, and `skill_pair.py` are the only modules
+`skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
+`user_input.py`, `duration.py`, and `friction_count.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
-`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
-still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
-`hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
+`cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. The
+still-unmigrated command-shape helper `_command_segment_is_mutating_git` likewise calls `denials.py`'s
+`_drop_denial_command_flag_values` by name from the shim.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 The still-unmigrated context-composition code separately reads `read_scope.py`'s
 `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
@@ -32,6 +33,8 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
 `_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
+`friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
+`STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -46,12 +49,15 @@ The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_
 name from the shim.
 `build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
 `spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim.
-`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary` and
-`handoff_signal_response.py`'s `cmd_handoff_signal_response` from the shim.
-`build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
+`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary`,
+`handoff_signal_response.py`'s `cmd_handoff_signal_response`, and `period_cost.py`'s `cmd_period_cost`
+from the shim.
+`build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
+user-input, duration, and friction-count by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
-The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, and `cmd_skill_pair`, and those
+The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
+`cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, and `cmd_user_input`, and those
 bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
 affordances: a test that needs to steer a moved command patches the module whose binding the
 handler reads at call time, not the shim name.
@@ -130,6 +136,102 @@ values a `--this-repo` report may disclose versus fold into a withheld row.
 Rate tables, per-turn dollar pricing (`_price_turn`), token counts, context-window sizing, and
 `dedup_turns_by_request_id` (collapsing Claude Code's one-record-per-content-block write pattern
 into one record per API call). Self-contained: no dependency on `scope.py` or `redaction.py`.
+`_dedup_session` is the per-session step that `cost.py`'s report loop and `session_pricing.py` share:
+it deduplicates one session's records and returns its subagent-spawn count, its sidechain
+assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
+the re-verify-by staleness rule both apply.
+
+### `session_pricing.py`
+
+Per-session, per-UTC-day pricing for importers outside this repository: `price_sessions_by_utc_day`,
+its frozen result dataclasses `SessionSpend` and `SessionPricingResult`, and `SessionPricingError`.
+Each field's meaning is in its dataclass's docstring. It reads each session with
+`corpus._read_session_file_partitioned`, deduplicates it and collects its drift-canary inputs with
+`pricing._dedup_session` (the step `cost.py`'s report loop also calls), checks usage with its own
+strict token-field validator, and prices each turn with `pricing._price_turn`. It imports only
+`corpus` and `pricing` from the package, by module (attribute access), plus the standard library.
+
+**Import path.** Append `<config-dir>/scripts` to the end of `sys.path`, where `<config-dir>` is the
+Claude Code config directory this repo is stowed into. Then run
+`from transcript_analysis import session_pricing`. Do not insert the directory at the front: it also
+holds top-level modules and packages such as `tests`, `_config` and `_config_dir`, which would then
+shadow an importer's own modules of the same name. The module needs only the standard library and the
+Python version `README.md` requires.
+
+**Stability promise.** This is the only module in `transcript_analysis` with a stability promise.
+Every other module, and every underscore-prefixed name anywhere in the package, may change without
+notice. The promise covers:
+
+- the names in `session_pricing.__all__`;
+- the parameters of `price_sessions_by_utc_day`;
+- every field of `SessionSpend` and `SessionPricingResult`, with its type and documented meaning;
+- the `SessionPricingResult.format_drift_detected` property;
+- `SessionPricingError`, its `session_index` attribute, and its index-only message;
+- the error contract and the stderr contract below.
+
+The promise covers reading named fields. Constructing these types, relying on field order, hashing a
+result, mutating its day maps, and comparing or serializing whole results (for example with
+`dataclasses.asdict` or `repr`) are outside it.
+
+A new public name, a new result field, or a new keyword-only parameter with a default is an additive
+change. Any other change to the list above is a breaking change, and so is removing this module. A
+breaking change updates the pins in `tests/test_transcript_session_pricing.py` and states the break in
+this section.
+
+**Breaking change: `unpriced_models` now defaults to empty.** `price_sessions_by_utc_day` gained the
+keyword-only `include_unpriced_model_ids` parameter (default `False`). A caller that read `unpriced_models`
+for its raw model IDs must now pass `include_unpriced_model_ids=True` to keep seeing them. The new
+`unpriced_model_count` field reports the count either way.
+
+**Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
+path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
+filesystem encoding), and `TypeError` for a wrongly typed argument, before it reads any session.
+It raises `SessionPricingError` for the first session it cannot read, deduplicate, validate or price,
+and reads no later session. An assistant turn with a non-empty usage object and a truthy non-string
+timestamp fails its session this way. A malformed usage object fails its session even on a turn
+outside `[start, end]`. A missing or unreadable main file is not an error: it comes back
+as `main_file_readable=False`. A `SessionPricingError` does not say whether the session's content is
+malformed, claude-config failed while processing it, or the environment failed. `__cause__` holds the original
+exception for diagnosis; its type and text are outside the promise. Any other exception signals a
+claude-config defect or a failing environment.
+
+**Stderr contract.** `price_sessions_by_utc_day` writes nothing to stdout or stderr itself. The
+`pricing.py` functions it calls may write four lines to stderr:
+
+- a usage-drift warning starting `WARNING: requestId `, at most once per process;
+- a merge notice starting `NOTICE: non-contiguous requestId run merged -- `, at most once per process;
+- a merge notice starting `NOTICE: non-contiguous requestId run rejected -- `, at most once per process;
+- a subagent-format warning starting `WARNING: subagent spawns detected in main thread`, at most once per call.
+
+Each of the first three names one requestId, copied from the transcript with control characters
+escaped and no limit on its length. Only these prefixes are stable; the rest of each line may change.
+After a process has printed the usage-drift warning it prints it no more, but each call's
+`usage_drift_detected` still reports that call's own sessions.
+
+**What the output can disclose.**
+
+- The fixed text of the four stderr lines names no transcript path, session ID, project slug, config
+  directory, or model ID.
+- The requestId in the first three lines, described in the stderr contract, is the one
+  transcript-supplied substring on stderr, so treat those lines as carrying untrusted text.
+- `str()` of a `SessionPricingError` names only `session_index`.
+- `__cause__`, `__context__` and tracebacks are outside this guarantee and may carry a path or
+  transcript content. Record only `session_index` and the exception class in output you share.
+- `unpriced_models` is the only result field whose strings come from transcript content, and it is empty
+  unless the call passed `include_unpriced_model_ids=True`.
+  Its entries are `message.model` values, verbatim.
+  They are untrusted transcript text of any length.
+  A model ID can carry an account-identifying pre-announcement name, so do not publish the list.
+  Also escape entries before rendering.
+  `unpriced_model_count` carries no transcript content and is always populated.
+  Prefer it over `include_unpriced_model_ids=True` wherever only the count is needed.
+
+**Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
+`main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an
+endless device file such as `/dev/zero` grows memory without bound, which a timeout does not stop. Pass only
+paths whose directories nobody else can write. The call also reads each path's `<stem>/subagents/*.jsonl`, so
+checking `session_paths` alone is not enough. Every result derives from unauthenticated transcript text, and its integers are
+unbounded.
 
 ### `render.py`
 
@@ -230,9 +332,9 @@ current-format `is_error` `tool_result`), the label/cause/command-shape classifi
 non-gate-friction classification (`_is_nongate_friction_kind`, `_friction_kind_label`). A leaf:
 imports `corpus` and `render` by module (attribute access), matching `cost.py`'s convention —
 `corpus._parse_ts` for the module-level `_TOOL_DENIAL_KIND_REGIME_START_TS` constant,
-`render._content_text` for `hook_denial_key`'s current-shape decode. `hook_denial_key` and
-`_drop_denial_command_flag_values` are the two names reached bare from still-unmigrated
-friction/command-shape helpers in the shim — see the exception noted above.
+`render._content_text` for `hook_denial_key`'s current-shape decode. `_drop_denial_command_flag_values`
+is the one name reached bare from a still-unmigrated command-shape helper in the shim — see the
+exception noted above. `friction_count.py` reads `hook_denial_key` as `denials.hook_denial_key`.
 
 ### `review_trace.py`
 
@@ -278,7 +380,7 @@ through this one binding. `cost_ledger.py` reads the other six names by attribut
 
 ### `gh_cli.py`
 
-gh and git-remote access shared by pr-link, pr-cost, and workstream-cost: origin
+gh and git-remote access shared by pr-link, pr-cost, workstream-cost, and period-cost: origin
 host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module — `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
@@ -290,6 +392,23 @@ pr-link reaches bare from the shim: `_classify_gh_error`, `_GH_ERROR_KIND_NETWOR
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
 discipline.
+
+The period-cost command shares four pieces of this module:
+
+- **`_gh_pr_list`** is the one bulk `gh pr list` call. It returns `(payload, status)` and aborts
+  nothing: an empty status is success, and `_GH_PR_LIST_UNPARSEABLE` is gh answering with stdout that
+  is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps),
+  `env`, which it forwards to the call, and `command_name`, which prefixes every message
+  `_gh_call_with_backoff` prints. The merged and closed
+  discovery helpers go through it and keep their own abort messages.
+- **`_is_plain_owner_repo`** is the Python copy of the owner/repo grammar in `_lib_parse_pr_identity`
+  (`claude/.claude/hooks/_lib.sh`), with parity tests against the bash parser.
+- **`_environ_without_gh_tokens`** returns a copy of `os.environ` without the four variables gh reads as
+  tokens. A child that must not send an ambient gh token gets that environment. The call sites are in
+  `docs/transcript-analysis.md` § "period-cost".
+- **`_origin_identity_at`** resolves a recorded directory's `origin` where the cwd lookup resolves the
+  process's own, so it lives in `gh_cli` beside that lookup. It returns `None` on any failure and prints
+  nothing. See docs/transcript-analysis.md, "Repository resolution", for the git call and the vetting.
 
 ### `pr_cost_ledger.py`
 
@@ -476,6 +595,77 @@ sessions where a leader skill fired on the main thread, and the `_add_skill_pair
 registration. Imports `corpus`, `pricing`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_add_skill_pair_subparser` is the one name `build_parser()` reaches bare.
 
+### `period_cost.py`
+
+The period-cost command: `cmd_period_cost` and every helper used only by it — the inclusive UTC
+window refusals, the per-session stream assignment, the anchor directories, the review windows, the
+repository resolver, the per-repository PR join, the Slack report renderer, and the stderr notices.
+The stream assignment runs the PR-cost attribution and pricing primitives per record
+(`pricing.dedup_turns_by_request_id`, `scope._attributed_branch`, `pricing._price_turn`) instead of
+calling `cost._compute_pr_cost_branch_totals`, which takes no time window. Imports `corpus`, `cost`,
+`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, and `scope` all by module (attribute
+access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_PRICE_CAVEAT` and
+`_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS`. It reads its one root, `scope.config_dir() / "projects"`,
+as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
+`--config-dir` flag. Its subprocess calls are listed in
+`docs/transcript-analysis.md` § "period-cost".
+`cmd_period_cost` is the one name reached bare from the shim, from `build_parser()`.
+
+### `buckets.py`
+
+The buckets command: `cmd_buckets`, the per-branch count of main-thread assistant turns by model
+family with project and session counts and the date range, and the `_add_buckets_subparser`
+registration. Imports `corpus`, `redaction`, `render`, and `scope` all by module (attribute access),
+matching `cost.py`'s convention. `_add_buckets_subparser` is the one name `build_parser()` reaches bare.
+
+### `fail_seq.py`
+
+The fail-seq command: `cmd_fail_seq`, each branch's ordered test-run failed-count sequence with its
+failing rate and longest failing streak (`_longest_fail_streak`), and the `_add_fail_seq_subparser`
+registration. Imports `render` and `scope` both by module (attribute access), matching `cost.py`'s
+convention. It is the one home of `TEST_RUNNER_RE` and `FAILED_RE`, which `friction_count.py` reads as
+`fail_seq.TEST_RUNNER_RE` and `fail_seq.FAILED_RE`. `_add_fail_seq_subparser` is the one name
+`build_parser()` reaches bare.
+
+### `struggle.py`
+
+The struggle command: `cmd_struggle`, each branch's count of user turns matching `STRUGGLE_PHRASES` by
+the preceding model family, and the `_add_struggle_subparser` registration. Imports `render` and
+`scope` both by module (attribute access), matching `cost.py`'s convention. It is the one home of
+`STRUGGLE_PHRASES`, which `user_input.py` and `friction_count.py` read as `struggle.STRUGGLE_PHRASES`.
+`_add_struggle_subparser` is the one name `build_parser()` reaches bare.
+
+### `user_input.py`
+
+The user-input command: `cmd_user_input`, the per-session narrative of fresh user prompts classified as
+initial, follow-up, or explicit correction, the prompt-classification helpers only it uses
+(`_is_fresh_user_prompt_for_narrative`, `_is_unrecognized_user_list_record`, `_classify_prompt`,
+`_attribute_model_to_prompt`, `_truncate_prompt_text`), and the `_add_user_input_subparser`
+registration. Imports `corpus`, `redaction`, `render`, `scope`, and `struggle` all by module
+(attribute access), matching `cost.py`'s convention; `_classify_prompt` reads
+`struggle.STRUGGLE_PHRASES`. It scans `scope.PROJECTS_DIR` only, ignoring declared roots. Its
+`--redact` map comes from `redaction._build_redact_map`'s default root. `_add_user_input_subparser`
+is the one name `build_parser()` reaches bare.
+
+### `duration.py`
+
+The duration command: `cmd_duration`, each branch's span, active, and idle minutes and activity-burst
+count, and the `_add_duration_subparser` registration. Imports `corpus` and `scope` both by module
+(attribute access), matching `cost.py`'s convention. `_add_duration_subparser` is the one name
+`build_parser()` reaches bare.
+
+### `friction_count.py`
+
+The friction-count command: `cmd_friction_count`, one transcript's composite of hook denials, failed
+test runs, and struggle-phrase user turns, its `--checkpoint` incremental byte-offset scan
+(`_read_friction_checkpoint`, `_write_friction_checkpoint`, `_consume_new_transcript_lines`), and the
+`_add_friction_count_subparser` registration. Imports `denials`, `fail_seq`, `render`, and `struggle`
+all by module (attribute access), matching `cost.py`'s convention: it reads `denials.hook_denial_key`,
+`fail_seq.TEST_RUNNER_RE`, `fail_seq.FAILED_RE`, and `struggle.STRUGGLE_PHRASES`. It reads no scope,
+since it takes one transcript path rather than a corpus. `nudge-error-mode-analysis.sh` runs it
+through the shim with `--checkpoint` and reads a bare integer from stdout.
+`_add_friction_count_subparser` is the one name `build_parser()` reaches bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -486,9 +676,12 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised only
-through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which
-calls into the shim. Every other package module has its own per-command-group (or, for `denials.py`,
+Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
+`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which calls into
+the shim. `pricing.py`'s shared per-session step, staleness rule, and canary return values, and
+`cost.py`'s accumulation of that step's counts, also have direct tests in
+`tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
+its stability promise relies on, live in `tests/test_transcript_session_pricing.py`. Every other package module has its own per-command-group (or, for `denials.py`,
 per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py`'s in
 `tests/test_transcript_denials.py`, `review_trace.py`'s in
 `tests/test_transcript_review_trace.py`, `read_scope.py`'s in
@@ -505,12 +698,15 @@ seven pr-cost-family test files, plus `tests/_pr_cost_helpers.py` (a plain modul
 itself — see `.claude/rules/test-tree-packaging.md` for why its own consumers import it as
 `from ._pr_cost_helpers import ...`), share the family-only fixtures the legacy pr-cost tests used:
 `_enable_pr_cost`, `_pr_cost_args`, `_pr_cost_export_args`, `_fake_pr_cost_subprocess_run`,
-`_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. Each loads its own
-independent copy of `transcript-analysis.py` via the same `spec_from_file_location` boilerplate
-`test_transcript_analysis.py` uses, rather than importing that file's `_mod`. Each reaches a moved
-module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_denial_key`,
-`_mod.review_trace.cmd_review_trace`) — the same channel the shim-reimport exception above relies
-on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
+`_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. A test file that reads
+only package-resident names imports those modules directly, unaliased, as `from
+transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
+only the shim has — `build_parser`, `main`, or a `cmd_*` function the shim itself defines — loads
+its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
+boilerplate `test_transcript_analysis.py` uses. It reaches package modules as
+`_mod.<module>.<name>` (e.g. `_mod.cost._cost_report`, `_mod.redaction._REDACT_MAP_MISS_TOKEN`)
+— the same channel the shim-reimport exception above relies on. `tests/conftest.py` carries the
+shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
@@ -578,9 +774,12 @@ covers every path where `--record` must refuse and write nothing, plus each gate
 cases (`TestCostLedgerPublishSafety`, `TestCostLedgerSentinelGate`). `workstream_cost.py`'s own
 tests live in `tests/test_transcript_workstream_cost.py`, alongside `cost.py`'s
 `_compute_workstream_dollars` coverage. `tests/test_transcript_package_module_prefixes.py` pins the
-by-module import discipline of every module in its `PRODUCTION_MODULES` tuple, and the
-`_mod.<module>.<name>` reads in every test file in its `TEST_FILES` tuple, to real bindings — a
-permanent check rather than a one-time migration-time script.
+by-module import discipline of every module in its `PRODUCTION_MODULES` tuple. For every file in
+its `TEST_FILES` tuple, it checks both the `<module>.<name>` and `_mod.<module>.<name>` read
+shapes. It requires at least one such read per file. It holds the file to an unaliased
+whole-module import. It also fails any test file that imports from `transcript_analysis` without
+loading the shim and is missing from `TEST_FILES` — a permanent check rather than a one-time
+migration-time script.
 
 The subagent command family splits at command seams rather than one file per module:
 
@@ -623,6 +822,10 @@ again at its detection/reporting seam:
 - `tests/test_transcript_handoff_signal_response.py` covers its reporting side: spend ranking,
   curation cards, the startup-burn benchmark, the renderers, and `cmd_handoff_signal_response` end
   to end
+- `tests/test_transcript_period_cost.py` covers `period_cost.py`: the window refusals, review windows,
+  anchor directories, repository resolution, PR join, report rendering, notices, and `cmd_period_cost`
+  end to end against a fake `subprocess.run`. Its golden test compares `--sample` to the sample in
+  `docs/transcript-analysis.md`.
 
 `tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the six helpers more
 than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,
@@ -643,3 +846,16 @@ helpers more than one of those files, or `tests/test_transcript_analysis.py`, re
 imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
 why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
 `render.py`, not the judgment-pair command.
+
+The session-signal command group splits at command seams, one test file per module:
+`tests/test_transcript_buckets.py`, `tests/test_transcript_fail_seq.py`,
+`tests/test_transcript_struggle.py`, `tests/test_transcript_user_input.py`,
+`tests/test_transcript_duration.py`, and `tests/test_transcript_friction_count.py`. None of the six
+loads the shim: each imports its package module directly and relies on the loader-free
+`fake_projects` fixture. `TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration`
+covers buckets and duration from `tests/test_transcript_buckets.py`. `tests/_session_signal_helpers.py`,
+a plain module, not a test file itself, holds the helpers more than one of those files, or
+`tests/test_transcript_analysis.py`, reads. The legacy file imports it too, as
+`from ._session_signal_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
+`TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays in `tests/test_transcript_analysis.py`
+because it also spans judgment-pair and pr-link.

@@ -2,15 +2,15 @@
 
 The failure mode these tests exist to prevent is *silent under-linting*: a
 shell file that discovery never returns is never checked, and CI stays green
-while the file rots. `scripts/list-shell-files.sh` owns discovery for both CI
-and these tests, so a bug in its shebang *classification* pattern would be
-invisible to a test that reused the same pattern — the tests below re-derive
-that classification independently rather than recompiling the production
-regex. This independence covers shebang matching only: both the production
-script and `_independently_expected_files()` enumerate via the same
-`git ls-files -z` and both read only the first line of each file, so a shared
-blind spot upstream of classification (e.g. a byte-order mark before the
-shebang) is invisible to both.
+while the file rots. `scripts/list-shell-files.sh` owns discovery for both the
+contributor lint command and these tests, so a bug in its shebang
+*classification* pattern would be invisible to a test that reused the same
+pattern — the tests below re-derive that classification independently rather
+than recompiling the production regex. This independence covers shebang
+matching only: both the production script and `_independently_expected_files()`
+enumerate via the same `git ls-files -z` and both read only the first line of
+each file, so a shared blind spot upstream of classification (e.g. a
+byte-order mark before the shebang) is invisible to both.
 """
 
 from __future__ import annotations
@@ -19,24 +19,22 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-from helpers import (
-    REPO_ROOT,
-    init_ci_detect_step_test_repo,
-    run_ci_detect_step,
-)
+from helpers import REPO_ROOT
 
 DISCOVERY_SCRIPT = REPO_ROOT / "scripts" / "list-shell-files.sh"
 
 # Tracked shell scripts that carry no .sh extension and are identifiable only
-# by shebang. Hardcoded on purpose: in CI an explicit list would rot into "did
-# the author remember?", but in a test it is the known floor that makes a
-# discovery regression fail loudly. This is a floor, not a ceiling — it only
-# fails when a currently-listed file stops being discovered; it does nothing
-# to catch a newly-added extensionless script that discovery also misses. Add
-# to this list when a new extensionless shell script is committed.
+# by shebang. Hardcoded on purpose: in the discovery script an explicit list
+# would rot into "did the author remember?", but in a test it is the known
+# floor that makes a discovery regression fail loudly. This is a floor, not a
+# ceiling — it only fails when a currently-listed file stops being discovered;
+# it does nothing to catch a newly-added extensionless script that discovery
+# also misses. Add to this list when a new extensionless shell script is
+# committed.
 KNOWN_EXTENSIONLESS_SHELL_FILES = frozenset(
     {
         "claude/.local/bin/analyze-context",
@@ -107,6 +105,29 @@ def _shellcheck_binary() -> str | None:
     return shutil.which("shellcheck")
 
 
+_REQUIREMENTS_DEV = REPO_ROOT / "requirements-dev.txt"
+_SHELLCHECK_PY_PIN_PATTERN = re.compile(r"^shellcheck-py==(\d+\.\d+)\.\*$")
+_SHELLCHECK_VERSION_LINE_PATTERN = re.compile(r"^version:\s*(\S+)", re.MULTILINE)
+
+
+def _pinned_shellcheck_minor_version() -> str:
+    """The "X.Y" prefix of requirements-dev.txt's shellcheck-py==X.Y.* pin."""
+    for line in _REQUIREMENTS_DEV.read_text().splitlines():
+        match = _SHELLCHECK_PY_PIN_PATTERN.match(line.strip())
+        if match:
+            return match.group(1)
+    raise AssertionError(f"{_REQUIREMENTS_DEV} has no shellcheck-py==X.Y.* pin to verify the resolved binary against")
+
+
+def _shellcheck_version(binary: str) -> str:
+    """The version reported by `<binary> --version`'s "version: X.Y.Z" line."""
+    result = subprocess.run([binary, "--version"], capture_output=True, text=True, check=True)
+    match = _SHELLCHECK_VERSION_LINE_PATTERN.search(result.stdout)
+    if match is None:
+        raise AssertionError(f"could not parse a version from `{binary} --version`:\n{result.stdout}")
+    return match.group(1)
+
+
 def _require_shellcheck() -> str:
     """Resolve shellcheck, failing rather than skipping when running in CI.
 
@@ -114,6 +135,10 @@ def _require_shellcheck() -> str:
     install-dev.sh. Skipping in CI is not: a failed shellcheck-py install would
     turn "lint everything" into a silent no-op while the job still reports
     green, which is the same silent-success failure this suite exists to catch.
+
+    Also fails loudly, in CI and locally, when the resolved binary's version does not match
+    requirements-dev.txt's shellcheck-py pin. A PATH-ordering regression (an actions/setup-python
+    bump, a runner-image change) would otherwise lint silently with an unpinned shellcheck.
     """
     binary = _shellcheck_binary()
     if binary is None:
@@ -124,6 +149,14 @@ def _require_shellcheck() -> str:
                 "reports green while checking nothing."
             )
         pytest.skip("shellcheck not installed; run ./install-dev.sh")
+    pinned_minor = _pinned_shellcheck_minor_version()
+    resolved_version = _shellcheck_version(binary)
+    if not resolved_version.startswith(f"{pinned_minor}."):
+        pytest.fail(
+            f"resolved shellcheck ({binary}) reports version {resolved_version}, which does not match the"
+            f" shellcheck-py=={pinned_minor}.* pin in requirements-dev.txt — PATH is resolving a shellcheck binary"
+            " other than the pinned shellcheck-py console script"
+        )
     return binary
 
 
@@ -142,6 +175,84 @@ def _xargs_invokes_command_on_empty_input() -> bool:
         ["xargs", "-0", "false"], input="", capture_output=True, text=True
     )
     return result.returncode != 0
+
+
+class TestRequireShellcheck:
+    """Missing shellcheck fails in CI, not skips: a skip passes the lint vacuously."""
+
+    # Catch BaseException and compare the outcome type exactly: a guard
+    # collapsed to pytest.skip would otherwise escape pytest.raises(Failed)
+    # and report this test as skipped rather than failed.
+    def test_fails_in_ci_when_shellcheck_is_missing(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: None)
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.fail.Exception
+
+    def test_skips_outside_ci_when_shellcheck_is_missing(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: None)
+        monkeypatch.delenv("CI", raising=False)
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.skip.Exception
+
+    # Catch BaseException and compare the outcome type exactly, as above: a
+    # resolved-but-unpinned binary must fail, not silently lint with it.
+    def test_fails_when_the_resolved_binary_reports_a_version_outside_the_pin(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: "/opt/other/shellcheck")
+        monkeypatch.setattr(sys.modules[__name__], "_pinned_shellcheck_minor_version", lambda: "0.11")
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_version", lambda binary: "0.9.0")
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.fail.Exception
+
+    def test_returns_the_binary_when_its_version_matches_the_pin(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: "/opt/pinned/shellcheck")
+        monkeypatch.setattr(sys.modules[__name__], "_pinned_shellcheck_minor_version", lambda: "0.11")
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_version", lambda binary: "0.11.0")
+        assert _require_shellcheck() == "/opt/pinned/shellcheck"
+
+
+class TestPinnedShellcheckVersion:
+    """`_pinned_shellcheck_minor_version` reads the shellcheck-py pin straight from requirements-dev.txt."""
+
+    def test_parses_the_minor_version_from_a_shellcheck_py_pin_line(self, tmp_path, monkeypatch):
+        fake_requirements = tmp_path / "requirements-dev.txt"
+        fake_requirements.write_text("pytest==8.*\nshellcheck-py==0.11.*\n")
+        monkeypatch.setattr(sys.modules[__name__], "_REQUIREMENTS_DEV", fake_requirements)
+
+        assert _pinned_shellcheck_minor_version() == "0.11"
+
+    def test_raises_when_no_shellcheck_py_pin_line_is_present(self, tmp_path, monkeypatch):
+        fake_requirements = tmp_path / "requirements-dev.txt"
+        fake_requirements.write_text("pytest==8.*\n")
+        monkeypatch.setattr(sys.modules[__name__], "_REQUIREMENTS_DEV", fake_requirements)
+
+        with pytest.raises(AssertionError):
+            _pinned_shellcheck_minor_version()
+
+
+class TestShellcheckVersionParsing:
+    """`_shellcheck_version` parses the "version:" line out of `shellcheck --version`'s multi-line output."""
+
+    def test_parses_the_version_from_multi_line_version_output(self, monkeypatch):
+        output = "ShellCheck - shell script analysis tool\nversion: 0.11.0\nlicense: GPLv3\nwebsite: https://www.shellcheck.net\n"
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=output, stderr=""),
+        )
+
+        assert _shellcheck_version("shellcheck") == "0.11.0"
+
+    def test_raises_when_the_output_has_no_version_line(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="not shellcheck output\n", stderr=""),
+        )
+
+        with pytest.raises(AssertionError):
+            _shellcheck_version("shellcheck")
 
 
 class TestDiscovery:
@@ -177,127 +288,6 @@ class TestDiscovery:
         assert "\n" not in raw, (
             "Discovery emitted a newline — output must be NUL-separated only, "
             "or paths containing newlines would split incorrectly"
-        )
-
-
-class TestCiGateCoversDiscovery:
-    """The CI path filter must trigger on everything discovery lints.
-
-    Discovery is content-based (shebang); the CI gate is necessarily
-    path-based. If SHELL_REGEX is narrower than discovery, edits to the
-    uncovered files never run the shellcheck step — the silent-under-linting
-    failure this suite exists to prevent, reintroduced one layer up in the
-    workflow rather than in discovery itself.
-    """
-
-    @staticmethod
-    def _shell_regex_pattern() -> str:
-        workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text()
-        match = re.search(r"^\s*SHELL_REGEX='([^']+)'", workflow, re.MULTILINE)
-        assert match, "SHELL_REGEX not found in tests.yml — did the gate move?"
-        return match.group(1)
-
-    @staticmethod
-    def _grep_e_matches(pattern: str, candidate: str) -> bool:
-        """Match via the real `grep -E` binary rather than `re.compile`.
-
-        CI evaluates SHELL_REGEX with `grep -E`, a POSIX ERE engine. Today ERE
-        and Python's `re` agree on this pattern, but a future GNU-ERE-only
-        construct would be silently reinterpreted by `re.compile` instead of
-        erroring — leaving this test green while CI's `grep -E` diverges.
-        Shelling out to `grep -E` keeps the test in the same dialect CI uses.
-        """
-        result = subprocess.run(
-            ["grep", "-E", pattern],
-            input=candidate,
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
-
-    def test_every_discovered_file_matches_the_ci_filter(self):
-        pattern = self._shell_regex_pattern()
-        unmatched = sorted(
-            p for p in _discovered_files() if not self._grep_e_matches(pattern, p)
-        )
-        assert not unmatched, (
-            "Discovered shell files that SHELL_REGEX in .github/workflows/"
-            "tests.yml would not trigger on — editing one of these alone would "
-            f"skip the shellcheck step entirely: {unmatched}"
-        )
-
-    def test_filter_triggers_on_the_config_and_discovery_script(self):
-        """Neither is a .sh consumer, but both change what gets linted."""
-        pattern = self._shell_regex_pattern()
-        for path in (".shellcheckrc", "scripts/list-shell-files.sh"):
-            assert self._grep_e_matches(pattern, path), (
-                f"SHELL_REGEX must match {path} — editing it changes lint "
-                "results without touching any linted file"
-            )
-
-
-class TestDetectStepFailOpenSetsShellChanged:
-    """Executes the detect step's actual `run:` body, not its extracted pattern.
-
-    TestCiGateCoversDiscovery only inspects SHELL_REGEX as a string — it
-    cannot see a branch that returns before that pattern is ever evaluated.
-    The detect step has exactly such a branch: on an unresolvable or
-    zero-SHA BASE it echoes changed=true and exits before the block that
-    computes shell_changed ever runs, so shell_changed would be absent
-    (not false) rather than true. An absent output never equals 'true', so
-    the shellcheck step would silently skip while CI reports green. These
-    tests run the step's real shell body under bash against a throwaway git
-    repository to prove both the normal and fail-open paths set
-    shell_changed correctly.
-    """
-
-    def test_resolvable_base_with_shell_file_changed_sets_shell_changed_true(
-        self, tmp_path: Path
-    ):
-        repo, base_sha, head_sha = init_ci_detect_step_test_repo(
-            tmp_path, {"scripts/example.sh": "#!/bin/bash\necho hi\n"}
-        )
-        outputs = run_ci_detect_step(repo, base_sha, head_sha)
-        assert outputs.get("shell_changed") == "true", (
-            "Expected shell_changed=true for a resolvable BASE with a .sh "
-            f"file changed; got outputs: {outputs}"
-        )
-
-    def test_zero_sha_base_sets_shell_changed_true(self, tmp_path: Path):
-        """The fail-open regression this test class exists to guard.
-
-        The zero-SHA/unresolvable-BASE early-exit branch must set
-        shell_changed=true alongside changed=true. That branch returns before
-        the block further down the step that otherwise computes
-        shell_changed, so if the early exit only sets changed=true,
-        shell_changed stays absent rather than false — and an absent output
-        never equals 'true', so the shellcheck step silently skips while CI
-        reports green. If this assertion fails, that is exactly the
-        regression that has crept back in.
-        """
-        repo, _base_sha, head_sha = init_ci_detect_step_test_repo(
-            tmp_path, {"README.md": "second\n"}
-        )
-        zero_sha = "0" * 40
-        outputs = run_ci_detect_step(repo, zero_sha, head_sha)
-        assert outputs.get("shell_changed") == "true", (
-            "shell_changed must be 'true' when BASE is the zero SHA (the "
-            f"fail-open path) — got {outputs.get('shell_changed')!r}. The "
-            "detect step's early-exit branch for an unresolvable/zero BASE "
-            "must set shell_changed=true alongside changed=true, or the "
-            "shellcheck step silently skips while CI reports green."
-        )
-
-    def test_resolvable_base_with_only_non_shell_file_changed_sets_shell_changed_false(
-        self, tmp_path: Path
-    ):
-        repo, base_sha, head_sha = init_ci_detect_step_test_repo(
-            tmp_path, {"docs/notes.md": "some notes\n"}
-        )
-        outputs = run_ci_detect_step(repo, base_sha, head_sha)
-        assert outputs.get("shell_changed") == "false", (
-            "Expected shell_changed=false for a resolvable BASE touching only "
-            f"a non-shell, non-test file; got outputs: {outputs}"
         )
 
 
@@ -354,30 +344,19 @@ class TestGateActuallyBites:
             f"Expected SC2006; got:\n{result.stdout}{result.stderr}"
         )
 
-    def test_exits_nonzero_when_given_no_files(self):
-        """An empty file list must fail, not pass vacuously.
-
-        If discovery ever returns nothing, the CI step has to go red. Exit 3
-        is shellcheck's "invoked with bad syntax" code.
-        """
-        binary = _require_shellcheck()
-        result = subprocess.run(
-            [binary], capture_output=True, text=True, stdin=subprocess.DEVNULL
-        )
-        assert result.returncode != 0, (
-            "shellcheck with no file arguments must not exit 0, or a broken "
-            "discovery regex would silently pass CI"
-        )
-
     def test_xargs_zero_composition_exits_nonzero_on_empty_input(self):
-        """Pins the CI step's actual invocation, not bare shellcheck alone.
+        """Pins the `xargs -0 <shellcheck>` composition of the contributor command.
 
-        The CI step runs `./scripts/list-shell-files.sh | xargs -0 shellcheck`,
-        not `shellcheck` directly. Whether zero bytes of input still invoke
-        `shellcheck` once (and therefore still hit its bad-syntax exit code)
+        README.md's lint command is
+        `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`.
+        This test drops the `scripts/venv-run.sh` wrapper and calls the
+        resolved binary directly. Whether zero bytes of input still invoke
+        shellcheck once (and therefore still hit its bad-syntax exit code)
         depends on GNU xargs running the command once when `-r` /
-        `--no-run-if-empty` is absent — a composition the bare-binary test
-        above cannot observe.
+        `--no-run-if-empty` is absent. It does not go through
+        `scripts/venv-run.sh` because CI installs with `pip` and has no `.venv`,
+        so venv-run.sh would exit 127. That status would satisfy the test's
+        `returncode != 0` assertion without shellcheck ever running.
         """
         try:
             invokes_on_empty = _xargs_invokes_command_on_empty_input()
@@ -387,7 +366,7 @@ class TestGateActuallyBites:
         else:
             reason = (
                 "local xargs does not invoke the command on empty input "
-                "(BSD/macOS default); CI's ubuntu-24.04 runner uses GNU "
+                "(BSD/macOS default); the ubuntu-24.04 CI runner uses GNU "
                 "xargs, where this guarantee holds"
             )
         if not invokes_on_empty:
@@ -403,12 +382,12 @@ class TestGateActuallyBites:
         )
         assert result.returncode != 0, (
             "`xargs -0 shellcheck` on empty input must not exit 0 — a broken "
-            "discovery regex producing no output would silently pass CI"
+            "discovery regex producing no output would silently pass the lint"
         )
 
 
 class TestShellcheckrc:
-    """The repo-root .shellcheckrc is what lets the CI step run without flags."""
+    """The repo-root .shellcheckrc is what lets shellcheck run without flags."""
 
     def test_rc_file_exists_with_required_directives(self):
         rc_path = REPO_ROOT / ".shellcheckrc"
