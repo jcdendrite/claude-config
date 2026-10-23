@@ -726,12 +726,13 @@ class TestRawWriteTargetGap:
 
     @pytest.mark.parametrize(
         "command",
-        ["git log -n 5 2>&1", "git diff 2>/dev/null"],
-        ids=["stderr-to-stdout", "stderr-to-dev-null"],
+        ["git log -n 5 2>&1", "git diff 2>/dev/null", "git log > /dev/null 2>&1"],
+        ids=["stderr-to-stdout", "stderr-to-dev-null", "spaced-dev-null-with-stderr"],
     )
     def test_reviewer_git_redirect_of_stderr_allowed(self, command):
-        # Pins that an fd-numbered redirect (`2>&1`, `2>/dev/null`) stays allowed,
-        # so a future fix of that header gap must not start denying it.
+        # Pins that an fd-numbered redirect (`2>&1`, `2>/dev/null`) and the spaced
+        # `> /dev/null 2>&1` stay allowed, so a future fix of that header gap
+        # must not start denying them.
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     @pytest.mark.parametrize(
@@ -750,13 +751,41 @@ class TestRawWriteTargetGap:
 
     @pytest.mark.parametrize(
         "command",
-        ["git diff >&2", "git log > /dev/stderr", "git log > /dev/stdout"],
-        ids=["fd-duplication", "dev-stderr", "dev-stdout"],
+        [
+            "git diff >&2",
+            "git log > /dev/stderr",
+            "git log > /dev/stdout",
+            # The extracted target is `&`, so the `/dev/null` exemption never applies.
+            "git log >& /dev/null",
+            # The extracted target is `&`, so a `/tmp/` path after `>&` is not exempt either.
+            "git log >& /tmp/scratch/x",
+        ],
+        ids=[
+            "fd-duplication",
+            "dev-stderr",
+            "dev-stdout",
+            "combined-redirect-dev-null",
+            "combined-redirect-tmp",
+        ],
     )
-    def test_reviewer_git_redirect_to_standard_stream_over_denied(self, command):
-        """An accepted false deny named in the hook header's Known gaps, because
-        only `/dev/null` and `/tmp/*` targets are exempt. The assertion pins the
-        verdict, not the extracted target text."""
+    def test_reviewer_git_redirect_over_denied(self, command):
+        """An accepted false deny named in the hook header's Known gaps.
+        `/dev/stderr` and `/dev/stdout` deny because only `/dev/null` and `/tmp/*` targets are exempt.
+        `>&2` and `>& /dev/null` deny because the hook reads `>&` (or `>&2`) as a redirect whose target is `&` (or `&2`).
+        The word after `>&` is never read as a target, so the `/dev/null` and `/tmp/*` exemptions never apply.
+        The assertion pins the verdict and the shared `, which is outside /tmp.` tail, not the extracted target text."""
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert ", which is outside /tmp." in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        ["git log >& src/x", "git log >&src/x"],
+        ids=["spaced", "attached"],
+    )
+    def test_reviewer_git_ampersand_redirect_to_tracked_path_denied(self, command):
+        # The deny currently comes from the `>&` word yielding a target that starts with `&`, so a
+        # fix that skips `>&` as fd duplication must keep a write onto a tracked path denied.
         reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
         assert reason is not None
         assert ", which is outside /tmp." in reason
@@ -847,13 +876,12 @@ class TestRawWriteTargetGap:
     def test_reviewer_redirect_hidden_behind_bare_ampersand_denied(self):
         # The `>` target scan walks every word of the unsplit fragment, so a
         # redirect after a bare `&` is still read, unlike a cp/mv/tee target.
-        assert (
-            run_hook(
-                HOOK,
-                bash_input("echo hi & echo x > src/y", agent_type="staff-sdet"),
-            )
-            == "deny"
+        reason = run_hook_reason(
+            HOOK,
+            bash_input("echo hi & echo x > src/y", agent_type="staff-sdet"),
         )
+        assert reason is not None
+        assert "writes to 'src/y'" in reason
 
 
 class TestBuiltinAgents:
@@ -1159,7 +1187,7 @@ class TestKnownGapBypass:
     # `_lib_split_fragments` does not split on a bare `&`. A fix to GH-811's
     # underlying limitation should make each allow assertion start failing;
     # update it to "deny" then, not silently accept it. The third test pins
-    # the deny that stays.
+    # the deny that holds when no earlier git word precedes the write.
     def test_reviewer_git_write_after_allowed_git_word_and_bare_ampersand_allowed(self):
         # The first git word is `log`, so the subcommand check reads `log`
         # and never sees the `git checkout` after the `&`.
@@ -1187,13 +1215,12 @@ class TestKnownGapBypass:
         # test_reviewer_git_write_after_allowed_git_word_and_bare_ampersand_allowed:
         # with no earlier git word, the first git word is the write itself, so
         # the subcommand check denies.
-        assert (
-            run_hook(
-                HOOK,
-                bash_input("sleep 1 & git checkout -- x", agent_type="staff-sdet"),
-            )
-            == "deny"
+        reason = run_hook_reason(
+            HOOK,
+            bash_input("sleep 1 & git checkout -- x", agent_type="staff-sdet"),
         )
+        assert reason is not None
+        assert "is not a read-only git subcommand" in reason
 
     # The cases below pin the CURRENT (imperfect) allow verdicts for the
     # reserved-word entry in the header's known-gaps list: a command right after
@@ -1225,12 +1252,16 @@ class TestKnownGapBypass:
     def test_reviewer_redirect_in_keyword_body_denied(self):
         # Counterpart of test_reviewer_command_word_arm_in_keyword_body_allowed:
         # the redirect scan walks every word of the fragment, so it still denies.
-        assert run_hook(HOOK, bash_input("for f in a; do echo x > src/x; done", agent_type="staff-sdet")) == "deny"
+        reason = run_hook_reason(HOOK, bash_input("for f in a; do echo x > src/x; done", agent_type="staff-sdet"))
+        assert reason is not None
+        assert "writes to 'src/x'" in reason
 
     def test_reviewer_git_write_in_keyword_body_denied(self):
         # Counterpart of test_reviewer_command_word_arm_in_keyword_body_allowed:
         # the git scan reads any word of the fragment, so a keyword does not hide a git write.
-        assert run_hook(HOOK, bash_input("for f in a; do git checkout -- x; done", agent_type="staff-sdet")) == "deny"
+        reason = run_hook_reason(HOOK, bash_input("for f in a; do git checkout -- x; done", agent_type="staff-sdet"))
+        assert reason is not None
+        assert "is not a read-only git subcommand" in reason
 
     @pytest.mark.parametrize(
         "command",
@@ -1246,7 +1277,9 @@ class TestKnownGapBypass:
     )
     def test_reviewer_command_word_arm_outside_keyword_body_denied(self, command):
         # Boundaries of test_reviewer_command_word_arm_in_keyword_body_allowed, per the header's reserved-word entry.
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "rewrites the file in place" in reason
 
     @pytest.mark.parametrize("command", ["echo x | TEE src/x", "echo x | Tee src/x"], ids=["upper-case", "title-case"])
     def test_reviewer_non_lowercase_tee_to_tracked_path_allowed(self, command):
@@ -1258,7 +1291,9 @@ class TestKnownGapBypass:
     def test_reviewer_non_lowercase_cp_mv_to_tracked_path_denied(self, command):
         # Counterpart of test_reviewer_non_lowercase_tee_to_tracked_path_allowed:
         # the command-word gate ignores case, but the tee destination walk does not.
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "writes to 'src/x'" in reason
 
     # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
     # for the /tmp link gap in the header's known-gaps list. The hook matches

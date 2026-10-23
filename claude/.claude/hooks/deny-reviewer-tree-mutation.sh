@@ -155,13 +155,15 @@
 #     `black --check`, `ruff format --check`) is denied by the unconditional
 #     rule above — a false deny on a genuinely read-only invocation, not a
 #     missed mutation (see Grounding).
-#   - These read-only shapes deny as raw writes, an accepted false deny:
+#   - These shapes deny as raw writes, an accepted false deny:
 #       - A `>` that starts a word inside quoted text or a heredoc body
 #         (`git log --grep 'a > b'`).
 #         docs/design-decisions/command-text-gates-accept-quoted-text-over-deny.md
 #         records why.
-#       - A redirect to `>&2`, `/dev/stderr`, or `/dev/stdout`, because the
-#         raw-write check exempts only `/dev/null` and `/tmp/*` targets.
+#       - A redirect to `/dev/stderr` or `/dev/stdout`, because the raw-write
+#         check exempts only `/dev/null` and `/tmp/*` targets.
+#       - `>&2`, `>& /dev/null` and `>& /tmp/x`, because the check reads the
+#         text after `>` as the target (`&`, `&2`), which no exemption matches.
 #   - Does not resolve a fragment's effective cwd (unlike
 #     require-worktree-for-git-writes.sh's -C/cd threading): a reviewer
 #     never has a legitimate git-write or in-place-format target anywhere,
