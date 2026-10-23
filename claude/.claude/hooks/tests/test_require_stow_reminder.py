@@ -550,9 +550,8 @@ class TestRequireStowReminder:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    def test_missing_lib_sh_bootstrap_deny_points_at_install_sh_without_relink_premise(self, tmp_path):
-        """With `_lib.sh` absent, the bootstrap deny tells the engineer to run
-        ./install.sh and states no relink premise."""
+    def test_missing_lib_sh_bootstrap_deny_points_at_install_sh(self, tmp_path):
+        """With `_lib.sh` absent, the bootstrap deny tells the engineer to run ./install.sh."""
         # The copy sits alone in `tmp_path`, so the hook finds no `_lib.sh` beside it.
         lonely_hook = tmp_path / STOW_REMINDER_HOOK.name
         shutil.copy2(STOW_REMINDER_HOOK, lonely_hook)
