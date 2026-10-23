@@ -280,6 +280,7 @@ class TestDetailsBalance:
         body = _write(tmp_path, _body_with(f"{DISCLOSURE_LINE}\n\n<details>"))
         result = _run([str(body), "diff-only"])
         assert result.returncode == 1
+        assert "never closed" in result.stderr
 
     def test_awk_failure_exits_two_and_names_the_file(self, tmp_path):
         """An awk that cannot run must not read as balanced or as a tag defect."""
