@@ -1020,6 +1020,48 @@ class TestFailureStamp:
         assert third.returncode == 0, repr(third)
         assert len(install_log_entries(install_log)) == 2, "a settings change must lift the suppression"
 
+    def test_id_skipped_before_its_install_is_not_stamped_and_installs_once_its_marketplace_is_listed(
+        self, tmp_path: Path
+    ) -> None:
+        """Only a failed install stamps, so an id skipped for an unregistered marketplace is retried on
+        unchanged settings while its failed sibling stays suppressed."""
+        repo = tmp_path / "repo"
+        init_reconciler_repo(repo, enabled_plugins={"failing@bar": True, "skipped@baz": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            fail_install_ids=frozenset({"failing@bar"}),
+            install_log=install_log,
+        )
+
+        first = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert first.returncode == 0, repr(first)
+        assert [(line["plugin_id"], line["decision"]) for line in reconciler_audit_lines(config_dir)] == [
+            ("failing@bar", "install_failed"),
+            ("skipped@baz", "m4_marketplace_not_registered"),
+        ]
+        assert len(list((config_dir / "plugin-bootstrap").glob("failure-stamp.*"))) == 1
+
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}, {"name": "baz", "source": "directory"}],
+            fail_install_ids=frozenset({"failing@bar"}),
+            install_log=install_log,
+        )
+        second = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert second.returncode == 0, repr(second)
+        assert [entry["plugin"] for entry in install_log_entries(install_log)] == ["failing@bar", "skipped@baz"]
+        assert [(line["plugin_id"], line["decision"]) for line in reconciler_audit_lines(config_dir)[2:]] == [
+            ("failing@bar", "m9_stamp_suppressed"),
+            ("skipped@baz", "install_succeeded"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Install argv content and cap-kill classification.
@@ -1104,6 +1146,43 @@ class TestInstallArgv:
         entries = install_log_entries(install_log)
         assert [entry["plugin"] for entry in entries] == ["a@bar", "b@bar", "c@bar"]
         assert [entry["stdin_is_dev_null"] for entry in entries] == [True, True, True]
+
+    @pytest.mark.parametrize(
+        ("marketplace_entries", "expected_install_ids"),
+        [
+            ([{"name": "bar", "source": "directory"}], ["ok@bar", "failing@bar"]),
+            ([], []),
+        ],
+        ids=["listed-marketplace-with-failing-and-skipped-ids", "empty-listing"],
+    )
+    def test_reconciler_issues_only_a_marketplace_listing_and_local_installs(
+        self, tmp_path: Path, marketplace_entries: list[dict], expected_install_ids: list[str]
+    ) -> None:
+        """Every `claude` call is one `plugin marketplace list --json` or one `plugin install -s local -- <id>`,
+        so the reconciler never adds a marketplace, whether an install fails or an id is skipped."""
+        repo = tmp_path / "repo"
+        init_reconciler_repo(
+            repo, enabled_plugins={"ok@bar": True, "failing@bar": True, "skipped@baz": True}
+        )
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        call_log = tmp_path / "calls.log"
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=marketplace_entries,
+            fail_install_ids=frozenset({"failing@bar"}),
+            call_log=call_log,
+        )
+
+        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        recorded_calls = [json.loads(line) for line in call_log.read_text().splitlines() if line]
+        listing_call = ["plugin", "marketplace", "list", "--json"]
+        install_calls = [["plugin", "install", "-s", "local", "--", plugin_id] for plugin_id in expected_install_ids]
+        assert recorded_calls.count(listing_call) == 1
+        assert sorted(call for call in recorded_calls if call != listing_call) == sorted(install_calls)
 
 
 class TestInstallCapKill:
@@ -1680,13 +1759,15 @@ class TestWallClockCeiling:
         decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
         assert decisions == ["wall_clock_ceiling_reached"]
 
-    def test_ceiling_reached_logs_one_line_and_ends_the_run_however_many_ids_remain(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("marker_change", ["backdate", "delete"])
+    def test_ceiling_reached_mid_run_stops_after_the_in_flight_install_and_logs_one_line(
+        self, tmp_path: Path, marker_change: str
     ) -> None:
-        """The ceiling stays hit once hit, so a run logs it once and stops
-        iterating instead of paying a log append per remaining id."""
+        """The ceiling stays hit once hit, so a run that trips it between ids logs it once, for the
+        next id, and stops iterating instead of paying a log append per remaining id. The shim changes
+        the marker during the first install, so the ceiling trips after that install began."""
         repo = tmp_path / "repo"
-        init_reconciler_repo(repo, enabled_plugins={"foo@bar": True, "baz@bar": True, "qux@bar": True})
+        init_reconciler_repo(repo, enabled_plugins={"aaa@bar": True, "bbb@bar": True, "ccc@bar": True})
         config_dir = tmp_path / "cfg"
         marker_file = config_dir / "plugin-bootstrap" / ".reconciler-start"
         bin_dir = tmp_path / "bin"
@@ -1696,16 +1777,17 @@ class TestWallClockCeiling:
             bin_dir,
             marketplace_entries=[{"name": "bar", "source": "directory"}],
             install_log=install_log,
-            backdate_marker=marker_file,
-            backdate_marker_seconds_ago=700,
+            install_changes_marker=(marker_file, marker_change),
         )
 
         result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
 
         assert result.returncode == 0, repr(result)
-        assert install_log_entries(install_log) == []
-        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
-        assert decisions == ["wall_clock_ceiling_reached"]
+        assert [entry["plugin"] for entry in install_log_entries(install_log)] == ["aaa@bar"]
+        assert [(line["plugin_id"], line["decision"]) for line in reconciler_audit_lines(config_dir)] == [
+            ("aaa@bar", "install_succeeded"),
+            ("bbb@bar", "wall_clock_ceiling_reached"),
+        ]
 
 
 # ---------------------------------------------------------------------------

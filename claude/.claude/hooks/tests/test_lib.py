@@ -11039,6 +11039,19 @@ class TestLibMissingPluginIds:
         assert result.returncode == 0, repr(result)
         assert result.stdout.strip() == ""
 
+    @pytest.mark.parametrize(
+        "non_boolean_value",
+        ["true", 1, None, [], {}, "false"],
+        ids=["string-true", "number-one", "null", "empty-array", "empty-object", "string-false"],
+    )
+    def test_skips_entries_whose_value_is_not_the_boolean_true(self, tmp_path: Path, non_boolean_value) -> None:
+        """Only the JSON boolean `true` enables a plugin, so a truthy-looking or empty value does not."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": non_boolean_value}}))
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+        assert result.returncode == 0, repr(result)
+        assert result.stdout == ""
+
     def test_id_already_in_registry_is_not_reported_missing(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))

@@ -2948,39 +2948,55 @@ def make_reconciler_claude_shim(
     lingering_child_on: str = "install",
     backdate_marker: Path | None = None,
     backdate_marker_seconds_ago: int = 700,
+    install_changes_marker: tuple[Path, str] | None = None,
+    call_log: Path | None = None,
 ) -> None:
     """A `claude` PATH shim for the reconciler's two subcommands, with the
     marketplace's name and `.source` value configurable per test.
 
-    `plugin marketplace list --json` prints `marketplace_raw_stdout` verbatim
-    when given (for the "unparseable output" case), else
-    `json.dumps(marketplace_entries or [])`, and exits
-    `marketplace_list_exit_code` (stdout is empty for a non-zero exit,
-    matching a real CLI failure). When `marketplace_list_sleep_seconds` is
-    set, this call sleeps that long before responding -- for exercising
-    _lib_capped_for's own kill-and-nonzero-exit path at this call site.
-    When `marketplace_list_log` is given, each call appends one line to it.
-    When `marketplace_list_umask_log` is given, each call also appends the octal umask it runs under.
-    When `backdate_marker` is given, this call also sets that file's mtime
-    `backdate_marker_seconds_ago` seconds into the past before returning --
-    the marketplace listing is the run's first `claude` call after the marker
-    is created, so a test can simulate the wall-clock ceiling already having
-    elapsed without an actual 600s wait.
-
-    `plugin install ... <id> ...` (the id found positionally, tolerating
-    `-s`/`--scope`/`--` anywhere in argv) records `{"plugin": id, "args":
-    argv, "cwd": os.getcwd(), "umask": octal umask, "stdin_is_dev_null": bool}`
-    to `install_log` when given. It exits 1 for any id in `fail_install_ids`. After logging it
-    sleeps `install_sleep_seconds`, then, when `install_blocks_until_file_exists` is given, polls until that
-    file exists (giving up after 30 s so a test that never releases it cannot hang), then (for a successful id) adds a version-2
-    registry entry to `install_writes_registry`. When `lingering_child_pid_file` is given, the call named
-    by `lingering_child_on` (one of LINGERING_CHILD_CALLS) leaves a detached child behind that outlives it
-    for 30 s and writes the child's pid to that file. The child inherits every file descriptor the call
-    inherited except stdio. For "marketplace list" the shim forks it before responding. For "install"
-    a successful install forks it. For "git" the shim also writes a `git` wrapper that forks it, then
-    execs the real git. Any other subcommand exits 1 and names itself on stderr.
+    - `plugin marketplace list --json` prints `marketplace_raw_stdout` verbatim
+      when given (for the "unparseable output" case), else
+      `json.dumps(marketplace_entries or [])`, and exits
+      `marketplace_list_exit_code` (stdout is empty for a non-zero exit,
+      matching a real CLI failure).
+    - When `marketplace_list_sleep_seconds` is set, the list call sleeps that
+      long before responding -- for exercising _lib_capped_for's own
+      kill-and-nonzero-exit path at this call site.
+    - When `marketplace_list_log` is given, each list call appends one line to it.
+    - When `marketplace_list_umask_log` is given, each list call also appends
+      the octal umask it runs under.
+    - When `backdate_marker` is given, the list call also sets that file's mtime
+      `backdate_marker_seconds_ago` seconds into the past before returning --
+      the marketplace listing is the run's first `claude` call after the marker
+      is created, so a test can simulate the wall-clock ceiling already having
+      elapsed without an actual 600s wait.
+    - `plugin install ... <id> ...` (the id found positionally, tolerating
+      `-s`/`--scope`/`--` anywhere in argv) records `{"plugin": id, "args":
+      argv, "cwd": os.getcwd(), "umask": octal umask, "stdin_is_dev_null": bool}`
+      to `install_log` when given. It exits 1 for any id in `fail_install_ids`.
+    - After logging, an install sleeps `install_sleep_seconds`, then, when
+      `install_blocks_until_file_exists` is given, polls until that file exists
+      (giving up after 30 s so a test that never releases it cannot hang), then
+      (for a successful id) adds a version-2 registry entry to
+      `install_writes_registry`.
+    - When `install_changes_marker` is given as `(path, "backdate" | "delete")`,
+      every install call backdates (by `backdate_marker_seconds_ago`) or deletes
+      that file before exiting, so a test can trip the ceiling between ids.
+    - When `lingering_child_pid_file` is given, the call named by
+      `lingering_child_on` (one of LINGERING_CHILD_CALLS) leaves a detached child
+      behind that outlives it for 30 s and writes the child's pid to that file.
+      The child inherits every file descriptor the call inherited except stdio.
+      For "marketplace list" the shim forks it before responding. For "install"
+      a successful install forks it. For "git" the shim also writes a `git`
+      wrapper that forks it, then execs the real git.
+    - Any other subcommand exits 1 and names itself on stderr.
+    - When `call_log` is given, every call -- handled or not -- appends its argv
+      as one JSON line to it before any branch runs.
     """
     assert lingering_child_on in LINGERING_CHILD_CALLS, lingering_child_on
+    assert install_changes_marker is None or install_changes_marker[1] in ("backdate", "delete"), (
+        install_changes_marker
+    )
     marketplace_stdout = (
         marketplace_raw_stdout
         if marketplace_raw_stdout is not None
@@ -2993,6 +3009,9 @@ def make_reconciler_claude_shim(
     install_release_file_repr = repr(str(install_blocks_until_file_exists)) if install_blocks_until_file_exists else "None"
     registry_path_repr = repr(str(install_writes_registry)) if install_writes_registry else "None"
     lingering_child_pid_file_repr = repr(str(lingering_child_pid_file)) if lingering_child_pid_file else "None"
+    call_log_repr = repr(str(call_log)) if call_log else "None"
+    install_marker_path_repr = repr(str(install_changes_marker[0])) if install_changes_marker else "None"
+    install_marker_change_repr = repr(install_changes_marker[1]) if install_changes_marker else "None"
 
     shim = textwrap.dedent(f"""\
         #!/usr/bin/env python3
@@ -3001,6 +3020,10 @@ def make_reconciler_claude_shim(
         __LEAVE_LINGERING_CHILD__
 
         args = sys.argv[1:]
+        call_log = {call_log_repr}
+        if call_log:
+            with open(call_log, "a") as f:
+                f.write(json.dumps(args) + "\\n")
         FAIL_INSTALL_IDS = {repr(sorted(fail_install_ids))}
         install_log = {install_log_repr}
         marketplace_list_log = {marketplace_list_log_repr}
@@ -3009,6 +3032,8 @@ def make_reconciler_claude_shim(
         install_release_file = {install_release_file_repr}
         lingering_child_pid_file = {lingering_child_pid_file_repr}
         lingering_child_on = {lingering_child_on!r}
+        install_marker_path = {install_marker_path_repr}
+        install_marker_change = {install_marker_change_repr}
         REGISTRY_ENTRY = {v2_registry_entry()!r}
         marketplace_list_umask_log = {marketplace_list_umask_log_repr}
 
@@ -3061,6 +3086,12 @@ def make_reconciler_claude_shim(
                         "stdin_is_dev_null": os.path.samestat(os.fstat(0), os.stat(os.devnull)),
                     }}
                     f.write(json.dumps(record) + "\\n")
+            if install_marker_path and os.path.exists(install_marker_path):
+                if install_marker_change == "backdate":
+                    old = time.time() - {backdate_marker_seconds_ago}
+                    os.utime(install_marker_path, (old, old))
+                else:
+                    os.unlink(install_marker_path)
             if {install_sleep_seconds}:
                 time.sleep({install_sleep_seconds})
             if install_release_file:

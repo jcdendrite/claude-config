@@ -3460,11 +3460,8 @@ _LIB_PLUGIN_ID_MAX_LENGTH=256
 # install/enable argv sink accepts, before it ever reaches a command line.
 # Both halves must start with an alphanumeric character -- `[A-Za-z0-9._-]+`
 # alone would admit a leading `-`, `.`, or `_`, which would defeat the
-# anti-flag-injection purpose of validating at all. Also rejects the
-# reserved pseudo-marketplace name `npm`: the CLI treats `<pkg>@npm` as a
-# real install form, and `npm` would otherwise pass this regex and be
-# blocked only by happening not to appear in the registered-marketplace
-# list.
+# anti-flag-injection purpose of validating at all. Rejects the reserved
+# pseudo-marketplace `npm`, which the CLI treats as an install form.
 # Rejects an id longer than _LIB_PLUGIN_ID_MAX_LENGTH bytes before any pattern
 # match or `##*@` expansion runs.
 # Returns 0 for a valid id, 1 otherwise. Prints nothing.
