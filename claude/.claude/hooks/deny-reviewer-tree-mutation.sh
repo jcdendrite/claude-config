@@ -26,12 +26,14 @@
 # session started without a review-only `--agent`, code-writer,
 # general-purpose, or any agent not in the closed set) — this keeps it off the
 # latency budget for the overwhelmingly common call.
+# A review-only agent's command of several fragments can exceed the
+# claude-hook-review per-fire budget (<100ms), stated in
+# plugins/claude-hook-review/skills/claude-hook-review/SKILL.md
+# § "7. Performance budget".
 # `.agent_type` names a subagent's type, or the `--agent` name of a main
 # session started with one.
 # It is a documented PreToolUse field (code.claude.com/docs/en/hooks) already
 # consumed by nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
-# A review-only agent's command of several fragments can exceed the
-# claude-hook-review per-fire budget.
 #
 # Grounding — the in-place-edit family splits into two tiers:
 #
@@ -560,10 +562,11 @@ case "$TOOL_NAME" in
         # raw-write checks below.
       fi
 
-      # Closed in-place-edit family. Each tool word is matched against the
-      # fragment's resolved command word, not any word (the git word above is
-      # the any-word scan): a match ignoring case, or a word ending in
-      # "/<tool>" (absolute/relative path invocation), also ignoring case.
+      # Closed in-place-edit family. Each tool word is matched
+      # case-insensitively against the fragment's resolved command word.
+      # The match is the exact word, or a word ending in "/<tool>"
+      # (absolute/relative path invocation).
+      # The git word above is the exception: it uses an any-word scan.
       # Pure code formatters. A review-only agent reads diffs; it never
       # reformats the tree under review, so these deny on ANY invocation —
       # no read-only mode is exempted. This is the deliberate simplification
