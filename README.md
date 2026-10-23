@@ -244,7 +244,7 @@ Marketplace registration and user-scope `enabledPlugins` install are also availa
 
 Two agent types ship in `claude/.claude/agents/`:
 
-**Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with tools `Read`, `Grep`, `Glob`, `Write` (no `Bash`; the hook confines `Write` to the persona's own `<agent>-*.md` file in an ignored `agent-reviews/` directory at any depth, within the hook header's Known gaps); all write structured findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` when dispatched with `findings_path:` and return only a pointer line inline.
+**Reviewer subagents** — eight stack-agnostic personas spawned by `/plan-review` and `/code-review` based on the **Item ownership** tables in those skills. Each runs in its own context with tools `Read`, `Grep`, `Glob`, `Write` (no `Bash`; `deny-reviewer-tree-mutation.sh` confines `Write`, see `docs/hooks.md`); all write structured findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` when dispatched with `findings_path:` and return only a pointer line inline.
 
 - **`ciso-reviewer`** — threat modeling, auth boundaries, privilege escalation, data exposure, defense in depth.
 - **`staff-backend-engineer`** — API contracts, error handling, idempotency, retry semantics, service boundaries; AND application data-store schema design (relational + NoSQL): partition keys, GSI/LSI, document shape, single-table vs multi-table, index coverage for app queries.

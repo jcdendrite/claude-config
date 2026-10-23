@@ -23,14 +23,21 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 import textwrap
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from helpers import (
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    SKILLS_DIR,
+    fresh_reviewer_findings_session,
+    head_sha,
+    init_git_repo,
+    install_shell_exec_guard,
+)
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
@@ -503,24 +510,9 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
 @pytest.fixture
 def reviewer_findings_session() -> Iterator[tuple[str, Path]]:
     """A fresh uuid4 session id and the directory
-    review-pr-reviewer-findings-dir.sh derives for it, removed on teardown.
-
-    The directory sits under the literal /tmp, never tmp_path, because the
-    helper hard-codes that root. The uuid keeps parallel workers sharing the
-    real /tmp apart. Fails with a message naming the precondition when a
-    throwaway directory cannot be created and removed under /tmp (for example
-    under a sandbox)."""
-    try:
-        os.rmdir(tempfile.mkdtemp(dir="/tmp"))
-    except OSError:
-        pytest.fail("this test needs a writable, unsandboxed literal /tmp directory")
-    session_id = str(uuid.uuid4())
-    findings_dir = Path(f"/tmp/review-pr-reviewer-findings-{session_id}")
-    yield session_id, findings_dir
-    if findings_dir.is_symlink() or findings_dir.is_file():
-        findings_dir.unlink()
-    else:
-        shutil.rmtree(findings_dir, ignore_errors=True)
+    review-pr-reviewer-findings-dir.sh derives for it, removed on teardown."""
+    with fresh_reviewer_findings_session() as session:
+        yield session
 
 
 def _git_shim_that_fails_on_worktree_subcommand(

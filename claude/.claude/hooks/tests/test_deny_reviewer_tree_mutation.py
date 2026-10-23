@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+import uuid
 
 import pytest
 from helpers import (
@@ -14,6 +15,7 @@ from helpers import (
     bash_input,
     build_path_without,
     edit_input,
+    fresh_reviewer_findings_session,
     init_git_repo_with_commit,
     multiedit_input,
     review_only_agents,
@@ -27,10 +29,11 @@ from .test_agent_roster import CANARY_AGENTS
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 
-# The four sentences below are the denial discipline deny-reviewer-tree-mutation.sh
+# The first four sentences below are the denial discipline deny-reviewer-tree-mutation.sh
 # puts in its Bash-arm denial text. `Plan` is the only roster member that reaches
 # that arm, so they are its only discipline. The Write arm repeats only the
-# no-retry and read-tool sentences.
+# no-retry and read-tool sentences. DENIAL_INLINE_FALLBACK_SENTENCE is the Write arm's
+# own; the Bash-arm text lacks it.
 DENIAL_LINK_SENTENCE = (
     "A write through a symlink or hard link changes the linked file, "
     "wherever it lives, so a /tmp path can still change a file outside /tmp."
@@ -47,6 +50,8 @@ DENIAL_NO_RETRY_SENTENCE = (
 )
 
 DENIAL_READ_TOOL_SENTENCE = "Use Read, Grep, or Glob for a read the hook misjudges."
+
+DENIAL_INLINE_FALLBACK_SENTENCE = "If that write is denied, return your findings inline and write nothing else."
 
 pytestmark = pytest.mark.usefixtures("isolated_git_environment")
 
@@ -82,7 +87,15 @@ def repo_ignoring_agent_reviews_and_build(repo_ignoring_agent_reviews):
     return repo_ignoring_agent_reviews
 
 
-# The Write, Edit and MultiEdit tools reach one case arm; each rule below holds for all three.
+@pytest.fixture
+def reviewer_findings_session():
+    """A fresh uuid4 session id and the path of its /review-pr findings directory, which is not created."""
+    with fresh_reviewer_findings_session() as session:
+        yield session
+
+
+# The Write, Edit and MultiEdit tools reach one case arm. Tests parametrized over these builders pin the rules
+# that hold for all three; the /tmp findings-directory exemption is Write-only and is pinned separately.
 _FILE_TOOL_BUILDERS = {"Write": write_input, "Edit": edit_input, "MultiEdit": multiedit_input}
 
 
@@ -93,6 +106,12 @@ def _assert_write_arm_denied(payload):
     assert reason is not None, f"expected a deny for {payload}"
     assert "which is not your own findings file" in reason, reason
     assert stderr == "", f"a successful deny wrote to stderr: {stderr!r}"
+
+
+def _assert_clean_allow(payload):
+    """Assert the hook allows `payload` with no deny reason and nothing on stderr, so a pass cannot come from
+    a non-JSON or error-path output that run_hook reads as an allow."""
+    assert run_hook_reason_and_stderr(HOOK, payload) == (None, "")
 
 
 class TestFileWriteTools:
@@ -126,12 +145,15 @@ class TestFileWriteTools:
         """A reviewer has no scratch directory: its only write is its own findings file."""
         _assert_write_arm_denied(write_input("/tmp/scratch/copy.py", agent_type="staff-sdet"))
 
-    def test_reviewer_write_to_review_pr_findings_directory_under_tmp_allowed(self):
-        """A narrowing of the /tmp arm (GH-1103) that stops admitting this path
-        string fails here. The path does not exist on disk, so a check of link
-        or ownership state is not exercised."""
-        path = "/tmp/review-pr-reviewer-findings-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d/staff-sdet-1700000000-branch.md"
-        assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "allow"
+    def test_reviewer_write_creating_own_review_pr_findings_file_allowed(self, reviewer_findings_session):
+        """A Write creating the caller's own new file in its session's existing /review-pr findings directory is the
+        one sanctioned /tmp target."""
+        session_id, findings_dir = reviewer_findings_session
+        findings_dir.mkdir()
+        path = str(findings_dir / "staff-sdet-1700000000-branch.md")
+        payload = write_input(path, agent_type="staff-sdet")
+        payload["session_id"] = session_id
+        _assert_clean_allow(payload)
 
     def test_reviewer_edit_to_tracked_path_denied(self):
         assert run_hook(HOOK, edit_input("/repo/src/main.py", agent_type="ciso-reviewer")) == "deny"
@@ -173,14 +195,16 @@ class TestFileWriteTools:
 
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_write_arm_deny_reason_names_only_the_findings_file(self, tool_name):
-        """The Write arm's denial keeps the no-retry and read-tool sentences, names agent-reviews, and offers no
-        scratch directory, link rule or `Check:` line, because a reviewer holds no Bash to use them with."""
+        """The Write arm's denial keeps the no-retry and read-tool sentences, names the dispatch's `findings_path` and
+        the inline fallback, and offers no scratch directory, link rule or `Check:` line, because a reviewer holds no
+        Bash to use them with."""
         payload = _FILE_TOOL_BUILDERS[tool_name]("/repo/src/main.py", agent_type="staff-sdet")
         reason, stderr = run_hook_reason_and_stderr(HOOK, payload)
         assert reason is not None
         assert DENIAL_NO_RETRY_SENTENCE in reason
         assert DENIAL_READ_TOOL_SENTENCE in reason
-        assert "agent-reviews" in reason
+        assert "findings_path" in reason
+        assert DENIAL_INLINE_FALLBACK_SENTENCE in reason
         assert FINDING_CHECK_LABEL not in reason
         assert DENIAL_LINK_SENTENCE not in reason
         assert DENIAL_NEW_NAME_SENTENCE not in reason
@@ -206,6 +230,137 @@ class TestFileWriteTools:
         deny on an empty string."""
         payload = {"tool_name": "Write", "tool_input": {}, "agent_type": "staff-sdet"}
         assert run_hook(HOOK, payload) == "allow"
+
+
+def _review_pr_findings_write_case(case, session_id, findings_dir, tmp_path):
+    """Build one near-miss of the sanctioned /review-pr findings write and return (file_path, payload session id).
+
+    Each case differs from the allowed write (existing directory, matching session id, own persona name, directly
+    inside the directory, .md suffix, path not yet existing) in exactly one respect, with two exceptions.
+    `invalid-session` differs in two respects: its path sits in `nested`, so with the session-id validator removed
+    every other predicate would pass. `directory-path` is overdetermined: the empty name and the existing-path check
+    each deny it on their own. A payload session id of None means the payload carries no session_id key."""
+    own_name = "staff-sdet-1700000000-branch.md"
+    if case == "another-session":
+        findings_dir.mkdir()
+        return str(findings_dir / own_name), str(uuid.uuid4())
+    if case == "no-session":
+        findings_dir.mkdir()
+        return str(findings_dir / own_name), None
+    if case == "empty-session":
+        findings_dir.mkdir()
+        return str(findings_dir / own_name), ""
+    if case == "invalid-session":
+        # The payload session id plus "/nested" names the directory the path sits in, so only the session-id
+        # validator can deny.
+        (findings_dir / "nested").mkdir(parents=True)
+        return str(findings_dir / "nested" / own_name), f"{session_id}/nested"
+    if case == "doubled-slash-after-directory":
+        findings_dir.mkdir()
+        return f"{findings_dir}//{own_name}", session_id
+    if case == "doubled-slash-before-directory":
+        findings_dir.mkdir()
+        return f"/tmp//{findings_dir.name}/{own_name}", session_id
+    if case == "dot-segment":
+        findings_dir.mkdir()
+        return f"{findings_dir}/./{own_name}", session_id
+    if case == "directory-path":
+        findings_dir.mkdir()
+        return f"{findings_dir}/", session_id
+    if case == "existing-file":
+        findings_dir.mkdir()
+        existing_file = findings_dir / own_name
+        existing_file.write_text("earlier findings")
+        return str(existing_file), session_id
+    if case == "dangling-symlink":
+        findings_dir.mkdir()
+        (findings_dir / own_name).symlink_to(tmp_path / "does-not-exist")
+        return str(findings_dir / own_name), session_id
+    if case == "live-symlink":
+        findings_dir.mkdir()
+        link_target = tmp_path / "link-target.md"
+        link_target.write_text("a file outside the findings directory")
+        (findings_dir / own_name).symlink_to(link_target)
+        return str(findings_dir / own_name), session_id
+    if case == "extended-directory-name":
+        # The real directory exists, so only an exact parent-directory comparison (not a prefix match) denies.
+        findings_dir.mkdir()
+        return f"{findings_dir}-x/{own_name}", session_id
+    if case == "another-persona":
+        findings_dir.mkdir()
+        return str(findings_dir / "ciso-reviewer-1700000000-branch.md"), session_id
+    if case == "subdirectory":
+        (findings_dir / "nested").mkdir(parents=True)
+        return str(findings_dir / "nested" / own_name), session_id
+    if case == "missing-directory":
+        return str(findings_dir / own_name), session_id
+    if case == "symlinked-directory":
+        real_directory = tmp_path / "real-findings-directory"
+        real_directory.mkdir()
+        findings_dir.symlink_to(real_directory)
+        return str(findings_dir / own_name), session_id
+    if case == "non-md-name":
+        findings_dir.mkdir()
+        return str(findings_dir / "staff-sdet-1700000000-branch.txt"), session_id
+    if case == "own-type-without-dash":
+        findings_dir.mkdir()
+        return str(findings_dir / "staff-sdet.md"), session_id
+    raise AssertionError(f"unknown case {case!r}")
+
+
+class TestReviewPrFindingsDirectoryDenied:
+    """Every near-miss of the sanctioned /tmp findings write must still reach the Write arm's final deny."""
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "another-session",
+            "no-session",
+            "empty-session",
+            "invalid-session",
+            "another-persona",
+            "subdirectory",
+            "extended-directory-name",
+            "missing-directory",
+            "symlinked-directory",
+            "non-md-name",
+            "own-type-without-dash",
+            "doubled-slash-after-directory",
+            "doubled-slash-before-directory",
+            "dot-segment",
+            "directory-path",
+        ],
+    )
+    def test_near_miss_of_the_findings_write_denied(self, reviewer_findings_session, tmp_path, case):
+        """Write is the only tool the exemption can ever admit, so the matrix runs for Write alone; Edit and
+        MultiEdit deny on the tool name whatever the path and are pinned once below."""
+        session_id, findings_dir = reviewer_findings_session
+        path, payload_session_id = _review_pr_findings_write_case(case, session_id, findings_dir, tmp_path)
+        payload = write_input(path, agent_type="staff-sdet")
+        if payload_session_id is not None:
+            payload["session_id"] = payload_session_id
+        _assert_write_arm_denied(payload)
+
+    @pytest.mark.parametrize("case", ["existing-file", "dangling-symlink", "live-symlink"])
+    def test_write_to_an_existing_path_denied(self, reviewer_findings_session, tmp_path, case):
+        """The arm is create-only: a Write onto an existing file, a symlink to an existing file or a dangling
+        symlink denies, which keeps a planted link from redirecting the write."""
+        session_id, findings_dir = reviewer_findings_session
+        path, payload_session_id = _review_pr_findings_write_case(case, session_id, findings_dir, tmp_path)
+        payload = write_input(path, agent_type="staff-sdet")
+        payload["session_id"] = payload_session_id
+        _assert_write_arm_denied(payload)
+
+    @pytest.mark.parametrize("tool_name", ["Edit", "MultiEdit"])
+    def test_edit_tools_creating_own_findings_file_denied(self, reviewer_findings_session, tool_name):
+        """Only Write creates a file: Edit and MultiEdit to the not-yet-existing own file deny, though the same path
+        passes for Write."""
+        session_id, findings_dir = reviewer_findings_session
+        findings_dir.mkdir()
+        path = str(findings_dir / "staff-sdet-1700000000-branch.md")
+        payload = _FILE_TOOL_BUILDERS[tool_name](path, agent_type="staff-sdet")
+        payload["session_id"] = session_id
+        _assert_write_arm_denied(payload)
 
 
 class TestAgentReviewsIgnoreVerification:
@@ -1116,7 +1271,8 @@ class TestWriteArmFindingsFileRule:
     @pytest.mark.parametrize("path_form", ["relative", "absolute"])
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_own_findings_file_allowed_for_every_file_tool(self, repo_ignoring_agent_reviews, tool_name, path_form):
-        """The production Write tool sends absolute paths, and the own-name rule allows that shape as well as the relative one."""
+        """The production Write tool sends absolute paths, and the own-name rule allows that shape as well as the relative
+        one, with no deny reason and nothing on stderr."""
         own_file = "agent-reviews/staff-sdet-1700000000-branch.md"
         path = own_file if path_form == "relative" else str(repo_ignoring_agent_reviews / own_file)
         payload = _FILE_TOOL_BUILDERS[tool_name](
@@ -1124,7 +1280,7 @@ class TestWriteArmFindingsFileRule:
             agent_type="staff-sdet",
             cwd=str(repo_ignoring_agent_reviews),
         )
-        assert run_hook(HOOK, payload) == "allow"
+        _assert_clean_allow(payload)
 
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_other_agents_findings_file_denied_for_every_file_tool_given_an_absolute_path(
@@ -1550,7 +1706,8 @@ class TestKnownGapBypass:
         assert run_hook(HOOK, bash_input("cat > /tmp/d/file", agent_type="Plan")) == "allow"
 
     def test_persona_write_to_tmp_path_denied_by_path_shape(self):
-        """A persona's Write tool reaches the Write arm, which exempts no /tmp path. Pins path shape only: no link is created."""
+        """A persona's Write tool reaches the Write arm, which exempts no /tmp path except a new own-persona file in the
+        session's /review-pr findings directory, which `/tmp/d/file` is not. Pins path shape only: no link is created."""
         _assert_write_arm_denied(write_input("/tmp/d/file", agent_type="ciso-reviewer"))
 
     # GH-1295: these two pin the CURRENT (imperfect) allow verdicts for the header's "The git branch skips the

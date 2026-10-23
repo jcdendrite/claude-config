@@ -6,7 +6,8 @@
 # comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see
 # _lib.sh's _LIB_REVIEW_ONLY_AGENTS) must never mutate the tree they are
 # reviewing.
-# Their Write tool's only sanctioned target is the caller's own findings file (its own <agent>-*.md file in an ignored agent-reviews directory; see the depth and path-form gaps in Known gaps below).
+# Their Write tool's first sanctioned target is the caller's own findings file (its own <agent>-*.md file in an ignored agent-reviews directory; see the depth and path-form gaps in Known gaps below).
+# The second is a new <agent>-*.md file the caller creates with the Write tool directly inside this session's /review-pr findings directory under /tmp.
 # A Bash write is sanctioned only under /tmp.
 # /dev/null is also exempt from the Bash write-target scan.
 # Per the harness's own agent listing, which this repo cannot pin, `Plan` is the only roster member holding Bash.
@@ -223,7 +224,7 @@
 #     backslash-newline continuation is caught, because the Bash arm also
 #     scans a copy of the stripped text with every backslash-newline pair
 #     deleted.
-#   - The Write arm's findings-file exemption is not a pure string match:
+#   - The Write arm's agent-reviews findings-file exemption is not a pure string match:
 #     it checks that the file name starts with the caller's own agent type,
 #     that its parent directory is agent-reviews itself (so a file in any
 #     subdirectory of agent-reviews is denied), and, through
@@ -236,6 +237,23 @@
 #     so every findings write denies and the reviewer returns inline.
 #     A symlinked agent-reviews directory also makes the ignore check exit 128
 #     (test_lib.py pins this on git 2.43.0), so the write denies.
+#   - The /review-pr findings-directory exemption is create-only and Write-only.
+#     It accepts a path only when all of these hold:
+#       - The tool is Write.
+#       - The path names nothing yet (not an existing file, symlink or dangling symlink).
+#       - The parent is exactly the directory _lib_review_pr_reviewer_findings_dir names for the payload's session_id.
+#       - The name starts with the caller's agent type.
+#       - The name ends in .md.
+#       - That directory exists.
+#       - That directory is not a symlink.
+#     Edit and MultiEdit into that directory deny.
+#     The create-only check is what closes the symlink and hard-link gap for the file itself, apart from a race between the check and the write.
+#     The directory's owner and mode are not checked.
+#     The exemption assumes a subagent's PreToolUse payload carries the dispatching session's session_id.
+#     That assumption is unverified until a live probe; if the payload carried another id, every such write would deny.
+#   - macOS `/tmp` is a symlink to `/private/tmp`.
+#     If a harness build resolves `file_path` to its real path before invoking this hook, a findings write under `/tmp/...` would miss the literal `/tmp/*` arm and deny.
+#     That is fail-closed friction, not a safety gap. [unverified] The current harness passes the path as written.
 #   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
 #     exit status is checked and denies with an explicit message rather than
 #     falling through to this hook's normal "no gated fragment matched"
@@ -243,7 +261,7 @@
 #   - Waived under the cooperative tier:
 #       - A Write, Edit or MultiEdit payload with no file_path is allowed.
 #       - The Bash arm's denial text names the Write tool, which Plan may lack (GH-1295).
-#       - The Write arm judges the path string and the ignore check, never the inode.
+#       - The Write arm's agent-reviews branch judges the path string and the ignore check, never the inode.
 #         A symlinked own-name leaf or a hard-linked own-name leaf is not inspected by this hook.
 #         Only a persona that holds Bash can plant such a link.
 #         Whether the Write tool refuses a symlink leaf or a hard-linked leaf it did not read is unverified here.
@@ -291,7 +309,7 @@ DENIAL_DISCIPLINE="Reviewers are read-only on the tree under review. Treat a hoo
 SANCTIONED_ALTERNATIVE="$DENIAL_DISCIPLINE Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
 # The Write arm's denial text: a reviewer has no scratch directory, so it names only the findings file.
-WRITE_ARM_ALTERNATIVE="$DENIAL_DISCIPLINE Your only write is your findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool). Put anything else you need to say in that file."
+WRITE_ARM_ALTERNATIVE="$DENIAL_DISCIPLINE Your only write is the findings_path your dispatch handed you, via the Write tool. If that write is denied, return your findings inline and write nothing else."
 
 # Local to this hook, not _lib.sh: this prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.
@@ -421,6 +439,21 @@ _fragment_raw_write_targets() {
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
+# True iff a $1 tool call may create $2, the caller's own not-yet-existing
+# `<agent>-*.md` file directly inside the /review-pr findings directory of
+# session $3, and that directory exists and is a real directory rather than a
+# symlink. $4 is the caller's agent type. Only the Write tool creates a file.
+# Local to this hook, not _lib.sh: no other hook needs it.
+_may_create_own_review_pr_findings_file() {
+  local tool_name="$1" file_path="$2" session_id="$3" agent_type="$4" findings_dir
+  [[ "$tool_name" == Write ]] || return 1
+  findings_dir=$(_lib_review_pr_reviewer_findings_dir "$session_id") || return 1
+  [[ "${file_path%/*}" == "$findings_dir" ]] || return 1
+  [[ "${file_path##*/}" == "$agent_type"-*.md ]] || return 1
+  [[ ! -e "$file_path" && ! -L "$file_path" ]] || return 1
+  [[ -d "$findings_dir" && ! -L "$findings_dir" ]]
+}
+
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit)
     # _lib_parse_tool_input_or_deny already reads .tool_input.file_path
@@ -487,6 +520,14 @@ case "$TOOL_NAME" in
             esac
             ;;
         esac
+        ;;
+      # The one sanctioned /tmp target: a new file of the caller's own in this
+      # session's /review-pr findings directory. Any other /tmp path, and any
+      # failed check, falls to the final deny.
+      /tmp/*)
+        if _may_create_own_review_pr_findings_file "$TOOL_NAME" "$FILE_PATH" "$SESSION_ID" "$AGENT_TYPE"; then
+          exit 0
+        fi
         ;;
     esac
     emit_deny "$TOOL_NAME targets '$FILE_PATH', which is not your own findings file. $WRITE_ARM_ALTERNATIVE"

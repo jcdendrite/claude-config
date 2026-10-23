@@ -612,7 +612,7 @@ A `/review-pr` session may stand in the main tree, and `diff-only` mode has no r
 
 `review-pr-reviewer-findings-dir.sh` creates the session's directory and prints its path. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. The session puts that directory in place of `agent-reviews/` in each reviewer's `findings_path`.
 
-The path starts with a literal `/tmp/`. `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` under `/tmp` as written, and `TMPDIR` can point elsewhere.
+The path starts with a literal `/tmp/`, so the create script and `deny-reviewer-tree-mutation.sh` compute the same directory whatever `TMPDIR` each sees. The hook allows a reviewer only a `Write` that creates its own new `<agent>-*.md` file directly inside the current session's directory, and an existing path, an `Edit` or a `MultiEdit` there denies.
 
 `/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
 
@@ -620,7 +620,7 @@ The session still reads each findings file in full, whatever its count, so files
 
 The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
 
-Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path names a different file than the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path names a different file than the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory any process of the same user can write, so a link planted there can still redirect the `Read`.
 
 If the script fails, the session leaves each dispatcher's relative `findings_path` in place. From the main tree of a repo with worktree discipline on, that `Write` is denied and the reviewer returns inline. From a linked worktree, or in a repo without worktree discipline, the file lands in that tree's ignored `agent-reviews/`. `review-pr-finish.sh` removes it only when that tree is one of this session's review worktrees. Handing reviewers no `findings_path` instead would force every reviewer inline, including where the relative path works. The session's one failure notice says where findings may land, and it does not sweep the leftover files, because `/code-review`'s own round files accumulate in the same directory and no script or skill removes them short of removing the whole tree. A leftover file holds reviewer output about the reviewed PR, and that output can quote the PR's own text. A later `/code-review` round-cap consult in that tree could take a leftover file whose name carries the branch's slug as its previous round's findings (`code-review/SKILL.md` § "Round-cap architect consult"). Guarding that selection belongs to `/code-review`, which serves every caller.
 

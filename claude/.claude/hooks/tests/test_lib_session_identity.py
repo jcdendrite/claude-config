@@ -122,6 +122,7 @@ def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> 
         "session;rm -rf /",
         ".",
         "..",
+        "a*",
         "abc\n",  # trailing newline: `$` must not stop matching before it
         "\nabc",
         "ab\ncd",

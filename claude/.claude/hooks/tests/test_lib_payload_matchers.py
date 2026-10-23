@@ -5,7 +5,13 @@ import os
 import subprocess
 
 import pytest
-from helpers import installed_locale_where, no_gate_release_agents, review_only_agents, reviewer_persona_agents
+from helpers import (
+    installed_locale_where,
+    no_gate_release_agents,
+    plan_writer_agents,
+    review_only_agents,
+    reviewer_persona_agents,
+)
 
 from ._lib_sh_helpers import _LIB_SH
 
@@ -216,16 +222,6 @@ def test_no_gate_release_set_includes_code_writer() -> None:
     assert "code-writer" in no_gate_release_agents()
 
 
-def _plan_writer_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_plan_writer_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def _is_plan_writer_agent(agent_type: str) -> bool:
     result = subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_is_plan_writer_agent "$1"', "bash", agent_type],
@@ -238,13 +234,13 @@ def _is_plan_writer_agent(agent_type: str) -> bool:
 
 def test_no_gate_release_set_covers_every_plan_writer_agent() -> None:
     """The set is a superset of the plan-writer registry, by derivation not by copy."""
-    plan_writers = _plan_writer_agents()
+    plan_writers = plan_writer_agents()
     assert plan_writers, "plan-writer registry must not be empty"
     assert set(plan_writers) <= set(no_gate_release_agents())
 
 
 def test_plan_writer_predicate_accepts_every_registry_member() -> None:
-    for agent_type in _plan_writer_agents():
+    for agent_type in plan_writer_agents():
         assert _is_plan_writer_agent(agent_type), agent_type
 
 

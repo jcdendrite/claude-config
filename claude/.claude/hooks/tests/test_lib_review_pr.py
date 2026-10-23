@@ -594,8 +594,7 @@ class TestLibReviewPrReviewerFindingsDir:
         )
 
     def test_prints_the_literal_tmp_path_even_when_tmpdir_points_elsewhere(self, tmp_path: Path) -> None:
-        """A TMPDIR-derived root would leave the reviewers' findings_path outside
-        the reviewer gate's /tmp allow; see the comment on
+        """The root is the literal /tmp whatever TMPDIR holds; the reason is in the comment on
         _lib_review_pr_reviewer_findings_dir in _lib.sh."""
         result = self._findings_dir("sess-1", {"TMPDIR": str(tmp_path)})
         assert result.returncode == 0, result.stderr

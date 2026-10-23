@@ -1,7 +1,8 @@
 """Pure helpers and path constants shared across the repo's test trees.
 
-No pytest decorators here — this is a plain Python module. Import
-explicitly from each test file that needs these symbols.
+This module defines no fixtures or pytest decorators. It imports pytest only
+so a helper can call `pytest.fail`. Import explicitly from each test file that
+needs these symbols.
 """
 from __future__ import annotations
 
@@ -18,15 +19,14 @@ import subprocess
 import tempfile
 import textwrap
 import time
+import uuid
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import pytest
 import yaml
-
-if TYPE_CHECKING:
-    import pytest
 
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CLAUDE_DIR.parent.parent
@@ -1273,6 +1273,11 @@ def review_only_agents() -> list[str]:
 def no_gate_release_agents() -> list[str]:
     """Read _LIB_NO_GATE_RELEASE_AGENTS from _lib.sh — the shipping source of truth."""
     return _lib_listed_names("_lib_no_gate_release_agents")
+
+
+def plan_writer_agents() -> list[str]:
+    """Read _LIB_PLAN_WRITER_AGENTS from _lib.sh — the shipping source of truth."""
+    return _lib_listed_names("_lib_plan_writer_agents")
 
 
 def reviewer_persona_agents() -> list[str]:
@@ -3320,14 +3325,39 @@ def file_mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+@contextmanager
+def fresh_reviewer_findings_session() -> Iterator[tuple[str, Path]]:
+    """Yield a fresh uuid4 session id and the path of its /review-pr findings directory, which is not created and
+    is removed on teardown.
+
+    The directory sits under the literal /tmp, never tmp_path, because the one hard-coded site,
+    `_lib_review_pr_reviewer_findings_dir`, which the hook and the findings-dir script both call, fixes that root.
+    The uuid keeps parallel workers sharing the real /tmp apart. Fails with a message naming
+    the precondition when a throwaway directory cannot be created and removed under /tmp (for example under a
+    sandbox)."""
+    try:
+        os.rmdir(tempfile.mkdtemp(dir="/tmp"))
+    except OSError:
+        pytest.fail("this test needs a writable, unsandboxed literal /tmp directory")
+    session_id = str(uuid.uuid4())
+    findings_dir = Path(f"/tmp/review-pr-reviewer-findings-{session_id}")
+    try:
+        yield session_id, findings_dir
+    finally:
+        if findings_dir.is_symlink() or findings_dir.is_file():
+            findings_dir.unlink()
+        else:
+            shutil.rmtree(findings_dir, ignore_errors=True)
+
+
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
 # test_transcript_analysis.py's Python-classifier test. Proves the two
 # runtimes agree on classification behaviorally, not that their source text
 # matches byte-for-byte -- a byte-equality assertion across the literal sites
-# would still pass with the Python `!=` comparison inverted to `==`. No
-# pytest import here (see module docstring), so each test file wraps these
-# rows in pytest.param(...) at its own @pytest.mark.parametrize call site.
+# would still pass with the Python `!=` comparison inverted to `==`. Each test
+# file wraps these rows in pytest.param(...) at its own
+# @pytest.mark.parametrize call site.
 CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
     ("MODE=consult", True, "mode_consult"),
     ("MODE=plan-sections", False, "mode_plan_sections"),

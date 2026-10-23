@@ -24,6 +24,7 @@ from helpers import (
     REVIEWER_INPUT_DENIED_READ_SENTENCE,
     REVIEWER_INPUT_FAIL_LOUD_SENTENCE,
     no_gate_release_agents,
+    plan_writer_agents,
     review_only_agents,
 )
 from validate_skill_structure import parse_frontmatter
@@ -1036,18 +1037,6 @@ class TestReviewOrchestratorRosterPlacement:
         )
 
 
-def _plan_writer_agents() -> list[str]:
-    """Read _LIB_PLAN_WRITER_AGENTS from _lib.sh — the shipping source of truth."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib}; _lib_plan_writer_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def _declared_tool_names(path) -> set[str]:
     """Tool names an agent file's frontmatter grants.
 
@@ -1096,7 +1085,7 @@ class TestEditWithoutBashAgentsAreWriteScopeConfined:
     rates Low only while every writer without Bash is confined."""
 
     def test_edit_without_bash_agents_are_write_scope_confined(self):
-        confined = set(review_only_agents()) | set(_plan_writer_agents())
+        confined = set(review_only_agents()) | set(plan_writer_agents())
         for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
             tools = _declared_tool_names(path)
             if tools & {"Edit", "MultiEdit"} and "Bash" not in tools:
@@ -1118,7 +1107,7 @@ class TestPlanWriterAgentsHoldOnlyPlanEditingTools:
     PERMITTED_PLAN_WRITER_TOOLS = {"Read", "Grep", "Glob", "Edit"}
 
     def test_every_plan_writer_declares_only_permitted_tools(self):
-        plan_writers = _plan_writer_agents()
+        plan_writers = plan_writer_agents()
         assert plan_writers, "_LIB_PLAN_WRITER_AGENTS is empty"
         agent_paths = {path.stem: path for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES}
         for agent_name in plan_writers:
