@@ -20,8 +20,9 @@ non-blank line is exactly the attribution trailer "🤖 Generated with
 [Claude Code](https://claude.com/claude-code)", and -- in diff-only mode
 only -- the file also contains the literal line "Reviewed from the PR diff
 only — no checkout, no checks run." Every mode also requires balanced
-<details>/</details> tags outside single-backtick code spans. Exits 1 on
-any missing piece, naming which one and the file's own path on stderr
+<details>/</details> tags outside single-backtick code spans (a span must sit
+on one line). Exits 1 on any missing piece, naming which one and the file's
+own path on stderr
 (never the file's own content, which may be arbitrarily long PR-review
 prose). Exits 2 on a usage error, an invalid mode, an unreadable file, or a
 details check that did not complete.
@@ -78,8 +79,9 @@ fi
 # quotes the tag in single backticks does not trip the check.
 # A tag inside a fenced code block, a double-backtick span, or a span wrapped
 # across lines still counts, so an unbalanced quote there refuses the body.
-# One accepted miss is a fenced quote that exactly offsets a real unbalanced tag.
-# A tag split across lines is another, since the scan matches one line at a time.
+# A fenced quote that exactly offsets a real unbalanced tag is an accepted miss.
+# A tag split across lines never counts, since the scan matches one line at a time.
+# So an unbalanced split tag is missed, and a balanced pair with one split tag is refused.
 # A line with thousands of `<details ` openers and no later `>` scans in
 # quadratic time, so a caller's time cap can kill the check first, which
 # fails closed.

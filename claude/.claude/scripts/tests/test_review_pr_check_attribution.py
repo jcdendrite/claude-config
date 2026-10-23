@@ -247,23 +247,25 @@ class TestDetailsBalance:
             ("```html\n</details>\n```", "no opener"),
             ("The PR leaves ``<details>`` open.", "never closed"),
             ("It ends with a lone ` <details>", "never closed"),
+            ("A span `wraps\n<details>\nacross lines` here.", "never closed"),
         ],
         ids=[
             "fenced-lone-opener",
             "fenced-lone-closer",
             "double-backtick-span-opener",
             "unpaired-backtick-before-opener",
+            "single-backtick-span-wrapped-across-lines",
         ],
     )
     def test_unbalanced_tag_outside_single_backtick_span_still_counts(self, tmp_path, middle, expected_message):
-        """Fence, double-backtick, and unpaired-backtick content is not
-        skipped, so a quoted lone tag refuses the body and the message tells
-        the author to quote it in single backticks."""
+        """Fence, double-backtick, unpaired-backtick, and wrapped-span content
+        is not skipped, so a quoted lone tag refuses the body and the message
+        tells the author to quote it in single backticks on one line."""
         body = _write(tmp_path, _body_with(middle))
         result = _run([str(body), "checkout"])
         assert result.returncode == 1
         assert expected_message in result.stderr
-        assert "single backticks" in result.stderr
+        assert "single backticks on one line" in result.stderr
 
     def test_findings_path_shaped_like_a_variable_assignment_is_still_scanned(self, tmp_path):
         """awk treats a bare NAME=value operand as an assignment and reads
