@@ -58,14 +58,10 @@ already relies on for every fixture, now with a trigger attached to it.
 
 ## Committing the fixture despite the scratchpad rule
 
-`.claude/rules/skill-and-agent-self-review.md` says to keep a
-skill-or-agent self-review fixture in a scratchpad, because a realistic
-must-flag fixture is exactly the content that rule exists to keep out of
-the repo. That reasoning fits a fixture whose only job is probing a leak
-or an evasion. `paragraph-readability.json`'s `must_flag` and `must_pass`
-hold no such content — a neutral synthetic topic whose only defect is
-paragraph arrangement. The scratchpad rule's stated reason does not apply
-to it, so this decision commits the fixture instead. The plan's
+`paragraph-readability.json`'s `must_flag` and `must_pass` are a neutral
+synthetic topic whose only defect is paragraph arrangement.
+`.claude/rules/skill-and-agent-self-review.md` § "When editing a skill or agent, run the skill on its own diff" states the scratchpad rule's reason: probing a leak or an evasion. That reason does not apply here,
+so this decision commits the fixture as an exception. The plan's
 assumption ledger in `.claude/plans/prose-density-reviewer-gaps.md`
 designed it to be exactly that regression guard.
 

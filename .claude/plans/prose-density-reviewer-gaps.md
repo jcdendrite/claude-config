@@ -47,7 +47,10 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
 2. Two carve-outs exempt the measured shapes by their own wording. `[verified: same file]`
    - Comment verbosity's "Separate sentences that each carry a distinct fact are not verbosity" (line 59) clears an eight-sentence paragraph of single facts.
    - Multi-fact's exemption for "a cause and its direct effect, or a claim and the hedge that qualifies it" (lines 70–72) clears a rule fused with its "so" consequence or its exception.
-3. Today's reviewer body (`origin/main`) does not give a paragraph-level finding at the #972 and #963 sites in most runs. `[unverified]` Phase 0 tests it. If the row is false, the angle is unnecessary for those sites. What the reviewer returned in September stays unrecoverable (G3), because its body and dispatch have changed since: the cumulative-pass deferral is dated 2026-09-15, the Restated canonical rule angle 2026-09-18, and path-based diff handoff 2026-09-11 (`docs/cost-levers-considered.md` lines 200–205).
+3. Today's reviewer body (`origin/main`) does not give a paragraph-level finding at the #972 and #963 sites in most runs. `[unverified]` Phase 0 tests it. If the row is false, the angle is unnecessary for those sites. What the reviewer returned in September stays unrecoverable (G3), because its body and dispatch have changed since:
+   - The cumulative-pass deferral is dated 2026-09-15.
+   - The Restated canonical rule angle is dated 2026-09-18.
+   - Path-based diff handoff is dated 2026-09-11 (`docs/cost-levers-considered.md` lines 200–205).
 4. Add one readability angle. `[engineer-verified: "Add a readability angle (Recommended)"]`
 5. Two proposals in the session's option description are not the engineer's words: anchoring the angle to "One idea per sentence" and "Shape follows content", and narrowing the "tightly coupled facts" carve-out. `[unverified]` This plan keeps both anchors. It adds "Lead with the answer", because the #972 complaint is about an instruction fused with its justification. It bounds the carve-out rather than narrowing it (M2, row 7).
 6. §Prose and Output Format governs "every text surface you author". Durable docs carry §Durable text as "further constraints" on top of it. `[verified: claude/.claude/CLAUDE.md line 88]` So citing §Prose from the reviewer extends its charter without inventing a rule.
@@ -64,7 +67,13 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
     - The row must not contain `pr-diff-against-base.sh --staged --diff-file`.
     - No test asserts the rest of the right column. `[verified: architect consult, this session: `test_comment_discipline_row_points_to_its_deferral` at line 5269 pins only the Step 0.6 sentence; a search of `*.py` for "carries no `Bash`" and "per the note directly below" found nothing]`
 15. A test pins item 12a's sub-bullets to the agent's angle headers, by name and in order. `[verified: claude/.claude/hooks/tests/test_design_decision_files.py lines 536–618, 621–626]` `_SCOPE_CITED_ANGLE_NAMES` gains "Prose at the wrong altitude" because the Scope section will name it (row 39). No test pins a design-decision doc to the angle list, which corrects Step 3 evidence A.
-16. Agent descriptions are capped at 1,000 characters. The description is 823 characters today (counted this session). M3 adds about 47 for the charter label and M5 adds about 72 for the TRIGGER list and about 85 for the DO NOT TRIGGER adjacency; replacing the Focus list with a pointer removes about 200. `[verified: test_agent_roster.py lines 87–91; the deltas are by hand and unverified to the character]` Naming the three §Prose bullets in the description would still not fit, so the description carries the short label and the TRIGGER clause uses the compact list (M5 c). `test_description_length` settles it.
+16. Agent descriptions are capped at 1,000 characters. The description is 823 characters today (counted this session). The deltas by mechanism:
+    - M3 charter label: +47.
+    - M5 TRIGGER list: +72.
+    - M5 DO NOT TRIGGER adjacency: +85.
+    - Focus-list-to-pointer: −200.
+
+    `[verified: test_agent_roster.py lines 87–91; the deltas are by hand and unverified to the character]` Naming the three §Prose bullets in the description would still not fit, so the description carries the short label and the TRIGGER clause uses the compact list (M5 c). `test_description_length` settles it.
 17. `code-review/SKILL.md` has 488 lines against a 500-line cap, and this plan adds one. `[verified: check-skill-length.sh lines 113–114; line count taken this session]`
 18. Past `comment-discipline-reviewer` scope changes are logged in `CHANGELOG.md`. `[verified: CHANGELOG.md line 119]`
 

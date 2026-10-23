@@ -919,6 +919,9 @@ def _paragraph_readability_fixture_violations(
             f"{sorted(_MUST_PASS_CARVE_OUT_SHAPES)}."
         )
     for shape_name, excerpt in carve_outs.items():
+        # A JSON `null` (or other non-string) excerpt value must still
+        # produce a violation entry below, not an uncaught TypeError.
+        excerpt = excerpt if isinstance(excerpt, str) else ""
         if excerpt not in must_pass:
             violations.append(
                 f"paragraph-readability.json: must_pass_carve_outs[{shape_name!r}] "
@@ -2108,6 +2111,24 @@ class TestFaultInjection:
         assert len(violations) == 1
         assert "'must_pass_carve_outs' names" in violations[0]
         assert "expected exactly" in violations[0]
+
+    def test_paragraph_readability_fixture_treats_null_carve_out_excerpt_as_absent(
+        self,
+    ) -> None:
+        """A JSON `null` value for one must_pass_carve_outs excerpt (with the
+        other two populated, so the carve-out name-set check passes and the
+        loop reaches the null entry) normalizes to an empty string and is
+        caught by this shape's own per-branch violation message, rather than
+        raising TypeError out of `excerpt not in must_pass`."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        fixture["must_pass_carve_outs"]["cause_and_effect"] = None
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "must_pass_carve_outs['cause_and_effect']" in violations[0]
+        assert "carries no causal marker" in violations[0]
 
     def test_paragraph_readability_fixture_detects_vacuous_cause_and_effect_carve_out(
         self,
