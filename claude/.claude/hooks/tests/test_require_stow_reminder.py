@@ -25,6 +25,8 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
+
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 README_UPDATING_AFTER_GIT_PULL = "Updating after git pull"
 # The example PR-body line the deny message offers. It must stay free of the
@@ -550,8 +552,9 @@ class TestRequireStowReminder:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    def test_missing_lib_sh_bootstrap_deny_points_at_install_sh(self, tmp_path):
-        """With `_lib.sh` absent, the bootstrap deny tells the engineer to run ./install.sh."""
+    def test_missing_lib_sh_bootstrap_deny_cites_the_runbook_and_leaves_install_sh_to_the_user(self, tmp_path):
+        """With `_lib.sh` absent, the bootstrap deny cites the deadlock-recovery runbook and says
+        the user, not the agent, runs ./install.sh only if that runbook says so."""
         # The copy sits alone in `tmp_path`, so the hook finds no `_lib.sh` beside it.
         lonely_hook = tmp_path / STOW_REMINDER_HOOK.name
         shutil.copy2(STOW_REMINDER_HOOK, lonely_hook)
@@ -567,6 +570,10 @@ class TestRequireStowReminder:
         assert result.returncode == 2
         assert "could not source _lib.sh" in result.stderr
         assert "./install.sh" in result.stderr
+        assert "the user, not the agent" in result.stderr
+        assert "only if that runbook says so" in result.stderr
+        assert "separate terminal" in result.stderr
+        assert HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text in result.stderr
         assert not re.search(r"re-?link", result.stderr, re.IGNORECASE)
 
 
