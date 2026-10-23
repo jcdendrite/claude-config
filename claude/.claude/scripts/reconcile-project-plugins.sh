@@ -52,17 +52,18 @@ _RECONCILER_WALL_CLOCK_CEILING_SECONDS=600
 # An install can read marketplace metadata and fetch plugin content, hence the doubling.
 _RECONCILER_CLAUDE_CALL_CAP_SECONDS=30
 
-# Plugins that carry credentials and so are never auto-installed.
-_RECONCILER_CREDENTIAL_DENYLIST=("issue-triage@claude-config")
+# Plugin names that carry credentials and so are never auto-installed, whichever marketplace carries them.
+_RECONCILER_CREDENTIAL_DENYLIST=("issue-triage")
 
 # _reconciler_is_denylisted PLUGIN_ID
-# Returns 0 when PLUGIN_ID matches a denylist entry, ignoring ASCII case.
+# Returns 0 when the name half of PLUGIN_ID matches a denylist entry, ignoring ASCII case, so the list binds whichever marketplace carries the name.
 # The body is a subshell that sets LC_ALL=C, so the case fold touches only A-Z.
 _reconciler_is_denylisted() (
   LC_ALL=C
-  folded_id="${1,,}"
+  folded_name="${1%%@*}"
+  folded_name="${folded_name,,}"
   for denied in "${_RECONCILER_CREDENTIAL_DENYLIST[@]}"; do
-    [ "$folded_id" = "${denied,,}" ] && exit 0
+    [ "$folded_name" = "${denied,,}" ] && exit 0
   done
   exit 1
 )

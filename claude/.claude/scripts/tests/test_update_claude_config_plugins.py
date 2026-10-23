@@ -632,7 +632,7 @@ class TestLocalScope:
         self, tmp_path: Path
     ) -> None:
         """The update runs with cwd equal to the entry's projectPath, not the caller's cwd, which is only
-        a subdirectory of it here -- the CLI keys project- and local-scope entries on the working directory."""
+        a subdirectory of it here."""
         marketplace = _make_marketplace_dir(
             tmp_path / "marketplace",
             [{"name": "tool", "version": "2.0.0"}],

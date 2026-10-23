@@ -727,8 +727,8 @@ class TestMarketplacePrecondition:
 
     @pytest.mark.parametrize(
         "spelling",
-        ["Issue-Triage@claude-config", "issue-triage@CLAUDE-CONFIG", "ISSUE-TRIAGE@Claude-Config"],
-        ids=["name-half-capitalized", "marketplace-half-uppercase", "all-uppercase"],
+        ["Issue-Triage@claude-config", "ISSUE-TRIAGE@Claude-Config"],
+        ids=["name-half-capitalized", "name-half-uppercase"],
     )
     def test_credential_denylist_matches_ignoring_ascii_case(self, tmp_path: Path, spelling: str) -> None:
         repo = tmp_path / "repo"
@@ -779,11 +779,11 @@ class TestMarketplacePrecondition:
         assert [line["decision"] for line in reconciler_audit_lines(config_dir)] == ["m4_credential_denylist_skip"]
         assert install_log_entries(install_log) == []
 
-    def test_id_sharing_the_denylisted_name_but_not_the_whole_id_installs(self, tmp_path: Path) -> None:
-        """Allow control: the denylist is a whole-id match, not a prefix or substring match."""
-        near_miss_id = "issue-triage@claude-config-two"
+    def test_denylisted_name_from_another_marketplace_is_skipped(self, tmp_path: Path) -> None:
+        """The denylist binds the plugin name, whichever marketplace carries it."""
+        other_marketplace_id = "issue-triage@claude-config-two"
         repo = tmp_path / "repo"
-        init_reconciler_repo(repo, enabled_plugins={near_miss_id: True})
+        init_reconciler_repo(repo, enabled_plugins={other_marketplace_id: True})
         config_dir = tmp_path / "cfg"
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
@@ -797,7 +797,29 @@ class TestMarketplacePrecondition:
         result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
 
         assert result.returncode == 0, repr(result)
-        assert [entry["plugin"] for entry in install_log_entries(install_log)] == [near_miss_id]
+        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
+        assert decisions == ["m4_credential_denylist_skip"]
+        assert install_log_entries(install_log) == []
+
+    def test_name_extending_the_denylisted_name_installs(self, tmp_path: Path) -> None:
+        """Allow control: the denylist matches the whole name half, not a prefix."""
+        longer_name_id = "issue-triage-two@claude-config"
+        repo = tmp_path / "repo"
+        init_reconciler_repo(repo, enabled_plugins={longer_name_id: True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "claude-config", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        assert [entry["plugin"] for entry in install_log_entries(install_log)] == [longer_name_id]
 
 
 class TestLocalFiltersRunBeforeMarketplaceListing:
@@ -975,6 +997,61 @@ class TestScopeGuard:
         decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
         assert decisions == ["m6_already_tracked"]
         assert install_log_entries(install_log) == []
+
+    def _init_package_inside_toplevel(self, tmp_path: Path) -> Path:
+        """A package directory nested in a git toplevel that is neither tracking nor ignoring its own settings.local.json."""
+        top = tmp_path / "top"
+        init_reconciler_repo(top, enabled_plugins={}, gitignore_settings_local=False)
+        package_dir = top / "pkg"
+        (package_dir / ".claude").mkdir(parents=True)
+        (package_dir / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        return package_dir
+
+    def test_no_install_when_package_settings_local_is_tracked_below_the_git_toplevel(self, tmp_path: Path) -> None:
+        package_dir = self._init_package_inside_toplevel(tmp_path)
+        (package_dir / ".claude" / "settings.local.json").write_text("{}")
+        subprocess.run(
+            ["git", "add", "-f", "pkg/.claude/settings.local.json"], cwd=package_dir.parent, check=True,
+            env={**os.environ, **git_isolation_env(tmp_path)},
+        )
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        result = run_reconciler(package_dir, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
+        assert decisions == ["m6_already_tracked"]
+        assert install_log_entries(install_log) == []
+
+    def test_installs_when_package_gitignore_ignores_its_settings_local_below_the_git_toplevel(
+        self, tmp_path: Path
+    ) -> None:
+        package_dir = self._init_package_inside_toplevel(tmp_path)
+        (package_dir / ".gitignore").write_text(".claude/settings.local.json\n")
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        result = run_reconciler(package_dir, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        entries = install_log_entries(install_log)
+        assert [entry["plugin"] for entry in entries] == ["foo@bar"]
+        assert entries[0]["cwd"] == str(package_dir.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -1854,6 +1931,7 @@ def max_length_id_run_seconds(tmp_path_factory) -> float:
 
 class TestAuditLogFields:
     @pytest.mark.parametrize("hostile_ids", list(_HOSTILE_ID_SETS.values()), ids=list(_HOSTILE_ID_SETS))
+    @pytest.mark.timing
     def test_invalid_id_is_logged_as_a_length_marker_and_the_run_costs_about_a_control_run(
         self, tmp_path: Path, hostile_ids: list[str], max_length_id_run_seconds: float
     ) -> None:
@@ -1895,6 +1973,7 @@ class TestAuditLogFields:
     @pytest.mark.parametrize(
         "control_character_ids", list(_CONTROL_CHARACTER_ID_SETS.values()), ids=list(_CONTROL_CHARACTER_ID_SETS)
     )
+    @pytest.mark.timing
     def test_key_with_a_control_character_never_reaches_the_log_and_the_run_costs_about_a_control_run(
         self, tmp_path: Path, control_character_ids: list[str], max_length_id_run_seconds: float
     ) -> None:
@@ -1980,6 +2059,7 @@ class TestAuditLogFields:
         assert entry["decision"] == "m3_invalid_id_skip"
         assert entry["plugin_id"] == f"invalid-id(len={len(accented_id)})"
 
+    @pytest.mark.timing
     def test_valid_shaped_id_over_the_max_length_is_invalid_and_the_run_costs_about_a_control_run(
         self, tmp_path: Path, max_length_id_run_seconds: float
     ) -> None:

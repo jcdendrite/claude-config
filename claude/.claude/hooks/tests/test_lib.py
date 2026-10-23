@@ -10908,6 +10908,7 @@ class TestLibValidatePluginId:
 
         assert result.returncode == 1, repr(result)
 
+    @pytest.mark.timing
     def test_rejects_valid_shaped_id_of_96_kib_marketplace_half_as_fast_as_a_max_length_id(self) -> None:
         """The length check runs before the super-linear `##*@` removal, so a
         96 KiB id costs about what a maximum-length one does. Timing is a ratio
