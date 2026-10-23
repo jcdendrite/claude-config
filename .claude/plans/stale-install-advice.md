@@ -12,13 +12,12 @@ Why now: it recurred in the session that shipped PR #1290. The audience is every
 
 Fix the instruction that teaches sessions the wrong rule, and state the real rule once. The gate `require-stow-reminder.sh` currently tells sessions every new file needs `./install.sh`, with an unconditional PR-body template. Rewrite its text to defer to a new `README.md` § "Updating after git pull", which states the rule and gives a one-line existence check for a new file. No new script.
 
-The gate keeps its trigger: any path added under `claude/.claude/`, or a change to `install.sh`. The deny's example line states the condition for when a re-run applies. Past CHANGELOG entries and design-decision records stay as written. This PR's own entry shows the new shape: the condition comes first and the rule is not restated.
+The gate's trigger narrows (row 22): it fires on an added path under `claude/.claude/` only when that path's first component, the top-level entry, does not exist on `main`, or on a change to `install.sh`. A file added under a top-level entry that `main` already has arrives on `git pull`, so it no longer trips the gate. The deny's example line states the condition for when a re-run applies. Past CHANGELOG entries and design-decision records stay as written. This PR's own entry shows the new shape: the condition comes first and the rule is not restated.
 
 Alternatives set aside:
 - **A note beside root `CLAUDE.md:56`, or dropping the conditional CHANGELOG re-stow entry.** The engineer said the prior session's suggestions were not the right solution (row 7), and the handoff names these two as those suggestions (row 8).
 - **A read-only `restow-check.py` that walks ancestors and reports `LIVE`/`RESTOW`.** The engineer called it "WAY overengineered" (row 19). It also reaches a session only through the same README or deny prose it was meant to backstop, and it answers a question that checking the file itself answers directly.
 - **Have the gate compute this machine's verdict.** The gate writes for the PR body's audience, which is every stow consumer. It also fires only when the body lacks the marker, so it is absent at most of the moments when a session gives advice.
-- **Narrow the gate to new top-level entries and `install.sh` changes.** This changes the trigger, which this plan keeps as is. Narrowing it is a separate decision.
 - **Normalize installs with `stow --no-folding` everywhere.** Every consumer's layout changes, and the change does not reach other installers. `--no-folding` would also make every new file need a re-run, the opposite of what the engineer expects (row 9).
 - **A path-scoped `.claude/rules/` instruction.** This is another standing prose layer. Revisit it only if the bad advice recurs after this lands.
 - **A real-`stow` integration test pinning stow's folding behavior.** Real stow tests exist elsewhere in the suite, but this change rewrites prose, not stow behavior. The stow manual's tree-folding section already settles the semantics (row 1).
@@ -36,16 +35,16 @@ Alternatives set aside:
 
 **Rows:**
 
-4. `require-stow-reminder.sh`'s deny says a new file "only appears there after re-running install.sh; git pull alone does not create the symlink". It offers the template "Post-merge: run `./install.sh` to pick up this change." [verified: require-stow-reminder.sh:242]
+4. `require-stow-reminder.sh`'s deny says a new file "only appears there after re-running install.sh; git pull alone does not create the symlink". It offers the template "Post-merge: run `./install.sh` to pick up this change." [verified: the `emit_deny` line at the end of require-stow-reminder.sh on `main`]
 5. The hook's header premise is "there is no 'already-stowed parent covers it' case to filter out". That premise contradicts `install.sh`. `install.sh` pre-creates only `~/.claude` and `~/.local/bin`. A new top-level child of `claude/.claude/` is therefore never created by `git pull`, so it always needs a re-run. A new file nested under an already-folded directory arrives on pull. [verified: require-stow-reminder.sh:30-38; install.sh:91-96]
-6. `docs/hooks.md:143` says the gate fires on a new *immediate child* of `claude/.claude/`. The hook actually fires on an added path at any depth. [verified: docs/hooks.md:143; require-stow-reminder.sh:133-162]
+6. The `require-stow-reminder.sh` entry in `docs/hooks.md` says the gate fires on a new *immediate child* of `claude/.claude/`. The hook on `main` fires on an added path at any depth; row 22 narrows that. [verified: that entry and the `ADDED_PATHS` scan on `main`]
 7. The prior session's two fixes are not the right solution. [engineer-verified: "none of your suggestions really seem like the right solution"]
 8. Those two fixes were a "when is a re-stow needed" note beside root `CLAUDE.md:56`, and dropping the conditional re-stow entry from `CHANGELOG.md`. [unverified: relayed by the dispatching session from the handoff, not quoted]
 9. The engineer expects a new file under `scripts/` to arrive on `git pull`. [engineer-verified: "I think that anything in scripts is stowed..."]
 10. Sessions have repeatedly advised re-running `install.sh` for this kind of change. [engineer-verified: "you're not the first session to suggest running install.sh for these types of changes"]
 11. It is not established whether the stow-reminder deny actually fired in the PR #1290 session. The session may instead have acted on its priors or on CHANGELOG precedent. The design does not depend on which: the deny text is wrong either way, and the README states the rule for both paths. Residual: nothing here proves a session reads the README, which is why a `.claude/rules/` file stays a recurrence fallback. [unverified]
-12. Correct general prose lost to wrong specific prose. Root `CLAUDE.md:56-57` tells every session "no re-install needed", while the deny at `require-stow-reminder.sh:242` and the CHANGELOG precedents say to re-run. [verified: CLAUDE.md:56-57; require-stow-reminder.sh:242; CHANGELOG.md:356, :359]
-13. The conditional rule lives mainly in CHANGELOG sub-bullets, in three phrasing families:
+12. Correct general prose lost to wrong specific prose. Root `CLAUDE.md:56-57` tells every session "no re-install needed", while the deny's `emit_deny` line in `require-stow-reminder.sh` and the CHANGELOG precedents say to re-run. [verified: CLAUDE.md:56-57; require-stow-reminder.sh:242; CHANGELOG.md:356, :359]
+13. The conditional rule lives mainly in CHANGELOG sub-bullets (line numbers below are as of the branch cut and have since shifted; find them by phrase), in three phrasing families:
     - "only sufficient when ... tree-folded": CHANGELOG.md:158, :171, :373, :410, :422
     - "real directory": :58, :365, :366, :425
     - "not ... a folded directory symlink": :356, :359
@@ -58,32 +57,38 @@ Alternatives set aside:
 18. Root `CLAUDE.md:56-57` stays untouched in this PR. [engineer-verified: "Leave it untouched (Recommended)"] (the selected option label; the reasoning attached to that option was the planner's proposal)
 19. The read-only checker script is too heavy for this problem. [engineer-verified: "I think the read-only script is WAY overengineered."]
 20. Checking whether the new file itself exists in the config dir gives the right answer without regard to fold state, so the README needs no ancestor-walk rule. `~/.local/bin` is pre-created real, so a new wrapper always reports missing until a re-run. [verified: platform reviewer's reading of install.sh:91 and stow-packages.sh rows]
-21. The deny text is shared by all three REASON_DETAIL branches, and existing tests assert that the strings `adds new files` and `changes install.sh` appear only in the matching branch. New shared deny prose and the example body line must contain neither. [verified: test_require_stow_reminder.py:171-201, :336, :384, :409, :434]
+21. The deny text is shared by all three REASON_DETAIL branches, and existing tests assert that the strings `adds new files` and `changes install.sh` appear only in the matching branch. New shared deny prose and the example body line must contain neither. [verified: the REASON_DETAIL-branch and marker tests in test_require_stow_reminder.py, re-read by the SDET reviewer at HEAD]
+
+22. The PR owner's ruling on the trigger: "let's make the hook snip nested adds for all the directories that install.sh stows. We don't have to support machines that haven't made the migration yet." Leaving the nested case in the trigger keeps "a class of false positives that are only mediated by probabilistic model judgment". The rule: an added path under `claude/.claude/` whose first component exists on `main` raises no reminder. A first component new on the branch still raises it, and so does any `install.sh` change. The existence test reads git (`git ls-tree` or `git cat-file -e main:claude/.claude/<first component>`), not a hardcoded directory list and not `install.sh`. A machine whose pre-existing real `hooks/` or `scripts/` directory never folded is unsupported, and the README `ls` check stays as its fallback. [engineer-verified, quoted; the earlier "trigger unchanged" scope was the plan's own and was never put to the engineer]
+23. `claude/.local/bin` additions stay outside the trigger, and so does a second immediate child of `claude-skills/` beside `skills/` (known gaps, ledger 112dd2d0d41d). Skills nested under `claude-skills/skills/` fold and are live on pull. The engineer has not asked to change either gap. [verified: platform reviewer's reading of install.sh and stow-packages.sh; no engineer instruction either way]
+24. The current scan reads `git diff --name-only` without `-z`, so a non-ASCII added path comes back git-quoted, its leading `"` defeats the prefix strip, and the path is dropped (ledger c0fc625eb5cd). The new first-component test must read NUL-delimited paths so a non-ASCII top-level entry still counts as new. [verified: platform reviewer's scratch-repo run; the test pin is still to be written]
+25. A `$(...)` capture strips NUL bytes, so the existing `ADDED_PATHS=$(...)` plus `<<<` shape cannot carry `-z` output: the paths glue together and only the first path's first component is tested. The read must be a `while IFS= read -r -d ''` loop fed by process substitution or a temp file. The git probe runs once per distinct first component. The diff compares `main...HEAD` (the merge-base), and the probe reads the `main` tip. A tip that already has the entry means another PR carried the re-run. [verified: SDET reviewer ran the NUL strip on bash 5.3; platform reviewer ran the `-z` plus `read -d ''` loop on spaces, a newline and non-ASCII names]
+26. Default rename detection reports a file moved into a new top-level entry as `R`, so `--diff-filter=A` lists nothing and no reminder fires. Real history (commit d3db8632, a file moved into the new top-level `tests/`) shows this. With `diff.renames=false` the same move lists the entry as added, so the verdict varies with a contributor's git config. Ledger row b3ddc46a7cef deferred it as "trigger diff unchanged by this PR", which stopped holding once this PR rewrote that diff line. The engineer chose to close it here: the diff takes `--no-renames`. [verified: SDET reviewer's read of d3db8632; platform reviewer's scratch-repo runs with default and disabled rename detection] [engineer-verified: "Add --no-renames"] (the selected option label; "(Recommended)" was the planner's suffix)
 
 **Mechanisms:**
 - M1. `README.md` § "Updating after git pull" is the one current-behavior statement of the rule and carries the existence check. The gate, `docs/hooks.md`, and this PR's CHANGELOG entry all defer to it. anchors: row13
-- M2. Rewrite the gate's header and deny explanation. Keep its trigger, `DENY_GATE_LABEL`, the `REASON_DETAIL` strings, and the marker match. anchors: row4, row5, row21
-- M3. Make `docs/hooks.md:143` describe the any-depth trigger and defer the rule to README. anchors: row6
+- M2. Rewrite the gate's header and deny explanation, and narrow its trigger to new top-level entries plus `install.sh` changes. Keep `DENY_GATE_LABEL`, the `REASON_DETAIL` strings, the marker match, and the `_lib.sh` bootstrap deny. anchors: row4, row5, row21, row22, row24, row25, row26
+- M3. Make the `require-stow-reminder.sh` entry in `docs/hooks.md` describe the new-top-level-entry trigger and defer the rule to README. anchors: row6, row22
 
 ## Critical files
 
 One `code-writer` dispatch covers every file. Every file needs the same background (the fold rule, the existence check, and the pinned-phrase constraint), so splitting the work would mean restating it in each prompt.
 
 1. **`claude/.claude/hooks/require-stow-reminder.sh`** (modify)
-   - **Header (:4-17 and :30-38):** remove the "Stow links each file individually" rationale and the "no 'already-stowed parent covers it' case" claim. Replace them with one-sentence facts:
-     - The gate fires on any added path. Its trigger is unchanged, and narrowing it is a separate decision.
+   - **Header (the opening Reason comment and the Scope bullet that says "Any depth trips the gate"):** remove the "Stow links each file individually" rationale and the "no 'already-stowed parent covers it' case" claim. Replace them with one-sentence facts:
+     - The gate fires on an added path whose top-level entry under `claude/.claude/` is new relative to `main`, and on an `install.sh` change. A file nested under an existing top-level entry arrives on `git pull` and does not trip it.
      - README § Updating after git pull states the rule.
-     - The trigger rationale appears once in the header, and the detection bullet says only that any depth trips the gate.
+     - The trigger rationale appears once in the header, and the detection bullet says only what trips the gate.
      - **Known gaps:** an edit to a file that `install.sh` copies, reads or runs is an `M`, so the `--diff-filter=A` diff misses it. The package list in `claude/.claude/scripts/stow-packages.sh` and `claude/.claude/scripts/relocate-claude-config.sh` are examples, not an exhaustive list. A PR making such an edit gets no reminder, and the change needs the installer.
-   - **Deny text (:242):**
+   - **Deny text (the final `emit_deny` call):**
      - Keep `this PR $REASON_DETAIL.`
      - Replace the rest with: Whether a consumer must re-run `install.sh` after pulling depends on what changed and on their config dir; README.md § Updating after git pull states the rule and the check.
      - Example body line, containing `install.sh`, which the marker needs, and neither `adds new files` nor `changes install.sh` (row 21): `Post-merge: after git pull, re-run ./install.sh if install.sh itself was modified or a new file is missing from your config dir (see README, Updating after git pull).`
      - No unescaped double quote, `$`, or backtick in the new text: the message sits in a bash double-quoted string under `set -u`, and the template is pasted into `--body "..."`.
      - Keep the existing sentence describing the marker match.
      - Keep each `§` citation on one line.
+   - **Trigger (the `ADDED_PATHS` scan through the `NEW_ENTRIES` loop):** read added paths with `git diff -z --name-only --diff-filter=A main...HEAD -- claude/.claude/` through a `while IFS= read -r -d ''` loop, never a `$(...)` capture (rows 24, 25). For each path, take the first component after `claude/.claude/`. Probe each distinct first component once with `git cat-file -e main:claude/.claude/<first component>`, and keep it only when the probe fails. A path whose first component exists on `main` is dropped. `NEW_ENTRIES` lists the new top-level entries, deduplicated, not every added file. A new top-level file keeps its own name as the first component, so it still trips the gate. Add `--no-renames` to the diff (row 26), so a file moved into a new top-level entry lists as an add, and drop the header's rename Known-gaps line, and say in the header's detection bullet that a moved file counts as an added path. A failed probe counts as a new entry: state that in one header sentence. Reword the `REASON_DETAIL` strings only if the tests' pinned phrases (row 21) stay intact. Do not touch the `_lib.sh` bootstrap deny at :101.
    - **Unchanged:**
-     - The trigger (:133-168).
      - `DENY_GATE_LABEL`.
      - The `REASON_DETAIL` strings.
      - The marker regex.
@@ -91,13 +96,26 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 
 2. **`claude/.claude/hooks/tests/test_require_stow_reminder.py`** (modify)
    - Reword the docstrings at :33-35, :46-49, :77-80, :126-129, and :140-141 that restate the false premise (stow links every file individually; files inside `skills/` do not trip the gate).
-   - Add tests, red first (run them before the hook edit and confirm they fail):
+   - Flip the nested cases: `nested-in-existing-directory` and `deeply-nested-two-directories-down` leave `TRIGGER_SHAPES` and become allow tests (`commit_inside_existing_toplevel`, `commit_deeply_nested_file`). `test_new_file_inside_existing_toplevel_denied` flips to an allow test too. Red first: run the flipped allow tests before the hook edit and confirm they fail.
+   - Every allow test also asserts a live deny control in the same fixture, because `run_hook` reads empty stdout with any exit code other than 2 as allow, so a crashed hook would pass an allow test. The control is a new top-level entry added in a second commit on the same fixture.
+   - Add trigger tests (pins of the new behavior; they pass once the hook edit lands, except where a bullet says otherwise):
+     - A nested add beside a new top-level entry in one PR is denied. The new entry's name sorts after the nested path's first component, which catches a `$(...)`-glued read (row 25). The deny names only the new entry.
+     - Two new top-level entries, one of them also holding two files, are denied, and each entry is named once.
+     - An `install.sh` change beside a nested add is denied with the install.sh-only reason.
+     - A non-ASCII new top-level entry is denied. A non-ASCII directory seeded on `main` with a file added inside it is allowed. The fixture seeds that directory on `main` and sets `core.quotePath` and `diff.renames` repo-locally so ambient git config cannot flip the result.
+     - A new top-level file (not a directory) is denied.
+     - A file moved into a new top-level entry is denied, and the deny names that entry. The move is a `git mv` of a file seeded on `main` under `claude/.claude/`, content unchanged. A source outside the prefix, or edited content below the similarity threshold, lists as an add without the flag and leaves the test green. The fixture's repo-local `diff.renames=true` is what makes it fail without `--no-renames`. This test is red against the hook as it stands: run it before the one-token edit.
+     - A file moved into an existing top-level entry is allowed, with the generic live deny control. It guards over-triggering only; it is not a pin on `--no-renames`.
+     - `main` gains the top-level entry after the branch is cut, and the branch adds a file under the same entry: allowed, because the probe reads the `main` tip. The entry is absent at the merge-base, and `main` advances without resetting the branch onto it (`seed_path_on_main` resets the branch, so the test must not use it). The deny control is a different new entry. This test is green on arrival, so run it once against a merge-base-probe mutant of the hook and confirm it fails.
+     - `main` deletes an existing top-level entry after the cut and the branch makes an unrelated commit: allowed, with the deny control. This pins the `main...HEAD` half of row 25, since a two-dot diff would list the deleted entry's files as added.
+     - The dedup test commits its second file explicitly in its own fixture step, not through a later `git add .`.
+   - Add the rest, red first (run them before the hook edit and confirm they fail):
      - The README heading `Updating after git pull` resolves, using `normalize_heading` and `heading_texts` from the `helpers` module this file already imports, as `test_bash_floor.py` `TestFloorMessageCitationsResolve` does.
      - The example body line, used verbatim as a PR body, is accepted by the marker for both a new-top-level shape (`commit_new_toplevel_dir`) and a nested shape (`commit_inside_existing_toplevel`).
      - The deny reason does not contain `git pull alone does not create the symlink`.
      - A PR that only edits an existing stowed file, or only changes paths outside `claude/.claude/` and `install.sh`, is allowed without a marker.
      - `install.sh` is seeded on `main`, so install.sh tests exercise a modification.
-     - The README-citation and example-line assertions run over every trigger shape: new top-level entry, nested, deeply nested, install.sh-only, and combined.
+     - The README-citation and example-line assertions run over every shape that still denies: new top-level entry, install.sh-only, new top-level entry plus install.sh, and new top-level entry plus a nested add. The nested-only shapes are allow tests and carry no example-line check.
 
 3. **`README.md`** (modify)
    - Add `### Updating after git pull` under `## Quickstart`, after line 90, and a TOC entry nested under Quickstart. The shipped section is four short paragraphs, cut at the PR owner's request; the per-path mapping, the `docs/worktree-bash-guard.md` pointer and the installer-definition bullets below did not ship. It states these facts:
@@ -110,8 +128,8 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
      - "The installer" means `./install.sh` for `~/.claude`. For any other config dir, it means whichever installer stows the packages that `claude/.claude/scripts/stow-packages.sh` lists into that dir.
    - Edit the "Existing users" paragraph (`README.md:113`): drop the claim that `git pull` never materializes new wrappers, point at "Updating after git pull" (row 16), and scope the closing "Re-run it once" to applying the owner-only permissions.
 
-4. **`docs/hooks.md`** (modify :143)
-   - Describe the trigger correctly: any path added under `claude/.claude/` (a file at any depth), or an `install.sh` change.
+4. **`docs/hooks.md`** (modify the require-stow-reminder entry)
+   - Describe the trigger correctly: an added path under `claude/.claude/` whose top-level entry is new relative to `main`, or an `install.sh` change.
    - Replace the "Reason:" restatement with a pointer to README § Updating after git pull and a mention of the deny's conditional template.
    - Keep the `claude-skills/` gap sentence and the line-start bullet `test_hook_alignment.py` requires.
 
@@ -120,7 +138,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
    - Leave the Site sweep table and Current status sections as written.
 
 6. **`CHANGELOG.md`** (modify `## [Unreleased]`)
-   - **Changed:** `require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`. It names README § Updating after git pull, and its example body line is conditional. The trigger is unchanged.
+   - **Changed:** `require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`. It names README § Updating after git pull, and its example body line is conditional. The trigger narrows: a file added under a top-level entry that already exists on `main` no longer raises the reminder, and a file moved into a new top-level entry now does.
 
 7. **`.claude/plans/stale-install-advice.md`**: this plan.
 
@@ -129,8 +147,8 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 1. Run `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. It runs the selected pytest domains itself: a hook change maps to the whole hooks test tree, and README and `docs/` map to the hooks and skills trees. CHANGELOG maps to no tests.
 2. Run `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`, because the plan edits a `.py`.
 3. Run `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`.
-4. Replay the incident on this machine: `ls ~/.claude/scripts/transcript_analysis/session_pricing.py` succeeds, showing the README check reports a live file where the old advice said to re-run.
-5. Sweep the whole false-premise family, not one sentence: `git grep -nEi "individually|alone (does not|doesn't|won't)|materializ|only appears|real director|relink"` over the hook, its tests, `docs/hooks.md`, and `README.md`. Every remaining hit must be a true statement (for example the "Updating after git pull" section on wrappers) or a record.
+4. Replay the incident on this machine: `ls ~/.claude/scripts/transcript_analysis/session_pricing.py` succeeds, showing the README check reports a live file where the old advice said to re-run. Then run the hook's own tests, which replay a nested add (allowed) and a new top-level entry (denied) end to end.
+5. Sweep the whole false-premise family, not one sentence: `git grep -nEi "individually|alone (does not|doesn't|won't)|materializ|only appears|real director|relink|any depth|regardless of whether|adds any path|nested|rename"` over the hook, its tests, `docs/hooks.md`, and `README.md`. Every remaining hit must be a true statement (for example the "Updating after git pull" section on wrappers) or a record.
 
 ## Out of scope
 
@@ -140,6 +158,6 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 - **The same "could not source _lib.sh; run ./install.sh ..." bootstrap in the other hooks.** This change drops its stow-relink parenthetical only in `require-stow-reminder.sh`. The instruction itself stays, because re-running the installer is a correct step when `_lib.sh` cannot be sourced.
 - **The exit-127 advice at `claude-skills/skills/branch-management/SKILL.md:100-101`.** A missing script means it is unlinked, so re-running the installer is correct.
 - **The `--adopt` sentences in the README "Existing users" paragraph.** They describe a flag `install.sh` no longer passes (install.sh:335-336). This is real but unrelated; raise it to the reviewer.
-- **The gate's possible rename blind spot.** It runs `--diff-filter=A` without `--no-renames`, so git's default rename detection may classify a moved file as `R` and skip it [unverified]. This is a separate trigger defect.
+- **Top-level entry names with spaces.** `ENTRIES_HUMAN` splits the entry list on spaces, so such a name is garbled in the deny text. No tracked path under `claude/.claude/` has a space today.
 - **The gate's documented `claude-skills/` gap.** Its own header records it.
-- **Deleted or renamed files** that leave dangling per-entry links.
+- **The deleted side of a delete or rename**, which can leave dangling per-entry links.

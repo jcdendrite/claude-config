@@ -352,7 +352,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **A change under repo-root `scripts/` now selects the hooks and scripts tests in `select-tests.py` instead of falling open to the full suite.**
 - **`require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`.**
   - It names README § "Updating after git pull" for the rule, and its example PR-body line is conditional.
-  - The trigger is unchanged.
+  - The trigger narrows: a file added under a top-level entry that already exists on `main` no longer raises the reminder, and a file moved into a new top-level entry now does.
 
 ### Removed
 

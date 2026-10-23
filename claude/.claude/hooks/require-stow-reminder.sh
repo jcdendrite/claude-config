@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
-# Gate: when a PR being opened/edited against claude-config adds any path
-# under `claude/.claude/`, OR changes `install.sh` (GH-465), require the PR
+# Gate: when a PR being opened/edited against claude-config adds a path whose
+# top-level entry under `claude/.claude/` is new relative to `main`, OR
+# changes `install.sh` (GH-465), require the PR
 # body (or a referenced body-source file, or a referenced commit message via
 # `--fill`) to mention `install.sh` or `stow`.
 # Reason: on a standard install, `install.sh` pre-creates `~/.claude` as a
 # real directory.
 # There, a new top-level entry under `claude/.claude/` always needs a re-run.
+# A file nested under a top-level entry that exists on `main` arrives on
+# `git pull`, so it does not trip the gate.
 # `install.sh` itself is not stowed and only takes effect when invoked, so
 # a change to it ships on `git pull` only if it removes stowed behavior,
 # with the replacement landing only after a manual re-run.
@@ -24,11 +27,19 @@
 # - Fires only when origin URL contains `claude-config` (the origin-URL
 #   test deny-private-project-refs.sh also applies, without its
 #   .claude/private-projects-optin marker arm).
-# - Detects any file added under `claude/.claude/` between `main` and
-#   `HEAD` (`git diff --diff-filter=A`). Any depth trips the gate, whether
-#   or not the file's parent directory already existed on `main`.
-#   The gate cannot see a consumer's layout, so it cannot tell which nested
-#   adds need a re-run.
+# - Detects a path added under `claude/.claude/` between `main` and `HEAD`
+#   (`git diff --diff-filter=A`) whose first path component does not exist
+#   on `main` (`git cat-file -e`).
+# - A moved file counts as an added path, because the diff disables rename
+#   detection.
+# - A failed `git cat-file` probe counts as a new entry.
+# - A failed or killed added-path diff counts only the complete paths it printed
+#   before the failure.
+# - The rest of the added paths go uncounted (fail-open).
+# - The added-path diff and the `git cat-file` probe are each time-capped by
+#   `_lib_capped`.
+# - Reads the added paths NUL-delimited, so a non-ASCII name is not
+#   git-quoted into a path the prefix strip would drop.
 # - GH-465: also fires when `install.sh` itself differs between `main`
 #   and `HEAD` (any change, not only new content), independent of whether
 #   any new top-level entry exists.
@@ -61,7 +72,7 @@
 #   gate exits 0 (fail-open). The cost of a missed reminder is one
 #   confused user; the cost of fail-closed in this rare case is
 #   blocking every PR until they fetch main.
-# - `ADDED_PATHS` below is hardcoded to diff against `claude/.claude/`
+# - The added-path diff below is hardcoded to `claude/.claude/`
 #   and structurally cannot see anything added under `claude-skills/` or
 #   `claude/.local/bin/`.
 #   A future PR that adds a second immediate child under `claude-skills/`
@@ -132,9 +143,6 @@ if ! (cd "$REPO_ROOT" && git rev-parse --verify main >/dev/null 2>&1); then
   exit 0
 fi
 
-# Added paths on the branch since main, scoped to the stow source dir.
-ADDED_PATHS=$(cd "$REPO_ROOT" && git diff --name-only --diff-filter=A main...HEAD -- 'claude/.claude/' 2>/dev/null || true)
-
 # GH-465: install.sh itself is not stowed and only takes effect when
 # invoked, so a change to it -- not only a new stowed entry under
 # claude/.claude/ -- also needs the re-run reminder. Any change (not
@@ -146,23 +154,25 @@ if [ -n "$(cd "$REPO_ROOT" && _lib_capped git diff --name-only main...HEAD -- in
   INSTALL_SH_CHANGED=1
 fi
 
-if [ -z "$ADDED_PATHS" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
-  exit 0
-fi
-
-# Strip the claude/.claude/ prefix from every added path. `--diff-filter=A`
-# already guarantees each one is new relative to `main` — no further
-# existence check against `main` is needed or wanted (see header: any
-# depth trips the gate, whether or not the parent directory exists on main).
+# Top-level entries (first path component under claude/.claude/) of every path
+# added since main that `main` does not already have. `git diff` lists paths in
+# sorted order, so paths sharing a first component are adjacent and each
+# component is probed once. The process substitution keeps the NUL bytes of
+# `-z` output, which a `$(...)` capture would strip.
 NEW_ENTRIES=""
-while IFS= read -r added_path; do
-  [ -z "$added_path" ] && continue
+previous_component=""
+while IFS= read -r -d '' added_path; do
   rest="${added_path#claude/.claude/}"
   # If stripping the prefix produced no change, the path didn't have it.
   [ "$rest" = "$added_path" ] && continue
-  [ -z "$rest" ] && continue
-  NEW_ENTRIES="$NEW_ENTRIES $rest"
-done <<< "$ADDED_PATHS"
+  first_component="${rest%%/*}"
+  [ -z "$first_component" ] && continue
+  [ "$first_component" = "$previous_component" ] && continue
+  previous_component="$first_component"
+  if ! (cd "$REPO_ROOT" && _lib_capped git cat-file -e "main:claude/.claude/$first_component" 2>/dev/null </dev/null); then
+    NEW_ENTRIES="$NEW_ENTRIES $first_component"
+  fi
+done < <(cd "$REPO_ROOT" && _lib_capped git diff -z --no-renames --name-only --diff-filter=A main...HEAD -- 'claude/.claude/' 2>/dev/null || true)
 
 # Trim leading space.
 NEW_ENTRIES="${NEW_ENTRIES# }"
