@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # _review-ledger-lib.sh — validation, site hash, row reader and render for review-ledger.sh.
 #
-# Sourced by review-ledger.sh after hooks/_lib.sh, whose _lib_jq, _lib_capped and
-# _lib_hash_diff_text it calls. Not executable on its own; source it, do not invoke it.
+# Sourced by review-ledger.sh after hooks/_lib.sh, whose _lib_jq, _lib_capped,
+# _lib_hash_diff_text and _lib_status_consistent_with_cap_kill it calls. Not executable
+# on its own; source it, do not invoke it.
 # It sets no EXIT trap, because _lib_acquire_append_lock owns the sourcing script's one.
 
 _REVIEW_LEDGER_DELIM_START='<!-- code-review:deferred:start -->'
@@ -779,19 +780,62 @@ def last_cell:
   end
 '
 
-# _review_ledger_check_out REPO_ROOT OUT PR_JSON LEDGER_DIR
+# _review_ledger_confirm_ignored REAL_ROOT NAME SUBCOMMAND TARGET
+# Succeeds only when git confirms agent-reviews/NAME is ignored in REAL_ROOT.
+# Exit 1 from `git check-ignore` (not ignored, negated, or tracked) and every
+# status other than 0 and 1 (a fatal error, a timeout, a missing git) both
+# refuse. The subshell scrubs the variables that redirect git to another
+# repository, as worktree-ensure.sh and deny-reviewer-tree-mutation.sh do.
+# Returns 1 with the reason on stderr.
+_review_ledger_confirm_ignored() {
+  local real_root="$1" name="$2" subcommand="$3" target="$4" ignore_status
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+    _lib_capped git -C "$real_root" check-ignore -q -- "agent-reviews/$name" 2>/dev/null
+  )
+  ignore_status=$?
+  case "$ignore_status" in
+    0) return 0 ;;
+    1)
+      _review_ledger_reject "$subcommand: $target is not git-ignored, and --out deletes its target, so it will not run. Either no ignore entry matches it, a negating pattern re-includes it, or it is tracked. For the first, the dispatching session, not a review-only agent, runs findings-path-suffix.sh, which appends agent-reviews/ to the file that git rev-parse --git-path info/exclude names. If the script warns that the append failed, the dispatching session adds that line to that file by hand"
+      return 1
+      ;;
+    *)
+      if _lib_status_consistent_with_cap_kill "$ignore_status"; then
+        _review_ledger_reject "$subcommand: could not confirm that $target is git-ignored (git check-ignore timed out, exit $ignore_status), so --out will not run; a retry may clear it"
+      else
+        _review_ledger_reject "$subcommand: could not confirm that $target is git-ignored (git check-ignore exited $ignore_status), so --out will not run"
+      fi
+      return 1
+      ;;
+  esac
+}
+
+# _review_ledger_check_out REPO_ROOT OUT PR_JSON LEDGER_DIR SUBCOMMAND
 # Accepts OUT only as a regular-file target directly under REPO_ROOT's real
-# agent-reviews directory, named review-ledger-<suffix>.md or pr-body-<suffix>.md.
+# agent-reviews directory. SUBCOMMAND picks the allowed names (render:
+# review-ledger-<suffix>.md or pr-body-<suffix>.md; show:
+# review-history-<suffix>.md) and prefixes the messages. Any other SUBCOMMAND,
+# an empty one included, is refused.
 # A relative OUT is taken from the working directory,
 # as the write below takes it. Rejects a '..', '.' or empty segment, a symlinked
 # agent-reviews directory or target, an existing target that is not a regular
-# file, the same file as PR_JSON, and any directory at or under LEDGER_DIR.
+# file, the same file as PR_JSON, any directory at or under LEDGER_DIR, and a
+# target that git does not confirm is ignored.
 # Prints nothing. Returns 1 with the reason on stderr.
 _review_ledger_check_out() {
-  local repo_root="$1" out="$2" pr_json="$3" ledger_dir="$4"
-  local real_root here abs relative_out rel name agents_dir target pr_json_abs ledger_real origin_note=""
+  local repo_root="$1" out="$2" pr_json="$3" ledger_dir="$4" subcommand="${5:-}"
+  local real_root here abs relative_out rel name agents_dir target pr_json_abs ledger_real origin_note="" name_rule
+  case "$subcommand" in
+    render) name_rule="review-ledger-<suffix>.md or pr-body-<suffix>.md" ;;
+    show) name_rule="review-history-<suffix>.md" ;;
+    *)
+      _review_ledger_reject "--out check: unknown subcommand '$subcommand'; expected render or show"
+      return 1
+      ;;
+  esac
   real_root=$(cd -P -- "$repo_root" 2>/dev/null && pwd -P) || {
-    _review_ledger_reject "render: could not resolve the repository root $repo_root"
+    _review_ledger_reject "$subcommand: could not resolve the repository root $repo_root"
     return 1
   }
   agents_dir="$real_root/agent-reviews"
@@ -810,7 +854,7 @@ _review_ledger_check_out() {
   case "$abs" in
     "$agents_dir"/?*) ;;
     *)
-      _review_ledger_reject "render: --out '$out'$origin_note must be a file directly under $agents_dir/"
+      _review_ledger_reject "$subcommand: --out '$out'$origin_note must be a file directly under $agents_dir/"
       return 1
       ;;
   esac
@@ -818,30 +862,30 @@ _review_ledger_check_out() {
   name="${rel#agent-reviews/}"
   case "$name" in
     */*)
-      _review_ledger_reject "render: --out '$out'$origin_note must be a file directly under $agents_dir/, not in a subdirectory"
+      _review_ledger_reject "$subcommand: --out '$out'$origin_note must be a file directly under $agents_dir/, not in a subdirectory"
       return 1
       ;;
   esac
-  case "$name" in
-    review-ledger-?*.md|pr-body-?*.md) ;;
+  case "$subcommand:$name" in
+    render:review-ledger-?*.md|render:pr-body-?*.md|show:review-history-?*.md) ;;
     *)
-      _review_ledger_reject "render: --out '$out' must be named review-ledger-<suffix>.md or pr-body-<suffix>.md, since --out deletes its target and no other file under agent-reviews/ is a render output"
+      _review_ledger_reject "$subcommand: --out '$out' must be named $name_rule, since --out deletes its target and no other file under agent-reviews/ is a $subcommand output"
       return 1
       ;;
   esac
   if [ -e "$agents_dir" ] || [ -L "$agents_dir" ]; then
     if [ -L "$agents_dir" ] || [ ! -d "$agents_dir" ]; then
-      _review_ledger_reject "render: $agents_dir must be a real directory, not a symlink or a file"
+      _review_ledger_reject "$subcommand: $agents_dir must be a real directory, not a symlink or a file"
       return 1
     fi
   fi
   target="$agents_dir/$name"
   if [ -L "$target" ]; then
-    _review_ledger_reject "render: --out '$out' is a symlink; name a regular file"
+    _review_ledger_reject "$subcommand: --out '$out' is a symlink; name a regular file"
     return 1
   fi
   if [ -e "$target" ] && [ ! -f "$target" ]; then
-    _review_ledger_reject "render: --out '$out' exists and is not a regular file"
+    _review_ledger_reject "$subcommand: --out '$out' exists and is not a regular file"
     return 1
   fi
   if [ -n "$pr_json" ] && [ "$pr_json" != "-" ]; then
@@ -850,37 +894,69 @@ _review_ledger_check_out() {
       *) pr_json_abs="$here/$pr_json" ;;
     esac
     if [ "$pr_json_abs" = "$target" ] || [ "$pr_json_abs" -ef "$target" ]; then
-      _review_ledger_reject "render: --out and --pr-json name the same file, which --out deletes before it is read"
+      _review_ledger_reject "$subcommand: --out and --pr-json name the same file, which --out deletes before it is read"
       return 1
     fi
   fi
+  _review_ledger_confirm_ignored "$real_root" "$name" "$subcommand" "$target" || return 1
   # Confinement to a direct child of agent-reviews/ is the control; this check only fires when the repository sits at or under the ledger directory.
   [ -n "$ledger_dir" ] || return 0
   ledger_real=$(cd -P -- "$ledger_dir" 2>/dev/null && pwd -P) || ledger_real="$ledger_dir"
   case "$agents_dir/" in
     "$ledger_real"/*|"$ledger_dir"/*)
-      _review_ledger_reject "render: --out '$out' is inside the ledger directory $ledger_dir"
+      _review_ledger_reject "$subcommand: --out '$out' is inside the ledger directory $ledger_dir"
       return 1
       ;;
   esac
 }
 
-# _review_ledger_remove_out OUT
-# Deletes a stale OUT so that no earlier render's body survives a later failure.
+# _review_ledger_remove_out OUT [SUBCOMMAND]
+# Deletes a stale OUT so that no earlier run's output survives a later failure.
+# SUBCOMMAND (default render) prefixes the messages.
 # An absent OUT is fine. Returns 1 with the reason on stderr when OUT is a
 # symlink or not a regular file, or when the delete fails.
 _review_ledger_remove_out() {
-  local out="$1"
+  local out="$1" subcommand="${2:-render}"
   [ -e "$out" ] || [ -L "$out" ] || return 0
   if [ -L "$out" ] || [ ! -f "$out" ]; then
-    _review_ledger_reject "render: $out exists and is not a regular file, so it is left in place"
+    _review_ledger_reject "$subcommand: $out exists and is not a regular file, so it is left in place"
     return 1
   fi
   rm -f -- "$out"
   if [ -e "$out" ]; then
-    _review_ledger_reject "render: could not delete the stale $out"
+    _review_ledger_reject "$subcommand: could not delete the stale $out"
     return 1
   fi
+}
+
+# _review_ledger_make_out_dir OUT [SUBCOMMAND]
+# Creates OUT's parent directory. SUBCOMMAND (default render) prefixes the
+# message. Returns 1 with the reason on stderr when it cannot.
+_review_ledger_make_out_dir() {
+  local out="$1" subcommand="${2:-render}"
+  mkdir -p -- "$(dirname -- "$out")" || {
+    _review_ledger_reject "$subcommand: could not create the directory for $out"
+    return 1
+  }
+}
+
+# _review_ledger_write_out OUT [SUBCOMMAND]
+# Writes stdin to OUT atomically (a temporary file beside OUT, then mv) and
+# prints `changed: <OUT>`. SUBCOMMAND (default render) prefixes the messages.
+# Returns 1 with no OUT and the reason on stderr when the write fails.
+_review_ledger_write_out() {
+  local out="$1" subcommand="${2:-render}" out_tmp
+  out_tmp=$(mktemp "$out.XXXXXX") || {
+    _review_ledger_reject "$subcommand: could not create a temporary file beside $out"
+    return 1
+  }
+  if cat > "$out_tmp" && mv -f -- "$out_tmp" "$out"; then
+    printf 'changed: %s\n' "$out"
+    return 0
+  fi
+  rm -f -- "$out_tmp" "$out"
+  _review_ledger_reject "$subcommand: could not write $out"
+  return 1
 }
 
 # _review_ledger_render LEDGER_FILE PR_JSON OUT
@@ -905,11 +981,8 @@ _review_ledger_render() {
   local ledger_file="$1" pr_json="$2" out="$3"
   local work status=0
   if [ -n "$out" ]; then
-    _review_ledger_remove_out "$out" || return 1
-    mkdir -p -- "$(dirname -- "$out")" || {
-      _review_ledger_reject "render: could not create the directory for $out"
-      return 1
-    }
+    _review_ledger_remove_out "$out" render || return 1
+    _review_ledger_make_out_dir "$out" render || return 1
   fi
   work=$(mktemp -d "${TMPDIR:-/tmp}/review-ledger.XXXXXX") || {
     _review_ledger_reject "render: could not create a temporary directory"
@@ -925,7 +998,7 @@ _review_ledger_render() {
 # The body of _review_ledger_render, with WORK_DIR for its intermediate files.
 _review_ledger_render_in() {
   local ledger_file="$1" pr_json="$2" out="$3" work="$4"
-  local rows input digest_flag=true out_tmp
+  local rows input digest_flag=true
   _review_ledger_check_regular_file "$ledger_file" || return 1
   rows=$(_review_ledger_read_rows "$ledger_file") || {
     _review_ledger_reject "render: could not read the ledger (jq missing, failed, or timed out)"
@@ -973,15 +1046,5 @@ _review_ledger_render_in() {
     printf 'unchanged\n'
     return 0
   fi
-  out_tmp=$(mktemp "$out.XXXXXX") || {
-    _review_ledger_reject "render: could not create a temporary file beside $out"
-    return 1
-  }
-  if cat -- "$work/result" > "$out_tmp" && mv -f -- "$out_tmp" "$out"; then
-    printf 'changed: %s\n' "$out"
-    return 0
-  fi
-  rm -f -- "$out_tmp" "$out"
-  _review_ledger_reject "render: could not write $out"
-  return 1
+  _review_ledger_write_out "$out" render < "$work/result"
 }
