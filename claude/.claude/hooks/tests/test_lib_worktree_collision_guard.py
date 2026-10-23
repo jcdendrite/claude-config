@@ -652,8 +652,7 @@ exec "{real_git}" "$@"
 
     def test_verification_reread_naming_own_pid_without_session_allows(self, isolated_home, tmp_path):
         """Acquire-verify falls back to a pid comparison only for a lock with
-        no session_id. The session-less branch of the post-write reread judges
-        the lock by pid, so a session-less lock naming this process's pid is
+        no session_id, so a session-less lock naming this process's pid is
         accepted and the guard allows. Forced via a `git` wrapper that
         rewrites `locked` at the SECOND `worktree list --porcelain` call (the
         verification reread, after the guard's own write succeeded)."""
@@ -1114,9 +1113,8 @@ class TestCollisionGuardBranches:
         self, isolated_home, tmp_path, live_pid
     ):
         """The old process still runs the lock's own conversation, and a
-        second process resumes it. Two live processes on one conversation
-        is the other shape of that denial, and the guard denies the resumed one
-        naming the old pid."""
+        second process resumes it. The guard denies the resumed one naming the
+        old pid."""
         repo = tmp_path / "resume-old-pid-same-session-repo"
         init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-old-pid-same-session-worktree"

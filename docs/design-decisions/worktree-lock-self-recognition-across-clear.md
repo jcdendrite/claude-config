@@ -8,11 +8,11 @@ After `/clear`, the harness issues a new `session_id` inside the same Claude Cod
 
 ## Rule
 
-`_lib_worktree_lock_is_mine` (`claude/.claude/hooks/_lib.sh`) is the canonical statement of the rule, and this file records why it has that shape. A lock that records the caller's own PID is the caller's, because `/clear` keeps the process and so the PID is the identity that survives it. A lock from another PID is the caller's only when it carries the caller's `session_id` (a `claude --continue`/`--resume`) and the old PID is not a live Claude Code process. The guard's first read and its reread after a failed write share that one predicate. `_lib_worktree_acquire_lock`'s post-write reread and `_lib_worktree_reclaim_dead_lock`'s content check stay exact comparisons, because they confirm content the caller just wrote or a lock already diagnosed dead, and do not decide whether someone else's lock is the caller's.
+`_lib_worktree_lock_is_mine` (`claude/.claude/hooks/_lib.sh`) is the canonical statement of the rule, and this file records why it has that shape. A lock that records the caller's own PID is the caller's, because `/clear` keeps the process and so the PID is the identity that survives it. The guard's first read and its reread after a failed write share that one predicate. `_lib_worktree_acquire_lock`'s post-write reread and `_lib_worktree_reclaim_dead_lock`'s content check stay exact comparisons, because they confirm content the caller just wrote or a lock already diagnosed dead, and do not decide whether someone else's lock is the caller's.
 
 ## Why the registry is read
 
-The `session_id` match alone cannot see whether the old PID is still running. If the old process was cleared and still runs, admitting a resume of the lock's conversation would put two live processes into one worktree. Reading `sessions/<pid>` with its start-time check tells a live Claude Code process from a PID that is free or was reused by some other program. While the lock's PID is a live registered process, only that process writes. A `kill -0` check on the old PID in this position cannot tell those two apart, and would deny a resumed session whose old PID an unrelated program now holds.
+The `session_id` match alone cannot see whether the old PID is still running. If the old process was cleared and still runs, admitting a resume of the lock's conversation would put two live processes into one worktree. Reading `sessions/<pid>` with its start-time check tells a live Claude Code process from a PID that is free or was reused by some other program. A `kill -0` check on the old PID in this position cannot tell those two apart, and would deny a resumed session whose old PID an unrelated program now holds.
 
 ## Alternatives
 
