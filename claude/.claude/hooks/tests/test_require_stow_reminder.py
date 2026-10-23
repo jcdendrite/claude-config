@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -12,22 +13,34 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     LARGE_MULTILINE_TAIL,
+    REPO_ROOT,
     assert_cap_engaged,
     bash_input,
     build_path_without,
+    heading_texts,
+    normalize_heading,
     run_hook,
     run_hook_reason,
     scaled_shim_sleep,
     write_scaled_timeout_shim,
 )
 
+from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
+
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
+README_UPDATING_AFTER_GIT_PULL = "Updating after git pull"
+# The example PR-body line the deny message offers. It must stay free of the
+# phrases "adds new files" and "changes install.sh".
+EXAMPLE_BODY_LINE = (
+    "Post-merge: after git pull, re-run ./install.sh if install.sh itself was modified "
+    f"or a new file is missing from your config dir (see README, {README_UPDATING_AFTER_GIT_PULL})."
+)
 
 
 @pytest.fixture
 def stow_repo(tmp_path):
-    """A claude-config-shaped repo with `main` containing one already-
-    stowed top-level entry under `claude/.claude/`, and a `feature`
+    """A claude-config-shaped repo with `main` containing one existing
+    top-level entry under `claude/.claude/`, and a `feature`
     branch checked out for tests to add new content on top of.
 
     Tests that want a new top-level entry to be detected should add it
@@ -43,13 +56,13 @@ def stow_repo(tmp_path):
         cwd=repo,
         check=True,
     )
-    # Existing top-level entry on main: claude/.claude/skills/foo.md.
-    # Tests can add files inside `skills/` without tripping the gate
-    # (skills/ is not a new top-level), or add a sibling like
-    # `agents/` to trip it.
-    skills = repo / "claude" / ".claude" / "skills"
-    skills.mkdir(parents=True)
-    (skills / "foo.md").write_text("# existing skill\n")
+    # Existing top-level entry on main: claude/.claude/hooks/foo.md, plus the
+    # installer, so install.sh tests exercise a modification.
+    # Tests can add a file inside `hooks/` or a sibling like `agents/`.
+    hooks = repo / "claude" / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "foo.md").write_text("# existing hook doc\n")
+    (repo / "install.sh").write_text("#!/bin/bash\necho installer\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
@@ -74,13 +87,36 @@ def commit_new_toplevel_file(repo: Path, name: str) -> None:
 
 
 def commit_inside_existing_toplevel(repo: Path) -> None:
-    """Add a new file inside the already-stowed `skills/` directory. Must
-    still trip the gate — GNU Stow links each file individually, so a new
-    file needs a re-stow regardless of whether its parent directory
-    already existed on main."""
-    (repo / "claude" / ".claude" / "skills" / "bar.md").write_text("# new skill\n")
+    """Add a new file inside the existing `hooks/` directory. Must trip the
+    gate regardless of whether the parent directory existed on main."""
+    (repo / "claude" / ".claude" / "hooks" / "bar.md").write_text("# new hook doc\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add skill bar"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add hook doc bar"], cwd=repo, check=True)
+
+
+def commit_deeply_nested_file(repo: Path) -> None:
+    """Add `claude/.claude/hooks/pkg/sub/module.py`: a file two directories
+    below the existing `hooks/` directory."""
+    target_dir = repo / "claude" / ".claude" / "hooks" / "pkg" / "sub"
+    target_dir.mkdir(parents=True)
+    (target_dir / "module.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add nested module"], cwd=repo, check=True)
+
+
+def commit_edit_to_existing_stowed_file(repo: Path) -> None:
+    """Modify `claude/.claude/hooks/foo.md`, which exists on main."""
+    (repo / "claude" / ".claude" / "hooks" / "foo.md").write_text("# edited hook doc\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "edit hook doc foo"], cwd=repo, check=True)
+
+
+def commit_docs_only_change(repo: Path) -> None:
+    """Add a file under `docs/`, outside every stowed package."""
+    (repo / "docs").mkdir()
+    (repo / "docs" / "notes.md").write_text("# notes\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add docs notes"], cwd=repo, check=True)
 
 
 def commit_install_sh_change(repo: Path) -> None:
@@ -89,6 +125,21 @@ def commit_install_sh_change(repo: Path) -> None:
     (repo / "install.sh").write_text("#!/bin/bash\necho updated installer\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "update install.sh"], cwd=repo, check=True)
+
+
+def commit_new_toplevel_dir_and_install_sh_change(repo: Path) -> None:
+    commit_new_toplevel_dir(repo, "agents")
+    commit_install_sh_change(repo)
+
+
+# One commit shape per way the gate can trip.
+TRIGGER_SHAPES = [
+    pytest.param(lambda repo: commit_new_toplevel_dir(repo, "agents"), id="new-toplevel-entry"),
+    pytest.param(commit_inside_existing_toplevel, id="nested-in-existing-directory"),
+    pytest.param(commit_deeply_nested_file, id="deeply-nested-two-directories-down"),
+    pytest.param(commit_install_sh_change, id="install-sh-only"),
+    pytest.param(commit_new_toplevel_dir_and_install_sh_change, id="new-toplevel-and-install-sh"),
+]
 
 
 class TestRequireStowReminder:
@@ -123,12 +174,9 @@ class TestRequireStowReminder:
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=repo) == "allow"
 
     def test_new_file_inside_existing_toplevel_denied(self, stow_repo):
-        """A new file added inside an already-stowed directory still
-        needs a stow re-run — this is the exact shape this migration's own
-        `claude/.claude/hooks/_config.sh` (new file, pre-existing `hooks/`)
-        exposed as a detection gap."""
+        """A new file added inside an existing directory trips the gate."""
         commit_inside_existing_toplevel(stow_repo)
-        cmd = "gh pr create --title T --body 'just a new skill'"
+        cmd = "gh pr create --title T --body 'just a new hook doc'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
     def test_new_toplevel_dir_without_marker_denied(self, stow_repo):
@@ -137,11 +185,25 @@ class TestRequireStowReminder:
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
     def test_new_toplevel_file_without_marker_denied(self, stow_repo):
-        """A new file directly under claude/.claude/ also requires
-        re-stow — stow links each top-level child individually."""
+        """A new file directly under claude/.claude/ also trips the gate —
+        it is a new top-level entry."""
         commit_new_toplevel_file(stow_repo, "newfile.md")
         cmd = "gh pr create --title T --body 'add file'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "commit_change",
+        [
+            pytest.param(commit_edit_to_existing_stowed_file, id="edit-to-existing-stowed-file"),
+            pytest.param(commit_docs_only_change, id="docs-only-change"),
+        ],
+    )
+    def test_change_that_adds_no_stowed_path_without_marker_allowed(self, stow_repo, commit_change):
+        """An edit to a file already on main, or an added file under `docs/`
+        outside every stowed package, needs no PR-body reminder."""
+        commit_change(stow_repo)
+        cmd = "gh pr create --title T --body 'no marker here'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
 
     # ------------------------------------------------------------------ #
     # GH-465: install.sh changes also need the re-run reminder            #
@@ -489,3 +551,70 @@ class TestRequireStowReminder:
         )
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_missing_lib_sh_bootstrap_deny_cites_the_runbook_and_leaves_install_sh_to_the_user(self, tmp_path):
+        """With `_lib.sh` absent, the bootstrap deny cites the deadlock-recovery runbook and says
+        the user, not the agent, runs ./install.sh only if that runbook says so."""
+        # The copy sits alone in `tmp_path`, so the hook finds no `_lib.sh` beside it.
+        lonely_hook = tmp_path / STOW_REMINDER_HOOK.name
+        shutil.copy2(STOW_REMINDER_HOOK, lonely_hook)
+        lonely_hook.chmod(0o755)
+        result = subprocess.run(
+            [str(lonely_hook)],
+            input=json.dumps(bash_input("gh pr create --title T --body 'no marker here'")),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert "could not source _lib.sh" in result.stderr
+        assert "./install.sh" in result.stderr
+        assert "the user, not the agent" in result.stderr
+        assert "only if that runbook says so" in result.stderr
+        assert "separate terminal" in result.stderr
+        assert HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text in result.stderr
+        assert not re.search(r"re-?link", result.stderr, re.IGNORECASE)
+
+
+class TestStowReminderDefersToReadme:
+    """The deny offers an example PR-body line and cites the README heading."""
+
+    def test_readme_has_the_updating_after_git_pull_heading(self):
+        readme_text = (REPO_ROOT / "README.md").read_text()
+        assert normalize_heading(README_UPDATING_AFTER_GIT_PULL) in heading_texts(readme_text), (
+            f"README.md has no heading {README_UPDATING_AFTER_GIT_PULL!r}"
+        )
+
+    @pytest.mark.parametrize("commit_shape", TRIGGER_SHAPES)
+    def test_example_body_line_used_as_pr_body_is_allowed(self, stow_repo, commit_shape):
+        commit_shape(stow_repo)
+        cmd = f"gh pr create --title T --body '{EXAMPLE_BODY_LINE}'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+
+    @pytest.mark.parametrize("commit_shape", TRIGGER_SHAPES)
+    def test_deny_offers_the_example_body_line_and_cites_the_readme_heading(self, stow_repo, commit_shape):
+        commit_shape(stow_repo)
+        cmd = "gh pr create --title T --body 'no marker here'"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        assert EXAMPLE_BODY_LINE in reason
+        assert f"README.md § {README_UPDATING_AFTER_GIT_PULL}" in reason
+
+    def test_deny_states_no_unconditional_rerun_rule(self, stow_repo):
+        """The deny defers the rule to README and words the re-run as conditional, so it states no per-file re-run requirement."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title T --body 'no marker here'"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        unconditional_rule_patterns = [
+            r"individually",
+            r"alone (does not|doesn't|won't)",
+            r"only appears",
+        ]
+        found = [
+            pattern
+            for pattern in unconditional_rule_patterns
+            if re.search(pattern, reason, re.IGNORECASE)
+        ]
+        assert not found, f"deny reason states an unconditional re-run rule: {found}"

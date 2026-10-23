@@ -350,6 +350,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `ruff check --add-noqa` now denies, bare or behind `scripts/venv-run.sh`, since it writes `# noqa` comments into files in place.
   - A gated command word, write flag, or write target split across a backslash-newline continuation now denies, such as `ru\` then `ff`, `sed \` then `-i`, or `ruff check \` then `--fix`.
 - **A change under repo-root `scripts/` now selects the hooks and scripts tests in `select-tests.py` instead of falling open to the full suite.**
+- **`require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`.**
+  - It names README § "Updating after git pull" for the rule, and its example PR-body line is conditional.
+  - The trigger is unchanged.
 
 ### Removed
 
