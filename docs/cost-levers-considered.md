@@ -708,3 +708,37 @@ Reopening incremental credit would need:
 - Line headroom in `code-review/SKILL.md`. See `docs/design-decisions/ready-for-review-fix-loop-convergence.md` § "The `code-review/SKILL.md` line cap".
 
 No code, skill, hook, or test change ships from this investigation.
+
+**2026-10-23 follow-up:** the narrowed-pass row's question of where findings sit relative to a fix is re-read with exact line overlap in the `fix-delta-churn-measure.md` section below, which states whether that reading points the same way. The narrowed-pass row's verdict stands.
+
+## From `fix-delta-churn-measure.md` — "Measure whether cumulative-pass findings land on lines the previous fix wrote"
+
+The question is whether findings on `ready-for-review`'s cumulative re-passes after a fix land on lines that fix wrote more often than the fix's share of the branch's added prose lines predicts, and so whether steering fixes away from adding prose would cut review churn.
+
+The evidence is a one-off scan of locally retained `agent-reviews/` findings files and each branch's git history. Its method was committed before it ran, and it is not kept as a script. Two consecutive cumulative passes bracket a fix, and the later pass's cited line is inside the fix when `git blame` attributes the line to a commit between them. A reading's baseline is the fix's share of the branch's added prose lines. Prose means documentation, comments, and docstrings, skill and agent bodies included. Each reading was computed with uncertain findings counted against inside findings exceeding their baseline, and again with them counted for it. The engineer decided from these readings and their known leans, and the Reason cell quotes the label they selected from labels fixed before the run. This section names no account, branch, or time window.
+
+Because the scan is ad hoc rather than a scope-refusing subcommand, this section follows `docs/private-project-redaction.md` § "Publishing a tooling measurement". It names no figure from the scan and no share-like descriptor, and records which way each reading pointed.
+
+The `review-loop-cost-levers.md` section above placed findings by token match for its narrowed-pass row. Counting inside against outside findings as placed, without reassigning uncertain ones, points the same way as that row. That count is not an exact re-read, because it leaves `comment-discipline-reviewer` out. This section does not re-decide that row.
+
+Limits of the scan:
+
+- The sample is non-random. Findings files survive only in worktrees not yet removed, only files in the current heading format were read, and a pass counted as cumulative only when it left a disposition record.
+- Findings on lines the branch did not add count against the fix, while the baseline covers added lines alone. That leans the comparison toward not pursuing, and a tie leans it the same way, because findings landing inside at exactly the baseline do not exceed it. A finding counts as inside when a line it cites is, while the baseline is the chance for a single line, which leans the other way.
+- Commits between two passes can include work beyond the fix, which counts as inside.
+- Counting uncertain findings both ways bounds placement uncertainty at the finding and pass level, not at the branch level, and not sampling error.
+- `comment-discipline-reviewer` sits outside the comparison, because its findings inside a fix are a first read of that text.
+- `skill-fidelity-reviewer`'s findings are excluded from the comparison, because the scan could not place them.
+- A citation with no path took the path of the finding's previous citation. That resolves the wrong file when a reviewer names the file in prose and then gives a bare line number.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Steering review fixes away from fix-written churn, by a `code-writer` rule to prefer deleting or rewording prose over adding it, or by a change to one reviewer's suggested-fix wording | Deferred for more data (measured) | - At the finding level, the direction turned on how uncertain findings were counted.<br>- At the pass level, the direction turned on how uncertain findings were counted.<br>- At the branch level, the direction turned on how uncertain findings were counted.<br>- Inside counts findings on lines a commit between the passes wrote.<br>- Outside mixes variance, ripple findings, and omissions anchored on older lines.<br>- The engineer selected "More data: the staged-round measurement", so that measurement is the next step. |
+
+Reopening would need:
+
+- A record of which finding's suggested fix wrote each line, since one `code-writer` addresses all the findings a pass sends it.
+- A staged-round measurement that reads fix-written lines from `code-writer` edit calls, since repeated staged rounds on one commit are never committed apart.
+- A per-pass record of the commit each cumulative pass reviewed, and citations that carry repo-relative paths.
+
+No code, skill, hook, or test change ships from this investigation.
