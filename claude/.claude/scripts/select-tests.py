@@ -767,6 +767,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # DOCS_DIR blanket below.
 # TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
 # SCRIPTS_DOC_MD, CREDENTIAL_BASH_READS_HOOK_SH and HOOKS_LIB_SH: see each constant's own comment above for its citation.
+# The CREDENTIAL_BASH_READS_HOOK_SH and HOOKS_LIB_SH row is subsumed by the _is_hooks_dir_shell_script_change row above.
+# Kept anyway because it declares a different test_skills.py dependency, which is running the real credential hook,
+# from that row's callers scan.
 # DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, ROOT_SCRIPTS_DIR, and CLAUDE_SETTINGS_JSON:
 # see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and

@@ -5469,7 +5469,23 @@ def test_code_review_spawn_step_halts_on_a_reviewer_that_could_not_read_its_inpu
     ):
         assert sentence in text, f"code-review/SKILL.md no longer carries {sentence!r}"
     scripts_doc_lines = (REPO_ROOT / "docs" / "scripts.md").read_text().splitlines()
-    withholding_bullet = next(line for line in scripts_doc_lines if line.lstrip().startswith("- **Withholding"))
+    withholding_start = next(
+        index for index, line in enumerate(scripts_doc_lines) if line.lstrip().startswith("- **Withholding")
+    )
+    withholding_line = scripts_doc_lines[withholding_start]
+    sibling_bullet_prefix = " " * (len(withholding_line) - len(withholding_line.lstrip())) + "- **"
+    withholding_end = next(
+        (
+            index for index in range(withholding_start + 1, len(scripts_doc_lines))
+            if scripts_doc_lines[index].startswith(sibling_bullet_prefix)
+        ),
+        None,
+    )
+    assert withholding_end is not None, (
+        "docs/scripts.md's Withholding bullet is no longer followed by a sibling bullet starting with the same indent "
+        f"plus \"- **\" ({sibling_bullet_prefix!r}), so its end cannot be found"
+    )
+    withholding_bullet = "\n".join(scripts_doc_lines[withholding_start:withholding_end])
     assert "review from a checkout elsewhere" in withholding_bullet, (
         "docs/scripts.md's Withholding bullet no longer names the remedy the halts section's denied-`Read` entry "
         "cites for a matching root"

@@ -610,13 +610,12 @@ _lib_repo_root() {
 
 # _lib_path_ignore_status DIR PATH
 # Returns 0 when PATH is ignored in DIR's repository, 1 when it is not, else git's or the cap's status.
-# Status 3 is a sentinel for an empty or unenterable DIR that git never returns here.
+# Status 3, which git never returns here, marks an empty DIR or a failed cd, so neither reads as git's status 1 ("not ignored").
 # Writes nothing to stdout, and the git call's own 2>/dev/null also swallows _lib_capped_for's uncapped-run notice.
 # Unsets GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE so an inherited value cannot point the check at another repository's ignore rules.
 # Uses cd and not git -C because the Write tool resolves a relative PATH against the caller's cwd, which can be a repository subdirectory.
 # Runs git through _lib_capped so a stalled call cannot hang the caller.
 # Checks an empty DIR first because `cd ''` succeeds in place on bash 5.2.
-# A cd failure exits 3 inside the subshell so it is not mistaken for git's status 1 ("not ignored").
 _lib_path_ignore_status() {
   local dir="$1" path="$2"
   [ -n "$dir" ] || return 3

@@ -2305,6 +2305,36 @@ _REALISTIC_CLASSIFICATION_NOTES = {
 _CLASSIFICATION_NOTE_NAMES = {"binary", "gitlink", "symlink", "mode", "empty", "no-eol"}
 
 
+def _assert_ranges_tile_lane_bodies(files: dict[str, Path], repo: Path) -> None:
+    """Every index row's base and history range starts where the previous one ended, and the ranges end at the file's end.
+
+    A base body equals the pre-image `git show` returns at the index header's base.
+    A history body opens with a `commit ` line.
+    """
+    header, index_rows = _parse_index(files["index"])
+    base_lines = files["base"].read_bytes().split(b"\n")[:-1]
+    history_lines = files["history"].read_bytes().split(b"\n")[:-1]
+    base_sha = header["base"]
+    cursor = {"base": 1, "history": 1}
+    for row in index_rows:
+        for key, lines in (("base", base_lines), ("history", history_lines)):
+            value = row[key]
+            if value == "-":
+                continue
+            start, count = map(int, value.split("+"))
+            assert start == cursor[key], f"{key} range of {row['path']} leaves a gap or overlaps"
+            cursor[key] += count
+            body = b"\n".join(lines[start - 1:start - 1 + count]) + b"\n"
+            if key == "base":
+                old = _cunquote_index(row["old_path"] or row["path"])
+                pre_image = _git_out(repo, "show", f"{base_sha}:{old}").stdout
+                assert body == (pre_image if pre_image.endswith(b"\n") else pre_image + b"\n"), row
+            else:
+                assert lines[start - 1].startswith(b"commit "), row
+    assert cursor["base"] - 1 == len(base_lines)
+    assert cursor["history"] - 1 == len(history_lines)
+
+
 class TestRealisticChangeSet:
     def test_lane_diff_equals_per_path_git_reference(self, realistic_run):
         """Whole-diff lanes equal the reference with only the withheld block missing; a listed lane equals its rows' reference
@@ -2382,29 +2412,7 @@ class TestRealisticChangeSet:
 
     def test_base_and_history_ranges_tile_each_body_and_land_on_their_rows(self, realistic_run):
         _source, repo, _env, _id, _rows, result = realistic_run
-        files = _lane_files(result, "staff-sdet")
-        header, index_rows = _parse_index(files["index"])
-        base_lines = files["base"].read_bytes().split(b"\n")[:-1]
-        history_lines = files["history"].read_bytes().split(b"\n")[:-1]
-        base_sha = header["base"]
-        cursor = {"base": 1, "history": 1}
-        for row in index_rows:
-            for key, lines in (("base", base_lines), ("history", history_lines)):
-                value = row[key]
-                if value == "-":
-                    continue
-                start, count = map(int, value.split("+"))
-                assert start == cursor[key], f"{key} range of {row['path']} leaves a gap or overlaps"
-                cursor[key] += count
-                body = b"\n".join(lines[start - 1:start - 1 + count]) + b"\n"
-                if key == "base":
-                    old = _cunquote_index(row["old_path"] or row["path"])
-                    pre_image = _git_out(repo, "show", f"{base_sha}:{old}").stdout
-                    assert body == (pre_image if pre_image.endswith(b"\n") else pre_image + b"\n"), row
-                else:
-                    assert lines[start - 1].startswith(b"commit "), row
-        assert cursor["base"] - 1 == len(base_lines)
-        assert cursor["history"] - 1 == len(history_lines)
+        _assert_ranges_tile_lane_bodies(_lane_files(result, "staff-sdet"), repo)
 
     def test_lane_row_echo_names_each_listed_row_in_index_order(self, realistic_run):
         source, _repo, _env, _id, rows, result = realistic_run
@@ -3911,7 +3919,8 @@ def _lane_bytes(result: subprocess.CompletedProcess, agent: str) -> dict[str, by
 
 def _hostile_repo(tmp_path: Path) -> Path:
     """A repository whose changed set holds a gitlink, a non-ASCII path, a rename and a textconv-attributed text file,
-    with two prior commits on one path so a history body exists."""
+    with two prior commits on one path so a history body exists. One changed path, file.txt, has a history that reaches the
+    root commit."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     local, _bare = _make_repo_with_remote(tmp_path)
     (local / ".gitattributes").write_text("*.txt diff=upper\n")
@@ -3923,6 +3932,9 @@ def _hostile_repo(tmp_path: Path) -> Path:
     (local / "one.txt").write_text(_numbered_lines("one", 12).replace("line 0002", "line two, first edit"))
     _commit_all(local, "hostile base two")
     _git_out(local, "push", "-q", "origin", "main")
+    root_commits = _git_out(local, "rev-list", "--max-parents=0", "HEAD").stdout
+    file_txt_added_in = _git_out(local, "log", "--diff-filter=A", "--format=%H", "--", "file.txt").stdout
+    assert file_txt_added_in == root_commits, "file.txt must be added by the root commit, or no history body ends at the root"
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
     edited_one = _numbered_lines("one", 12).replace("line 0002", "line two, first edit").replace("line 0008", "line eight")
     (local / "one.txt").write_text(edited_one)
@@ -3932,6 +3944,7 @@ def _hostile_repo(tmp_path: Path) -> Path:
     (local / "gl" / "inner.txt").write_text("gl two\n")
     subprocess.run(["git", "commit", "-q", "-a", "-m", "gl two"], cwd=local / "gl", check=True, capture_output=True)
     (local / "added.txt").write_text(_numbered_lines("added", 3))
+    (local / "file.txt").write_text("edited root file\n")
     _git_out(local, "add", "-A")
     return local
 
@@ -3999,13 +4012,21 @@ class TestHostileGitConfiguration:
             assert observed == expected
 
     @pytest.mark.parametrize("setting", [("core.abbrev", "12"), ("log.showRoot", "false")])
-    def test_settings_that_change_the_history_bodies_are_not_pinned(self, tmp_path, hostile_template, setting):
-        """Characterization only: core.abbrev and log.showRoot change a history body (index-line length; the root commit's
-        patch). The script pins neither, so this asserts a clean exit and nothing about the bytes."""
+    def test_settings_that_change_the_history_bodies_are_not_pinned(self, tmp_path, hostile_template, baseline, setting):
+        """core.abbrev and log.showRoot change a history body (index-line length; the root commit's patch). The script pins
+        neither, so each setting yields a history body unlike the clean-config one, and the index-to-body invariant holds
+        under it."""
         repo = _copy_template(hostile_template, tmp_path)
         _git_out(repo, "config", *setting)
 
-        _two_calls(repo, _context_env(tmp_path))
+        result = _two_calls(repo, _context_env(tmp_path))
+
+        assert _lane_bytes(result, "staff-sdet")["history"] != baseline["staff-sdet"]["history"], (
+            f"{setting[0]}={setting[1]} left the history body identical to the clean-config one: the script now pins "
+            "that setting (this test's premise is gone)"
+        )
+        for agent in ("staff-sdet", "staff-backend-engineer"):
+            _assert_ranges_tile_lane_bodies(_lane_files(result, agent), repo)
 
     def test_an_edited_credential_rename_git_cannot_pair_lists_as_a_withheld_delete_and_an_add_under_the_new_name(self, tmp_path):
         """diff.renameLimit=1 stops git pairing the edited rename, so the old name is a delete withheld by its name and the
@@ -4483,6 +4504,38 @@ class TestWithholding:
         kept_block = _lane_files(result, "staff-sdet")["diff"].read_bytes()
         assert b"fail-open-ssh-canary" in kept_block, "the path reads as no match, so its block is kept"
         assert b"withheld-key-canary" not in kept_block, "the regex pass runs in the shell, so a failing grep cannot reach it"
+
+    def test_withholding_fails_closed_when_the_ssh_per_candidate_basename_check_fails(self, tmp_path):
+        """The grep -qEi behind the .ssh directory predicate's per-candidate basename check exits 2: a candidate it could not
+        classify reads as unsafe, so even a safe-allowlist basename (`config`) is withheld and its block is dropped from every
+        lane. The docs/scripts.md Withholding bullet states this half of the predicate's failure handling."""
+        def add_ssh_files(repo: Path) -> None:
+            _write(repo, f"{_SSH_DIR}/config", "fail-closed-ssh-config-canary\n")
+            _write(repo, f"{_SSH_DIR}/deploy_key", "fail-closed-ssh-key-canary\n")
+
+        repo = _small_repo(tmp_path, extra_changes=add_ssh_files)
+        _git_out(repo, "add", "-f", "-A")
+        base_env = _context_env(tmp_path)
+        _healthy_id, _count, healthy_rows = _parse_listing(_run_context(repo, base_env, "--staged", list_only=True))
+        healthy_withheld = {row["path"]: row["withheld"] for row in healthy_rows}
+        assert healthy_withheld[f"{_SSH_DIR}/deploy_key"] == "withheld"
+        assert healthy_withheld[f"{_SSH_DIR}/config"] != "withheld", "control: allowlisted basename is safe"
+        shim_dir = tmp_path / "shim-ssh-per-candidate"
+        _tool_shim(shim_dir, "grep", fragments=(" -qEi ",), status=2)
+        env = {**base_env, "PATH": f"{shim_dir}{os.pathsep}{base_env['PATH']}"}
+
+        failing_id, _count, failing_rows = _parse_listing(_run_context(repo, env, "--staged", list_only=True))
+        result = _run_context(repo, env, "--staged", listing=failing_id, lanes=("staff-sdet",))
+
+        failing_withheld = {row["path"]: row["withheld"] for row in failing_rows}
+        assert failing_withheld[f"{_SSH_DIR}/config"] == failing_withheld[f"{_SSH_DIR}/deploy_key"] == "withheld"
+        assert failing_withheld["one.txt"] != "withheld", (
+            "control: a path outside the .ssh directory is not withheld by the failing per-candidate grep"
+        )
+        assert result.returncode == 0, result.stderr
+        lane_diff = _lane_files(result, "staff-sdet")["diff"].read_bytes()
+        assert b"fail-closed-ssh-config-canary" not in lane_diff
+        assert b"fail-closed-ssh-key-canary" not in lane_diff
 
     def test_history_withholding_fails_closed_when_the_header_scan_fails(self, tmp_path):
         """A grep that fails the history-header scan checked no header, so every history body is dropped and its row noted
@@ -5482,9 +5535,10 @@ def test_the_time_sum_accounts_for_every_capped_call_a_real_run_makes(tmp_path):
             for entry in entries:
                 seconds = int(entry.split(" ")[0])
                 observed[seconds] = observed.get(seconds, 0) + 1
-            # The 20 s bucket mixes git merge-base with the enrichment calls, which the table bounds by their shared 120 s budget.
+            # In the lanes call the 20 s bucket mixes git merge-base with the enrichment calls, which the table bounds by their
+            # shared 120 s budget. The list call runs no enrichment, so its 20 s bucket is merge-base alone and is counted.
             for seconds, count in observed.items():
-                if seconds != _lib_constant("CONTEXT_GIT_CALL_SECONDS"):
+                if call == "list" or seconds != _lib_constant("CONTEXT_GIT_CALL_SECONDS"):
                     assert count <= allowed.get(seconds, 0), (source, call, seconds, count, allowed)
 
 

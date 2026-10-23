@@ -259,7 +259,7 @@
 #       - The Bash arm's denial text names the Write tool, which Plan may lack (GH-1295).
 #       - The Write arm's agent-reviews branch judges the path string and the ignore check, never the inode.
 #         A symlinked own-name leaf or a hard-linked own-name leaf is not inspected by this hook.
-#         Only a persona that holds Bash can plant such a link.
+#         Any agent that holds Bash, `Plan` included, can plant such a link.
 #         Whether the Write tool refuses a symlink leaf or a hard-linked leaf it did not read is unverified here.
 #       - An allowed git subcommand can run a command named by one of its own flags, or by a `-c <key>=<value>` config setting whose value git runs as a command.
 #         Examples: `git grep -O<cmd>`, `git ls-remote --upload-pack=<cmd>`, `git -c core.fsmonitor=<cmd> status`.

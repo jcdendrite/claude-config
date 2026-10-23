@@ -338,6 +338,7 @@ _context_build_listing() {
 }
 
 # The listing, one CHANGED_PATH line per index row, goes to stderr in a single write.
+# The listing has no row ceiling, so a listing of thousands of rows is the point to add one.
 _context_print_listing() {
   local index withheld_field listing_text
   listing_text="LISTING: $LISTING_ID $ROW_COUNT"$'\n'
@@ -455,6 +456,7 @@ _context_slice_lane_diffs() {
     _context_halt header-check 1 "$PR_DIFF_HEADER_DETAIL"
   fi
   CONTEXT_STEP='lane-slice'
+  # A lane .diff copies its blocks uncapped, so a shared diff of many megabytes is the point to cap it.
   LANE_DIFF_TEMPS=()
   for ((lane = 0; lane < ${#LANE_AGENTS[@]}; lane++)); do
     LANE_DIFF_TEMPS[lane]=$(mktemp "$OUTPUT_DIR/.${LANE_AGENTS[lane]}-$CONTEXT_SUFFIX.diff.XXXXXX")

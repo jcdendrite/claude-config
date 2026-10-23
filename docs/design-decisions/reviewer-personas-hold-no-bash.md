@@ -8,8 +8,9 @@ GH-1208 removes `Bash` from the eight reviewer personas that held it, so none of
 
 ## How each agent is contained
 
-- **The ten reviewers** (`ciso-reviewer`, the seven `staff-*` specialists, `comment-discipline-reviewer`, `skill-fidelity-reviewer`) hold exactly `Read`, `Grep`, `Glob` and `Write`, pinned by `test_agent_roster.py`. `deny-reviewer-tree-mutation.sh` allows their `Write`, `Edit` and `MultiEdit` only to `<own agent name>-*.md` directly inside an ignored `agent-reviews/` directory, or, for `Write` only, a new `<agent>-*.md` file of the caller's own directly inside the current session's `/review-pr` findings directory under `/tmp`, within the hook header's Known gaps. The general `/tmp` exemption is gone. The Write tool's refusal to write through a symlink is a vendor assumption from one Linux run of the case study (W1-RERUN), not something this repo pins.
-- **`Explore` and `plan-architect`** are contained by their `tools:` lines, each `Read, Grep, Glob`, pinned in `test_agent_roster.py`.
+- **The ten reviewers** (`ciso-reviewer`, the seven `staff-*` specialists, `comment-discipline-reviewer`, `skill-fidelity-reviewer`) hold exactly `Read`, `Grep`, `Glob` and `Write`, pinned by `test_agent_roster.py`. `deny-reviewer-tree-mutation.sh` allows their `Write`, `Edit` and `MultiEdit` only to `<own agent name>-*.md` directly inside an ignored `agent-reviews/` directory, or, for `Write` only, a new `<agent>-*.md` file of the caller's own directly inside the current session's `/review-pr` findings directory under `/tmp`, within the hook header's Known gaps. The Write arm allows no other `/tmp` path. The Write tool's refusal to write through a symlink is a vendor assumption from one Linux run of the case study (W1-RERUN), not something this repo pins.
+- **`Explore`** is contained by its `tools:` line, `Read, Grep, Glob`, pinned in `test_agent_roster.py`.
+- **`plan-architect`**'s `tools:` line is `Read, Grep, Glob, Edit`, pinned in `test_agent_roster.py` (`test_plan_architect_tools_are_exactly_read_grep_glob_edit`). `deny-plan-writer-off-plan-writes.sh` confines its `Edit` to existing plan files directly under the repository's `.claude/plans/`, within that hook header's Known gaps. The agent is listed in `_LIB_PLAN_WRITER_AGENTS` in `_lib.sh`.
 - **`review-orchestrator`** holds `Bash` and sits outside the hook's roster. It runs the `pr-diff-against-base.sh --context-files` calls with listing numbers and no changed-path text in either command.
 - **`general-purpose`** is a built-in with the full tool set, outside the roster and outside the follow-up issue.
 - **`Plan`** is the only roster member that reaches the hook's Bash arm. That claim rests on the harness's own agent listing, which this repo cannot pin, and a consumer project's agent file with a roster persona's name overrides the shipped `tools:` line and can give that persona `Bash` again. The Bash arm and the three link tests protect only `Plan`. Its remaining gaps are owned by #1295.
@@ -18,7 +19,7 @@ GH-1208 removes `Bash` from the eight reviewer personas that held it, so none of
 
 ## Decisions and the engineer's answers
 
-Each answer is quoted with the question it answered. The option text behind a label is the session's proposal, not the engineer's words.
+Each answer quotes the label the engineer selected or the words they typed. The plan row it cites holds the selected label and, where the row has one, the plan's reading of the question, not the question text. The option text behind a label is the session's proposal, not the engineer's words.
 
 - **Reduced inputs** (row 5): "Reduced inputs for those spawns are fine (Recommended)". `/review-pr` spawns, `comment-discipline-reviewer` and `skill-fidelity-reviewer` get no base and history files.
 - **Accept `Plan`-reachable Bash-arm gaps** (row 26): "Accept Plan-reachable Bash-arm gaps as debt; re-point to follow-up (Recommended)". The hook's tracker pointer moves from #1103 to #1295, so under `docs/hooks.md` § "Threat-model tiers" every finding against the gate is regression-class. This label is the stop-and-ask record for findings against that gate.

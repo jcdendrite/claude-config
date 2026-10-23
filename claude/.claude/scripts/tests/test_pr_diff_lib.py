@@ -1255,6 +1255,7 @@ def test_guard_glob_matcher_with_no_globs_matches_nothing() -> None:
 _DENY_DATA_FILE_READS_HOOK = HOOKS_DIR / "deny-data-file-reads.sh"
 
 # (relative name, Read verdict). The verdict a Read of "<root>/<name>" gets is deny when either credential Read gate denies it.
+# The oracle runs deny-credential-file-reads.sh and deny-env-reads.sh only, not deny-data-file-reads.sh.
 _READ_GATE_NAME_MATRIX = [
     ("src/main.py", "allow"),
     ("notes/env.md", "allow"),
@@ -1291,6 +1292,10 @@ _READ_GATE_NAME_MATRIX = [
     (f"x\n{_SSH_DIR}/deploy_key", "deny"),
     ("a.netrc\nb", "allow"),
     ("first\nsecond\n.env.example", "allow"),
+    ("agent-reviews/staff-sdet-1700000000-branch.index", "allow"),
+    ("agent-reviews/staff-sdet-1700000000-branch.diff", "allow"),
+    ("agent-reviews/staff-sdet-1700000000-branch.base", "allow"),
+    ("agent-reviews/staff-sdet-1700000000-branch.history", "allow"),
 ]
 
 

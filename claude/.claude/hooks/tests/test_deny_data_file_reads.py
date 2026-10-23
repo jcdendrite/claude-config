@@ -116,6 +116,16 @@ class TestDenyDataFileReads:
         over.write_bytes(b"x" * 5242881)
         assert run_hook(DENY_DATA_FILE_READS_HOOK, read_input(str(over))) == "deny"
 
+    @pytest.mark.parametrize("suffix", ["index", "diff", "base", "history"])
+    def test_small_review_lane_file_allowed_with_guard_armed(self, isolated_home, read_guard, tmp_path, suffix):
+        """Each of the four per-lane `agent-reviews/` names is allowed when small: no name or extension rule
+        in the data-file guard covers a lane file, so only the size rule can deny one."""
+        read_guard()
+        lane_file = tmp_path / "agent-reviews" / f"staff-sdet-1700000000-branch.{suffix}"
+        lane_file.parent.mkdir()
+        lane_file.write_bytes(b"x" * 1024)
+        assert run_hook(DENY_DATA_FILE_READS_HOOK, read_input(str(lane_file))) == "allow"
+
     def test_oversized_review_lane_diff_denied(self, isolated_home, read_guard, tmp_path):
         """A `.diff` lane input over the threshold is blocked whole at Read time: pr-diff-against-base.sh
         --context-files copies the hook's name rules only, so this size rule is what covers the lane file.
