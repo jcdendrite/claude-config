@@ -760,11 +760,11 @@ case "$SUBCOMMAND" in
         # The two checks below each read the body by path, so the hash is
         # taken again after them: a body changed in between would otherwise
         # get a marker covering bytes neither check saw.
-        # Attribution prefix, trailer, and (diff-only mode) disclosure line
-        # check, run before the marker is written so a failure refuses the
-        # whole write (see review-pr-check-attribution.sh's header for why it
-        # is mechanical). _lib_capped's 5s default bounds a local read of a
-        # session-owned text file.
+        # Findings-body check, run before the marker is written so a failure
+        # refuses the whole write. review-pr-check-attribution.sh's usage text
+        # owns what it requires; its header says why it is mechanical.
+        # _lib_capped's 5s default bounds a local read of a session-owned
+        # text file.
         if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" "$MODE" 2>&1); then
           printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
           printf 'marker.sh: findings-body attribution check failed. Abort without writing a marker.\n' >&2
