@@ -16,6 +16,7 @@ from helpers import (
     assert_cap_engaged,
     build_path_without,
     cumulative_review_value,
+    head_sha,
     init_git_repo,
     isolated_git_diff,
     reference_normalized_text,
@@ -321,7 +322,8 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
     return repo
 
 
-# The textconv shapes are normalizer inputs that `pr-diff-against-base.sh`'s `git diff-tree` no longer emits.
+# The textconv shapes come only from porcelain `git diff`,
+# because `pr-diff-against-base.sh`'s `git diff-tree` never applies textconv.
 TEXTCONV_CONFIG = ("diff.hexdump.textconv=od -A n -t x1",)
 SUPPRESS_BLANK_EMPTY_CONFIG = ("diff.suppressBlankEmpty=true",)
 # An `index` line that still carries its blob-id pair; the normalizer strips the pair from a text entry's line.
@@ -558,17 +560,11 @@ def _commit_variant(repo: Path, base_sha: str, branch: str, *file_sets: dict[str
     return isolated_git_diff(repo, "HEAD~1", "HEAD")
 
 
-def _head_sha(repo: Path) -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
 def _repo_with_base_file(tmp_path: Path, name: str, content: bytes) -> tuple[Path, str]:
     repo = init_git_repo(tmp_path / "variants")
     (repo / name).write_bytes(content)
     _commit_all(repo, "base")
-    return repo, _head_sha(repo)
+    return repo, head_sha(repo)
 
 
 def _sha256_of(text: bytes) -> str:
@@ -954,7 +950,7 @@ class TestLibCumulativeReviewValue:
         repo, _first_commit = _repo_with_base_file(tmp_path, "x.bin", b"\x00base")
         (repo / "y.bin").write_bytes(b"\x00base")
         _commit_all(repo, "second path, same blob")
-        base_sha = _head_sha(repo)
+        base_sha = head_sha(repo)
         edit_one = _commit_variant(repo, base_sha, "one", {"x.bin": b"\x00one"})
         edit_two = _commit_variant(repo, base_sha, "two", {"x.bin": b"\x00two"})
         same_blob_other_path = _commit_variant(repo, base_sha, "other-path", {"y.bin": b"\x00one"})
@@ -1242,7 +1238,7 @@ class TestLibCumulativeReviewValue:
         repo, base_sha = _repo_with_base_file(tmp_path, "p\u00e4th.txt", "h\u00e9llo\n".encode())
         (repo / "p\u00f6th.txt").write_text("h\u00e9llo\n")
         _commit_all(repo, "second multibyte path")
-        base_sha = _head_sha(repo)
+        base_sha = head_sha(repo)
 
         def diff_of(branch: str, name: str, content: str) -> bytes:
             subprocess.run(["git", "checkout", "-q", "-b", branch, base_sha], cwd=repo, check=True)
@@ -1268,7 +1264,7 @@ class TestLibCumulativeReviewValue:
         _commit_all(repo, "seed")
         set_gitlink(repo, "gitlink", GITLINK_BEFORE)
         subprocess.run(["git", "commit", "-q", "-m", "gitlink before"], cwd=repo, check=True)
-        base_sha = _head_sha(repo)
+        base_sha = head_sha(repo)
 
         def bump_diff(branch: str, commit_sha: str) -> bytes:
             subprocess.run(["git", "checkout", "-q", "-b", branch, base_sha], cwd=repo, check=True)

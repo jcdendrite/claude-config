@@ -18,17 +18,10 @@ Every other byte except a NUL (see the NUL bullet below) reaches sha256 unchange
 The marker is a normalized-text equivalence key, not a content hash. This file is the one canonical statement of what shares a value. The `_lib.sh` comments, the CHANGELOG entry and `docs/hooks.md` name this file and do not restate the class.
 
 - sha256 hashes the normalized text. Binary entries are identified by git's abbreviated blob ids (at least 7 hex digits by default, more in a large repository, 4 at minimum under `core.abbrev`), so the key makes no collision-resistance claim for them.
-- NUL bytes are not hashed. Bash command substitution (`$( )`) drops them in `pr-diff-against-base.sh`'s `DIFF_TEXT` capture, in `_lib_cumulative_diff_hash` and in `marker.sh`'s recorded-subject read, so two diffs that differ only by NUL bytes share a value.
-  - Git's binary sniff reads only the first 8000 bytes of a file, so a text entry can carry NUL bytes after that.
-  - `$( )` drops those NUL bytes, and the `index` line, stripped of its blob ids, no longer pins them.
-  - A path with the `diff` attribute set (from `.gitattributes`, `info/attributes` or `core.attributesFile`) is rendered as text whatever it contains, per `git help gitattributes`, so NUL bytes in its hunk lines are also dropped by `$( )`, and the `index` line no longer pins them.
-  - A diff that only inserts NUL bytes into a large, already-reviewed text file, or into a path with the `diff` attribute set, therefore shares a value with the diff without them.
-  - The reviewer's `--diff-file` is NUL-stripped the same way, so the review never saw them.
-  - Leaving this open is a judgment call of this design.
-- The rules never rewrite a body line. Apart from NUL bytes (previous bullets), two diffs share a value only when they differ solely in hunk start offsets, in function-context TEXT, in a text entry's `index` blob ids, or in the site of a hunk with identical context.
+- NUL bytes are not hashed. Bash command substitution drops them where `pr-diff-against-base.sh` captures the diff, so a NUL byte inside a line the diff prints changes no hashed byte. The diff handed to the reviewer comes from the same capture, so it never carries a NUL byte either. Pinned by `test_cumulative_review_value_ignores_a_nul_byte_in_an_edited_line_past_the_binary_sniff_window`.
+- The rules never rewrite a body line. Apart from NUL bytes, two diffs share a value only when they differ solely in hunk start offsets, in function-context TEXT, in a text entry's `index` blob ids, or in the site of a hunk with identical context.
 - Hunk line counts stay in the preimage. Under `diff.suppressBlankEmpty=true`, trailing blank context lines print as empty lines that `$( )` strips, so only the counts record how many there were. Dropping the counts would make two such diffs collide. Because counts are a function of the hunk body, keeping them costs no hit on the targeted rebase.
 - A header the rules do not recognize stays in the preimage, which causes a miss and never a false `live`. Recognized means the closing `@@` followed by end of line or a space. A combined-diff `@@@` header, a glued tail (`@@ -1 +1 @@x`), an `index` line with an extra field, and uppercase hex are not recognized.
-- The key has no age bound and matches tree-wide and branch-agnostically. The cross-branch replay residual below covers the consequence.
 
 ## Why not `git patch-id`
 
@@ -58,7 +51,7 @@ Each of these can only cause a miss: color, `similarity index`, diff config such
 
 Two rules keep config that rewrites the text, or drops a change from it, out of the script's merge-base diff. The first rule leaves some inputs in place.
 
-- **Plumbing.** The script runs `git diff-tree -r -p -M` rather than the `git diff` porcelain, so porcelain-only diff config (for example `diff.relative`, `diff.submodule` and `diff.context`) does not change the hashed text. `test_merge_base_diff_is_unchanged_by_porcelain_diff_config` pins this. Its output is byte-equal to the porcelain's for the eight shapes of `test_default_config_output_equals_the_porcelain_diff_of_the_merge_base_range`, in a repo with no textconv driver (checked on git 2.56.0). `-M` stays explicit because rename detection is on by default only in the porcelain. `--no-color --no-ext-diff` are defense in depth: plumbing prints no color or external-diff output without them.
+- **Plumbing.** The script runs `git diff-tree -r -p -M` rather than the `git diff` porcelain, so porcelain-only diff config (for example `diff.relative`, `diff.submodule` and `diff.context`) does not change the hashed text. `-M` stays explicit because rename detection is on by default only in the porcelain.
   - Textconv is never applied. The abbreviated-binary-blob-id residual above states what a text file and a binary file with a `textconv` driver print.
   - A binary attribute or `core.bigFileThreshold` renders a path as `Binary files ... differ`, which the abbreviated-binary-blob-id residual above covers.
   - A low `diff.renameLimit` can turn an inexact rename into a delete and an add.
@@ -107,10 +100,6 @@ A false `live` skips the cumulative pass in `ready-for-review` step 3. The skill
 - [ready-for-review-fix-loop-convergence.md](ready-for-review-fix-loop-convergence.md) says "The byte-exact cumulative guarantee stays intact"; that guarantee is a normalized-text key.
 - The generic claims that a marker's content is a hash of exactly the reviewed state, in two sentences of `docs/hooks.md` and in the comment on `_lib_marker_value_present`, are qualified in place for `cumulative-review`.
 - The `cumulative-review` status line `live (hash matches the current state)`, which `marker.sh` prints for every completion-marker kind, reads as exact-state equality. For this kind the matched value is a normalized key, and the line is not qualified in the output.
-
-## A marker from a different recipe reads `historical`
-
-A marker whose value was computed by a different recipe reads `historical`, because `status` matches by exact content. Under the raw-diff recipe that happens once when the diff has a hunk header or a text entry's `index` line. There is no dual read of the raw value: accepting both recipes would keep the raw recipe on the cumulative path and need a later removal, all to save one review per in-flight branch. A diff with neither, such as a pure-rename PR, normalizes to itself, so a marker written under the raw-diff recipe stays `live`. `status` cannot tell a recipe change from a content change, by design: the marker is a bare digest with no recipe identifier, and a recipe change costs one re-review per in-flight branch. For the diffs that do change, the `historical` reading also ends the first disclosure in [cumulative-review-marker-not-recomputed.md](cumulative-review-marker-not-recomputed.md), that an unswept unearned marker stays `live` forever.
 
 ## Sources
 

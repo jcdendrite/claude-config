@@ -24,6 +24,7 @@ from helpers import (
     cumulative_review_value,
     isolated_git_diff,
     isolated_git_env,
+    require_cumulative_review_value,
     set_gitlink,
 )
 
@@ -536,6 +537,45 @@ class TestNormalPathAgainstMain:
         assert "Binary files a/blob.bin and b/blob.bin differ" in result.stdout
         assert "\nindex " in result.stdout
         assert "CONVERTED" not in result.stdout
+
+    def test_cumulative_review_value_ignores_a_nul_byte_in_an_edited_line_past_the_binary_sniff_window(self, tmp_path):
+        """Named residual: two cumulative diffs that differ only by a NUL byte in an edited line past git's
+        8000-byte binary-sniff window share one cumulative-review value.
+
+        Git still prints the file as text, and the script's command substitution drops the NUL.
+        The key therefore makes no claim about NUL bytes.
+        """
+        git_binary_sniff_window_bytes = 8000
+        base_lines = [f"line {number:04d}\n" for number in range(3000)]
+        edited_line_index = 2900
+        assert len("".join(base_lines[:edited_line_index]).encode()) > git_binary_sniff_window_bytes
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / "long.txt").write_text("".join(base_lines))
+        subprocess.run(["git", "add", "long.txt"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a text file longer than the sniff window"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+
+        def diff_script_and_git_for_edit(branch: str, edited_line: bytes) -> tuple[subprocess.CompletedProcess, bytes]:
+            subprocess.run(["git", "checkout", "-q", "-b", branch, "main"], cwd=local, check=True)
+            edited_lines = [line.encode() for line in base_lines]
+            edited_lines[edited_line_index] = edited_line
+            (local / "long.txt").write_bytes(b"".join(edited_lines))
+            subprocess.run(["git", "commit", "-q", "-a", "-m", f"feature: edit line {edited_line_index}"], cwd=local, check=True)
+            return _run_script(local, env), isolated_git_diff(local, "origin/main...HEAD")
+
+        plain_result, _ = diff_script_and_git_for_edit("feat/plain-edit", b"edited\n")
+        nul_result, nul_git_diff = diff_script_and_git_for_edit("feat/nul-edit", b"edit\x00ed\n")
+
+        assert plain_result.returncode == 0, plain_result.stderr
+        assert nul_result.returncode == 0, nul_result.stderr
+        assert b"edit\x00ed" in nul_git_diff, "control: git prints the NUL-bearing edit as text"
+        assert "Binary files" not in nul_result.stdout
+        assert "\x00" not in nul_result.stdout, "command substitution drops the NUL"
+        assert plain_result.stdout != nul_result.stdout, "control: the post-image blob ids in the index lines differ"
+        plain_value = require_cumulative_review_value(plain_result.stdout.encode().rstrip(b"\n"), tmp_path)
+        nul_value = require_cumulative_review_value(nul_result.stdout.encode().rstrip(b"\n"), tmp_path)
+        assert plain_value == nul_value
 
 
 class TestGhPrViewFailureFallback:

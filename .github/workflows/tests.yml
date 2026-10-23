@@ -125,6 +125,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: |
           nproc
+          git --version
           readlink -f "$(command -v awk)" || true
           { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
 
