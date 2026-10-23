@@ -738,15 +738,17 @@ def _find_scheduled_task_locks(
     $HOME can force file hydration or block indefinitely. No -L: a symlinked
     lock is not this sweep's concern. Library, .Trash, and Movies are pruned.
     macOS TCC denies traversal into their protected subtrees (141 "Operation
-    not permitted" errors measured on one Darwin machine, 2026-10-19), and
-    none of the three can hold a scheduled_tasks.lock, which only ever lands
+    not permitted" errors measured on one Darwin machine, 2026-10-19). None
+    of the three can hold a scheduled_tasks.lock, since locks only ever land
     under a project's own .claude/ directory. The -path match is
     case-sensitive and assumes Library, .Trash, and Movies keep their
     canonical macOS casing (true for TCC-created paths); a lowercase
     "library" directory would not be pruned. Pruning also assumes no
     project is rooted directly under Library, .Trash, or Movies, since such
-    a project's own scheduled_tasks.lock would be missed too. Returns
-    (paths, timed_out, elapsed).
+    a project's own scheduled_tasks.lock would be missed too. A nonzero exit
+    after find has already printed some paths is not distinguished from a
+    clean sweep, so a partial result can be returned as if it were complete.
+    Returns (paths, timed_out, elapsed).
     """
     root = find_root.resolve()
     started = time.monotonic()

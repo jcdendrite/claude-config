@@ -963,9 +963,23 @@ def test_find_scheduled_task_locks_reports_timeout_when_find_cannot_be_started(t
     assert timed_out is True
 
 
+def test_find_scheduled_task_locks_nonzero_exit_with_empty_stdout_reports_no_locks_found(tmp_path):
+    """Documents existing behavior: a nonzero find exit is currently silently
+    treated as "no locks found" rather than surfaced as an error, since the
+    function never inspects result.returncode or result.stderr."""
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="find: bad option")
+    found, timed_out, elapsed = _mod._find_scheduled_task_locks(tmp_path, run=fake_run)
+    assert found == []
+    assert timed_out is False
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="find -prune syntax is Darwin/BSD-only")
 def test_find_scheduled_task_locks_prunes_library_trash_movies(tmp_path):
     """Regression guard for the TCC "Operation not permitted" noise this sweep
-    hit under ~/Library, ~/.Trash, and ~/Movies during crash recovery (measured 2026-10-19)."""
+    hit under ~/Library, ~/.Trash, and ~/Movies during crash recovery (measured 2026-10-19).
+    No injected run=, like test_boot_time_darwin_real_subprocess_returns_plausible_epoch: CI
+    runs on Linux's GNU find, which can't validate this BSD-find-specific prune syntax."""
     pruned_lock = tmp_path / "Library" / "proj" / ".claude" / "scheduled_tasks.lock"
     _write_lock(pruned_lock)
     _write_lock(tmp_path / ".Trash" / "proj" / ".claude" / "scheduled_tasks.lock")
@@ -981,9 +995,12 @@ def test_find_scheduled_task_locks_prunes_library_trash_movies(tmp_path):
     assert len(found) == 1
 
 
+@pytest.mark.skipif(platform.system() != "Darwin", reason="find -prune syntax is Darwin/BSD-only")
 def test_find_scheduled_task_locks_prune_does_not_match_by_basename_alone(tmp_path):
     """Regression guard: the -prune exclusion matches only the exact root-level
-    Library/.Trash/Movies paths, not any directory sharing their basename elsewhere."""
+    Library/.Trash/Movies paths, not any directory sharing their basename elsewhere.
+    No injected run=, like test_boot_time_darwin_real_subprocess_returns_plausible_epoch: CI
+    runs on Linux's GNU find, which can't validate this BSD-find-specific prune syntax."""
     near_miss_lock = tmp_path / "LibraryBackup" / "proj" / ".claude" / "scheduled_tasks.lock"
     _write_lock(near_miss_lock)
     nested_lock = tmp_path / "proj" / "Library" / ".claude" / "scheduled_tasks.lock"
