@@ -766,6 +766,15 @@ _FENCE_ROWS = {
     "closer-with-trailing-spaces-and-tabs": (["```", "## P", "``` \t ", "## P"], ({1, 2, 3}, None)),
     "longer-closer": (["```", "## P", "`````", "## P"], ({1, 2, 3}, None)),
     "four-space-opener-is-not-a-fence": (["    ```", "## P", "    ```", "## P"], (set(), None)),
+    "list-marker-backtick-opener-is-not-a-fence-and-its-closer-opens-one": (
+        ["- ```bash", "## P", "  ```", "## P"],
+        ({3, 4}, 3),
+    ),
+    "ordered-list-marker-tilde-opener-is-not-a-fence-and-its-closer-opens-one": (
+        ["1. ~~~", "## P", "   ~~~", "## P"],
+        ({3, 4}, 3),
+    ),
+    "block-quoted-opener-is-not-a-fence": (["> ```", "## P", "> ```", "## P"], (set(), None)),
     "backtick-in-backtick-info-string-is-not-an-opener": (["``` a`b", "## P"], (set(), None)),
     "two-backtick-run-is-not-an-opener": (["``", "## P"], (set(), None)),
     "two-tilde-run-is-not-an-opener": (["~~", "## P"], (set(), None)),
@@ -1350,7 +1359,7 @@ def _step5_section() -> str:
     return after_heading.split(_STEP6_START, 1)[0]
 
 
-# test_skills.py pins the verdict literals and the check command inside Step 5's clauses, so they have no test here.
+# test_skills.py pins the check command inside Step 5's clauses.
 class TestSkillContract:
     def test_step5_names_every_output_key(self, script) -> None:
         section = _step5_section()
@@ -1380,6 +1389,18 @@ class TestSkillContract:
 
         assert f"`{script._CONTEXT_HEADING}`" in section
         assert four_heading_phrase in section
+
+    def test_step5_names_the_verdict_lines_and_first_authoring_stage_in_backticks(self, script) -> None:
+        section = _step5_section()
+        literals = [
+            script._verdict_line(script._MODE_PREPARE, True),
+            script._verdict_line(script._MODE_CHECK, True),
+            script._line("STAGE", script._STAGE_FIRST_AUTHORING),
+        ]
+
+        missing = [literal for literal in literals if f"`{literal}`" not in section]
+
+        assert missing == [], f"plan-it/SKILL.md Step 5 does not name {missing} in backticks"
 
     def test_step5_gives_the_prepare_command(self) -> None:
         assert "python3 ~/.claude/scripts/plan-shape.py prepare '<plan path>'" in _step5_section()

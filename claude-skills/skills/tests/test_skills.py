@@ -5870,6 +5870,10 @@ _PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
         "revision, re-dispatch when `check` then passes or fails with a `STAGE` line, because a "
         "revision that died partway can pass it."
     ),
+    "code_fence_never_shares_a_line_with_a_list_marker": (
+        "Start each code fence on a line of its own, never on the same line as a list marker "
+        "such as `-` or `1.`, because `plan-shape.py` does not model list items."
+    ),
 }
 
 _EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"

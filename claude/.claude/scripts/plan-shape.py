@@ -17,9 +17,8 @@ path. The rule tests directory names only, so it admits any `.claude/plans/` dir
 the current repository's. Under a config directory with another name, the plan-mode harness path is refused.
 
 File: opened once, with no symlink followed and no blocking on a FIFO, and it must be a regular
-file. `prepare` opens it for reading and appending, `check` for reading. Its bytes must decode as
-strict UTF-8, and a carriage return anywhere stops evaluation. The script never rewrites line
-endings.
+file. Its bytes must decode as strict UTF-8, and a carriage return anywhere stops evaluation. The
+script never rewrites line endings.
 
 Lines: the text split on "\\n" only, numbered from 1. A final "\\n" ends the last line instead of
 starting an empty one. A blank line holds only U+0020 and U+0009.
