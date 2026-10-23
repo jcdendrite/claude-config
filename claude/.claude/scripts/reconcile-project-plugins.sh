@@ -46,10 +46,10 @@ MARKER_FILE="$BOOTSTRAP_DIR/.reconciler-start"
 
 # Wall-clock ceiling for one run: 600s (10 minutes), 20x the per-call cap below.
 # The ceiling is checked only before each id, so an install that starts just under it can still run past it, for its capped git checks and its 30s cap.
-# This is repo precedent, not a vendor figure, because no vendor documentation gives this call's duration.
 _RECONCILER_WALL_CLOCK_CEILING_SECONDS=600
 # 30s per capped `claude` call: double this repo's 15s cap for the closest comparable network-fetching call (`git fetch` in cleanup-merged-branches.sh).
 # An install can read marketplace metadata and fetch plugin content, hence the doubling.
+# This is repo precedent, not a vendor figure, because no vendor documentation gives this call's duration.
 _RECONCILER_CLAUDE_CALL_CAP_SECONDS=30
 
 # Plugin names that carry credentials and so are never auto-installed, whichever marketplace carries them.
