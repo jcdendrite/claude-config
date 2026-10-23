@@ -1,8 +1,5 @@
 """Unit tests for _lib.sh's _lib_passes_path_char_allowlist, the pure-bash
-byte-class gate its callers run on a path before putting it in their output:
-- announce-resume-command.sh, on FILE_PATH and a resolved worktree root,
-  before interpolating either into its emitted resume-context command.
-- announce-approved-plan-path.sh, on each plan path it relays.
+byte-class gate its callers run on a path before putting it in their output.
 
 These source _lib.sh directly and call the function through bash -- no
 hook invocation, no JSON payload -- mirroring test_lib_mask_shell_quotes.py.
