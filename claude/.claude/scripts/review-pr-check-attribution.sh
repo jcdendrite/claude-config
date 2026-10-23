@@ -82,6 +82,7 @@ fi
 # A fenced quote that exactly offsets a real unbalanced tag is an accepted miss.
 # A tag split across lines never counts, since the scan matches one line at a time.
 # So an unbalanced split tag is missed, and a balanced pair with one split tag is refused.
+# A self-closing `<details/>` never counts, though an HTML5 parser opens a block for it.
 # A line with thousands of `<details ` openers and no later `>` scans in
 # quadratic time, so a caller's time cap can kill the check first, which
 # fails closed.
