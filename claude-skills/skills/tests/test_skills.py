@@ -6632,6 +6632,18 @@ class TestCodeReviewFixPlanPilotRegionPin:
         )
 
 
+def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
+    """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
+    the exclusion list, a digest or history file would pass as a reviewer's findings file."""
+    round_cap_text = _normalized_anchor_text(
+        _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+    )
+    assert (
+        "never a `review-ledger-`, `review-history-`, `code-review-dispositions-` or `pr-body-` file"
+        in round_cap_text
+    )
+
+
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
     """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
     schema_keys = config_schema()

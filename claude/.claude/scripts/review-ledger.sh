@@ -103,7 +103,8 @@ Subcommands:
              authoring_effort, session_id and every field above) already exists.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
-  show       Print this branch's ledger rows (this session's rows on a
+  show [--out <path>]
+             Print this branch's ledger rows (this session's rows on a
              detached HEAD or the default branch) sorted by event_time, each
              tagged with its own source_repo_hash, or an absence message. A
              header line on stderr always has the shape
@@ -115,6 +116,17 @@ Subcommands:
              prints no rows and no header, and if only the summary fails it
              prints the cleaned rows without a header. Both exit 1, and the
              round count is then unknown, not 0.
+             With --out the rows go to <path>, one JSON object per line as
+             show prints them, instead of stdout. <path> must be a git-ignored
+             file directly under <repo>/agent-reviews/ named
+             review-history-<suffix>.md (a relative path is taken from the
+             working directory) and is deleted first, then written atomically
+             only on success. stdout reads `changed: <path>`, or `unchanged`
+             (no file written) when there are no rows or no ledger. The header
+             and the no-ledger notice go to stderr. Exits 2 on a rejected
+             --out, which includes a <path> git does not confirm is ignored.
+             After the delete, a read, sort, summary or write failure exits 1
+             (see "What a failure under --out leaves at <path>").
   render [--pr-json <file|->] [--out <path>]
              Print the PR-body block built from the live decisions in the
              resolved ledger file (this branch's, or this session's in session
@@ -125,28 +137,45 @@ Subcommands:
              appended when absent, and dropped when it would hold no rows; every
              byte outside the block stays identical, and a row whose last cell
              is not a ledger id is kept. With --out the result goes to <path>,
-             which must be a file directly under <repo>/agent-reviews/ named
-             review-ledger-<suffix>.md or pr-body-<suffix>.md (a relative path
-             is taken from the working directory) and is deleted
-             first, then written atomically only on success. stdout reads
-             `changed: <path>` or `unchanged` (no file written). Exits 2 on a
-             rejected --out, and 1 with no file on empty input, an unreadable
-             --pr-json file, a failed ledger read, an unpaired or repeated
-             delimiter in the body, a --pr-json object with no `body` key, an
-             open code fence that would hide an appended block, or a stale
-             <path> that cannot be deleted.
+             which must be a git-ignored file directly under
+             <repo>/agent-reviews/ named review-ledger-<suffix>.md or
+             pr-body-<suffix>.md (a relative path is taken from the working
+             directory) and is deleted first, then written atomically only on
+             success. stdout reads `changed: <path>` or `unchanged` (no file
+             written). Exits 2 on a rejected --out, which includes a <path>
+             git does not confirm is ignored. After the delete, empty input,
+             an unreadable --pr-json file, a failed ledger read, an unpaired or
+             repeated delimiter in the body, a --pr-json object with no `body`
+             key, an open code fence that would hide an appended block, or a
+             write failure exits 1 (see "What a failure under --out leaves at
+             <path>").
   clear-stale [--dry-run]
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
              than the resolved sweep window (Claude Code's cleanupPeriodDays
              setting, floored at 30 days), across every repo-hash.
              --dry-run reports without removing.
 
+What a failure under --out leaves at <path>, for show and render alike,
+depends on the step, not the exit code, and exit 2 and exit 1 each occur on
+both sides of the delete:
+  - Through the path check and the delete, an existing <path> stays: a
+    malformed argument list, a failed repository-root lookup, a rejected
+    --out, or a stale <path> that cannot be deleted (exit 1).
+  - Once the delete succeeds, no failure leaves a file at <path>: a session or
+    ledger lookup failure (exit 2), or the exit-1 failures named under the
+    subcommand.
+  - No non-zero exit writes a new file. A killed write can leave a
+    <path>.XXXXXX temporary beside <path>.
+A consumer acts on the stdout line, never on the exit status or on whether
+<path> exists.
+
 Exit status: append exits 2 on every refusal, a rejected call and an
 environment failure alike, so its message carries the distinction. show and
 render exit 2 for a rejected call or an unresolved ledger location, and 1 when
 a read, sort or write fails. Two cases differ: a symlinked or non-regular
-ledger file exits 2 from show and 1 from render, and render exits 1 when it
-cannot delete a stale --out, before it resolves the ledger location.
+ledger file exits 2 from show and 1 from render, and either subcommand exits 1
+when it cannot delete a stale --out, before it resolves the session and ledger
+location.
 EOF
 }
 
@@ -595,12 +624,35 @@ case "$SUBCOMMAND" in
     _sweep_stale_ledger_files "$LEDGER_DIR" "$_LEDGER_SWEEP_FLOOR_DAYS" 0 0
     ;;
   show)
-    if [ $# -gt 0 ]; then
-      usage
-      exit 2
+    SHOW_OUT=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --out)
+          if [ $# -lt 2 ] || [ -z "$2" ] || [ -n "$SHOW_OUT" ]; then
+            usage
+            exit 2
+          fi
+          SHOW_OUT="$2"
+          shift 2
+          ;;
+        *)
+          usage
+          exit 2
+          ;;
+      esac
+    done
+    if [ -n "$SHOW_OUT" ]; then
+      # A stale --out is deleted, and its directory created, before any later step that can exit.
+      # render also deletes before resolving the session, but creates the directory only after the ledger resolves.
+      REPO_ROOT=$(_resolve_repo_root) || exit 2
+      _review_ledger_check_out "$REPO_ROOT" "$SHOW_OUT" "" "$LEDGER_DIR" show || exit 2
+      _review_ledger_remove_out "$SHOW_OUT" show || exit 1
+      _review_ledger_make_out_dir "$SHOW_OUT" show || exit 1
+      SESSION_ID=$(_resolve_session_id) || exit 2
+    else
+      SESSION_ID=$(_resolve_session_id) || exit 2
+      REPO_ROOT=$(_resolve_repo_root) || exit 2
     fi
-    SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
     _resolve_ledger_location "$REPO_ROOT" "$SESSION_ID" || exit 2
     # This worktree's own session file is read alongside the resolved file:
     # in branch scope it holds rows appended while HEAD was detached, and
@@ -620,8 +672,12 @@ case "$SUBCOMMAND" in
       [ -s "$f" ] && NONEMPTY_LEDGER_FILES+=("$f")
     done
     if [ "${#NONEMPTY_LEDGER_FILES[@]}" -eq 0 ]; then
-      printf 'review-ledger.sh: no ledger for this %s (%s).\n' "$LEDGER_SCOPE" "$LEDGER_FILE"
+      # Under --out stdout carries only the one `unchanged` line.
+      NO_LEDGER_NOTICE_FD=1
+      [ -n "$SHOW_OUT" ] && NO_LEDGER_NOTICE_FD=2
+      printf 'review-ledger.sh: no ledger for this %s (%s).\n' "$LEDGER_SCOPE" "$LEDGER_FILE" >&"$NO_LEDGER_NOTICE_FD"
       printf 'review-ledger.sh: show scope=%s rows=0 oldest=- newest=- max_round=0 files=\n' "$LEDGER_SCOPE" >&2
+      [ -z "$SHOW_OUT" ] || printf 'unchanged\n'
       exit 0
     fi
     # Sorted by event_time so rows from the branch and session files
@@ -663,13 +719,23 @@ case "$SUBCOMMAND" in
     IFS=$'\t' read -r SHOW_ROW_COUNT SHOW_OLDEST SHOW_NEWEST SHOW_MAX_ROUND <<<"$SHOW_STATS"
     if [ "$SHOW_STATS_STATUS" -ne 0 ] || ! _is_uint "$SHOW_ROW_COUNT" || ! _is_uint "$SHOW_MAX_ROUND" \
         || [ -z "$SHOW_OLDEST" ] || [ -z "$SHOW_NEWEST" ]; then
-      printf 'review-ledger.sh: could not summarize ledger rows for display (jq missing, failed, or timed out) -- printing rows with no header; the round count is unknown, not 0.\n' >&2
-      printf '%s\n' "$SHOW_OUTPUT"
+      if [ -n "$SHOW_OUT" ]; then
+        printf 'review-ledger.sh: could not summarize ledger rows (jq missing, failed, or timed out) -- no file written; the round count is unknown, not 0.\n' >&2
+      else
+        printf 'review-ledger.sh: could not summarize ledger rows for display (jq missing, failed, or timed out) -- printing rows with no header; the round count is unknown, not 0.\n' >&2
+        printf '%s\n' "$SHOW_OUTPUT"
+      fi
       exit 1
     fi
     printf 'review-ledger.sh: show scope=%s rows=%s oldest=%s newest=%s max_round=%s files=%s\n' \
       "$LEDGER_SCOPE" "$SHOW_ROW_COUNT" "$SHOW_OLDEST" "$SHOW_NEWEST" "$SHOW_MAX_ROUND" "$SHOW_FILES_LABEL" >&2
-    printf '%s\n' "$SHOW_OUTPUT"
+    if [ -z "$SHOW_OUT" ]; then
+      printf '%s\n' "$SHOW_OUTPUT"
+    elif [ "$SHOW_ROW_COUNT" -eq 0 ]; then
+      printf 'unchanged\n'
+    else
+      printf '%s\n' "$SHOW_OUTPUT" | _review_ledger_write_out "$SHOW_OUT" show || exit 1
+    fi
     ;;
   render)
     RENDER_PR_JSON=""
@@ -697,8 +763,8 @@ case "$SUBCOMMAND" in
     # A stale --out is deleted before any later step that can exit, so a failed
     # render never leaves the previous round's body file to be published.
     if [ -n "$RENDER_OUT" ]; then
-      _review_ledger_check_out "$REPO_ROOT" "$RENDER_OUT" "$RENDER_PR_JSON" "$LEDGER_DIR" || exit 2
-      _review_ledger_remove_out "$RENDER_OUT" || exit 1
+      _review_ledger_check_out "$REPO_ROOT" "$RENDER_OUT" "$RENDER_PR_JSON" "$LEDGER_DIR" render || exit 2
+      _review_ledger_remove_out "$RENDER_OUT" render || exit 1
     fi
     SESSION_ID=$(_resolve_session_id) || exit 2
     _resolve_ledger_location "$REPO_ROOT" "$SESSION_ID" || exit 2

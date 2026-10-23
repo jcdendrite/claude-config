@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from helpers import path_with_failing_tool_shim
 
 _SCRIPT = Path(__file__).parent.parent / "resume-context.sh"
 
@@ -52,28 +54,15 @@ def _install_cwd_recorder(tmp_path: Path) -> tuple[Path, Path, Path]:
     return stub, recorder, cwd_recorder
 
 
-def _destination_chmod_failure_env(tmp_path: Path) -> dict[str, str]:
-    """Install the recorder launcher plus a chmod shim that fails only on the mktemp
-    destination, and return the env that selects both."""
-    stub, _ = _install_recorder(tmp_path)
-    shim_dir = tmp_path / "shims"
-    shim_dir.mkdir()
-    real_chmod = shutil.which("chmod")
-    assert real_chmod is not None
-    shim = shim_dir / "chmod"
+def _destination_chmod_failure_env(tmp_path: Path, launcher_stub: Path) -> dict[str, str]:
+    """Return the env that selects `launcher_stub` (installed by the caller) plus a chmod
+    shim that fails only on the mktemp destination."""
     # The index directory is resume-context-index-<uid> and the day-file is consumed.<date>.tsv,
-    # so only the mktemp destination matches resume-context.*.
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        'last_argument="${@: -1}"\n'
-        'case "${last_argument##*/}" in resume-context.*) exit 1 ;; esac\n'
-        f'exec "{real_chmod}" "$@"\n'
-    )
-    shim.chmod(0o755)
+    # so only the mktemp destination matches */resume-context.*.
     return {
-        "RESUME_CONTEXT_LAUNCHER": str(stub),
+        "RESUME_CONTEXT_LAUNCHER": str(launcher_stub),
         "RESUME_CONTEXT_TMPDIR": str(tmp_path),
-        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "PATH": path_with_failing_tool_shim(tmp_path / "shims", "chmod", "*/resume-context.*"),
     }
 
 
@@ -288,29 +277,17 @@ class TestLaunchMode:
         """The source is narrowed before mktemp and mv: when that chmod fails, nothing
         may reach the shared temp dir, and the source stays where a retry can find it."""
         stub, _ = _install_recorder(tmp_path)
-        shim_dir = tmp_path / "shims"
-        shim_dir.mkdir()
-        real_chmod = shutil.which("chmod")
-        assert real_chmod is not None
         src = tmp_path / "foo-handoff.md"
         src.write_text("hello handoff\n")
         src.chmod(0o664)
-        shim = shim_dir / "chmod"
-        # Fails only when the source is an argument, wherever `--` puts it.
-        shim.write_text(
-            "#!/usr/bin/env bash\n"
-            'for argument in "$@"; do\n'
-            f'  if [ "$argument" = "{src}" ]; then exit 1; fi\n'
-            "done\n"
-            f'exec "{real_chmod}" "$@"\n'
-        )
-        shim.chmod(0o755)
         result = _run(
             ["--consume-only", str(src)],
             {
                 "RESUME_CONTEXT_LAUNCHER": str(stub),
                 "RESUME_CONTEXT_TMPDIR": str(tmp_path),
-                "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+                # Fails only when the source is an argument, wherever `--` puts it. The quoting
+                # makes the case pattern match the path literally, glob characters included.
+                "PATH": path_with_failing_tool_shim(tmp_path / "shims", "chmod", shlex.quote(str(src))),
             },
         )
         assert result.returncode == 1
@@ -326,7 +303,8 @@ class TestLaunchMode:
         not secure."""
         src = tmp_path / "foo-handoff.md"
         src.write_text("hello handoff\n")
-        result = _run(["--consume-only", str(src)], _destination_chmod_failure_env(tmp_path))
+        stub, _ = _install_recorder(tmp_path)
+        result = _run(["--consume-only", str(src)], _destination_chmod_failure_env(tmp_path, stub))
         destinations = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(destinations) == 1
         assert result.returncode == 1
@@ -348,10 +326,10 @@ class TestLaunchMode:
     ) -> None:
         """Launch mode must not announce the move or exec the launcher when the
         destination chmod fails."""
-        _, recorder = _install_recorder(tmp_path)
+        stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-handoff.md"
         src.write_text("hello handoff\n")
-        result = _run([str(src)], _destination_chmod_failure_env(tmp_path))
+        result = _run([str(src)], _destination_chmod_failure_env(tmp_path, stub))
         destinations = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(destinations) == 1
         assert result.returncode == 1
