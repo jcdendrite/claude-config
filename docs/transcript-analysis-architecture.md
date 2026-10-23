@@ -897,5 +897,5 @@ module, not a test file itself, holds `_gate_args`, which the commit-gate file a
 too, as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
 `sessions.py` has no test file of its own. The cross-subcommand header table covers its header.
 `tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
-emission. The `--paths` refusal stays untested. The pr-link method of
+emission. No test covers the `--paths` refusal. The pr-link method of
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).
