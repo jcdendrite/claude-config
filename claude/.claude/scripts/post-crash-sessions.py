@@ -741,8 +741,8 @@ def _find_scheduled_task_locks(
     not permitted" errors measured on one Darwin machine, 2026-10-19). None
     of the three can hold a scheduled_tasks.lock, since locks only ever land
     under a project's own .claude/ directory. The -path match is
-    case-sensitive and assumes Library, .Trash, and Movies keep their
-    canonical macOS casing (true for TCC-created paths); a lowercase
+    case-sensitive. It assumes Library, .Trash, and Movies keep their
+    canonical macOS casing, which holds for TCC-created paths. A lowercase
     "library" directory would not be pruned. Pruning also assumes no
     project is rooted directly under Library, .Trash, or Movies, since such
     a project's own scheduled_tasks.lock would be missed too. A nonzero exit
