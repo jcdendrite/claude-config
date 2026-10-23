@@ -92,22 +92,13 @@ This links the entries of `claude/.claude/` one by one into a real `$HOME/.claud
 
 ### Updating after git pull
 
-Whether a pull needs the installer depends on what changed and on how your config dir links into this checkout.
+Edits to existing files, and new files nested under a directory `~/.claude` already links into this checkout, are on disk after `git pull`. A running session may need a restart to read them.
 
-- **Edited files.** An edit to an existing file that Claude Code reads from the config dir is on disk after `git pull`, though a running session may need a restart to read it. What the installer itself produces reaches a machine only when an installer runs: the `~/.local/bin` copy, marketplace and plugin registrations, migrations, the stow package list, and the stow links. A change to `install.sh` takes effect the same way. A file that Claude Code or a hook reads from the config dir is live on pull, even when `install.sh` also reads or runs it. Examples, not an exhaustive list: the `relocate-claude-config` copy in `~/.local/bin` and a package added to the list in `claude/.claude/scripts/stow-packages.sh` both need the installer.
-- **New files nested under a linked directory.** A new file under a directory the config dir already links into this checkout is on disk after `git pull`, with the same restart caveat. If the config dir holds that directory as a real directory rather than a link into this checkout, a new file under it needs the installer.
-- **New top-level entries and wrappers.** On a standard install, `~/.claude` and `~/.local/bin` are real directories, because `install.sh` ensures both with `mkdir -p`. There, a new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` always need the installer. `git pull` cannot add a link inside a real directory.
+A new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` need `./install.sh`, because `~/.claude` and `~/.local/bin` are real directories.
 
-To check one new file, list where it should appear: `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`.
-- For `claude-skills/skills/<x>`, the path is `<config-dir>/skills/<x>`.
-- For `claude/.local/bin/<x>`, the path is `~/.local/bin/<x>`.
-- For an agent Bash call, `docs/worktree-bash-guard.md` § "The fix: script-first, not prose-split" says how to write this path.
+What only the installer produces needs it too: the `~/.local/bin` copy of `relocate-claude-config`, plugin registrations, migrations, the stow package list in `claude/.claude/scripts/stow-packages.sh`, and any change to `install.sh` itself.
 
-"No such file or directory" means re-run the installer, once the change is in the checkout the config dir links to. Before the pull, or from a feature worktree, a missing file does not mean the installer is needed.
-
-If `~/.claude/skills` is a real directory, `install.sh` stows `claude`, skips `claude-skills`, and exits non-zero before its later steps. Those steps stay skipped and a new skill stays missing until you follow the message it prints.
-
-"The installer" means `./install.sh` for `~/.claude`. For any other config dir, it means whichever installer stows the packages that `claude/.claude/scripts/stow-packages.sh` lists.
+To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`. "No such file or directory" means re-run the installer once the change is in the checkout.
 
 ## Requirements
 

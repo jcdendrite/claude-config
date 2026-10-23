@@ -85,10 +85,8 @@ def commit_new_toplevel_file(repo: Path, name: str) -> None:
 
 
 def commit_inside_existing_toplevel(repo: Path) -> None:
-    """Add a new file inside the existing `hooks/` directory. Must
-    trip the gate — a consumer whose config dir holds that directory as a
-    real directory picks the file up only after a re-stow, so the gate does
-    not depend on whether the parent directory existed on main."""
+    """Add a new file inside the existing `hooks/` directory. Must trip the
+    gate regardless of whether the parent directory existed on main."""
     (repo / "claude" / ".claude" / "hooks" / "bar.md").write_text("# new hook doc\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "add hook doc bar"], cwd=repo, check=True)
@@ -174,9 +172,7 @@ class TestRequireStowReminder:
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=repo) == "allow"
 
     def test_new_file_inside_existing_toplevel_denied(self, stow_repo):
-        """A new file added inside an existing directory trips the
-        gate — a consumer whose config dir holds that directory as a real
-        directory needs a stow re-run for it."""
+        """A new file added inside an existing directory trips the gate."""
         commit_inside_existing_toplevel(stow_repo)
         cmd = "gh pr create --title T --body 'just a new hook doc'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
