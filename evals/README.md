@@ -460,9 +460,9 @@ python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-
 ```
 
 `--keep-artifacts DIR` retains each sample's session and subagent
-transcripts for diagnosis instead of discarding them; `DIR` is refused if
-it resolves inside any worktree of this repository — the main checkout or
-any linked worktree — since copied transcripts carry account-local session
+transcripts for diagnosis instead of discarding them. `DIR` is refused if
+it resolves inside any worktree of this repository (the main checkout or
+any linked worktree), since copied transcripts carry account-local session
 paths that must never be staged or committed.
 
 `--json`'s report carries the same class of account-local content

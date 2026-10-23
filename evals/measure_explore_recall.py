@@ -68,9 +68,9 @@ REQUIRED_TOP_LEVEL_KEYS = frozenset({"pinned_commit", "cases"})
 MIN_PINNED_COMMIT_HEX_LEN = 7
 _ABBREVIATED_COMMIT_RE = re.compile(rf"^[0-9a-f]{{{MIN_PINNED_COMMIT_HEX_LEN},}}$")
 
-# Fixture floor rationale: Stratum A needs recall to be exercisable (a
-# model must be able to return a subset), Stratum B needs more than one
-# ground-truth site so a single-site case doesn't degenerate recall to a
+# Fixture floor rationale: Stratum A needs recall to be exercisable: a
+# model must be able to return a subset. Stratum B needs more than one
+# ground-truth site, so a single-site case doesn't degenerate recall to a
 # coin flip.
 STRATUM_SITE_FLOOR = 5
 MIN_STRATUM_A_CASES = 8

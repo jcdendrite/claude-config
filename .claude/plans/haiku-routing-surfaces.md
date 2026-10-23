@@ -83,7 +83,7 @@ dispatch's description and prompt head:
 | OTHER (mechanical ops, placeholders) | withheld | withheld |
 
 The classification is one judgment pass over descriptions, not a mechanical
-measurement; 9 of 144 had no recoverable prompt and were bucketed from the
+measurement. 9 of 144 had no recoverable prompt and were bucketed from the
 description alone. JUDGMENT is inflated by two repeated-dispatch clusters, an
 eval-bench replay harness and one branch's plan-review loop of 23 numbered
 rounds. It is sized to locate the eligible slice, not to support a
@@ -92,19 +92,23 @@ precise figure.
 **The locate lane is mis-routed, and that is the larger finding.**
 `subagent-delegation/SKILL.md` § "Codebase discovery → `Explore` or
 `general-purpose`" assigns locate-style search to `Explore`, yet 24 of the 25
-LOCATE dispatches went to `general-purpose` or `fork` and only 1 to `Explore`. Two
-shipped instructions push that way: `claude/.claude/CLAUDE.md:163` frames
-`general-purpose`'s routine use as "discovery and research dispatches", and
-`claude/.claude/CLAUDE.md:160` tells every dispatcher to pass `model: sonnet`
-on every dispatch including pinned ones. A Haiku pin on `Explore` that nothing
-dispatches to saves nothing; the pin and the routing fix ship together or not at
-all.
+LOCATE dispatches went to `general-purpose` or `fork` and only 1 to `Explore`.
+Two shipped instructions push that way:
+
+- `claude/.claude/CLAUDE.md:163` frames `general-purpose`'s routine use as
+  "discovery and research dispatches".
+- `claude/.claude/CLAUDE.md:160` tells every dispatcher to pass `model:
+  sonnet` on every dispatch, including pinned ones.
+
+A Haiku pin on `Explore` that nothing dispatches to saves nothing; the pin
+and the routing fix ship together or not at all.
 
 **The rule this replaces predates its own evidence.** CLAUDE.md's *"Haiku:
 narrow, deterministic skills only. Never for code authoring or judgment"*
-landed 2026-05-02 (`16530ce`); the check-runner incidents ran through May and
-the retirement measurement landed 2026-06-23. It also names a routing target no
-mechanism implements — skills execute in whatever context invokes them.
+rule landed 2026-05-02 (`16530ce`). The check-runner incidents ran through
+May. The retirement measurement landed 2026-06-23. It also names a routing
+target no mechanism implements — skills execute in whatever context invokes
+them.
 
 ## Approach
 
