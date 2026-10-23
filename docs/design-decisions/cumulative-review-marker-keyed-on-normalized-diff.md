@@ -101,6 +101,12 @@ A false `live` skips the cumulative pass in `ready-for-review` step 3. The skill
 - The generic claims that a marker's content is a hash of exactly the reviewed state, in two sentences of `docs/hooks.md` and in the comment on `_lib_marker_value_present`, are qualified in place for `cumulative-review`.
 - The `cumulative-review` status line `live (hash matches the current state)`, which `marker.sh` prints for every completion-marker kind, reads as exact-state equality. For this kind the matched value is a normalized key, and the line is not qualified in the output.
 
+## `status` matches by exact content and the marker names no recipe
+
+- `status` reads a marker as `live` only when some marker file for the repo holds the computed value as a whole line (`_lib_marker_value_present`).
+- A marker file holds the digest line and nothing else, so it carries no identifier of the recipe that produced it.
+- `status` therefore cannot tell a value from a different recipe apart from a changed diff, and reads `historical` for both.
+
 ## Sources
 
 - `.claude/plans/cumulative-hash-patch-id.md` — full assumption ledger, mechanism list, and out-of-scope residuals.
