@@ -2,6 +2,8 @@
 
 *2026-10-21.*
 
+**Superseded in part (2026-10-23):** `branch-divergence-status.sh` now exits 1, instead of printing `Trial merge: CLEAN`, when `git merge-tree` cannot complete, and the README floor is git 2.43. So the git-below-2.38 sentence in "What the gate does not catch after step 1" and the Residuals bullet on a failed `git merge-tree` no longer hold. Every other clause here stands.
+
 `ready-for-review/SKILL.md` § "6. Final hygiene recheck (halt on fail)" re-runs the divergence detection recipe every time. A branch that is behind the base with `Trial merge: CLEAN` passes without a sync, and the Completion summary reports the behind-count. A branch that is behind with `Trial merge: CONFLICT` halts step 6 and returns the gate to step 1, which syncs before verification runs again. A recipe failure halts step 6, is re-run in place once, and a second failure is reported to the engineer and the gate stops. The bound on a moving base covers only the clean case: a conflict has to be resolved before merge under any rule, and the resolution's new HEAD needs a completed gate before the push gate releases a push on a branch with an open PR.
 
 ## What the gate certifies about the base

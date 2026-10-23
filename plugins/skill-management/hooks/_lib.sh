@@ -294,7 +294,7 @@ _lib_git_inprogress_state() {
 #   - exit 0, stdout = a tree OID: an in-progress state was detected, its
 #     OID reached a trusted anchor, and the reference tree was computed.
 #   - exit 1, stdout empty: no in-progress state, or one whose OID reached
-#     no anchor, or a topology/git-version this design computes no base
+#     no anchor, or a topology this design computes no base
 #     for. This is the correct answer, not a degraded one.
 #   - exit 2, stdout empty: undetermined -- a capped git call inside
 #     detection or tree computation timed out, was killed, or its binary

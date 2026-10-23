@@ -272,9 +272,6 @@ run_repo_cleanup() {
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 REPO_GIT_DIR=$(git rev-parse --absolute-git-dir)
-# --path-format needs git >=2.31 (2021); an older git echoes it back as a
-# literal output line instead of erroring, degrading this comparison rather
-# than failing loudly — verified via `git rev-parse --this-flag-does-not-exist`.
 REPO_GIT_COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir)
 # readonly: an .envrc's GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR would otherwise
 # repoint the git-root re-check below, and clobbering these directly would
