@@ -32,6 +32,8 @@ from helpers import (
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
 
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
+
 
 @functools.cache
 def _real_timeout_is_gnu_coreutils() -> bool:

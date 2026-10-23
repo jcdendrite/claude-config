@@ -120,7 +120,7 @@ Steps 3–5 may have produced new commits or body writes. Reconfirm:
 - Working tree is clean.
 - All commits are pushed. If `git status` shows the branch ahead of `origin/<branch>` because steps 2/3/4 produced fix commits, push them now — those commits are inside the approved scope of this gate and the user does not need to re-authorize the push. After pushing, re-verify the branch is no longer ahead.
 - The PR body landed, when step 5 edited an already-open PR — re-fetch with `gh pr view` and confirm. With a PR open, edited or not, then run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence": `unchanged` is expected, and `changed:` publishes the ledger's block over the body's copy. A failed `render` or `gh pr edit` halts this step.
-- Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
+- Branch has no merge conflict with the base branch. Re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence"). Behind with `Trial merge: CLEAN` passes: report the behind-count in the Completion summary. Do not sync here: a sync changes the tree, so step 2 would re-run. Behind with `Trial merge: CONFLICT` halts this step: return to step 1, whose in-sync precondition runs the sync. A recipe failure (non-zero exit) halts this step: re-run the recipe here once rather than restarting the gate, whose step 1 would sync; if it fails again, report its stderr cause to the engineer and stop.
 
 With a PR open, launch the CI watch now (see "CI watch (out-of-band)" below), whether or not this step pushed.
 
@@ -168,7 +168,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 - Code review: findings fixed, "none," or "skipped — cache hit."
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
-- Branch: clean, pushed, PR #N ready for review.
+- Branch: clean, pushed, PR #N ready for review. Add step 6's behind-count when it found the branch behind with a clean trial merge.
 - Context budget: re-run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. Report the fresh `estimate`/`threshold` with a handoff recommendation when `over_threshold` or `already_fired` is true, naming `nudge_disabled` inline when it is also true. Omit this line entirely when under threshold. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## CI watch (out-of-band)

@@ -18,16 +18,25 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
 1. Checks that <owner>/<repo> matches this worktree's own origin remote,
    aborting before any gh call on a mismatch.
 2. Fetches the PR's current headRefOid, baseRefOid, and baseRefName in one
-   `gh pr view` call, and its REST `changed_files` count and default branch.
-   Stops naming the limit when the PR changes more than 300 files, a limit
+   `gh pr view` call, and its REST `changed_files` count, base branch, and the
+   base repository's default branch. Aborts when the base branch or the default
+   branch is unreadable, or when the two base branch names differ.
+3. Only when the PR's base branch is not the base repository's default branch,
+   walks the chain of ancestor PRs behind it (review_pr_walk_stack in
+   _review-pr-lib.sh), one `gh pr list` lookup per level, down to the default
+   branch or to a branch with no open PR. Exits 4, before any file listing,
+   when an ancestor PR has no submitted review (a review in any state counts, a
+   pending one does not), naming the lowest such PR. A walk that cannot decide
+   exits 2.
+4. Stops naming the limit when the PR changes more than 300 files, a limit
    third parties report for GitHub's diff endpoint (see
    claude-skills/skills/review-pr/REFERENCES.md).
-3. Fetches the full, paginated file list (one JSON string per file name, so a
+5. Fetches the full, paginated file list (one JSON string per file name, so a
    name holding a newline stays one name) and aborts when its length differs
    from `changed_files`.
-4. Re-fetches headRefOid to catch a force-push landing while the file list was
+6. Re-fetches headRefOid to catch a force-push landing while the file list was
    being paginated, and aborts on drift.
-5. Pipes the file list to audit-execution-surface.py. A stop verdict is
+7. Pipes the file list to audit-execution-surface.py. A stop verdict is
    reported on stderr as a mandatory pre-seeded finding rather than a stop:
    with no checkout, that predicate has nothing to protect, and a PR
    touching .claude/hooks/** or .mcp.json is precisely what an inbound reviewer
@@ -36,7 +45,7 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    An audit that fails to return a verdict aborts with exit 2 and its stderr
    shown, and is never reported as a finding (review_pr_audit_verdict in
    _review-pr-lib.sh defines what counts as a verdict).
-6. Fetches the baseRefOid commit by object name, with git hooks disabled, so
+8. Fetches the baseRefOid commit by object name, with git hooks disabled, so
    the session can read base files with `git show` and `git grep`. Only a full
    SHA-1 or SHA-256 hex object name is fetched. A baseRefOid that is missing,
    not hex, or cannot be fetched degrades the base only: the run continues and
@@ -45,13 +54,13 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    leaving the commit in this repository), or fetch-timed-out (git exited with a
    status a cap kill produces). Git's own output is never echoed. A missing
    headRefOid still aborts.
-7. Fetches `gh pr diff`. Aborts, writing no diff file and no provenance, when
+9. Fetches `gh pr diff`. Aborts, writing no diff file and no provenance, when
    the diff is empty or whitespace-only although the PR reports changed
    files. Re-fetches
    headRefOid once more and aborts on drift, so the diff is bound to the head
    the provenance records.
-8. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
-   rewrites this session's provenance file with mode "diff-only".
+10. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
+    rewrites this session's provenance file with mode "diff-only".
 
 Prints the diff file's path on stdout as line 1 of a successful run. When the
 base fetch succeeded it also prints the baseRefOid as a full hex object name on
@@ -59,14 +68,21 @@ line 2, and when the PR's base branch is also the base repository's default
 branch, the fixed token BASE_IS_DEFAULT_BRANCH on line 3. When the base fetch did
 not succeed, stdout holds the path alone, and the token is never printed.
 
-Worst-case wall time: the per-step caps sum to 180 seconds on a run whose audit
-is clean (15 for the three local git reads, 100 for the six gh calls, 35 for
-seven jq calls, 30 for the base fetch) and 195 when the audit reports a finding
-(three more jq calls).
+Worst-case wall time: the per-step caps sum to 185 seconds on a run whose audit
+is clean (15 for the three local git reads, 100 for the six gh calls, 40 for
+eight jq calls, 30 for the base fetch) and 200 when the audit reports a finding
+(three more jq calls). A PR whose base branch is not the default branch adds 120
+seconds for the stack walk (eight lookups, each a 10 second gh call and a 5
+second jq call), for 305 and 320.
 Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and the
 provenance write are uncapped, as is the audit script. The session lookup's
 capped ps calls add up to 10 seconds per process-ancestor hop. The caps apply
 only when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
+
+Exit status: 0 on success, 4 when the PR's base branch is not the default branch
+and an ancestor PR in its stack has no submitted review (step 3's gate;
+review-pr-checkout.sh refuses the PR too), 2 on every other refusal or failure,
+including a stack walk that could not decide.
 EOF
 }
 
@@ -150,8 +166,8 @@ if [[ -z "$HEAD_REF_OID" ]]; then
 fi
 # A baseRefOid that cannot be read degrades the base only: the diff and the audit do not depend on it.
 BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // empty' 2>/dev/null) || BASE_REF_OID=""
-# The base branch name only decides whether the default-branch token prints, so an unreadable field degrades to no token instead of aborting.
-BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) || BASE_REF_NAME=""
+# The base branch name decides the stack gate and the default-branch token, so an unreadable one aborts below.
+PR_VIEW_BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) || PR_VIEW_BASE_REF_NAME=""
 
 # The PR's own file count, from the REST payload (snake_case, unlike the
 # camelCase `changedFiles` of `gh pr view --json`). Ground truth for the
@@ -167,7 +183,35 @@ if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$PR_REST_JSON"); then
   echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort." >&2
   exit 2
 fi
+REST_BASE_REF_NAME=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.ref // empty' 2>/dev/null) || REST_BASE_REF_NAME=""
 BASE_DEFAULT_BRANCH=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) || BASE_DEFAULT_BRANCH=""
+if [[ -z "$PR_VIEW_BASE_REF_NAME" || -z "$REST_BASE_REF_NAME" || -z "$BASE_DEFAULT_BRANCH" ]]; then
+  echo "review-pr-diff.sh: could not read PR $OWNER_REPO#$PR_NUMBER's base branch from both gh pr view and the REST payload, and the base repository's default branch from the REST payload (jq failed or timed out, or a field was absent), so whether the PR is stacked is undecided. Abort." >&2
+  exit 2
+fi
+# The stacked-or-default decision uses the REST payload's base name, while baseRefOid comes from gh pr view.
+# A retarget between the two reads would pair a base commit with the other base branch's decision, so the names must agree.
+if [[ "$PR_VIEW_BASE_REF_NAME" != "$REST_BASE_REF_NAME" ]]; then
+  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's base branch reads as $(review_pr_ascii_json_string "$REST_BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") from the REST payload but as $(review_pr_ascii_json_string "$PR_VIEW_BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") from gh pr view -- a retarget between the two reads, so whether the PR is stacked is undecided. Abort." >&2
+  exit 2
+fi
+BASE_REF_NAME="$REST_BASE_REF_NAME"
+
+# A PR stacked on an ancestor with no submitted review is refused before the file listing, the diff fetch or any provenance write.
+# A walk failure exits 2 here after the walk prints its own prefixed stderr line, so no gh status becomes this script's exit status (gh exits 4 when a command needs authentication). Only the gate below exits 4.
+if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
+  if ! LOWEST_UNREVIEWED_ANCESTOR=$(review_pr_walk_stack "review-pr-diff.sh" "$OWNER_REPO" "$PR_NUMBER" "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH" lowest-unreviewed); then
+    exit 2
+  fi
+  if [[ "$LOWEST_UNREVIEWED_ANCESTOR" =~ ^[1-9][0-9]*$ ]]; then
+    echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER is stacked on PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR, which has no submitted review. PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR clears once a review is submitted on it on GitHub; a draft (pending, unsubmitted) review or one kept local does not count. review-pr-checkout.sh refuses PR $OWNER_REPO#$PR_NUMBER too. Abort before any file listing." >&2
+    exit "$REVIEW_PR_EXIT_STACK_UNREVIEWED"
+  fi
+  if [[ "$LOWEST_UNREVIEWED_ANCESTOR" != "clear" ]]; then
+    echo "review-pr-diff.sh: the stack walk for PR $OWNER_REPO#$PR_NUMBER printed neither clear nor an ancestor PR number, so whether its ancestors have reviews is undecided. Abort before any file listing." >&2
+    exit 2
+  fi
+fi
 
 # The changed-file ceiling of GitHub's diff endpoint: `gh pr diff` cannot
 # serve a PR past it, so a named stop here beats a bare gh failure below.

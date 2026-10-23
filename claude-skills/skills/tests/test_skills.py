@@ -6632,6 +6632,18 @@ class TestCodeReviewFixPlanPilotRegionPin:
         )
 
 
+def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
+    """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
+    the exclusion list, a digest or history file would pass as a reviewer's findings file."""
+    round_cap_text = _normalized_anchor_text(
+        _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+    )
+    assert (
+        "never a `review-ledger-`, `review-history-`, `code-review-dispositions-` or `pr-body-` file"
+        in round_cap_text
+    )
+
+
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
     """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
     schema_keys = config_schema()
@@ -6980,6 +6992,90 @@ class TestReviewLedgerPublishAndInjectionControls:
 
         assert read_paths and read_paths == written_paths, (
             f"digest read at {sorted(read_paths)} but `render --out` writes {sorted(written_paths)}"
+        )
+
+
+_READY_FOR_REVIEW_STEP6_HEADING = "## 6. Final hygiene recheck (halt on fail)"
+
+# Step 6's behind-base bullet: no sync on a clean trial merge, a conflict returns
+# the gate to step 1, and a recipe failure is re-run once in place, then reported.
+_PINNED_STEP6_BEHIND_BASE_CLAUSE = (
+    "Branch has no merge conflict with the base branch. Re-run the divergence "
+    "detection recipe (`git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). Behind with `Trial merge: CLEAN` passes: report the "
+    "behind-count in the Completion summary. Do not sync here: a sync changes "
+    "the tree, so step 2 would re-run. Behind with `Trial merge: CONFLICT` "
+    "halts this step: return to step 1, whose in-sync precondition runs the "
+    "sync. A recipe failure (non-zero exit) halts this step: re-run the recipe "
+    "here once rather than restarting the gate, whose step 1 would sync; if it "
+    "fails again, report its stderr cause to the engineer and stop."
+)
+
+# Step 1's in-sync precondition: the bullet step 6 hands a conflict back to.
+# The pin also holds the sentence requiring step 7's completion marker to record
+# the post-resync HEAD SHA that the push-gate hook checks. No other test pins
+# that sentence, so trimming it needs a deliberate update here.
+_PINNED_STEP1_IN_SYNC_BULLET = (
+    "**Branch is in sync with `origin/<base>`.** Run the canonical detection "
+    "recipe (see `git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). If behind > 0, invoke `/git-feature-branch-sync`, then "
+    "re-run step 2 against the synced tree; step 7's completion marker must "
+    "record the post-resync HEAD SHA so it matches what the push-gate hook "
+    "checks."
+)
+
+
+class TestReadyForReviewStep6BehindBaseRule:
+    """Pin step 6's behind-base bullet as one whole clause, deliberately, and
+    check that no other step-6 text says "sync". That second check is a
+    lexical tripwire on the skill's own vocabulary (the "sync" stem, which
+    also matches the sync skill's name), not proof that no step-6 text moves
+    the branch. Fails when
+    step 6 syncs on a clean trial merge, stops returning a conflict to step 1,
+    or stops halting on a recipe failure. Step 1's in-sync precondition, which
+    runs the sync on that hand-off, is pinned separately, so both ends of the
+    step 6 to step 1 hand-off are checked.
+
+    A sync at step 6 changes the tree and forces step 2 to re-run; see
+    docs/design-decisions/ready-for-review-base-drift.md.
+    """
+
+    def test_step6_behind_base_bullet_is_the_only_sync_rule(self) -> None:
+        skill_md_path = _skill_file("ready-for-review")
+        pinned_text = " ".join(_PINNED_STEP6_BEHIND_BASE_CLAUSE.split())
+
+        # The negative check depends on the positive match, so both live here.
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 6's behind-base bullet has drifted from its pinned clause "
+                "(no sync on a clean trial merge, a conflict returns to step 1, a recipe failure is re-run "
+                "once in place then reported)"
+            ),
+        )
+
+        section_text = _heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING)
+        remainder = section_text.replace(pinned_text, "", 1)
+        # Over-matches benign words like "synchronously" and "in sync" (reword step 6 if it trips).
+        # Does not match unnamed branch-moving wording such as merge, rebase, or "Resync".
+        stray_sync = re.search(r"\bsync", remainder, re.IGNORECASE)
+        assert stray_sync is None, (
+            "ready-for-review/SKILL.md: step 6 says "
+            f"{stray_sync.group(0)!r} outside its behind-base bullet: "
+            f"{remainder[max(stray_sync.start() - 30, 0) : stray_sync.end() + 30]!r}"
+        )
+
+    def test_step1_in_sync_bullet_is_the_sync_the_step6_conflict_handoff_reaches(self) -> None:
+        pinned_text = " ".join(_PINNED_STEP1_IN_SYNC_BULLET.split())
+
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 1's in-sync precondition has drifted from its pinned clause "
+                "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
+            ),
         )
 
 

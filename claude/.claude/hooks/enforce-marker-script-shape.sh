@@ -883,7 +883,10 @@ fi
 #     every engineer-authority row, since the script rejects an engineer row
 #     without it. The tested text includes a quote-split `--engineer-''quote`
 #     and one split by a backslash-newline.
-# `show`, `render` and `clear-stale` stay ungated.
+# `show`, `render` and `clear-stale` stay ungated. `show --out` and `render --out`
+# write or delete a file directly under `agent-reviews/`, creating that directory
+# if absent, confined by `_review_ledger_check_out`.
+# `review-ledger.sh --help` states what a failure leaves at the target.
 if [ -n "$AGENT_ID" ] || [ -n "$AGENT_TYPE" ]; then
   LEDGER_SCRIPT_MENTIONED=false
   case "$COMMAND" in *review-ledger.sh*) LEDGER_SCRIPT_MENTIONED=true ;; esac
