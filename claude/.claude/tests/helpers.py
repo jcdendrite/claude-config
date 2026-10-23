@@ -2918,20 +2918,25 @@ def require_cumulative_review_value(
 _CUMULATIVE_REVIEW_HUNK_HEADER = re.compile(
     rb"@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@(?: .*)?"
 )
-_CUMULATIVE_REVIEW_INDEX_LINE = re.compile(rb"index [0-9a-f]+[.][.][0-9a-f]+( [0-7]+)?")
+_CUMULATIVE_REVIEW_INDEX_LINE = re.compile(rb"index [0-9a-f]+[.][.][0-9a-f]+(?P<mode_suffix>( [0-7]+)?)")
 
 
 def reference_normalized_text(text: bytes) -> bytes:
     """Pure-Python statement of the two rules `_lib_normalize_cumulative_review_text` applies.
 
-    A hunk header keeps only its two line counts. An `index` line that a `--- ` line directly follows is dropped.
+    A hunk header keeps only its two line counts.
+    An `index` line that a `--- ` line directly follows loses its blob ids and keeps its mode.
     Every other line passes through. Trailing newlines are stripped, as `$( )` strips them.
     """
     normalized_lines: list[bytes] = []
     held_index_line: bytes | None = None
     for line in text.split(b"\n"):
         if held_index_line is not None:
-            if not line.startswith(b"--- "):
+            if line.startswith(b"--- "):
+                held_index_match = _CUMULATIVE_REVIEW_INDEX_LINE.fullmatch(held_index_line)
+                assert held_index_match is not None
+                normalized_lines.append(b"index .." + held_index_match.group("mode_suffix"))
+            else:
                 normalized_lines.append(held_index_line)
             held_index_line = None
         header = _CUMULATIVE_REVIEW_HUNK_HEADER.fullmatch(line)

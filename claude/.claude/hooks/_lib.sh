@@ -1216,7 +1216,8 @@ _lib_hash_diff_text() {
 
 # _lib_normalize_cumulative_review_text TEXT
 # Prints TEXT with each hunk header reduced to its two line counts
-# (`@@ -,b +,d @@`) and each `index` line that a `--- ` line follows dropped.
+# (`@@ -,b +,d @@`) and each `index` line that a `--- ` line follows stripped of its blob ids
+# (`index .. 100644`, or `index ..` when the line carries no mode).
 # Every other line passes through unchanged.
 # See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md.
 # Avoids interval expressions so BSD awk and mawk accept it.
@@ -1224,7 +1225,8 @@ _lib_hash_diff_text() {
 _lib_normalize_cumulative_review_text() {
   printf '%s\n' "$1" | LC_ALL=C awk '
     held_index_line != "" {
-      if (substr($0, 1, 4) != "--- ") print held_index_line
+      if (substr($0, 1, 4) == "--- ") sub(/^index [0-9a-f]+[.][.][0-9a-f]+/, "index ..", held_index_line)
+      print held_index_line
       held_index_line = ""
     }
     /^index [0-9a-f]+[.][.][0-9a-f]+( [0-7]+)?$/ { held_index_line = $0; next }

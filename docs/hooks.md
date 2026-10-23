@@ -260,7 +260,7 @@ Two properties govern every review gate. They pull in opposite directions and ar
 - `cumulative-review` — the cumulative PR-vs-base diff.
   - Read back by `ready-for-review` step 3 itself via `marker.sh status`, not gated by a separate `require-*.sh` hook.
   - That content is itself the `_lib_cumulative_review_value` of the diff recorded as the review subject at `cumulative-review-subject-markers/<repo-hash>.<session-id>`, captured by `pr-diff-against-base.sh --record` at step 3's entry rather than recomputed at write time.
-  - That value is the sha256 of the diff with each hunk header reduced to its line counts and each text entry's `index` line dropped.
+  - That value is the sha256 of the diff with each hunk header reduced to its line counts and each text entry's `index` line stripped of its blob ids.
   - So a rebase that only shifts line numbers or text files' blob ids still matches. See [`docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md`](design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md) for what else shares a value.
 - `verification` — `HEAD^{tree}`.
   - Read back by `ready-for-review` step 2 itself via `marker.sh check verification`, likewise not gated by a separate `require-*.sh` hook.

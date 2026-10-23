@@ -278,6 +278,8 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
     (repo / "text-deleted.txt").write_text("one\ntwo\nthree\n")
     (repo / "mode-and-edit.sh").write_text("echo a\necho b\n")
     (repo / "mode-only.sh").write_text("echo only\n")
+    (repo / "exec-edit.sh").write_text("echo x\necho y\n")
+    (repo / "exec-edit.sh").chmod(0o755)
     os.symlink("target-a", repo / "symlink-edit")
     (repo / "binary-edit.dat").write_bytes(b"\x00old binary\x01")
     (repo / "binary-deleted.dat").write_bytes(b"\x00to delete\x02")
@@ -297,6 +299,7 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
     (repo / "mode-and-edit.sh").write_text("echo a\necho c\n")
     (repo / "mode-and-edit.sh").chmod(0o755)
     (repo / "mode-only.sh").chmod(0o755)
+    (repo / "exec-edit.sh").write_text("echo x\necho z\n")
     (repo / "symlink-edit").unlink()
     os.symlink("target-b", repo / "symlink-edit")
     os.symlink("target-c", repo / "symlink-created")
@@ -321,6 +324,8 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
 # The textconv shapes are normalizer inputs that `pr-diff-against-base.sh`'s `git diff-tree` no longer emits.
 TEXTCONV_CONFIG = ("diff.hexdump.textconv=od -A n -t x1",)
 SUPPRESS_BLANK_EMPTY_CONFIG = ("diff.suppressBlankEmpty=true",)
+# An `index` line that still carries its blob-id pair; the normalizer strips the pair from a text entry's line.
+INDEX_LINE_WITH_BLOB_IDS = re.compile(rb"index [0-9a-f]+\.\.[0-9a-f]+")
 
 
 def _diff_entries(diff: bytes) -> dict[bytes, list[bytes]]:
@@ -394,6 +399,7 @@ class TestGitDiffEntryShapes:
         "text-created.txt",
         "text-deleted.txt",
         "mode-and-edit.sh",
+        "exec-edit.sh",
         "symlink-edit",
         "symlink-created",
         "gitlink",
@@ -414,6 +420,26 @@ class TestGitDiffEntryShapes:
         entry = _entry_for_path(default_diff, "mode-and-edit.sh")
         assert re.fullmatch(rb"index [0-9a-f]+\.\.[0-9a-f]+", _index_lines(entry)[0]), entry
         assert b"old mode 100644" in entry and b"new mode 100755" in entry
+
+    @pytest.mark.parametrize(
+        ("path", "mode"),
+        [("text-edit.txt", b"100644"), ("exec-edit.sh", b"100755"), ("symlink-edit", b"120000")],
+        ids=["regular-file", "executable-file", "symlink"],
+    )
+    def test_in_place_text_edit_index_line_ends_in_the_file_mode(self, default_diff, path, mode):
+        entry = _entry_for_path(default_diff, path)
+        assert re.fullmatch(rb"index [0-9a-f]+\.\.[0-9a-f]+ " + mode, _index_lines(entry)[0]), entry
+
+    def test_created_text_file_index_line_carries_no_mode(self, default_diff):
+        entry = _entry_for_path(default_diff, "text-created.txt")
+        assert b"new file mode 100644" in entry
+        assert re.fullmatch(rb"index [0-9a-f]+\.\.[0-9a-f]+", _index_lines(entry)[0]), entry
+
+    def test_created_symlink_states_its_mode_on_a_new_file_mode_line_before_a_mode_less_index_line(self, default_diff):
+        entry = _entry_for_path(default_diff, "symlink-created")
+        assert b"new file mode 120000" in entry
+        assert entry.index(b"new file mode 120000") < entry.index(_index_lines(entry)[0]), entry
+        assert re.fullmatch(rb"index [0-9a-f]+\.\.[0-9a-f]+", _index_lines(entry)[0]), entry
 
     def test_gitlink_bump_keeps_the_minus_header_after_its_index_line(self, default_diff):
         entry = _entry_for_path(default_diff, "gitlink")
@@ -559,14 +585,14 @@ def _entry_pair(
     header: str = "@@ -3,2 +3,3 @@ def func():",
     expected_header: str = "@@ -,2 +,3 @@",
     index_line: str = "index 1111111..2222222 100644",
-    index_line_is_kept: bool = False,
+    expected_index_line: str = "index .. 100644",
     pre_index_lines: tuple[str, ...] = (),
 ) -> tuple[bytes, bytes]:
     """`(raw, hand-derived normalized)` text of one text entry. The expected side is written out here, not computed by a rule."""
     entry_head = [f"diff --git a/{path} b/{path}", *pre_index_lines]
     entry_tail = [f"--- a/{path}", f"+++ b/{path}"]
     raw_lines = [*entry_head, index_line, *entry_tail, header, *body]
-    expected_lines = [*entry_head, *([index_line] if index_line_is_kept else []), *entry_tail, expected_header, *body]
+    expected_lines = [*entry_head, expected_index_line, *entry_tail, expected_header, *body]
     return "\n".join(raw_lines).encode("latin-1"), "\n".join(expected_lines).encode("latin-1")
 
 
@@ -619,6 +645,7 @@ index 0000000..e69de29
 """
 ORACLE_EXPECTED_NORMALIZED = b"""\
 diff --git a/text.txt b/text.txt
+index .. 100644
 --- a/text.txt
 +++ b/text.txt
 @@ -,3 +,4 @@
@@ -633,6 +660,7 @@ diff --git a/text.txt b/text.txt
 +inserted
 diff --git a/new.txt b/new.txt
 new file mode 100644
+index ..
 --- /dev/null
 +++ b/new.txt
 @@ -,0 +,3 @@
@@ -697,8 +725,8 @@ def _unrecognized_form_pairs(digit: str) -> list[tuple[str, tuple[bytes, bytes]]
     return [
         ("combined-diff-header", _entry_pair(header=combined_header, expected_header=combined_header)),
         ("glued-tail-header", _entry_pair(header=glued_header, expected_header=glued_header)),
-        ("index-extra-field", _entry_pair(index_line=extra_field_index, index_line_is_kept=True)),
-        ("index-uppercase-hex", _entry_pair(index_line=uppercase_index, index_line_is_kept=True)),
+        ("index-extra-field", _entry_pair(index_line=extra_field_index, expected_index_line=extra_field_index)),
+        ("index-uppercase-hex", _entry_pair(index_line=uppercase_index, expected_index_line=uppercase_index)),
     ]
 
 
@@ -740,8 +768,27 @@ VALUE_DIFFERS_ROWS = {
         ),
     ),
     "mode-change-with-content-change": (
-        _entry_pair(index_line="index 1111111..2222222"),
-        _entry_pair(index_line="index 1111111..2222222", pre_index_lines=("old mode 100644", "new mode 100755")),
+        _entry_pair(index_line="index 1111111..2222222", expected_index_line="index .."),
+        _entry_pair(
+            index_line="index 1111111..2222222",
+            expected_index_line="index ..",
+            pre_index_lines=("old mode 100644", "new mode 100755"),
+        ),
+    ),
+    "index-line-mode-100644-versus-100755": (
+        _entry_pair(),
+        _entry_pair(index_line="index 1111111..2222222 100755", expected_index_line="index .. 100755"),
+    ),
+    "symlink-versus-regular-file-with-the-same-body": (
+        _entry_pair(
+            index_line="index 1111111..2222222 120000", expected_index_line="index .. 120000",
+            body=("-old", "\\ No newline at end of file", "+new", "\\ No newline at end of file"),
+            header="@@ -1 +1 @@", expected_header="@@ - + @@",
+        ),
+        _entry_pair(
+            body=("-old", "\\ No newline at end of file", "+new", "\\ No newline at end of file"),
+            header="@@ -1 +1 @@", expected_header="@@ - + @@",
+        ),
     ),
     "pure-rename-to-another-path": (_rename_pair("old.txt", "new.txt"), _rename_pair("old.txt", "other.txt")),
     **{
@@ -843,7 +890,8 @@ class TestLibCumulativeReviewValue:
 
     def test_normalizer_output_equals_the_hand_derived_oracle_text(self, tmp_path):
         """Both header counts survive, start offsets and function-context text do not,
-        the text entries' `index` lines drop, and the binary and empty-file `index` lines stay."""
+        the text entries' `index` lines lose their blob ids and keep their mode,
+        and the binary and empty-file `index` lines stay whole."""
         normalized = require_normalized_cumulative_review_text(ORACLE_RAW_TEXT.rstrip(b"\n"), tmp_path)
         assert normalized == ORACLE_EXPECTED_NORMALIZED.rstrip(b"\n")
 
@@ -975,6 +1023,20 @@ class TestLibCumulativeReviewValue:
         value_after = require_cumulative_review_value(raw_after, tmp_path)
         assert value_before == value_after == _sha256_of(expected_before)
 
+    @pytest.mark.parametrize(
+        "index_line",
+        ["index abcd..0123456789ab 100644", "index 0123456789ab..abcd 100644"],
+        ids=["short-old-id-long-new-id", "long-old-id-short-new-id"],
+    )
+    def test_blob_ids_of_any_length_are_stripped_from_a_text_entry_index_line(self, tmp_path, index_line):
+        """Git abbreviates blob ids to a length that varies with repository size and `core.abbrev`."""
+        raw_other_length, expected_other_length = _entry_pair(index_line=index_line)
+        raw_seven_digit, _ = _entry_pair()
+        assert require_normalized_cumulative_review_text(raw_other_length, tmp_path) == expected_other_length
+        assert require_cumulative_review_value(raw_other_length, tmp_path) == require_cumulative_review_value(
+            raw_seven_digit, tmp_path
+        )
+
     def test_edit_moved_past_another_hunk_of_the_same_file_changes_the_value(self, tmp_path):
         """Hunk order stays in the preimage, so a move past another PR hunk is not hidden."""
         first_hunk = ("@@ -1,6 +1,7 @@", "@@ -,6 +,7 @@", SAME_SITE_BODY)
@@ -1103,7 +1165,7 @@ class TestLibCumulativeReviewValue:
 
         assert normalized == reference_normalized_text(diff)
         assert not re.search(rb"^@@ -[0-9]", normalized, re.MULTILINE)
-        kept_index_lines = [line for line in normalized.split(b"\n") if line.startswith(b"index ")]
+        kept_index_lines = [line for line in normalized.split(b"\n") if INDEX_LINE_WITH_BLOB_IDS.match(line)]
         index_lines_before_non_minus_header = [
             following for following in _lines_after_each_index_line(diff)
             if following is None or not following.startswith(b"--- ")
@@ -1133,8 +1195,8 @@ class TestLibCumulativeReviewValue:
         normalized = require_normalized_cumulative_review_text(diff, tmp_path)
 
         assert normalized == reference_normalized_text(diff)
-        assert len([line for line in normalized.split(b"\n") if line.startswith(b"index ")]) == 2
-        assert normalized.split(b"\n")[-1].startswith(b"index ")
+        assert len([line for line in normalized.split(b"\n") if INDEX_LINE_WITH_BLOB_IDS.match(line)]) == 2
+        assert INDEX_LINE_WITH_BLOB_IDS.match(normalized.split(b"\n")[-1])
 
     def test_crlf_content_lines_keep_their_carriage_return(self, tmp_path):
         """No rule collapses whitespace, so a CRLF diff keeps its CR on every content line."""
