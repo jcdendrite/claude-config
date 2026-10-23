@@ -23,7 +23,7 @@ REVIEW_PR_SCAN_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-scan-findings-bo
 # Sibling script, invoked by the `write review-pr` arm below to mechanically
 # backstop SKILL.md's synthesize-and-record step's own attribution-prefix/
 # trailer/disclosure instruction before the completion marker is written --
-# see that script's own header for what it checks.
+# see that script's usage text for what it checks.
 REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-attribution.sh"
 
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,

@@ -3,8 +3,8 @@
 # before the deliver step posts it. The synthesize-and-record step's "start
 # with **[Claude Code]**, end with the attribution trailer" instruction is
 # prose the model composes the body under, not a tool-call argument, so no
-# PreToolUse hook ever sees it -- this closes that gap with literal string
-# comparisons, not a model re-read. Structurally parallel to
+# PreToolUse hook ever sees it -- this closes that gap with mechanical
+# checks, not a model re-read. Structurally parallel to
 # review-pr-scan-findings-body.sh's own credential scan: same usage/argv
 # shape, same exit-code contract. The mode argument means the diff-only
 # disclosure line cannot be opted out of by a model that never saw the
