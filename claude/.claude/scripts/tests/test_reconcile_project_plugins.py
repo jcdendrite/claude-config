@@ -501,6 +501,34 @@ class TestMarketplacePrecondition:
         assert decisions == ["m4_marketplace_list_failed"]
         assert install_log_entries(install_log) == []
 
+    def test_claude_call_disables_the_git_terminal_prompt_and_leaves_askpass_alone(self, tmp_path: Path) -> None:
+        """The recording shim exits 1, so the run skips on the failed listing after the shim has seen its env."""
+        repo = tmp_path / "repo"
+        init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        env_log = tmp_path / "claude-env.log"
+        claude_shim = bin_dir / "claude"
+        claude_shim.write_text(
+            "#!/bin/bash\n"
+            f'echo "${{GIT_TERMINAL_PROMPT-unset}} ${{GIT_ASKPASS-unset}}" >> {shlex.quote(str(env_log))}\n'
+            "exit 1\n"
+        )
+        claude_shim.chmod(0o755)
+
+        result = run_reconciler(
+            repo,
+            config_dir=config_dir,
+            bin_dir=bin_dir,
+            extra_env={"GIT_TERMINAL_PROMPT": "1", "GIT_ASKPASS": "/ambient/git-askpass"},
+        )
+
+        assert result.returncode == 0, repr(result)
+        assert env_log.read_text().splitlines() == ["0 /ambient/git-askpass"]
+        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
+        assert decisions == ["m4_marketplace_list_failed"]
+
     def test_skip_all_when_marketplace_listing_returns_empty_array(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
@@ -1806,6 +1834,11 @@ class TestLock:
 # Total per-invocation wall-clock ceiling.
 # ---------------------------------------------------------------------------
 
+# Matches the 600s wall-clock ceiling, so a loaded runner's run duration cannot push a reset marker out of tolerance.
+# Still far narrower than the 7200s offsets tested, so a reset marker remains distinguishable from a stale one.
+_MARKER_RESET_TOLERANCE_SECONDS = 600
+
+
 class TestWallClockCeiling:
     def test_ceiling_reached_skips_remaining_ids_without_an_actual_wait(self, tmp_path: Path) -> None:
         """The claude shim backdates the freshly-created marker file (via
@@ -1835,6 +1868,35 @@ class TestWallClockCeiling:
         assert install_log_entries(install_log) == []
         decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
         assert decisions == ["wall_clock_ceiling_reached"]
+
+    @pytest.mark.parametrize("marker_offset_seconds", [-7200, 7200], ids=["aged", "future"])
+    def test_run_that_wins_the_lock_resets_a_stale_marker_before_checking_the_ceiling(
+        self, tmp_path: Path, marker_offset_seconds: int
+    ) -> None:
+        """A marker left by an earlier run, hours old or dated in the future, must not skip the install.
+        Only the mtime assertion catches the future case: a future marker never reads as past the ceiling."""
+        repo = tmp_path / "repo"
+        init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        marker_file = config_dir / "plugin-bootstrap" / ".reconciler-start"
+        marker_file.parent.mkdir(parents=True)
+        marker_file.write_text("")
+        stale_mtime = time.time() + marker_offset_seconds
+        os.utime(marker_file, (stale_mtime, stale_mtime))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "bar", "source": "directory"}], install_log=install_log
+        )
+
+        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        assert [entry["plugin"] for entry in install_log_entries(install_log)] == ["foo@bar"]
+        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
+        assert decisions == ["install_succeeded"]
+        assert marker_file.stat().st_mtime == pytest.approx(time.time(), abs=_MARKER_RESET_TOLERANCE_SECONDS)
 
     @pytest.mark.parametrize("marker_change", ["backdate", "delete"])
     def test_ceiling_reached_mid_run_stops_after_the_in_flight_install_and_logs_one_line(

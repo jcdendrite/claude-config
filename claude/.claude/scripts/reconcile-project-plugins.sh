@@ -186,10 +186,12 @@ except BlockingIOError:
 # The body is a subshell, so the restored umask does not leak into the reconciler's own files.
 # This helper and _reconciler_git close the lock descriptor, so a child that outlives its call cannot keep the lock.
 # The subshell closes it first, before `claude` starts.
+# GIT_TERMINAL_PROMPT=0 makes a git child fail instead of prompting on the terminal.
+# Prompts that ssh raises are not covered.
 _reconciler_claude_call() (
   umask "$_RECONCILER_ORIGINAL_UMASK" || exit 1
   exec 9>&-
-  _lib_capped_for "$_RECONCILER_CLAUDE_CALL_CAP_SECONDS" claude "$@"
+  GIT_TERMINAL_PROMPT=0 _lib_capped_for "$_RECONCILER_CLAUDE_CALL_CAP_SECONDS" claude "$@"
 )
 
 # _reconciler_git GIT_ARGS...
