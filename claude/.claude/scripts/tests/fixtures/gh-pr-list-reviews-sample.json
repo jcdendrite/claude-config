@@ -1,0 +1,93 @@
+{
+  "human-author-beside-a-fork-pr-with-the-same-branch-name": [
+    {
+      "author": {
+        "id": "U_kgDOEXAMPLE01",
+        "is_bot": false,
+        "login": "alice",
+        "name": "Alice Example"
+      },
+      "baseRefName": "main",
+      "headRefName": "feature/sample",
+      "isCrossRepository": false,
+      "number": 101,
+      "reviews": [
+        {
+          "id": "PRR_kwDOEXAMPLE01",
+          "author": {
+            "login": "bob"
+          },
+          "authorAssociation": "MEMBER",
+          "body": "",
+          "submittedAt": "2026-01-02T03:04:05Z",
+          "includesCreatedEdit": false,
+          "reactionGroups": [],
+          "state": "COMMENTED",
+          "commit": {
+            "oid": "0123abc"
+          }
+        },
+        {
+          "id": "PRR_kwDOEXAMPLE02",
+          "author": {
+            "login": "carol"
+          },
+          "authorAssociation": "CONTRIBUTOR",
+          "body": "Please rename this.",
+          "submittedAt": "2026-01-03T03:04:05Z",
+          "includesCreatedEdit": false,
+          "reactionGroups": [],
+          "state": "CHANGES_REQUESTED",
+          "commit": {
+            "oid": "0123abc"
+          }
+        }
+      ],
+      "title": "Add the sample parser"
+    },
+    {
+      "author": {
+        "id": "U_kgDOEXAMPLE03",
+        "is_bot": false,
+        "login": "dave",
+        "name": ""
+      },
+      "baseRefName": "main",
+      "headRefName": "feature/sample",
+      "isCrossRepository": true,
+      "number": 7,
+      "reviews": [],
+      "title": "A fork PR that reuses the branch name"
+    }
+  ],
+  "bot-author-reviewed-by-the-same-bot": [
+    {
+      "author": {
+        "is_bot": true,
+        "login": "app/example-bot"
+      },
+      "baseRefName": "main",
+      "headRefName": "feature/sample",
+      "isCrossRepository": false,
+      "number": 102,
+      "reviews": [
+        {
+          "id": "PRR_kwDOEXAMPLE04",
+          "author": {
+            "login": "example-bot"
+          },
+          "authorAssociation": "CONTRIBUTOR",
+          "body": "",
+          "submittedAt": "2026-01-04T03:04:05Z",
+          "includesCreatedEdit": false,
+          "reactionGroups": [],
+          "state": "COMMENTED",
+          "commit": {
+            "oid": "0123abc"
+          }
+        }
+      ],
+      "title": "Bump the example dependency"
+    }
+  ]
+}

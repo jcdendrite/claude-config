@@ -28,6 +28,14 @@ from helpers import (
     write_review_pr_provenance,
 )
 
+from ._review_pr_stack_helpers import (
+    STACK_LOWER_PR_NUMBER,
+    STACK_UPPER_PR_NUMBER,
+    copy_script_with_stubbed_walk,
+    pr_list_head_values,
+    pr_list_item,
+    stack_replies,
+)
 from .conftest import (
     _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
@@ -49,7 +57,7 @@ from .conftest import (
     _provenance_fields,
     _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
-    _review_pr_audit_limit,
+    _review_pr_lib_integer,
     _seed_session,
     _shim_match_count,
     _shimmed_env,
@@ -224,6 +232,7 @@ def _gh_shim_source(
     base_default_branch: str | None = "main",
     pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
     pr_view_base_ref_name_second: str | None = None,
+    pr_list_replies: dict | None = None,
 ) -> str:
     """gh shim recording every invocation, dispatching on the invocation's own
     first word(s).
@@ -265,6 +274,9 @@ def _gh_shim_source(
     REST `base.ref` by default, None drops it); `pr_view_base_ref_name_second`,
     when set, replaces it from the SECOND `gh pr view` call onward, modeling a
     retarget between the initial read and the pre-audit re-fetch.
+    `gh pr list` is answered by the stack-walk double (_review_pr_stack_helpers.py)
+    from `pr_list_replies`, keyed by the exact `--head=` value; a branch with no
+    key answers `[]`, which leaves a stacked base clear.
     The files listing prints one JSON string per line when the call carries
     the `@json` jq filter, and raw names otherwise: raw UTF-8, with a control
     character rendered in caret notation as gh 2.100.0 is modeled to do (see
@@ -303,6 +315,9 @@ def _gh_shim_source(
         BASE_DEFAULT_BRANCH = {base_default_branch!r}
         PR_VIEW_BASE_REF_NAME = {view_base_ref_name!r}
         PR_VIEW_BASE_REF_NAME_SECOND = {pr_view_base_ref_name_second!r}
+        PR_LIST_REPLIES = json.loads({json.dumps(pr_list_replies or {})!r})
+        sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+        from _review_pr_stack_helpers import answer_gh_pr_list
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
@@ -318,6 +333,8 @@ def _gh_shim_source(
         }}
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
+        if args[:2] == ["pr", "list"]:
+            sys.exit(answer_gh_pr_list(args[2:], PR_LIST_REPLIES))
         if args[:2] == ["pr", "view"]:
             if FAIL_PR_VIEW or (FAIL_PR_VIEW_SECOND and prior_pr_view_calls >= 1):
                 sys.exit(1)
@@ -436,8 +453,10 @@ def _run(
     base_default_branch: str | None = "main",
     pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
     pr_view_base_ref_name_second: str | None = None,
+    pr_list_replies: dict | None = None,
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
+    script_path: Path = SCRIPT,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     # A successful checkout writes provenance, which needs a live session
     # -- seeded unconditionally, harmlessly idempotent for the many tests
@@ -471,6 +490,7 @@ def _run(
                 base_default_branch=base_default_branch,
                 pr_view_base_ref_name=pr_view_base_ref_name,
                 pr_view_base_ref_name_second=pr_view_base_ref_name_second,
+                pr_list_replies=pr_list_replies,
             ),
         ),
         "HOME": str(home),
@@ -485,14 +505,16 @@ def _run(
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
-        ["bash", str(SCRIPT), *args],
+        ["bash", str(script_path), *args],
         cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
-    _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
+    _assert_gh_calls_are_read_only(
+        _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "list")
+    )
     return result, call_log
 
 
@@ -905,6 +927,11 @@ def _build_stacked_repo(
     _git_bytes(repo, "checkout", "-q", "-f", "main")
     _git_bytes(repo, "clean", "-fdq")
     return repo, pr_sha, base_sha
+
+
+def _walked_branches(call_log: Path) -> list[str]:
+    """The `--head=` value of each `gh pr list` call the run made, in call order."""
+    return pr_list_head_values(_read_calls(call_log))
 
 
 def _default_branch_ref_exists(repo: Path) -> bool:
@@ -1336,11 +1363,12 @@ class TestStackedBaseDeltaAudit:
         shim_dir = _git_shim_that_fails_on_subcommand(
             tmp_path, "* diff --name-only *", exit_status=1, fail_only_match_number=fail_only_match_number,
         )
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert f"the {failed_run_wording}" in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
         assert _shim_match_count(shim_dir) == expected_match_count
@@ -1353,11 +1381,12 @@ class TestStackedBaseDeltaAudit:
         _install_audit_script(isolated_home)
         repo, _ = repo_with_pr_ref
         unrelated_head_sha = _push_unrelated_root_commit(repo, ref=f"refs/pull/{PR_NUMBER}/head")
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=unrelated_head_sha, files=["a.py"], **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "the counting run" in result.stderr
         assert "exited 128 (often no merge base between the default branch and the head)" in result.stderr
         assert result.stdout == ""
@@ -1376,11 +1405,12 @@ class TestStackedBaseDeltaAudit:
         shim_dir = _git_shim_that_fails_on_subcommand(
             tmp_path, "* diff --name-only *", exit_status=124, fail_only_match_number=fail_only_match_number,
         )
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert f"the {failed_run_wording}" in result.stderr
         assert "exited 124, consistent with the 30s cap firing" in result.stderr
         assert "no merge base" not in result.stderr
@@ -1395,13 +1425,14 @@ class TestStackedBaseDeltaAudit:
         sees it, so the message names git's status instead of a bare decoder failure."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
             path_prefix=_install_git_shim_that_prints_a_partial_name_then_fails_the_name_run(tmp_path, 124),
             **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "the name-listing run of git diff exited 124, consistent with the 30s cap firing" in result.stderr
         assert "decoding" not in result.stderr
         assert result.stdout == ""
@@ -1428,13 +1459,14 @@ class TestStackedBaseDeltaAudit:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
             path_prefix=_install_jq_shim_that_fails_the_nul_split_decode(tmp_path, exit_status=5),
             **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "the decoding of the name-listing run's output failed or timed out" in result.stderr
         assert "jq that truncates raw input at NUL" in result.stderr
         assert "claude-config's README.md jq version bullet" in result.stderr
@@ -1480,12 +1512,13 @@ class TestStackedBaseDeltaAudit:
     def test_an_unusable_temp_directory_exits_two_before_any_worktree_exists(self, isolated_home, tmp_path):
         _install_audit_script(isolated_home)
         repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
             extra_env={"TMPDIR": str(tmp_path / "no-such-tmpdir")}, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "could not create a temporary directory for the name-listing run" in result.stderr
         assert "Abort with no worktree created." in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
@@ -1495,12 +1528,13 @@ class TestStackedBaseDeltaAudit:
     def test_a_counting_run_that_prints_no_integer_exits_two(self, isolated_home, repo_with_pr_ref, tmp_path):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=_install_wc_shim_printing(tmp_path, "many"),
             **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "the counting run did not print an integer" in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
         assert result.stdout == ""
@@ -1512,11 +1546,12 @@ class TestStackedBaseDeltaAudit:
         shim_dir = _git_shim_that_fails_on_subcommand(
             tmp_path, "*rev-parse --verify --quiet refs/review-pr/*-default*", exit_status=1,
         )
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert f"{_DEFAULT_BRANCH_LOCAL_REF} did not resolve to a commit" in result.stderr
         assert _shim_match_count(shim_dir) == 1
         assert "review-pr-diff.sh" not in result.stderr
@@ -1532,11 +1567,12 @@ class TestStackedBaseDeltaAudit:
         shim_dir = _git_shim_that_prints_for_subcommand(
             tmp_path, "*rev-parse --verify --quiet refs/review-pr/*-default*", "--upload-pack=option-shaped",
         )
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert f"{_DEFAULT_BRANCH_LOCAL_REF} did not resolve to a commit with a full hex object name" in result.stderr
         assert result.stdout == ""
         assert _review_worktrees(repo) == []
@@ -1556,11 +1592,12 @@ class TestStackedBaseDeltaAudit:
             "    print('{\"stop\": false, \"matches\": []}')\n",
         )
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert len(audit_call_record.read_text().splitlines()) == 2, "the delta reached the audit"
         assert "returned no verdict" in result.stderr
         assert "were not audited" in result.stderr
@@ -1611,6 +1648,25 @@ class TestStackedBaseDeltaAudit:
         assert "\x01" not in result.stderr
         assert "\u202e" not in result.stderr
 
+    def test_base_and_default_branch_names_past_the_echo_limit_are_cut_in_the_delta_audit_failure_message(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        limit = _review_pr_lib_integer("REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
+        long_base_ref_name = "b" * (limit + 40)
+        invalid_long_default_branch = ".." + "d" * (limit + 40)
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name=long_base_ref_name, base_default_branch=invalid_long_default_branch,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "not a valid git ref name" in result.stderr
+        for name in (long_base_ref_name, invalid_long_default_branch):
+            assert f'"{name[:limit]}...[truncated]"' in result.stderr
+            assert name[: limit + 1] not in result.stderr
+
     def test_a_default_branch_name_shaped_like_a_fetch_option_is_never_read_as_one(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
@@ -1623,13 +1679,15 @@ class TestStackedBaseDeltaAudit:
         upload_pack_ran_sentinel = tmp_path / "upload-pack-ran"
         option_shaped_name = f"--upload-pack=touch${{IFS}}{upload_pack_ran_sentinel};"
 
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
             base_ref_name=_STACKED_BASE_BRANCH, base_default_branch=option_shaped_name,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "not a valid git ref name" not in result.stderr, "the name must reach the fetch"
+        assert "the fetch of default branch" in result.stderr
         assert not upload_pack_ran_sentinel.exists(), "the name must not run as a fetch option"
         assert not _default_branch_ref_exists(repo)
         assert _review_worktrees(repo) == []
@@ -1668,11 +1726,12 @@ class TestStackedBaseDeltaAudit:
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch origin refs/heads/*", exit_status=exit_status)
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert f'the fetch of default branch "main" from origin exited {exit_status}' in result.stderr
         assert ("consistent with the 30s cap firing" in result.stderr) is expect_cap_note
         assert "review-pr-diff.sh" not in result.stderr
@@ -1691,12 +1750,13 @@ class TestStackedBaseDeltaAudit:
         repo, pr_sha, base_sha = _build_stacked_repo(
             tmp_path, base_entries={b".claude/hooks/x.sh": b"#!/bin/sh\n"},
         )
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
             path_prefix=_install_jq_shim_that_misdecodes_nul_names(tmp_path, ["README.md"]), **_STACKED_BASE_NAMES,
         )
         assert result.returncode == 2, result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "the stack walk cleared before the failing step"
         assert "has 1 entries but the counting run found 2 names" in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
         assert _review_worktrees(repo) == []
@@ -2926,7 +2986,7 @@ class TestAuditStopMessageKeepsEachMatchOnOneLine:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        match_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        match_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
         unlisted_count = 5
         matching_names = [f"pkg_{index}/CLAUDE.md" for index in range(match_limit + unlisted_count)]
         result, _ = _run(
@@ -3047,36 +3107,37 @@ class TestBaseBranchRetargetDuringReads:
     payload, so a retarget between that read and the later `gh pr view` reads
     must abort rather than skip the stacked delta audit."""
 
-    def _assert_aborted_before_any_ref_fetch(self, result, repo, expected_stderr_fragment):
+    def _assert_aborted_before_any_ref_fetch(self, result, call_log, repo, expected_stderr_fragment):
         assert result.returncode == 2, result.stderr
         assert expected_stderr_fragment in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
         assert result.stdout == ""
         assert _local_pr_ref_names(repo) == "", "an undecided base must never fetch refs/pull/<N>/head"
         assert _review_worktrees(repo) == []
+        assert _walked_branches(call_log) == [], "the gate has not run: the base is the default branch or the reads disagree"
 
     def test_a_base_branch_that_differs_between_the_rest_payload_and_the_base_oid_read_aborts(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
             base_ref_name="main", base_default_branch="main", pr_view_base_ref_name=_STACKED_BASE_BRANCH,
         )
-        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "a retarget between the two reads")
 
     def test_a_base_oid_read_that_carries_no_base_branch_name_aborts(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], pr_view_base_ref_name=None,
         )
-        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "a retarget between the two reads")
 
     def test_a_retarget_during_the_file_list_fetch_aborts_before_the_audit(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -3087,9 +3148,54 @@ class TestBaseBranchRetargetDuringReads:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=[".mcp.json"], pr_view_base_ref_name_second=_STACKED_BASE_BRANCH,
         )
-        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget race between the self-fetches")
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "a retarget race between the self-fetches")
         assert f'"{_STACKED_BASE_BRANCH}"' in result.stderr
         assert len([c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]) == 2
+
+    def test_a_stacked_base_with_an_unreviewed_ancestor_that_the_two_reads_disagree_on_aborts_as_a_retarget_not_as_exit_4(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=False),
+            pr_view_base_ref_name="main", **_STACKED_BASE_NAMES,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "a retarget between the two reads")
+
+    @pytest.mark.parametrize(
+        ("site", "knobs", "expected_echoes"),
+        [
+            pytest.param(
+                "rest-vs-base-oid-read", {"base_ref_name": "b", "pr_view_base_ref_name": "c"}, ("b", "c"),
+                id="rest_and_base_oid_reads_disagree",
+            ),
+            pytest.param(
+                "file-list-recheck", {"base_ref_name": "b", "pr_view_base_ref_name_second": "c"}, ("b", "c"),
+                id="recheck_disagrees",
+            ),
+        ],
+    )
+    def test_a_base_branch_name_past_the_echo_limit_is_cut_in_each_retarget_message(
+        self, isolated_home, repo_with_pr_ref, tmp_path, site, knobs, expected_echoes
+    ):
+        limit = _review_pr_lib_integer("REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
+        long_names = {letter: letter * (limit + 40) for letter in expected_echoes}
+        shim_knobs = {key: long_names.get(value, value) for key, value in knobs.items()}
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_default_branch="main", **shim_knobs,
+        )
+
+        assert result.returncode == 2, result.stderr
+        for letter in expected_echoes:
+            assert '"' + letter * limit + '...[truncated]"' in result.stderr, f"{site}: {letter}"
+            assert letter * (limit + 1) not in result.stderr
 
     def test_a_base_branch_that_holds_across_every_read_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
         """Control: the same shim without a retarget reaches a worktree, so the aborts above are the retarget's doing.
@@ -3120,7 +3226,7 @@ class TestBaseBranchRetargetDuringReads:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=[".mcp.json"], **recheck_shim_knobs,
         )
-        self._assert_aborted_before_any_ref_fetch(result, repo, "could not re-fetch")
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "could not re-fetch")
         assert "retarget" not in result.stderr
         assert len([c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]) == 2
 
@@ -3130,11 +3236,12 @@ class TestBaseBranchRetargetDuringReads:
         """Control for the byte-exact cases below: a non-ASCII name with a space, equal on every read, is not a retarget."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_name=_UNUSUAL_BASE_BRANCH,
         )
         assert result.returncode == 0, result.stderr
+        assert _walked_branches(call_log) == [_UNUSUAL_BASE_BRANCH]
 
     @pytest.mark.parametrize(
         "pr_view_base_ref_name",
@@ -3149,12 +3256,12 @@ class TestBaseBranchRetargetDuringReads:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
             base_ref_name=_UNUSUAL_BASE_BRANCH, pr_view_base_ref_name=pr_view_base_ref_name,
         )
-        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
+        self._assert_aborted_before_any_ref_fetch(result, call_log, repo, "a retarget between the two reads")
 
 
 class TestMalformedGhApiOutput:
@@ -3355,7 +3462,9 @@ class TestAuditRejectsMalformedInput:
             ["bash", str(SCRIPT), PR_IDENTITY], cwd=repo, env=env, capture_output=True, text=True,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
-        _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
+        _assert_gh_calls_are_read_only(
+            _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "list")
+        )
         assert result.returncode == 2, result.stderr
         assert (
             'returned no verdict (exit 2, first line of stdout: {"error": "stdin must be a JSON array of path strings"})'
@@ -3717,3 +3826,171 @@ class TestWorktreeDirectoryCreationFailure:
         assert "could not create a directory for the review worktree" in result.stderr
         assert result.stdout == ""
         assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance").exists()
+
+
+_LOWER_BASE_BRANCH = "lower-base"
+
+
+def _assert_refused_before_the_file_listing(
+    result: subprocess.CompletedProcess, repo: Path, home: Path, call_log: Path
+) -> None:
+    """The run printed nothing and listed no files, fetched no PR ref, created no worktree and wrote no diff file."""
+    assert result.stdout == ""
+    assert not any(_is_listing_call(call, "/files") for call in _read_calls(call_log))
+    assert _local_pr_ref_names(repo) == ""
+    assert _review_worktrees(repo) == []
+    assert not (home / ".claude" / ".review-pr-active.d" / f"{SID}.diff").exists()
+
+
+class TestStackedBaseGate:
+    """A PR whose base is not the default branch is refused (exit 4) while an ancestor PR has no submitted review."""
+
+    def test_an_unreviewed_ancestor_exits_4_naming_the_lowest_one_and_leaves_a_pre_seeded_provenance_unchanged(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        provenance = write_review_pr_provenance(isolated_home, PR_IDENTITY, pr_sha, 999, mode="acquired", session_id=SID)
+        provenance_before = provenance.read_bytes()
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=False),
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 4, result.stderr
+        (refusal_line,) = result.stderr.splitlines()
+        assert refusal_line.startswith("review-pr-checkout.sh: ")
+        assert f"PR {OWNER_REPO}#{STACK_LOWER_PR_NUMBER}, which has no submitted review" in refusal_line
+        # Wording tripwires: the next two lines pin refusal prose, not behavior.
+        assert "clears once a review is submitted on it on GitHub" in refusal_line
+        assert "a draft (pending, unsubmitted) review or one kept local does not count" in refusal_line
+        assert f"review-pr-diff.sh refuses PR {PR_IDENTITY} too" in refusal_line
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
+        assert provenance.read_bytes() == provenance_before
+        _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
+
+    def test_an_unreviewed_immediate_base_exits_4_naming_it_though_the_ancestor_below_it_is_reviewed(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            pr_list_replies=stack_replies(
+                _STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True, upper_reviewed=False
+            ),
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 4, result.stderr
+        (refusal_line,) = result.stderr.splitlines()
+        assert f"PR {OWNER_REPO}#{STACK_UPPER_PR_NUMBER}, which has no submitted review" in refusal_line
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
+        _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
+
+    def test_a_pr_into_the_default_branch_makes_no_lookup_whatever_a_reply_keyed_by_the_default_branch_holds(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        bait_replies = {"main": [pr_list_item(99, "main", "elsewhere")]}
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], pr_list_replies=bait_replies,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _walked_branches(call_log) == []
+        assert any(call[:2] == ["pr", "view"] for call in _read_calls(call_log)), "control: other gh calls were logged"
+
+    def test_a_stack_whose_ancestors_all_have_reviews_proceeds_looking_up_one_branch_per_level(
+        self, isolated_home, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True), **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert [_printed_worktree_path(result)] == _review_worktrees(repo)
+        assert _printed_base_ref_oid(result) == base_sha
+        assert len(result.stdout.splitlines()) == 3, "a base other than the default branch prints no token line"
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
+        lookups = [call for call in _read_calls(call_log) if call[:2] == ["pr", "list"]]
+        assert [call[call.index("-R") + 1] for call in lookups] == [OWNER_REPO] * 2
+
+    def test_a_walk_that_cannot_decide_exits_2_even_when_gh_exits_4(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """gh exits 4 when a command needs authentication, and only the gate itself may produce this script's exit 4."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], pr_list_replies={_STACKED_BASE_BRANCH: {"exit": 4}},
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 2
+        (failure_line,) = result.stderr.splitlines()
+        assert failure_line.startswith("review-pr-checkout.sh: ")
+        assert "failed (exit 4)" in failure_line
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH]
+        _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
+
+    def test_a_gh_exit_4_outside_the_walk_exits_2(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, fail_files=True, files_failure_exit_status=4, **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 2
+        assert "gh api --paginate failed (exit 4)" in result.stderr
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH], "control: the walk cleared before the listing failed"
+
+    def test_a_restricted_author_is_refused_with_exit_3_before_any_lookup(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], author_association="NONE",
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=False), **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 3, result.stderr
+        assert "review-pr-diff.sh" in result.stderr
+        assert _walked_branches(call_log) == []
+
+    @pytest.mark.parametrize(
+        "walk_stdout", ["surprise", "", "0", "007", "[]", "41x", "41\nrm -rf"],
+        ids=["unrecognized-text", "empty", "zero", "leading-zero-number", "json-array", "number-then-letter", "number-then-line"],
+    )
+    def test_walk_output_that_is_neither_clear_nor_an_ancestor_number_exits_2_writing_no_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path, walk_stdout
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        script_with_stubbed_walk = copy_script_with_stubbed_walk(SCRIPT, tmp_path / "sandbox", walk_stdout)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], script_path=script_with_stubbed_walk, **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 2
+        assert "printed neither clear nor an ancestor PR number" in result.stderr
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance").exists()
+        _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
