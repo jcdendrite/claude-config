@@ -26,7 +26,7 @@ If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place
 
 ## Step 2 — Discovery
 
-Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules, or cited to the ticket it came from. Wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
+Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's `## Context` section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules, or cited to the ticket it came from. Wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
 
 ## Step 2.5 — Load project-specific layer
 
@@ -60,7 +60,7 @@ Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it au
 
 **Prepare.** Before this run's first dispatch, run `python3 ~/.claude/scripts/plan-shape.py prepare '<plan path>'`, passing the plan file's absolute path as one single-quoted literal word. When the file holds only its title and Context, the script appends the four headings with the placeholder under `## Approach`. It never edits a file in any other shape. The placeholder is the first non-blank line under `## Approach`, and it reads exactly `(pending: plan-architect)`. Dispatch only when the command exits 0 and prints `PREPARE: ready`. Otherwise give the engineer every `REASON` line, or the command's error if it printed none, through `AskUserQuestion`, and make no edit or dispatch.
 
-In plan mode, a `plan-path` line for the harness-provided plan path means the script's path rule refuses that path. Through `AskUserQuestion`, offer the engineer Step 1's recovery for a failed write as the way forward. In a git repository, that recovery writes the plan to the repo-relative `.claude/plans/<topic-slug>.md` in a new worktree, where `prepare` then runs on it.
+In plan mode, a `plan-path` line for the harness-provided plan path means the script's path rule refuses that path. The run ends there, and the way forward to give the engineer is leaving plan mode and running `/plan-it` again, which starts the plan over under Step 1.
 
 **Before every dispatch.** Make your last edit above `## Approach` first, then run `plan-shape.py`, then take the Context hash below, then dispatch. The run is `prepare` before this run's first dispatch and `check` before every later one. A later dispatch goes ahead only when that `check` exits 0 and prints a `STAGE` line, and any other output is handled as a failed `check` below.
 
@@ -78,7 +78,7 @@ If the returned design names an open decision it left to the user, ask it via `A
 
 A failed `check` that exits 0 and prints a `STAGE` line re-dispatches. It prints one only when every `REASON` code is `placeholder`, `headings` or `empty-section`. Any other output goes to the engineer through `AskUserQuestion`, with every `REASON` line or the command's error if it printed none, and no further dispatch or edit of the plan file follows.
 
-Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, ends the run until the engineer says the plan file is fixed. Then re-run the mode that stopped and act on its new output. Plan mode's `plan-path` recovery above is the one other way forward.
+Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, except the `plan-path` stop for the harness-provided plan path above, ends the run until the engineer says the plan file is fixed. Then re-run the mode that stopped and act on its new output.
 
 Treat a dispatch as first authoring when the `prepare` or `check` run just before it printed `STAGE: first-authoring`, and as a revision otherwise, including when that run printed no `STAGE` line. When a dispatch ends without a normal return, judge its stage by the run before it, not by the `check` after it.
 

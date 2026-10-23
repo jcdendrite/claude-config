@@ -5821,12 +5821,11 @@ _PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
         "the engineer every `REASON` line, or the command's error if it printed none, through "
         "`AskUserQuestion`, and make no edit or dispatch."
     ),
-    "plan_mode_path_refusal_goes_to_the_engineer": (
+    "plan_mode_path_refusal_exits_by_leaving_plan_mode": (
         "In plan mode, a `plan-path` line for the harness-provided plan path means the script's "
-        "path rule refuses that path. Through `AskUserQuestion`, offer the engineer Step 1's "
-        "recovery for a failed write as the way forward. In a git repository, that recovery "
-        "writes the plan to the repo-relative `.claude/plans/<topic-slug>.md` in a new worktree, "
-        "where `prepare` then runs on it."
+        "path rule refuses that path. The run ends there, and the way forward to give the "
+        "engineer is leaving plan mode and running `/plan-it` again, which starts the plan over "
+        "under Step 1."
     ),
     "script_runs_before_every_hash_and_dispatch": (
         "**Before every dispatch.** Make your last edit above `## Approach` first, then run "
@@ -5849,10 +5848,9 @@ _PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
         "file follows."
     ),
     "engineer_stop_resumes_by_rerunning_the_stopped_mode": (
-        "Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, ends "
-        "the run until the engineer says the plan file is fixed. Then re-run the mode that "
-        "stopped and act on its new output. Plan mode's `plan-path` recovery above is the one "
-        "other way forward."
+        "Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, "
+        "except the `plan-path` stop for the harness-provided plan path above, ends the run "
+        "until the engineer says the plan file is fixed. Then re-run the mode that stopped and act on its new output."
     ),
     "stage_line_decides_first_authoring": (
         "Treat a dispatch as first authoring when the `prepare` or `check` run just before it "

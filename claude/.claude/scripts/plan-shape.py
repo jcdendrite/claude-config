@@ -55,9 +55,11 @@ File-level conditions, checked first in this order. Each of the first five ends 
 `prepare` conditions:
 - With no `## Approach` heading line, the file's heading lines must be exactly one line,
   `## Context`. Any other heading line, or none, gives not-title-and-context, cited by the heading
-  lines. With neither that reason nor hash-range, the scaffold is appended: `\\n` when the file does not end in `\\n`, then `\\n`
-  when it does not end in `\\n\\n`, then the four headings with the placeholder under
-  `## Approach`. One `os.write` call sends it, and no existing byte changes.
+  lines.
+- With no `## Approach` heading line and neither not-title-and-context nor hash-range, the
+  scaffold is appended. It starts with `\\n` when the file does not end in `\\n`, then `\\n` when
+  it does not end in `\\n\\n`. The payload is the four headings with the placeholder under
+  `## Approach`. One `os.write` call sends it. No existing byte changes.
 - With a `## Approach` heading line, every heading line from the first one to the end of the file
   must be one of the four. Any other gives foreign-heading, cited by its lines. Order, duplicates
   and missing headings pass, and heading lines above the `## Approach` heading line are not

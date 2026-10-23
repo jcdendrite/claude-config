@@ -643,8 +643,8 @@ def _plans_directory(root: Path) -> Path:
 
 # Each reason code with the names of the script constants holding its sentence templates.
 # internal-error is absent because its sentence carries an exception type name.
+# usage is absent because usage output has no verdict line and its own test compares raw stdout.
 _SENTENCE_CONSTANTS_BY_CODE = {
-    "usage": ("_USAGE_SENTENCE",),
     "plan-path": ("_SENTENCE_PLAN_PATH",),
     "unreadable": ("_SENTENCE_UNREADABLE_CHECK", "_SENTENCE_UNREADABLE_PREPARE"),
     "not-utf8": ("_SENTENCE_NOT_UTF8",),
@@ -670,6 +670,17 @@ def _sentence_matches_a_template_for_code(script, code: str, sentence: str) -> b
 
 
 def _assert_output_grammar(script, parsed: ParsedOutput) -> None:
+    assert parsed.lines, "plan-shape.py printed nothing"
+    line_keys = [line.partition(": ")[0] for line in parsed.lines]
+    assert line_keys[0] in ("PREPARE", "CHECK"), f"output does not open with a verdict line: {parsed.lines!r}"
+    stage_count = line_keys.count("STAGE")
+    assert stage_count <= 1, f"more than one STAGE line: {parsed.lines!r}"
+    if stage_count:
+        assert line_keys[1] == "STAGE", f"STAGE line is not directly after the verdict: {parsed.lines!r}"
+    lines_after_verdict_and_stage = line_keys[1 + stage_count :]
+    assert all(key == "REASON" for key in lines_after_verdict_and_stage), (
+        f"lines after the verdict and STAGE are not all REASON lines: {parsed.lines!r}"
+    )
     for line in parsed.lines:
         if re.fullmatch(r"(PREPARE: (ready|stop)|CHECK: (pass|fail)|STAGE: (first-authoring|revision))", line):
             continue
@@ -804,12 +815,6 @@ def _build_name_ending_in_a_newline(root: Path):
 
 
 @_path_refusal
-def _build_relative_path(root: Path):
-    plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "x.md")
-    return "x.md", plan_path
-
-
-@_path_refusal
 def _build_dot_segment(root: Path):
     plan_path = _write_plan(_plans_directory(root), _TITLE_AND_CONTEXT, "x.md")
     return str(plan_path.parent) + "/./x.md", plan_path
@@ -940,6 +945,32 @@ class TestPath:
         assert parsed.reasons == [("plan-path", ())]
         assert existing_file.read_bytes() == original
         assert existing_file.stat().st_mtime_ns == mtime_before
+
+    @pytest.mark.parametrize("mode", ["prepare", "check"])
+    def test_refuses_a_relative_path_that_resolves_to_a_claude_plans_file_from_the_working_directory(
+        self,
+        script,
+        tmp_path: Path,
+        capsysbinary: pytest.CaptureFixture[bytes],
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> None:
+        plan_path = _write_plan(_plans_directory(tmp_path), _TITLE_AND_CONTEXT, "x.md")
+        original = plan_path.read_bytes()
+        mtime_before = plan_path.stat().st_mtime_ns
+        monkeypatch.chdir(tmp_path)
+
+        result = _run_in_process(script, capsysbinary, mode, ".claude/plans/x.md")
+
+        parsed = _parse_output(result.stdout)
+        assert result.status == 0
+        assert result.stderr == ""
+        _assert_output_grammar(script, parsed)
+        assert parsed.verdict == ("stop" if mode == "prepare" else "fail")
+        assert parsed.stage is None
+        assert parsed.reasons == [("plan-path", ())]
+        assert plan_path.read_bytes() == original
+        assert plan_path.stat().st_mtime_ns == mtime_before
 
     def test_accepts_a_parent_symlink_resolving_to_a_claude_plans_directory(self, tmp_path: Path) -> None:
         real_plan = _write_plan(_plans_directory(tmp_path), _TITLE_AND_CONTEXT, "x.md")

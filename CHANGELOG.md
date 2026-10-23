@@ -17,7 +17,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - a line reading exactly `## Approach` where Step 5's Context hash would end instead of at the heading.
   - The script tests the `plans` and `.claude` directory names on the symlink-resolved parent directory. A symlink is refused only at the last path component, so a symlinked parent is followed when it resolves to a `plans` directory directly under one named `.claude`.
   - The file-name rule is that the name starts with an ASCII letter or digit, holds only ASCII letters, digits, `.`, `_` and `-`, and ends in lowercase `.md`.
-  - In plan mode, a harness plan path whose resolved `plans` directory is not directly under a directory named `.claude` fails the path rule, so Step 5 stops and offers the engineer Step 1's repo-relative recovery.
+  - In plan mode, a harness plan path whose resolved `plans` directory is not directly under a directory named `.claude` fails the path rule, so Step 5 stops. Leaving plan mode and re-running `/plan-it` starts the plan again under `.claude/plans/` on a branch, and the harness-path file is not carried over.
   - An unclosed code fence in the sections `plan-architect` writes now goes to the engineer instead of a re-dispatch. A failed Check still re-dispatches for a leftover placeholder, a heading-structure error or an empty section, except a plan left with no `## Approach` heading line, which goes to the engineer.
   - Step 5 now also runs the Check before every dispatch after the first, and that dispatch goes ahead only when the Check passes or fails only in ways that re-dispatch.
   - A new plan file whose heading lines are not exactly one `## Context` goes to the engineer before its first dispatch.
