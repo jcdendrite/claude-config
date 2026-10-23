@@ -120,13 +120,18 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # The pin is one Ubuntu 24.04 (noble) git build: a version plus a SHA256 for git and for git-man, installed from the Launchpad archive.
       # test_ci_git_equals_the_floor fails when the test steps run without this step.
+      # The pinned values were fetched 2026-10-23; re-verify them by 2027-01-23.
+      # To bump, take the newest noble-updates or noble-security build of git and git-man.
+      # Read each file's SHA256 from that pocket's Packages index on archive.ubuntu.com.
+      # Confirm packages.ubuntu.com shows the same digest.
+      # Change the version, both digests, and both dates in one PR.
+      # The upstream version must keep the floor's major.minor, because test_git_floor.py ties the version to install.sh's GIT_MINIMUM_VERSION.
       - name: Install the pinned git package
         id: pin-git
         if: steps.detect.outputs.changed == 'true'
         env:
-          # README.md § "Tests" holds this pin's fetch date and bump procedure.
-          # test_git_floor.py ties the version to install.sh's GIT_MINIMUM_VERSION.
           CI_GIT_PACKAGE_VERSION: "1:2.43.0-1ubuntu7.4"
           CI_GIT_DEB_SHA256: "c79b7948ef9860c97ec74293a90178676e63368a0711c95c28a55af4edf1adab"
           CI_GIT_MAN_DEB_SHA256: "77f57651734edc24b5a9e7863bc261bf302060ac3c12bbb08a459966ea4d30a6"
