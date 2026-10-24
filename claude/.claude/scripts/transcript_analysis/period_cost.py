@@ -28,10 +28,10 @@ from transcript_analysis import corpus, cost, gh_cli, pr_cost_ledger, pricing, r
 
 _SECONDS_PER_DAY = 86400
 
-# 540 s is the 600 s foreground Bash ceiling (the Bash tool's `timeout` parameter: "max 600000 for a foreground
-# command", in milliseconds), less one in-flight gh call (gh_cli._GH_CALL_TIMEOUT_S) and a 30 s operational margin for
-# assembly, rendering, and interpreter start (not measured).
-_RUN_DEADLINE_S = 540
+# 480 s is the 600 s foreground Bash ceiling (the Bash tool's `timeout` parameter: "max 600000 for a foreground
+# command", in milliseconds), less one in-flight bulk list call (gh_cli._GH_PR_LIST_TIMEOUT_S, the longest gh call
+# this command makes) and a 30 s operational margin for assembly, rendering, and interpreter start (not measured).
+_RUN_DEADLINE_S = 480
 
 # A retry would first wait GitHub's minimum between retries (gh_cli._PR_COST_RATE_LIMIT_MIN_BACKOFF_S, 60 s), which an
 # account with more than a few repositories cannot afford inside _RUN_DEADLINE_S, so a failed list call is reported

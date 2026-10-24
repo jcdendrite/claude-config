@@ -396,7 +396,8 @@ The period-cost command shares four pieces of this module:
   is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps),
   `env`, which it forwards to the call, and `command_name`, which prefixes every message
   `_gh_call_with_backoff` prints. The merged and closed
-  discovery helpers go through it and keep their own abort messages.
+  discovery helpers go through it and keep their own abort messages. Each attempt is bounded by
+  `_GH_PR_LIST_TIMEOUT_S`, not the shorter `_GH_CALL_TIMEOUT_S` that every other gh call uses. The values are in `docs/transcript-analysis.md` § "period-cost".
 - **`_is_plain_owner_repo`** is the Python copy of the owner/repo grammar in `_lib_parse_pr_identity`
   (`claude/.claude/hooks/_lib.sh`), with parity tests against the bash parser.
 - **`_environ_without_gh_tokens`** returns a copy of `os.environ` without the four variables gh reads as
