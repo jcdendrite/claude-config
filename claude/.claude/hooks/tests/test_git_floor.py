@@ -410,8 +410,7 @@ def _run_pin_step(
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     """Run the `pin-git` step's `run:` body under bash against stub commands; return the result and the stubs' call log."""
     real_sha256sum = shutil.which("sha256sum")
-    if real_sha256sum is None:
-        pytest.skip("sha256sum is not installed; the step's digest comparison needs the real one")
+    assert real_sha256sum is not None, "sha256sum is not on PATH; install.sh requires it and the pin step runs the real one"
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
     stub_texts = {
