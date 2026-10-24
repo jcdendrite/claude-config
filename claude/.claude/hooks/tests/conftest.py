@@ -22,6 +22,7 @@ from helpers import (
     git_toplevel,
     init_git_repo_with_commit,
     install_shell_exec_guard,
+    live_process,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -143,17 +144,10 @@ def _review_ledger_path(home: Path, repo: Path, session_id: str) -> Path:
 def live_pid():
     """Yield the pid of a real process this fixture owns for the test's
     duration, terminated on teardown. A safe stand-in for "some other live
-    session" in a foreign-live-lock test — unlike os.getppid(), it doesn't
-    depend on this test process's own ancestry staying stable for the
-    assertion window, which a detached or reparented test-runner process
-    supervision setup can't guarantee (see _dead_pid's analogous
-    genuine-process-over-guessed-number rationale)."""
-    proc = subprocess.Popen(["sleep", "3600"])
-    try:
-        yield proc.pid
-    finally:
-        proc.terminate()
-        proc.wait()
+    session" in a foreign-live-lock test; see helpers.live_process for why it
+    spawns a real process instead of borrowing os.getppid()."""
+    with live_process() as pid:
+        yield pid
 
 
 def _worktree_lock_reason(worktree: Path) -> str | None:
