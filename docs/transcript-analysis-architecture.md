@@ -8,8 +8,7 @@ CLI reference: where each piece of `transcript-analysis.py`'s logic lives, not w
 unchanged. Its own body holds `build_parser()` and `main()`, and defines no `cmd_*` subcommand
 handler. Leaf logic with no dependency on any `cmd_*` function, plus (starting with
 `cost.py`) whole command groups, have moved into the `transcript_analysis/` package
-(`claude/.claude/scripts/transcript_analysis/`), which the script imports from. The shim now holds
-only `build_parser()` and `main()`, and `cli.py` is the next move.
+(`claude/.claude/scripts/transcript_analysis/`), which the script imports from.
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
@@ -963,5 +962,5 @@ read. The legacy file imports it too, as `from ._cache_efficiency_helpers import
 The edit-format and instrument-authoring commands each have one test file:
 `tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither
 loads the shim: each imports its package modules directly. `_UNCONDITIONAL_HEADER_CASES` in
-`tests/test_transcript_analysis.py` still reads `cmd_edit_format` and `cmd_instrument_authoring` through
+`tests/test_transcript_analysis.py` reads `cmd_edit_format` and `cmd_instrument_authoring` through
 the shim.
