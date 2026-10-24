@@ -226,7 +226,12 @@ Verification carries no rehearsal step.
     - `_mod._parse_since_nd_arg`: :478-493;
     - `_mod._scan_root_transcripts`: :823-944.
 
-    `_mod._session_peak_context` and `_mod._context_distribution_rows` lose their only readers when `TestContextDistribution` moves, and the composition file's reads of the two cross-command names move with it. `json`, `Counter`, `Sequence`, `_dedup_turns_by_request_id`, `_DO_NOT_PUBLISH_BANNER`, `_resolve_cost_roots`, `_resolve_project_scope`, `_print_resolved_scope`, `_redaction_ordinals`, `_root_index_for_path`, `_pct_of`, and `_SPAWN_TOOL_NAMES` keep shim readers in edit-format or instrument-authoring code. Both test_transcript_cost.py and test_transcript_plan_boundary.py load the shim (:36, :18). `[verified: grep]`
+    - `_mod._session_peak_context` and `_mod._context_distribution_rows` lose their only readers when `TestContextDistribution` moves.
+    - The composition file's reads of the two cross-command names move with it.
+    - These names keep shim readers in edit-format or instrument-authoring code: `json`, `Counter`, `Sequence`, `_dedup_turns_by_request_id`, `_DO_NOT_PUBLISH_BANNER`, `_resolve_cost_roots`, `_resolve_project_scope`, `_print_resolved_scope`, `_redaction_ordinals`, `_root_index_for_path`, `_pct_of`, and `_SPAWN_TOOL_NAMES`.
+    - Both test_transcript_cost.py and test_transcript_plan_boundary.py load the shim (:36, :18).
+
+    `[verified: grep]`
 11. Only `TestRootsThreadingSpy` patches a shim binding by string among transcript tests (:4140-4141, :4181-4182), and both names it patches stay bound. `[verified: grep "setattr\(_mod,"]`
 12. The moved slices read only these from the shim:
     - the moved names;
@@ -302,7 +307,13 @@ Verification carries no rehearsal step.
 
     `[verified: read]` `_redaction_ordinals` numbers roots by sorted resolved path (scope.py:295-296), so `<tmp_path>/account` is account-1 and `<tmp_path>/account2` is account-2. `[unverified: derived from that sort; Verification 1's run-06 confirms it for the same name pair]`
 50. Cache-efficiency's observable: `### account-N` prints only when `per_account` is passed, which needs more than one scan root (shim :1872-1880, :1936-1942, :1968). `per_account` holds every root's ordinal, so an empty second root still prints `### account-2`. Each of the three tables prints its own `Thread` header (:1856-1859), and `_table_cols` without `occurrence` requires exactly one header match (conftest.py:1148-1157). `[verified: read]`
-51. Registrar flags: context-distribution and context-composition each add `--since` (shim :2243-2246, :2362-2368). All three add `--config-dir` (:2233-2242, :2352-2361, :2390-2399) and `--no-redact` (:2247-2255, :2369-2377, :2400-2408), so no flag is unique to one of them. Each `--config-dir` help names `--no-redact` (:2239, :2358, :2396), so a bare `--no-redact` token matches without the flag. `--since` occurs in no other help text of those two blocks or of `_add_project_scope_args` (scope.py:516-521). `_parse_since_nd_arg`, `_resolve_cost_roots`, and the handlers read `since` and `no_redact` through `getattr` with a default (scope.py:1096, :787; shim :361, :1580, :1912), so dropping `--since` or `--no-redact` raises nothing at dispatch. `[verified: read; grep]` argparse renders the store_true flag as `[--no-redact]` in the subcommand's usage line. `[unverified: argparse usage formatting not read; Verification 1's help captures confirm it]`
+51. Registrar flags:
+    - context-distribution and context-composition each add `--since` (shim :2243-2246, :2362-2368). `[verified: read]`
+    - All three add `--config-dir` (:2233-2242, :2352-2361, :2390-2399) and `--no-redact` (:2247-2255, :2369-2377, :2400-2408), so no flag is unique to one of them. `[verified: read]`
+    - Each `--config-dir` help names `--no-redact` (:2239, :2358, :2396), so a bare `--no-redact` token matches without the flag. `[verified: read]`
+    - `--since` occurs in no other help text of those two blocks or of `_add_project_scope_args` (scope.py:516-521). `[verified: grep]`
+    - `_parse_since_nd_arg`, `_resolve_cost_roots`, and the handlers read `since` and `no_redact` through `getattr` with a default (scope.py:1096, :787; shim :361, :1580, :1912), so dropping `--since` or `--no-redact` raises nothing at dispatch. `[verified: read]`
+    - argparse renders the store_true flag as `[--no-redact]` in the subcommand's usage line. `[unverified: argparse usage formatting not read; Verification 1's help captures confirm it]`
 52. In `claude/` and `docs/`, `test_context_composition` occurs only at `conftest.py:40` (the file name) and old composition file :731 (the method `TestConfigDirRouting` carries into the legacy file). `[verified: grep]`
 
 **Mechanisms:**

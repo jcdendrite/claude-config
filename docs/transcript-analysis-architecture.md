@@ -699,7 +699,7 @@ The context-distribution command: `cmd_context_distribution`, each session's pea
 context-at-turn bucketed at candidate percentage and absolute-token thresholds with each threshold's
 session and dollar shares, and the `_add_context_distribution_subparser` registration. Imports `corpus`,
 `pricing`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s convention. The
-threshold tuples and `_session_peak_context` stay in `pricing.py`, and `_context_distribution_rows` stays
+threshold tuples and `_session_peak_context` live in `pricing.py`, and `_context_distribution_rows` lives
 in `render.py`. `_add_context_distribution_subparser` is the one name `build_parser()` reaches bare.
 
 ### `context_composition.py`

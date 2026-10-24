@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -683,11 +684,13 @@ def test_transcript_analysis_context_and_cache_help_exits_zero(command, flag_tok
 
 
 def _assert_context_distribution_seeded_cells(stdout: str) -> None:
-    assert "Sessions in scope: 1   Total priced dollars: 2.00" in stdout, stdout
+    assert re.search(r"Sessions in scope: 1(?=\s)", stdout), stdout
+    assert re.search(r"Total priced dollars: 2\.00(?=\s)", stdout), stdout
 
 
 def _assert_context_composition_seeded_cells(stdout: str) -> None:
-    assert "Sequences scanned: 1   Turns scanned: 1" in stdout, stdout
+    assert re.search(r"Sequences scanned: 1(?=\s)", stdout), stdout
+    assert re.search(r"Turns scanned: 1(?=\s)", stdout), stdout
 
 
 def _assert_cache_efficiency_seeded_cells(stdout: str) -> None:
