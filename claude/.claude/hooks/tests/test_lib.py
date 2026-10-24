@@ -11115,11 +11115,12 @@ class TestLibMissingPluginIds:
         assert result.returncode == 2, repr(result)
         assert result.stdout.strip() == ""
 
-    def test_registry_version_mismatch_fails_closed(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("registry_version", [None, 1, 3], ids=["version-missing", "version-1", "version-3"])
+    def test_registry_version_mismatch_fails_closed(self, tmp_path: Path, registry_version: int | None) -> None:
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
         registry_file = tmp_path / "installed_plugins.json"
-        write_plugin_registry(registry_file, {}, version=1)
+        write_plugin_registry(registry_file, {}, version=registry_version)
 
         result = _missing_plugin_ids(settings_file, registry_file)
 
