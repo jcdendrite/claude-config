@@ -167,10 +167,10 @@ the read-then-edit lookahead does not return `inline-edit`.
 
 **Lookahead.** For each candidate, scan forward up to three non-user turns:
 an `_CODE_WRITE_TOOLS` turn yields `inline-edit`; an `_ORCHESTRATION_TOOLS`
-turn yields `dispatched`; otherwise `neither`. Only `inline-edit` exculpates
-— narrower than `_D3_DISPATCHABLE_CASES`, which treats `dispatched` as
-dispatchable because it is answering the routing question, not asking
-whether the rule was followed.
+turn yields `dispatched`; otherwise `neither`. Only `inline-edit` exculpates,
+narrower than `_D3_DISPATCHABLE_CASES`. That set treats `dispatched` as
+dispatchable because it answers the routing question, not whether the rule
+was followed.
 
 Path identity between the read and the subsequent edit is deliberately
 **not** required. Requiring it would tighten exculpation and raise the flag
@@ -209,10 +209,10 @@ candidate turns, mirroring D2's bucket ladder, and resetting on a mid-session
 Shapes 1, 3, and 5 are expected to dominate, which is the substantive
 difference from the Bash rule, whose A13 names correctly-batched unrelated
 commands as its dominant FP. If precision misses 0.70, these are the first
-candidates for a sharpened predicate — shape 6 in particular has a cheap fix
-available (treat all unscoped searches in one turn as a single site) that is
-deliberately not applied pre-calibration, since it would also mask genuine
-multi-question sweeps.
+candidates for a sharpened predicate. Shape 6 in particular has a cheap fix
+available: treating all unscoped searches in one turn as a single site. That
+fix is deliberately not applied pre-calibration, because it would also mask
+genuine multi-question sweeps.
 
 ## Critical files
 
@@ -322,8 +322,8 @@ drift as the file changes.
    the scope line via `_print_resolved_scope(..., file=sys.stderr)`, and
    `--sample` / `--seed` handling copied from `cmd_turn_shape_samples`.
    Per sampled turn emit the tool-call lines, the verbatim prior user
-   message, and the first line of the model's own response — the context
-   Verification 7's rater note requires, and the same context
+   message, and the first line of the model's own response. This is the
+   context Verification 7's rater note requires. It is the same context
    `cmd_audit_routing_samples` already emits for its rating task. This widens
    the disclosure surface beyond paths to user prose (A18), which is why the
    handling rule below is printed rather than assumed.
