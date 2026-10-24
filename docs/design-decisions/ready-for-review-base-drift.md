@@ -13,7 +13,7 @@ The verified tree holds the base as of the run's step-1 check. Fix loops return 
 ## Why a clean trial merge is reported, not synced
 
 - A step-6 sync gains only the gate's own run time: it moves the point at which the tree last held the base forward by that long.
-- Its cost is a repeated gate. Step 2 re-runs, because the `verification` marker is keyed on the tree ([ready-for-review-verification-cache.md](ready-for-review-verification-cache.md)). Step 3 reuses its clean review only when the cumulative diff is byte-identical ([ready-for-review-cumulative-diff-cache.md](ready-for-review-cumulative-diff-cache.md)). Steps 4 and 5 re-run.
+- Its cost is a repeated gate. Step 2 re-runs, because the `verification` marker is keyed on the tree ([ready-for-review-verification-cache.md](ready-for-review-verification-cache.md)). Step 3 reuses its clean review only when the cumulative diff is identical after normalization ([ready-for-review-cumulative-diff-cache.md](ready-for-review-cumulative-diff-cache.md)). Steps 4 and 5 re-run.
 - Rechecking after each sync has no fixed point while the base moves, because each re-run gives the base time to move again. A single sync with no recheck has a fixed point, but pays the same cost for the same small gain.
 - When step 2's scope exception or the caches make the re-run cheap, the gain is still only the run time, so those cases get no carve-out.
 - The justification needs no CI or branch protection.

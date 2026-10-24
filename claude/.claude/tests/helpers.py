@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import time
 from collections import Counter
@@ -1248,6 +1249,18 @@ def init_git_repo_with_commit(
     subprocess.run(["git", "add", "--", file_name], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
     return path
+
+
+GITLINK_BEFORE = "1" * 40
+GITLINK_AFTER = "2" * 40
+
+
+def set_gitlink(repo: Path, path: str, commit_sha: str) -> None:
+    """Stage a mode-160000 entry without a submodule checkout. `git add -A` would stage its removal, so call this after it."""
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{commit_sha},{path}"],
+        cwd=repo, check=True,
+    )
 
 
 def continuity_resume_section(kind: str, path: Path, resume_cwd: Path | str | None) -> str:
@@ -2796,3 +2809,143 @@ CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
     ("Some preamble.\nMODE=plan-sections", True, "mode_plan_sections_not_first_line"),
     ("MODE=plan-sections\r\n## Section A", True, "mode_plan_sections_crlf"),
 ]
+
+
+def isolated_git_env(base_env: dict, empty_xdg_config_home: Path | str) -> dict:
+    """`base_env` without the ambient git config a contributor's machine carries.
+
+    Isolated: the global and system config files (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), the
+    system attributes file (`GIT_ATTR_NOSYSTEM=1`), the default `core.attributesFile` (`XDG_CONFIG_HOME` set to
+    `empty_xdg_config_home`, which the caller keeps empty), the ambient `GIT_DIFF_OPTS` and `GIT_EXTERNAL_DIFF`,
+    and every ambient `GIT_CONFIG_*` variable (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`,
+    `GIT_CONFIG_PARAMETERS`), each dropped before the two config variables above are set.
+    Still passing through: a repo's own config and attributes, and every other environment variable.
+    Limit: `GIT_CONFIG_GLOBAL` needs git 2.32. Older git ignores it, so a contributor's global config can reach the caller.
+    """
+    ambient_diff_variables = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+    return {
+        **{
+            name: value
+            for name, value in base_env.items()
+            if name not in ambient_diff_variables and not name.startswith("GIT_CONFIG_")
+        },
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": str(empty_xdg_config_home),
+    }
+
+
+def isolated_git_diff(repo: Path, *args: str, config: tuple[str, ...] = ()) -> bytes:
+    """Raw `git diff *args` bytes of `repo`, with trailing newlines stripped as `$( )` strips them.
+
+    Runs under `isolated_git_env(os.environ, ...)`, so ambient git config does not reach it.
+    Each `key=value` in `config` is passed as `-c key=value`.
+    Limits: those of `isolated_git_env`, and the fixture commits that built `repo` are not isolated.
+    """
+    config_args = [flag for pair in config for flag in ("-c", pair)]
+    with tempfile.TemporaryDirectory() as empty_xdg_config_home:
+        completed = subprocess.run(
+            ["git", *config_args, "diff", *args],
+            cwd=repo, env=isolated_git_env(os.environ, empty_xdg_config_home), capture_output=True, check=True,
+        )
+    return completed.stdout.rstrip(b"\n")
+
+
+def _run_lib_function_on_text(
+    function_call: str, text: bytes, tmp_path: Path, env_overrides: dict | None, shell_prelude: str
+) -> subprocess.CompletedProcess:
+    """Run `function_call` on `"$(cat FILE)"`, the way marker.sh's write arm reads its subject.
+
+    TEXT goes through a file so a large diff never becomes a single exec argument.
+    """
+    text_path = tmp_path / "lib-function-input.bin"
+    text_path.write_bytes(text)
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; {shell_prelude}\n{function_call} "$(cat "$1")"', "bash", str(text_path)],
+        capture_output=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def cumulative_review_value(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None, shell_prelude: str = ""
+) -> tuple[int, str]:
+    """`(exit_status, stripped stdout)` of the real `_lib_cumulative_review_value` on TEXT.
+
+    `shell_prelude` is bash run after `_lib.sh` is sourced and before the call, for function shims.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_cumulative_review_value", text, tmp_path, env_overrides, shell_prelude
+    )
+    return result.returncode, result.stdout.decode().strip()
+
+
+def _stdout_of_successful_run(result: subprocess.CompletedProcess) -> bytes:
+    """`result.stdout`, failing with the process stderr in the message when the exit status is not 0."""
+    assert result.returncode == 0, (result.returncode, result.stderr.decode(errors="replace"))
+    return result.stdout
+
+
+def require_normalized_cumulative_review_text(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None
+) -> bytes:
+    """The real `_lib_normalize_cumulative_review_text` output on TEXT, trailing newlines stripped as `$( )` strips them.
+
+    Fails with the process stderr when the function exits non-zero.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_normalize_cumulative_review_text", text, tmp_path, env_overrides, ""
+    )
+    return _stdout_of_successful_run(result).rstrip(b"\n")
+
+
+def require_cumulative_review_value(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None, shell_prelude: str = ""
+) -> str:
+    """The real `_lib_cumulative_review_value` digest of TEXT, checked to be 64 lowercase hex digits.
+
+    Fails with the process stderr when the function exits non-zero.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_cumulative_review_value", text, tmp_path, env_overrides, shell_prelude
+    )
+    value = _stdout_of_successful_run(result).decode().strip()
+    assert re.fullmatch(r"[0-9a-f]{64}", value), value
+    return value
+
+
+_CUMULATIVE_REVIEW_HUNK_HEADER = re.compile(
+    rb"@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@(?: .*)?"
+)
+_CUMULATIVE_REVIEW_INDEX_LINE = re.compile(rb"index [0-9a-f]+[.][.][0-9a-f]+(?P<mode_suffix>( [0-7]+)?)")
+
+
+def reference_normalized_text(text: bytes) -> bytes:
+    """Pure-Python statement of the two rules `_lib_normalize_cumulative_review_text` applies.
+
+    A hunk header keeps only its two line counts.
+    An `index` line that a `--- ` line directly follows loses its blob ids and keeps its mode.
+    Every other line passes through. Trailing newlines are stripped, as `$( )` strips them.
+    """
+    normalized_lines: list[bytes] = []
+    held_index_line: bytes | None = None
+    for line in text.split(b"\n"):
+        if held_index_line is not None:
+            if line.startswith(b"--- "):
+                held_index_match = _CUMULATIVE_REVIEW_INDEX_LINE.fullmatch(held_index_line)
+                assert held_index_match is not None
+                normalized_lines.append(b"index .." + held_index_match.group("mode_suffix"))
+            else:
+                normalized_lines.append(held_index_line)
+            held_index_line = None
+        header = _CUMULATIVE_REVIEW_HUNK_HEADER.fullmatch(line)
+        if _CUMULATIVE_REVIEW_INDEX_LINE.fullmatch(line):
+            held_index_line = line
+        elif header:
+            normalized_lines.append(b"@@ -" + (header.group(1) or b"") + b" +" + (header.group(2) or b"") + b" @@")
+        else:
+            normalized_lines.append(line)
+    if held_index_line is not None:
+        normalized_lines.append(held_index_line)
+    return b"\n".join(normalized_lines).rstrip(b"\n")

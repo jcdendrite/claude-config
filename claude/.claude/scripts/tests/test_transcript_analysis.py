@@ -17,6 +17,7 @@ import pytest
 from helpers import SKILLS_DIR
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
+from ._cache_efficiency_helpers import _cache_efficiency_args
 from ._cache_rebuild_helpers import _cache_rebuild_args
 from ._commit_gate_helpers import _gate_args
 from ._handoff_nudge_helpers import _rearm_backtest_args, _spend_over_threshold_args
@@ -36,7 +37,6 @@ from .conftest import (
     _attr_ts,
     _audit_routing_args,
     _bash_use,
-    _compact_boundary_rec,
     _context_distribution_args,
     _cost_args,
     _cost_ledger_args,
@@ -266,6 +266,31 @@ class TestConfigDirFlag:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
+
+
+class TestConfigDirRouting:
+    def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
+        assert "context-composition" in _mod._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+
+    def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        active_config_dir = tmp_path / "active-account"
+        (active_config_dir / "projects").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active_config_dir))
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["transcript-analysis.py", "--config-dir", str(other_account), "context-composition"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+
+        assert exc_info.value.code == 2
+        assert other_account / "projects" != _mod.scope.PROJECTS_DIR
+        err = capsys.readouterr().err
+        assert "--config-dir" in err
+        assert "context-composition" in err
 
 
 # ---------------------------------------------------------------------------
@@ -757,52 +782,6 @@ class TestSanitizeTableCell:
 
     def test_empty_string_unchanged(self):
         assert _mod._sanitize_table_cell("") == ""
-
-
-_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER = "## Peak absolute-token crossing thresholds"
-
-
-def _extract_context_distribution_row(out: str, pct: int) -> dict[str, str]:
-    """Read one context-distribution percentage-table threshold row
-    ('Threshold Sessions SessShare $ DollarShare') by its leading 'NN%'
-    token, rather than _table_cols' row_contains, since every row's leading
-    token is a candidate substring of another row's trailing percentage
-    columns. Scoped to the output before the absolute-token table's own
-    header, so an absolute threshold's leading token (a plain digit, never a
-    percentage) can't be misread as a percentage row by coincidence."""
-    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[0]
-    target = f"{pct}%"
-    for line in section.splitlines():
-        tokens = line.split()
-        if tokens and tokens[0] == target:
-            return {
-                "sessions": tokens[1],
-                "sess_share": tokens[2],
-                "dollars": tokens[3],
-                "dollar_share": tokens[4],
-            }
-    raise AssertionError(f"threshold row for {pct}% not found in output:\n{out}")
-
-
-def _extract_context_distribution_abs_row(out: str, threshold: int) -> dict[str, str]:
-    """Read one context-distribution absolute-token-table threshold row by
-    its leading comma-formatted token (e.g. '80,000'). Scoped to the output
-    at/after the absolute table's own header, the section-boundary
-    counterpart of _extract_context_distribution_row above."""
-    if _CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER not in out:
-        raise AssertionError(f"absolute-token table header not found in output:\n{out}")
-    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[1]
-    target = f"{threshold:,}"
-    for line in section.splitlines():
-        tokens = line.split()
-        if tokens and tokens[0] == target:
-            return {
-                "sessions": tokens[1],
-                "sess_share": tokens[2],
-                "dollars": tokens[3],
-                "dollar_share": tokens[4],
-            }
-    raise AssertionError(f"absolute threshold row for {threshold:,} not found in output:\n{out}")
 
 
 class TestScanRootTranscripts:
@@ -1537,246 +1516,6 @@ class TestDedupTurnsByRequestId:
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
         ]
-
-
-# ---------------------------------------------------------------------------
-# context-distribution
-# ---------------------------------------------------------------------------
-
-
-class TestContextDistribution:
-    def test_threshold_crossing_and_dollar_share_hand_computed(self, fake_projects, capsys):
-        """Three sessions with distinct peak context-at-turn percentages of
-        claude-sonnet-5's 1M default window (65%, 45%, 10%) cross a different
-        subset of the 30/40/50/60% thresholds — crossing-count and
-        dollar-share are verified against hand-computed expected values at
-        every threshold, not just one."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _priced("claude-sonnet-5", input=650_000),  # peak 65%, $1.30
-        ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
-            _priced("claude-sonnet-5", input=450_000),  # peak 45%, $0.90
-        ])
-        _write_jsonl(fake_projects / "sess-c.jsonl", [
-            _priced("claude-sonnet-5", input=100_000),  # peak 10%, $0.20
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-
-        assert "Sessions in scope: 3" in out
-        assert "Total priced dollars: 2.40" in out
-
-        # 30%/40%: sessions A and B cross (65% and 45% both >= threshold);
-        # dollars = 1.30 + 0.90 = 2.20; share = 2.20 / 2.40 = 91.7%.
-        for pct in (30, 40):
-            row = _extract_context_distribution_row(out, pct)
-            assert row["sessions"] == "2"
-            assert row["dollars"] == "2.20"
-            assert row["dollar_share"] == "91.7%"
-
-        # 50%/60%: only session A crosses (65% >= threshold, 45% does not);
-        # dollars = 1.30; share = 1.30 / 2.40 = 54.2%.
-        for pct in (50, 60):
-            row = _extract_context_distribution_row(out, pct)
-            assert row["sessions"] == "1"
-            assert row["dollars"] == "1.30"
-            assert row["dollar_share"] == "54.2%"
-
-    def test_peak_exactly_at_threshold_counts_as_crossing(self, fake_projects, capsys):
-        """A session whose peak lands exactly on a candidate threshold (not
-        strictly above it) still counts as crossing — the comparison is
-        >=, mirroring the nudge hook's own 'fires at exactly threshold'
-        test for its single threshold. Regression guard for a future
-        float-rounding change silently flipping >= to >."""
-        _write_jsonl(fake_projects / "sess-exact.jsonl", [
-            _priced("claude-sonnet-5", input=400_000),  # peak exactly 40% of 1M
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row_40 = _extract_context_distribution_row(out, 40)
-        assert row_40["sessions"] == "1"
-
-    def test_sidechain_turns_excluded_from_peak_context_tracking(self, fake_projects, capsys):
-        """A session's peak is computed from main-thread turns only — a deep
-        sidechain (subagent) turn must not count toward the session's own
-        handoff-relevant peak, since subagent context isn't shared with the
-        parent and doesn't accumulate toward a /handoff decision."""
-        session_id = "sess-side"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _priced("claude-sonnet-5", input=100_000),  # main: peak 10%
-        ])
-        subagent_rec = _priced("claude-sonnet-5", input=900_000)  # sidechain: would-be peak 90%
-        subagent_rec["isSidechain"] = True
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
-
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        # Session's own peak stays 10% (main-thread only) — crosses no threshold.
-        row_30 = _extract_context_distribution_row(out, 30)
-        assert row_30["sessions"] == "0"
-        # But dollars still sum main + sidechain: $0.20 (main, 100k input) +
-        # $1.80 (sidechain, 900k input) = $2.00 — a bug that coupled the
-        # sidechain exclusion to the dollar total too (instead of only the
-        # peak) would silently drop the sidechain's $1.80 here.
-        assert "Total priced dollars: 2.00" in out
-
-    def test_multi_record_request_id_group_priced_exactly_once(self, fake_projects, capsys):
-        """Three assistant records sharing one requestId (one JSONL record per
-        content block, as Claude Code writes for a single API call) carry a
-        byte-identical usage dict — context-distribution prices the group's
-        usage once, not once per record."""
-        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
-        recs = [
-            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
-            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
-                  request_id="req-1"),
-            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1"),
-        ]
-        for rec in recs:
-            rec["message"]["usage"] = dict(usage)
-        _write_jsonl(fake_projects / "sess.jsonl", recs)
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
-        # not $6.00 for pricing the group's usage three times over.
-        assert "Total priced dollars: 2.00" in out
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root in
-        scope, mirroring cost's own refusal exactly."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_context_distribution(
-                _context_distribution_args(no_redact=True, extra_config_dirs=[str(acct_b)])
-            )
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected — it
-        prints the DO NOT PUBLISH banner but does not exit, the allow-path
-        counterpart to the multi-root refusal above."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
-        _mod._context_distribution_report(_context_distribution_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        assert "Sessions in scope: 1" in out
-
-    def test_no_sessions_in_scope_prints_zero_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no priced or main-thread turns anywhere) prints a
-        zero-sessions summary and 0.0% shares rather than raising
-        ZeroDivisionError — in both the percentage table and its absolute-token
-        sibling, since both share the same _pct_of-guarded arithmetic."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        assert "Sessions in scope: 0" in out
-        row_30 = _extract_context_distribution_row(out, 30)
-        assert row_30["sessions"] == "0"
-        assert row_30["dollar_share"] == "0.0%"
-        row_abs = _extract_context_distribution_abs_row(out, 80_000)
-        assert row_abs["sessions"] == "0"
-        assert row_abs["dollar_share"] == "0.0%"
-
-    def test_unpriced_model_still_contributes_to_absolute_bucket(self, fake_projects, capsys):
-        """A model ID absent from _MODEL_BASE_INPUT_RATES prices at $0, but its
-        turns still feed the absolute-token peak — that path computes from
-        context_at_turn + output_tokens directly, and its value doesn't depend
-        on _context_window_for_model's result, unlike the percentage path."""
-        _write_jsonl(fake_projects / "sess-unpriced.jsonl", [
-            _priced("claude-opus-4-7", input=250_000),  # unpriced model; crosses the 250,000 bucket
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row = _extract_context_distribution_abs_row(out, 250_000)
-        assert row["sessions"] == "1"
-        assert row["dollars"] == "0.00"
-
-    def test_mixed_window_session_argmax_differs_between_pct_and_abs_peak(self, fake_projects, capsys):
-        """A session with one turn on a 200k-window model (high percentage,
-        lower absolute tokens) and one turn on a 1M-window model (lower
-        percentage, higher absolute tokens) — the percentage table's peak and
-        the absolute table's peak come from different turns, pinning that
-        peak_abs_tokens is its own tracked maximum, not peak_pct * window."""
-        _write_jsonl(fake_projects / "sess-mixed.jsonl", [
-            _priced("claude-sonnet-4-5", input=190_000),  # 200k model: 95% of window, abs 190,000
-            _priced("claude-sonnet-5", input=300_000),  # 1M model: 30% of window, abs 300,000
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row_60 = _extract_context_distribution_row(out, 60)
-        assert row_60["sessions"] == "1"  # peak_pct 95%, from the 200k turn
-        row_250k = _extract_context_distribution_abs_row(out, 250_000)
-        assert row_250k["sessions"] == "1"  # peak_abs_tokens 300,000, from the 1M turn
-        row_400k = _extract_context_distribution_abs_row(out, 400_000)
-        assert row_400k["sessions"] == "0"  # peak_abs_tokens is 300,000, not higher
-
-    def test_absolute_peak_accumulator_flat_and_nested_cache_creation_agree(self):
-        """One turn's cache_creation expressed via the hook's flat
-        cache_creation_input_tokens field and an equal-total turn expressed via
-        the nested ephemeral_1h/ephemeral_5m split feed the new absolute-peak
-        accumulator (_session_peak_context) to the identical total — pinning
-        the _cache_write_split equivalence the accumulator leans on, rather
-        than only citing it."""
-        flat_usage = _priced(
-            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000, flat_cache_creation=30_000
-        )["message"]["usage"]
-        nested_usage = _priced(
-            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000,
-            ephemeral_1h=10_000, ephemeral_5m=20_000,
-        )["message"]["usage"]
-
-        _dollars_flat, context_flat, _unpriced_flat = _mod._price_turn("claude-sonnet-5", flat_usage)
-        _dollars_nested, context_nested, _unpriced_nested = _mod._price_turn("claude-sonnet-5", nested_usage)
-
-        _peak_pct_flat, peak_abs_flat = _mod._session_peak_context([(context_flat, 5_000, 1_000_000)])
-        _peak_pct_nested, peak_abs_nested = _mod._session_peak_context([(context_nested, 5_000, 1_000_000)])
-
-        expected = 100_000 + 50_000 + 30_000 + 5_000
-        assert peak_abs_flat == peak_abs_nested == expected
-
-    def test_session_peak_context_tracks_independent_maxima(self):
-        """_session_peak_context's two maxima are independent — the turn with
-        the highest percentage of its own window need not be the turn with the
-        highest absolute token count."""
-        turns = [
-            (190_000, 0, 200_000),  # pct 95%, abs 190,000
-            (300_000, 0, 1_000_000),  # pct 30%, abs 300,000
-        ]
-        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
-        assert peak_pct == pytest.approx(0.95)
-        assert peak_abs_tokens == 300_000
-
-    def test_session_peak_context_abs_includes_output_tokens(self):
-        """peak_abs_tokens is context_at_turn + output_tokens — the hook's own
-        four-field ESTIMATE sum — not context_at_turn alone; peak_pct is
-        unaffected by output_tokens, matching context_at_turn's own definition."""
-        turns = [(100_000, 50_000, 1_000_000)]
-        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
-        assert peak_pct == pytest.approx(0.1)
-        assert peak_abs_tokens == 150_000
-
-    def test_session_peak_context_no_main_thread_turns_returns_zero(self):
-        """No main-thread turns (e.g. a session with only sidechain activity)
-        yields (0.0, 0) rather than raising."""
-        assert _mod._session_peak_context([]) == (0.0, 0)
-
-    def test_context_distribution_rows_session_share_hand_computed(self):
-        """_context_distribution_rows' session-share arithmetic, exercised
-        directly on a synthetic multi-session fixture with a known expected
-        fraction — a handoff-nudge cap chosen off this report's session-share
-        column is only as trustworthy as this arithmetic."""
-        peaks = [0.9, 0.5, 0.3, 0.1, 0.05]
-        dollars = [1.0, 1.0, 1.0, 1.0, 1.0]
-        rows = _mod._context_distribution_rows([0.4], peaks, dollars)
-        # 2 of 5 sessions (0.9, 0.5) cross 0.4 -> 40.0% session-share.
-        assert rows[0]["sessions"] == 2
-        assert rows[0]["session_share"] == "40.0%"
-        assert rows[0]["dollars"] == pytest.approx(2.0)
-        assert rows[0]["dollar_share"] == "40.0%"
 
 
 # ---------------------------------------------------------------------------
@@ -2867,321 +2606,6 @@ class TestScanInstrumentAuthoringSession:
 # ---------------------------------------------------------------------------
 # cache-efficiency
 # ---------------------------------------------------------------------------
-
-
-def _cache_efficiency_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-class TestCachePrefixTotal:
-    """Direct unit tests for _cache_prefix_total's usage-dict traversal --
-    the read-collapse classifier's prior-turn denominator."""
-
-    def test_excludes_input_tokens(self):
-        """input_tokens must not contribute to the prefix total -- only
-        cache_read_input_tokens and both cache_creation tiers count, per the
-        function's own documented differentiator from _context_at_turn. A
-        prior turn carrying only input_tokens (no cache fields at all) must
-        report a prefix total of zero, not the input_tokens value."""
-        usage = _priced("claude-sonnet-5", input=50_000, cache_read=0)["message"]["usage"]
-        assert _mod._cache_prefix_total(usage) == 0
-
-    def test_sums_read_and_both_cache_write_tiers(self):
-        usage = _priced("claude-sonnet-5", cache_read=1000, ephemeral_1h=200, ephemeral_5m=300)["message"]["usage"]
-        assert _mod._cache_prefix_total(usage) == 1500
-
-
-class TestCacheEfficiencyClassifier:
-    """Direct unit tests for the read-collapse classifier
-    (docs/case-studies/cold-cache-attribution.md), scored at
-    T=_COLD_READ_COLLAPSE_MARGIN=0.50 -- the margin the case study measured
-    as the maximum Youden's J across every threshold tested there."""
-
-    def test_margin_boundary_exactly_at_t_is_not_cold(self):
-        """collapse == T (not strictly greater than T) stays warm: prior
-        prefix 100, this turn's read 50 -> exactly 0.50 collapse."""
-        assert _mod._is_cold_read_collapse(100, 50) is False
-
-    def test_margin_boundary_just_past_t_is_cold(self):
-        """One token further past the same prior prefix flips the
-        classification: prior prefix 100, read 49 -> 0.51 collapse."""
-        assert _mod._is_cold_read_collapse(100, 49) is True
-
-    def test_zero_prior_prefix_is_never_cold(self):
-        """No prefix to collapse from -- covers both a prior turn whose own
-        prefix total was genuinely zero and (via _scan_cache_efficiency_group
-        below) a session's first turn, which has no prior turn at all."""
-        assert _mod._is_cold_read_collapse(0, 0) is False
-
-
-class TestCacheEfficiencyGroupScan:
-    """Direct unit tests for _scan_cache_efficiency_group's classification
-    over one source-file group -- the layer TestCacheEfficiencyClassifier's
-    pure-function tests can't reach, since the first-turn carve-out depends
-    on the per-session prior-turn chain, not the margin comparison alone."""
-
-    def test_first_turn_of_session_with_zero_read_is_not_cold(self):
-        """A session's first assistant turn has no predecessor, so a
-        first-turn read==0 (e.g. a genuinely fresh context) must not be
-        misread as a cold re-write -- the first-turn carve-out."""
-        records = [_priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["turns"] == 1
-        assert stats["main"]["cold_events"] == 0
-
-    def test_non_first_turn_with_zero_read_after_nonzero_prior_is_cold(self):
-        """The non-first-turn counterpart to the carve-out above: a turn
-        following a real prior prefix, whose own read collapses to zero,
-        must classify cold."""
-        records = [
-            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 1
-        assert stats["main"]["cold_tokens"] == 500
-
-    def test_compact_boundary_resets_the_chain(self):
-        """A compact_boundary record resets the prior-turn chain -- the turn
-        immediately after compaction is treated as a first turn (not cold),
-        since the pre-compaction prefix it would otherwise be compared
-        against no longer exists."""
-        records = [
-            _priced("claude-sonnet-5", cache_read=100_000, request_id="r1"),
-            _compact_boundary_rec(),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_input_heavy_prior_turn_not_treated_as_cache_prefix(self):
-        """A prior turn with a large input_tokens value but zero cache
-        fields contributes nothing to the prior-prefix chain (per
-        _cache_prefix_total's documented exclusion) -- the next turn's own
-        cache_read must not be misclassified as a collapse against that
-        input-heavy, uncached prefix. A buggy _cache_prefix_total that
-        folded input_tokens back in would see a 50,000-token prior prefix
-        and flag turn 2 as cold; this expects no such collapse."""
-        records = [
-            _priced("claude-sonnet-5", input=50_000, cache_read=0, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_return_value_counts_sidechain_assistant_records_read(self):
-        """The int return value counts isSidechain assistant records seen in
-        this group, independent of stats['sidechain']['turns'] -- feeds the
-        drift canary via _cache_efficiency_report's total_sidechain_turns
-        accumulation."""
-        side_rec = _priced("claude-sonnet-5", cache_read=100)
-        side_rec["isSidechain"] = True
-        records = [_priced("claude-sonnet-5", cache_read=50), side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        sidechain_turns_read = _mod._scan_cache_efficiency_group(records, stats)
-        assert sidechain_turns_read == 1
-
-    def test_second_session_first_turn_does_not_inherit_first_sessions_chain(self):
-        """The carve-out is keyed by sessionId, not by turn position within
-        the group: a second session's first turn must not inherit a first
-        session's already-built prior-prefix chain, even though both turns
-        appear in the same source-file group."""
-        session_a_turn = _priced("claude-sonnet-5", cache_read=10_000, request_id="r1")
-        session_a_turn["sessionId"] = "session-a"
-        session_b_first_turn = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2")
-        session_b_first_turn["sessionId"] = "session-b"
-        records = [session_a_turn, session_b_first_turn]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_sidechain_turn_buckets_separately_from_main(self):
-        """isSidechain routes a turn into its own thread bucket, mirroring
-        cost's and subagents' own main/sidechain split."""
-        side_rec = _priced("claude-sonnet-5", cache_read=200)
-        side_rec["isSidechain"] = True
-        records = [_priced("claude-sonnet-5", cache_read=100), side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["turns"] == 1
-        assert stats["main"]["read_tokens"] == 100
-        assert stats["sidechain"]["turns"] == 1
-        assert stats["sidechain"]["read_tokens"] == 200
-
-    def test_sidechain_first_turn_does_not_inherit_mains_prior_prefix(self):
-        """The prior-prefix chain is keyed by (sessionId, thread), not
-        sessionId alone: a sidechain record sharing the main record's
-        sessionId (the real-world shape -- a subagent file's records carry
-        the parent session's sessionId) must not inherit the main thread's
-        prior prefix. Values are chosen so cross-thread contamination would
-        flip the verdict: main's prefix (10,000) vastly exceeds the
-        sidechain's own read (0), so a shared chain would misclassify the
-        sidechain's first turn as a cold collapse."""
-        main_rec = _priced("claude-sonnet-5", cache_read=10_000)
-        main_rec["sessionId"] = "session-a"
-        side_rec = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)
-        side_rec["isSidechain"] = True
-        side_rec["sessionId"] = "session-a"
-        records = [main_rec, side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["sidechain"]["cold_events"] == 0
-
-
-class TestCacheEfficiency:
-    def test_turn_and_token_totals_and_cold_share_hand_computed(self, fake_projects, capsys):
-        """End-to-end report totals against a small hand-computed fixture:
-        turn 1 (no predecessor) is never cold; turn 2 is a warm append
-        (read stays at turn 1's full prefix); turn 3's read collapses to
-        zero against turn 2's 1,200-token prefix -- cold, contributing its
-        own 500 write-5m tokens as cold tokens."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=1000, ephemeral_5m=200, request_id="r2"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r3"),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "3"
-        assert cols["Read"] == "2,000"
-        assert cols["Write5m"] == "700"
-        assert cols["ColdTok"] == "500"
-        assert cols["ColdEvts"] == "1"
-
-    def test_multi_record_turn_split_across_jsonl_lines_not_misread_cold(self, fake_projects, capsys):
-        """Claude Code writes one JSONL record per assistant content block
-        (thinking/text/tool_use), all sharing one requestId and identical
-        cache_read/cache_creation usage (_dedup_turns_by_request_id's own
-        documented invariant). Without deduping each source-file group
-        before classification, the second record of that same turn would
-        read as a second turn whose read 'collapsed' against the first
-        record's own (identical) usage -- a false cold event on a turn that
-        never actually ended. Guards _cache_efficiency_report's per-group
-        _dedup_turns_by_request_id call."""
-        rec1 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
-        rec2 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
-        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "1"
-        assert cols["ColdEvts"] == "0"
-
-    def test_no_assistant_turns_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """A session with no assistant turns at all (e.g. only a user
-        message) prints a clean zero-state row rather than raising
-        ZeroDivisionError -- mirrors edit-format's own zero-state coverage."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "0"
-        assert cols["Cold/Wr"] == "0.0%"
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root
-        in scope, mirroring cost's/edit-format's/read-scope's own refusal."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cache_efficiency(_cache_efficiency_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected —
-        this report's content never varies with redact, since it carries no
-        project name or session ID, but the banner still prints for CLI
-        parity with cost/edit-format/read-scope."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "1"
-
-    def test_no_redact_refused_by_report_itself_even_when_called_directly(self, tmp_path, capsys):
-        """Defense-in-depth: _cache_efficiency_report must refuse the
-        multi-root + --no-redact combination itself rather than trusting
-        that _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
-        Refusal happens before any output is printed."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _priced("claude-sonnet-5", cache_read=200),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True), roots=[root_a, root_b])
-        assert exc_info.value.code == 2
-        assert capsys.readouterr().out == ""
-
-    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
-        """Per-account figures are emitted through account-N labels — never
-        the raw config-dir path or account-identifying directory name — the
-        same discipline edit-format's own per-account breakdown carries."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _priced("claude-sonnet-5", cache_read=200),
-            _priced("claude-sonnet-5", cache_read=300),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert "acct-alice-clientwork" not in out
-        assert "acct-bob-clientwork" not in out
-        assert str(root_a) not in out
-        assert str(root_b) not in out
-        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
-        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
-        assert account_1["Turns"] == "1"
-        assert account_2["Turns"] == "2"
-
-    def test_per_account_breakdown_attributes_cold_events_to_the_correct_account(self, tmp_path, capsys):
-        """A cold event originating in one account's session must land in
-        that account's own per_account[ordinal] bucket, not leak into the
-        other account's bucket or only the aggregate. A bug in the
-        redact_ordinals/root_position lookup could pass a turn-counts-only
-        check while still misattributing cold figures across accounts."""
-        root_a_turn = _priced("claude-sonnet-5", cache_read=100)
-        root_a_turn["sessionId"] = "sess-a"
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [root_a_turn])
-
-        root_b_turn_1 = _priced("claude-sonnet-5", cache_read=1000, request_id="r1")
-        root_b_turn_1["sessionId"] = "sess-b"
-        root_b_turn_2 = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2")
-        root_b_turn_2["sessionId"] = "sess-b"
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [root_b_turn_1, root_b_turn_2])
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
-        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
-        assert account_1["ColdEvts"] == "0"
-        assert account_1["ColdTok"] == "0"
-        assert account_2["ColdEvts"] == "1"
-        assert account_2["ColdTok"] == "500"
 
 
 class TestCacheEfficiencyArgparseWiring:

@@ -1798,6 +1798,24 @@ def test_all_hooks_and_libs_includes_every_lib_sh() -> None:
     assert len(ALL_HOOKS_AND_LIBS) == len(ALL_HOOKS) + expected_lib_count
 
 
+def test_no_hook_references_the_cumulative_review_value_helpers() -> None:
+    """The cumulative-review marker key is a normalized-text equivalence key, weaker than a byte hash,
+    so no hook may gate on it without a threat-model tier review.
+
+    Tripwire on direct references to the two helpers only. It does not see a hook that runs
+    `marker.sh status` or reads `cumulative-review-markers/`, because neither names a helper.
+    It does not see a future `_lib.sh` wrapper either, because `_all_hook_files()` excludes `_lib.sh`.
+    """
+    helper_names = ("_lib_cumulative_review_value", "_lib_cumulative_diff_hash")
+    referencing_hooks = [
+        f"{hook.name}: {helper_name}"
+        for hook in ALL_HOOKS
+        for helper_name in helper_names
+        if helper_name in hook.read_text()
+    ]
+    assert referencing_hooks == []
+
+
 @pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])
 class TestHookClassHeader:
     def test_hook_class_header_present(self, hook: Path) -> None:

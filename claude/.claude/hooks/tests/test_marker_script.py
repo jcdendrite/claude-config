@@ -29,6 +29,7 @@ from helpers import (
     plant_traversal_canary,
     push_conflicting_edit_to_origin,
     read_input,
+    reference_normalized_text,
     revert_subtraction_base,
     review_pr_completion_marker_path,
     run_hook,
@@ -336,12 +337,12 @@ def zero_diff_repo(git_repo):
 
 def _advance_origin_main_and_rebase(repo, commit_fn) -> None:
     """Move refs/remotes/origin/main forward by one commit built by
-    commit_fn (which mutates and stages the working tree; this function
-    commits it), then rebase the checked-out branch back onto the new
-    origin/main -- reproduces a conflict-free rebase onto a moved default
-    branch, always producing a new HEAD SHA regardless of whether the
-    cumulative diff bytes actually changed (docs/design-decisions.md
-    §44's motivating scenario)."""
+    commit_fn (which mutates the working tree and commits it itself), then
+    rebase the checked-out branch back onto the new origin/main --
+    reproduces a conflict-free rebase onto a moved default branch, always
+    producing a new HEAD SHA regardless of whether the cumulative diff
+    bytes actually changed (docs/design-decisions.md §44's motivating
+    scenario)."""
     branch = subprocess.run(
         ["git", "symbolic-ref", "--short", "HEAD"],
         cwd=repo,
@@ -388,6 +389,40 @@ def _insert_adjacent_line(repo) -> None:
     (repo / "shared.txt").write_text("\n".join(lines) + "\n")
     subprocess.run(["git", "add", "shared.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "insert adjacent line"], cwd=repo, check=True)
+
+
+def _prepend_distant_line(repo) -> None:
+    """Insert L0 before shared.txt's first line -- far outside the PR commit's
+    3-line context window, so the rebase shifts the PR hunk's line numbers
+    while leaving its context lines and its added line untouched."""
+    lines = [f"L{i}" for i in range(1, CONTEXT_DRIFT_LINE_COUNT + 1)]
+    (repo / "shared.txt").write_text("\n".join(["L0", *lines]) + "\n")
+    subprocess.run(["git", "add", "shared.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "prepend distant line"], cwd=repo, check=True)
+
+
+def _write_awk_shim_failing_on_normalizer(stub_dir, mode: str):
+    """Write an `awk` shim into stub_dir and return stub_dir, for a caller to put first on PATH.
+
+    The shim fails only when an argument contains `@@`, which only the cumulative-review
+    normalizer's awk script does (no other shipped shell file contains `@@`).
+    `mode` is "no-output" (exit 1, nothing printed) or "partial-output" (the first three
+    lines of the real output, then exit 1). Any other call runs the real awk, resolved
+    before PATH changes.
+    """
+    real_awk = shutil.which("awk")
+    assert real_awk is not None
+    failing_branch = {
+        "no-output": "exit 1",
+        "partial-output": f'{real_awk} "$@" | head -n 3\n    exit 1',
+    }[mode]
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    awk_shim = stub_dir / "awk"
+    awk_shim.write_text(
+        f'#!/bin/bash\ncase "$*" in\n  *"@@"*)\n    {failing_branch}\n    ;;\nesac\nexec {real_awk} "$@"\n'
+    )
+    awk_shim.chmod(0o755)
+    return stub_dir
 
 
 @pytest.fixture
@@ -4088,7 +4123,10 @@ class TestMarkerScriptCumulativeReview:
         assert write_result.returncode == 0, write_result.stderr
         marker = _cumulative_review_marker_path(isolated_home, cumulative_diff_repo, sid)
         stored_value = marker.read_text().strip()
-        assert stored_value == hashlib.sha256(recorded_text).hexdigest()
+        assert stored_value == hashlib.sha256(reference_normalized_text(recorded_text)).hexdigest()
+        assert stored_value != hashlib.sha256(recorded_text).hexdigest(), (
+            "the stored value must be the normalized text's hash, not the raw text's"
+        )
 
     def test_status_live_when_hash_matches_current_diff(
         self, isolated_home, cumulative_diff_repo, tmp_path
@@ -4186,15 +4224,16 @@ class TestMarkerScriptCumulativeReview:
             "presence only, not a confirmed hash comparison)"
         ) in result.stderr
 
-    def test_write_and_status_hash_recipes_agree_byte_for_byte(
+    def test_write_and_status_values_match_the_shared_recipe_on_script_output(
         self, isolated_home, cumulative_diff_repo, tmp_path
     ):
-        """marker.sh write and status both call the shared
-        _lib_cumulative_diff_hash helper, but that only proves the two call
-        sites agree with EACH OTHER. Prove the stored value also matches an
-        independently-computed sha256 of pr-diff-against-base.sh's own
-        stdout, so a shared-helper bug that hashes the wrong bytes on both
-        sides couldn't hide behind the two sides merely agreeing.
+        """The write arm reads a recorded subject and status recomputes the
+        diff, and both reach _lib_cumulative_review_value, whose output
+        TestLibCumulativeReviewValue pins against hand-derived text. Prove
+        the stored value also matches an independently-computed digest of
+        the normalized form of pr-diff-against-base.sh's own stdout, so a
+        shared-helper bug that hashes the wrong bytes on both sides couldn't
+        hide behind the two sides merely agreeing.
 
         Trailing newlines are stripped from the independently-captured
         stdout before hashing, mirroring bash command substitution's own
@@ -4222,7 +4261,10 @@ class TestMarkerScriptCumulativeReview:
             capture_output=True,
             check=True,
         ).stdout.rstrip(b"\n")
-        assert stored_value == hashlib.sha256(diff_output).hexdigest()
+        assert stored_value == hashlib.sha256(reference_normalized_text(diff_output)).hexdigest()
+        assert stored_value != hashlib.sha256(diff_output).hexdigest(), (
+            "the stored value must be the normalized text's hash, not the raw stdout's"
+        )
 
         status_result = _run(
             ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env
@@ -4299,12 +4341,11 @@ class TestMarkerScriptCumulativeReview:
         self, isolated_home, context_diff_repo, tmp_path
     ):
         """A base-branch commit that edits content merely adjacent to the
-        PR's own change -- not the changed line itself -- can still shift
-        the diff hunk's context lines after a conflict-free rebase. The
-        cache must not paper over that with a false live: this is
-        docs/design-decisions.md §44's named residual (a byte-identical
-        rebase is not guaranteed for every conflict-free rebase, only the
-        motivating case where nothing near the diff moved)."""
+        PR's own change -- not the changed line itself -- changes the diff
+        hunk's context lines after a conflict-free rebase. The cache
+        tolerates shifted line numbers but not changed context lines, so it
+        must not paper over this with a false live (see
+        docs/design-decisions.md §44)."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         env = _env_with_gh_shim(tmp_path, None)
@@ -4326,6 +4367,175 @@ class TestMarkerScriptCumulativeReview:
             "historical must reflect a genuine hash mismatch, not a masked "
             "_lib_cumulative_diff_hash computation failure"
         )
+
+    def test_status_stays_live_after_rebase_shifts_hunk_line_numbers(
+        self, isolated_home, context_diff_repo, tmp_path
+    ):
+        """A conflict-free rebase onto a base that edited shared.txt far above the PR's hunk
+        changes only the hunk's start offsets and the file's blob ids, never its content,
+        so the marker written before the rebase must still read live."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(context_diff_repo, isolated_home, env).returncode == 0
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=context_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        _advance_origin_main_and_rebase(context_diff_repo, _prepend_distant_line)
+
+        result = _run(["status"], cwd=context_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "could not verify" not in result.stderr
+        assert "cumulative-review: live" in result.stdout
+
+    def test_status_historical_after_rebase_when_an_added_line_changes(
+        self, isolated_home, context_diff_repo, tmp_path
+    ):
+        """The line-shift tolerance must not hide a change to the PR's own added line."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(context_diff_repo, isolated_home, env).returncode == 0
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=context_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+        _advance_origin_main_and_rebase(context_diff_repo, _prepend_distant_line)
+        (context_diff_repo / "shared.txt").write_text(
+            "L0\n" + _shared_txt_lines(f"L{CONTEXT_DRIFT_LINE_COUNT + 1} changed\n")
+        )
+        subprocess.run(["git", "add", "shared.txt"], cwd=context_diff_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "change the appended line"], cwd=context_diff_repo, check=True)
+        cumulative_diff = subprocess.run(
+            ["git", "diff", "--no-color", "--no-ext-diff", "origin/main...HEAD"],
+            cwd=context_diff_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        hunk_header_count = sum(line.startswith("@@") for line in cumulative_diff.splitlines())
+        assert hunk_header_count == 1, (
+            f"the appended line must be the only delta from the recorded diff, got:\n{cumulative_diff}"
+        )
+
+        result = _run(["status"], cwd=context_diff_repo, home=isolated_home, extra_env=env)
+
+        assert result.returncode == 0, result.stderr
+        assert "could not verify" not in result.stderr
+        assert "cumulative-review: historical" in result.stdout
+
+    def test_status_stays_live_after_relocated_edit_with_identical_context(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Named residual: the PR's added line moved to another stanza with identical +-3 line context keeps the marker live.
+
+        The marker cannot tell the two sites apart, so this pins the residual
+        instead of leaving it to be discovered.
+        """
+        stanza = ["s1", "s2", "s3", "s4", "s5", "s6"]
+        (git_repo / "stanzas.txt").write_text("\n".join([*stanza, "separator", *stanza]) + "\n")
+        subprocess.run(["git", "add", "stanzas.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add stanzas"], cwd=git_repo, check=True)
+        _arm_default_branch_ref(git_repo)
+        first_site = ["s1", "s2", "s3", "X", "s4", "s5", "s6", "separator", *stanza]
+        second_site = [*stanza, "separator", "s1", "s2", "s3", "X", "s4", "s5", "s6"]
+        (git_repo / "stanzas.txt").write_text("\n".join(first_site) + "\n")
+        subprocess.run(["git", "commit", "-q", "-am", "add X to the first stanza"], cwd=git_repo, check=True)
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(git_repo, isolated_home, env).returncode == 0
+        write_result = _run(["write", "cumulative-review"], cwd=git_repo, home=isolated_home, extra_env=env)
+        assert write_result.returncode == 0, write_result.stderr
+
+        (git_repo / "stanzas.txt").write_text("\n".join(second_site) + "\n")
+        subprocess.run(["git", "commit", "-q", "-am", "move X to the second stanza"], cwd=git_repo, check=True)
+
+        result = _run(["status"], cwd=git_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "could not verify" not in result.stderr
+        assert "cumulative-review: live" in result.stdout
+
+    @pytest.mark.parametrize("failure_mode", ["no-output", "partial-output"])
+    def test_write_refuses_and_keeps_subject_when_normalization_fails(
+        self, isolated_home, cumulative_diff_repo, tmp_path, failure_mode
+    ):
+        """A normalizer failure must refuse the write and leave the recorded subject for a retry."""
+        _seed_session(isolated_home, self.SID)
+        gh_env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, gh_env).returncode == 0
+        subject_path = _cumulative_review_subject_path(isolated_home, cumulative_diff_repo, self.SID)
+        assert subject_path.exists()
+
+        awk_shim_dir = _write_awk_shim_failing_on_normalizer(tmp_path / "awk_shim", failure_mode)
+        failing_env = {"PATH": f"{awk_shim_dir}{os.pathsep}{gh_env['PATH']}"}
+        result = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=failing_env
+        )
+
+        assert result.returncode == 2
+        assert "could not hash the recorded cumulative-review subject" in result.stderr
+        assert "a failing awk in the diff normalizer is a possible cause" in result.stderr
+        assert subject_path.exists(), "a failed write must leave the subject for a retry"
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        assert not marker_dir.exists() or list(marker_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("failure_mode", ["no-output", "partial-output"])
+    def test_write_leaves_an_existing_marker_byte_identical_when_normalization_fails(
+        self, isolated_home, cumulative_diff_repo, tmp_path, failure_mode
+    ):
+        """A failed hash must not truncate a marker written earlier: the value is computed
+        before the redirect, so the old marker survives and the new subject stays for a retry."""
+        _seed_session(isolated_home, self.SID)
+        gh_env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, gh_env).returncode == 0
+        first_write = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=gh_env
+        )
+        assert first_write.returncode == 0, first_write.stderr
+        marker_path = _cumulative_review_marker_path(isolated_home, cumulative_diff_repo, self.SID)
+        marker_bytes_before = marker_path.read_bytes()
+        assert marker_bytes_before
+        (cumulative_diff_repo / "second.txt").write_text("an edit that changes the cumulative diff\n")
+        subprocess.run(["git", "commit", "-q", "-am", "edit second file"], cwd=cumulative_diff_repo, check=True)
+        assert _record_subject(cumulative_diff_repo, isolated_home, gh_env).returncode == 0
+        subject_path = _cumulative_review_subject_path(isolated_home, cumulative_diff_repo, self.SID)
+        subject_bytes = subject_path.read_bytes()
+
+        awk_shim_dir = _write_awk_shim_failing_on_normalizer(tmp_path / "awk_shim", failure_mode)
+        failing_env = {"PATH": f"{awk_shim_dir}{os.pathsep}{gh_env['PATH']}"}
+        result = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=failing_env
+        )
+
+        assert result.returncode == 2
+        assert "could not hash the recorded cumulative-review subject" in result.stderr
+        assert marker_path.read_bytes() == marker_bytes_before
+        assert subject_path.read_bytes() == subject_bytes
+
+    @pytest.mark.parametrize("failure_mode", ["no-output", "partial-output"])
+    def test_status_never_live_when_normalization_fails_with_marker_on_disk(
+        self, isolated_home, cumulative_diff_repo, tmp_path, failure_mode
+    ):
+        """A marker written with the real awk must not read live when status cannot recompute its value."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, env).returncode == 0
+        write_result = _run(
+            ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        awk_shim_dir = _write_awk_shim_failing_on_normalizer(tmp_path / "awk_shim", failure_mode)
+        failing_env = {"PATH": f"{awk_shim_dir}{os.pathsep}{env['PATH']}"}
+        result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=failing_env)
+
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: live" not in result.stdout
+        assert "cumulative-review: could not verify" in result.stderr
+        assert "a failing awk in the diff normalizer is another possible cause" in result.stderr
 
     def test_status_ignores_the_subject_directory(
         self, isolated_home, cumulative_diff_repo, tmp_path

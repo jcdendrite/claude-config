@@ -46,6 +46,9 @@ PRODUCTION_MODULES = (
     "commit_gate.py",
     "pr_link.py",
     "sessions.py",
+    "context_distribution.py",
+    "context_composition.py",
+    "cache_efficiency.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -94,6 +97,9 @@ TEST_FILES = (
     "test_transcript_turn_shape.py",
     "test_transcript_commit_gate.py",
     "test_transcript_pr_link.py",
+    "test_transcript_context_distribution.py",
+    "test_transcript_context_composition.py",
+    "test_transcript_cache_efficiency.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

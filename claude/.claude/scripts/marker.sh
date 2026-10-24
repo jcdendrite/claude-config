@@ -23,7 +23,7 @@ REVIEW_PR_SCAN_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-scan-findings-bo
 # Sibling script, invoked by the `write review-pr` arm below to mechanically
 # backstop SKILL.md's synthesize-and-record step's own attribution-prefix/
 # trailer/disclosure instruction before the completion marker is written --
-# see that script's own header for what it checks.
+# see that script's usage text for what it checks.
 REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-attribution.sh"
 
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
@@ -690,8 +690,8 @@ case "$SUBCOMMAND" in
         # above: `>` truncates the marker before the pipeline runs, so a
         # failed hash would destroy a valid marker and silently force a
         # re-review.
-        MARKER_VALUE=$(_lib_hash_diff_text "$SUBJECT_TEXT") || {
-          printf 'marker.sh: could not hash the recorded cumulative-review subject. Abort without writing a marker.\n' >&2
+        MARKER_VALUE=$(_lib_cumulative_review_value "$SUBJECT_TEXT") || {
+          printf 'marker.sh: could not hash the recorded cumulative-review subject (a failing awk in the diff normalizer is a possible cause). Abort without writing a marker.\n' >&2
           exit 2
         }
         # Consumed on success: bounds a recorded-but-unreviewed subject to
@@ -760,11 +760,11 @@ case "$SUBCOMMAND" in
         # The two checks below each read the body by path, so the hash is
         # taken again after them: a body changed in between would otherwise
         # get a marker covering bytes neither check saw.
-        # Attribution prefix, trailer, and (diff-only mode) disclosure line
-        # check, run before the marker is written so a failure refuses the
-        # whole write (see review-pr-check-attribution.sh's header for why it
-        # is mechanical). _lib_capped's 5s default bounds a local read of a
-        # session-owned text file.
+        # Findings-body check, run before the marker is written so a failure
+        # refuses the whole write. review-pr-check-attribution.sh's usage text
+        # owns what it requires; its header says why it is mechanical.
+        # _lib_capped's 5s default bounds a local read of a session-owned
+        # text file.
         if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" "$MODE" 2>&1); then
           printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
           printf 'marker.sh: findings-body attribution check failed. Abort without writing a marker.\n' >&2
@@ -999,16 +999,17 @@ case "$SUBCOMMAND" in
     VERIFICATION_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT")
     _status_report_completion_marker verification "$CONFIG_DIR/verification-markers" "$REPO_HASH_PREFIX" "$VERIFICATION_VALUE"
 
-    # cumulative-review: same recipe as the `write cumulative-review` arm
-    # above, via the shared _lib_cumulative_diff_hash. Makes a network round
-    # trip (gh pr view) unlike every other line in this report, which are
-    # all local/offline. A hash that can't be computed (gh/network failure,
-    # a legitimately empty diff -- often because the branch already has a
-    # merged PR, no resolvable merge-base, or the 15s cap firing) is treated
-    # as empty here rather than aborting -- `status` is a report, not a
-    # write. No reconciliation flag: that check is documented
-    # (_status_reconciliation_flag above) as applying only to pathspec-hash
-    # markers, and the cumulative diff is not staged/unstaged tree state.
+    # cumulative-review: _lib_cumulative_diff_hash computes the value through
+    # _lib_cumulative_review_value, the same recipe the `write cumulative-review`
+    # arm above uses. Makes a network round trip (gh pr view) unlike every
+    # other line in this report, which are all local/offline. A hash that
+    # can't be computed (gh/network failure, a legitimately empty diff --
+    # often because the branch already has a merged PR, no resolvable
+    # merge-base, or the 15s cap firing) is treated as empty here rather than
+    # aborting -- `status` is a report, not a write. No reconciliation flag:
+    # that check is documented (_status_reconciliation_flag above) as
+    # applying only to pathspec-hash markers, and the cumulative diff is not
+    # staged/unstaged tree state.
     CUMULATIVE_DIFF_HASH_FAILED=0
     CUMULATIVE_REVIEW_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT") || { CUMULATIVE_REVIEW_VALUE=""; CUMULATIVE_DIFF_HASH_FAILED=1; }
     _status_report_completion_marker cumulative-review "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX" "$CUMULATIVE_REVIEW_VALUE"
@@ -1018,7 +1019,7 @@ case "$SUBCOMMAND" in
     # line above, so a reader can tell "could not verify" apart from
     # "confirmed stale".
     if [ "$CUMULATIVE_DIFF_HASH_FAILED" -eq 1 ] && _status_glob_has_match "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX"; then
-      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, the diff is empty -- often because this branch already has a merged PR -- or resolution timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
+      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, the diff is empty -- often because this branch already has a merged PR -- or resolution timed out -- the state above reflects marker presence only, not a confirmed hash comparison); a failing awk in the diff normalizer is another possible cause\n' >&2
     fi
 
     # review-pr: keyed to the main tree's root (_lib_review_pr_marker_repo_hash),

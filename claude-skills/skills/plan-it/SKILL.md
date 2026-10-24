@@ -26,7 +26,7 @@ If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place
 
 ## Step 2 — Discovery
 
-Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules, or cited to the ticket it came from. Wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
+Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's `## Context` section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules, or cited to the ticket it came from. Wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
 
 ## Step 2.5 — Load project-specific layer
 
@@ -56,13 +56,15 @@ The dispatch prompt carries:
 
 Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
 
-**Heading lines.** Every heading test below counts only line-start `## ` lines outside fenced code. Before the first dispatch, the title and Context, `Ask:` line included, are already in the plan file. The hash below cannot see fences, so Context never carries a line reading exactly `## Approach`, fenced or not; quote that heading inline in backticks.
+**Heading lines.** A heading line is a line-start `## ` line outside fenced code, the rule `plan-shape.py` applies to the plan file and the splice below applies to a return. Before the first dispatch, the title and Context, `Ask:` line included, are already in the plan file. The hash below cannot see fences, so Context never carries a line reading exactly `## Approach`, fenced or not; quote that heading inline in backticks. Start each code fence on a line of its own, never on the same line as a list marker such as `-` or `1.`, because `plan-shape.py` does not model list items.
 
-**Scaffold.** At first authoring the file holds only the title and Context and has no `## Approach` heading line. Append one blank line and then exactly these bytes: `## Approach\n\n(pending: plan-architect)\n\n## Critical files\n\n## Verification\n\n## Out of scope\n`. The placeholder is the first non-blank line under `## Approach`, and it reads exactly `(pending: plan-architect)`.
+**Prepare.** Before this run's first dispatch, run `python3 ~/.claude/scripts/plan-shape.py prepare '<plan path>'`, passing the plan file's absolute path as one single-quoted literal word. When the file holds only its title and Context, the script appends the four headings with the placeholder under `## Approach`. It never edits a file in any other shape. The placeholder is the first non-blank line under `## Approach`, and it reads exactly `(pending: plan-architect)`. Dispatch only when the command exits 0 and prints `PREPARE: ready`. Otherwise give the engineer every `REASON` line, or the command's error if it printed none, through `AskUserQuestion`, and make no edit or dispatch.
 
-**Plans without the four headings.** A file with more than the title and Context but no `## Approach` heading line cannot pass the Check below, and neither can one whose region from `## Approach` on carries a heading line other than the four. When the file has either shape before this run's first dispatch, treat it as a failed Check and ask the engineer through `AskUserQuestion`. Do not scaffold, dispatch, or restructure it.
+In plan mode, a `plan-path` line for the harness-provided plan path means the script's path rule refuses that path. The run ends there, and the way forward to give the engineer is leaving plan mode and running `/plan-it` again, which starts the plan over under Step 1.
 
-**Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the scaffold and any Context edit of your own. Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when any of these holds:
+**Before every dispatch.** Make your last edit above `## Approach` first, then run `plan-shape.py`, then take the Context hash below, then dispatch. The run is `prepare` before this run's first dispatch and `check` before every later one. A later dispatch goes ahead only when that `check` exits 0 and prints a `STAGE` line, and any other output is handled as a failed `check` below.
+
+**Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the `plan-shape.py` run in **Before every dispatch.** Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when any of these holds:
 
 - the two digests differ;
 - either digest starts `e3b0c442`, the digest of empty input, which an unreadable path also yields;
@@ -70,19 +72,22 @@ Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it au
 
 After every dispatch, `Read` the plan file. `plan-architect` writes its sections itself, so a successful return carries no `##` headings. When the return carries all four headings as heading lines, in order, splice it in with one `Edit` whose `old_string` is the file's region from its `## Approach` heading line to the end, replacing it with the return from its `## Approach` heading line on, verbatim. Every byte above that heading stays untouched; never use a whole-file `Write`. Relay the return's reason line to the engineer.
 
-**Check.** After any splice and its Context hash, `Read` the plan file. With or without a splice, the dispatch is complete only when all three hold:
-- the first non-blank line under `## Approach` is not `(pending: plan-architect)`;
-- the heading lines from `## Approach` on are exactly the four headings, in order;
-- each of the four headings has at least one non-blank line before the next heading or the end of the file.
+**Check.** After every dispatch, once the Context hash and any splice with its own hash are done, run `python3 ~/.claude/scripts/plan-shape.py check '<plan path>'`, passing the path the same way. With or without a splice, the dispatch is complete only when the command exits 0 and prints `CHECK: pass`.
 
 If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. The plan file's path is already on line 2, so do not re-inject the plan text inline — `plan-architect` holds `Read` and can load its own prior draft.
 
+A failed `check` that exits 0 and prints a `STAGE` line re-dispatches. It prints one only when every `REASON` code is `placeholder`, `headings` or `empty-section`. Any other output goes to the engineer through `AskUserQuestion`, with every `REASON` line or the command's error if it printed none, and no further dispatch or edit of the plan file follows.
+
+Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, except the `plan-path` stop for the harness-provided plan path above, ends the run until the engineer says the plan file is fixed. Then re-run the mode that stopped and act on its new output.
+
+Treat a dispatch as first authoring when the `prepare` or `check` run just before it printed `STAGE: first-authoring`, and as a revision otherwise, including when that run printed no `STAGE` line. When a dispatch ends without a normal return, judge its stage by the run before it, not by the `check` after it.
+
 Re-dispatch, rather than repairing inline, on any of these:
 - A return carrying some but not all four headings.
-- A file that fails the Check after a dispatch.
+- A failed `check` that prints a `STAGE` line, as above.
 - A dispatch that ends without a normal return (a context-limit failure, an error return, or no completion), as follows:
-  - At first authoring, re-dispatch only when the Check then fails.
-  - On a revision, re-dispatch whatever the Check reports, because a revision that died partway can pass it.
+  - At first authoring, re-dispatch when `check` then fails with a `STAGE` line.
+  - On a revision, re-dispatch when `check` then passes or fails with a `STAGE` line, because a revision that died partway can pass it.
 
 A near-empty return is the success shape, so never judge it truncated. A re-dispatch is always safe: `plan-architect` reads the plan file as it now stands, so a partial write is revised, not lost.
 
@@ -131,9 +136,9 @@ Write the plan with these sections:
 4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — always present; `None observed.` when empty
 
-Sections 2-5 sit under `##` headings carrying exactly those names, in order, ending the file.
+Context sits under `## Context`. Sections 2-5 sit under `## Approach`, `## Critical files`, `## Verification`, and `## Out of scope`, in that order, ending the file. Each section carries at least one non-blank line.
 
-Effort sections optional; if present, sit above `## Approach` and describe review surface (file count, domain spread, risk concentration), never hours or days.
+Effort sections are optional. Add one only after a dispatch has returned and passed `check`, above `## Approach`. It describes review surface (file count, domain spread, risk concentration), never hours or days.
 
 ## Step 6 — Hand off to /plan-review
 
