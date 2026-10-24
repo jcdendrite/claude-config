@@ -200,6 +200,7 @@ flowchart LR
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree other than a `review-pr` checkout exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 | `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |
+| `bootstrap-project-plugins.sh` | — (SessionStart, informational, on by default) | Installs a trusted repo's missing `enabledPlugins` into the plugin registry at `-s local` in the background; `plugin_bootstrap = false` turns it off; see [`docs/hooks.md`](docs/hooks.md) |
 | `track-permission-prompts.sh` | — (Notification, `informational`, opt-in) | Appends a redacted permission-prompt event to a local log; see [Permission-prompt tracking](#permission-prompt-tracking) |
 
 See [`docs/walkthrough.md`](docs/walkthrough.md) for a concrete example of one full contribution cycle with hooks firing. For full descriptions of all hooks, skills, scripts, and project-scoped plugins, see [`docs/hooks.md`](docs/hooks.md), [`docs/skills.md`](docs/skills.md), and [`docs/scripts.md`](docs/scripts.md).

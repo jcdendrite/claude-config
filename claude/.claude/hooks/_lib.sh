@@ -670,7 +670,9 @@ _lib_review_pr_marker_repo_hash() {
 # the supplied prefixes holds EXPECTED_VALUE as a whole line.
 #
 # Completion markers are content-addressed: the stored value is a hash of
-# exactly the state that was reviewed. That content is the authorization, so
+# exactly the state that was reviewed, except `cumulative-review`, whose value
+# is a normalized key (docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md).
+# That content is the authorization, so
 # the read asks "has this state been reviewed?" rather than "did this filename
 # review it?" — the filename keys only namespace concurrent writers apart.
 #
@@ -1190,12 +1192,10 @@ _lib_active_plan_hash() {
 _LIB_PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
 
 # _lib_hash_diff_text TEXT
-# Hashes TEXT via the shared sha256 recipe every cumulative-review value must
-# use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
-# `write cumulative-review` arm, which hashes a recorded subject through this
-# same function rather than a second, possibly-drifting copy of the recipe.
+# Hashes TEXT with sha256. _lib_cumulative_review_value below hashes the
+# normalized cumulative-review text through it.
 # review-ledger.sh's site hash (_review_ledger_site_hash in
-# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# scripts/_review-ledger-lib.sh) is a consumer: it hashes a line range of
 # a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
@@ -1214,17 +1214,62 @@ _lib_hash_diff_text() {
   printf '%s' "$digest"
 }
 
+# _lib_normalize_cumulative_review_text TEXT
+# Prints TEXT with each hunk header reduced to its two line counts
+# (`@@ -,b +,d @@`) and each `index` line that a `--- ` line follows stripped of its blob ids
+# (`index .. 100644`, or `index ..` when the line carries no mode).
+# Every other line passes through unchanged.
+# See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md.
+# Avoids interval expressions so BSD awk and mawk accept it.
+# Runs uncapped for the same reason as _lib_hash_diff_text (in-memory pipe that cannot hang), so `status` latency grows with diff size.
+_lib_normalize_cumulative_review_text() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    held_index_line != "" {
+      if (substr($0, 1, 4) == "--- ") sub(/^index [0-9a-f]+[.][.][0-9a-f]+/, "index ..", held_index_line)
+      print held_index_line
+      held_index_line = ""
+    }
+    /^index [0-9a-f]+[.][.][0-9a-f]+( [0-7]+)?$/ { held_index_line = $0; next }
+    match($0, /^@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@/) &&
+        (RLENGTH == length($0) || substr($0, RLENGTH + 1, 1) == " ") {
+      split($0, header_fields, " ")
+      old_count = header_fields[2]; sub(/^-[0-9]+/, "", old_count)
+      new_count = header_fields[3]; sub(/^[+][0-9]+/, "", new_count)
+      print "@@ -" old_count " +" new_count " @@"
+      next
+    }
+    { print }
+    END { if (held_index_line != "") print held_index_line }
+  '
+}
+
+# _lib_cumulative_review_value TEXT
+# Prints the cumulative-review marker value: the sha256 of TEXT's normalized form.
+# marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash both call it.
+# Exit 0, non-empty stdout: the digest.
+# Exit 1, empty stdout: TEXT is empty, or awk or sha256sum failed.
+# The key is not content equality:
+# docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md lists what else shares a value.
+# It must not back a hook-enforced marker without a threat-model tier review.
+_lib_cumulative_review_value() {
+  local normalized_text
+  normalized_text=$(_lib_normalize_cumulative_review_text "$1") || return 1
+  [ -n "$normalized_text" ] || return 1
+  _lib_hash_diff_text "$normalized_text"
+}
+
 # _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
 # Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
 # the completion-marker value for the `cumulative-review` kind. Only `status`
 # calls this helper; `write cumulative-review` hashes a recorded subject via
-# _lib_hash_diff_text instead (design-decisions.md §50).
+# _lib_cumulative_review_value instead (design-decisions.md §50).
 #
 # Two-outcome contract, matching _lib_active_plan_hash:
-#   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
-#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
-#     killed by the cap. Callers MUST fail closed -- status degrades to
-#     reporting the marker absent rather than erroring the whole report.
+#   - exit 0, non-empty stdout: the _lib_cumulative_review_value of the diff.
+#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, was
+#     killed by the cap, or its value could not be computed. Callers MUST fail
+#     closed -- status degrades to reporting the marker absent rather than
+#     erroring the whole report.
 _lib_cumulative_diff_hash() {
   local repo_root="$1" pr_diff_script="$2"
   local diff_output
@@ -1233,7 +1278,7 @@ _lib_cumulative_diff_hash() {
   # `gh pr view`.
   diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
   [ -n "$diff_output" ] || return 1
-  _lib_hash_diff_text "$diff_output"
+  _lib_cumulative_review_value "$diff_output"
 }
 
 # _lib_head_tree_hash CAP_MODE REPO_ROOT
@@ -3451,6 +3496,212 @@ _lib_worktree_collision_guard() {
 
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
+
+# Longest plugin id, in bytes, that _lib_validate_plugin_id accepts. Far above any real `<name>@<marketplace>`; it bounds the validator's cost, since bash's `##*@` removal is super-linear in the marketplace half.
+_LIB_PLUGIN_ID_MAX_LENGTH=256
+
+# _lib_validate_plugin_id PLUGIN_ID
+# Validates PLUGIN_ID against the "<name>@<marketplace>" shape a plugin
+# install/enable argv sink accepts, before it ever reaches a command line.
+# Both halves must start with an alphanumeric character -- `[A-Za-z0-9._-]+`
+# alone would admit a leading `-`, `.`, or `_`, which would defeat the
+# anti-flag-injection purpose of validating at all. Rejects the reserved
+# pseudo-marketplace `npm`, which the CLI treats as an install form.
+# Rejects an id longer than _LIB_PLUGIN_ID_MAX_LENGTH bytes before any pattern
+# match or `##*@` expansion runs.
+# Returns 0 for a valid id, 1 otherwise. Prints nothing.
+# The body is a subshell that sets LC_ALL=C, so the length counts bytes and the
+# bracket ranges match only ASCII (see _lib_passes_path_char_allowlist for why
+# it avoids `local LC_ALL=C`).
+# Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so the two callers cannot diverge.
+_lib_validate_plugin_id() (
+  LC_ALL=C
+  plugin_id="$1"
+  [ "${#plugin_id}" -le "$_LIB_PLUGIN_ID_MAX_LENGTH" ] || exit 1
+  [[ "$plugin_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || exit 1
+  [ "${plugin_id##*@}" = "npm" ] && exit 1
+  exit 0
+)
+
+# _lib_file_exceeds_size_cap FILE
+# Returns 0 when FILE's byte size is known and exceeds
+# _LIB_SIZE_THRESHOLD_BYTES, 1 otherwise (including when the size cannot be
+# determined). Prints nothing.
+_lib_file_exceeds_size_cap() {
+  local file_path="$1" file_size
+  file_size=$(stat -c%s -- "$file_path" 2>/dev/null) \
+    || file_size=$(stat -f%z -- "$file_path" 2>/dev/null) \
+    || file_size=$(wc -c < "$file_path" 2>/dev/null | tr -d '[:space:]') \
+    || file_size=""
+  [ -n "$file_size" ] && [ "$file_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null
+}
+
+# Most true-valued `enabledPlugins` ids _lib_missing_plugin_ids processes. Far above any real repo; it bounds the per-id `grep` forks and the validation work that follows.
+_LIB_ENABLED_PLUGIN_IDS_MAX=100
+
+# _lib_read_guarded_settings SETTINGS_FILE
+# Prints SETTINGS_FILE's content after refusing a symlink, a non-regular file, and a file over _LIB_SIZE_THRESHOLD_BYTES.
+# An absent SETTINGS_FILE prints nothing and returns 0.
+# The read is capped in bytes and in time, so a path swapped to a FIFO or a device after the checks cannot hang or exhaust the caller.
+# Returns 1 and prints nothing when a guard refuses, the capped read fails, or the content holds a NUL byte.
+# A NUL byte is refused because command substitution would drop it silently, leaving content that differs from the file and that a strict JSON parser rejects.
+# The body is a subshell that sets LC_ALL=C, so the length check counts bytes.
+# A caller that hashes or reuses the settings bytes uses this output instead of re-reading the path.
+_lib_read_guarded_settings() (
+  LC_ALL=C
+  set -o pipefail
+  settings_file="$1"
+  [ ! -L "$settings_file" ] || exit 1
+  if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
+    exit 1
+  fi
+  [ -f "$settings_file" ] || exit 0
+  ! _lib_file_exceeds_size_cap "$settings_file" || exit 1
+  # tr maps each NUL to \001, which raw JSON cannot contain, so a NUL survives the substitution as a refusable byte.
+  content=$(_lib_capped head -c "$((_LIB_SIZE_THRESHOLD_BYTES + 1))" -- "$settings_file" 2>/dev/null | tr '\0' '\001') || exit 1
+  [ "${#content}" -le "$_LIB_SIZE_THRESHOLD_BYTES" ] || exit 1
+  [[ "$content" != *$'\001'* ]] || exit 1
+  printf '%s' "$content"
+)
+
+# _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in
+# SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object and
+# not opted out in the `settings.local.json` beside SETTINGS_FILE.
+# Reads SETTINGS_FILE through _lib_read_guarded_settings and delegates to
+# _lib_missing_plugin_ids_for_content, whose header defines the output, the
+# exit statuses, and the local-file shape policy.
+# Returns 1 as well when _lib_read_guarded_settings refuses SETTINGS_FILE.
+# A caller that also needs the settings bytes (to hash them) calls those two
+# functions itself, so both uses see the same bytes.
+_lib_missing_plugin_ids() {
+  local settings_content
+  settings_content=$(_lib_read_guarded_settings "$1") || return 1
+  _lib_missing_plugin_ids_for_content "$settings_content" "$1" "$2"
+}
+
+# _lib_missing_plugin_ids_for_content SETTINGS_CONTENT SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in SETTINGS_CONTENT that is absent from REGISTRY_FILE and not locally opted out.
+# SETTINGS_CONTENT is SETTINGS_FILE's content as _lib_read_guarded_settings
+# printed it. SETTINGS_FILE is used only to locate the sibling
+# `settings.local.json`.
+# Presence is name-keyed only -- an id counts as installed regardless of
+# which `projectPath` its registry entry(ies) carry.
+#
+# An id whose `enabledPlugins` value in that sibling `settings.local.json` is
+# exactly `false` is a per-repo local opt-out and is never reported. Any other
+# value for the id and an id absent from the local file leave the id eligible.
+# The local file is read only once an id is known to be missing from
+# REGISTRY_FILE, so a repo whose enabled ids are all installed never touches it.
+#
+# Local-file shape policy:
+# - Absent file, empty or whitespace-only file, top-level JSON `null`, an
+#   object with no `enabledPlugins`, and `enabledPlugins: null` mean no
+#   opt-outs.
+# - A symlink, a non-regular file, a file over _LIB_SIZE_THRESHOLD_BYTES, a
+#   file that is not valid JSON or that jq cannot open, and any valid JSON
+#   that is not an object (or
+#   `null`) at the top level, or whose `enabledPlugins` is neither absent,
+#   `null`, nor an object, are unreadable. Unreadable returns exit 3, because
+#   the file may hold an opt-out this function cannot see and reporting the id
+#   would override the user's explicit choice.
+#
+# REGISTRY_FILE gets no symlink-and-size guard. It is per-account CLI-managed
+# state written only by `claude plugin install`, not repo-controlled input.
+# A caller passing a REGISTRY_FILE derived from something less trusted than the
+# fixed per-account registry path must add its own guard.
+#
+# Every printed id is a raw `enabledPlugins` key, not validated against
+# _lib_validate_plugin_id's `<name>@<marketplace>` shape. A key that contains
+# a control character (a newline included) is dropped, so each printed line is
+# exactly one key. Every caller must revalidate an id against that function
+# before using it in a CLI argv or any other sink.
+#
+# Exit 0: success. Stdout holds each missing id, one per line (empty when
+# none -- including when SETTINGS_CONTENT is empty, is not valid JSON, or has
+# no true-valued enabledPlugins). A missing REGISTRY_FILE is treated as an
+# empty registry, matching install.sh's registry-read step ("proceeding as if
+# none are installed"), so every enabled id is reported missing.
+# Exit 1: SETTINGS_CONTENT holds more than one top-level JSON value, or holds
+# more than _LIB_ENABLED_PLUGIN_IDS_MAX non-empty true-valued `enabledPlugins`
+# ids. Stdout is empty. Both callers treat this identically to a missing
+# settings file (nothing to install), but it is a status distinguishable from
+# exit 0 so a caller or test can tell "skipped" apart from "genuinely nothing
+# missing".
+# Exit 2: REGISTRY_FILE exists but is unparseable JSON, holds more than one
+# top-level value, or is not an object whose `version` is the number 2 and
+# whose `plugins` is an object -- fail closed, distinct from a missing
+# REGISTRY_FILE (exit 0, empty registry). Stdout is empty.
+# Exit 3: at least one id is missing from the registry and the sibling
+# `settings.local.json` is unreadable per the shape policy above, so an
+# opt-out in it cannot be ruled out. Stdout is empty. Callers fail closed.
+# Precedence: exit 1 for multiple top-level values, then exit 2, then exit 1 for the id count, then exit 3.
+# Caveats:
+# - The enabled-ids filter needs jq 1.6 or later for `halt_error`; on jq 1.5 it fails to compile, which reads as no ids.
+# - jq also accepts the literals `nan` and `Infinity`, which a strict JSON parser rejects, so such content can yield ids Claude Code would not read.
+_lib_missing_plugin_ids_for_content() {
+  local settings_content="$1" settings_file="$2" registry_file="$3"
+
+  # jq exit 7 is this filter's own signal for a second top-level value; every other jq failure leaves no ids.
+  local enabled_ids="" enabled_ids_status=0
+  enabled_ids=$(_lib_jq -r -s '
+    if length > 1 then ("multiple top-level JSON values" | halt_error(7))
+    else (.[0] // {}) | (.enabledPlugins // {}) | to_entries[]
+      | select(.value == true) | .key | select(test("\\p{Cc}") | not)
+    end' <<<"$settings_content" 2>/dev/null) || enabled_ids_status=$?
+  [ "$enabled_ids_status" -ne 7 ] || return 1
+  [ "$enabled_ids_status" -eq 0 ] || enabled_ids=""
+  [ -z "$enabled_ids" ] && return 0
+
+  local registry_ids=""
+  if [ -f "$registry_file" ]; then
+    registry_ids=$(_lib_jq -r -s '
+      if length == 1 and (.[0] | type == "object" and .version == 2 and (.plugins | type) == "object")
+      then .[0].plugins | keys[]
+      else error("registry is not a version-2 object with an object of plugins")
+      end' -- "$registry_file" 2>/dev/null) || return 2
+  fi
+
+  # Here-strings, not `printf | grep -q`: under pipefail a grep that exits
+  # early on a match SIGPIPEs the printf and turns a hit into a pipeline failure.
+  local id uninstalled_ids="" enabled_id_count=0
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    enabled_id_count=$((enabled_id_count + 1))
+    [ "$enabled_id_count" -gt "$_LIB_ENABLED_PLUGIN_IDS_MAX" ] && return 1
+    if ! grep -qFx -- "$id" <<<"$registry_ids"; then
+      uninstalled_ids+="$id"$'\n'
+    fi
+  done <<< "$enabled_ids"
+  [ -z "$uninstalled_ids" ] && return 0
+
+  local local_settings_file
+  local_settings_file="$(dirname -- "$settings_file")/settings.local.json"
+  local locally_disabled_ids=""
+  if [ -e "$local_settings_file" ] || [ -L "$local_settings_file" ]; then
+    if [ -L "$local_settings_file" ] || [ ! -f "$local_settings_file" ] \
+      || _lib_file_exceeds_size_cap "$local_settings_file"; then
+      return 3
+    fi
+    # `// {}` is avoided: it would also swallow an `enabledPlugins` of `false`.
+    locally_disabled_ids=$(_lib_jq -r '
+      if type == "null" then empty
+      elif type != "object" then error("settings.local.json is not an object")
+      else .enabledPlugins
+        | if type == "null" then empty
+          elif type != "object" then error("enabledPlugins is not an object")
+          else to_entries[] | select(.value == false) | .key
+          end
+      end' -- "$local_settings_file" 2>/dev/null) || return 3
+  fi
+
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! grep -qFx -- "$id" <<<"$locally_disabled_ids"; then
+      printf '%s\n' "$id"
+    fi
+  done <<< "$uninstalled_ids"
+}
 
 # _lib_config_lines FILE
 # Prints each non-blank, non-comment line of a per-user config file

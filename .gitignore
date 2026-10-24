@@ -102,6 +102,13 @@ claude/.claude/pr-cost-disclosure
 claude/.claude/*-markers/
 claude/.claude/.*-active.d/
 
+# reconcile-project-plugins.sh's own per-machine runtime state (lock file,
+# wall-clock-ceiling marker, failure stamps, audit log) -- not covered by the
+# *-markers/ glob above, since this directory's name doesn't end in
+# "-markers". Under stow directory-fold this lands physically inside the
+# repo the same way the review-gate markers above do.
+claude/.claude/plugin-bootstrap/
+
 # Claude Code CLI-managed runtime state. Under stow directory-fold, the CLI's
 # own writes against ~/.claude/... land physically inside this repo. None of
 # this is package content and some of it is sensitive — history.jsonl and

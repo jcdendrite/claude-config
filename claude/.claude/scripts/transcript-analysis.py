@@ -6,12 +6,11 @@ write a file; docs/transcript-analysis.md lists both sets.
 
 import argparse
 import json
-import math
 import os  # noqa: F401 -- read only via _mod.os from test files, as a stdlib passthrough
 import re
 import sys
 import tempfile  # noqa: F401 -- test_transcript_ledger_common.py reads _mod.tempfile as a stdlib passthrough
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
@@ -58,6 +57,14 @@ from transcript_analysis.buckets import (
     _add_buckets_subparser,
     cmd_buckets,  # noqa: F401
 )
+from transcript_analysis.cache_efficiency import (
+    # _add_cache_efficiency_subparser is read bare by this file's own build_parser (the cache-efficiency
+    # subparser's registration). cmd_cache_efficiency and _cache_efficiency_report are read only via
+    # _mod.<name> from test files.
+    _add_cache_efficiency_subparser,
+    _cache_efficiency_report,  # noqa: F401
+    cmd_cache_efficiency,  # noqa: F401
+)
 from transcript_analysis.cache_rebuild import (
     # Both names below are read bare by this file's own still-monolithic code:
     #   _CACHE_REBUILD_DEFAULT_SINCE/_CACHE_REBUILD_DEFAULT_THRESHOLD -> build_parser's own
@@ -73,10 +80,24 @@ from transcript_analysis.commit_gate import (
     _add_commit_gate_subparser,
     cmd_commit_gate,  # noqa: F401
 )
+from transcript_analysis.context_composition import (
+    # _add_context_composition_subparser is read bare by this file's own build_parser (the
+    # context-composition subparser's registration). cmd_context_composition is read only via
+    # _mod.cmd_context_composition from test files.
+    _add_context_composition_subparser,
+    cmd_context_composition,  # noqa: F401
+)
+from transcript_analysis.context_distribution import (
+    # _add_context_distribution_subparser is read bare by this file's own build_parser (the
+    # context-distribution subparser's registration). cmd_context_distribution is read only via
+    # _mod.cmd_context_distribution from test files.
+    _add_context_distribution_subparser,
+    cmd_context_distribution,  # noqa: F401
+)
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,  # noqa: F401 -- read only via _mod.SUBAGENT_SUBDIR from test files
-    _parse_ts,
-    _read_session_file_partitioned,
+    _parse_ts,  # noqa: F401 -- read only via _mod._parse_ts from test files
+    _read_session_file_partitioned,  # noqa: F401 -- read only via _mod._read_session_file_partitioned from test files
     iter_sessions,  # noqa: F401 -- read only via _mod.iter_sessions from test files
 )
 from transcript_analysis.cost import (
@@ -157,32 +178,19 @@ from transcript_analysis.pr_link import (
     cmd_pr_link,  # noqa: F401
 )
 from transcript_analysis.pricing import (
-    _CACHE_READ_MULTIPLIER,
-    _CACHE_WRITE_1H_MULTIPLIER,
-    _CACHE_WRITE_5M_MULTIPLIER,
-    _CONTEXT_DISTRIBUTION_THRESHOLD_ABS,
-    _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS,
-    _FAST_MODE_RATE_MULTIPLIER,
-    _INFERENCE_GEO_US_RATE_MULTIPLIER,
     _SPAWN_TOOL_NAMES,
     _TOKEN_CLASSES,  # noqa: F401 -- read only via _mod._TOKEN_CLASSES from test files
     _cache_miss_reason,  # noqa: F401 -- read only via _mod._cache_miss_reason from test files
-    _cache_write_split,
-    _context_at_turn,
+    _cache_write_split,  # noqa: F401 -- read only via _mod._cache_write_split from test files
+    _context_at_turn,  # noqa: F401 -- read only via _mod._context_at_turn from test files
     _context_bucket,  # noqa: F401 -- read only via _mod._context_bucket from test files
-    _context_window_for_model,
-    _count_subagent_spawns,
+    _context_window_for_model,  # noqa: F401 -- read only via _mod._context_window_for_model from test files
     _model_rates,  # noqa: F401 -- read only via _mod._model_rates from test files
-    _price_turn,
-    _session_peak_context,
-    _warn_if_subagent_format_drift,
+    _price_turn,  # noqa: F401 -- read only via _mod._price_turn from test files
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
 from transcript_analysis.read_scope import (
-    # Both names below are read bare by this file's own still-monolithic code:
-    #   _READ_SCOPE_CHARS_PER_TOKEN -> _classify_content_item
-    #   cmd_read_scope              -> p_read_scope.set_defaults
-    _READ_SCOPE_CHARS_PER_TOKEN,
+    # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
 )
 from transcript_analysis.rearm_backtest import (
@@ -201,8 +209,7 @@ from transcript_analysis.redaction import (
     _repo_tracked_agent_type_names,  # noqa: F401 -- read only via _mod._repo_tracked_agent_type_names from test files
 )
 from transcript_analysis.render import (
-    _content_text,
-    _context_distribution_rows,
+    _content_text,  # noqa: F401 -- read only via _mod._content_text from test files
     _fam,  # noqa: F401 -- read only via _mod._fam from test files
     _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
     _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
@@ -233,15 +240,14 @@ from transcript_analysis.scope import (
     _iso_date,
     _iter_scoped_sessions,  # noqa: F401 -- read only via _mod._iter_scoped_sessions from test files
     _parse_absolute_window_args,  # noqa: F401 -- read only via _mod._parse_absolute_window_args from test files
-    _parse_since_nd_arg,
-    _projects_glob,
+    _parse_since_nd_arg,  # noqa: F401 -- read only via _mod._parse_since_nd_arg from test files
     _redaction_ordinals,
     _repo_scoped_project_slugs,  # noqa: F401 -- read only via _mod._repo_scoped_project_slugs from test files
     _resolve_cost_roots,
     _resolve_project_scope,
     _resolved_scope_header,  # noqa: F401 -- read only via _mod._resolved_scope_header from test files
     _root_index_for_path,
-    _scan_root_transcripts,
+    _scan_root_transcripts,  # noqa: F401 -- read only via _mod._scan_root_transcripts from test files
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
 
@@ -285,10 +291,7 @@ from transcript_analysis.subagent_mix import (
     cmd_subagent_mix,
 )
 from transcript_analysis.subagents import (
-    # Both names below are read bare by this file's own still-monolithic code:
-    #   _MCP_TOOL_BUCKET_LABEL -> _normalize_composition_tool_name
-    #   cmd_subagents          -> p_sub.set_defaults
-    _MCP_TOOL_BUCKET_LABEL,
+    # Read bare by this file's own build_parser (the subagents subcommand's own set_defaults).
     cmd_subagents,
 )
 from transcript_analysis.turn_shape import (
@@ -308,202 +311,6 @@ from transcript_analysis.workstream_cost import (
     # subcommand's own set_defaults).
     cmd_workstream_cost,
 )
-
-
-def cmd_context_distribution(args: argparse.Namespace) -> None:
-    """CLI entry point for the context-distribution subcommand.
-
-    Root resolution happens here, at the CLI boundary, rather than inside
-    _context_distribution_report, mirroring cmd_cost — --config-dir
-    validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="context-distribution")
-    _context_distribution_report(args, roots)
-
-
-def _context_distribution_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Per-session peak context, bucketed two ways — grounds a handoff-nudge
-    threshold choice against measured sessions instead of picking one blind.
-
-    Peak-context tracking is restricted to main-thread (non-sidechain) turns:
-    a subagent dispatch pays its own prefix from scratch and is never a
-    candidate for /handoff, so folding sidechain turns into a session's peak
-    would mix two different context-growth stories into one number. Each
-    main-thread turn's context_at_turn (input_tokens + cache_read_input_tokens
-    + ephemeral_1h + ephemeral_5m, from _price_turn, same formula cost's own
-    bucket logic uses) feeds two independent per-session maxima, tracked by
-    _session_peak_context:
-    - peak_pct: context_at_turn expressed as a fraction of that turn's own
-      model's context window via _context_window_for_model — so a session
-      that mixes models with different windows is judged by how close each
-      turn came to its own model's limit, not a single window assumed for
-      the whole session. Reported against
-      _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS.
-    - peak_abs_tokens: context_at_turn plus that turn's output_tokens — the
-      same four-field sum nudge-handoff-near-context-cap.sh's own ESTIMATE
-      computes, so a threshold read off this table transfers directly to the
-      hook's unit. Reported against _CONTEXT_DISTRIBUTION_THRESHOLD_ABS.
-    Neither is derived from the other (peak_abs_tokens != peak_pct * window):
-    on a session mixing a 200k-window turn with a 1M-window turn, the turn
-    with the highest percentage of its own window need not be the turn with
-    the highest absolute token count.
-
-    Dollar totals per session sum ALL turns (main and sidechain), matching
-    cost's own definition of a session's total spend — a session's dollar
-    share reflects its full cost including any subagent work it spawned, not
-    just its main-thread portion.
-
-    roots is None for every direct caller other than cmd_context_distribution
-    (this module's own tests included) — that keeps the single-root report
-    byte-for-byte unchanged, including the absence of cmd_cost's per-root
-    scan-summary lines, which only cost's own CLI path emits.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "context-distribution: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "context-distribution")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(
-        args, "context-distribution", include_subagents=True, roots=roots
-    )
-
-    if roots is not None:
-        # Mirrors cmd_cost's own per-root scan diagnostic (_scan_root_transcripts)
-        # -- without it, a multi-root run matching nothing under every declared
-        # root would print an empty report with no signal of which root(s) came
-        # up empty, now that this subcommand scans multiple roots by default.
-        glob = _projects_glob(args)
-        this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
-        # Resolved-path-sorted, like _cost_report's own copy -- the same
-        # physical root must read as the same account-N here regardless of
-        # scan_roots' iteration order (active profile first). Computed
-        # unconditionally, not gated on multi_root: this loop runs at single
-        # root too whenever roots is not None, and _redaction_ordinals is
-        # correct and cheap on a single-element list.
-        redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
-        for root in scan_roots:
-            root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(root.parent)
-            try:
-                scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
-            except PermissionError as exc:
-                # str(exc) on a PermissionError typically embeds the offending
-                # path — suppressed under default redaction so a permission
-                # failure can't leak the raw config-dir path it's reporting on.
-                detail = str(exc) if not redact else "permission denied"
-                print(
-                    f"context-distribution: {root_label}: cannot scan ({detail})"
-                    " — treating as 0 transcripts",
-                    file=sys.stderr,
-                )
-                scanned, skipped = 0, 0
-            print(
-                f"context-distribution: {root_label}: scanned {scanned:,} transcripts,"
-                f" {skipped:,} skipped (unreadable)"
-            )
-            if scanned == 0:
-                print(
-                    f"WARNING: context-distribution: {root_label}: no transcripts found for this scope"
-                    " — check the config dir and --projects/--this-repo filter."
-                )
-
-    _print_resolved_scope("context-distribution", scope_label, scan_roots)
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Context distribution report ({title_since})\n")
-
-    session_peak_pcts: list[float] = []
-    session_peak_abs_tokens: list[int] = []
-    session_dollars: list[float] = []
-    total_dollars = 0.0
-
-    for _jsonl, records in session_iter:
-        records = _dedup_turns_by_request_id(records)
-        main_thread_turns: list[tuple[int, int, int]] = []
-        session_total = 0.0
-
-        for rec in records:
-            if rec.get("type") != "assistant":
-                continue
-            msg = rec.get("message") or {}
-            usage = msg.get("usage")
-            if not usage:
-                continue
-
-            if since_ts is not None:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None or rec_ts < since_ts:
-                    continue
-
-            model = msg.get("model", "")
-            dollars_by_class, context_at_turn, _turn_unpriced_tokens = _price_turn(model, usage)
-
-            if dollars_by_class is not None:
-                session_total += sum(dollars_by_class.values())
-
-            if not bool(rec.get("isSidechain")):
-                output_tokens = int(usage.get("output_tokens", 0))
-                main_thread_turns.append((context_at_turn, output_tokens, _context_window_for_model(model)))
-
-        peak_pct, peak_abs_tokens = _session_peak_context(main_thread_turns)
-
-        if session_total == 0.0 and peak_pct == 0.0:
-            continue
-
-        session_peak_pcts.append(peak_pct)
-        session_peak_abs_tokens.append(peak_abs_tokens)
-        session_dollars.append(session_total)
-        total_dollars += session_total
-
-    total_sessions = len(session_peak_pcts)
-    print(f"Sessions in scope: {total_sessions:,}   Total priced dollars: {total_dollars:,.2f}\n")
-
-    print(
-        "## Peak context-at-turn crossing thresholds (share of main-thread turns'"
-        " own model context window; dollars include each session's subagent spend)\n"
-    )
-    print(f"{'Threshold':>10} {'Sessions':>9} {'SessShare':>10} {'$':>14} {'DollarShare':>12}")
-    pct_rows = _context_distribution_rows(
-        [pct / 100 for pct in _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS], session_peak_pcts, session_dollars
-    )
-    for pct, row in zip(_CONTEXT_DISTRIBUTION_THRESHOLD_PCTS, pct_rows, strict=True):
-        print(
-            f"{pct:>9}% {row['sessions']:>9,} {row['session_share']:>10}"
-            f" {row['dollars']:>14,.2f} {row['dollar_share']:>12}"
-        )
-
-    print(
-        "\n## Peak absolute-token crossing thresholds (input + cache_read + cache_creation"
-        " + output tokens across main-thread turns — nudge-handoff-near-context-cap.sh's own"
-        " ESTIMATE unit; dollars include each session's subagent spend)\n"
-    )
-    print(f"{'Threshold':>10} {'Sessions':>9} {'SessShare':>10} {'$':>14} {'DollarShare':>12}")
-    abs_rows = _context_distribution_rows(
-        _CONTEXT_DISTRIBUTION_THRESHOLD_ABS, session_peak_abs_tokens, session_dollars
-    )
-    for abs_threshold, row in zip(_CONTEXT_DISTRIBUTION_THRESHOLD_ABS, abs_rows, strict=True):
-        print(
-            f"{abs_threshold:>10,} {row['sessions']:>9,} {row['session_share']:>10}"
-            f" {row['dollars']:>14,.2f} {row['dollar_share']:>12}"
-        )
-
 
 # Edit/Write/MultiEdit are the only tools whose call/failure counts
 # edit-format tracks; MultiEdit is kept as a member even though the tool no
@@ -1287,687 +1094,6 @@ def _print_instrument_authoring_report(stats: dict, cohort_totals: dict[str, dic
     )
 
 
-# ---------------------------------------------------------------------------
-# context-composition
-# ---------------------------------------------------------------------------
-#
-# See .claude/plans/context-composition-analyzer.md for the full design.
-
-# Closed content-item taxonomy. tool_call/tool_result are further qualified
-# with a tool-name suffix (see _normalize_composition_tool_name) at the point
-# they're accumulated, keeping the label set bounded (known tool names plus
-# the shared MCP bucket) rather than an open per-session vocabulary.
-_CATEGORY_USER_TEXT = "user_text"
-_CATEGORY_ASSISTANT_TEXT = "assistant_text"
-_CATEGORY_ASSISTANT_THINKING = "assistant_thinking"
-_CATEGORY_COMPACT_SUMMARY = "compact_summary"
-_CATEGORY_TOOL_CALL = "tool_call"
-_CATEGORY_TOOL_RESULT = "tool_result"
-_CATEGORY_UNCLASSIFIED = "unclassified"
-
-
-def _normalize_composition_tool_name(name: str | None) -> str:
-    """A missing name (e.g. a tool_result whose owning tool_use isn't in this sequence) reports
-    as "unknown", never a raw id."""
-    if not name:
-        return "unknown"
-    return _MCP_TOOL_BUCKET_LABEL if name.startswith("mcp__") else name
-
-
-def _classify_content_item(record_type: str, item, *, is_compact_summary: bool = False) -> tuple[str, int]:
-    """`is_compact_summary` marks a carried-forward compaction digest, not a fresh prompt."""
-    if isinstance(item, dict):
-        block_type = item.get("type")
-        if block_type == "text":
-            category = (
-                _CATEGORY_COMPACT_SUMMARY if is_compact_summary
-                else _CATEGORY_USER_TEXT if record_type == "user"
-                else _CATEGORY_ASSISTANT_TEXT
-            )
-            return category, len(item.get("text") or "") // _READ_SCOPE_CHARS_PER_TOKEN
-        if block_type == "thinking":
-            return _CATEGORY_ASSISTANT_THINKING, len(item.get("thinking") or "") // _READ_SCOPE_CHARS_PER_TOKEN
-        if block_type == "tool_use":
-            payload = json.dumps(item.get("input") or {}, separators=(",", ":"))
-            return _CATEGORY_TOOL_CALL, len(payload) // _READ_SCOPE_CHARS_PER_TOKEN
-        if block_type == "tool_result":
-            text = _content_text(item.get("content", ""))
-            return _CATEGORY_TOOL_RESULT, len(text) // _READ_SCOPE_CHARS_PER_TOKEN
-        try:
-            payload = json.dumps(item, separators=(",", ":"))
-        except TypeError:
-            payload = str(item)
-        return _CATEGORY_UNCLASSIFIED, len(payload) // _READ_SCOPE_CHARS_PER_TOKEN
-    if isinstance(item, str):
-        category = (
-            _CATEGORY_COMPACT_SUMMARY if is_compact_summary
-            else _CATEGORY_USER_TEXT if record_type == "user"
-            else _CATEGORY_ASSISTANT_TEXT
-        )
-        return category, len(item) // _READ_SCOPE_CHARS_PER_TOKEN
-    return _CATEGORY_UNCLASSIFIED, 0
-
-
-def _split_context_sequences(records: list[dict]) -> list[list[dict]]:
-    """Splits at a compact_boundary record or an isSidechain toggle between consecutive records."""
-    sequences: list[list[dict]] = []
-    current: list[dict] = []
-    current_sidechain: bool | None = None
-    for rec in records:
-        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-            if current:
-                sequences.append(current)
-            current = []
-            current_sidechain = None
-            continue
-        rec_sidechain = bool(rec.get("isSidechain"))
-        if current and rec_sidechain != current_sidechain:
-            sequences.append(current)
-            current = []
-        current.append(rec)
-        current_sidechain = rec_sidechain
-    if current:
-        sequences.append(current)
-    return sequences
-
-
-def _context_composition_turn_rate_scale(usage: dict) -> float:
-    """Fast-mode (2x) / US-inference-geo (1.1x) multiplier scale for one turn, applied uniformly
-    to every rate class that turn -- the same usage.get("speed")/"inference_geo" checks
-    _price_turn applies at its own dollar-scaling step, reused here for the
-    multiplier-only (not dollar) context-composition weighting."""
-    scale = 1.0
-    if usage.get("speed") == "fast":
-        scale *= _FAST_MODE_RATE_MULTIPLIER
-    if usage.get("inference_geo") == "us":
-        scale *= _INFERENCE_GEO_US_RATE_MULTIPLIER
-    return scale
-
-
-# Engineer-chosen starting point, not a vendor-specified value: a sequence's residual range
-# spanning more than half its own mean (range/mean >= 0.5) trips the refusal gate.
-_CONTEXT_COMPOSITION_RESIDUAL_INSTABILITY_REFUSAL_THRESHOLD = 0.5
-
-# Same reasoning as above: an engineer-chosen tolerance for the introduced-vs-resident split
-# diagnostic, which is informational only (see _print_context_composition_report) and never gates
-# the refusal decision above.
-_CONTEXT_COMPOSITION_SPLIT_DISCREPANCY_TOLERANCE = 0.2
-
-
-def _context_composition_residual_instability(residuals: Sequence[int]) -> float:
-    """Range-over-mean instability of one sequence's reconciliation residuals; 0.0 if empty or
-    all-zero, infinite if any residual is negative."""
-    if not residuals:
-        return 0.0
-    if min(residuals) < 0:
-        return math.inf
-    mean = sum(residuals) / len(residuals)
-    if mean == 0:
-        return 0.0
-    return (max(residuals) - min(residuals)) / mean
-
-
-def _new_context_composition_stats() -> dict:
-    return {
-        "weighted_by_category": Counter(),  # category -> rate-weighted token-turns (float)
-        "item_counts": Counter(),  # category -> classified item count
-        "unclassified_count": 0,
-        "sequences_scanned": 0,
-        "turns_scanned": 0,
-        "residuals": [],  # list of per-sequence [context_at_turn(t) - resident_size(t), ...] lists
-        "since_excluded_turns": 0,  # turns whose rate contribution --since excluded (see below)
-        "introduced_size_total": 0,  # Sigma of our own per-turn "newly introduced" token bookkeeping
-        "actual_new_size_total": 0,  # Sigma of (context_at_turn - cache_read_input_tokens) from usage directly
-    }
-
-
-def _merge_context_composition_stats(dst: dict, src: dict) -> None:
-    dst["weighted_by_category"].update(src["weighted_by_category"])
-    dst["item_counts"].update(src["item_counts"])
-    dst["unclassified_count"] += src["unclassified_count"]
-    dst["sequences_scanned"] += src["sequences_scanned"]
-    dst["turns_scanned"] += src["turns_scanned"]
-    dst["residuals"].extend(src["residuals"])
-    dst["since_excluded_turns"] += src["since_excluded_turns"]
-    dst["introduced_size_total"] += src["introduced_size_total"]
-    dst["actual_new_size_total"] += src["actual_new_size_total"]
-
-
-def _scan_context_composition_sequence(records: list[dict], since_ts: float | None) -> dict:
-    """turn_introduced uses the NEXT assistant turn, since an assistant turn's own generated
-    content is that turn's OUTPUT, not its input."""
-    stats = _new_context_composition_stats()
-
-    turn_usages: list[dict] = []
-    turn_timestamps: list[float | None] = []
-    items_by_intro: dict[int, list[tuple[str, int]]] = defaultdict(list)
-    tool_name_by_id: dict[str, str] = {}
-    item_counts: Counter = stats["item_counts"]
-    unclassified_count = 0
-
-    def _record_items(rec: dict) -> list[tuple[str, int]]:
-        nonlocal unclassified_count
-        msg = rec.get("message") or {}
-        content = msg.get("content", "")
-        record_type = rec.get("type")
-        is_compact_summary = bool(rec.get("isCompactSummary"))
-        blocks = content if isinstance(content, list) else ([content] if content else [])
-        entries: list[tuple[str, int]] = []
-        for block in blocks:
-            category, size = _classify_content_item(record_type, block, is_compact_summary=is_compact_summary)
-            if category == _CATEGORY_UNCLASSIFIED:
-                unclassified_count += 1
-            elif category == _CATEGORY_TOOL_CALL and isinstance(block, dict):
-                tool_id = block.get("id")
-                tool_name = _normalize_composition_tool_name(block.get("name"))
-                if tool_id:
-                    tool_name_by_id[tool_id] = tool_name
-                category = f"{category}:{tool_name}"
-            elif category == _CATEGORY_TOOL_RESULT and isinstance(block, dict):
-                owner_name = tool_name_by_id.get(block.get("tool_use_id") or "", "unknown")
-                category = f"{category}:{owner_name}"
-            item_counts[category] += 1
-            entries.append((category, size))
-        return entries
-
-    turn_count = 0
-    for rec in records:
-        rec_type = rec.get("type")
-        if rec_type == "assistant":
-            usage = (rec.get("message") or {}).get("usage") or {}
-            for entry in _record_items(rec):
-                items_by_intro[turn_count + 1].append(entry)
-            turn_usages.append(usage)
-            turn_timestamps.append(_parse_ts(rec.get("timestamp")))
-            turn_count += 1
-        elif rec_type == "user":
-            for entry in _record_items(rec):
-                items_by_intro[turn_count].append(entry)
-
-    stats["unclassified_count"] = unclassified_count
-    stats["sequences_scanned"] = 1
-    stats["turns_scanned"] = turn_count
-
-    if turn_count == 0:
-        return stats
-
-    read_mult = [0.0] * turn_count
-    write_mult = [0.0] * turn_count
-    context_at_turn = [0] * turn_count
-    actual_new = [0] * turn_count
-    since_excluded = 0
-
-    for t, usage in enumerate(turn_usages):
-        in_window = True
-        if since_ts is not None:
-            ts = turn_timestamps[t]
-            in_window = ts is not None and ts >= since_ts
-            if not in_window:
-                since_excluded += 1
-
-        scale = _context_composition_turn_rate_scale(usage)
-        read_mult[t] = _CACHE_READ_MULTIPLIER * scale if in_window else 0.0
-        eph_1h, eph_5m = _cache_write_split(usage)
-        if eph_1h + eph_5m > 0:
-            write_base = (eph_1h * _CACHE_WRITE_1H_MULTIPLIER + eph_5m * _CACHE_WRITE_5M_MULTIPLIER) / (eph_1h + eph_5m)
-        else:
-            # No cache-write tokens this turn -- _price_turn's own rate for that case is the
-            # plain input rate (1x), not a cache-write tier.
-            write_base = 1.0
-        write_mult[t] = write_base * scale if in_window else 0.0
-
-        context_at_turn[t] = _context_at_turn(usage)
-        actual_new[t] = context_at_turn[t] - int(usage.get("cache_read_input_tokens", 0))
-
-    stats["since_excluded_turns"] = since_excluded
-
-    read_mult_prefix = [0.0] * (turn_count + 1)
-    for t in range(turn_count):
-        read_mult_prefix[t + 1] = read_mult_prefix[t] + read_mult[t]
-
-    last_turn = turn_count - 1
-    introduced_size = [0] * turn_count
-    weighted_by_category = stats["weighted_by_category"]
-
-    for intro, entries in items_by_intro.items():
-        if intro > last_turn:
-            continue  # generated on the sequence's own last turn's output; never sent back, never resident
-        introduced_size[intro] += sum(size for _category, size in entries)
-        read_span = read_mult_prefix[last_turn + 1] - read_mult_prefix[intro + 1]
-        per_item_multiplier = read_span + write_mult[intro]
-        for category, size in entries:
-            weighted_by_category[category] += size * per_item_multiplier
-
-    resident_size = [0] * turn_count
-    running = 0
-    for t in range(turn_count):
-        running += introduced_size[t]
-        resident_size[t] = running
-
-    stats["residuals"] = [[context_at_turn[t] - resident_size[t] for t in range(turn_count)]]
-    stats["introduced_size_total"] = sum(introduced_size)
-    stats["actual_new_size_total"] = sum(actual_new)
-
-    return stats
-
-
-def _scan_context_composition_session(groups: list[list[dict]], since_ts: float | None) -> dict:
-    """One session's composition scan: each source-file group (main transcript, then each
-    subagents/*.jsonl -- per _read_session_file_partitioned) is deduped by requestId and split
-    into context sequences independently, since a group boundary and a compact_boundary/
-    isSidechain-toggle boundary are both real context-window resets that must never blend two
-    sequences' turn indexing together."""
-    stats = _new_context_composition_stats()
-    for group in groups:
-        deduped = _dedup_turns_by_request_id(group)
-        for sequence in _split_context_sequences(deduped):
-            _merge_context_composition_stats(stats, _scan_context_composition_sequence(sequence, since_ts))
-    return stats
-
-
-def cmd_context_composition(args: argparse.Namespace) -> None:
-    """CLI entry point for the context-composition subcommand.
-
-    Root resolution happens here, mirroring cmd_context_distribution, so --config-dir validation
-    exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="context-composition")
-    _context_composition_report(args, roots)
-
-
-def _context_composition_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Redaction contract mirrors context-distribution: no redact map, no per-root/per-account/per-project breakdown."""
-    redact: bool = not bool(getattr(args, "no_redact", False))
-
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement point for this refusal,
-    # but every direct caller of this function (including this module's own tests) bypasses that
-    # boundary.
-    if not redact and multi_root:
-        print(
-            "context-composition: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "context-composition")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(
-        args, "context-composition", include_subagents=True, roots=roots
-    )
-
-    if roots is not None:
-        # Mirrors cmd_cost's/context-distribution's own per-root scan diagnostic
-        # (_scan_root_transcripts) -- pure counts, no composition data, so it stays outside the
-        # "no per-root breakdown" redaction contract above.
-        glob = _projects_glob(args)
-        this_repo_slugs = getattr(args, "_this_repo_slugs", None) if args.this_repo else None
-        redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
-        for root in scan_roots:
-            root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(root.parent)
-            try:
-                scanned, skipped = _scan_root_transcripts(root, glob, slugs=this_repo_slugs)
-            except PermissionError as exc:
-                detail = str(exc) if not redact else "permission denied"
-                print(
-                    f"context-composition: {root_label}: cannot scan ({detail})"
-                    " — treating as 0 transcripts",
-                    file=sys.stderr,
-                )
-                scanned, skipped = 0, 0
-            print(
-                f"context-composition: {root_label}: scanned {scanned:,} transcripts,"
-                f" {skipped:,} skipped (unreadable)"
-            )
-            if scanned == 0:
-                print(
-                    f"WARNING: context-composition: {root_label}: no transcripts found for this scope"
-                    " — check the config dir and --projects/--this-repo filter."
-                )
-
-    _print_resolved_scope("context-composition", scope_label, scan_roots)
-
-    stats = _new_context_composition_stats()
-    for jsonl, _records in session_iter:
-        # session_iter already read and parsed this file once internally (to decide whether to
-        # yield it at all); this second, partitioned read is the cost of reusing
-        # _resolve_project_scope's shared iterator, the same tradeoff _read_scope_report makes.
-        groups = _read_session_file_partitioned(jsonl, include_subagents=True)
-        _merge_context_composition_stats(stats, _scan_context_composition_session(groups, since_ts))
-
-    _print_context_composition_report(stats, since_label)
-
-
-def _print_context_composition_report(stats: dict, since_label: str) -> None:
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Context composition report ({title_since})\n")
-
-    print(
-        f"Sequences scanned: {stats['sequences_scanned']:,}   Turns scanned: {stats['turns_scanned']:,}"
-        f"   Unclassified items: {stats['unclassified_count']:,}"
-    )
-    if since_label:
-        print(
-            "Turns excluded from weighting (--since active, unparseable/out-of-window timestamp):"
-            f" {stats['since_excluded_turns']:,}"
-        )
-
-    residuals_by_sequence = stats["residuals"]
-    flat_residuals = [r for sequence in residuals_by_sequence for r in sequence]
-    print(
-        "\n## Reconciliation (static-prefix residual: context_at_turn - reconstructed resident size)\n"
-    )
-    if flat_residuals:
-        mean = sum(flat_residuals) / len(flat_residuals)
-        print(
-            f"turns: {len(flat_residuals):,}   mean={mean:,.0f}   min={min(flat_residuals):,}"
-            f"   max={max(flat_residuals):,}"
-        )
-    else:
-        print("turns: 0 (nothing scanned)")
-
-    # Gated on the worst single sequence, never on residuals pooled across sequences -- two
-    # individually-stable sequences with different static-prefix baselines must not combine into
-    # a spurious refusal.
-    instability = max(
-        (_context_composition_residual_instability(sequence) for sequence in residuals_by_sequence),
-        default=0.0,
-    )
-    instability_str = "inf" if math.isinf(instability) else f"{instability:.2f}"
-    print(
-        f"instability (range/mean): {instability_str}"
-        f"   refusal threshold: {_CONTEXT_COMPOSITION_RESIDUAL_INSTABILITY_REFUSAL_THRESHOLD}"
-    )
-
-    if instability >= _CONTEXT_COMPOSITION_RESIDUAL_INSTABILITY_REFUSAL_THRESHOLD:
-        print(
-            "\nREFUSED: the static-prefix residual is not approximately constant across turns"
-            " in this scope (instability at or above threshold) -- the per-item residency model"
-            " disagrees with itself too much to trust a category ranking. No ranking is printed."
-        )
-        return
-
-    actual_new_total = stats["actual_new_size_total"]
-    introduced_total = stats["introduced_size_total"]
-    if actual_new_total:
-        split_discrepancy = abs(introduced_total - actual_new_total) / actual_new_total
-        print(
-            f"\nIntroduced-vs-resident split (corpus-wide, not scoped by --since): our"
-            f" bookkeeping={introduced_total:,} tok, usage's own new-token split={actual_new_total:,} tok"
-            f" (discrepancy {split_discrepancy:.1%})"
-        )
-        if split_discrepancy > _CONTEXT_COMPOSITION_SPLIT_DISCREPANCY_TOLERANCE:
-            print(
-                "  NOTE: discrepancy exceeds tolerance -- ambiguous between a wrong write-timing"
-                " rule and chars//4 estimation bias correlated with introduced-vs-resident"
-                " content, not necessarily a rate-classification bug."
-            )
-
-    weighted = stats["weighted_by_category"]
-    total_weighted = sum(weighted.values())
-    print("\n## Category (rate-weighted token-turns share)\n")
-    if not total_weighted:
-        print("No priced turns in scope.")
-        return
-    print(f"{'Category':<32} {'Token-turns':>16} {'Share':>8} {'Items':>10}")
-    for category, value in sorted(weighted.items(), key=lambda kv: -kv[1]):
-        count = stats["item_counts"].get(category, 0)
-        print(f"{category:<32} {value:>16,.0f} {_pct_of(value, total_weighted):>8} {count:>10,}")
-
-
-
-# T=0.50 is the case study's highest-scoring threshold for this read-collapse
-# rule (max Youden's J) against the alternative cache_creation >
-# cache_read_input_tokens rule; see docs/case-studies/cold-cache-attribution.md
-# for the full comparison.
-_COLD_READ_COLLAPSE_MARGIN = 0.50
-
-
-def _cache_prefix_total(usage: dict) -> int:
-    """cache_read_input_tokens plus both cache_creation tiers for one turn's
-    usage -- the prefix total a warm cache would have served whole, and the
-    read-collapse classifier's prior-turn denominator
-    (docs/case-studies/cold-cache-attribution.md). Deliberately excludes
-    input_tokens, unlike _context_at_turn: the classifier compares what the
-    cache itself could have served, not the turn's total context."""
-    eph_1h, eph_5m = _cache_write_split(usage)
-    return int(usage.get("cache_read_input_tokens", 0)) + eph_1h + eph_5m
-
-
-def _is_cold_read_collapse(prior_prefix_total: int, read_t: int) -> bool:
-    """The read-collapse rule: cold when this turn's read falls more than
-    _COLD_READ_COLLAPSE_MARGIN below the prior turn's own prefix total.
-    prior_prefix_total <= 0 means there is no prefix to collapse from --
-    including a session/thread's first turn, which has no prior turn at all
-    -- and is never cold."""
-    if prior_prefix_total <= 0:
-        return False
-    return (prior_prefix_total - read_t) / prior_prefix_total > _COLD_READ_COLLAPSE_MARGIN
-
-
-def _new_cache_efficiency_stats() -> dict:
-    return {
-        thread: {
-            "turns": 0,
-            "read_tokens": 0,
-            "write_1h_tokens": 0,
-            "write_5m_tokens": 0,
-            "cold_tokens": 0,
-            "cold_events": 0,
-        }
-        for thread in ("main", "sidechain")
-    }
-
-
-def _merge_cache_efficiency_stats(dst: dict, src: dict) -> None:
-    for thread in ("main", "sidechain"):
-        d, s = dst[thread], src[thread]
-        for key in ("turns", "read_tokens", "write_1h_tokens", "write_5m_tokens", "cold_tokens", "cold_events"):
-            d[key] += s[key]
-
-
-def _scan_cache_efficiency_group(group: list[dict], stats: dict) -> int:
-    """Classify one source-file group's (main transcript, or one subagent
-    file, per _read_session_file_partitioned) assistant turns for cold-cache
-    read collapse and accumulate into `stats`, keyed by thread
-    ("main"/"sidechain").
-
-    `group` must already be deduped via _dedup_turns_by_request_id -- an
-    un-deduped multi-record run shares one identical cache_read/cache_creation
-    usage across every record in the run (see that function's docstring), so
-    scanning raw records would compare a turn against itself mid-run and can
-    spuriously read as cold whenever that turn's own write exceeds its read.
-
-    Keys the prior-turn chain by each record's own (sessionId, thread),
-    mirroring _read_scope_growth_for_group's sessionId keying -- a subagent
-    file's records carry the *parent* session's sessionId, so sessionId
-    alone is still the correct per-conversation boundary, not per-file
-    identity. Thread is included because, unlike _read_scope_growth_for_group
-    (which has no per-thread output), this function already buckets its
-    output by thread: without it, a defensively-accepted mixed-thread group
-    would let one thread's prior prefix leak into the other's first-turn
-    classification. The first turn of every resulting per-(session, thread)
-    sequence has no predecessor and so is never classified cold. Resets the
-    chain at each compact_boundary record, same as
-    _read_scope_growth_for_group -- the pre-compaction prefix no longer
-    exists to collapse from, so treating it as this turn's "prior" would
-    misclassify the first post-compaction turn as cold every time.
-
-    Returns the count of isSidechain assistant records read in this group,
-    counted unconditionally before the usage check -- feeds the drift canary
-    independently of stats["sidechain"]["turns"] (which only counts turns
-    with priced usage), mirroring _cost_report's total_sidechain_turns.
-    """
-    prior_prefix_by_thread_session: dict[tuple[str, str], int] = {}
-    sidechain_turns_read = 0
-
-    for rec in group:
-        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-            prior_prefix_by_thread_session.clear()
-            continue
-        if rec.get("type") != "assistant":
-            continue
-        thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
-        if thread == "sidechain":
-            sidechain_turns_read += 1
-        usage = (rec.get("message") or {}).get("usage")
-        if not usage:
-            continue
-
-        session_key = rec.get("sessionId") or ""
-        chain_key = (session_key, thread)
-        read_t = int(usage.get("cache_read_input_tokens", 0))
-        # _cache_write_split runs twice for this turn (here and inside
-        # _cache_prefix_total below), mirroring _price_turn's own reuse of
-        # it -- it's pure, and the per-tier accumulators need the split
-        # separately from the combined prefix total the classifier compares.
-        eph_1h, eph_5m = _cache_write_split(usage)
-        prefix_total = _cache_prefix_total(usage)
-
-        row = stats[thread]
-        row["turns"] += 1
-        row["read_tokens"] += read_t
-        row["write_1h_tokens"] += eph_1h
-        row["write_5m_tokens"] += eph_5m
-
-        prior_prefix_total = prior_prefix_by_thread_session.get(chain_key)
-        if prior_prefix_total is not None and _is_cold_read_collapse(prior_prefix_total, read_t):
-            row["cold_tokens"] += eph_1h + eph_5m
-            row["cold_events"] += 1
-
-        prior_prefix_by_thread_session[chain_key] = prefix_total
-
-    return sidechain_turns_read
-
-
-def _print_cache_efficiency_table(stats: dict) -> None:
-    # Every header label is a single whitespace token (Write1h, not "Write
-    # 1h") so this table stays parseable by the test suite's own
-    # header-anchored column reader (_table_cols), matching every other
-    # fixed-width table in this file.
-    print(
-        f"{'Thread':<10} {'Turns':>10} {'Read':>16} {'Write1h':>14} {'Write5m':>14}"
-        f" {'ColdTok':>16} {'Cold/Wr':>11} {'Cold/Rd':>10} {'ColdEvts':>10} {'AvgEvt':>10}"
-    )
-    for thread in ("main", "sidechain"):
-        row = stats[thread]
-        write_total = row["write_1h_tokens"] + row["write_5m_tokens"]
-        cold_events = row["cold_events"]
-        avg_event = row["cold_tokens"] / cold_events if cold_events else 0
-        print(
-            f"{thread:<10} {row['turns']:>10,} {row['read_tokens']:>16,} {row['write_1h_tokens']:>14,}"
-            f" {row['write_5m_tokens']:>14,} {row['cold_tokens']:>16,} {_pct_of(row['cold_tokens'], write_total):>11}"
-            f" {_pct_of(row['cold_tokens'], row['read_tokens']):>10} {cold_events:>10,} {avg_event:>10,.0f}"
-        )
-
-
-def _print_cache_efficiency_report(stats: dict, per_account: dict[int, dict] | None) -> None:
-    print("\n## Cache efficiency by thread\n")
-    _print_cache_efficiency_table(stats)
-
-    if per_account is not None:
-        print("\n## Cache efficiency by account\n")
-        for ordinal in sorted(per_account):
-            print(f"\n### account-{ordinal}\n")
-            _print_cache_efficiency_table(per_account[ordinal])
-
-
-def cmd_cache_efficiency(args: argparse.Namespace) -> None:
-    """CLI entry point for the cache-efficiency subcommand.
-
-    Root resolution happens here, mirroring cmd_cost/cmd_edit_format/
-    cmd_read_scope, so --config-dir validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="cache-efficiency")
-    _cache_efficiency_report(args, roots)
-
-
-def _cache_efficiency_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Per-thread cold-cache read-collapse census: assistant turn counts,
-    cache read/write token totals, and cold-write volume/rate, classified by
-    the read-collapse rule at T=_COLD_READ_COLLAPSE_MARGIN
-    (docs/case-studies/cold-cache-attribution.md). `cost` buckets spend by
-    token class only; this distinguishes a cold prefix re-write from an
-    ordinary incremental append within that spend.
-
-    roots is None for every direct caller other than cmd_cache_efficiency
-    (this module's own tests included) -- mirrors cost/edit-format/read-scope's
-    own single-root-by-default contract, including the absence of the
-    per-account breakdown below.
-
-    This report's own content never varies with `redact`: like edit-format
-    and read-scope, it carries no project name or session ID -- per-account
-    rows use account-N labels. --no-redact is still accepted and still
-    enforces the same multi-root refusal and DO NOT PUBLISH banner as
-    cost/edit-format/read-scope, for CLI parity.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "cache-efficiency: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    session_iter, scope_label = _resolve_project_scope(
-        args, "cache-efficiency", include_subagents=True, roots=roots
-    )
-    _print_resolved_scope("cache-efficiency", scope_label, scan_roots)
-
-    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
-    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots) if multi_root else {}
-
-    stats = _new_cache_efficiency_stats()
-    per_account: dict[int, dict] = (
-        {ordinal: _new_cache_efficiency_stats() for ordinal in redact_ordinals.values()} if multi_root else {}
-    )
-    total_spawns = 0
-    total_sidechain_turns = 0
-
-    for jsonl, records in session_iter:
-        records = _dedup_turns_by_request_id(records)
-        total_spawns += _count_subagent_spawns(records)
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # mirroring read-scope's own growth-chain reuse note -- the
-        # classifier's prior-turn chain needs the per-file boundary the flat
-        # merge discards (a subagent's own cache prefix is not continuous
-        # with the main thread's, or with a sibling subagent's).
-        groups = _read_session_file_partitioned(jsonl, include_subagents=True)
-        session_stats = _new_cache_efficiency_stats()
-        for group in groups:
-            total_sidechain_turns += _scan_cache_efficiency_group(_dedup_turns_by_request_id(group), session_stats)
-        _merge_cache_efficiency_stats(stats, session_stats)
-        if multi_root:
-            root_position = _root_index_for_path(jsonl, resolved_scan_roots)
-            ordinal = redact_ordinals[resolved_scan_roots[root_position]]
-            _merge_cache_efficiency_stats(per_account[ordinal], session_stats)
-
-    _warn_if_subagent_format_drift(total_spawns, total_sidechain_turns)
-
-    _print_cache_efficiency_report(stats, per_account if multi_root else None)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     # Top-level (not per-subcommand) so main() can reassign PROJECTS_DIR before
@@ -2220,40 +1346,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost.set_defaults(func=cmd_cost)
 
-    p_context_dist = sub.add_parser(
-        "context-distribution",
-        help=(
-            "Per-session peak context-at-turn, bucketed both at candidate threshold percentages"
-            " (30/40/50/60%%) of the model's context window and at candidate absolute-token"
-            " thresholds, with each threshold's session-share and dollar-cost share."
-            " Redacted by default."
-        ),
-    )
-    _add_project_scope_args(p_context_dist)
-    p_context_dist.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
-    )
-    p_context_dist.add_argument(
-        "--since", metavar="Nd",
-        help="Limit to turns with timestamp in the last N days (e.g. 35d).",
-    )
-    p_context_dist.add_argument(
-        "--no-redact", action="store_true",
-        help=(
-            "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
-        ),
-    )
-    p_context_dist.set_defaults(func=cmd_context_distribution)
+    _add_context_distribution_subparser(sub)
 
     p_edit_format = sub.add_parser(
         "edit-format",
@@ -2339,74 +1432,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_instrument_authoring.set_defaults(func=cmd_instrument_authoring)
 
-    p_context_comp = sub.add_parser(
-        "context-composition",
-        help=(
-            "Rate-weighted token-turns by content-item category (user/assistant text, thinking,"
-            " tool calls/results, compact summaries), gated by a reconciliation check against"
-            " _context_at_turn -- the static-prefix residual refuses to print a ranking above a"
-            " named instability threshold. Aggregate-only output; redacted by default."
-        ),
-    )
-    _add_project_scope_args(p_context_comp)
-    p_context_comp.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
-    )
-    p_context_comp.add_argument(
-        "--since", metavar="Nd",
-        help=(
-            "Limit rate-weighted turns to timestamps in the last N days (e.g. 35d); reconciliation"
-            " and the introduced-vs-resident split diagnostic both still scan/accumulate every turn."
-        ),
-    )
-    p_context_comp.add_argument(
-        "--no-redact", action="store_true",
-        help=(
-            "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
-        ),
-    )
-    p_context_comp.set_defaults(func=cmd_context_composition)
+    _add_context_composition_subparser(sub)
 
-    p_cache_efficiency = sub.add_parser(
-        "cache-efficiency",
-        help=(
-            "Per-thread (main/sidechain) cold-cache read-collapse census: assistant turn counts,"
-            " cache read/write token totals, and cold-write volume/rate, classified by the"
-            " validated read-collapse rule (docs/case-studies/cold-cache-attribution.md)."
-            " Aggregate-only output; redacted by default."
-        ),
-    )
-    _add_project_scope_args(p_cache_efficiency)
-    p_cache_efficiency.add_argument(
-        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
-        help=(
-            "Additional Claude Code config directory to scan (repeatable). The default resolved"
-            " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
-            " across every resulting root; --no-redact is refused once this puts more than one"
-            " root in scope."
-        ),
-    )
-    p_cache_efficiency.add_argument(
-        "--no-redact", action="store_true",
-        help=(
-            "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
-        ),
-    )
-    p_cache_efficiency.set_defaults(func=cmd_cache_efficiency)
+    _add_cache_efficiency_subparser(sub)
 
     p_cost_trend = sub.add_parser(
         "cost-trend",

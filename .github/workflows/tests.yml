@@ -120,14 +120,20 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # The awk lines record which implementation runs the cumulative-review normalizer's tests on this runner.
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
-        run: nproc
+        run: |
+          nproc
+          git --version
+          readlink -f "$(command -v awk)" || true
+          { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
 
       # _locale_that_widens_ascii_ranges (test_config_lib.py) fails CI when no installed UTF-8 locale lets a bracket range accept a non-ASCII letter.
-      - name: Generate a UTF-8 locale
+      # _locale_that_folds_ascii_capital_i_to_a_non_ascii_letter (test_reconcile_project_plugins.py) fails CI when no installed UTF-8 locale lower-cases `I` to a non-ASCII letter, which tr_TR does.
+      - name: Generate UTF-8 locales
         if: steps.detect.outputs.changed == 'true'
-        run: sudo locale-gen en_US.UTF-8
+        run: sudo locale-gen en_US.UTF-8 tr_TR.UTF-8
 
       - name: Run tests (parallel)
         # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.

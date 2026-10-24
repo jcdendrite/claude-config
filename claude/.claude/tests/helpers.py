@@ -13,7 +13,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import textwrap
 import time
 from collections import Counter
@@ -1225,15 +1227,16 @@ def _run_git(repo: Path, *args: str) -> str:
     ).stdout
 
 
-def init_git_repo(path: Path, *, branch: str | None = None) -> Path:
-    """Create `path` as a git repo with a test identity and no commit. `branch=None` keeps the host's init.defaultBranch."""
+def init_git_repo(path: Path, *, branch: str | None = None, env: dict | None = None) -> Path:
+    """Create `path` as a git repo with a test identity and no commit. `branch=None` keeps the host's init.defaultBranch.
+    `env` is the subprocess environment for every git call, `None` inheriting the caller's."""
     path.mkdir(parents=True, exist_ok=True)
     init_args = ["git", "init", "-q"]
     if branch is not None:
         init_args += ["-b", branch]
-    subprocess.run(init_args, cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    subprocess.run(init_args, cwd=path, check=True, env=env)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True, env=env)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True, env=env)
     return path
 
 
@@ -1248,6 +1251,18 @@ def init_git_repo_with_commit(
     subprocess.run(["git", "add", "--", file_name], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
     return path
+
+
+GITLINK_BEFORE = "1" * 40
+GITLINK_AFTER = "2" * 40
+
+
+def set_gitlink(repo: Path, path: str, commit_sha: str) -> None:
+    """Stage a mode-160000 entry without a submodule checkout. `git add -A` would stage its removal, so call this after it."""
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{commit_sha},{path}"],
+        cwd=repo, check=True,
+    )
 
 
 def continuity_resume_section(kind: str, path: Path, resume_cwd: Path | str | None) -> str:
@@ -2778,6 +2793,407 @@ def assert_cap_not_engaged(bin_dir: Path, production_cap: float | None = None):
     )
 
 
+def _installed_utf8_locale_names() -> list[str]:
+    """Every UTF-8 locale name `locale -a` reports as installed, in its order.
+    Empty when `locale` is missing or fails, as on a minimal container image."""
+    try:
+        result = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+    return [name for name in result.stdout.split() if "utf8" in name.lower() or "utf-8" in name.lower()]
+
+
+def installed_locale_where(bash_condition: str, probe_argument: str, *, absent_message: str) -> str:
+    """The first installed UTF-8 locale under which bash's `bash_condition` holds for `probe_argument` (its `$1`).
+    A test of a locale-dependent bash behaviour takes its locale from here, because `C.UTF-8` is not guaranteed to show it.
+    With no such locale installed, fails under CI so a runner that lost its locale cannot lose the discrimination unnoticed.
+    Skips otherwise."""
+    import pytest  # imported here because the module header keeps pytest out of the runtime imports
+
+    for name in _installed_utf8_locale_names():
+        probe = subprocess.run(
+            ["bash", "-c", bash_condition, "bash", probe_argument],
+            env={**os.environ, "LC_ALL": name}, capture_output=True, check=False,
+        )
+        if probe.returncode == 0:
+            return name
+    if os.environ.get("CI"):
+        pytest.fail(f"{absent_message}; CI must provide one")
+    pytest.skip(absent_message)
+
+
+def locale_that_widens_ascii_ranges() -> str:
+    """An installed UTF-8 locale under which an unpinned `[A-Za-z]` bracket range accepts a non-ASCII letter.
+    That is the exposure `LC_ALL=C` removes."""
+    return installed_locale_where(
+        '[[ "$1" =~ ^[A-Za-z]+$ ]]', "\u00e9",
+        absent_message="no installed locale makes a bracket range accept a non-ASCII letter",
+    )
+
+
+@contextmanager
+def live_process():
+    """Yield the pid of a real process this context owns for its duration,
+    terminated on exit. A safe stand-in for "some other live holder" in a
+    lock-contention test -- unlike os.getppid(), it doesn't depend on this
+    test process's own ancestry staying stable for the assertion window."""
+    proc = subprocess.Popen(["sleep", "3600"])
+    try:
+        yield proc.pid
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# Plugin-bootstrap scaffolding shared by the reconciler's and the hook's tests
+# ---------------------------------------------------------------------------
+
+RECONCILE_SH = SCRIPTS_DIR / "reconcile-project-plugins.sh"
+_BASH = shutil.which("bash") or "/bin/bash"
+
+
+def plugin_registry_file(config_dir: Path) -> Path:
+    return config_dir / "plugins" / "installed_plugins.json"
+
+
+def v2_registry_entry(project_path: str = "/elsewhere") -> dict:
+    """One `installed_plugins.json` entry in the shape `claude plugin install -s local` records."""
+    return {"scope": "local", "installPath": "/installed", "projectPath": project_path}
+
+
+def write_plugin_registry(registry_file: Path, plugins: dict[str, list[dict]], version: int | None = 2) -> Path:
+    """Write `registry_file` with `plugins` under `version`, omitting the `version` key when it is None."""
+    registry: dict = {"plugins": plugins}
+    if version is not None:
+        registry["version"] = version
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(json.dumps(registry))
+    return registry_file
+
+
+# Isolates every scratch repo's git calls from the executing account's global git config.
+# A global excludes file can ignore `.claude/settings.local.json`.
+# git reads `~/.config/git/ignore`, or `$XDG_CONFIG_HOME/git/ignore` when that variable is set.
+# That would flip every scope-guard case and every install-allow case.
+# GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM do not reach the excludes file, so HOME and XDG_CONFIG_HOME are overridden too.
+# GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM need git >= 2.32 (this repo's CI and dev baseline).
+def git_isolation_env(tmp_path: Path) -> dict:
+    isolated_home = tmp_path / "isolated-home-for-git"
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    return {
+        "HOME": str(isolated_home),
+        "XDG_CONFIG_HOME": str(isolated_home / ".config"),
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+
+
+def init_reconciler_repo(repo: Path, *, enabled_plugins: dict, gitignore_settings_local: bool = True) -> None:
+    (repo / ".claude").mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "-q"], cwd=repo, check=True,
+        env={**os.environ, **git_isolation_env(repo.parent)},
+    )
+    if gitignore_settings_local:
+        (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    (repo / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": enabled_plugins}))
+
+
+# The calls a lingering child can be attached to: the two `claude` subcommands the reconciler runs, and `git`.
+LINGERING_CHILD_CALLS = ("marketplace list", "install", "git")
+
+# Source of the function the reconciler's PATH shims embed to leave a lingering child behind.
+# The detached child inherits every descriptor but 0-2, so it keeps the reconciler lock whenever the call did not close fd 9.
+# Its stdio points at /dev/null so it cannot hold the pipe a caller reads the call's output from.
+# It forks once per pid file, so a call the reconciler repeats does not orphan an earlier child.
+_LEAVE_LINGERING_CHILD_SOURCE = textwrap.dedent("""\
+    def leave_lingering_child(pid_file):
+        if os.path.exists(pid_file):
+            return
+        child_pid = os.fork()
+        if child_pid == 0:
+            os.setsid()
+            devnull_fd = os.open(os.devnull, os.O_RDWR)
+            for stdio_fd in (0, 1, 2):
+                os.dup2(devnull_fd, stdio_fd)
+            time.sleep(30)
+            os._exit(0)
+        with open(pid_file, "w") as f:
+            f.write(str(child_pid))
+""")
+
+
+def _write_lingering_git_wrapper(bin_dir: Path, lingering_child_pid_file: Path) -> None:
+    """A `git` wrapper in `bin_dir` that leaves a lingering child, then execs the real git.
+    The real git is resolved from a PATH without `bin_dir`, so the wrapper never execs itself."""
+    path_without_bin_dir = os.pathsep.join(
+        entry for entry in os.environ["PATH"].split(os.pathsep) if entry != str(bin_dir)
+    )
+    real_git = shutil.which("git", path=path_without_bin_dir)
+    assert real_git, "git not found on PATH"
+    wrapper_path = bin_dir / "git"
+    wrapper_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys, time\n\n"
+        f"{_LEAVE_LINGERING_CHILD_SOURCE}\n"
+        f"leave_lingering_child({str(lingering_child_pid_file)!r})\n"
+        f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
+    )
+    wrapper_path.chmod(0o755)
+
+
+def make_reconciler_claude_shim(
+    bin_dir: Path,
+    *,
+    marketplace_entries: list[dict] | None = None,
+    marketplace_raw_stdout: str | None = None,
+    marketplace_list_exit_code: int = 0,
+    marketplace_list_sleep_seconds: float = 0,
+    marketplace_list_log: Path | None = None,
+    marketplace_list_umask_log: Path | None = None,
+    fail_install_ids: frozenset[str] = frozenset(),
+    install_log: Path | None = None,
+    install_sleep_seconds: float = 0,
+    install_blocks_until_file_exists: Path | None = None,
+    install_writes_registry: Path | None = None,
+    lingering_child_pid_file: Path | None = None,
+    lingering_child_on: str = "install",
+    backdate_marker: Path | None = None,
+    backdate_marker_seconds_ago: int = 700,
+    install_changes_marker: tuple[Path, str] | None = None,
+    call_log: Path | None = None,
+) -> None:
+    """A `claude` PATH shim for the reconciler's two subcommands, with the
+    marketplace's name and `.source` value configurable per test.
+
+    - `plugin marketplace list --json` prints `marketplace_raw_stdout` verbatim
+      when given (for the "unparseable output" case), else
+      `json.dumps(marketplace_entries or [])`, and exits
+      `marketplace_list_exit_code` (stdout is empty for a non-zero exit,
+      matching a real CLI failure).
+    - When `marketplace_list_sleep_seconds` is set, the list call sleeps that
+      long before responding -- for exercising _lib_capped_for's own
+      kill-and-nonzero-exit path at this call site.
+    - When `marketplace_list_log` is given, each list call appends one line to it.
+    - When `marketplace_list_umask_log` is given, each list call also appends
+      the octal umask it runs under.
+    - When `backdate_marker` is given, the list call also sets that file's mtime
+      `backdate_marker_seconds_ago` seconds into the past before returning --
+      the marketplace listing is the run's first `claude` call after the marker
+      is created, so a test can simulate the wall-clock ceiling already having
+      elapsed without an actual 600s wait.
+    - `plugin install ... <id> ...` (the id found positionally, tolerating
+      `-s`/`--scope`/`--` anywhere in argv) records `{"plugin": id, "args":
+      argv, "cwd": os.getcwd(), "umask": octal umask, "stdin_is_dev_null": bool}`
+      to `install_log` when given. It exits 1 for any id in `fail_install_ids`.
+    - After logging, an install sleeps `install_sleep_seconds`, then, when
+      `install_blocks_until_file_exists` is given, polls until that file exists
+      (giving up after 30 s so a test that never releases it cannot hang), then
+      (for a successful id) adds a version-2 registry entry to
+      `install_writes_registry`.
+    - When `install_changes_marker` is given as `(path, "backdate" | "delete")`,
+      every install call backdates (by `backdate_marker_seconds_ago`) or deletes
+      that file before exiting, so a test can trip the ceiling between ids.
+    - When `lingering_child_pid_file` is given, the call named by
+      `lingering_child_on` (one of LINGERING_CHILD_CALLS) leaves a detached child
+      behind that outlives it for 30 s and writes the child's pid to that file.
+      The child inherits every file descriptor the call inherited except stdio.
+      For "marketplace list" the shim forks it before responding. For "install"
+      a successful install forks it. For "git" the shim also writes a `git`
+      wrapper that forks it, then execs the real git.
+    - Any other subcommand exits 1 and names itself on stderr.
+    - When `call_log` is given, every call -- handled or not -- appends its argv
+      as one JSON line to it before any branch runs.
+    """
+    assert lingering_child_on in LINGERING_CHILD_CALLS, lingering_child_on
+    assert install_changes_marker is None or install_changes_marker[1] in ("backdate", "delete"), (
+        install_changes_marker
+    )
+    marketplace_stdout = (
+        marketplace_raw_stdout
+        if marketplace_raw_stdout is not None
+        else json.dumps(marketplace_entries or [])
+    )
+    install_log_repr = repr(str(install_log)) if install_log else "None"
+    marketplace_list_log_repr = repr(str(marketplace_list_log)) if marketplace_list_log else "None"
+    marketplace_list_umask_log_repr = repr(str(marketplace_list_umask_log)) if marketplace_list_umask_log else "None"
+    backdate_marker_repr = repr(str(backdate_marker)) if backdate_marker else "None"
+    install_release_file_repr = repr(str(install_blocks_until_file_exists)) if install_blocks_until_file_exists else "None"
+    registry_path_repr = repr(str(install_writes_registry)) if install_writes_registry else "None"
+    lingering_child_pid_file_repr = repr(str(lingering_child_pid_file)) if lingering_child_pid_file else "None"
+    call_log_repr = repr(str(call_log)) if call_log else "None"
+    install_marker_path_repr = repr(str(install_changes_marker[0])) if install_changes_marker else "None"
+    install_marker_change_repr = repr(install_changes_marker[1]) if install_changes_marker else "None"
+
+    shim = textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, os, sys, time
+
+        __LEAVE_LINGERING_CHILD__
+
+        args = sys.argv[1:]
+        call_log = {call_log_repr}
+        if call_log:
+            with open(call_log, "a") as f:
+                f.write(json.dumps(args) + "\\n")
+        FAIL_INSTALL_IDS = {repr(sorted(fail_install_ids))}
+        install_log = {install_log_repr}
+        marketplace_list_log = {marketplace_list_log_repr}
+        backdate_marker = {backdate_marker_repr}
+        registry_path = {registry_path_repr}
+        install_release_file = {install_release_file_repr}
+        lingering_child_pid_file = {lingering_child_pid_file_repr}
+        lingering_child_on = {lingering_child_on!r}
+        install_marker_path = {install_marker_path_repr}
+        install_marker_change = {install_marker_change_repr}
+        REGISTRY_ENTRY = {v2_registry_entry()!r}
+        marketplace_list_umask_log = {marketplace_list_umask_log_repr}
+
+        def is_subcommand(*parts):
+            return args[:len(parts)] == list(parts)
+
+        if is_subcommand("plugin", "marketplace", "list") and "--json" in args:
+            if marketplace_list_log:
+                with open(marketplace_list_log, "a") as f:
+                    f.write("list\\n")
+            if marketplace_list_umask_log:
+                current_umask = os.umask(0)
+                os.umask(current_umask)
+                with open(marketplace_list_umask_log, "a") as f:
+                    f.write(oct(current_umask) + "\\n")
+            if lingering_child_pid_file and lingering_child_on == "marketplace list":
+                leave_lingering_child(lingering_child_pid_file)
+            if {marketplace_list_sleep_seconds}:
+                time.sleep({marketplace_list_sleep_seconds})
+            if backdate_marker and os.path.exists(backdate_marker):
+                old = time.time() - {backdate_marker_seconds_ago}
+                os.utime(backdate_marker, (old, old))
+            if {marketplace_list_exit_code} == 0:
+                print({repr(marketplace_stdout)})
+            sys.exit({marketplace_list_exit_code})
+
+        if is_subcommand("plugin", "install"):
+            rest = args[2:]
+            plugin_id = ""
+            skip_next = False
+            for tok in rest:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if tok in ("-s", "--scope"):
+                    skip_next = True
+                    continue
+                if tok == "--":
+                    continue
+                if tok.startswith("-"):
+                    continue
+                if not plugin_id:
+                    plugin_id = tok
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            if install_log:
+                with open(install_log, "a") as f:
+                    record = {{
+                        "plugin": plugin_id, "args": args, "cwd": os.getcwd(), "umask": oct(current_umask),
+                        "stdin_is_dev_null": os.path.samestat(os.fstat(0), os.stat(os.devnull)),
+                    }}
+                    f.write(json.dumps(record) + "\\n")
+            if install_marker_path and os.path.exists(install_marker_path):
+                if install_marker_change == "backdate":
+                    old = time.time() - {backdate_marker_seconds_ago}
+                    os.utime(install_marker_path, (old, old))
+                else:
+                    os.unlink(install_marker_path)
+            if {install_sleep_seconds}:
+                time.sleep({install_sleep_seconds})
+            if install_release_file:
+                release_deadline = time.time() + 30
+                while not os.path.exists(install_release_file) and time.time() < release_deadline:
+                    time.sleep(0.05)
+            fails = plugin_id in FAIL_INSTALL_IDS
+            if lingering_child_pid_file and lingering_child_on == "install" and not fails:
+                leave_lingering_child(lingering_child_pid_file)
+            if registry_path and not fails:
+                try:
+                    with open(registry_path) as f:
+                        registry = json.load(f)
+                except (OSError, ValueError):
+                    registry = {{"version": 2, "plugins": {{}}}}
+                registry["plugins"].setdefault(plugin_id, []).append(
+                    dict(REGISTRY_ENTRY, projectPath=os.getcwd())
+                )
+                os.makedirs(os.path.dirname(registry_path), exist_ok=True)
+                with open(registry_path, "w") as f:
+                    json.dump(registry, f)
+            sys.exit(1 if fails else 0)
+
+        sys.stderr.write("unhandled: " + repr(args) + chr(10))
+        sys.exit(1)
+    """).replace("__LEAVE_LINGERING_CHILD__", _LEAVE_LINGERING_CHILD_SOURCE)
+    shim_path = bin_dir / "claude"
+    shim_path.write_text(shim)
+    shim_path.chmod(0o755)
+    if lingering_child_pid_file and lingering_child_on == "git":
+        _write_lingering_git_wrapper(bin_dir, lingering_child_pid_file)
+
+
+def run_reconciler(
+    repo_root: Path,
+    *,
+    config_dir: Path,
+    bin_dir: Path,
+    cwd: Path | None = None,
+    extra_env: dict | None = None,
+    stdin_text: str | None = None,
+    timeout: float = 30,
+) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "CLAUDE_CONFIG_DIR": str(config_dir),
+        **git_isolation_env(config_dir.parent),
+    }
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [_BASH, str(RECONCILE_SH), str(repo_root)],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        input=stdin_text,
+        timeout=timeout,
+    )
+
+
+def reconciler_audit_lines(config_dir: Path) -> list[dict]:
+    log_path = config_dir / "plugin-bootstrap" / "audit.log"
+    if not log_path.exists():
+        return []
+    return [json.loads(line) for line in log_path.read_text().splitlines() if line]
+
+
+def install_log_entries(install_log: Path) -> list[dict]:
+    if not install_log.exists():
+        return []
+    return [json.loads(line) for line in install_log.read_text().splitlines() if line]
+
+
+@contextmanager
+def ambient_umask(mask: int):
+    """Run subprocesses under a known umask, restoring the process's own on exit."""
+    previous_mask = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(previous_mask)
+
+
+def file_mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
 # test_transcript_analysis.py's Python-classifier test. Proves the two
@@ -2796,3 +3212,143 @@ CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
     ("Some preamble.\nMODE=plan-sections", True, "mode_plan_sections_not_first_line"),
     ("MODE=plan-sections\r\n## Section A", True, "mode_plan_sections_crlf"),
 ]
+
+
+def isolated_git_env(base_env: dict, empty_xdg_config_home: Path | str) -> dict:
+    """`base_env` without the ambient git config a contributor's machine carries.
+
+    Isolated: the global and system config files (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), the
+    system attributes file (`GIT_ATTR_NOSYSTEM=1`), the default `core.attributesFile` (`XDG_CONFIG_HOME` set to
+    `empty_xdg_config_home`, which the caller keeps empty), the ambient `GIT_DIFF_OPTS` and `GIT_EXTERNAL_DIFF`,
+    and every ambient `GIT_CONFIG_*` variable (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`,
+    `GIT_CONFIG_PARAMETERS`), each dropped before the two config variables above are set.
+    Still passing through: a repo's own config and attributes, and every other environment variable.
+    Limit: `GIT_CONFIG_GLOBAL` needs git 2.32. Older git ignores it, so a contributor's global config can reach the caller.
+    """
+    ambient_diff_variables = ("GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF")
+    return {
+        **{
+            name: value
+            for name, value in base_env.items()
+            if name not in ambient_diff_variables and not name.startswith("GIT_CONFIG_")
+        },
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": str(empty_xdg_config_home),
+    }
+
+
+def isolated_git_diff(repo: Path, *args: str, config: tuple[str, ...] = ()) -> bytes:
+    """Raw `git diff *args` bytes of `repo`, with trailing newlines stripped as `$( )` strips them.
+
+    Runs under `isolated_git_env(os.environ, ...)`, so ambient git config does not reach it.
+    Each `key=value` in `config` is passed as `-c key=value`.
+    Limits: those of `isolated_git_env`, and the fixture commits that built `repo` are not isolated.
+    """
+    config_args = [flag for pair in config for flag in ("-c", pair)]
+    with tempfile.TemporaryDirectory() as empty_xdg_config_home:
+        completed = subprocess.run(
+            ["git", *config_args, "diff", *args],
+            cwd=repo, env=isolated_git_env(os.environ, empty_xdg_config_home), capture_output=True, check=True,
+        )
+    return completed.stdout.rstrip(b"\n")
+
+
+def _run_lib_function_on_text(
+    function_call: str, text: bytes, tmp_path: Path, env_overrides: dict | None, shell_prelude: str
+) -> subprocess.CompletedProcess:
+    """Run `function_call` on `"$(cat FILE)"`, the way marker.sh's write arm reads its subject.
+
+    TEXT goes through a file so a large diff never becomes a single exec argument.
+    """
+    text_path = tmp_path / "lib-function-input.bin"
+    text_path.write_bytes(text)
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; {shell_prelude}\n{function_call} "$(cat "$1")"', "bash", str(text_path)],
+        capture_output=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def cumulative_review_value(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None, shell_prelude: str = ""
+) -> tuple[int, str]:
+    """`(exit_status, stripped stdout)` of the real `_lib_cumulative_review_value` on TEXT.
+
+    `shell_prelude` is bash run after `_lib.sh` is sourced and before the call, for function shims.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_cumulative_review_value", text, tmp_path, env_overrides, shell_prelude
+    )
+    return result.returncode, result.stdout.decode().strip()
+
+
+def _stdout_of_successful_run(result: subprocess.CompletedProcess) -> bytes:
+    """`result.stdout`, failing with the process stderr in the message when the exit status is not 0."""
+    assert result.returncode == 0, (result.returncode, result.stderr.decode(errors="replace"))
+    return result.stdout
+
+
+def require_normalized_cumulative_review_text(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None
+) -> bytes:
+    """The real `_lib_normalize_cumulative_review_text` output on TEXT, trailing newlines stripped as `$( )` strips them.
+
+    Fails with the process stderr when the function exits non-zero.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_normalize_cumulative_review_text", text, tmp_path, env_overrides, ""
+    )
+    return _stdout_of_successful_run(result).rstrip(b"\n")
+
+
+def require_cumulative_review_value(
+    text: bytes, tmp_path: Path, env_overrides: dict | None = None, shell_prelude: str = ""
+) -> str:
+    """The real `_lib_cumulative_review_value` digest of TEXT, checked to be 64 lowercase hex digits.
+
+    Fails with the process stderr when the function exits non-zero.
+    """
+    result = _run_lib_function_on_text(
+        "_lib_cumulative_review_value", text, tmp_path, env_overrides, shell_prelude
+    )
+    value = _stdout_of_successful_run(result).decode().strip()
+    assert re.fullmatch(r"[0-9a-f]{64}", value), value
+    return value
+
+
+_CUMULATIVE_REVIEW_HUNK_HEADER = re.compile(
+    rb"@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@(?: .*)?"
+)
+_CUMULATIVE_REVIEW_INDEX_LINE = re.compile(rb"index [0-9a-f]+[.][.][0-9a-f]+(?P<mode_suffix>( [0-7]+)?)")
+
+
+def reference_normalized_text(text: bytes) -> bytes:
+    """Pure-Python statement of the two rules `_lib_normalize_cumulative_review_text` applies.
+
+    A hunk header keeps only its two line counts.
+    An `index` line that a `--- ` line directly follows loses its blob ids and keeps its mode.
+    Every other line passes through. Trailing newlines are stripped, as `$( )` strips them.
+    """
+    normalized_lines: list[bytes] = []
+    held_index_line: bytes | None = None
+    for line in text.split(b"\n"):
+        if held_index_line is not None:
+            if line.startswith(b"--- "):
+                held_index_match = _CUMULATIVE_REVIEW_INDEX_LINE.fullmatch(held_index_line)
+                assert held_index_match is not None
+                normalized_lines.append(b"index .." + held_index_match.group("mode_suffix"))
+            else:
+                normalized_lines.append(held_index_line)
+            held_index_line = None
+        header = _CUMULATIVE_REVIEW_HUNK_HEADER.fullmatch(line)
+        if _CUMULATIVE_REVIEW_INDEX_LINE.fullmatch(line):
+            held_index_line = line
+        elif header:
+            normalized_lines.append(b"@@ -" + (header.group(1) or b"") + b" +" + (header.group(2) or b"") + b" @@")
+        else:
+            normalized_lines.append(line)
+    if held_index_line is not None:
+        normalized_lines.append(held_index_line)
+    return b"\n".join(normalized_lines).rstrip(b"\n")
