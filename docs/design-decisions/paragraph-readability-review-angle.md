@@ -93,17 +93,19 @@ Three items were not achieved:
 
 - The pre-angle reviewer's fixture cell missed its bar. The fixture's
   `note` field holds the measured rate.
-- One gated complaint site is a known residual. A dense paragraph of
-  mixed rules that already leads with its claim draws sentence splits,
-  not a lead plus a list. Its rules are mixed in kind. They also sit
-  interleaved with a definition and an examples line, which falls outside
-  the first shape's three-or-more parallel, consecutive-rule case.
-  Reaching it would need a density rule. `.claude/plans/prose-density-reviewer-gaps.md`'s
+- One complaint site scored against Phase 2's pass bar is a known
+  residual. A dense paragraph of mixed rules that already leads with
+  its claim draws sentence splits, not a lead plus a list. Its rules
+  are mixed in kind. They also sit interleaved with a definition and
+  an examples line, which falls outside the first shape's
+  three-or-more parallel, consecutive-rule case. Reaching it would
+  need a density rule. `.claude/plans/prose-density-reviewer-gaps.md`'s
   Alternatives list already declines a density mechanism, for the same
   reason.
-- One gated complaint site gives no evidence for the new angle. Both the
-  pre-angle reviewer and the reviewer with this angle added caught it in
-  every run, so the site doesn't separate them.
+- One complaint site scored against Phase 2's pass bar gives no
+  evidence for the new angle. Both the pre-angle reviewer and the
+  reviewer with this angle added caught it in every run, so the site
+  doesn't separate them.
 
 ## Sources
 

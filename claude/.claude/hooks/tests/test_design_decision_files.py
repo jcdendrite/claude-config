@@ -797,7 +797,7 @@ def _angle_block_text(agent_text: str, angle_name: str) -> str | None:
     A genuine angle header always opens a new paragraph, so it is preceded
     by the section start or a blank line. Requiring that excludes a decoy:
     a bold-dash line that reads like a header but is actually a nested
-    list item whose author forgot its leading '- '. Such a line sits
+    list item. Its author forgot the item's leading '- '. Such a line sits
     directly after other body text with no blank line before it."""
     section_match = _CORE_REVIEW_ANGLES_SECTION_RE.search(agent_text)
     if not section_match:
@@ -2252,6 +2252,36 @@ class TestFaultInjection:
         )
         fixture["must_pass_carve_outs"]["cause_and_effect"] = mid_sentence_excerpt
         fixture["must_pass"] = fixture["must_pass"] + mid_sentence_excerpt + "\n"
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert violations == []
+
+    def test_paragraph_readability_fixture_accepts_comma_led_so_cause_and_effect_carve_out(
+        self,
+    ) -> None:
+        """A cause_and_effect excerpt using the comma-led "so" form passes --
+        only "because" was previously exercised in the accepting branch."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        so_excerpt = "A write must hold the lock, so two writers can't corrupt it."
+        fixture["must_pass_carve_outs"]["cause_and_effect"] = so_excerpt
+        fixture["must_pass"] = fixture["must_pass"] + so_excerpt + "\n"
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert violations == []
+
+    def test_paragraph_readability_fixture_accepts_comma_led_but_claim_and_hedge_carve_out(
+        self,
+    ) -> None:
+        """A claim_and_hedge excerpt using the comma-led "but" form passes --
+        only "though" was previously exercised in the accepting branch."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        but_excerpt = "The design is solid, but edge cases remain untested."
+        fixture["must_pass_carve_outs"]["claim_and_hedge"] = but_excerpt
+        fixture["must_pass"] = fixture["must_pass"] + but_excerpt + "\n"
         violations = _paragraph_readability_fixture_violations(
             fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
         )
