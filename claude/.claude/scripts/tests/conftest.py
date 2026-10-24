@@ -37,7 +37,7 @@ from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     """Write records as one-JSON-object-per-line, transcript-analysis.py's on-disk shape -- shared
-    here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
+    here (with _asst/_user_msg) so test_transcript_context_composition.py doesn't re-derive its own,
     possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 

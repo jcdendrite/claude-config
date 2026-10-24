@@ -18,12 +18,11 @@ package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `revi
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
-`user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`, and
-`sessions.py` are the only modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
+`user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
+`sessions.py`, `context_distribution.py`, `context_composition.py`, and `cache_efficiency.py` are the only
+modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
-The still-unmigrated context-composition code separately reads `read_scope.py`'s
-`_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
 A command-group module may import another by module (attribute access). Among the review modules,
 `reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
 is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
@@ -34,6 +33,7 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
 `STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
+`context_composition.py` imports `read_scope.py` (for `_READ_SCOPE_CHARS_PER_TOKEN`) and `subagents.py` (for `_MCP_TOOL_BUCKET_LABEL`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -44,8 +44,6 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `cmd_audit_routing_shape`, and `cmd_audit_routing_samples` from the shim.
 `build_parser()` likewise wires up `subagents.py`'s `cmd_subagents` and `subagent_mix.py`'s
 `cmd_subagent_mix`/`cmd_cost_counts` from the shim.
-The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_BUCKET_LABEL` by
-name from the shim.
 `build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
 `spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim.
 `build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary`,
@@ -53,13 +51,14 @@ name from the shim.
 from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
-turn-shape-holdout-samples, and sessions by calling each owning
+turn-shape-holdout-samples, sessions, context-distribution, context-composition, and cache-efficiency by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
 `cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, `cmd_user_input`, `cmd_commit_gate`, `cmd_pr_link`, and
-`cmd_sessions`, and those
-bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
+`cmd_sessions`, `cmd_context_distribution`, `cmd_context_composition`, `cmd_cache_efficiency`, and
+`cache_efficiency.py`'s `_cache_efficiency_report`, and those
+bindings exist only for test files, which read them as `_mod.<name>`. They are read-only test
 affordances: a test that needs to steer a moved command patches the module whose binding the
 handler reads at call time, not the shim name.
 
@@ -360,9 +359,9 @@ normal cross-module package read.
 The read-scope command family: `cmd_read_scope` and every helper used only by it — the Read-call
 census by cohort and scope (`_scan_read_scope_session`), repeat-whole-file-read detection, and
 per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render`, and `scope` all
-by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` and
-`_READ_SCOPE_CHARS_PER_TOKEN` are the two names reached bare from the shim — see the exception
-noted above.
+by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` is the one name
+reached bare from the shim — see the exception noted above. `context_composition.py` reads
+`_READ_SCOPE_CHARS_PER_TOKEN` as `read_scope._READ_SCOPE_CHARS_PER_TOKEN`.
 
 ### `ledger_common.py`
 
@@ -491,9 +490,9 @@ The subagents command: `cmd_subagents` and `_MCP_TOOL_BUCKET_LABEL` — per-bran
 counts by model family, plus tool-result text bytes per thread and per producing tool, with every
 `mcp__<server>__<tool>` name collapsed into the one bucket label (an MCP server name is a per-account
 integration identifier). Imports `corpus`, `pricing`, `redaction`, `render`, and `scope` all by
-module (attribute access), matching `cost.py`'s convention. `cmd_subagents` and
-`_MCP_TOOL_BUCKET_LABEL` are the two names reached bare from the shim: `build_parser()` wires up the
-former, and the still-unmigrated context-composition code reads the latter.
+module (attribute access), matching `cost.py`'s convention. `cmd_subagents` is the one name reached
+bare from the shim, which `build_parser()` wires up. `context_composition.py` reads
+`_MCP_TOOL_BUCKET_LABEL` as `subagents._MCP_TOOL_BUCKET_LABEL`.
 
 ### `subagent_mix.py`
 
@@ -702,6 +701,33 @@ subagent files under `--include-subagents`, and the `_add_sessions_subparser` re
 `corpus` and `scope` both by module (attribute access), matching `cost.py`'s convention: it reads
 `corpus.SUBAGENT_SUBDIR`. `_add_sessions_subparser` is the one name `build_parser()` reaches bare.
 
+### `context_distribution.py`
+
+The context-distribution command: `cmd_context_distribution`, each session's peak main-thread
+context-at-turn bucketed at candidate percentage and absolute-token thresholds with each threshold's
+session and dollar shares, and the `_add_context_distribution_subparser` registration. Imports `corpus`,
+`pricing`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s convention. The
+threshold tuples and `_session_peak_context` live in `pricing.py`, and `_context_distribution_rows` lives
+in `render.py`. `_add_context_distribution_subparser` is the one name `build_parser()` reaches bare.
+
+### `context_composition.py`
+
+The context-composition command: `cmd_context_composition`, rate-weighted token-turns by content-item
+category over each context sequence, gated by the static-prefix reconciliation residual's per-sequence
+instability, and the `_add_context_composition_subparser` registration. Imports `corpus`, `pricing`,
+`read_scope`, `render`, `scope`, and `subagents` all by module (attribute access), matching `cost.py`'s
+convention. It makes two cross-command reads, `read_scope._READ_SCOPE_CHARS_PER_TOKEN` and
+`subagents._MCP_TOOL_BUCKET_LABEL`. `_add_context_composition_subparser` is the one name `build_parser()`
+reaches bare.
+
+### `cache_efficiency.py`
+
+The cache-efficiency command: `cmd_cache_efficiency`, the per-thread cold-cache read-collapse census of
+cache read and write tokens, with a per-account breakdown above one root, and the
+`_add_cache_efficiency_subparser` registration. Imports `corpus`, `pricing`, `render`, and `scope` all by
+module (attribute access), matching `cost.py`'s convention. `_add_cache_efficiency_subparser` is the one
+name `build_parser()` reaches bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -787,9 +813,10 @@ All six share
 `from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
 itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
 `tests/test_transcript_analysis.py` rather than moving with the rest of the family: it spans both
-cache-rebuild and cache-efficiency, and `.claude/plans/transcript-analysis-decomposition.md`'s rule
-for a cross-group test (stated there for `_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the
-legacy file until every group it references has moved.
+cache-rebuild and cache-efficiency.
+`.claude/plans/transcript-analysis-decomposition.md`'s rule for a cross-group test (stated there for
+`_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the legacy file at least until every group it
+references has moved.
 
 The audit-routing family splits along its three subcommands rather than one file per module:
 `tests/test_transcript_audit_routing.py` (`cmd_audit_routing`),
@@ -907,3 +934,13 @@ too, as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree
 `tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
 emission. No test covers the `--paths` refusal. The pr-link method of
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).
+
+The context-distribution, context-composition, and cache-efficiency commands each have one test file:
+`tests/test_transcript_context_distribution.py`, `tests/test_transcript_context_composition.py`, and
+`tests/test_transcript_cache_efficiency.py`. None of the three loads the shim: each imports its package
+modules directly. `tests/_cache_efficiency_helpers.py`, a plain module, not a test file itself, holds
+`_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_analysis.py` both
+read. The legacy file imports it too, as `from ._cache_efficiency_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. `TestCacheEfficiencyArgparseWiring` and
+`TestConfigDirRouting` stay in `tests/test_transcript_analysis.py` because they read `build_parser` and
+`main`, which only the shim has.
