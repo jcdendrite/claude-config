@@ -161,7 +161,7 @@ After the last consult and every change to the body, from any tree of the repo (
 ```
 ~/.claude/scripts/marker.sh write review-pr
 ```
-The write mechanically re-checks the prefix, the trailer, the mode-conditional disclosure, and a credential scan before it writes the completion marker. A non-zero exit names what failed on stderr, so fix the body under step 7's consult rule and re-run.
+The write mechanically re-checks the prefix, the trailer, the mode-conditional disclosure, a credential scan, and, in `diff-only` mode, that each `AUDIT_FINDING` path appears in the body as its own inline-code span, before it writes the completion marker. A non-zero exit names what failed on stderr, so fix the body under step 7's consult rule and re-run.
 
 **Do not write this if:** step 7's item 3 left a claim open that this session could still settle from the diff file, base objects, or worktree, or the state just synthesized is not the state currently reviewed (`headRefOid` moved). A blocking finding is the review's result and never withholds the marker. Skipping it here just means step 8's post stays gated — say so explicitly.
 
