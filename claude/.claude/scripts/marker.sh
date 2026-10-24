@@ -26,6 +26,11 @@ REVIEW_PR_SCAN_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-scan-findings-bo
 # see that script's usage text for what it checks.
 REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-attribution.sh"
 
+# Sibling script, invoked by the `write review-pr` arm below in diff-only mode
+# to confirm each audit-matched path the provenance records appears in the
+# findings body -- see that script's own header for what it checks.
+REVIEW_PR_AUDIT_PATHS_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-audit-paths.sh"
+
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
 # plugin, plugin-root-equals-repo-root, and this repo's own project-layer
 # locations) plus plan-review/ROUTING.md, matching what require-skill-review.sh
@@ -709,10 +714,11 @@ case "$SUBCOMMAND" in
         # Provenance file written by review-pr-acquire.sh (mode acquired)
         # and rewritten by review-pr-checkout.sh/review-pr-diff.sh (mode
         # checkout/diff-only): PR identity, the reviewed headRefOid, the
-        # session's Claude PID, and the mode. It never holds the findings-body
-        # text, so the findings never land in argv, shell history, or the
-        # process table. Fields are read by key, not by line position, so an
-        # added field cannot shift another field's read.
+        # session's Claude PID, the mode, and, in diff-only mode, the audit's
+        # matched paths. It never holds the findings-body text, so the
+        # findings never land in argv, shell history, or the process table.
+        # Fields are read by key, not by line position, so an added field
+        # cannot shift another field's read.
         PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
         PR_IDENTITY=$(_lib_review_pr_provenance_field "$PROVENANCE" pr_identity) || PR_IDENTITY=""
         HEAD_REF_OID=$(_lib_review_pr_provenance_field "$PROVENANCE" head_ref_oid) || HEAD_REF_OID=""
@@ -741,6 +747,17 @@ case "$SUBCOMMAND" in
             exit 2
             ;;
         esac
+        # Read beside the other provenance fields so stale provenance is
+        # refused before the session spends rounds on the body checks.
+        # review-pr-diff.sh writes `[]` when nothing matched, so an absent
+        # or empty field means the matched paths are unknown.
+        AUDIT_PATHS=""
+        if [ "$MODE" = "diff-only" ]; then
+          AUDIT_PATHS=$(_lib_review_pr_provenance_field "$PROVENANCE" audit_paths) || {
+            printf 'marker.sh: %s records no audit_paths field, so the audit'\''s matched paths are unknown. Ask the human to re-run review-pr-diff.sh %s. review-pr-diff.sh does not print the head, so after the re-run compare the PR'\''s current headRefOid with the headRefOid this review recorded from Step 1'\''s document, and redo the review if they differ. Abort without writing a marker.\n' "$PROVENANCE" "$PR_IDENTITY" >&2
+            exit 2
+          }
+        fi
         # Keyed to the main tree's root, not the current tree's, in both
         # modes: the marker binds a session to a PR review, not to a tree,
         # so it needs no _resolve_repo_root main-tree refusal and can be
@@ -757,9 +774,9 @@ case "$SUBCOMMAND" in
         # path is followed, matching the Write tool that created the file.
         BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
         [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing or unreadable). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
-        # The two checks below each read the body by path, so the hash is
+        # The checks below each read the body by path, so the hash is
         # taken again after them: a body changed in between would otherwise
-        # get a marker covering bytes neither check saw.
+        # get a marker covering bytes none of the checks saw.
         # Findings-body check, run before the marker is written so a failure
         # refuses the whole write. review-pr-check-attribution.sh's usage text
         # owns what it requires; its header says why it is mechanical.
@@ -777,6 +794,25 @@ case "$SUBCOMMAND" in
           printf '%s\n' "$SCAN_OUTPUT" >&2
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
           exit 2
+        fi
+        # Audit-matched path presence check, diff-only mode only.
+        # A checkout-mode run stops on any audit match before provenance is
+        # written, so it has no matches to check.
+        # The path list goes in on stdin because an argv string has a kernel
+        # cap. The status is read, unlike the two checks above, so a cap kill gets
+        # its own message.
+        if [ "$MODE" = "diff-only" ]; then
+          AUDIT_PATHS_STATUS=0
+          AUDIT_PATHS_OUTPUT=$(printf '%s' "$AUDIT_PATHS" | _lib_capped "$REVIEW_PR_AUDIT_PATHS_SCRIPT" "$FINDINGS_BODY_PATH" 2>&1) || AUDIT_PATHS_STATUS=$?
+          if [ "$AUDIT_PATHS_STATUS" -ne 0 ]; then
+            if _lib_status_consistent_with_cap_kill "$AUDIT_PATHS_STATUS"; then
+              printf 'marker.sh: findings-body audit-path check exited %s, consistent with its 5 s cap firing, which a very long or heavily non-ASCII path list can cause. If a re-run exits this way again, tell the human this review stays unmarked. Abort without writing a marker.\n' "$AUDIT_PATHS_STATUS" >&2
+              exit 2
+            fi
+            printf '%s\n' "$AUDIT_PATHS_OUTPUT" >&2
+            printf 'marker.sh: findings-body audit-path check failed. Abort without writing a marker.\n' >&2
+            exit 2
+          fi
         fi
         BODY_HASH_AFTER_CHECKS=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
         if [ "$BODY_HASH_AFTER_CHECKS" != "$BODY_HASH" ]; then

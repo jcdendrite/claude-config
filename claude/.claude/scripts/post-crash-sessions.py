@@ -104,10 +104,13 @@ _PROC_START_TOLERANCE_SECONDS = 2.0
 # split (2 fields), and the remainder is 0-indexed (1 more).
 _PROC_STAT_STARTTIME_INDEX = 19
 
-# Empirically measured at ~18.9s for a full $HOME sweep on one Darwin
-# machine; this bounds a hang on a slower disk or a large home tree, it does
+# Measured 2026-10-19 on one Darwin machine: 27.8s and 43.5s on two
+# cold-cache full $HOME sweeps, versus 3.7s once warm. This sweep runs right
+# after a crash, often right after a reboot. Cold-cache is the relevant
+# case, since $HOME's metadata typically has not yet reentered the kernel
+# cache. This bounds a hang on a slower disk or a large home tree; it does
 # not guarantee the sweep completes within it on every machine.
-_FIND_SWEEP_TIMEOUT_SECONDS = 25.0
+_FIND_SWEEP_TIMEOUT_SECONDS = 60.0
 
 # sysctl/ps are short-lived local commands querying local process state; this
 # is a hang-detection backstop, not a measured value.
@@ -733,13 +736,37 @@ def _find_scheduled_task_locks(
 
     -xdev stays within one filesystem: cloud-storage and network mounts under
     $HOME can force file hydration or block indefinitely. No -L: a symlinked
-    lock is not this sweep's concern. Returns (paths, timed_out, elapsed).
+    lock is not this sweep's concern. Library, .Trash, and Movies are pruned.
+    macOS TCC denies traversal into their protected subtrees (141 "Operation
+    not permitted" errors measured on one Darwin machine, 2026-10-19). None
+    of the three can hold a scheduled_tasks.lock, since locks only ever land
+    under a project's own .claude/ directory.
+
+    Known gaps:
+    - The -path match is case-sensitive, so it assumes Library, .Trash, and
+      Movies keep their canonical macOS casing (which holds for TCC-created
+      paths); a lowercase "library" directory would not be pruned.
+    - Pruning assumes no project is rooted directly under Library, .Trash,
+      or Movies, since such a project's own scheduled_tasks.lock would be
+      missed too.
+    - A nonzero exit after find has already printed some paths is not
+      distinguished from a clean sweep, so a partial result can be returned
+      as if it were complete.
+
+    Returns (paths, timed_out, elapsed).
     """
     root = find_root.resolve()
     started = time.monotonic()
     try:
         result = run(
-            ["find", str(root), "-xdev", "-maxdepth", "6", "-type", "f", "-name", "scheduled_tasks.lock"],
+            [
+                "find", str(root), "-xdev", "-maxdepth", "6",
+                "(", "-path", str(root / "Library"),
+                "-o", "-path", str(root / ".Trash"),
+                "-o", "-path", str(root / "Movies"),
+                ")", "-prune",
+                "-o", "-type", "f", "-name", "scheduled_tasks.lock", "-print",
+            ],
             capture_output=True, text=True, timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:

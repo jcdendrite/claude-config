@@ -120,11 +120,14 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
-      # The awk lines record which implementation runs the cumulative-review normalizer's tests on this runner.
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
+        run: nproc
+
+      # Records the runner's git version and which awk implementation runs the cumulative-review normalizer's tests.
+      - name: Report runner git and awk versions
+        if: steps.detect.outputs.changed == 'true'
         run: |
-          nproc
           git --version
           readlink -f "$(command -v awk)" || true
           { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
