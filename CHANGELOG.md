@@ -377,6 +377,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `ruff check --add-noqa` now denies, bare or behind `scripts/venv-run.sh`, since it writes `# noqa` comments into files in place.
   - A gated command word, write flag, or write target split across a backslash-newline continuation now denies, such as `ru\` then `ff`, `sed \` then `-i`, or `ruff check \` then `--fix`.
 - **A change under repo-root `scripts/` now selects the hooks and scripts tests in `select-tests.py` instead of falling open to the full suite.**
+- **`update-claude-config-plugins.sh` now handles `local`-scope entries like `project`-scope ones and no longer aborts on a failed update.**
+  - `local`-scope entries are now filtered to the current repo like `project`-scope ones, unless `--all-projects` is passed.
+  - Every project- or local-scope update now runs from inside the entry's `projectPath`, with or without `--all-projects`.
+  - A failed update at any scope, user scope included, now warns and the run exits 1 at the end instead of aborting.
 
 ### Removed
 
@@ -407,6 +411,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Added
 
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
+- **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
+  - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.
+  - IDE and desktop sessions are expected to skip it, which is untested.
+  - The install lands for the next session in that repo. Only a fresh start triggers it, not `--resume`, `--continue`, `/clear`, or `/compact`.
+  - Installs write the repo's gitignored `.claude/settings.local.json` and fetch plugin content at session start.
+  - The plugin is reinstalled next session unless the repo stops declaring its id or you set the id to `false` in `.claude/settings.local.json`. `claude plugin uninstall <id> -s local` alone does not keep it removed.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` or `~/.claude/scripts` is a real directory rather than a symlink into this checkout.** Until then a real hooks directory leaves the new hook unlinked while `settings.json` already registers it, and a real scripts directory leaves `reconcile-project-plugins.sh` unlinked.
+  - The startup latency it addresses was reproduced and measured on git-source marketplaces only. It also installs from `github` and `directory` sources, with no measured benefit there, and skips every other source type.
+  - **Migration:** to opt out before pulling, add `plugin_bootstrap = false` to `<config-dir>/claude-config.toml`. That key is the only opt-out that holds across every repo and worktree.
+  - `<config-dir>/plugin-bootstrap/audit.log` lists installs until it rolls over, and `claude plugin list --json` is the durable inventory. See `docs/hooks.md` § Utility hooks.
 - **A repo can now opt in to the private-project redaction gate by committing `.claude/private-projects-optin`.** The whole `deny-private-project-refs.sh` hook then runs there: the tracker-ID scan, the structural-shape scan, and the private-projects blocklist. The change is live on `git pull` with no re-install. `claude-config` and its forks stay gated by their origin URL. Nothing changes in a repo that is not claude-config and has no marker. Every gated repo, claude-config included, gets a hardened staged-diff read: it ignores color, external-diff, textconv, `diff.relative`, and git pathspec environment settings, and denies on a `git diff` error. Because the read passes `--no-textconv`, a binary file that a textconv driver maps to text is no longer scanned. The hook header's Known gaps lists known unscanned shapes. See `docs/private-project-redaction.md` § "Opting in another repository".
 - **`transcript-analysis.py period-cost` and the `/period-cost-report` skill: one Claude Code account's per-PR and per-review spend for an inclusive UTC date range, grouped by repository, as Slack mrkdwn.** The report covers every repository the active account worked in and fits an account whose repositories all belong to one project owner. It is built for private delivery to that owner, not for a PR body, commit, issue, or this repository.
   - **Reads and writes:** it reads the active account's transcripts, runs `git` in each recorded directory, and calls `gh` over the network (`gh pr list` per listed repository, and `gh auth status` per host other than github.com). It writes nothing to disk. `--sample` prints a synthetic report and reads nothing.

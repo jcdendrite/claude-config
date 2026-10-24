@@ -165,6 +165,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "~/.claude/hooks/bootstrap-project-plugins.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
             "command": "~/.claude/hooks/nudge-memory-store-audit.sh",
             "timeout": 10
           }
