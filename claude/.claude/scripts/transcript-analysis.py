@@ -190,7 +190,7 @@ from transcript_analysis.pricing import (
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
 from transcript_analysis.read_scope import (
-    # Read bare by this file's own still-monolithic build_parser (the read-scope subcommand's own set_defaults).
+    # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
 )
 from transcript_analysis.rearm_backtest import (
@@ -291,7 +291,7 @@ from transcript_analysis.subagent_mix import (
     cmd_subagent_mix,
 )
 from transcript_analysis.subagents import (
-    # Read bare by this file's own still-monolithic build_parser (the subagents subcommand's own set_defaults).
+    # Read bare by this file's own build_parser (the subagents subcommand's own set_defaults).
     cmd_subagents,
 )
 from transcript_analysis.turn_shape import (
