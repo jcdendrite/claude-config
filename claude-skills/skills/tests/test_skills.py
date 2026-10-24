@@ -6136,7 +6136,7 @@ class TestReadyForReviewPreflightScriptClauses:
 
     The chained step 8 call is what keeps a failed body check from reaching the PR-creation
     command, so dropping the `create` prefix from the chain, or the instruction to re-run the
-    whole call on every attempt, silently reopens the empty-body hole the removed shell guard closed.
+    whole call on every attempt, silently reopens the empty-body hole.
     """
 
     @pytest.mark.parametrize("clause_key", sorted(_PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES))

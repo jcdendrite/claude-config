@@ -336,9 +336,7 @@ class TestBodyCheck:
         ids=["letter", "file-separator", "next-line", "latin1-nbsp", "utf8-nbsp", "invalid-utf8", "nul", "padded"],
     )
     def test_any_other_byte_is_content(self, preflight, tmp_path: Path, content: bytes) -> None:
-        """A NUL-only file is content here although `[ -n "$(tr -d '[:space:]' < file)" ]` refuses it.
-
-        Bash command substitution drops NUL bytes, so that test sees an empty string.
+        """A NUL-only file is content.
 
         The file-separator, next-line, latin1-nbsp, utf8-nbsp and invalid-utf8 rows are bytes a check that
         decodes to str would count as whitespace or fail to decode.

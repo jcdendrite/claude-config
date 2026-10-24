@@ -40,8 +40,7 @@ characters neither end nor expand a word inside the double-quoted `--title` argu
   the read raises OSError. `os.stat` follows a symlink, as `[ -f ]` does. A FIFO is refused before any
   open, so nothing blocks.
 - body-empty: the file holds no byte outside the six whitespace bytes space, tab, LF, VT, FF and CR.
-  NUL is content, so a file of only NUL and whitespace bytes passes, where
-  `[ -n "$(tr -d '[:space:]' < file)" ]` refuses it because bash command substitution drops NUL bytes.
+  NUL is content, so a file of only NUL and whitespace bytes passes.
 
 Keys: TICKET_ID, TITLE, REASON
 Reason codes: usage, internal-error, not-on-branch, not-plain-word, body-unreadable, body-empty
@@ -85,7 +84,6 @@ _REASON_CODES = (
 _TICKET_ID_PATTERN = r"[A-Za-z]+-[0-9]+"
 _TITLE_PATTERN = r"[A-Za-z0-9._: -]+"
 _BODY_PATH_PATTERN = r"/[A-Za-z0-9._/-]*"
-# The six bytes `tr -d '[:space:]'` deletes in the POSIX locale.
 _BODY_WHITESPACE = b" \t\n\v\f\r"
 _NO_TICKET_ID = "none"
 _TITLE_MAX_CHARACTERS = 70
