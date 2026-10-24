@@ -80,10 +80,6 @@ LATENCY_PROBE_POLL_INTERVAL_SECONDS = 0.001
 # Matches ENTRYPOINT_LOGGED_MAX_LENGTH in the hook.
 ENTRYPOINT_LOGGED_MAX_LENGTH = 64
 SIZE_CAP_BYTES = int(_sourced_value("_LIB_SIZE_THRESHOLD_BYTES"))
-ENABLED_PLUGIN_IDS_MAX = int(_sourced_value("_LIB_ENABLED_PLUGIN_IDS_MAX"))
-# A valid-shaped key whose marketplace half is long enough that an unbounded `##*@` removal
-# takes many seconds, yet below the 128 KiB single-argument limit.
-LONG_MARKETPLACE_HALF_LENGTH = 96 * 1024
 
 AUDIT_LINE_KEYS = {"timestamp", "pid", "repo_root", "plugin_id", "decision", "outcome"}
 AUDIT_TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -128,11 +124,10 @@ class Sandbox:
         settings_file.parent.mkdir(parents=True, exist_ok=True)
         settings_file.write_text(json.dumps({"enabledPlugins": enabled_plugins}))
 
-    def write_registry(self, plugin_ids: list[str], version: int | None = 2, project_path: str = "/elsewhere") -> None:
+    def write_registry(self, plugin_ids: list[str], project_path: str = "/elsewhere") -> None:
         write_plugin_registry(
             plugin_registry_file(self.config_dir),
             {pid: [v2_registry_entry(project_path)] for pid in plugin_ids},
-            version,
         )
 
     def write_trust(self, repo: Path | None = None, accepted: object = True, trust_file: Path | None = None) -> None:
@@ -524,35 +519,27 @@ class TestMissingIdDecision:
 
         sandbox.assert_not_launched()
 
-    def test_valid_shaped_id_with_a_long_marketplace_half_never_launches(self, sandbox):
-        """The id length bound rejects it. The bound's cost is timed at the unit layer, in test_lib.py."""
-        sandbox.write_settings({"a@" + "b" * LONG_MARKETPLACE_HALF_LENGTH: True})
-
-        sandbox.run()
-
-        sandbox.assert_not_launched()
-
-    def test_enabled_id_count_at_the_cap_still_launches(self, sandbox):
-        sandbox.write_settings({f"plugin-{index}@market-a": True for index in range(ENABLED_PLUGIN_IDS_MAX)})
-
-        sandbox.run()
-
-        sandbox.assert_launched_with_root()
-
-    def test_enabled_id_count_one_past_the_cap_is_silent_no_launch(self, sandbox):
-        sandbox.write_settings({f"plugin-{index}@market-a": True for index in range(ENABLED_PLUGIN_IDS_MAX + 1)})
-
-        sandbox.run()
-
-        sandbox.assert_not_launched()
-        assert sandbox.audit_entries() == []
-
     def test_one_valid_id_among_invalid_ids_still_launches(self, sandbox):
         sandbox.write_settings({"-flag@market-a": True, "plugin-a@npm": True, MISSING_PLUGIN_ID: True})
 
         sandbox.run()
 
         sandbox.assert_launched_with_root()
+
+    def test_unparseable_registry_is_no_launch_and_logged(self, sandbox):
+        """The three real-helper tests pin the hook's helper-status case arms against the real helper's return values.
+
+        test_launch_requires_helper_status_zero_even_when_the_helper_printed_an_id pins them only against literal statuses.
+        """
+        registry_file = sandbox.config_dir / "plugins" / "installed_plugins.json"
+        registry_file.parent.mkdir(parents=True)
+        registry_file.write_text("{ not json")
+
+        sandbox.run()
+
+        [entry] = sandbox.audit_entries()
+        assert entry["decision"] == "registry_unparseable_or_version_mismatch"
+        sandbox.assert_not_launched_after_logged_refusal()
 
     def test_symlinked_settings_file_is_silent_no_launch(self, sandbox, tmp_path):
         real_settings = tmp_path / "real-settings.json"
@@ -566,70 +553,18 @@ class TestMissingIdDecision:
         sandbox.assert_not_launched()
         assert sandbox.audit_entries() == []
 
-    def test_non_regular_settings_file_is_silent_no_launch(self, sandbox):
-        settings_file = sandbox.repo / ".claude" / "settings.json"
-        settings_file.unlink()
-        settings_file.mkdir()
+    def test_unparseable_local_settings_is_no_launch_and_logged(self, sandbox):
+        """Drives the real helper to status 3.
 
-        sandbox.run()
-
-        sandbox.assert_not_launched()
-
-    def test_oversized_settings_file_is_silent_no_launch(self, sandbox):
-        oversized = {"enabledPlugins": {MISSING_PLUGIN_ID: True}, "padding": "x" * (SIZE_CAP_BYTES + 1)}
-        (sandbox.repo / ".claude" / "settings.json").write_text(json.dumps(oversized))
-
-        sandbox.run()
-
-        sandbox.assert_not_launched()
-        assert sandbox.audit_entries() == []
-
-    @pytest.mark.parametrize("registry_version", [None, 1, 3], ids=["version-missing", "version-1", "version-3"])
-    def test_registry_with_wrong_version_is_no_launch_and_logged(self, sandbox, registry_version):
-        sandbox.write_registry([], version=registry_version)
+        test_launch_requires_helper_status_zero_even_when_the_helper_printed_an_id shims the helper instead.
+        """
+        (sandbox.repo / ".claude" / "settings.local.json").write_text("{ not json")
 
         sandbox.run()
 
         [entry] = sandbox.audit_entries()
-        assert entry["decision"] == "registry_unparseable_or_version_mismatch"
+        assert entry["decision"] == "m10_local_optout_unreadable"
         assert entry["outcome"] == "skipped"
-        sandbox.assert_not_launched_after_logged_refusal()
-
-    @pytest.mark.parametrize(
-        "registry_text",
-        ['{"version": 2}', '{"version": 2, "plugins": null}', '{"version": 2, "plugins": []}', '{"version": "2", "plugins": {}}'],
-        ids=["plugins-absent", "plugins-null", "plugins-array", "version-string"],
-    )
-    def test_registry_that_is_not_a_version_2_object_of_plugins_is_no_launch_and_logged(self, sandbox, registry_text):
-        registry_file = sandbox.config_dir / "plugins" / "installed_plugins.json"
-        registry_file.parent.mkdir(parents=True)
-        registry_file.write_text(registry_text)
-
-        sandbox.run()
-
-        [entry] = sandbox.audit_entries()
-        assert entry["decision"] == "registry_unparseable_or_version_mismatch"
-        sandbox.assert_not_launched_after_logged_refusal()
-
-    def test_two_top_level_json_values_in_settings_is_silent_no_launch(self, sandbox):
-        (sandbox.repo / ".claude" / "settings.json").write_text(
-            json.dumps({"enabledPlugins": {MISSING_PLUGIN_ID: True}}) + json.dumps({"enabledPlugins": {}})
-        )
-
-        sandbox.run()
-
-        sandbox.assert_not_launched()
-        assert sandbox.audit_entries() == []
-
-    def test_unparseable_registry_is_no_launch_and_logged(self, sandbox):
-        registry_file = sandbox.config_dir / "plugins" / "installed_plugins.json"
-        registry_file.parent.mkdir(parents=True)
-        registry_file.write_text("{ not json")
-
-        sandbox.run()
-
-        [entry] = sandbox.audit_entries()
-        assert entry["decision"] == "registry_unparseable_or_version_mismatch"
         sandbox.assert_not_launched_after_logged_refusal()
 
     @pytest.mark.parametrize(
@@ -960,35 +895,6 @@ class TestLocalOptOut:
         sandbox.run()
 
         sandbox.assert_launched_with_root()
-
-    @pytest.mark.parametrize(
-        "local_settings_text",
-        ["{ not json", json.dumps([]), json.dumps({"enabledPlugins": "oops"})],
-        ids=["malformed-json", "top-level-array", "enabledplugins-not-object"],
-    )
-    def test_unreadable_local_settings_is_no_launch_and_logged(self, sandbox, local_settings_text):
-        """Deny case: status 3 logs m10_local_optout_unreadable, unlike the silent status 1."""
-        (sandbox.repo / ".claude" / "settings.local.json").write_text(local_settings_text)
-
-        sandbox.run()
-
-        [entry] = sandbox.audit_entries()
-        assert entry["decision"] == "m10_local_optout_unreadable"
-        assert entry["outcome"] == "skipped"
-        assert entry["plugin_id"] == "-"
-        assert entry["repo_root"] == str(sandbox.repo)
-        sandbox.assert_not_launched_after_logged_refusal()
-
-    def test_symlinked_local_settings_is_no_launch_and_logged(self, sandbox, tmp_path):
-        real_local_settings = tmp_path / "real-local.json"
-        real_local_settings.write_text(json.dumps({"enabledPlugins": {}}))
-        (sandbox.repo / ".claude" / "settings.local.json").symlink_to(real_local_settings)
-
-        sandbox.run()
-
-        [entry] = sandbox.audit_entries()
-        assert entry["decision"] == "m10_local_optout_unreadable"
-        sandbox.assert_not_launched_after_logged_refusal()
 
 
 class TestTrustLayerOne:

@@ -748,6 +748,8 @@ Reopening would need:
 
 No code, skill, hook, or test change ships from this investigation.
 
+**2026-10-24 follow-up:** the suggested-fix-wording form of the lever above is adopted by judgment, not by measurement; the rule lives in `code-review/SKILL.md` § "Output format". The `code-writer` form stays deferred.
+
 ## From `haiku-routing-surfaces.md` — "Haiku routing surfaces: measure Haiku's locate recall, then pin and route the locate lane"
 
 | Lever | Verdict | Measured reason |

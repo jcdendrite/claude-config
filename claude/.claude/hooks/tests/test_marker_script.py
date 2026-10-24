@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1634,8 +1635,9 @@ class TestMarkerDirectoryNamingConvention:
 
     def _seed_review_pr_sibling(self, home, sid, tmp_path):
         """review-pr's write arm reads a key=value provenance file (schema=1
-        header, then pr_identity/head_ref_oid/pid/mode) rather than deriving
-        its marker value from repo state the way the other arms do. mode
+        header, then pr_identity/head_ref_oid/pid/mode, plus audit_paths for
+        diff-only) rather than deriving its marker value from repo state the
+        way the other arms do. mode
         "diff-only" needs no local-HEAD match, keeping this seeding
         independent of whatever commit git_repo happens to be at. Seeded
         unconditionally alongside the plans_dir seeding below so every skill
@@ -1646,7 +1648,9 @@ class TestMarkerDirectoryNamingConvention:
         findings_body.write_text(
             f"**[Claude Code]** # findings\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
         )
-        write_review_pr_provenance(home, "foo/bar#1", "abc123", os.getpid(), mode="diff-only", session_id=sid)
+        write_review_pr_provenance(
+            home, "foo/bar#1", "abc123", os.getpid(), mode="diff-only", session_id=sid, audit_paths="[]"
+        )
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_lands_in_skill_derived_directory(
@@ -6341,11 +6345,23 @@ class TestMarkerScriptReviewPr:
     def _fixed_body_path(self, home, sid=SID):
         return home / ".claude" / ".review-pr-active.d" / f"{sid}.body"
 
-    def _declare_provenance(self, home, pr_identity, head_ref_oid, mode="checkout", pid=None, sid=SID):
+    def _declare_provenance(
+        self, home, pr_identity, head_ref_oid, mode="checkout", pid=None, sid=SID, audit_paths=None
+    ):
         """_lib_write_review_pr_provenance's key=value schema (_lib.sh): a
-        `schema=1` header line, then one key=value line per field."""
+        `schema=1` header line, then one key=value line per field.
+        `audit_paths` is the raw field value review-pr-diff.sh records.
+        It defaults to `[]` (no audit match) for diff-only and to no field
+        for checkout."""
         stored_pid = pid if pid is not None else os.getpid()
-        return write_review_pr_provenance(home, pr_identity, head_ref_oid, stored_pid, mode=mode, session_id=sid)
+        extra_fields = {}
+        if audit_paths is not None:
+            extra_fields["audit_paths"] = audit_paths
+        elif mode == "diff-only":
+            extra_fields["audit_paths"] = "[]"
+        return write_review_pr_provenance(
+            home, pr_identity, head_ref_oid, stored_pid, mode=mode, session_id=sid, **extra_fields
+        )
 
     def test_write_stores_pr_identity_head_ref_oid_body_hash_and_mode(
         self, isolated_home, git_repo, tmp_path
@@ -6877,6 +6893,282 @@ class TestMarkerScriptReviewPr:
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a credential-shaped findings body must not write a marker: {stray}"
+
+    def _write_diff_only_body_naming(self, home, spans, sid=SID):
+        """A findings body that passes the attribution check in diff-only mode and
+        holds `spans` as its inline-code text, one bullet each."""
+        findings_body = self._fixed_body_path(home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        blocking_findings = "".join(f"- blocking: {span}\n" for span in spans)
+        findings_body.write_text(
+            f"**[Claude Code]** # findings\n\n{blocking_findings}\n"
+            f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        return findings_body
+
+    def _assert_no_completion_marker(self, home, repo, sid=SID):
+        assert not review_pr_completion_marker_path(home, repo, sid).exists()
+
+    def test_diff_only_write_succeeds_when_the_body_names_every_audit_matched_path(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, ["`.claude/hooks/pre.sh`", "`docs/CLAUDE.md`"], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid,
+            audit_paths=json.dumps([".claude/hooks/pre.sh", "docs/CLAUDE.md"]),
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def test_diff_only_write_refuses_a_body_missing_one_audit_matched_path_and_names_it(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, ["`.claude/hooks/pre.sh`"], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid,
+            audit_paths=json.dumps([".claude/hooks/pre.sh", "docs/CLAUDE.md"]),
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert "missing span 1: `docs/CLAUDE.md`" in result.stderr
+        assert "missing span 2" not in result.stderr
+        assert "audit-path check failed" in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    @pytest.mark.parametrize("audit_paths_line_value", [None, ""], ids=["field-absent", "field-empty"])
+    def test_diff_only_write_refuses_provenance_with_no_audit_paths_before_the_body_checks(
+        self, isolated_home, git_repo, audit_paths_line_value
+    ):
+        """Provenance with no audit_paths field cannot say what the audit matched, so the write
+        refuses it. The body here would fail the attribution check, so the refusal
+        proves the audit_paths read happens first."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings body, no attribution prefix\n")
+        extra_fields = {} if audit_paths_line_value is None else {"audit_paths": audit_paths_line_value}
+        write_review_pr_provenance(
+            isolated_home, "foo/bar#42", "abc123", os.getpid(), mode="diff-only", session_id=sid, **extra_fields
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert "records no audit_paths field" in result.stderr
+        assert "re-run review-pr-diff.sh foo/bar#42" in result.stderr
+        assert (
+            "compare the PR's current headRefOid with the headRefOid this review recorded from Step 1's document"
+            in result.stderr
+        )
+        assert "attribution" not in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    @pytest.mark.parametrize("malformed_audit_paths", ["not-json", "{}"], ids=["not-json", "object-not-array"])
+    def test_diff_only_write_refuses_an_audit_paths_value_that_is_not_a_json_array(
+        self, isolated_home, git_repo, malformed_audit_paths
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid, audit_paths=malformed_audit_paths
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert "audit-path check failed" in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    def test_checkout_write_ignores_audit_paths_the_body_does_not_name(self, isolated_home, git_repo):
+        """Checkout mode stops on any audit match before writing provenance, so the check runs only in diff-only mode."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid,
+            audit_paths=json.dumps([".claude/hooks/pre.sh"]),
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    def test_diff_only_write_names_the_cap_when_the_audit_path_check_exits_with_a_cap_kill_status(
+        self, isolated_home, git_repo, tmp_path, cap_kill_status
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
+
+        result = self._write_with_stand_in_check_siblings(
+            tmp_path, isolated_home, git_repo,
+            {"review-pr-check-audit-paths.sh": f"#!/usr/bin/env bash\nexit {cap_kill_status}\n"},
+            real_siblings=("review-pr-check-attribution.sh", "review-pr-scan-findings-body.sh"),
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert f"audit-path check exited {cap_kill_status}, consistent with its 5 s cap firing" in result.stderr
+        assert "audit-path check failed" not in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    def test_diff_only_write_succeeds_when_the_body_holds_the_escaped_span_of_each_hostile_name(
+        self, isolated_home, git_repo
+    ):
+        """The names cross the provenance file, the provenance reader and marker.sh's stdin hop, so a
+        reader that interpreted backslashes would turn every escaped name into a refusal. The
+        space-bearing name goes red if the list is word-split or glob-expanded between the
+        provenance read and the check's stdin."""
+        sid = self.SID
+        backslash = chr(92)
+        hostile_names_and_spans = [
+            (".claude/hooks/dir x/a=b*c$d.sh", "`.claude/hooks/dir x/a=b*c$d.sh`"),
+            ("dir" + backslash + "x", "`dir" + backslash * 2 + "x`"),
+            ("q" + chr(0x22) + "x", "`q" + backslash + chr(0x22) + "x`"),
+            ("b" + chr(0x60) + "x", "`b" + backslash + "u0060x`"),
+            ("o" + chr(0x202E) + "x", "`o" + backslash + "u202ex`"),
+            ("e" + chr(0xE9) + "x", "`e" + backslash + "u00e9x`"),
+            ("a" + chr(0x1F600) + "x", "`a" + backslash + "ud83d" + backslash + "ude00x`"),
+        ]
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, [span for _, span in hostile_names_and_spans], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid,
+            audit_paths=json.dumps([name for name, _ in hostile_names_and_spans]),
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def test_diff_only_write_runs_the_audit_path_check_before_the_rehash_of_the_body(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Only the re-hash can refuse a stand-in check that rewrites the body and passes, so
+        a check moved after the re-hash would leave this write succeeding."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
+
+        result = self._write_with_stand_in_check_siblings(
+            tmp_path, isolated_home, git_repo,
+            {
+                "review-pr-check-audit-paths.sh": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf 'rewritten during the audit-path check\\n' >> {str(findings_body)!r}\n"
+                )
+            },
+            real_siblings=("review-pr-check-attribution.sh", "review-pr-scan-findings-body.sh"),
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "changed while it was being checked" in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    @pytest.mark.timing
+    def test_diff_only_write_passes_a_list_over_the_argv_string_cap_to_the_check_on_stdin(
+        self, isolated_home, git_repo
+    ):
+        """300 ASCII names past 131,072 bytes (Linux's one-argv-string cap) reach the check.
+        Its refusal lists 20 spans and stays under the 30,000-byte Bash output truncation threshold."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        recorded_names = [f"dir{index:03d}/" + "x" * 440 for index in range(300)]
+        audit_paths = json.dumps(recorded_names)
+        assert len(audit_paths.encode()) > 131_072
+        self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid, audit_paths=audit_paths
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert f"missing span 1: `{recorded_names[0]}`" in result.stderr
+        assert "END UNTRUSTED FILE NAMES" in result.stderr
+        assert "lacks 300 audit-matched path span(s)" in result.stderr
+        assert "... and 280 more missing span(s) not shown" in result.stderr
+        assert len(result.stderr.encode()) < 30_000
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    def test_diff_only_write_tells_the_human_to_post_by_hand_for_a_credential_shaped_missing_name(
+        self, isolated_home, git_repo
+    ):
+        """The scan refuses any body holding the span, so the check cannot be satisfied and says so
+        without echoing the span."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        credential_shaped_name = ".claude/hooks/ghp_" + "a" * 36
+        self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid,
+            audit_paths=json.dumps([credential_shaped_name]),
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert "must post this review by hand" in result.stderr
+        assert "audit-path check failed" in result.stderr
+        assert "missing span" not in result.stderr
+        assert "ghp_" not in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
+
+    @pytest.mark.parametrize(
+        "stand_in_source, expected_status",
+        [
+            pytest.param("#!/usr/bin/env bash\nexit 3\n", 3, id="status-outside-the-known-set"),
+            pytest.param(None, 127, id="script-missing"),
+            pytest.param("#!/usr/bin/env bash\nexit 0\n", 126, id="script-not-executable"),
+        ],
+    )
+    def test_diff_only_write_takes_the_generic_refusal_for_a_status_that_is_not_a_cap_kill(
+        self, isolated_home, git_repo, tmp_path, stand_in_source, expected_status
+    ):
+        """timeout exits 126 for a non-executable file and 127 for a missing one. Neither is a cap
+        firing, so neither gets the cap message."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_diff_only_body_naming(isolated_home, [], sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
+        sibling_sources = {} if stand_in_source is None else {"review-pr-check-audit-paths.sh": stand_in_source}
+        marker_sh = _marker_sh_in_synthetic_install(
+            tmp_path, sibling_sources,
+            real_siblings=("review-pr-check-attribution.sh", "review-pr-scan-findings-body.sh"),
+        )
+        stand_in_path = os.path.join(os.path.dirname(marker_sh), "review-pr-check-audit-paths.sh")
+        if expected_status == 126:
+            os.chmod(stand_in_path, 0o644)
+        # Control: running the stand-in directly yields the status its row names, with or without timeout(1).
+        assert subprocess.run(["bash", "-c", '"$0"', stand_in_path]).returncode == expected_status
+
+        result = subprocess.run(
+            ["bash", marker_sh, "write", "review-pr"],
+            cwd=git_repo,
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "audit-path check failed" in result.stderr
+        assert "cap firing" not in result.stderr
+        self._assert_no_completion_marker(isolated_home, git_repo, sid)
 
     def test_write_without_provenance_aborts_without_writing_marker(
         self, isolated_home, git_repo

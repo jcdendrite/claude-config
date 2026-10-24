@@ -6,8 +6,8 @@ audit_routing, workstream_cost, subagents, subagent_mix, rearm_backtest,
 spend_over_threshold, plan_boundary, handoff_signal_response, judgment_pair,
 skill_invocation, skill_pair, period_cost, buckets, fail_seq, struggle, user_input, duration,
 friction_count, turn_shape, commit_gate, pr_link, sessions, context_distribution,
-context_composition, cache_efficiency), and the shared ledger/gh-access/handoff-nudge
-modules (ledger_common, gh_cli, pr_cost_ledger, handoff_nudge), plus
+context_composition, cache_efficiency, edit_format, instrument_authoring), and the shared
+ledger/gh-access/handoff-nudge modules (ledger_common, gh_cli, pr_cost_ledger, handoff_nudge), plus
 session_pricing, the one module with a stability promise, for importers outside
 this repository (see docs/transcript-analysis-architecture.md).
 
