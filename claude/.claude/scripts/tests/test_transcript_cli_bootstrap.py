@@ -752,6 +752,78 @@ def test_transcript_analysis_context_and_cache_subprocess_finds_seeded_session(
     assert_seeded_cells(result.stdout)
 
 
+@pytest.mark.parametrize(
+    ("command", "flag_tokens"),
+    [
+        # Usage-line forms, because edit-format's --config-dir and --no-redact help texts each name the other flag.
+        ("edit-format", ("[--config-dir DIR]", "[--no-redact]")),
+        ("instrument-authoring", ("[--config-dir DIR]",)),
+    ],
+    ids=["edit-format", "instrument-authoring"],
+)
+def test_transcript_analysis_edit_format_and_instrument_authoring_help_exits_zero(command, flag_tokens):
+    """Proves, in a fresh interpreter, that build_parser calls the edit-format and instrument-authoring registrars,
+    and that each registrar still adds its --config-dir flag and, where it has one, its --no-redact flag."""
+    result = _run("transcript-analysis.py", command, "--help")
+    assert result.returncode == 0, result.stderr
+    assert f"transcript-analysis.py {command}" in result.stdout
+    for flag_token in flag_tokens:
+        assert flag_token in result.stdout
+
+
+def _assert_edit_format_seeded_cells(stdout: str) -> None:
+    assert re.search(r"total assistant output tokens \(all sessions\): 200(?=\s)", stdout), stdout
+
+
+def _assert_instrument_authoring_seeded_cells(stdout: str) -> None:
+    assert re.search(r"zero_dispatch +sessions= +1 \(100\.0% of sessions\)", stdout), stdout
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_token", "resolved_root_token", "assert_seeded_cells"),
+    [
+        (
+            "edit-format",
+            "## Edit-family call census",
+            "EDIT FORMAT SOURCES (*; 2 roots)",
+            _assert_edit_format_seeded_cells,
+        ),
+        (
+            "instrument-authoring",
+            "## Inline instrument-authoring census",
+            "INSTRUMENT AUTHORING SOURCES (*; 2 roots)",
+            _assert_instrument_authoring_seeded_cells,
+        ),
+    ],
+    ids=["edit-format", "instrument-authoring"],
+)
+def test_transcript_analysis_edit_format_and_instrument_authoring_subprocess_finds_seeded_session(
+    tmp_path, command, expected_token, resolved_root_token, assert_seeded_cells
+):
+    """Proves, in a fresh interpreter, that real argparse dispatches edit-format and instrument-authoring each to its
+    own cmd_* handler through set_defaults(func=...), and that the subcommand-level --config-dir reaches
+    _resolve_cost_roots. Both refuse the top-level --config-dir, so _isolated_config_env pins the first account and
+    the subcommand flag adds an empty second one."""
+    # _seed_read_scope_account's one turn carries output tokens, which edit-format's census reports.
+    config_dir = _seed_read_scope_account(tmp_path)
+    extra_config_dir = tmp_path / "account2"
+    (extra_config_dir / "projects").mkdir(parents=True)
+
+    result = _run(
+        "transcript-analysis.py", command, "--config-dir", str(extra_config_dir),
+        env=_isolated_config_env(config_dir, tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout, (
+        f"{command} never printed its own report heading {expected_token!r}: {result.stdout!r}"
+    )
+    assert resolved_root_token in result.stdout, (
+        f"{command} never resolved the --config-dir root through _resolve_cost_roots: {result.stdout!r}"
+    )
+    assert_seeded_cells(result.stdout)
+
+
 def test_transcript_analysis_read_scope_help_exits_zero():
     result = _run("transcript-analysis.py", "read-scope", "--help")
     assert result.returncode == 0, result.stderr
