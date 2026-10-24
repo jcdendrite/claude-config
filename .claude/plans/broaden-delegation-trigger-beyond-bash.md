@@ -1,6 +1,6 @@
 # Broaden the delegation trigger beyond Bash
 
-**Status (2026-10-23):** Shelved, not built. The parent plan's tool-call detectors missed the same precision and κ floors this plan adopts (`docs/design-decisions/tool-call-advisory-does-not-ship.md`), and this detector's expected false positives turn on intent that transcripts do not record (G2). The placement and test-helper sections also predate the `transcript_analysis/` package extraction of `audit_routing` and `turn_shape`, so a revival must re-plan them.
+**Status (2026-10-23):** Shelved, not built. The parent plan's tool-call detectors missed the same precision and κ floors this plan adopts (`docs/design-decisions/tool-call-advisory-does-not-ship.md`). This detector's expected false positives separately turn on intent that transcripts do not record (G2). The placement and test-helper sections also predate the `transcript_analysis/` package extraction of `audit_routing` and `turn_shape`, so a revival must re-plan them.
 
 ## Context
 
@@ -89,10 +89,10 @@ wrong.
 | A12 | `Bash`-only turns are excluded from this population | **[verified: `transcript-analysis.py:7909-7942`]** — those turns are the shipped delegation rule's population; including them would double-count and would make the two rules' precision figures non-independent |
 | A13 | The brief's cited line anchors are stale (it cites 8761, 8876, 8601 for symbols now at 7909, 8024, 7749) | **[verified: `grep -n` against the current file]** — implementation should re-locate by symbol name, not by the brief's line numbers |
 | A14 | `Grep`/`Glob`'s `path` is routinely relative while `Read`'s `file_path` is absolute, so raw string comparison would double-count one file | **[verified: `transcript-analysis.py:2850-2905`]** — `_normalize_cited_path`'s own docstring exists for this hazard class ("would make the join key depend on where each analyst's clone lives"), and `:2978` shows the `rec.get("cwd")` source it needs. The frequency of the mismatch in *this* corpus is **[unverified]** and is what Verification 6a measures |
-| A15 | `read-sweep-samples` retains full, unredacted paths rather than truncating or relativizing them | **[engineer-verified — recorded as a deliberate choice, not inherited]**. Every flagged entry carries at least two real paths by construction of the predicate, making this output denser in path content than `turn-shape-samples`, whose `Bash` command text is only sometimes path-bearing. Full paths are retained because a rater cannot judge dispatchability without seeing what was actually read; the mitigation is the handling rule in Verification 7, not redaction |
+| A15 | `read-sweep-samples` retains full, unredacted paths rather than truncating or relativizing them | **[engineer-verified — recorded as a deliberate choice, not inherited]**. Every flagged entry carries at least two real paths by construction of the predicate, making this output denser in path content than `turn-shape-samples`, whose `Bash` command text is only sometimes path-bearing. Full paths are retained because a rater cannot judge dispatchability without seeing what was actually read. The resulting disclosure risk is mitigated by the handling rule in Verification 7, not by redaction |
 | A16 | This plan adds ~400 lines to `transcript-analysis.py` while `.claude/plans/transcript-analysis-decomposition.md` is actively extracting that file into `transcript_analysis/`, with `audit-routing` — whose D1/D3 internals this plan reuses — queued as a future extraction phase | **[verified: `.claude/plans/transcript-analysis-decomposition.md:150-152`]**. Resolution below under "Relationship to the decomposition effort" |
 | A17 | Test helpers `_read_use`, `_grep_use`, `_glob_use` already exist — in `test_transcript_analysis.py:9888-9898`, not `conftest.py` — and the existing `_grep_use(tool_id)` hardcodes `path: "."` with no parameter | **[verified: `grep -rn "def _read_use\|def _grep_use\|def _glob_use" claude/.claude/scripts/tests/`]**. Adding a differently-signatured `_grep_use` to `conftest.py` would be shadowed by the local definition throughout the region where the new tests belong |
-| A18 | `read-sweep-samples` emits prior user prose as well as paths, and the commit-time redaction backstop only partly covers it | **[verified: `docs/private-project-redaction.md`]**. `deny-private-project-refs`'s always-on detectors catch home-rooted paths and UUID-shaped session IDs, but project and org *names* — the likeliest leak in user prose — are caught only when `~/.claude/private-projects.md` is populated, which is empty for a fresh contributor. Anyone running this against a mixed corpus should populate that blocklist first; the printed handling rule is the primary control, the hook is the backstop, and neither is sufficient alone |
+| A18 | `read-sweep-samples` emits prior user prose as well as paths, and the commit-time redaction backstop only partly covers it | **[verified: `docs/private-project-redaction.md`]**. `deny-private-project-refs`'s always-on detectors catch home-rooted paths and UUID-shaped session IDs, but project and org *names* — the likeliest leak in user prose — are caught only when `~/.claude/private-projects.md` is populated, which is empty for a fresh contributor. Anyone running this against a mixed corpus should populate that blocklist first.<br>- The printed handling rule is the primary control.<br>- The hook is only a backstop; neither is sufficient alone |
 
 ### Relationship to the decomposition effort
 
@@ -296,10 +296,10 @@ drift as the file changes.
    carry `branch`, `dollars` (via `_price_turn`), `is_candidate`,
    `site_count`, and enough class information for the lookahead. Source `cwd`
    from `rec.get("cwd") or ""` for step 2's normalizer. Model the function on
-   `_turn_shape_session_turns` but do not modify it — and carry over its
+   `_turn_shape_session_turns`, but do not modify it. Carry over its
    `rec.get("gitBranch") or ""` branch normalization, not
-   `rec.get("gitBranch", "")`; that distinction was a real regression there,
-   visible only on an explicit `null`, and step 10 pins it.
+   `rec.get("gitBranch", "")`. That distinction was a real regression there,
+   visible only on an explicit `null`. Step 10 pins it.
 
 6. **`transcript-analysis.py` — add bucket helpers and constants.**
    `_READ_SWEEP_SITE_BUCKETS` and `_READ_SWEEP_STREAK_BUCKETS` mirroring
@@ -340,21 +340,29 @@ drift as the file changes.
 10. **`test_transcript_analysis.py` — add the unit tests.** Each named, not
     bundled, so none is silently skipped:
 
-    *Site count:* grep-scoped-to-one-file plus read-of-that-file → 1
-    (Verification 4); the same pair where the grep `path` is relative and the
-    read `file_path` absolute → still 1, which is the test that actually
-    pins A14's normalization; grep-scoped-to-a-directory plus read-inside-it
-    → 2 (the named limit, asserted as intended behavior); two unscoped greps
-    → 2 (FP shape 6, asserted so a later fix is a visible change); a
-    glob-scoped grep repeated twice → 1; a `Read` block with no `file_path`
-    key → contributes 0; the same file read twice at different offsets → 1;
-    eight distinct `Read` blocks in one turn → 8 and flagged (Verification 5).
+    *Site count:*
+    - grep-scoped-to-one-file plus read-of-that-file → 1 (Verification 4).
+    - the same pair where the grep `path` is relative and the read
+      `file_path` absolute → still 1, which is the test that actually pins
+      A14's normalization.
+    - grep-scoped-to-a-directory plus read-inside-it → 2 (the named limit,
+      asserted as intended behavior).
+    - two unscoped greps → 2 (FP shape 6, asserted so a later fix is a
+      visible change).
+    - a glob-scoped grep repeated twice → 1.
+    - a `Read` block with no `file_path` key → contributes 0.
+    - the same file read twice at different offsets → 1.
+    - eight distinct `Read` blocks in one turn → 8 and flagged
+      (Verification 5).
 
-    *Lookahead:* edit at exactly window position 3 → `inline-edit`; edit at
-    position 4 → `neither`; a user turn between read and edit does not
-    consume the window; an `Agent` call → `dispatched`; the candidate is the
-    session's last turn → `neither` (and therefore flagged) — the
-    end-of-session case audit-routing's own D3 fixtures never had to cover.
+    *Lookahead:*
+    - edit at exactly window position 3 → `inline-edit`.
+    - edit at position 4 → `neither`.
+    - a user turn between read and edit does not consume the window.
+    - an `Agent` call → `dispatched`.
+    - the candidate is the session's last turn → `neither` (and therefore
+      flagged) — the end-of-session case audit-routing's own D3 fixtures
+      never had to cover.
 
     *Session turns:* an explicit `null` `gitBranch` normalizes the same as an
     empty string, mirroring `test_null_git_branch_normalizes_the_same_as_empty_string`;
