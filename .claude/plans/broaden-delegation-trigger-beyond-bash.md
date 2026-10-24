@@ -1,5 +1,7 @@
 # Broaden the delegation trigger beyond Bash
 
+**Status (2026-10-23):** Shelved, not built. The parent plan's tool-call detectors missed the same precision and κ floors this plan adopts (`docs/design-decisions/tool-call-advisory-does-not-ship.md`), and this detector's expected false positives turn on intent that transcripts do not record (G2). The placement and test-helper sections also predate the `transcript_analysis/` package extraction of `audit_routing` and `turn_shape`, so a revival must re-plan them.
+
 ## Context
 
 **Goal:** give the `subagent-delegation` rule a retrospective measurement of
