@@ -241,7 +241,7 @@ For each finding, state:
 2. **File and line**
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
-5. **Suggested fix** (concrete, not "consider improving")
+5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require)
 
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 
