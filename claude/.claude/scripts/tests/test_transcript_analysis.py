@@ -15,6 +15,41 @@ from pathlib import Path
 
 import pytest
 from helpers import SKILLS_DIR
+from transcript_analysis import (
+    audit_routing,
+    buckets,
+    cache_efficiency,
+    cache_rebuild,
+    commit_gate,
+    context_composition,
+    context_distribution,
+    corpus,
+    cost,
+    cost_ledger,
+    duration,
+    edit_format,
+    fail_seq,
+    instrument_authoring,
+    judgment_pair,
+    plan_boundary,
+    pr_link,
+    pricing,
+    read_scope,
+    rearm_backtest,
+    redaction,
+    render,
+    review_trace,
+    reviewer_yield,
+    scope,
+    sessions,
+    skill_invocation,
+    skill_pair,
+    spend_over_threshold,
+    struggle,
+    subagent_mix,
+    subagents,
+    user_input,
+)
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
 from ._cache_efficiency_helpers import _cache_efficiency_args
@@ -148,7 +183,7 @@ class TestConfigDirFlag:
         session-iteration path captured PROJECTS_DIR into a local before
         main()'s post-parse reassignment, silently reporting zero sessions
         (the exact regression class this feature exists to close)."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         proj = config_dir / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -157,7 +192,7 @@ class TestConfigDirFlag:
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
         _mod.main()
 
-        assert config_dir / "projects" == _mod.scope.PROJECTS_DIR
+        assert config_dir / "projects" == scope.PROJECTS_DIR
         out = capsys.readouterr().out
         assert "feat-config-dir" in out, (
             f"the seeded session's branch never surfaced in `buckets` output: {out!r}"
@@ -170,23 +205,23 @@ class TestConfigDirFlag:
         main() performs after parsing, e.g. an unguarded `Path(None)`."""
         fixture_projects_dir = tmp_path / "projects"
         fixture_projects_dir.mkdir()
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", fixture_projects_dir)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", fixture_projects_dir)
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
         _mod.main()
 
-        assert fixture_projects_dir == _mod.scope.PROJECTS_DIR
+        assert fixture_projects_dir == scope.PROJECTS_DIR
 
     def test_this_repo_loud_error_on_zero_matches(self, monkeypatch, tmp_path, capsys):
         """--config-dir + --this-repo, resolved against a config dir with no
         matching project directories, errors loudly instead of silently
         reporting an empty scope -- closes the original reported symptom
         (declaring no sessions exist for a container that has them)."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         (config_dir / "projects").mkdir(parents=True)  # exists, but empty
 
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -207,7 +242,7 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
+    @pytest.mark.parametrize("subcommand", scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
@@ -242,7 +277,7 @@ class TestConfigDirFlag:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.scope.PROJECTS_DIR  # refusal happens before reassignment
+        assert other_account / "projects" != scope.PROJECTS_DIR  # refusal happens before reassignment
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
@@ -268,7 +303,7 @@ class TestConfigDirFlag:
 
 class TestConfigDirRouting:
     def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
-        assert "context-composition" in _mod._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        assert "context-composition" in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
 
     def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
         other_account = tmp_path / "other-account"
@@ -285,7 +320,7 @@ class TestConfigDirRouting:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.scope.PROJECTS_DIR
+        assert other_account / "projects" != scope.PROJECTS_DIR
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert "context-composition" in err
@@ -378,88 +413,88 @@ class TestTableColsHelper:
 
 class TestHelpers:
     def test_fam_opus(self):
-        assert _mod._fam("claude-opus-4-7") == "opus"
+        assert render._fam("claude-opus-4-7") == "opus"
 
     def test_fam_sonnet(self):
-        assert _mod._fam("claude-sonnet-4-6") == "sonnet"
+        assert render._fam("claude-sonnet-4-6") == "sonnet"
 
     def test_fam_haiku(self):
-        assert _mod._fam("claude-haiku-4-5") == "haiku"
+        assert render._fam("claude-haiku-4-5") == "haiku"
 
     def test_fam_unknown_model(self):
-        assert _mod._fam("gpt-4") == "other"
+        assert render._fam("gpt-4") == "other"
 
     def test_content_text_plain_string(self):
-        assert _mod._content_text("hello world") == "hello world"
+        assert render._content_text("hello world") == "hello world"
 
     def test_content_text_list_joins_text_blocks(self):
         content = [{"type": "text", "text": "hello"}, {"type": "tool_use", "name": "Bash"}, {"type": "text", "text": "world"}]
-        assert _mod._content_text(content) == "hello world"
+        assert render._content_text(content) == "hello world"
 
     def test_content_text_none_returns_empty(self):
-        assert _mod._content_text(None) == ""
+        assert render._content_text(None) == ""
 
     def test_parse_ts_valid_iso_z(self):
-        ts = _mod._parse_ts("2024-06-01T12:00:00.000Z")
+        ts = corpus._parse_ts("2024-06-01T12:00:00.000Z")
         assert ts is not None and ts > 0
 
     def test_parse_ts_none_input(self):
-        assert _mod._parse_ts(None) is None
+        assert corpus._parse_ts(None) is None
 
     def test_parse_ts_invalid_string(self):
-        assert _mod._parse_ts("not-a-date") is None
+        assert corpus._parse_ts("not-a-date") is None
 
     def test_iso_date_valid_returns_string(self):
-        assert _mod._iso_date("2026-05-19") == "2026-05-19"
+        assert scope._iso_date("2026-05-19") == "2026-05-19"
 
     def test_iso_date_invalid_month_raises_type_error(self):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod._iso_date("2026-13-01")
+            scope._iso_date("2026-13-01")
 
     def test_iso_date_garbage_raises_type_error(self):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod._iso_date("garbage")
+            scope._iso_date("garbage")
 
     def test_strip_task_notifications_multiline_envelope_removed(self):
         text = "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
-        assert _mod._strip_task_notifications(text) == " "
+        assert render._strip_task_notifications(text) == " "
 
     def test_strip_task_notifications_two_envelopes_both_removed(self):
         text = "<task-notification>first</task-notification> and <task-notification>second</task-notification>"
-        assert _mod._strip_task_notifications(text) == "  and  "
+        assert render._strip_task_notifications(text) == "  and  "
 
     def test_strip_task_notifications_adjacent_envelopes_both_removed(self):
         text = "<task-notification>a</task-notification><task-notification>b</task-notification>"
-        assert _mod._strip_task_notifications(text) == "  "
+        assert render._strip_task_notifications(text) == "  "
 
     def test_strip_task_notifications_envelope_free_string_unchanged(self):
         text = "just a plain user prompt with no envelope"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_does_not_weld_words_across_envelope_boundary(self):
         """Single-space substitution keeps 'try' and 'again' separated across a stripped envelope boundary."""
         text = "...try <task-notification>still failing</task-notification>again..."
-        result = _mod._strip_task_notifications(text)
+        result = render._strip_task_notifications(text)
         assert "try again" not in result
         assert result == "...try  again..."
 
     def test_strip_task_notifications_unterminated_opener_left_in_place(self):
         text = "<task-notification><summary>no closing tag here"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_unterminated_opener_preserves_trailing_turn_content(self):
         text = "<task-notification><summary>no closing tag here" + "\nuser: please retry the deploy"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_orphan_closer_with_no_opener_left_in_place(self):
         text = "no opener here</task-notification>"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_orphan_closer_adjacent_to_real_envelope(self):
         """A match requires the opener literal first, so the stray closer with no preceding
         opener is inert. Only the well-formed envelope after it is stripped to a single space."""
         text = "stray</task-notification> then <task-notification><summary>real</summary></task-notification> after"
-        assert _mod._strip_task_notifications(text) == "stray</task-notification> then   after"
+        assert render._strip_task_notifications(text) == "stray</task-notification> then   after"
 
     def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
         """A `<summary>` field quotes a full envelope inline. The non-greedy match stops at the
@@ -470,7 +505,7 @@ class TestHelpers:
             "<task-notification><summary>inner</summary></task-notification>"
             "</summary></task-notification>"
         )
-        assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+        assert render._strip_task_notifications(text) == " </summary></task-notification>"
 
     def test_strip_task_notifications_preserves_non_ascii_text_around_envelope(self):
         text = (
@@ -478,18 +513,18 @@ class TestHelpers:
             "<task-notification><summary>結果: café</summary></task-notification>"
             " after— 北京 😀"
         )
-        result = _mod._strip_task_notifications(text)
+        result = render._strip_task_notifications(text)
         assert result == "café 🎉 —before   after— 北京 😀"
 
     def test_strip_task_notifications_empty_string_unchanged(self):
-        assert _mod._strip_task_notifications("") == ""
+        assert render._strip_task_notifications("") == ""
 
     def test_strip_task_notifications_case_sensitive_uppercase_unchanged(self):
         """Case-sensitive match is deliberate: an uppercase-tagged string is left in
         place rather than trading a hypothetical miss for a real over-strip of
         user-typed text."""
         text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
 
 class TestParseSinceNdArg:
@@ -498,14 +533,14 @@ class TestParseSinceNdArg:
 
     @pytest.mark.timing
     def test_valid_nd_value_returns_timestamp_and_raw_string(self):
-        since_ts, since_raw = _mod._parse_since_nd_arg(
+        since_ts, since_raw = scope._parse_since_nd_arg(
             argparse.Namespace(since="1d"), "cost"
         )
         assert since_raw == "1d"
         assert since_ts == pytest.approx(time.time() - 86400, abs=1)
 
     def test_absent_since_returns_none_for_both(self):
-        since_ts, since_raw = _mod._parse_since_nd_arg(
+        since_ts, since_raw = scope._parse_since_nd_arg(
             argparse.Namespace(since=None), "cost"
         )
         assert since_ts is None
@@ -513,7 +548,7 @@ class TestParseSinceNdArg:
 
     def test_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
+            scope._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
         assert exc_info.value.code == 1
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
@@ -524,14 +559,14 @@ class TestParseAbsoluteWindowArgs:
     identical six-line conversion."""
 
     def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
         )
-        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
-        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+        assert since_ts == corpus._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == corpus._parse_ts("2026-05-03T00:00:00Z") + 86400
 
     def test_absent_since_and_until_returns_none_for_both(self):
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since=None, until=None), "review-trace",
         )
         assert since_ts is None
@@ -541,12 +576,12 @@ class TestParseAbsoluteWindowArgs:
         """cmd_subagent_mix's own dest names (since_date/until_date) resolve
         through the same helper as the default since/until attrs -- the
         parameterized call cmd_subagent_mix's own call site uses."""
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
             since_attr="since_date", until_attr="until_date",
         )
-        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
-        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
+        assert since_ts == corpus._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == corpus._parse_ts("2026-07-02T00:00:00Z") + 86400
 
 
 # ---------------------------------------------------------------------------
@@ -556,10 +591,10 @@ class TestParseAbsoluteWindowArgs:
 
 class TestProjectFamily:
     def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
-        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+        assert redaction._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
 
     def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
-        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+        assert redaction._project_family("-home-u-repo-a") == "-home-u-repo-a"
 
 
 # ---------------------------------------------------------------------------
@@ -576,15 +611,15 @@ class TestRootScopedDisplayLabel:
     @pytest.mark.parametrize("kind", ["branch", "agent-type"])
     def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        label = redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
         assert label == "account-1/feat-x"
         assert redact_map == {}
 
     @pytest.mark.parametrize("kind", ["branch", "agent-type"])
     def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
-        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        label = redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
         assert redact_map == {(1, "feat-x"): label}
 
     def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
@@ -593,9 +628,9 @@ class TestRootScopedDisplayLabel:
         multi-root corpus can't isolate the counter position from the data
         it's built from."""
         redact_map: dict[tuple[int, str], str] = {}
-        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
-        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
-        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        first = redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
         assert first == "account-1/branch-1"
         assert second == "account-1/branch-2"
 
@@ -604,8 +639,8 @@ class TestRootScopedDisplayLabel:
         string must fail here, substituting for extracting the format
         string into a third shared helper."""
         redact_map: dict[tuple[int, str], str] = {}
-        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
-        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        disclosed = redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
         assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
 
     def test_disclosed_label_strips_control_characters(self):
@@ -614,7 +649,7 @@ class TestRootScopedDisplayLabel:
         _format_cost_ledger_row's own control-character test) must not reach
         the disclosed label raw."""
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(
+        label = redaction._root_scoped_display_label(
             "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
         )
         assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
@@ -626,7 +661,7 @@ class TestRootScopedDisplayLabel:
         separator, so this pins that a "/"-bearing value composes without
         truncation or reinterpretation."""
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        label = redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
         assert label == "account-1/feature/foo"
         assert label.split("/", 1) == ["account-1", "feature/foo"]
 
@@ -641,9 +676,9 @@ class TestRepoTrackedAgentTypeNames:
         every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
         from one test can never leak a stale cached result into the next,
         including the real-directory regression test below."""
-        _mod._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
         yield
-        _mod._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
         agents_dir = tmp_path / "agents"
@@ -658,24 +693,24 @@ class TestRepoTrackedAgentTypeNames:
         return agents_dir
 
     def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        monkeypatch.setattr(redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
 
     def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+        assert "my-agent" in redaction._repo_tracked_agent_type_names()
 
     def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "tracked-agent" in names
         assert "scratch-agent" not in names
 
     def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "code-writer" in names
         assert "Code-Writer" not in names
 
@@ -683,7 +718,7 @@ class TestRepoTrackedAgentTypeNames:
         agents_dir = tmp_path / "not-a-repo"
         agents_dir.mkdir()
         self._patch_dir(monkeypatch, agents_dir)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
     def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
@@ -695,7 +730,7 @@ class TestRepoTrackedAgentTypeNames:
         else:
             agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+        assert redaction._repo_tracked_agent_type_names().issuperset(redaction._BUILT_IN_AGENT_TYPES)
 
     def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
         """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
@@ -710,7 +745,7 @@ class TestRepoTrackedAgentTypeNames:
         def boom(cmd, *a, **k):
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", boom)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
         agents_dir = tmp_path / "agents"
@@ -720,7 +755,7 @@ class TestRepoTrackedAgentTypeNames:
         def boom(cmd, *a, **k):
             raise subprocess.TimeoutExpired(cmd, 10)
         monkeypatch.setattr(subprocess, "run", boom)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
         """_repo_tracked_agent_type_names matches top-level entries only
@@ -733,7 +768,7 @@ class TestRepoTrackedAgentTypeNames:
         (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
         subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "top-level-agent" in names
         assert "nested-agent" not in names
 
@@ -742,7 +777,7 @@ class TestRepoTrackedAgentTypeNames:
         escapes unusual path names, corrupting the stem."""
         agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+        assert "café-agent" in redaction._repo_tracked_agent_type_names()
 
     def test_real_agents_directory_allowlists_code_writer(self):
         """The ticket's own motivating scenario, against the real,
@@ -750,7 +785,7 @@ class TestRepoTrackedAgentTypeNames:
         (next(dir.glob('*.md')).stem) would make both this test's intent
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
-        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in redaction._repo_tracked_agent_type_names()
 
 
 # ---------------------------------------------------------------------------
@@ -770,16 +805,16 @@ class TestSanitizeTableCell:
         """Only the ESC control byte itself is stripped, not surrounding
         printable characters — e.g. an ANSI escape sequence's bracket/digit
         payload is left in place, just no longer interpretable as an escape."""
-        assert _mod._sanitize_table_cell("git\x1b[31mcommit") == "git[31mcommit"
+        assert render._sanitize_table_cell("git\x1b[31mcommit") == "git[31mcommit"
 
     def test_strips_null_and_del_bytes(self):
-        assert _mod._sanitize_table_cell("a\x00b\x7fc") == "abc"
+        assert render._sanitize_table_cell("a\x00b\x7fc") == "abc"
 
     def test_plain_label_unchanged(self):
-        assert _mod._sanitize_table_cell("git commit") == "git commit"
+        assert render._sanitize_table_cell("git commit") == "git commit"
 
     def test_empty_string_unchanged(self):
-        assert _mod._sanitize_table_cell("") == ""
+        assert render._sanitize_table_cell("") == ""
 
 
 class TestScanRootTranscripts:
@@ -797,14 +832,14 @@ class TestScanRootTranscripts:
         os.chmod(root, 0o000)
         try:
             with pytest.raises(PermissionError):
-                _mod._scan_root_transcripts(root, "*")
+                scope._scan_root_transcripts(root, "*")
         finally:
             os.chmod(root, 0o755)
 
     def test_readable_root_with_no_matches_returns_zero_zero(self, tmp_path):
         root = tmp_path / "empty"
         root.mkdir()
-        assert _mod._scan_root_transcripts(root, "*") == (0, 0)
+        assert scope._scan_root_transcripts(root, "*") == (0, 0)
 
     def test_skipped_counts_unreadable_file_separately_from_scanned(self, tmp_path):
         proj = tmp_path / "-home-user-repo"
@@ -815,7 +850,7 @@ class TestScanRootTranscripts:
         locked.write_text("{}\n")
         os.chmod(locked, 0o000)
         try:
-            scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+            scanned, skipped = scope._scan_root_transcripts(tmp_path, "*")
         finally:
             os.chmod(locked, 0o644)
         assert (scanned, skipped) == (2, 1)
@@ -829,7 +864,7 @@ class TestScanRootTranscripts:
         (real_proj / "sess.jsonl").write_text("{}\n")
         alias = tmp_path / "-home-user-repo-alias"
         alias.symlink_to(real_proj)
-        scanned, _skipped = _mod._scan_root_transcripts(
+        scanned, _skipped = scope._scan_root_transcripts(
             tmp_path, "*", slugs=["-home-user-repo", "-home-user-repo-alias"]
         )
         assert scanned == 1
@@ -844,7 +879,7 @@ class TestScanRootTranscripts:
         (real_proj / "sess.jsonl").write_text("{}\n")
         alias = tmp_path / "-home-user-repo-alias"
         alias.symlink_to(real_proj)
-        scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        scanned, _skipped = scope._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
 
     def test_glob_mode_rejects_a_parent_traversing_projects_value(self, tmp_path):
@@ -857,7 +892,7 @@ class TestScanRootTranscripts:
         sibling = tmp_path / "acct-b"
         sibling.mkdir()
         (sibling / "secret.jsonl").write_text("{}\n")
-        scanned, skipped = _mod._scan_root_transcripts(root, "../acct-b")
+        scanned, skipped = scope._scan_root_transcripts(root, "../acct-b")
         assert (scanned, skipped) == (0, 0)
 
     def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
@@ -870,7 +905,7 @@ class TestScanRootTranscripts:
         (proj_open / "sess.jsonl").write_text("{}\n")
         loop_link = tmp_path / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        scanned, skipped = scope._scan_root_transcripts(tmp_path, "*")
         assert (scanned, skipped) == (1, 0)
 
     @pytest.mark.parametrize("mode", ["glob", "slugs"])
@@ -888,7 +923,7 @@ class TestScanRootTranscripts:
         (outside / "sess.jsonl").write_text("{}\n")
         (root / "-repo-relocated").symlink_to(outside)
         slugs = ["-repo-relocated"] if mode == "slugs" else None
-        assert _mod._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
+        assert scope._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
 
     def test_symlink_loop_transcript_is_counted_as_skipped_not_raised(self, tmp_path):
         """A looped .jsonl symlink fails open() with OSError, so it is
@@ -899,7 +934,7 @@ class TestScanRootTranscripts:
         (proj / "sess.jsonl").write_text("{}\n")
         loop_link = proj / "loop.jsonl"
         loop_link.symlink_to(loop_link)
-        assert _mod._scan_root_transcripts(tmp_path, "*") == (2, 1)
+        assert scope._scan_root_transcripts(tmp_path, "*") == (2, 1)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
@@ -918,7 +953,7 @@ class TestScanRootTranscripts:
         proj_through_sealed.symlink_to(target)
         os.chmod(sealed_ancestor, 0o000)
         try:
-            scanned, skipped = _mod._scan_root_transcripts(root, "*")
+            scanned, skipped = scope._scan_root_transcripts(root, "*")
         finally:
             os.chmod(sealed_ancestor, 0o755)
         assert (scanned, skipped) == (1, 0)
@@ -933,7 +968,7 @@ class TestPriceTurnArity:
         audit-routing-shape and audit-routing-samples classify Opus turn
         shape only and never call _price_turn."""
         usage = _priced("claude-sonnet-5", input=100)["message"]["usage"]
-        result = _mod._price_turn("claude-sonnet-5", usage)
+        result = pricing._price_turn("claude-sonnet-5", usage)
         assert len(result) == 3
         dollars, context_at_turn, unpriced_tokens = result
         assert isinstance(dollars, dict)
@@ -952,7 +987,7 @@ class TestPriceTurnArity:
             "cache_creation_input_tokens": 15,
             "cache_creation": {"ephemeral_1h_input_tokens": 10, "ephemeral_5m_input_tokens": 5},
         }
-        _dollars, context_at_turn, _unpriced_tokens = _mod._price_turn("claude-sonnet-5", usage)
+        _dollars, context_at_turn, _unpriced_tokens = pricing._price_turn("claude-sonnet-5", usage)
         assert context_at_turn == 100 + 50 + 10 + 5
 
 
@@ -964,13 +999,13 @@ class TestPriceTurnSpeedGeoMultipliers:
 
     def test_speed_fast_multiplies_dollars_by_two(self):
         usage = _priced("claude-sonnet-5", input=1_000_000, speed="fast")["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2)
 
     def test_inference_geo_us_multiplies_dollars_by_1_1(self):
         usage = _priced("claude-sonnet-5", input=1_000_000, inference_geo="us")["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 1.1)
 
@@ -980,7 +1015,7 @@ class TestPriceTurnSpeedGeoMultipliers:
         usage = _priced(
             "claude-sonnet-5", input=1_000_000, speed="fast", inference_geo="us",
         )["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2.2)
 
@@ -993,7 +1028,7 @@ class TestPriceTurnSpeedGeoMultipliers:
         usage = _priced(
             "claude-sonnet-4-6", input=1_000_000, speed="fast", inference_geo="us",
         )["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
@@ -1022,7 +1057,7 @@ class TestPricingVariant:
     @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
     def test_label_for_each_speed_and_geo_combination_and_near_miss(self, extra_usage_fields, expected_label):
         usage = {**_priced("claude-sonnet-5", input=1_000)["message"]["usage"], **extra_usage_fields}
-        assert _mod.pricing._pricing_variant(usage) == expected_label
+        assert pricing._pricing_variant(usage) == expected_label
 
     @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
     def test_price_turn_dollars_follow_the_label_implied_multiplier_under_the_listed_usage_perturbations(
@@ -1034,9 +1069,9 @@ class TestPricingVariant:
         refactor does not."""
         label_multiplier = {
             "standard": 1,
-            "fast": _mod.pricing._FAST_MODE_RATE_MULTIPLIER,
-            "us_geo": _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
-            "fast_us_geo": _mod.pricing._FAST_MODE_RATE_MULTIPLIER * _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+            "fast": pricing._FAST_MODE_RATE_MULTIPLIER,
+            "us_geo": pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+            "fast_us_geo": pricing._FAST_MODE_RATE_MULTIPLIER * pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
         }
         realistic_usage = {
             **_priced(
@@ -1046,7 +1081,7 @@ class TestPricingVariant:
             "service_tier": "standard",
             "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
         }
-        standard_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", realistic_usage)
+        standard_dollars, _context, _unpriced = pricing._price_turn("claude-sonnet-5", realistic_usage)
         perturbations = [
             {},
             {"service_tier": "priority"},
@@ -1060,9 +1095,9 @@ class TestPricingVariant:
 
         for perturbation in perturbations:
             usage = {**realistic_usage, **perturbation, **extra_usage_fields}
-            assert _mod.pricing._pricing_variant(usage) == expected_label, perturbation
-            actual_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", usage)
-            for token_class in _mod.pricing._TOKEN_CLASSES:
+            assert pricing._pricing_variant(usage) == expected_label, perturbation
+            actual_dollars, _context, _unpriced = pricing._price_turn("claude-sonnet-5", usage)
+            for token_class in pricing._TOKEN_CLASSES:
                 assert actual_dollars[token_class] == pytest.approx(
                     standard_dollars[token_class] * label_multiplier[expected_label], rel=1e-9,
                 ), (perturbation, token_class)
@@ -1076,26 +1111,26 @@ class TestReportableUnpricedModelIds:
     banner that consumes it."""
 
     def test_empty_dict_reports_nothing(self):
-        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+        assert pricing._reportable_unpriced_model_ids({}) == []
 
     def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
-        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+        assert pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
 
     def test_synthetic_at_zero_tokens_is_not_reportable(self):
         """A corpus with no synthetic records at all still seeds this key at
         0 in some callers -- a $0 entry is not spend excluded from anything."""
-        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+        assert pricing._reportable_unpriced_model_ids({pricing._SYNTHETIC_MODEL_ID: 0}) == []
 
     def test_synthetic_at_nonzero_tokens_is_reportable(self):
         """Forward-looking guard, not a case observed in a real corpus (see
         the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
         filter, which would silently drop this branch, is rejected."""
-        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
-            _mod.pricing._SYNTHETIC_MODEL_ID
+        assert pricing._reportable_unpriced_model_ids({pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            pricing._SYNTHETIC_MODEL_ID
         ]
 
     def test_multiple_unpriced_ids_all_reported(self):
-        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        result = pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
         assert sorted(result) == ["claude-example-10", "claude-example-9"]
 
 
@@ -1105,19 +1140,19 @@ class TestFormatDriftDetected:
     fixtures also exercise through the full report."""
 
     def test_false_when_neither_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
-        assert _mod.pricing._format_drift_detected() is False
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
+        assert pricing._format_drift_detected() is False
 
     def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
-        assert _mod.pricing._format_drift_detected() is True
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
+        assert pricing._format_drift_detected() is True
 
     def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
-        assert _mod.pricing._format_drift_detected() is True
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", True)
+        assert pricing._format_drift_detected() is True
 
 
 class TestDedupTurnsByRequestId:
@@ -1133,7 +1168,7 @@ class TestDedupTurnsByRequestId:
     def test_single_record_request_is_a_no_op(self):
         """A lone assistant record (no run to merge) is returned unchanged."""
         rec = _priced("claude-sonnet-5", input=100, request_id="req-1")
-        assert _mod._dedup_turns_by_request_id([rec]) == [rec]
+        assert pricing.dedup_turns_by_request_id([rec]) == [rec]
 
     def test_multi_record_run_merges_content_in_order_and_keeps_last_usage(self):
         """Three records sharing one requestId collapse into one turn whose
@@ -1152,7 +1187,7 @@ class TestDedupTurnsByRequestId:
         recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id(recs)
+        result = pricing.dedup_turns_by_request_id(recs)
         assert len(result) == 1
         assert result[0]["message"]["content"] == [block_a, block_b, block_c]
         assert result[0]["message"]["usage"] == {"input_tokens": 100, "output_tokens": 50}
@@ -1172,7 +1207,7 @@ class TestDedupTurnsByRequestId:
         recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3111}
-        result = _mod._dedup_turns_by_request_id(recs)
+        result = pricing.dedup_turns_by_request_id(recs)
         assert result[0]["message"]["usage"]["output_tokens"] == 3111
 
     def test_non_identical_input_usage_within_run_emits_stderr_warning(self, monkeypatch, capsys):
@@ -1184,12 +1219,12 @@ class TestDedupTurnsByRequestId:
         _usage_drift_warned is reset here since the canary is rate-limited to
         one warning per process (see _warn_if_run_usage_drift) and other
         tests in this module-scoped process may have already tripped it."""
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 999, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([rec1, rec2])
+        pricing.dedup_turns_by_request_id([rec1, rec2])
         assert "WARNING" in capsys.readouterr().err
 
     def test_ascending_output_tokens_within_run_emits_no_warning(self, monkeypatch, capsys):
@@ -1197,12 +1232,12 @@ class TestDedupTurnsByRequestId:
         input_tokens and the cache_* classes stay identical -- never fires
         the drift canary; an ascending output_tokens is the documented norm,
         not drift."""
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([rec1, rec2])
+        pricing.dedup_turns_by_request_id([rec1, rec2])
         assert "WARNING" not in capsys.readouterr().err
 
     def test_missing_request_id_records_each_count_separately(self):
@@ -1212,7 +1247,7 @@ class TestDedupTurnsByRequestId:
         rec2 = _priced("claude-sonnet-5", input=200)
         assert "requestId" not in rec1
         assert "requestId" not in rec2
-        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+        assert pricing.dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
     def test_null_and_empty_request_id_records_each_count_separately(self):
         """A null requestId and an empty-string requestId are both treated as
@@ -1222,7 +1257,7 @@ class TestDedupTurnsByRequestId:
         rec1["requestId"] = None
         rec2 = _priced("claude-sonnet-5", input=200)
         rec2["requestId"] = ""
-        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+        assert pricing.dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
     def test_non_contiguous_run_with_matching_usage_merges_across_user_record(self):
         """A same-requestId assistant run interleaved with a user tool_result
@@ -1240,7 +1275,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert len(result) == 2
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
@@ -1269,7 +1304,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = dict(usage)
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert len(result) == 2
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
@@ -1287,7 +1322,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "continue")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
     def test_three_record_non_contiguous_run_merges(self):
@@ -1302,7 +1337,7 @@ class TestDedupTurnsByRequestId:
         user2 = _user_msg([_tool_result("t2", "tool result 2")])
         rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
         rec3["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        result = pricing.dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
         assert len(result) == 3
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"}, {"type": "text", "text": "c"},
@@ -1334,7 +1369,7 @@ class TestDedupTurnsByRequestId:
             "input_tokens": 100, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 999, "output_tokens": 50,
         }
-        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        result = pricing.dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
         assert result == [rec1, user1, rec2, user2, rec3]
 
     def test_interleaved_different_request_id_group_leaves_other_run_record_untouched(self):
@@ -1351,7 +1386,7 @@ class TestDedupTurnsByRequestId:
         rec_b["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
         rec_c = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
         rec_c["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec_a, rec_b, rec_c])
+        result = pricing.dedup_turns_by_request_id([rec_a, rec_b, rec_c])
         assert len(result) == 2
         assert result[0]["requestId"] == "req-1"
         assert result[0]["message"]["content"] == [
@@ -1375,7 +1410,7 @@ class TestDedupTurnsByRequestId:
         rec_a2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         rec_b2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b2"}], request_id="req-2")
         rec_b2["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
-        result = _mod._dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
+        result = pricing.dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
         assert len(result) == 2
         assert result[0]["requestId"] == "req-1"
         assert result[0]["message"]["content"] == [
@@ -1405,13 +1440,13 @@ class TestDedupTurnsByRequestId:
         module-scoped run may have already tripped either kind (mirrors
         test_non_identical_input_usage_within_run_emits_stderr_warning's
         reset of _usage_drift_warned)."""
-        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
 
         merge_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         merge_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         merge_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         merge_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
+        pricing.dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
         merge_stderr = capsys.readouterr().err
         assert "NOTICE" in merge_stderr
         assert "merged" in merge_stderr
@@ -1423,7 +1458,7 @@ class TestDedupTurnsByRequestId:
         reject_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         reject_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
         reject_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
-        _mod._dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
+        pricing.dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
         reject_stderr = capsys.readouterr().err
         assert "NOTICE" in reject_stderr
         assert "rejected" in reject_stderr
@@ -1435,20 +1470,20 @@ class TestDedupTurnsByRequestId:
         decision kind) after the first must not print a second NOTICE --
         pinning the rate-limit half of 'independently rate-limited', not
         just the cross-kind independence the prior test covers."""
-        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
 
         first_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         first_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         first_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         first_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
+        pricing.dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
         capsys.readouterr()  # drain the first NOTICE
 
         second_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
         second_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         second_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
         second_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
+        pricing.dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
         assert capsys.readouterr().err == ""
 
     def test_non_contiguous_run_with_missing_usage_does_not_merge(self):
@@ -1461,7 +1496,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         del rec2["message"]["usage"]
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
     def test_request_id_does_not_merge_across_session_files(self, fake_projects, capsys):
@@ -1476,7 +1511,7 @@ class TestDedupTurnsByRequestId:
         _write_jsonl(fake_projects / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, request_id="shared-req"),  # $2.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(4.00)
 
@@ -1493,7 +1528,7 @@ class TestDedupTurnsByRequestId:
         _write_jsonl(fake_projects / "sess.jsonl", [
             first, _user_msg([_tool_result("t1", "tool result")]), second,
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(2.00)
 
@@ -1509,7 +1544,7 @@ class TestDedupTurnsByRequestId:
                           request_id="req-1", sidechain=False)
         side_rec = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}],
                           request_id="req-1", sidechain=True)
-        result = _mod._dedup_turns_by_request_id([main_rec, side_rec])
+        result = pricing.dedup_turns_by_request_id([main_rec, side_rec])
         assert len(result) == 1
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
@@ -1539,7 +1574,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
         try:
-            result = _mod._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
+            result = corpus._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
         finally:
             os.chmod(session_dir, 0o755)
 
@@ -1563,7 +1598,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
         try:
-            index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+            index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
         finally:
             os.chmod(session_dir, 0o755)
 
@@ -1578,11 +1613,11 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         non-UTF-8 bytes as
         test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes."""
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
 
-        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
 
         assert index == {}
         assert meta_read_errors == 1
@@ -1595,7 +1630,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         mixed_jsonl.write_bytes(
             b'{"type": "user", "n": 1}\n\xff\xfe\x00\x01\n{"type": "user", "n": 2}\n'
         )
-        assert _mod.corpus._parse_jsonl_records(mixed_jsonl) == [
+        assert corpus._parse_jsonl_records(mixed_jsonl) == [
             {"type": "user", "n": 1}, {"type": "user", "n": 2},
         ]
 
@@ -1605,10 +1640,10 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         a failed read."""
         bad_jsonl = tmp_path / "bad.jsonl"
         bad_jsonl.write_bytes(b"\xff\xfe\x00\x01")
-        assert _mod.corpus._parse_jsonl_records(bad_jsonl) == []
+        assert corpus._parse_jsonl_records(bad_jsonl) == []
 
     def test_parse_jsonl_records_returns_none_when_the_file_cannot_be_opened(self, tmp_path):
-        assert _mod.corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
+        assert corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
 
     def test_parse_jsonl_records_keeps_valid_multibyte_utf8_lines_on_both_sides_of_a_corrupt_line(self, tmp_path):
         """A transcript written as raw UTF-8 (not ASCII-escaped, unlike
@@ -1623,7 +1658,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             + json.dumps({"type": "user", "n": 2, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
             + b"\n"
         )
-        assert _mod.corpus._parse_jsonl_records(multibyte_jsonl) == [
+        assert corpus._parse_jsonl_records(multibyte_jsonl) == [
             {"type": "user", "n": 1, "text": multibyte_text},
             {"type": "user", "n": 2, "text": multibyte_text},
         ]
@@ -1640,7 +1675,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             + b'{"type": "user", "n": 2, "text": "caf\xc3"}\n'
             + b'{"type": "user", "n": 3}\n'
         )
-        assert _mod.corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
+        assert corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
             {"type": "user", "n": 1}, {"type": "user", "n": 3},
         ]
 
@@ -1648,12 +1683,12 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         """A meta.json written as raw UTF-8 with non-ASCII text next to a
         valid toolUseId is indexed, not counted under meta_read_errors."""
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
         (subdir / "agent-1.meta.json").write_bytes(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
 
-        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
 
         assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
         assert meta_read_errors == 0
@@ -1675,12 +1710,12 @@ class TestCacheEfficiencyArgparseWiring:
         args = parser.parse_args(["cache-efficiency"])
         assert args.extra_config_dirs is None
         assert args.no_redact is False
-        assert args.func == _mod.cmd_cache_efficiency
+        assert args.func == cache_efficiency.cmd_cache_efficiency
 
     def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
         parser = _mod.build_parser()
         args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
-        assert args.func is _mod.cmd_cache_efficiency
+        assert args.func is cache_efficiency.cmd_cache_efficiency
         assert args.extra_config_dirs == ["X"]
         assert args.no_redact is True
 
@@ -1711,11 +1746,11 @@ class TestCacheRebuildCrossInstrumentReconciliation:
             rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         rebuild_out = capsys.readouterr().out
         rebuild_row = _table_cols(rebuild_out, header_contains="Ratio", row_contains="subagent")
 
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
+        cache_efficiency._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
         efficiency_out = capsys.readouterr().out
         efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
 
@@ -1740,7 +1775,7 @@ class TestRepoScopedProjectSlugsGuard:
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", boom)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("buckets")
+            scope._repo_scoped_project_slugs("buckets")
         assert "buckets:" in capsys.readouterr().err
 
     def test_fails_closed_when_worktree_list_returns_no_worktrees(self, monkeypatch, capsys):
@@ -1748,23 +1783,23 @@ class TestRepoScopedProjectSlugsGuard:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("buckets")
+            scope._repo_scoped_project_slugs("buckets")
         assert "buckets:" in capsys.readouterr().err
 
     def test_fails_closed_when_cwd_outside_all_worktrees(self, monkeypatch, capsys):
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/somewhere/else")
+        monkeypatch.setattr(os, "getcwd", lambda: "/somewhere/else")
 
         def fake_run(cmd, *a, **k):
             return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "duration:" in capsys.readouterr().err
 
     def test_cwd_inside_worktree_subdirectory_resolves_successfully(self, monkeypatch):
         """Containment (not slug equality) lets --this-repo run from a subdirectory
         of the worktree root."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested/dir")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested/dir")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1773,21 +1808,21 @@ class TestRepoScopedProjectSlugsGuard:
             return subprocess.CompletedProcess(cmd, 0, "/repo\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        slugs = _mod._repo_scoped_project_slugs("duration")
-        assert slugs == [_mod.scope._path_to_project_slug("/repo")]
+        slugs = scope._repo_scoped_project_slugs("duration")
+        assert slugs == [scope._path_to_project_slug("/repo")]
 
     def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
         """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
         must exit 1 — the case bare str.startswith containment would wrongly
         accept."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo-fork/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo-fork/nested")
 
         def fake_run(cmd, *a, **k):
             return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert capsys.readouterr().out == ""
 
     def test_fails_closed_when_cwd_repo_root_diverges_from_worktree_list(self, monkeypatch, capsys):
@@ -1797,7 +1832,7 @@ class TestRepoScopedProjectSlugsGuard:
         toplevel reporting from the worktree-list enumeration. Every other test
         in this class returns the same path from both git calls, so this is the
         only test that would catch a typo bug in the identity check itself."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1807,13 +1842,13 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "repo root is not among the resolved worktrees" in capsys.readouterr().err
 
     def test_fails_closed_when_rev_parse_toplevel_command_fails(self, monkeypatch, capsys):
         """The identity-check subprocess call erroring must fail closed, not
         fall back to a machine-wide scope, even though worktree list succeeded."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1823,7 +1858,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "duration:" in capsys.readouterr().err
 
 
@@ -1839,7 +1874,7 @@ class TestResolveProjectScope:
         entirely) must raise, not silently fall through to '*' scope."""
         args = type("A", (), {"projects": "*"})()  # no this_repo attribute at all
         with pytest.raises(AttributeError):
-            _mod._resolve_project_scope(args, "buckets")
+            scope._resolve_project_scope(args, "buckets")
 
     def test_called_twice_from_one_args_yields_same_session_list_both_times(self, tmp_path, monkeypatch):
         """cmd_audit_routing's redact pass and main pass both call the scope helper
@@ -1848,9 +1883,9 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1860,8 +1895,8 @@ class TestResolveProjectScope:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         args = argparse.Namespace(this_repo=True, projects="*")
-        iter1, label1 = _mod._resolve_project_scope(args, "audit-routing")
-        iter2, label2 = _mod._resolve_project_scope(args, "audit-routing")
+        iter1, label1 = scope._resolve_project_scope(args, "audit-routing")
+        iter2, label2 = scope._resolve_project_scope(args, "audit-routing")
         sessions1 = list(iter1)
         sessions2 = list(iter2)
         assert len(sessions1) == 1
@@ -1875,9 +1910,9 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1886,14 +1921,14 @@ class TestResolveProjectScope:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
         out_repo = capsys.readouterr().out
         assert (
             "BUCKETS SOURCES (this repo (1 project dirs); "
             "1 root (no ~/.claude/transcript-config-dirs declared))"
         ) in out_repo
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
         out_glob = capsys.readouterr().out
         assert "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))" in out_glob
 
@@ -1982,7 +2017,7 @@ class TestIterSessionsOrdering:
         wt_dir.mkdir(parents=True)
         _write_jsonl(main_dir / "a.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
         _write_jsonl(wt_dir / "m.jsonl", [_asst("claude-sonnet-4-6", branch="b")])
-        yielded = [jsonl for jsonl, _records in _mod.iter_sessions(projects, "*")]
+        yielded = [jsonl for jsonl, _records in corpus.iter_sessions(projects, "*")]
         # The flat full-path sort places the worktree dir's file first ('-' 0x2D <
         # '/' 0x2F at the byte after the shared prefix); a dir-grouped traversal
         # would place the main dir first. Pin the flat order explicitly.
@@ -1997,10 +2032,10 @@ class TestPathToProjectSlug:
     """The slug transform and its known, accepted lossiness."""
 
     def test_main_repo_path(self):
-        assert _mod.scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
+        assert scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
 
     def test_worktree_path(self):
-        assert (_mod.scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
+        assert (scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
                 == "-home-<user>-repo--claude-worktrees-b")
 
     def test_known_slug_collision_is_accepted(self):
@@ -2008,7 +2043,7 @@ class TestPathToProjectSlug:
         This is Claude Code's own dir-naming scheme, not ours to change; the repo
         scoping accepts this residual (see _repo_scoped_project_slugs). Pinned so a
         later refactor cannot silently assume injectivity."""
-        assert _mod.scope._path_to_project_slug("/home/<user>/a/b") == _mod.scope._path_to_project_slug("/home/<user>/a.b")
+        assert scope._path_to_project_slug("/home/<user>/a/b") == scope._path_to_project_slug("/home/<user>/a.b")
 
 
 # ---------------------------------------------------------------------------
@@ -2026,7 +2061,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=False))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=False))
         assert len(results) == 1
         _path, records = results[0]
         # Only the main record; sidechain record must not appear.
@@ -2042,7 +2077,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 2
@@ -2056,7 +2091,7 @@ class TestIterSessionsSubagentMerge:
             _asst("claude-opus-4-7", branch="main"),
         ])
         # No subagents/ dir for this session.
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 1
@@ -2073,7 +2108,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
             _asst("claude-haiku-4-5", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 3, "expected main + 2 subagent records"
@@ -2089,14 +2124,14 @@ class TestIterSessionsSubagentMerge:
             _asst("claude-opus-4-7", branch="main"),
         ])
         # Write a subagent file with one valid record and one corrupt line.
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-corrupt.jsonl").write_text(
             '{"type":"assistant","isSidechain":true,"gitBranch":"main",'
             '"message":{"model":"claude-sonnet-4-6","content":[],"usage":{}}}\n'
             'THIS IS NOT JSON\n'
         )
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         sidechain = [r for r in records if r.get("isSidechain")]
@@ -2118,7 +2153,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert "isSidechain" in captured.err
@@ -2130,7 +2165,7 @@ class TestFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-4-6", branch="main"),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_old_inlined_format(self, fake_projects, capsys):
@@ -2141,7 +2176,7 @@ class TestFormatDriftCanary:
             ]),
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
@@ -2152,7 +2187,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_skill_pair(_skill_pair_args())
+        skill_pair.cmd_skill_pair(_skill_pair_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_subagent_records_without_issidechain_field_treated_as_main_thread(
@@ -2170,12 +2205,12 @@ class TestFormatDriftCanary:
             ]),
         ])
         # Subagent file record WITHOUT isSidechain field.
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         rec = _asst("claude-sonnet-4-6", branch="main", sidechain=True)
         del rec["isSidechain"]  # simulate format drift
         (subdir / "agent-drifted.jsonl").write_text(json.dumps(rec) + "\n")
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         captured = capsys.readouterr()
         sidechain_lines = [ln for ln in captured.out.splitlines() if "sidechain" in ln]
         # Without isSidechain=True, the subagent record is not a sidechain turn.
@@ -2194,7 +2229,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_on_healthy_corpus(self, fake_projects, capsys):
@@ -2203,7 +2238,7 @@ class TestFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", cache_read=100),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
@@ -2224,7 +2259,7 @@ class TestFormatDriftCanary:
         side_rec = _priced("claude-sonnet-5", cache_read=100)
         side_rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
@@ -2244,7 +2279,7 @@ class TestFormatDriftCanary:
         _write_subagent_jsonl(fake_projects, session_id, "a1", [
             _asst("claude-opus-4-7", branch="main", sidechain=True),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
 
@@ -2269,7 +2304,7 @@ class TestSubagentFormatContract:
             fake_projects, session_id, agent_id,
             [_asst("claude-sonnet-4-6", sidechain=True)]
         )
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         assert subdir.is_dir(), f"Expected subagent dir at {subdir}"
         files = list(subdir.glob("*.jsonl"))
         assert len(files) == 1
@@ -2285,7 +2320,7 @@ class TestSubagentFormatContract:
             fake_projects, session_id, "agent-contract",
             [_asst("claude-sonnet-4-6", branch="feat", sidechain=True)]
         )
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         sidechain_records = [r for r in records if r.get("isSidechain")]
@@ -2316,11 +2351,11 @@ class TestSubagentFormatContract:
 class TestIsFreshUserPrompt:
     def test_plain_text_user_record_returns_true(self):
         rec = _user_msg("Please fix that", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is True
+        assert render._is_fresh_user_prompt(rec) is True
 
     def test_tool_result_bearing_record_returns_false(self):
         rec = _user_msg([_tool_result("t1", "some result")], branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_ismeta_true_returns_false(self):
         rec = {
@@ -2329,7 +2364,7 @@ class TestIsFreshUserPrompt:
             "message": {"content": "injected meta"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_issidechain_true_returns_false(self):
         rec = {
@@ -2338,7 +2373,7 @@ class TestIsFreshUserPrompt:
             "message": {"content": "sidechain msg"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_iscompactsummary_true_returns_false(self):
         rec = {
@@ -2347,15 +2382,15 @@ class TestIsFreshUserPrompt:
             "message": {"content": "summary"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_empty_text_content_returns_false(self):
         rec = _user_msg("", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_assistant_record_returns_false(self):
         rec = _asst("claude-sonnet-4-6", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_task_notification_only_record_returns_false(self):
         """GH-1312: a harness-delivered task notification is not the human speaking."""
@@ -2459,51 +2494,51 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
 # too, but carry zero-match message text and branches the other rows don't, so
 # they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
-    ("buckets", "BUCKETS", _mod.cmd_buckets,
+    ("buckets", "BUCKETS", buckets.cmd_buckets,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("fail-seq", "FAIL SEQ", _mod.cmd_fail_seq,
+    ("fail-seq", "FAIL SEQ", fail_seq.cmd_fail_seq,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": "main"})()),
-    ("struggle", "STRUGGLE", _mod.cmd_struggle,
+    ("struggle", "STRUGGLE", struggle.cmd_struggle,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("duration", "DURATION", _mod.cmd_duration,
+    ("duration", "DURATION", duration.cmd_duration,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("subagents", "SUBAGENTS", _mod.cmd_subagents, _subagents_args),
-    ("subagent-mix", "SUBAGENT MIX", _mod.cmd_subagent_mix,
+    ("subagents", "SUBAGENTS", subagents.cmd_subagents, _subagents_args),
+    ("subagent-mix", "SUBAGENT MIX", subagent_mix.cmd_subagent_mix,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()),
-    ("reviewer-yield", "REVIEWER YIELD", _mod.cmd_reviewer_yield, _reviewer_yield_args),
-    ("skill-pair", "SKILL PAIR", _mod.cmd_skill_pair, _skill_pair_args),
-    ("pr-link", "PR LINK", _mod.cmd_pr_link,
+    ("reviewer-yield", "REVIEWER YIELD", reviewer_yield.cmd_reviewer_yield, _reviewer_yield_args),
+    ("skill-pair", "SKILL PAIR", skill_pair.cmd_skill_pair, _skill_pair_args),
+    ("pr-link", "PR LINK", pr_link.cmd_pr_link,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "branches": "main",
          "repo": "owner/repo", "author": None,
      })()),
-    ("commit-gate", "COMMIT GATE", _mod.cmd_commit_gate, lambda: _gate_args("code-review")),
-    ("audit-routing", "AUDIT ROUTING", _mod.cmd_audit_routing, _audit_routing_args),
-    ("cost", "COST", _mod.cmd_cost, _cost_args),
-    ("context-distribution", "CONTEXT DISTRIBUTION", _mod.cmd_context_distribution, _context_distribution_args),
-    ("context-composition", "CONTEXT COMPOSITION", _mod.cmd_context_composition,
+    ("commit-gate", "COMMIT GATE", commit_gate.cmd_commit_gate, lambda: _gate_args("code-review")),
+    ("audit-routing", "AUDIT ROUTING", audit_routing.cmd_audit_routing, _audit_routing_args),
+    ("cost", "COST", cost.cmd_cost, _cost_args),
+    ("context-distribution", "CONTEXT DISTRIBUTION", context_distribution.cmd_context_distribution, _context_distribution_args),
+    ("context-composition", "CONTEXT COMPOSITION", context_composition.cmd_context_composition,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
      })()),
-    ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
-    ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
-    ("spend-over-threshold", "SPEND OVER THRESHOLD", _mod.cmd_spend_over_threshold, _spend_over_threshold_args),
-    ("rearm-backtest", "REARM BACKTEST", _mod.cmd_rearm_backtest, _rearm_backtest_args),
-    ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
-    ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
-    ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
-    ("edit-format", "EDIT FORMAT", _mod.cmd_edit_format,
+    ("cost-trend", "COST TREND", cost.cmd_cost_trend, _cost_trend_args),
+    ("cache-rebuild", "CACHE REBUILD", cache_rebuild.cmd_cache_rebuild, _cache_rebuild_args),
+    ("spend-over-threshold", "SPEND OVER THRESHOLD", spend_over_threshold.cmd_spend_over_threshold, _spend_over_threshold_args),
+    ("rearm-backtest", "REARM BACKTEST", rearm_backtest.cmd_rearm_backtest, _rearm_backtest_args),
+    ("audit-routing-shape", "AUDIT ROUTING SHAPE", audit_routing.cmd_audit_routing_shape, _audit_routing_shape_args),
+    ("audit-routing-samples", "AUDIT ROUTING SAMPLES", audit_routing.cmd_audit_routing_samples, _audit_routing_samples_args),
+    ("judgment-pair", "JUDGMENT PAIR", judgment_pair.cmd_judgment_pair, _judgment_pair_args),
+    ("edit-format", "EDIT FORMAT", edit_format.cmd_edit_format,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
-    ("read-scope", "READ SCOPE", _mod.cmd_read_scope,
+    ("read-scope", "READ SCOPE", read_scope.cmd_read_scope,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
-    ("instrument-authoring", "INSTRUMENT AUTHORING", _mod.cmd_instrument_authoring,
+    ("instrument-authoring", "INSTRUMENT AUTHORING", instrument_authoring.cmd_instrument_authoring,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "extra_config_dirs": None})()),
-    ("cost-ledger", "COST LEDGER", _mod.cmd_cost_ledger, _cost_ledger_args),
-    ("plan-boundary", "PLAN BOUNDARY", _mod.cmd_plan_boundary,
+    ("cost-ledger", "COST LEDGER", cost_ledger.cmd_cost_ledger, _cost_ledger_args),
+    ("plan-boundary", "PLAN BOUNDARY", plan_boundary.cmd_plan_boundary,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
      })()),
-    ("sessions", "SESSIONS", _mod.cmd_sessions,
+    ("sessions", "SESSIONS", sessions.cmd_sessions,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "paths": True, "include_subagents": False,
      })()),
@@ -2538,7 +2573,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out, err = capsys.readouterr()
         combined = out + err
         assert "REVIEW TRACE SOURCES (" in combined
@@ -2551,7 +2586,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(_skill_inv_args())
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())
         out, err = capsys.readouterr()
         combined = out + err
         assert "SKILL INVOCATION SOURCES (" in combined
@@ -2565,7 +2600,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
+        review_trace.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "REVIEW TRACE SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -2579,7 +2614,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "REVIEW TRACE SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -2595,7 +2630,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "SKILL INVOCATION SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -2611,7 +2646,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(
+        skill_invocation.cmd_skill_invocation(
             _skill_inv_args(branches="no-such-branch", include_subagents=True)
         )
         out = capsys.readouterr().out
@@ -2630,7 +2665,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(
+        review_trace.cmd_review_trace(
             _review_trace_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
         )
         out = capsys.readouterr().out
@@ -2647,7 +2682,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(
+        skill_invocation.cmd_skill_invocation(
             _skill_inv_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
         )
         out = capsys.readouterr().out
@@ -2664,7 +2699,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
         out = capsys.readouterr().out
         assert "No denials found in scope." in out
         assert "No sessions matched in scope." not in out
@@ -2686,8 +2721,8 @@ class TestRootsThreadingSpy:
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         scope_calls: list[list] = []
         header_calls: list[list] = []
-        real_resolve = _mod._resolve_project_scope
-        real_print = _mod._print_resolved_scope
+        real_resolve = scope._resolve_project_scope
+        real_print = scope.print_resolved_scope
 
         def spy_resolve(*a, **k):
             scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
@@ -2703,8 +2738,8 @@ class TestRootsThreadingSpy:
         # cost/cost-trend's cmd_* now live in cost.py and call scope._resolve_project_scope/
         # scope.print_resolved_scope by module attribute access rather than the bare shim
         # names above -- patched here too so the spy intercepts either call shape.
-        monkeypatch.setattr(_mod.scope, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod.scope, "print_resolved_scope", spy_print)
+        monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
         monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
 
         cmd_func(args_factory())
@@ -2727,8 +2762,8 @@ class TestRootsThreadingSpy:
         ])
         scope_calls: list[list] = []
         header_calls: list[list] = []
-        real_resolve = _mod._resolve_project_scope
-        real_print = _mod._print_resolved_scope
+        real_resolve = scope._resolve_project_scope
+        real_print = scope.print_resolved_scope
 
         def spy_resolve(*a, **k):
             scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
@@ -2744,10 +2779,10 @@ class TestRootsThreadingSpy:
         # cmd_review_trace now lives in review_trace.py and calls scope._resolve_project_scope/
         # scope.print_resolved_scope by module attribute access rather than the bare shim
         # names above -- patched here too so the spy intercepts either call shape.
-        monkeypatch.setattr(_mod.scope, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod.scope, "print_resolved_scope", spy_print)
+        monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
 
-        _mod.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
 
         assert scope_calls[-1] == expected_roots
         assert header_calls[-1] == expected_roots
@@ -2760,15 +2795,15 @@ class TestRootsThreadingSpy:
         with the full roots list (not iter_sessions' single-Path shape)."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list] = []
-        real_glob_scoped = _mod.scope._iter_glob_scoped_sessions
+        real_glob_scoped = scope._iter_glob_scoped_sessions
 
         def spy_glob_scoped(roots, *a, **k):
             calls.append(list(roots))
             return real_glob_scoped(roots, *a, **k)
 
-        monkeypatch.setattr(_mod.scope, "_iter_glob_scoped_sessions", spy_glob_scoped)
+        monkeypatch.setattr(scope, "_iter_glob_scoped_sessions", spy_glob_scoped)
 
-        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
 
         assert calls, "_iter_glob_scoped_sessions was never called"
         assert calls[-1] == expected_roots
@@ -2778,14 +2813,14 @@ class TestRootsThreadingSpy:
         roots=roots into _iter_scoped_sessions rather than defaulting."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list | None] = []
-        real_scoped = _mod.scope._iter_scoped_sessions
+        real_scoped = scope._iter_scoped_sessions
 
         def spy_scoped(slugs, include_subagents, roots=None):
             calls.append(list(roots) if roots is not None else None)
             return real_scoped(slugs, include_subagents, roots=roots)
 
-        monkeypatch.setattr(_mod.scope, "_iter_scoped_sessions", spy_scoped)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "_iter_scoped_sessions", spy_scoped)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_git_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2795,7 +2830,7 @@ class TestRootsThreadingSpy:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_git_run)
 
-        _mod.cmd_skill_invocation(_skill_inv_args(projects=None))  # unset -- the repo-scoped default branch
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(projects=None))  # unset -- the repo-scoped default branch
 
         assert calls, "_iter_scoped_sessions was never called"
         assert calls[-1] == expected_roots
@@ -2806,17 +2841,17 @@ class TestRootsThreadingSpy:
         iter_sessions' documented flat-sort-over-full-paths ordering guarantee
         is unaffected by this plan at single root."""
         calls: list[Path] = []
-        real_iter_sessions = _mod.corpus.iter_sessions
+        real_iter_sessions = corpus.iter_sessions
 
         def spy_iter_sessions(projects_dir, *a, **k):
             calls.append(projects_dir)
             return real_iter_sessions(projects_dir, *a, **k)
 
-        monkeypatch.setattr(_mod.corpus, "iter_sessions", spy_iter_sessions)
+        monkeypatch.setattr(corpus, "iter_sessions", spy_iter_sessions)
 
-        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
 
-        assert calls == [_mod.scope.PROJECTS_DIR]
+        assert calls == [scope.PROJECTS_DIR]
 
 
 class TestThisRepoUnionsAcrossRoots:
@@ -2844,7 +2879,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_c_alias = tmp_path / "acct-a-alias"
         root_c_alias.symlink_to(root_a)
 
-        sessions = list(_mod._iter_scoped_sessions(
+        sessions = list(scope._iter_scoped_sessions(
             ["-repo-main"], False, roots=[root_a, root_b, root_c_alias],
         ))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
@@ -2870,7 +2905,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_b_foreign.mkdir(parents=True)
         _write_jsonl(proj_b_foreign / "sess-foreign.jsonl", [_asst("claude-sonnet-4-6", branch="foreign-branch")])
 
-        sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+        sessions = list(scope._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-root-a", "from-root-b"}
         assert "foreign-branch" not in branches_seen
@@ -2887,8 +2922,8 @@ class TestThisRepoUnionsAcrossRoots:
         same slug -- under --this-repo, both are admitted. A future change to
         slug derivation that silently alters this posture, in either
         direction, must fail this test."""
-        this_repo_slug = _mod.scope._path_to_project_slug("/a/b/c")
-        foreign_path_slug = _mod.scope._path_to_project_slug("/a/b.c")
+        this_repo_slug = scope._path_to_project_slug("/a/b/c")
+        foreign_path_slug = scope._path_to_project_slug("/a/b.c")
         assert this_repo_slug == foreign_path_slug == "-a-b-c"  # the collision this test pins
 
         root_a = tmp_path / "acct-a"
@@ -2904,9 +2939,9 @@ class TestThisRepoUnionsAcrossRoots:
 
         args = type("A", (), {"projects": "*", "this_repo": True})()
         args._this_repo_slugs = [this_repo_slug]
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"this-repo-session", "foreign-colliding-session"}
 
@@ -2919,7 +2954,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_a = root_a / "-repo-main"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-a")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", root_a)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", root_a)
 
         root_b = tmp_path / "acct-b-config"
         proj_b = root_b / "projects" / "-repo-main"
@@ -2929,7 +2964,7 @@ class TestThisRepoUnionsAcrossRoots:
         roots_file.write_text(f"{root_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2939,7 +2974,7 @@ class TestThisRepoUnionsAcrossRoots:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
         out = capsys.readouterr().out
         assert "feat-in-root-a" in out
         assert "feat-in-root-b" in out
@@ -2960,7 +2995,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_b.mkdir()
         args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+            scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert exc_info.value.code == 1
 
     def test_this_repo_allow_case_when_only_a_non_first_root_matches(self, tmp_path):
@@ -2973,7 +3008,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_b = tmp_path / "acct-b"
         (root_b / "-repo-main").mkdir(parents=True)
         args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
-        session_iter, scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        session_iter, scope_label = scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert list(session_iter) == []  # no sessions written, but no SystemExit either
         assert scope_label == "this repo (1 project dirs)"
 
@@ -2998,7 +3033,7 @@ class TestIterScopedSessionsUnreadableRoot:
         root_b.mkdir()
         os.chmod(root_b, 0o000)
         try:
-            sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+            sessions = list(scope._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
         finally:
             os.chmod(root_b, 0o755)  # restore before tmp_path teardown
 
@@ -3038,7 +3073,7 @@ class TestScanGapCounter:
         os.chmod(root_b, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            sessions = list(scope._iter_glob_scoped_sessions(
                 [root_a, root_b], "*", False, scan_gaps=scan_gaps,
             ))
         finally:
@@ -3046,7 +3081,7 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-readable-root"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_ROOT: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_project_dir_records_project_dir_level_gap(self, tmp_path):
@@ -3059,13 +3094,13 @@ class TestScanGapCounter:
         os.chmod(proj_sealed, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj_sealed, 0o755)
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_project_dir_symlink_loop_is_skipped_with_no_gap(self, tmp_path):
         """A self-referencing symlink makes the stat fail with ELOOP (which
@@ -3080,7 +3115,7 @@ class TestScanGapCounter:
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
@@ -3095,7 +3130,7 @@ class TestScanGapCounter:
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        assert list(_mod.scope._iter_glob_scoped_sessions([root], "*", False)) == []
+        assert list(scope._iter_glob_scoped_sessions([root], "*", False)) == []
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
@@ -3117,13 +3152,13 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(sealed_ancestor, 0o755)
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
@@ -3140,7 +3175,7 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         try:
             with pytest.raises(PermissionError) as excinfo:
-                list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+                list(scope._iter_glob_scoped_sessions([root], "*", False))
             assert str(proj_through_sealed) not in str(excinfo.value)
             _assert_scan_error_chain_suppressed(excinfo)
         finally:
@@ -3156,7 +3191,7 @@ class TestScanGapCounter:
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        assert list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
+        assert list(scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
@@ -3177,7 +3212,7 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         try:
             with pytest.raises(PermissionError) as excinfo:
-                list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+                list(scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
             assert str(proj_through_sealed) not in str(excinfo.value)
             _assert_scan_error_chain_suppressed(excinfo)
         finally:
@@ -3194,12 +3229,12 @@ class TestScanGapCounter:
         (proj / "empty.jsonl").write_text("")
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(sealed, 0o644)
 
         assert sessions == []  # neither the unreadable nor the readable-empty file yields
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_SESSION_FILE: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_without_search_permission_records_session_file_gap(self, tmp_path):
@@ -3214,17 +3249,17 @@ class TestScanGapCounter:
         os.chmod(proj, 0o444)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj, 0o755)
 
         assert sessions == []
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_SESSION_FILE: 1})
 
     def test_nonexistent_root_records_no_gap(self, tmp_path):
         missing_root = tmp_path / "never-created"
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [missing_root], "*", False, scan_gaps=scan_gaps,
         ))
         assert sessions == []
@@ -3244,7 +3279,7 @@ class TestScanGapCounter:
         os.chmod(proj_sealed, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_scoped_sessions(
+            sessions = list(scope._iter_scoped_sessions(
                 ["-repo-open", "-repo-sealed"], False, roots=[root], scan_gaps=scan_gaps,
             ))
         finally:
@@ -3252,14 +3287,14 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_resolve_project_scope_single_root_glob_branch_raises_on_scan_gaps(self, tmp_path):
         root = tmp_path / "acct-a" / "projects"
         root.mkdir(parents=True)
         args = argparse.Namespace(this_repo=False, projects="*")
         with pytest.raises(ValueError):
-            _mod.scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
+            scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_project_dir_without_scan_gaps_skips_it_silently(self, tmp_path):
@@ -3275,7 +3310,7 @@ class TestScanGapCounter:
         proj_sealed.mkdir(parents=True)
         os.chmod(proj_sealed, 0o000)
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False))
         finally:
             os.chmod(proj_sealed, 0o755)
 
@@ -3299,14 +3334,14 @@ class TestScanGapCounter:
         os.chmod(root_b, 0o000)
         scan_gaps = Counter()
         try:
-            list(_mod.scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
+            list(scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj_c, 0o755)
             os.chmod(sealed, 0o644)
             os.chmod(root_b, 0o755)
 
         assert set(scan_gaps) == {
-            _mod.scope._SCAN_GAP_ROOT, _mod.scope._SCAN_GAP_PROJECT_DIR, _mod.scope._SCAN_GAP_SESSION_FILE,
+            scope._SCAN_GAP_ROOT, scope._SCAN_GAP_PROJECT_DIR, scope._SCAN_GAP_SESSION_FILE,
         }
 
     def test_root_that_is_a_regular_file_records_no_gap(self, tmp_path):
@@ -3320,7 +3355,7 @@ class TestScanGapCounter:
         root_b = tmp_path / "acct-b-not-a-dir"
         root_b.write_text("not a directory")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [root_a, root_b], "*", False, scan_gaps=scan_gaps,
         ))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
@@ -3337,7 +3372,7 @@ class TestScanGapCounter:
         _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-repo-a")])
         (root / ".DS_Store").write_text("")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-repo-a"}
         assert scan_gaps == Counter()
@@ -3356,7 +3391,7 @@ class TestScanGapCounter:
         (proj / "dangling.jsonl").symlink_to(proj / "does-not-exist.jsonl")
         (proj / "loop.jsonl").symlink_to(proj / "loop.jsonl")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-real"}
         assert scan_gaps == Counter()
@@ -3389,7 +3424,7 @@ class TestScanGapCounter:
         os.chmod(sealed_b, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            sessions = list(scope._iter_glob_scoped_sessions(
                 [root_0, root_1], "*", False, scan_gaps=scan_gaps,
             ))
         finally:
@@ -3402,9 +3437,9 @@ class TestScanGapCounter:
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open"}
         assert scan_gaps == Counter({
-            _mod.scope._SCAN_GAP_ROOT: 1,
-            _mod.scope._SCAN_GAP_PROJECT_DIR: 2,
-            _mod.scope._SCAN_GAP_SESSION_FILE: 2,
+            scope._SCAN_GAP_ROOT: 1,
+            scope._SCAN_GAP_PROJECT_DIR: 2,
+            scope._SCAN_GAP_SESSION_FILE: 2,
         })
 
     def test_project_dir_symlink_alias_across_roots_records_no_gap_and_yields_once(self, tmp_path):
@@ -3419,7 +3454,7 @@ class TestScanGapCounter:
         root_b.mkdir()
         (root_b / "-repo-shared-alias").symlink_to(proj, target_is_directory=True)
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [root_a, root_b], "*", False, scan_gaps=scan_gaps,
         ))
         branches_seen = [rec["gitBranch"] for _jsonl, records in sessions for rec in records]
@@ -3443,7 +3478,7 @@ class TestScanGapCounter:
         os.chmod(root_c, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_scoped_sessions(
+            sessions = list(scope._iter_scoped_sessions(
                 ["-repo-main"], False, roots=[root_a, root_b, root_c], scan_gaps=scan_gaps,
             ))
         finally:
@@ -3452,7 +3487,7 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-readable-root"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 2})
+        assert scan_gaps == Counter({scope._SCAN_GAP_ROOT: 2})
 
     @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP])
     def test_stat_mode_unless_absent_returns_none_for_absent_entry_errnos(self, absent_errno):
@@ -3462,7 +3497,7 @@ class TestScanGapCounter:
             def stat(self):
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
-        assert _mod.scope._stat_mode_unless_absent(_StatRaises()) is None
+        assert scope._stat_mode_unless_absent(_StatRaises()) is None
 
     @pytest.mark.parametrize("propagated_errno", [errno.EACCES, errno.EIO])
     def test_stat_mode_unless_absent_reraises_every_other_errno(self, propagated_errno):
@@ -3471,7 +3506,7 @@ class TestScanGapCounter:
                 raise OSError(propagated_errno, os.strerror(propagated_errno))
 
         with pytest.raises(OSError) as excinfo:
-            _mod.scope._stat_mode_unless_absent(_StatRaises())
+            scope._stat_mode_unless_absent(_StatRaises())
         assert excinfo.value.errno == propagated_errno
 
     def test_stat_mode_unless_absent_returns_the_mode_of_an_existing_entry(self, tmp_path):
@@ -3480,8 +3515,8 @@ class TestScanGapCounter:
         directory = tmp_path / "project-dir"
         directory.mkdir()
 
-        regular_mode = _mod.scope._stat_mode_unless_absent(regular_file)
-        directory_mode = _mod.scope._stat_mode_unless_absent(directory)
+        regular_mode = scope._stat_mode_unless_absent(regular_file)
+        directory_mode = scope._stat_mode_unless_absent(directory)
 
         assert stat.S_ISREG(regular_mode) and not stat.S_ISDIR(regular_mode)
         assert stat.S_ISDIR(directory_mode) and not stat.S_ISREG(directory_mode)
@@ -3494,7 +3529,7 @@ class TestScanGapCounter:
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
         scan_gaps = Counter()
-        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        yielded = list(scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
         assert yielded == []
         assert scan_gaps == Counter()
 
@@ -3504,9 +3539,9 @@ class TestScanGapCounter:
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES))
 
         scan_gaps = Counter()
-        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        yielded = list(scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
         assert yielded == []
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_dedup_without_scan_gaps_raises_eacces_with_the_path_stripped(self):
         sensitive_path = "/private/acct-a/projects/-repo-sealed"
@@ -3516,7 +3551,7 @@ class TestScanGapCounter:
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES), sensitive_path)
 
         with pytest.raises(OSError) as excinfo:
-            list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set()))
+            list(scope._dedup_new_project_dirs([_StatRaises()], set()))
         assert excinfo.value.errno == errno.EACCES
         assert sensitive_path not in str(excinfo.value)
         _assert_scan_error_chain_suppressed(excinfo)
@@ -3527,14 +3562,14 @@ class TestScanGapCounter:
             def stat(self):
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is False
+        assert scope._failed_transcript_read_is_gap(_StatRaises()) is False
 
     def test_failed_transcript_read_is_a_gap_when_stat_fails_with_eacces(self):
         class _StatRaises:
             def stat(self):
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES))
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is True
+        assert scope._failed_transcript_read_is_gap(_StatRaises()) is True
 
     def test_failed_transcript_read_is_a_gap_when_stat_reports_a_regular_file(self):
         """The regular-file arm, pinned with a stat stub so it holds under root."""
@@ -3542,14 +3577,14 @@ class TestScanGapCounter:
             def stat(self):
                 return os.stat_result((stat.S_IFREG | 0o644,) + (0,) * 9)
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
+        assert scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
 
     def test_failed_transcript_read_is_not_a_gap_when_stat_reports_a_directory(self):
         class _StatsAsDirectory:
             def stat(self):
                 return os.stat_result((stat.S_IFDIR | 0o755,) + (0,) * 9)
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
+        assert scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
 
 
 class TestGlobScopedSessionsSelection:
@@ -3579,14 +3614,14 @@ class TestGlobScopedSessionsSelection:
         _write_jsonl(non_transcript, stray_records)
 
         yielded_paths = {
-            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, projects_glob, False)
+            jsonl for jsonl, _records in scope._iter_glob_scoped_sessions(roots, projects_glob, False)
         }
         every_project_paths = {
-            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, "*", False)
+            jsonl for jsonl, _records in scope._iter_glob_scoped_sessions(roots, "*", False)
         }
 
         expected_paths = {
-            jsonl for root in roots for jsonl, _records in _mod.corpus.iter_sessions(root, projects_glob)
+            jsonl for root in roots for jsonl, _records in corpus.iter_sessions(root, projects_glob)
         }
         assert expected_paths
         assert yielded_paths == expected_paths
@@ -3599,11 +3634,11 @@ class TestGlobScopedSessionsSelection:
 class TestProjectsGlobStepsToParent:
     @pytest.mark.parametrize("projects_glob", ["..", "../x", "x/..", "a/../.."])
     def test_dotdot_path_component_steps_to_parent(self, projects_glob):
-        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is True
+        assert corpus._projects_glob_steps_to_parent(projects_glob) is True
 
     @pytest.mark.parametrize("projects_glob", ["a..b", "..*", "...", ".hidden*", "*"])
     def test_dotdot_inside_a_component_does_not_step_to_parent(self, projects_glob):
-        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is False
+        assert corpus._projects_glob_steps_to_parent(projects_glob) is False
 
 
 class TestSingleLevelProjectsGlob:
@@ -3620,12 +3655,12 @@ class TestSingleLevelProjectsGlob:
 
     @pytest.mark.parametrize("value", ["*", "-home-user-repo*", "feat-?", "[ab]*", ""])
     def test_accepts_single_level_glob_values_unchanged(self, value):
-        assert _mod.scope._single_level_projects_glob(value) == value
+        assert scope._single_level_projects_glob(value) == value
 
     @pytest.mark.parametrize("value", ["a/b", "a/", "/a", "**", "a**", ".", ".."])
     def test_rejects_values_path_glob_would_read_differently(self, value):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod.scope._single_level_projects_glob(value)
+            scope._single_level_projects_glob(value)
 
     @pytest.mark.parametrize(
         "cli_args",
@@ -3668,7 +3703,7 @@ class TestSingleLevelProjectsGlob:
         root_b.mkdir()
         args = argparse.Namespace(this_repo=False, projects="a/b")
         with pytest.raises(SystemExit) as exc:
-            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+            scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert exc.value.code == 2
 
     def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
@@ -3680,7 +3715,7 @@ class TestSingleLevelProjectsGlob:
         nested.mkdir(parents=True)
         _write_jsonl(nested / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-nested")])
         args = argparse.Namespace(this_repo=False, projects="sub/-repo-main")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-nested"}
 
@@ -3694,7 +3729,7 @@ class TestSingleLevelProjectsGlob:
         sibling.mkdir()
         _write_jsonl(sibling / "secret.jsonl", [_asst("claude-sonnet-4-6", branch="from-sibling")])
         args = argparse.Namespace(this_repo=False, projects="../acct-b")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         assert list(session_iter) == []
 
     def test_single_root_scope_reads_a_project_dir_symlinked_outside_the_root(self, tmp_path):
@@ -3710,7 +3745,7 @@ class TestSingleLevelProjectsGlob:
         _write_jsonl(outside / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-relocated")])
         (root / "-repo-relocated").symlink_to(outside)
         args = argparse.Namespace(this_repo=False, projects="*")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-relocated"}
 
@@ -3725,7 +3760,7 @@ class TestSingleLevelProjectsGlob:
         loop_link = proj / "loop.jsonl"
         loop_link.symlink_to(loop_link)
         args = argparse.Namespace(this_repo=False, projects="*")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-healthy"}
 
@@ -3741,13 +3776,13 @@ class TestSingleLevelProjectsGlob:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_config)
 
         sibling_proj = tmp_path / "secret-account" / "projects" / "-home-secret-repo"
         sibling_proj.mkdir(parents=True)
         _write_jsonl(sibling_proj / "secret.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
 
-        _mod.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
+        cost.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
         out = capsys.readouterr().out
         assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
         assert "WARNING: cost: account-1: no transcripts found for this scope" in out
@@ -3763,9 +3798,9 @@ class TestSingleLevelProjectsGlob:
         root_b = tmp_path / "acct-b"
         root_b.mkdir()
         args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
-        monkeypatch.setattr(_mod.scope, "resolve_scan_roots", lambda _args: [root_a, root_b])
+        monkeypatch.setattr(scope, "resolve_scan_roots", lambda _args: [root_a, root_b])
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_skill_invocation(args)
+            skill_invocation.cmd_skill_invocation(args)
         assert exc.value.code == 2
         assert "--projects" in capsys.readouterr().err
 
@@ -3779,7 +3814,7 @@ class TestPoisonedProjectsDirGlobal:
     def test_sessions_found_via_declared_root_despite_nonexistent_projects_dir(
         self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
         real_root = tmp_path / "real-account"
         proj = real_root / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -3788,7 +3823,7 @@ class TestPoisonedProjectsDirGlobal:
         roots_file.write_text(f"{real_root}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
         out = capsys.readouterr().out
         assert "feat-declared-root" in out
         assert "2 roots" in out
@@ -3808,7 +3843,7 @@ class TestMultiRootFormatOutliers:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_config)
 
         declared_config = tmp_path / "declared-account"
         declared_proj = declared_config / "projects" / "-home-user-repo-b"
@@ -3818,7 +3853,7 @@ class TestMultiRootFormatOutliers:
         roots_file.write_text(f"{declared_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         out = capsys.readouterr().out
         assert "account-1/private-project-1" in out
         assert "account-2/private-project-1" in out
@@ -3833,7 +3868,7 @@ class TestMultiRootFormatOutliers:
             proj.mkdir(parents=True)
             _write_jsonl(proj / f"sess-{idx}.jsonl", [_opus([_read_use("r1", "/a.py")], out=100)])
 
-        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         out, err = capsys.readouterr()
         assert "2 roots" in err  # header routed to stderr, matching audit-routing-samples' convention
         # The per-root progress line is gated on len(roots) > 1, so above one
@@ -3857,7 +3892,7 @@ class TestMultiRootFormatOutliers:
             ])
         out_file = roots[0].parent / "out.txt"
 
-        _mod.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
         content = out_file.read_text()
         lines = content.splitlines()
         assert lines[0] == "JUDGMENT PAIR SOURCES (*; 2 roots)"
@@ -3874,12 +3909,12 @@ class TestResolveScanRoots:
     many such fixtures)."""
 
     def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+        assert scope.resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_no_config_dir_with_declared_roots_unions_both(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -3887,7 +3922,7 @@ class TestResolveScanRoots:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [
+        assert scope.resolve_scan_roots(args) == [
             tmp_path / "active" / "projects", declared / "projects",
         ]
 
@@ -3897,7 +3932,7 @@ class TestResolveScanRoots:
         """The flagship precedence rule: an explicit --config-dir wins outright,
         returning that one directory's projects/ subdirectory alone — the
         declared-roots file's entries are not unioned in on top of it."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -3906,15 +3941,15 @@ class TestResolveScanRoots:
 
         override_dir = tmp_path / "explicit-override"
         args = argparse.Namespace(config_dir=str(override_dir))
-        assert _mod._resolve_scan_roots(args) == [override_dir / "projects"]
+        assert scope.resolve_scan_roots(args) == [override_dir / "projects"]
 
     def test_config_dir_attribute_absent_from_parsed_does_not_raise(self, monkeypatch, tmp_path):
         """A hand-built test `args` Namespace that predates the top-level
         --config-dir flag (this file's many such fixtures) must not raise
         AttributeError -- its absence means "not passed," the real default."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = type("A", (), {})()  # no config_dir attribute at all
-        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+        assert scope.resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_declared_root_matching_active_profile_is_deduped_not_double_listed(
         self, monkeypatch, tmp_path
@@ -3924,13 +3959,13 @@ class TestResolveScanRoots:
         active profile is deduped, not double-listed."""
         active_config = tmp_path / "active-account"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", active_config / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{active_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [active_config / "projects"]
+        assert scope.resolve_scan_roots(args) == [active_config / "projects"]
 
 
 class TestRedactionOrdinalStability:
@@ -3945,8 +3980,8 @@ class TestRedactionOrdinalStability:
         root_b = tmp_path / "acct-b"
         root_b.mkdir()
 
-        ordinals_a_first = _mod._redaction_ordinals([root_a, root_b])
-        ordinals_b_first = _mod._redaction_ordinals([root_b, root_a])
+        ordinals_a_first = scope._redaction_ordinals([root_a, root_b])
+        ordinals_b_first = scope._redaction_ordinals([root_b, root_a])
 
         assert ordinals_a_first == ordinals_b_first
         assert ordinals_a_first[root_a.resolve()] == ordinals_b_first[root_a.resolve()]
@@ -3963,10 +3998,10 @@ class TestRedactionOrdinalStability:
         root_zulu = _write_cost_root(tmp_path, "acct-zulu", "-home-user-repo-zulu", "sess-zulu",
                                       [_priced("claude-sonnet-5", input=1_000_000)])
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_alpha, root_zulu])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_alpha, root_zulu])
         out_alpha_active = capsys.readouterr().out
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_zulu, root_alpha])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_zulu, root_alpha])
         out_zulu_active = capsys.readouterr().out
 
         # root_alpha resolves alphabetically first, so it holds account-1 in both
@@ -3991,7 +4026,7 @@ class TestCorpusFingerprintRootRemovalLimits:
         # Root 2's only label ("shared-label") is a strict subset of root 1's
         # own label set, so dropping root 2 does not change the label SET —
         # the fingerprint is identical even though the account count changed.
-        assert _mod._corpus_fingerprint(two_root_map) == _mod._corpus_fingerprint(one_root_map)
+        assert redaction._corpus_fingerprint(two_root_map) == redaction._corpus_fingerprint(one_root_map)
 
 
 class TestResolvedScopeHeaderDirectUnit:
@@ -4001,7 +4036,7 @@ class TestResolvedScopeHeaderDirectUnit:
     root-count branch."""
 
     def test_one_root_states_no_declared_roots_file(self, tmp_path):
-        header = _mod._resolved_scope_header("buckets", "*", [tmp_path / "acct-a" / "projects"])
+        header = scope._resolved_scope_header("buckets", "*", [tmp_path / "acct-a" / "projects"])
         assert header == (
             "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))"
         )
@@ -4012,7 +4047,7 @@ class TestResolvedScopeHeaderDirectUnit:
             tmp_path / "acct-b" / "projects",
             tmp_path / "acct-c" / "projects",
         ]
-        header = _mod._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
+        header = scope._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
         assert header == "COST SOURCES (this repo (2 project dirs); 3 roots)"
 
 
@@ -4024,7 +4059,7 @@ class TestRootCountDescDirectUnit:
 
     def test_one_root_absent_roots_file_states_no_declared_roots_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (no ~/.claude/transcript-config-dirs declared)"
         )
 
@@ -4035,7 +4070,7 @@ class TestRootCountDescDirectUnit:
         roots_file = tmp_path / "roots"
         roots_file.write_text("# just a comment\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        desc = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
+        desc = scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         assert "no ~/.claude/transcript-config-dirs declared" not in desc
         assert "~/.claude/transcript-config-dirs" in desc
 
@@ -4050,7 +4085,7 @@ class TestRootCountDescDirectUnit:
         roots_file_as_dir = tmp_path / "roots-is-a-directory"
         roots_file_as_dir.mkdir()
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
-        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (~/.claude/transcript-config-dirs present but unreadable)"
         )
 
@@ -4059,8 +4094,8 @@ class TestRootCountDescDirectUnit:
         file, so the >1-root branch must not name the file at all."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
         roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
-        assert _mod.scope._root_count_desc(roots) == "2 roots"
-        assert "transcript-config-dirs" not in _mod.scope._root_count_desc(roots)
+        assert scope._root_count_desc(roots) == "2 roots"
+        assert "transcript-config-dirs" not in scope._root_count_desc(roots)
 
     def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
         """Contract test, a tripwire not a full guarantee: derives
@@ -4071,7 +4106,7 @@ class TestRootCountDescDirectUnit:
         verbatim positive pin on its own scope-confirmation sentence (see
         each skill's dedicated tests) is the real contract."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        literal = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
+        literal = scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         for skill_name in ("transcript-analysis", "transcript-narrative"):
             skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
             assert literal in skill_text, f"{skill_name}/SKILL.md does not quote _root_count_desc()'s literal"
@@ -4131,10 +4166,10 @@ class TestBuildRedactMapDirectUnit:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_b / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="from-b")])
 
-        ordinals = _mod._redaction_ordinals([root_a, root_b])
+        ordinals = scope._redaction_ordinals([root_a, root_b])
         ordinal_a, ordinal_b = ordinals[root_a.resolve()], ordinals[root_b.resolve()]
 
-        redact_map = _mod._build_redact_map([root_a, root_b])
+        redact_map = redaction._build_redact_map([root_a, root_b])
 
         assert redact_map == {
             (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
@@ -4159,7 +4194,7 @@ class TestBuildRedactMapDirectUnit:
         priced.mkdir(parents=True)
         _write_jsonl(priced / "sess-priced.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
 
-        redact_map = _mod._build_redact_map([root])
+        redact_map = redaction._build_redact_map([root])
         assert redact_map["zzz-priced"] == "private-project-2"
 
     def test_two_subagent_only_projects_get_distinct_sorted_labels(self, tmp_path):
@@ -4177,7 +4212,7 @@ class TestBuildRedactMapDirectUnit:
         _write_jsonl(proj_b / "sess-b.jsonl", [])
         _write_subagent_jsonl(proj_b, "sess-b", "agent-1", [_user_msg("hi")])
 
-        redact_map = _mod._build_redact_map([root])
+        redact_map = redaction._build_redact_map([root])
         assert redact_map == {
             "aaa-phantom": "private-project-1",
             "zzz-phantom": "private-project-2",
@@ -4198,36 +4233,36 @@ class TestCacheMissReason:
                 "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 12345},
             }
         }
-        assert _mod._cache_miss_reason(message) == "model_changed"
+        assert pricing._cache_miss_reason(message) == "model_changed"
 
     def test_returns_none_when_diagnostics_absent(self):
-        assert _mod._cache_miss_reason({}) is None
+        assert pricing._cache_miss_reason({}) is None
 
     def test_returns_none_when_diagnostics_not_a_dict(self):
-        assert _mod._cache_miss_reason({"diagnostics": "oops"}) is None
+        assert pricing._cache_miss_reason({"diagnostics": "oops"}) is None
 
     def test_returns_none_when_cache_miss_reason_absent(self):
-        assert _mod._cache_miss_reason({"diagnostics": {}}) is None
+        assert pricing._cache_miss_reason({"diagnostics": {}}) is None
 
     def test_returns_none_when_cache_miss_reason_not_a_dict(self):
-        assert _mod._cache_miss_reason({"diagnostics": {"cache_miss_reason": 42}}) is None
+        assert pricing._cache_miss_reason({"diagnostics": {"cache_miss_reason": 42}}) is None
 
     def test_returns_none_when_cache_miss_reason_type_not_a_string(self):
         message = {"diagnostics": {"cache_miss_reason": {"type": 42}}}
-        assert _mod._cache_miss_reason(message) is None
+        assert pricing._cache_miss_reason(message) is None
 
     def test_previous_message_not_found_reason_has_no_cache_missed_input_tokens_field(self):
         """The previous_message_not_found variant carries no
         cache_missed_input_tokens field at all -- the parser must not assume
         its presence."""
         message = {"diagnostics": {"cache_miss_reason": {"type": "previous_message_not_found"}}}
-        assert _mod._cache_miss_reason(message) == "previous_message_not_found"
+        assert pricing._cache_miss_reason(message) == "previous_message_not_found"
 
     def test_unavailable_reason_has_no_cache_missed_input_tokens_field(self):
         """The unavailable variant also carries no cache_missed_input_tokens
         field -- the parser must not assume its presence."""
         message = {"diagnostics": {"cache_miss_reason": {"type": "unavailable"}}}
-        assert _mod._cache_miss_reason(message) == "unavailable"
+        assert pricing._cache_miss_reason(message) == "unavailable"
 
     def test_merged_run_takes_cache_miss_reason_from_first_record(self):
         """_merge_assistant_run takes every non-content, non-usage field from
@@ -4239,9 +4274,9 @@ class TestCacheMissReason:
         }
         rec_b = _priced("claude-opus-5", output=20, request_id="req-1")
         rec_b["message"]["diagnostics"] = {"cache_miss_reason": {"type": "something_else"}}
-        merged = _mod._dedup_turns_by_request_id([rec_a, rec_b])
+        merged = pricing.dedup_turns_by_request_id([rec_a, rec_b])
         assert len(merged) == 1
-        assert _mod._cache_miss_reason(merged[0]["message"]) == "model_changed"
+        assert pricing._cache_miss_reason(merged[0]["message"]) == "model_changed"
 
 
 # ---------------------------------------------------------------------------
@@ -4266,7 +4301,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="main", ts="2026-06-01T11:00:00.000Z"),
             _asst(_SONNET, branch="feature-x", ts="2026-06-02T11:00:00.000Z"),
         ])
-        _mod.cmd_buckets(_branch_args())
+        buckets.cmd_buckets(_branch_args())
         out = capsys.readouterr().out
         feature_cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
         main_cols = _table_cols(out, header_contains="Branch", row_contains="main", max_labels=8)
@@ -4282,7 +4317,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="main", ts=_attr_ts(1)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        _mod.cmd_buckets(_branch_args(branches="feature-x"))
+        buckets.cmd_buckets(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)["Total"] == "2"
 
@@ -4292,7 +4327,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(10)),
         ])
-        _mod.cmd_duration(_branch_args(branches="feature-x"))
+        duration.cmd_duration(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
         assert cols["Span(min)"] == "10"  # 12:00 to 12:10, not 12:05 to 12:10
@@ -4304,7 +4339,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _user_msg([{"type": "text", "text": "this is the wrong approach"}], branch="main", ts=_attr_ts(2)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        _mod.cmd_struggle(_branch_args(branches="feature-x"))
+        struggle.cmd_struggle(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
         assert cols["Opus"] == "1"
@@ -4314,7 +4349,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("a prompt recorded with no branch", branch="", ts=_attr_ts(1)),
             _asst(_SONNET, branch="", ts=_attr_ts(2)),
         ])
-        _mod.cmd_user_input(_user_input_args())
+        user_input.cmd_user_input(_user_input_args())
         out = capsys.readouterr().out
         assert "a prompt recorded with no branch" in out
         assert "None" not in out
@@ -4329,7 +4364,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("prompt after entering the branch", branch="feature-x", ts=_attr_ts(5)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(6)),
         ])
-        _mod.cmd_user_input(_user_input_args(branches="feature-x"))
+        user_input.cmd_user_input(_user_input_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert re.search(r"INITIAL · \w+\]\*\*\n~~~text\nprefix planning prompt\n~~~", out)
         assert re.search(r"FOLLOWUP · \w+\]\*\*\n~~~text\nprompt after entering the branch\n~~~", out)
@@ -4341,7 +4376,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _user_reply("Acknowledged.", branch="main"),
             _review_asst("Work on the branch.", _attr_ts(5), branch="feature-x"),
         ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert "Skill: code-review  branch=feature-x" in out
 
@@ -4358,10 +4393,10 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("prompt on branch y", branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
 
-        _mod.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
+        user_input.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
         main_out = capsys.readouterr().out
         assert "later prompt on the default branch" in main_out
-        _mod.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
+        user_input.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
         feature_y_out = capsys.readouterr().out
         assert "prompt on branch y" in feature_y_out
         assert "later prompt on the default branch" not in feature_y_out
@@ -4381,11 +4416,11 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
 
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
         main_out = capsys.readouterr().out
         assert "Skill: code-review  branch=main" in main_out
         assert "Review recorded on the default branch later." in main_out
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
         assert "Review recorded on the default branch later." not in capsys.readouterr().out
 
     def test_pr_link_counts_the_prefix_turn_toward_the_branch_model_split(self, fake_projects, monkeypatch, capsys):
@@ -4402,7 +4437,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             return Completed()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        _mod.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
+        pr_link.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
         assert (cols["Opus"], cols["Sonnet"]) == ("1", "1")
@@ -4414,7 +4449,7 @@ class TestSubagentRecordsFollowTheDispatchingBranch:
 
     @staticmethod
     def _run_skill_invocation(capsys, **kw) -> str:
-        _mod.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
         return capsys.readouterr().out
 
     def test_prefix_late_and_isolated_sidechain_invocations_count_under_the_branch_entered(
@@ -4467,7 +4502,7 @@ class TestSubagentRecordsFollowTheDispatchingBranch:
                 _asst(_SONNET, branch=follower_tag, sidechain=True, ts=_attr_ts(8),
                       content=[_skill_use("f1", "plan-review")]),
             ])
-        _mod.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
+        skill_pair.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
         assert (cols["Lead"], cols["Main"], cols["Side"]) == ("2", "0", "2")
