@@ -1365,6 +1365,23 @@ class TestPrDescriptionTwoModeDispatch:
         """pr-description must not retain a precondition that halts when no PR exists."""
         assert "no PR to sync" not in _skill_file("pr-description").read_text()
 
+    def test_pr_description_states_base_name_charset_gate(self):
+        """pr-description tells the agent to ask the engineer when the base name
+        holds characters outside the allowed set.
+
+        A retargeted PR can carry shell metacharacters in its base name, and
+        `<name>` must be bound to all three base sources so the gate covers them.
+        """
+        body = " ".join(_skill_file("pr-description").read_text().split())
+        assert (
+            "`<base>` is `origin/<name>` and `<name>` is the base branch the "
+            "caller passed, else the open PR's base, else the default branch"
+        ) in body
+        assert (
+            "If `<name>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, "
+            "or starts with `-`, ask the engineer instead of running these"
+        ) in body
+
 
 class TestPrDescriptionExternalStateCheck:
     """Pin the Flag-and-fix bullet that catches claims about state outside
