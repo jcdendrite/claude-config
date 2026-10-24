@@ -6738,8 +6738,8 @@ class TestMarkerScriptReviewPr:
     def test_diff_only_write_refuses_provenance_with_no_audit_paths_before_the_body_checks(
         self, isolated_home, git_repo, audit_paths_line_value
     ):
-        """Provenance from before review-pr-diff.sh recorded the matched paths cannot say what
-        the audit matched. The body here would fail the attribution check, so the refusal
+        """Provenance with no audit_paths field cannot say what the audit matched, so the write
+        refuses it. The body here would fail the attribution check, so the refusal
         proves the audit_paths read happens first."""
         sid = self.SID
         _seed_session(isolated_home, sid)
