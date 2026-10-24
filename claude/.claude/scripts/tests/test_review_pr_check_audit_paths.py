@@ -1,8 +1,9 @@
-"""Tests for review-pr-check-audit-paths.sh -- the presence check run over
-/review-pr's findings-body file by marker.sh in diff-only mode: every path the
-audit matched, read as a JSON array on stdin, must appear in the body as its
-inline-code span. One subprocess case per exit-1 branch; the span and report
-matrices live in test_review_pr_lib.py.
+"""Tests for review-pr-check-audit-paths.sh, the presence check marker.sh runs
+over /review-pr's findings-body file in diff-only mode.
+Every path the audit matched, read as a JSON array on stdin, must appear in the
+body as its inline-code span.
+There is one subprocess case per exit-1 branch.
+The span and report matrices live in test_review_pr_lib.py.
 """
 from __future__ import annotations
 

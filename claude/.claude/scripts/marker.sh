@@ -776,7 +776,7 @@ case "$SUBCOMMAND" in
         [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing or unreadable). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         # The checks below each read the body by path, so the hash is
         # taken again after them: a body changed in between would otherwise
-        # get a marker covering bytes neither check saw.
+        # get a marker covering bytes none of the checks saw.
         # Findings-body check, run before the marker is written so a failure
         # refuses the whole write. review-pr-check-attribution.sh's usage text
         # owns what it requires; its header says why it is mechanical.
@@ -795,10 +795,11 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # Audit-matched path presence check (diff-only only; a checkout-mode
-        # run stops on any audit match before provenance is written). The
-        # path list goes in on stdin because an argv string has a kernel cap.
-        # The status is read, unlike the two checks above, so a cap kill gets
+        # Audit-matched path presence check, diff-only mode only.
+        # A checkout-mode run stops on any audit match before provenance is
+        # written, so it has no matches to check.
+        # The path list goes in on stdin because an argv string has a kernel
+        # cap. The status is read, unlike the two checks above, so a cap kill gets
         # its own message.
         if [ "$MODE" = "diff-only" ]; then
           AUDIT_PATHS_STATUS=0

@@ -276,8 +276,9 @@ case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
     ;;
   stop)
     # The recorded paths are what marker.sh checks the findings body against, so a stop whose paths cannot be recorded
-    # aborts instead of printing findings that nothing could then enforce. Both causes (a stop document that is not one
-    # document whose matches each carry a string path, a jq cap kill) get the same disposition, so the status is not classified.
+    # aborts instead of printing findings that nothing could then enforce.
+    # Recording fails either when the stop document is not one document whose matches each carry a string path, or when jq hits its cap.
+    # Both causes get the same disposition, so the status is not classified.
     MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
     if ! AUDIT_PATHS_JSON=$(review_pr_audit_matched_paths_json "$AUDIT_OUTPUT"); then
       echo "review-pr-diff.sh: the passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list, but they could not be recorded: the stop document is not one document whose matches each carry a string path, or jq hit its 5 s cap, which a very long or heavily non-ASCII path list can cause. Matched paths, as far as they can be shown:" >&2

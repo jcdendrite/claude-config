@@ -6140,9 +6140,9 @@ class TestMarkerScriptReviewPr:
     ):
         """_lib_write_review_pr_provenance's key=value schema (_lib.sh): a
         `schema=1` header line, then one key=value line per field.
-        `audit_paths` is the raw field value review-pr-diff.sh records; it
-        defaults to `[]` (no audit match) for diff-only and to no field for
-        checkout."""
+        `audit_paths` is the raw field value review-pr-diff.sh records.
+        It defaults to `[]` (no audit match) for diff-only and to no field
+        for checkout."""
         stored_pid = pid if pid is not None else os.getpid()
         extra_fields = {}
         if audit_paths is not None:
@@ -6874,8 +6874,8 @@ class TestMarkerScriptReviewPr:
     def test_diff_only_write_passes_a_list_over_the_argv_string_cap_to_the_check_on_stdin(
         self, isolated_home, git_repo
     ):
-        """300 ASCII names past 131,072 bytes (Linux's one-argv-string cap) reach the check, whose
-        refusal lists 20 spans and stays under the 30,000-byte Bash output truncation threshold."""
+        """300 ASCII names past 131,072 bytes (Linux's one-argv-string cap) reach the check.
+        Its refusal lists 20 spans and stays under the 30,000-byte Bash output truncation threshold."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         recorded_names = [f"dir{index:03d}/" + "x" * 440 for index in range(300)]

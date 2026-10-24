@@ -3,10 +3,10 @@
 # marker.sh before the diff-only completion marker is written. review-pr-diff.sh
 # records every path the passive-execution audit matched, and SKILL.md's
 # protected-findings rule says each one reaches the posted body as a blocking
-# finding -- prose the model composes the body under. This script confirms by
-# literal comparison that each recorded path's inline-code span occurs in the
-# body (see review_pr_audit_paths_missing_from_body in _review-pr-lib.sh for the
-# span).
+# finding. That rule is prose the model composes the body under. This script
+# confirms by literal comparison that each recorded path's inline-code span
+# occurs in the body (see review_pr_audit_paths_missing_from_body in
+# _review-pr-lib.sh for the span).
 # Threat model:
 # - It guards a cooperative session that lost an AUDIT_FINDING line or was
 #   steered by PR text into dropping one. It does not defend against a session
