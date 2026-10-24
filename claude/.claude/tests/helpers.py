@@ -2542,7 +2542,7 @@ def build_path_with_silent_python3(shim_dir: Path) -> str:
 # Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
 # through to the manual ancestor-walk fallback) by shadowing `realpath` on
 # PATH. A non-`-m` invocation still execs the real binary, so the fallback
-# loop's own `realpath --` lookups keep working. Shared by test_lib.py's
+# loop's own `realpath --` lookups keep working. Shared by test_lib_realpath.py's
 # TestLibRealpathM and test_ask_review_permissions.py, both of which force
 # the same fast-path failure for the same reason.
 
@@ -2562,7 +2562,7 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
     is placed first specifically to exclude any `grealpath` the host might
     also have on a wider PATH -- `command -v grealpath` succeeding would
     skip the fallback branch this exists to force. Shared by
-    test_ask_review_permissions.py and test_lib.py's `_run_realpath_m`,
+    test_ask_review_permissions.py and test_lib_realpath.py's `_run_realpath_m`,
     both of which force the same fast-path failure for the same reason."""
     shim_dir = tmp_path / "realpath_shim"
     shim_dir.mkdir(exist_ok=True)

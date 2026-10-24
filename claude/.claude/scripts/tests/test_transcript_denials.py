@@ -660,7 +660,7 @@ class TestDenyGateLabelConformance:
         )
 
     def test_deny_literal_extraction_is_non_empty_for_every_gate_hook(self):
-        """Vacuity self-check mirroring test_lib.py's builds_path_re
+        """Vacuity self-check mirroring test_lib_session_identity.py's builds_path_re
         precedent: a hook yielding zero literals means the extraction regex
         has drifted from that hook's call shape, not that the hook has no
         deny literals — and clause (d) would be silently vacuous for it."""

@@ -1059,7 +1059,7 @@ class TestPlanFileAuthoringExemption:
         must not be exempted when _lib_realpath_m falls back to its manual
         ancestor walk (neither native `realpath -m` nor `grealpath` on
         PATH) -- see TestLibRealpathM's
-        test_forced_fallback_fails_closed_on_dangling_symlink in test_lib.py
+        test_forced_fallback_fails_closed_on_dangling_symlink in test_lib_realpath.py
         for the underlying _lib.sh-level regression test."""
         shim_dir = tmp_path / "realpath_shim"
         shim_dir.mkdir()

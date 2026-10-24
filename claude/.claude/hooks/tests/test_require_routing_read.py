@@ -208,7 +208,7 @@ class TestRequireRoutingRead:
         so no assertion can separate them. The guard still belongs (this hook
         must not build attacker-shaped paths, and its absence is a real
         defect in the write-sink hooks), but the property is pinned by
-        test_lib.py's direct unit tests of _lib_valid_session_id_component
+        test_lib_session_identity.py's direct unit tests of _lib_valid_session_id_component
         and by the write-sink hooks' own traversal tests, not by this one."""
         assert_gate_handles_traversal_session_id(
             REQUIRE_ROUTING_READ_HOOK,

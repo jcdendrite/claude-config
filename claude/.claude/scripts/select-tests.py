@@ -650,7 +650,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # See its own comment above for why it's narrower than _is_plugin_subpath.
-# _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
+# _is_plugin_hooks_change: test_hook_alignment.py and test_lib_session_identity.py
 # (HOOKS_TESTS_DIR) glob plugins/*/hooks/*.sh.
 # _is_plugin_skills_change: test_skills.py (SKILLS_TESTS_DIR) globs
 # plugins/*/skills/*/SKILL.md.
