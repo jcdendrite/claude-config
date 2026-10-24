@@ -45,6 +45,11 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    An audit that fails to return a verdict aborts with exit 2 and its stderr
    shown, and is never reported as a finding (review_pr_audit_verdict in
    _review-pr-lib.sh defines what counts as a verdict).
+   Every matched path is also recorded for the marker check
+   (review_pr_audit_matched_paths_json in _review-pr-lib.sh). A stop whose
+   paths cannot be recorded aborts: it prints the bounded match report or its
+   fixed count line, prints no AUDIT_FINDING line, writes no provenance or diff,
+   and exits 2 saying the audit matched.
 8. Fetches the baseRefOid commit by object name, with git hooks disabled, so
    the session can read base files with `git show` and `git grep`. Only a full
    SHA-1 or SHA-256 hex object name is fetched. A baseRefOid that is missing,
@@ -60,7 +65,8 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    headRefOid once more and aborts on drift, so the diff is bound to the head
    the provenance records.
 10. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
-    rewrites this session's provenance file with mode "diff-only".
+    rewrites this session's provenance file with mode "diff-only" and the
+    audit's matched paths (`audit_paths`, a JSON array, `[]` when none matched).
 
 Prints the diff file's path on stdout as line 1 of a successful run. When the
 base fetch succeeded it also prints the baseRefOid as a full hex object name on
@@ -70,10 +76,10 @@ not succeed, stdout holds the path alone, and the token is never printed.
 
 Worst-case wall time: the per-step caps sum to 185 seconds on a run whose audit
 is clean (15 for the three local git reads, 100 for the six gh calls, 40 for
-eight jq calls, 30 for the base fetch) and 200 when the audit reports a finding
-(three more jq calls). A PR whose base branch is not the default branch adds 120
+eight jq calls, 30 for the base fetch) and 205 when the audit reports a finding
+(four more jq calls). A PR whose base branch is not the default branch adds 120
 seconds for the stack walk (eight lookups, each a 10 second gh call and a 5
-second jq call), for 305 and 320.
+second jq call), for 305 and 325.
 Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and the
 provenance write are uncapped, as is the audit script. The session lookup's
 capped ps calls add up to 10 seconds per process-ancestor hop. The caps apply
@@ -264,9 +270,22 @@ else
   AUDIT_EXIT=$?
 fi
 case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
-  clean) ;;
+  clean)
+    # The clean document is byte-equal to REVIEW_PR_AUDIT_CLEAN_DOCUMENT, so no path matched and no jq call is needed.
+    AUDIT_PATHS_JSON='[]'
+    ;;
   stop)
+    # The recorded paths are what marker.sh checks the findings body against, so a stop whose paths cannot be recorded
+    # aborts instead of printing findings that nothing could then enforce.
+    # Recording fails either when the stop document is not one document whose matches each carry a string path, or when jq hits its cap.
+    # Both causes get the same disposition, so the status is not classified.
     MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
+    if ! AUDIT_PATHS_JSON=$(review_pr_audit_matched_paths_json "$AUDIT_OUTPUT"); then
+      echo "review-pr-diff.sh: the passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list, but they could not be recorded: the stop document is not one document whose matches each carry a string path, or jq hit its 5 s cap, which a very long or heavily non-ASCII path list can cause. Matched paths, as far as they can be shown:" >&2
+      printf '%s\n' "$MATCHES" >&2
+      echo "review-pr-diff.sh: report this to the human and stop. Abort with no diff file or provenance written." >&2
+      exit 2
+    fi
     echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- this path checks nothing out. Matched paths:" >&2
     printf '%s\n' "$MATCHES" >&2
     ;;
@@ -337,7 +356,7 @@ fi
 
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
 if ! _lib_write_review_pr_provenance "$PROVENANCE" \
-  "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=diff-only"; then
+  "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=diff-only" "audit_paths=$AUDIT_PATHS_JSON"; then
   echo "review-pr-diff.sh: could not write provenance file $PROVENANCE. Abort." >&2
   exit 2
 fi

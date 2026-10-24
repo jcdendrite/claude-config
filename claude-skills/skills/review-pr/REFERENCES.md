@@ -387,7 +387,9 @@ left implicit:
   same hit is reported on stderr as an `AUDIT_FINDING` line instead, and must
   be carried into the Step 5
   synthesized review as a blocking finding — there is no checkout for a
-  hard stop to protect.
+  hard stop to protect. The exception is a hit whose matched paths cannot be
+  recorded for `marker.sh`'s audit-path check: `review-pr-diff.sh` then prints
+  the match report with no `AUDIT_FINDING` line and aborts with exit 2.
 - **The diff itself may be truncated on an unusually large PR.** `gh pr
   diff`'s server-side truncation behavior on an unusually large PR is not
   confirmed against production. `review-pr-diff.sh` stops (exit 2) when the
@@ -564,15 +566,34 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   `enforce-marker-script-shape.sh` denies `plan-architect`'s `Edit` to the body on every install,
   because the body sits under `.review-pr-active.d/` and the plan-writer registry
   puts `plan-architect` on that gate's no-gate-release roster.
-  Nothing mechanical detects a finding missing from the body. `marker.sh`'s
+  Nothing mechanical detects a finding missing from the body, except that in
+  `diff-only` mode `marker.sh`'s audit-path check confirms only that each
+  `AUDIT_FINDING` path's span is present. `marker.sh`'s
   body check and `review-pr-post.sh`'s hash check prove only that the posted
   text equals the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
   any `Edit` made after the last consult, the human's reading of the presented
-  text is the only content review. `marker.sh`'s attribution check and
-  credential scan check the body's shape, not its content, so step 8 presents
+  text is the only content review. `marker.sh`'s attribution check, credential
+  scan, and audit-path check inspect the body's shape and presence, not what a
+  finding says, so step 8 presents
   a fresh `Read` of the file and shows each such `Edit` as its verbatim old and
-  new strings.
+  new strings. The audit-path check has these limits:
+  - A span inside an HTML comment or a code block passes, and so does one
+    assembled from text around two code spans.
+  - A span longer than the refusal's per-span cap prints cut, so it cannot be
+    copied from the refusal.
+  - A recorded name the credential scan would refuse, or a path list too long
+    for jq's 5 s cap, leaves the review unmarked, to be posted by hand.
+  - A review posted by hand skips every check `marker.sh` runs at write time,
+    including the attribution prefix and trailer, the diff-only disclosure, the
+    credential scan, and the audit-path check. It also skips
+    every check in `review-pr-post.sh`, including its body-hash and remote head
+    checks.
+  - A PR author who has any audit-matched path with a credential-shaped
+    component, or who forces jq's cap, can force that route.
+  - The check accepts that route because an exemption would let a name opt
+    itself out of the check.
+  - A session that writes the provenance file itself defeats the check.
 - **`plan-architect`, `comment-discipline-reviewer`, and `skill-fidelity-reviewer`
   get no Bash.** These three hold no Bash, so
   the main session resolves the claims they mark as unchecked.
