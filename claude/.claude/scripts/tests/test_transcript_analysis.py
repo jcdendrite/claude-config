@@ -2431,6 +2431,7 @@ class TestIsTaskNotification:
                 _user_msg([_tool_result("t1", _TASK_NOTIFICATION_TEXT)]),
                 id="tool-result-record",
             ),
+            pytest.param(_user_msg("   "), id="blank-text-record"),
             pytest.param(_asst("claude-sonnet-4-6"), id="assistant-record"),
         ],
     )

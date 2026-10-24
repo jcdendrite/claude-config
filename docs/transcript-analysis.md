@@ -38,7 +38,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **turn** — one assistant reply record.
 - **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
 - **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.
-- **fresh user prompt** — a main-thread user record with its own text that is not a tool result, an `isMeta` injection, a compaction summary, or a task notification. A **task notification** is a record whose whole text is `<task-notification>` envelopes, the harness's delivery of a finished background task or subagent. `judgment-pair` and `review-round-cost` close a window at a fresh user prompt, and `period-cost` closes a finished review window at one. `user-input` does not use this definition; its own predicate counts a task notification as a prompt, among other differences.
+- **fresh user prompt** — a main-thread user record with its own text that is not a tool result, an `isMeta` injection, a compaction summary, or a task notification. A **task notification** is a record whose whole text is `<task-notification>` envelopes, the harness's delivery of a finished background task or subagent. `judgment-pair` and `review-round-cost` close a window at a fresh user prompt, and `period-cost` closes a finished review window at one. `user-input` does not use this definition; its own predicate counts a task notification as a prompt, among other differences. A record whose envelope is unterminated, or whose enclosed text itself contains a closing `</task-notification>` tag, is not recognized as a task notification and still counts as a fresh user prompt.
 
 ---
 
@@ -572,7 +572,7 @@ interrupted                    1
 
 ## judgment-pair
 
-**Purpose.** Extract `(review-skill output, user response)` pairs from sessions where a review skill was invoked. For each matching skill invocation, locates the last main-thread assistant text turn before the next fresh user prompt (see Terms) or next invocation (whichever comes first), then captures the record at that window's end, when it is a fresh user prompt. A task notification does not end the window. USER RESPONSE is that record, printed as-is; otherwise, at end of file or when the window closed at the next invocation, it prints `(no user response — end of session)`.
+**Purpose.** Extract `(review-skill output, user response)` pairs from sessions where a review skill was invoked. For each matching skill invocation, locates the last main-thread assistant text turn before the next fresh user prompt (see Terms) or next invocation (whichever comes first), then captures the record at that window's end when it is a fresh user prompt. A task notification does not end the window. USER RESPONSE prints that prompt as-is, or `(no user response — end of session)` when the window ends at end of file or at the next invocation.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)

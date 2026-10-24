@@ -64,17 +64,17 @@ class TestHookObservableBoundaries:
         ]
         assert rearm_backtest._hook_observable_boundaries(records) == [0, 1, 2, 3]
 
-    def test_task_notification_still_produces_a_boundary(self):
-        """GH-1312: the boundary set is kept as it was, so a task notification still produces a
-        boundary here even though it is not a fresh user prompt for round windows. Whether the hook
-        observes the session at a notification is not checked."""
+    def test_task_notification_produces_a_boundary(self):
+        """A task notification produces a boundary here, though it is not a fresh user prompt for round windows.
+        Whether the hook observes the session at a notification is not checked."""
         records = [
             _priced("claude-sonnet-5", output=100),
             _task_notification_msg(),
             _priced("claude-sonnet-5", output=100),
             _user_msg("go on"),
+            _priced("claude-sonnet-5", output=100),
         ]
-        assert rearm_backtest._hook_observable_boundaries(records) == [0, 1, 2]
+        assert rearm_backtest._hook_observable_boundaries(records) == [0, 1, 2, 3]
 
     def test_session_end_with_no_trailing_user_message_still_surfaces_boundary(self):
         """A session whose last record is an assistant turn with no further

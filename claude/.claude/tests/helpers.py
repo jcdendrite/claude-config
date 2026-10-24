@@ -35,6 +35,22 @@ HOOKS_DIR = CLAUDE_DIR / "hooks"
 SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
+# Placeholder envelope: one element per line, as the harness emits it.
+# The multi-line text crosses the DOTALL span of `transcript_analysis.render._TASK_NOTIFICATION_RE`.
+TASK_NOTIFICATION_TEXT = (
+    "<task-notification>\n"
+    "<task-id>task-1</task-id>\n"
+    "<tool-use-id>toolu_placeholder</tool-use-id>\n"
+    "<output-file>/tmp/placeholder-task.output</output-file>\n"
+    "<status>completed</status>\n"
+    "<summary>background task finished</summary>\n"
+    "<result>Placeholder reviewer report.\n"
+    "\n"
+    "Second paragraph after a blank line.</result>\n"
+    "<usage><total_tokens>1</total_tokens></usage>\n"
+    "</task-notification>"
+)
+
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"

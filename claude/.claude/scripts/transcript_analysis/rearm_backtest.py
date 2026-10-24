@@ -31,19 +31,20 @@ def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
     The hook checks the transcript's latest recorded main-thread assistant
     usage (docs/handoff-nudge.md), so these boundaries are a transcript-side
     proxy for its sampling points: right after a run of tool-call-only turns
-    yields back to a user message (a human prompt or a task notification). Reusing _is_main_thread_user_text
-    for that user-message half (see its own docstring for what it filters;
-    it counts a task notification as well as a genuine user message, so a
-    task notification still produces a boundary; whether the hook observes
-    the session at a notification is not checked) marks every INTERNAL boundary -- one per user
-    message, not one per turn, so a multi-tool-call stretch between two user
-    messages contributes no boundary of its own. Session start (0, before
-    any turn) and session end (N, the full turn count) are the two
-    boundaries no user message can
-    supply on their own, and both are always included: the hook is registered
-    on Stop so a toolless final turn is still observed
-    (docs/handoff-nudge.md) -- a boundary set with no session-end entry would
-    make a last-turn crossing invisible to the simulation.
+    yields back to a user message (a human prompt or a task notification).
+    Reusing _is_main_thread_user_text for that user-message half (see its own
+    docstring for what it filters) marks every INTERNAL boundary -- one per
+    user message, not one per turn, so a multi-tool-call stretch between two
+    user messages contributes no boundary of its own. A task notification
+    counts as a user message here. Whether the hook observes the session at a
+    notification is not checked.
+
+    Session start (0, before any turn) and session end (N, the full turn
+    count) are the two boundaries no user message can supply on their own, and
+    both are always included: the hook is registered on Stop so a toolless
+    final turn is still observed (docs/handoff-nudge.md) -- a boundary set
+    with no session-end entry would make a last-turn crossing invisible to
+    the simulation.
 
     A turn only counts toward the position (and thus toward a boundary) when
     it carries a usage block, matching exactly the predicate a caller uses to

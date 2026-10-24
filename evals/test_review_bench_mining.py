@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import run_review_bench
+from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from review_bench import defects, mine_pr_comments, mine_review_rounds, mine_szz
 from review_bench.defects import Candidate, ConfirmedDefect
 from transcript_analysis import corpus, review_rounds, reviewer_yield
@@ -217,20 +218,8 @@ def _agent_use(tool_id: str, subagent_type: str) -> dict:
     }
 
 
-# Mirrors _TASK_NOTIFICATION_TEXT in claude/.claude/scripts/tests/conftest.py; the two must stay identical.
-_TASK_NOTIFICATION_TEXT = (
-    "<task-notification>\n"
-    "<task-id>task-1</task-id>\n"
-    "<tool-use-id>toolu_placeholder</tool-use-id>\n"
-    "<output-file>/tmp/placeholder-task.output</output-file>\n"
-    "<status>completed</status>\n"
-    "<summary>background task finished</summary>\n"
-    "<result>Placeholder reviewer report.\n"
-    "\n"
-    "Second paragraph after a blank line.</result>\n"
-    "<usage><total_tokens>1</total_tokens></usage>\n"
-    "</task-notification>"
-)
+def _edit_use(tool_id: str, path: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Edit", "input": {"file_path": path}}
 
 
 def _task_notification_user(*, ts: str) -> dict:
@@ -1925,18 +1914,15 @@ class TestMinerFollowsTheSharedWindowAcrossATaskNotification:
         The edit after the window's end is the positive control, so the False above proves the window and not a
         path-key mismatch.
         """
-        def edit_use(tool_id: str, path: str) -> dict:
-            return {"type": "tool_use", "id": tool_id, "name": "Edit", "input": {"file_path": path}}
-
         fix_inside_window = "/repo/app.py"
         edit_after_window = "/repo/other.py"
         records = [
             _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
             _assistant(ts="2026-01-01T00:00:10Z", content=[_agent_use("a1", "staff-backend-engineer")]),
             _task_notification_user(ts="2026-01-01T00:01:00Z"),
-            _assistant(ts="2026-01-01T00:01:30Z", content=[edit_use("e1", fix_inside_window)]),
+            _assistant(ts="2026-01-01T00:01:30Z", content=[_edit_use("e1", fix_inside_window)]),
             _user("done", ts="2026-01-01T00:03:00Z"),
-            _assistant(ts="2026-01-01T00:04:00Z", content=[edit_use("e2", edit_after_window)]),
+            _assistant(ts="2026-01-01T00:04:00Z", content=[_edit_use("e2", edit_after_window)]),
             _assistant(ts="2026-01-01T00:05:00Z", content=[_skill_use("s2", "code-review")]),
         ]
         jsonl = tmp_path / "sess-1.jsonl"
