@@ -40,7 +40,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - Do not quote the raw `session_id` into prose that may reach the PR body.
 - See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`.
-- If no PR exists, step 5 authors the body and step 8 opens the PR from it, after verification and review.
+- If no PR exists, step 5 authors the body and step 8 opens the PR from it. When the engineer has said this branch is stacked on another branch, run `git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet: `<branch>` is the current branch (`git branch --show-current`), only `<stack-base>` comes from their words (no `origin/` prefix, never inferred), and run it only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, 0-9, `.`, `_`, `/` and `-` and neither starts with `-` (otherwise ask the engineer). Halt unless the next bullet's recipe prints `Base branch: <stack-base>`. With the key set, every base-dependent step uses it or stops.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
@@ -68,13 +68,13 @@ test, lint, and typecheck commands. Do not invent — skip undefined steps.
 Before computing anything, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the diff computation and the `/code-review` invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
 <!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
 
-On a cache miss, compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
+On a cache miss, compute the **cumulative** PR-vs-base diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
 ~/.claude/scripts/pr-diff-against-base.sh --record --diff-file
 ```
 
-**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged — halt `/ready-for-review` and report both facts.
+**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged or, when the script printed a `using branch.<b>.gh-merge-base` line, because that base already holds this branch's commits — halt `/ready-for-review` and report both facts.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
@@ -109,7 +109,7 @@ Invoke the `pr-description` skill via the Skill tool. It owns body content in
 both directions and runs the same checks either way; the standard lives there,
 not here — don't restate it.
 Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any). With a PR open
+Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), and the branch on step 1's `Base branch:` line (if one printed). With a PR open
 it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
 body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
@@ -147,7 +147,7 @@ Otherwise, record the completed gate:
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars, using step 1's derived `<TICKET-ID>` (omit the prefix if step 1 found none).
 
-The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Confirm the body landed by re-fetching with `gh pr view`, capture the PR number, and once that re-fetch succeeds run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence" with that number. A failed re-fetch, a failed `render`, or a failed or denied `gh pr edit` is a blocking stop per `code-review/SKILL.md` § "Review-narrative ledger": name the PR number, say it exists without the block, and neither launch the CI watch nor report ready. Otherwise launch the CI watch now (see "CI watch (out-of-band)" below).
+The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`, adding `--base "<name>"` when step 6 printed `Base branch: <name>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Confirm the body landed by re-fetching with `gh pr view`, capture the PR number, and once that re-fetch succeeds run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence" with that number. A failed re-fetch, a failed `render`, or a failed or denied `gh pr edit` is a blocking stop per `code-review/SKILL.md` § "Review-narrative ledger": name the PR number, say it exists without the block, and neither launch the CI watch nor report ready. Otherwise launch the CI watch now (see "CI watch (out-of-band)" below).
 
 Create it ready for review, not `--draft`: this gate has already verified the work, and CI running against a non-draft PR is normal. A plan or handoff file saying "open a draft PR" recorded a prior agent's default, not the engineer's instruction — reserve draft for genuinely incomplete work.
 
@@ -168,7 +168,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 - Code review: findings fixed, "none," or "skipped — cache hit."
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
-- Branch: clean, pushed, PR #N ready for review. Add step 6's behind-count when it found the branch behind with a clean trial merge.
+- Branch: clean, pushed, PR #N ready for review against the base. For an existing PR, name the base step 1 captured (`baseRefName`). Otherwise name the branch on step 6's `Default branch:` or `Base branch:` line. Add step 6's behind-count, with step 6's branch beside it, when step 6 found the branch behind with a clean trial merge.
 - Context budget: re-run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. Report the fresh `estimate`/`threshold` with a handoff recommendation when `over_threshold` or `already_fired` is true, naming `nudge_disabled` inline when it is also true. Omit this line entirely when under threshold. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## CI watch (out-of-band)

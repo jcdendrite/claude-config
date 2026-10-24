@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# Reports the current branch's divergence from origin/<default branch> in plain text to
-# stdout -- always, even when fully in sync. Detection primitive matches
+# Reports the current branch's divergence from its base in plain text to stdout -- always,
+# even when fully in sync. The base is origin/<default branch>, or origin/<stack base> when
+# `git config branch.<branch>.gh-merge-base` is set. Uses the same detection primitives as
 # check-branch-divergence.sh's SessionStart hook (default-branch resolution, bounded fetch,
-# behind-count, `git merge-tree --write-tree` trial merge) -- see
+# behind-count, `git merge-tree --write-tree` trial merge), but that hook never reads the key
+# and fetches and measures through `origin/<default branch>` -- see
 # git-feature-branch-sync/SKILL.md's "Detecting divergence" section for the canonical recipe.
 # Requires git >= 2.38 for `git merge-tree --write-tree`.
+# Makes no gh call: it never reads an open PR's base.
+#
+# Stdout starts with `Default branch: <name>` for the default branch and `Base branch: <name>`
+# for a stack base.
 #
 # Exit 0: report printed, regardless of divergence state -- divergence is reported in the
-# text, never signaled via exit code. Exit 1: the default branch could not be resolved or the
-# bounded fetch failed -- a genuine failure, a different class than "divergence exists."
+# text, never signaled via exit code. Exit 1: the base could not be resolved or the bounded
+# fetch failed, or the stack base is unusable -- a genuine failure, a different class than
+# "divergence exists." Any _lib_configured_stack_base status other than 0 and 1 exits 1 with
+# that helper's own line, a git read failure included, and that stop can fire with no key set.
+# A stack base's fetch failure reads the same for a timeout and a branch deleted on origin,
+# so the stop line tells the engineer to retry before changing the key.
 
 set -euo pipefail
 
@@ -30,7 +40,19 @@ fi
 # check-branch-divergence.sh's header documents for its hook call site. This
 # is the higher-stakes of the two call sites, since it backs
 # /ready-for-review and /respond-pr's precheck.
-if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$PWD"); then
+#
+# With a stack base configured, the default branch is not consulted at all.
+# Empty STACK_BRANCH marks the no-key path.
+STACK_BRANCH=""
+STACK_STATUS=0
+STACK_BASE_INFO=$(_lib_configured_stack_base "$SCRIPT_NAME" "$PWD") || STACK_STATUS=$?
+if [[ "$STACK_STATUS" -eq 0 ]]; then
+  STACK_BRANCH="${STACK_BASE_INFO%% *}"
+  BASE_BRANCH="${STACK_BASE_INFO#* }"
+elif [[ "$STACK_STATUS" -ne 1 ]]; then
+  # Status 2 is the helper's stop, with its line already printed.
+  exit 1
+elif ! BASE_BRANCH=$(_lib_default_branch_from_origin_head "$PWD"); then
   echo "$SCRIPT_NAME: could not resolve origin/HEAD -- no 'origin' remote, or its default branch is unset (try 'git remote set-head origin -a')" >&2
   exit 1
 fi
@@ -51,26 +73,39 @@ fi
 # GIT_TERMINAL_PROMPT=0 and SSH_ASKPASS='' GIT_ASKPASS='' prevent any credential or
 # passphrase prompt from blocking on a machine without ssh-agent. The 2-second bound
 # mirrors check-branch-divergence.sh's own value -- change both together.
+# The named destination keeps a narrowed remote.origin.fetch from leaving the
+# ref missing or stale, and the leading + lets a force-pushed base update.
+# The verify confirms the ref resolves to a commit before it is measured.
 if ! GIT_TERMINAL_PROMPT=0 SSH_ASKPASS='' GIT_ASKPASS='' \
-    "$TIMEOUT_CMD" 2 git fetch --no-tags --quiet origin "$DEFAULT_BRANCH" \
-    >/dev/null 2>&1; then
-  echo "$SCRIPT_NAME: fetch of origin/$DEFAULT_BRANCH failed or timed out" >&2
+    "$TIMEOUT_CMD" 2 git fetch --no-tags --quiet origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH" \
+    >/dev/null 2>&1 \
+  || ! git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH^{commit}" >/dev/null 2>&1; then
+  if [[ -n "$STACK_BRANCH" ]]; then
+    _lib_print_unusable_stack_base "$SCRIPT_NAME" "$STACK_BRANCH" "$BASE_BRANCH" \
+      "fetch failed (network, or the stack base is gone from origin); retry the command before changing the key"
+  else
+    echo "$SCRIPT_NAME: fetch of origin/$BASE_BRANCH failed or timed out" >&2
+  fi
   exit 1
 fi
 
-BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT_BRANCH")
+BEHIND=$(git rev-list --count "HEAD..refs/remotes/origin/$BASE_BRANCH")
 
-echo "Default branch: $DEFAULT_BRANCH"
+if [[ -n "$STACK_BRANCH" ]]; then
+  echo "Base branch: $BASE_BRANCH"
+else
+  echo "Default branch: $BASE_BRANCH"
+fi
 echo "Behind: $BEHIND commit(s)"
 
 if [[ "$BEHIND" == "0" ]]; then
-  echo "In sync with origin/$DEFAULT_BRANCH."
+  echo "In sync with origin/$BASE_BRANCH."
   exit 0
 fi
 
 # Non-zero exit on conflict is expected here, not a script failure -- capture stdout
 # regardless of exit status instead of letting `set -e` abort on a real conflict result.
-TRIAL_OUTPUT=$(git merge-tree --write-tree "origin/$DEFAULT_BRANCH" HEAD 2>/dev/null) || true
+TRIAL_OUTPUT=$(git merge-tree --write-tree "refs/remotes/origin/$BASE_BRANCH" HEAD 2>/dev/null) || true
 CONFLICT_FILES=$(printf '%s\n' "$TRIAL_OUTPUT" \
   | awk '/^[0-9]+ /{print $NF}' \
   | sort -u \

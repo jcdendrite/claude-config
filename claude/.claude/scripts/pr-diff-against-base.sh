@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Prints the cumulative PR-vs-default-branch diff /ready-for-review's step 3
+# Prints the cumulative PR-vs-base diff /ready-for-review's step 3
 # reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
+# <base-branch> is the stack base in `git config branch.<branch>.gh-merge-base`
+# when that key is set, else the open PR's base, else the default branch. With
+# the key set the script uses its value or exits 1 with one stderr line: the
+# value is unusable, no merge-base resolves against origin/<value>, or an OPEN
+# PR targets another base. Any _lib_configured_stack_base status other than 0
+# and 1 also exits 1 with that helper's own line, a git read failure included,
+# and that stop can fire with no key set. It never fetches.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
@@ -67,7 +74,34 @@ if [ "$STAGED" -eq 1 ]; then
   fi
 else
   DIFF_MARKER_DIR_NAME="cumulative-review-diff-markers"
-  if ! BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
+  # Empty STACK_BRANCH marks the no-key path: the open PR's base, else the default branch.
+  STACK_BRANCH=""
+  STACK_STATUS=0
+  STACK_BASE_INFO=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD") || STACK_STATUS=$?
+  if [ "$STACK_STATUS" -eq 0 ]; then
+    STACK_BRANCH="${STACK_BASE_INFO%% *}"
+    BASE_REF="${STACK_BASE_INFO#* }"
+    # A merged or closed PR's base is ignored; only an OPEN PR can disagree.
+    # A gh failure or a reply that is not two lines reads as no open PR,
+    # as a gh failure does on the no-key path.
+    PR_BASE=""
+    if PR_REPLY=$(gh pr view --json state,baseRefName --jq '.state, .baseRefName' 2>/dev/null); then
+      PR_BASE=$(_lib_open_pr_base "$PR_REPLY") || PR_BASE=""
+    fi
+    if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "$BASE_REF" ]; then
+      # %q-quoted because a valid branch name can still hold shell metacharacters,
+      # and this text offers a command to copy.
+      printf -v PR_BASE_QUOTED '%q' "$PR_BASE"
+      printf -v BASE_REF_QUOTED '%q' "$BASE_REF"
+      _lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
+        "the open PR for this branch targets $PR_BASE_QUOTED, not $BASE_REF_QUOTED (to retarget the PR to the key's value instead, the engineer can run: gh pr edit --base $BASE_REF_QUOTED)"
+      exit 1
+    fi
+  elif [ "$STACK_STATUS" -ne 1 ]; then
+    # Status 2 is the helper's stop with its line already printed. This
+    # script's own exit 2 means a usage error, so every stop exits 1.
+    exit 1
+  elif ! BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
     # gh exits nonzero for "no PR open yet" and for auth/network failure alike.
     if ! BASE_REF=$(_lib_default_branch_or_guess "$PWD"); then
       printf 'pr-diff-against-base.sh: gh pr view failed and no default branch resolved from origin\n' >&2
@@ -76,9 +110,18 @@ else
     printf 'pr-diff-against-base.sh: gh pr view failed; defaulting base to %s\n' "$BASE_REF" >&2
   fi
 
-  if ! MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD 2>/dev/null); then
-    printf 'pr-diff-against-base.sh: could not resolve merge-base against origin/%s\n' "$BASE_REF" >&2
+  if ! MERGE_BASE=$(git merge-base "refs/remotes/origin/$BASE_REF" HEAD 2>/dev/null); then
+    if [ -n "$STACK_BRANCH" ]; then
+      _lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
+        "no merge-base with origin/$BASE_REF (if it was never fetched, run ~/.claude/scripts/branch-divergence-status.sh, which fetches it, before changing the key; otherwise the histories are unrelated)"
+    else
+      printf 'pr-diff-against-base.sh: could not resolve merge-base against origin/%s\n' "$BASE_REF" >&2
+    fi
     exit 1
+  fi
+  # After the merge-base resolves, so a merge-base stop prints one line.
+  if [ -n "$STACK_BRANCH" ]; then
+    printf 'pr-diff-against-base.sh: using branch.%s.gh-merge-base = %s as the base\n' "$STACK_BRANCH" "$BASE_REF" >&2
   fi
 
   # The cumulative arm uses plumbing `git diff-tree`, so porcelain-only diff config

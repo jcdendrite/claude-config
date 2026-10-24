@@ -11680,3 +11680,256 @@ class TestLibMissingPluginIdsLocalOptOut:
 
         assert result.returncode == 3, repr(result)
         assert result.stdout == ""
+
+
+# --- _lib_configured_stack_base / _lib_print_unusable_stack_base -------------
+
+_STACK_BASE_STDERR_PREFIX = "some-script.sh"
+
+
+def _configured_stack_base(
+    repo_root: Path, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", '. "$1"; _lib_configured_stack_base "$2" "$3"', "bash",
+         str(_LIB_SH), _STACK_BASE_STDERR_PREFIX, str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def _repo_on_branch_with_key(tmp_path: Path, branch: str, key_value: str | None) -> Path:
+    repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
+    subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=repo, check=True)
+    if key_value is not None:
+        subprocess.run(
+            ["git", "config", f"branch.{branch}.gh-merge-base", key_value], cwd=repo, check=True
+        )
+    return repo
+
+
+def _assert_stack_base_stop(result: subprocess.CompletedProcess, branch: str) -> None:
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith(f"{_STACK_BASE_STDERR_PREFIX}: ")
+    assert f"branch.{branch}.gh-merge-base" in result.stderr
+    assert "The engineer runs the fix, not the agent" in result.stderr
+    assert result.stderr.count("\n") == 1
+
+
+class TestLibConfiguredStackBase:
+    """Exit 0 prints "<branch> <stack-base>", exit 1 is "no key or detached
+    HEAD", exit 2 is a stop whose one stderr line comes from
+    _lib_print_unusable_stack_base. Every non-zero exit has empty stdout."""
+
+    def test_unset_key_exits_1_with_no_output(self, tmp_path: Path) -> None:
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", None)
+        result = _configured_stack_base(repo)
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
+
+    def test_valid_slashed_value_prints_branch_and_value(self, tmp_path: Path) -> None:
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", "feat/base")
+        result = _configured_stack_base(repo)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "feat/x feat/base\n", "")
+
+    def test_detached_head_exits_1_even_with_a_key_on_some_branch(self, tmp_path: Path) -> None:
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", "stack")
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+        result = _configured_stack_base(repo)
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
+
+    def test_key_set_in_main_worktree_is_read_from_a_linked_worktree(
+        self, git_repo: Path, tmp_path: Path
+    ) -> None:
+        worktree = _add_linked_worktree(git_repo, tmp_path / "linked-wt", "linked-branch")
+        subprocess.run(
+            ["git", "config", "branch.linked-branch.gh-merge-base", "stack"], cwd=git_repo, check=True
+        )
+        result = _configured_stack_base(worktree)
+        assert (result.returncode, result.stdout) == (0, "linked-branch stack\n")
+
+    @pytest.mark.parametrize(
+        ("value", "reason_fragment"),
+        [
+            pytest.param("", "the value is empty", id="empty"),
+            pytest.param("-x", "starts with '-'", id="leading-dash"),
+            pytest.param("a..b", "not a valid branch name", id="double-dot"),
+            pytest.param("@{-1}", "not a valid branch name", id="reflog-expression"),
+            pytest.param("a b", "not a valid branch name", id="space"),
+            pytest.param("feat/x", "this branch itself", id="own-branch-name"),
+            pytest.param("origin/stack", "starts with 'origin/'", id="origin-prefix"),
+            pytest.param("HEAD", "the value is HEAD", id="head"),
+            pytest.param("caf" + chr(0xE9), "outside A-Z", id="non-ascii"),
+            pytest.param("a" + chr(0x202E) + "b", "outside A-Z", id="right-to-left-override"),
+            pytest.param("a:b", "not a valid branch name", id="colon"),
+            pytest.param("a~1", "not a valid branch name", id="tilde"),
+            pytest.param("a^", "not a valid branch name", id="caret"),
+            pytest.param("a?", "not a valid branch name", id="question-mark"),
+            pytest.param("a*", "not a valid branch name", id="asterisk"),
+            pytest.param("a[", "not a valid branch name", id="open-bracket"),
+            pytest.param("a\\", "not a valid branch name", id="backslash"),
+            pytest.param("a\tb", "not a valid branch name", id="tab"),
+            pytest.param("a\x1bb", "not a valid branch name", id="escape-control"),
+            pytest.param("a.lock", "not a valid branch name", id="lock-suffix"),
+            # Values built only from allowed characters, so check-ref-format alone rejects them.
+            pytest.param("/stack", "not a valid branch name", id="leading-slash"),
+            pytest.param("stack/", "not a valid branch name", id="trailing-slash"),
+            pytest.param("a//b", "not a valid branch name", id="double-slash"),
+            pytest.param("stack.", "not a valid branch name", id="trailing-dot"),
+            pytest.param("a/.b", "not a valid branch name", id="component-starting-with-dot"),
+        ],
+    )
+    def test_unusable_value_stops_naming_key_and_reason(
+        self, tmp_path: Path, value: str, reason_fragment: str
+    ) -> None:
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", value)
+        result = _configured_stack_base(repo)
+        _assert_stack_base_stop(result, "feat/x")
+        assert reason_fragment in result.stderr
+
+    @pytest.mark.parametrize("git_status", [128, 124])
+    @pytest.mark.parametrize(
+        ("failing_subcommand", "failed_call"),
+        [
+            pytest.param("symbolic-ref", "git symbolic-ref HEAD", id="head-read"),
+            pytest.param("config", "git config branch.feat/x.gh-merge-base", id="key-read"),
+            pytest.param(
+                "check-ref-format",
+                "git check-ref-format on the value of branch.feat/x.gh-merge-base",
+                id="value-check",
+            ),
+        ],
+    )
+    def test_git_read_failure_stops_with_its_own_line_instead_of_reading_as_unset(
+        self, tmp_path: Path, failing_subcommand: str, failed_call: str, git_status: int
+    ) -> None:
+        """A failed read prints one line naming the git call and its status; it carries
+        no key value, no key-edit fix and no placeholder branch."""
+        key_value = "sentinel-base"
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", key_value)
+        bin_dir = tmp_path / "bin-git-read-fails"
+        _make_git_exiting_with_status(bin_dir, failing_subcommand, git_status)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _configured_stack_base(repo, env)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith(f"{_STACK_BASE_STDERR_PREFIX}: ")
+        assert result.stderr.count("\n") == 1
+        assert f"{failed_call} failed (status {git_status})" in result.stderr
+        assert "retry the command" in result.stderr
+        assert "run that git call by hand" in result.stderr
+        assert "replace-all" not in result.stderr
+        assert "branch.unknown" not in result.stderr
+        assert key_value not in result.stderr
+
+    def test_stop_status_survives_a_set_e_caller_capturing_with_or(self, tmp_path: Path) -> None:
+        """The documented capture shape must reach the explicit status test
+        inside a `set -e` script rather than aborting on the function's non-zero return."""
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", "-x")
+        script = (
+            'set -euo pipefail\n. "$1"\nrc=0\n'
+            'out=$(_lib_configured_stack_base "$2" "$3") || rc=$?\n'
+            'printf "rc=%s out=[%s]\\n" "$rc" "$out"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(_LIB_SH), _STACK_BASE_STDERR_PREFIX, str(repo)],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == "rc=2 out=[]\n"
+        assert "branch.feat/x.gh-merge-base" in result.stderr
+
+    def test_value_with_embedded_newline_is_rejected_with_one_stderr_line(self, tmp_path: Path) -> None:
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", "evil\nsecond line")
+        result = _configured_stack_base(repo)
+        _assert_stack_base_stop(result, "feat/x")
+
+    def test_stop_for_a_branch_holding_a_single_quote_quotes_the_key_so_it_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        """An unquoted `'` leaves shlex.split with no closing quotation, so
+        dropping the formatter's %q quoting of the branch fails this test."""
+        branch = "feat/a'b"
+        repo = _repo_on_branch_with_key(tmp_path, branch, "-x")
+        result = _configured_stack_base(repo)
+        assert (result.returncode, result.stdout) == (2, "")
+        assert result.stderr.count("\n") == 1
+        replace_all_fix = re.search(r"git config --replace-all (\S+) <stack-base>", result.stderr)
+        assert replace_all_fix is not None
+        assert shlex.split(replace_all_fix.group(1)) == [f"branch.{branch}.gh-merge-base"]
+
+    def test_every_printable_ascii_character_is_allowed_only_inside_the_documented_set(
+        self, tmp_path: Path
+    ) -> None:
+        """The value `a<c>b` for each printable ASCII c passes when c is in the documented
+        set and stops otherwise, quotes and backticks included. One repo serves every
+        character to bound the runtime."""
+        allowed_characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-"
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", None)
+        for code_point in range(0x20, 0x7F):
+            character = chr(code_point)
+            value = f"a{character}b"
+            subprocess.run(
+                ["git", "config", "--replace-all", "branch.feat/x.gh-merge-base", value],
+                cwd=repo, check=True,
+            )
+            result = _configured_stack_base(repo)
+            if character in allowed_characters:
+                assert (result.returncode, result.stdout, result.stderr) == (
+                    0, f"feat/x {value}\n", ""
+                ), f"{character!r} should be allowed"
+            else:
+                assert (result.returncode, result.stdout) == (2, ""), f"{character!r} should stop"
+                assert result.stderr.count("\n") == 1, f"{character!r} should stop with one line"
+
+    @pytest.mark.parametrize(
+        ("value", "rendered_value_clause"),
+        [
+            pytest.param("", "is '', which", id="empty-value-reads-as-two-quotes"),
+            pytest.param("a;b", "is a\\;b, which", id="semicolon-is-backslash-escaped"),
+        ],
+    )
+    def test_stop_line_renders_the_value_percent_q_quoted(
+        self, tmp_path: Path, value: str, rendered_value_clause: str
+    ) -> None:
+        """An empty value must not read as blank and a metacharacter must not read as shell syntax."""
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", value)
+        result = _configured_stack_base(repo)
+        _assert_stack_base_stop(result, "feat/x")
+        assert rendered_value_clause in result.stderr
+
+
+def _open_pr_base(reply: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", '. "$1"; _lib_open_pr_base "$2"', "bash", str(_LIB_SH), reply],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLibOpenPrBase:
+    """Exit 0 prints the base only for a two-line reply whose first line is `OPEN` and
+    whose second line is non-empty; every other reply exits 1 with empty stdout."""
+
+    def test_open_two_line_reply_prints_the_base(self) -> None:
+        result = _open_pr_base("OPEN\nstack")
+        assert (result.returncode, result.stdout, result.stderr) == (0, "stack", "")
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            pytest.param("", id="empty-reply"),
+            pytest.param("OPEN", id="one-line"),
+            pytest.param("OPEN\nstack\nextra", id="three-lines"),
+            pytest.param("OPEN\n\nstack", id="three-lines-with-empty-second"),
+            pytest.param("MERGED\nstack", id="merged"),
+            pytest.param("CLOSED\nstack", id="closed"),
+            pytest.param("OPEN\n", id="open-with-empty-base"),
+        ],
+    )
+    def test_any_other_reply_exits_1_with_empty_stdout(self, reply: str) -> None:
+        result = _open_pr_base(reply)
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")

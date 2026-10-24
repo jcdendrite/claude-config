@@ -5280,6 +5280,73 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     assert "page onward with `offset` until one doesn't" in reviewer_body
 
 
+# Step 1's stack-base bullet runs the key command only when both operands hold
+# the character set _lib_configured_stack_base accepts and neither starts with
+# `-`, because the agent composes the quoted command before the helper can
+# validate anything. It then halts unless the recipe confirms the base.
+_PINNED_STEP1_STACK_BASE_CHARSET_CLAUSE = (
+    "run it only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, "
+    "0-9, `.`, `_`, `/` and `-` and neither starts with `-` (otherwise ask "
+    "the engineer)."
+)
+_PINNED_STEP1_STACK_BASE_HALT_CLAUSE = (
+    "Halt unless the next bullet's recipe prints `Base branch: <stack-base>`."
+)
+# The provenance clause keeps the key set only from the engineer's own words.
+_PINNED_STEP1_STACK_BASE_TRIGGER_CLAUSE = (
+    "When the engineer has said this branch is stacked on another branch, run "
+    "`git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet:"
+)
+_PINNED_STEP1_STACK_BASE_PROVENANCE_CLAUSE = (
+    "only `<stack-base>` comes from their words (no `origin/` prefix, never inferred), "
+    "and run it only when"
+)
+
+
+def test_ready_for_review_names_the_stack_base_key_and_the_base_branch_line() -> None:
+    """Step 1 sets the `gh-merge-base` key from the engineer's words, and step
+    8 passes `--base` from the `Base branch:` line that
+    branch-divergence-status.sh prints for a stack base. Step 1 also runs the
+    key command only when both operands hold the helper's character set and
+    neither starts with `-`, and halts unless the recipe prints
+    `Base branch: <stack-base>`. It also pins the provenance clause: the key
+    is set only when the engineer has said the branch is stacked, and only
+    `<stack-base>` comes from their words, with no `origin/` prefix and never
+    inferred. The script-source assertion is a
+    wiring-presence tripwire tying the skill's literal to the script's;
+    test_branch_divergence_status.py runs the script and asserts the printed
+    line."""
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    step1_start, step1_end = _section_between(lines, _READY_FOR_REVIEW_STEP1_HEADING, skill_md_path)
+    step1_text = "".join(lines[step1_start:step1_end])
+    step8_start, step8_end = _section_between(
+        lines, "## 8. Create PR if missing (skip if PR already exists)", skill_md_path
+    )
+    step8_text = "".join(lines[step8_start:step8_end])
+
+    assert "gh-merge-base" in step1_text, f"{skill_md_path}: step 1 no longer names the gh-merge-base key"
+    step1_collapsed = " ".join(step1_text.split())
+    assert " ".join(_PINNED_STEP1_STACK_BASE_TRIGGER_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer sets the key only when the engineer has said the branch is stacked"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_PROVENANCE_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer takes only `<stack-base>` from the engineer's words, "
+        "with no `origin/` prefix and never inferred"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_CHARSET_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer applies the character set and the leading-`-` reject to both "
+        "`<branch>` and `<stack-base>` before running the key command"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_HALT_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer halts unless the recipe prints `Base branch: <stack-base>`"
+    )
+    assert '--base "<name>"' in step8_text, f"{skill_md_path}: step 8 no longer passes --base \"<name>\" for a stack base"
+    assert "Base branch:" in step8_text, f"{skill_md_path}: step 8 no longer keys --base on the Base branch: line"
+    divergence_script_source = (SCRIPTS_DIR / "branch-divergence-status.sh").read_text()
+    assert 'echo "Base branch: $BASE_BRANCH"' in divergence_script_source
+
+
 def test_claude_hook_review_section10_handoff_rules_present() -> None:
     """Section 10 hands the reviewers a hook path plus its diff, never a branch
     or range name, and says so when the diff is unavailable."""
@@ -7125,6 +7192,95 @@ class TestReadyForReviewStep6BehindBaseRule:
                 "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
             ),
         )
+
+
+# respond-pr step 3's failed-recipe sentence: re-run once, then abort with the
+# PR number, the already-re-run fact, the recipe's stderr and the next action,
+# and never route to /git-feature-branch-sync, whose detection runs the same
+# script. Mirrors ready-for-review step 6's pinned recipe-failure clause.
+_PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE = (
+    "When the recipe exits non-zero, re-run it once; if it fails again, abort "
+    "the skill, printing a message that names the PR number (captured in step "
+    "1), says the recipe was already re-run once, gives the recipe's stderr "
+    "and ends with the engineer's next action (fix the cause the stderr "
+    "names, then re-invoke `/respond-pr`), and do not route to "
+    "`/git-feature-branch-sync`, whose detection runs the same script."
+)
+
+
+def _respond_pr_step3_text() -> str:
+    """Raw text of respond-pr's step 3 list item, from its `3.` marker to the
+    line before step 4's `4.` marker. Both markers are asserted found, so a
+    renumbered step fails instead of extracting empty text."""
+    lines = _skill_file("respond-pr").read_text().splitlines(keepends=True)
+    start_idx = next((i for i, line in enumerate(lines) if line.startswith("3. **Divergence precheck.**")), None)
+    assert start_idx is not None, "respond-pr/SKILL.md: step 3 (`3. **Divergence precheck.**`) not found"
+    end_idx = next((i for i in range(start_idx + 1, len(lines)) if lines[i].startswith("4. ")), None)
+    assert end_idx is not None, "respond-pr/SKILL.md: step 4 marker not found after step 3"
+    return "".join(lines[start_idx:end_idx])
+
+
+class TestRespondPrStep3FailedRecipeSentence:
+    """Pin the whole failed-recipe sentence in respond-pr step 3. Deleting the
+    do-not-route clause, the PR number, the already-re-run fact, the stderr or
+    the next action fails it, as does appending a contradicting clause."""
+
+    def test_step3_reruns_a_failed_recipe_once_then_aborts_without_routing_to_sync(self) -> None:
+        _assert_pinned_clause_right_bounded(
+            " ".join(_PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE.split()),
+            _respond_pr_step3_text(),
+            context=(
+                "respond-pr/SKILL.md: step 3's failed-recipe sentence has drifted from its pinned clause "
+                "(re-run once, abort naming the PR number with the recipe's stderr, no routing to "
+                "/git-feature-branch-sync)"
+            ),
+        )
+
+
+# git-feature-branch-sync keeps its recipe examples on the default branch's
+# literal names, so the preamble names the base the recipe reports as what they
+# stand for. The detection section tells an agent that arrives from the
+# SessionStart advisory, which never reads the stack-base key, to sync to the
+# branch the recipe names, and to stop on a failed recipe. Both clauses are
+# whitespace-collapsed substrings: the detection block's paragraph continues past
+# its last pinned word.
+_PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE = (
+    "use `main` / `origin/main` as the placeholder for the base the recipe reports"
+)
+_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE = (
+    "The hook never reads `git config branch.<branch>.gh-merge-base`, so on a "
+    "stacked branch its advisory counts against the default branch. After that "
+    "advisory, run the recipe and sync to the branch its `Default branch:` or "
+    "`Base branch:` line names, not the advisory's; if the recipe exits "
+    "non-zero, report its stderr and stop, and sync nothing against the "
+    "advisory's branch."
+)
+_REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE = "Same detection primitive everywhere"
+
+
+def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() -> None:
+    """The sync skill's `main` / `origin/main` examples stand for the base the
+    recipe reports, and after the SessionStart advisory (default-branch only) the
+    agent runs the recipe and syncs to the branch its `Default branch:` or
+    `Base branch:` line names, stopping when the recipe exits non-zero. Deleting
+    either clause lets an agent primed by the advisory run a literal
+    `git rebase origin/main` on a stacked branch."""
+    skill_md_path = _skill_file("git-feature-branch-sync")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    detecting_start, detecting_end = _section_between(lines, "## Detecting divergence", skill_md_path)
+    preamble_collapsed = " ".join("".join(lines[:detecting_start]).split())
+    detecting_collapsed = " ".join("".join(lines[detecting_start:detecting_end]).split())
+
+    assert _PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE in preamble_collapsed, (
+        f"{skill_md_path}: the preamble no longer says `main` / `origin/main` stand for the base the recipe reports"
+    )
+    assert " ".join(_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer tells the agent to sync to the branch the recipe "
+        "names rather than the advisory's, or no longer stops on a failed recipe"
+    )
+    assert _REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE not in skill_md_path.read_text(), (
+        f"{skill_md_path}: the sentence calling the hook and the recipe one uniform detection primitive is back"
+    )
 
 
 _READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"

@@ -1617,6 +1617,34 @@ def _make_repo_with_remote(tmp_path: Path, default_branch: str = "main") -> tupl
     return local, bare
 
 
+_STACKED_BRANCH = "feat/own"
+
+
+def _commit_new_file(repo: Path, file_name: str) -> None:
+    (repo / file_name).write_text(f"{file_name} content\n")
+    subprocess.run(["git", "add", file_name], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"add {file_name}"], cwd=repo, check=True)
+
+
+def _make_stacked_repo(tmp_path: Path, stack_base: str = "stack", *, key_value: str | None = None) -> tuple[Path, Path]:
+    """Three tiers: the default tip, `stack_base` adding base.txt, and
+    _STACKED_BRANCH (checked out) adding own.txt. Both branches are pushed.
+    The branch's gh-merge-base key is set to stack_base unless key_value
+    overrides it."""
+    local, bare = _make_repo_with_remote(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", stack_base], cwd=local, check=True)
+    _commit_new_file(local, "base.txt")
+    subprocess.run(["git", "push", "-q", "origin", stack_base], cwd=local, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", _STACKED_BRANCH], cwd=local, check=True)
+    _commit_new_file(local, "own.txt")
+    subprocess.run(["git", "push", "-q", "origin", _STACKED_BRANCH], cwd=local, check=True)
+    subprocess.run(
+        ["git", "config", f"branch.{_STACKED_BRANCH}.gh-merge-base", stack_base if key_value is None else key_value],
+        cwd=local, check=True,
+    )
+    return local, bare
+
+
 def _make_feature_branch(repo: Path, branch_name: str, return_to: str = "main") -> None:
     """Create and push a feature branch in repo, then return to return_to."""
     subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)

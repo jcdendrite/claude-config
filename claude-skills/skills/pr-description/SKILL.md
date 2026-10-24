@@ -167,7 +167,7 @@ If nothing fires after a careful read, say so — naming the sections
 you read end to end. A bare negative cannot distinguish a coherent
 body from a skipped pass.
 
-Then compare the body against branch state:
+Then compare the body against branch state, where `<base>` is `origin/<name>` for the base branch the caller passed, else the open PR's base, else the default branch:
 
 - `git log <base>..HEAD --oneline`
 - `git diff <base>..HEAD --name-only`

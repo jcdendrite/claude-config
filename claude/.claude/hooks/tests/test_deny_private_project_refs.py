@@ -1271,6 +1271,25 @@ class TestDenyPrivateProjectRefs:
         assert reason_with_branch_typed_via_head_flag is not None
         assert "WIDGET-123" in reason_with_branch_typed_via_head_flag
 
+    def test_optin_marker_scans_tracker_named_base_flag_of_gh_pr_create(self, private_projects_optin_repo):
+        """A stacked PR's `--base <name>` is typed in the command text, so a
+        tracker-named stack base denies like a tracker-ID title, and a plain
+        stack base allows."""
+        tracker_named_base = "WIDGET-123-base"
+        tracker_named_reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh pr create --base {tracker_named_base} --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        plain_base_decision = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("gh pr create --base stack --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert tracker_named_reason is not None
+        assert "WIDGET-123" in tracker_named_reason
+        assert plain_base_decision == "allow"
+
     @pytest.mark.parametrize("command", _OPTIN_MARKER_ARMED_COMMANDS)
     def test_optin_marker_arms_continue_and_gh_write_surfaces(self, private_projects_optin_repo, command):
         """Each `--continue` commit-concluding form and each gh write surface
