@@ -2954,8 +2954,6 @@ def installed_locale_where(bash_condition: str, probe_argument: str, *, absent_m
     A test of a locale-dependent bash behaviour takes its locale from here, because `C.UTF-8` is not guaranteed to show it.
     With no such locale installed, fails under CI so a runner that lost its locale cannot lose the discrimination unnoticed.
     Skips otherwise."""
-    import pytest  # imported here because the module header keeps pytest out of the runtime imports
-
     for name in _installed_utf8_locale_names():
         probe = subprocess.run(
             ["bash", "-c", bash_condition, "bash", probe_argument],

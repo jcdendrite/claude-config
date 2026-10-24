@@ -193,7 +193,6 @@ _context_prepare() {
   CONTEXT_STEP='repo-root'
   REPO_ROOT=$(_lib_repo_root)
   cd "$REPO_ROOT"
-  umask 077
   CONTEXT_STEP='temp-dir'
   CONTEXT_TMP_BASE=${TMPDIR:-/tmp}
   CONTEXT_TMP_BASE=${CONTEXT_TMP_BASE%/}
@@ -424,7 +423,7 @@ _context_prepare_output_dir() {
   CONTEXT_STEP='output-dir'
   OUTPUT_DIR="$REPO_ROOT/agent-reviews"
   if [ ! -e "$OUTPUT_DIR" ] && [ ! -L "$OUTPUT_DIR" ]; then
-    mkdir "$OUTPUT_DIR" 2>/dev/null || :
+    mkdir -m 0700 "$OUTPUT_DIR" 2>/dev/null || :
   fi
   if [ -L "$OUTPUT_DIR" ] || [ ! -d "$OUTPUT_DIR" ]; then
     _pr_diff_index_path "$OUTPUT_DIR"
@@ -664,7 +663,7 @@ _context_enrich() {
   PR_DIFF_LANE_FORM_LIST=("${LANE_FORMS[@]}")
   PR_DIFF_LANE_NUMBERS_LIST=("${LANE_NUMBERS[@]}")
   _pr_diff_enrichment_order
-  mkdir "$CONTEXT_TMP_DIR/history"
+  mkdir -m 0700 "$CONTEXT_TMP_DIR/history"
   for row in "${PR_DIFF_ENRICH_ORDER[@]}"; do
     status=${PR_DIFF_ROW_STATUS[row]}
     if [ "${ROW_WITHHELD[row]}" -eq 1 ] || [ "$status" = '?' ] || [ "$status" = A ]; then

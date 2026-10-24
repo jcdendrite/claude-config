@@ -32,8 +32,10 @@ from helpers import (
     GITLINK_BEFORE,
     HOOKS_DIR,
     LANE_INDEX_ROW_FIELDS,
+    ambient_umask,
     assert_cap_engaged,
     cumulative_review_value,
+    file_mode,
     git_config_isolation_env,
     isolated_git_diff,
     isolated_git_env,
@@ -2446,8 +2448,6 @@ class TestRealisticChangeSet:
         assert all(not name.startswith(".") for name in names)
         assert len(names) == 14, names  # three whole or listed lanes of four files each, and a diff-only lane of two
         assert list(Path(env["TMPDIR"]).iterdir()) == []
-        assert all((repo / "agent-reviews" / name).stat().st_mode & 0o777 == 0o600 for name in names)
-        assert (repo / "agent-reviews").stat().st_mode & 0o777 == 0o700
 
 
 def _fail_nth_call(counter: Path, nth: int, status: int) -> str:
@@ -3290,7 +3290,8 @@ class TestHaltsAndAtomicity:
         real_mkdir = shutil.which("mkdir")
         shim_dir.mkdir()
         (shim_dir / "mkdir").write_text(
-            f'#!/bin/bash\nif [ "${{1##*/}}" = agent-reviews ]; then {real_mkdir} "$@"; exit 1; fi\nexec {real_mkdir} "$@"\n'
+            f'#!/bin/bash\nlast=${{@: -1}}\n'
+            f'if [ "${{last##*/}}" = agent-reviews ]; then {real_mkdir} "$@"; exit 1; fi\nexec {real_mkdir} "$@"\n'
         )
         (shim_dir / "mkdir").chmod(0o755)
         race_env = {**env, "PATH": f"{shim_dir}{os.pathsep}{env['PATH']}"}
@@ -3302,9 +3303,10 @@ class TestHaltsAndAtomicity:
             other = _small_repo(tmp_path / planted)
             elsewhere = tmp_path / f"{planted}-target"
             elsewhere.mkdir()
-            plant_command = f'ln -s {elsewhere} "$1"' if planted == "symlink" else ': > "$1"'
+            plant_command = f'ln -s {elsewhere} "$last"' if planted == "symlink" else ': > "$last"'
             (shim_dir / "mkdir").write_text(
-                f'#!/bin/bash\nif [ "${{1##*/}}" = agent-reviews ]; then {plant_command}; exit 1; fi\nexec {real_mkdir} "$@"\n'
+                f'#!/bin/bash\nlast=${{@: -1}}\n'
+                f'if [ "${{last##*/}}" = agent-reviews ]; then {plant_command}; exit 1; fi\nexec {real_mkdir} "$@"\n'
             )
             id_for_other = _parse_listing(_run_context(other, env, "--staged", list_only=True))[0]
             result = _run_context(other, race_env, "--staged", listing=id_for_other, lanes=("staff-sdet",))
@@ -3811,11 +3813,30 @@ class TestIgnoreCheckAndOutputTargets:
         repo, env, _shim, listing_id = self._prepare(tmp_path)
         assert not (repo / "agent-reviews").exists()
 
-        result = _run_context(repo, env, "--staged", listing=listing_id, lanes=("staff-sdet",))
+        with ambient_umask(0o022):
+            result = _run_context(repo, env, "--staged", listing=listing_id, lanes=("staff-sdet",))
 
         assert result.returncode == 0, result.stderr
         assert stat.S_IMODE((repo / "agent-reviews").stat().st_mode) == 0o700
         assert {stat.S_IMODE(path.stat().st_mode) for path in (repo / "agent-reviews").iterdir()} == {0o600}
+
+    def test_a_run_that_makes_git_rewrite_a_stat_dirty_index_leaves_the_index_mode_unchanged(self, tmp_path):
+        """Guards the script's umask changing the mode git gives a rewritten `.git/index`. The 0o022 umask pin makes a
+        leaked umask show as a mode change, and the `os.utime` call makes the index stat-dirty so git rewrites it."""
+        repo = _small_repo(tmp_path, "working-tree")
+        env = _context_env(tmp_path)
+        index_path = repo / ".git" / "index"
+        with ambient_umask(0o022):
+            index_path.chmod(0o644)
+            index_mode_before = file_mode(index_path)
+            index_inode_before = index_path.stat().st_ino
+            os.utime(repo / "keep.txt", ns=(1_000_000_000, 1_000_000_000))
+
+            result = _run_context(repo, env, "--working-tree", list_only=True)
+
+        assert result.returncode == 0, result.stderr
+        assert index_path.stat().st_ino != index_inode_before, "git did not rewrite the index in the fixture"
+        assert file_mode(index_path) == index_mode_before
 
     def test_a_same_suffix_rerun_with_a_changed_lane_replaces_the_files_and_the_new_header_names_no_stale_body(self, tmp_path):
         """Characterization of the accepted residual: a lane file the rerun no longer writes stays on disk. The docs/scripts.md
@@ -5218,10 +5239,8 @@ class TestExpectDiff:
         ],
     )
     def test_a_handed_file_written_under_a_porcelain_diff_setting_does_not_mismatch(self, tmp_path, setting_kind, key, value):
-        """Default mode and the recompute both run the one shared plumbing command, which ignores diff.* and color.* config and
-        external diff drivers and sets its own GIT_DIFF_OPTS=-u3 over an exported value, so none of these settings reaches either
-        side. If the recompute ran a different command from default mode, a setting that reached only one of them would print a
-        false DIFF_MISMATCH."""
+        """A setting that reached only default mode or only the recompute would print a false DIFF_MISMATCH. Both run the command
+        `_cumulative_diff_argv` in pr-diff-against-base.sh builds."""
         repo = _small_repo(tmp_path, "cumulative")
         recording_script = tmp_path / "external-diff-recording.sh"
         ran_log = tmp_path / "external-diff-ran.log"
@@ -5906,7 +5925,8 @@ class TestRemainingWiring:
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
-        process, _started, release = spawn_blocked_run(repo, env, listing_id, tmp_path)
+        with ambient_umask(0o022):
+            process, _started, release = spawn_blocked_run(repo, env, listing_id, tmp_path)
 
         (private_dir,) = list(Path(env["TMPDIR"]).iterdir())
         names = sorted(path.name.rsplit(".", 1)[0] for path in private_dir.iterdir())

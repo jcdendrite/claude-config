@@ -6,7 +6,8 @@
 # comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see
 # _lib.sh's _LIB_REVIEW_ONLY_AGENTS) must never mutate the tree they are
 # reviewing.
-# Their Write tool's first sanctioned target is the caller's own findings file (its own <agent>-*.md file in an ignored agent-reviews directory; see the depth and path-form gaps in Known gaps below).
+# Their Write tool's first sanctioned target is the caller's own <agent>-*.md findings file in an ignored agent-reviews directory.
+# Known gaps below state that rule's reach by depth and by path form.
 # The second is a new <agent>-*.md file the caller creates with the Write tool directly inside this session's /review-pr findings directory under /tmp.
 # A Bash write is sanctioned only under /tmp.
 # /dev/null is also exempt from the Bash write-target scan.
@@ -149,7 +150,8 @@
 #         allow verdicts for `Plan`.
 #   - The Write arm accepts the caller's own `<agent>-*.md` file in an ignored directory named agent-reviews at any depth.
 #     The unanchored ignore pattern findings-path-suffix.sh writes ignores every directory of that name in the repository, so the reach is any such directory.
-#     That reach includes an agent-reviews directory under .claude/rules/, .claude/agents/ or .claude/plans/; whether Claude Code loads a file there is unverified.
+#     That reach includes an agent-reviews directory anywhere under .claude/, for example under .claude/commands/, .claude/rules/, .claude/agents/ or .claude/plans/.
+#     Claude Code may load a file written there.
 #     The engineer accepted the any-depth reach as debt: "Keep, accept as debt (Recommended)".
 #     The reach also includes `<repo>/.git/refs/heads/agent-reviews/<agent>-*.md`, because `git check-ignore -q` exits 0 for it.
 #   - A Write path starting with `~` or `:/` passes the case globs and the name predicate unchanged.
