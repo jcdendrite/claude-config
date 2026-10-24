@@ -32,11 +32,11 @@ The tier and the grounds for each component are in the gate's header and its row
 
 ## Fixed headings and the splice
 
-Every plan now ends with the same four headings, in the order `claude-skills/skills/plan-it/SKILL.md` § "Step 5 — Architecture design" defines. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: a successful return carries none, so a summary cannot overwrite edits that landed. Step 5 owns the splice conditions and the handling of plans committed before this change.
+Every plan now ends with the same four headings, in the order `claude-skills/skills/plan-it/SKILL.md` § "Step 5 — Architecture design" defines. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: a successful return carries none, so a summary cannot overwrite edits that landed. Step 5 owns the splice conditions and the handling of a plan committed before this change. `plan-shape.py prepare` stops a plan whose heading lines fail `prepare`'s conditions. The script's docstring states those conditions. Step 5 routes the stop to the engineer.
 
 ## Notes
 
-- `plan-it/SKILL.md` Step 5 holds `(pending: plan-architect)`, the scaffold bytes, and the four heading literals. `plan-architect.md` cites Step 5 for the placeholder and names only the headings its edit rules need. A `test_skills.py` test pins the literals in Step 5.
+- `plan-it/SKILL.md` Step 5 holds `(pending: plan-architect)` and the four heading literals, and `claude/.claude/scripts/plan-shape.py` writes the scaffold. The script's tests pin the scaffold's bytes and check that Step 5 names the same placeholder and headings. `plan-architect.md` cites Step 5 for the placeholder and names only the headings its edit rules need.
 - The hash command is one statement with none of the worktree guard's trigger shapes, and `sha256sum` is an `install.sh` prerequisite. Step 5 holds the command and its stop conditions.
 
 ## Accepted residuals

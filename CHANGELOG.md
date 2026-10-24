@@ -6,6 +6,22 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`/plan-it` Step 5 now runs one tested script, `plan-shape.py`, to scaffold a new plan's four headings and to check a plan's heading structure, instead of following prose rules.**
+  - The headings, the placeholder and the Context hash are unchanged.
+  - These now stop and go to the engineer, before a dispatch or after one:
+    - a plan file not directly under a `.claude/plans/` directory, or whose name breaks the file-name rule;
+    - a plan path whose last component is a symlink, a directory or another non-regular file;
+    - a carriage return;
+    - invalid UTF-8;
+    - an unclosed code fence;
+    - a line reading exactly `## Approach` where Step 5's Context hash would end instead of at the heading.
+  - The script tests the `plans` and `.claude` directory names on the symlink-resolved parent directory. A symlink is refused only at the last path component, so a symlinked parent is followed when it resolves to a `plans` directory directly under one named `.claude`.
+  - The file-name rule is that the name starts with an ASCII letter or digit, holds only ASCII letters, digits, `.`, `_` and `-`, and ends in lowercase `.md`.
+  - In plan mode, a harness plan path whose resolved `plans` directory is not directly under a directory named `.claude` fails the path rule, so Step 5 stops. Leaving plan mode and re-running `/plan-it` starts the plan again under `.claude/plans/` on a branch, and the harness-path file is not carried over.
+  - An unclosed code fence in the sections `plan-architect` writes now goes to the engineer instead of a re-dispatch. A failed Check still re-dispatches for a leftover placeholder, a heading-structure error or an empty section, except a plan left with no `## Approach` heading line, which goes to the engineer.
+  - Step 5 now also runs the Check before every dispatch after the first, and that dispatch goes ahead only when the Check passes or fails only in ways that re-dispatch.
+  - A new plan file whose heading lines are not exactly one `## Context` goes to the engineer before its first dispatch.
+  - An Effort section may be added only after a dispatch has returned and passed the Check.
 - **`/ready-for-review` step 6 now hands off a branch that is behind the base without syncing it when its trial merge is clean.** It reports the behind-count in the Completion summary instead, so a base that keeps moving cannot force step 2's verification to re-run on a clean merge. The handed-off tree therefore holds the base only as of step 1's most recent check. A trial-merge conflict at step 6 returns the gate to step 1, which syncs before verification runs again. On git below 2.38 the trial-merge verdict is always clean, so step 6 there reports the count and never returns a conflict. On the CI-watch path, a step-6 conflict returns to step 1, whose sync can rebase and force-push a pull request already handed off. A failed divergence check at step 6 halts the step: the check is re-run once in place, and a second failure is reported to the engineer. Step 6 now re-runs the divergence check on every gate run, where it previously re-ran only if steps 3-5 produced commits, which adds one fetch bounded at 2 seconds and a halt arm on a failed check.
 - **A dispatching session now hands an agent files by path, and sets inline relayed text in a blockquote under a lead-in naming its source.** The rule is a new Agent Briefing bullet in the global `CLAUDE.md`. A skill's own wording that the session passes on while running that skill counts as its own words and takes no blockquote.
   - **`/review-pr`:** a plan from a ticket or a `diff-only` PR reaches each `/plan-review` reviewer under a lead-in naming the ticket or the PR.
