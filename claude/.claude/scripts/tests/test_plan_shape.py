@@ -599,6 +599,7 @@ def _run_in_process(script, capture: pytest.CaptureFixture[bytes], *arguments: s
 
 def _sed_hash_range_last_line(plan_path: Path) -> int:
     """The last line `sed` prints for the hash range, which is where Step 5's Context hash ends."""
+    # BSD sed's `=` takes one address, so the range goes on a `{...}` block; the `;` before `}` is required (it rejects `{=}`).
     completed = subprocess.run(
         ["sed", "-n", f"{_HASH_RANGE_ADDRESS}{{=;}}", str(plan_path)],
         capture_output=True,
