@@ -10811,6 +10811,40 @@ class TestTrialMergeVerdict:
         assert result.returncode == 0
         assert result.stdout == "Trial merge: CONFLICT in: a.txt, dir/b c.txt, z.txt\n"
 
+    def test_modify_delete_conflict_reports_the_path_when_stage_2_is_absent(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """Upstream, the first argument of `git merge-tree --write-tree upstream HEAD`,
+        deleting the file leaves stage lines 1 and 3 only, because stage numbers
+        follow merge-tree's argument order. The path must still be reported,
+        so the filter cannot key on a single stage number."""
+        # The upstream.txt decoy only makes upstream's commit non-empty before the
+        # delete. It must stay dissimilar to shared.txt, or rename detection
+        # would pair the two and the merge would come out clean.
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"upstream.txt": "u\n"}, {"shared.txt": "feature\n"}
+        )
+        _run_git(repo, "checkout", "-q", "upstream")
+        _run_git(repo, "rm", "-q", "--", "shared.txt")
+        _run_git(repo, "commit", "-qm", "upstream deletes shared.txt")
+        _run_git(repo, "checkout", "-q", "feature")
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: shared.txt\n"
+
+    def test_add_add_conflict_reports_the_path_when_stage_1_is_absent(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """A path added on both branches has no merge base, so stage 1 is absent
+        and only stage lines 2 and 3 appear. The path must still be reported,
+        so the filter cannot key on a single stage number."""
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"added.txt": "upstream\n"}, {"added.txt": "feature\n"}
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: added.txt\n"
+
     def test_unknown_upstream_ref_fails_with_one_stderr_line(
         self, tmp_path: Path, shell_mode: str
     ) -> None:

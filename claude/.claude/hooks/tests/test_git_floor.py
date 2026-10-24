@@ -1,6 +1,5 @@
-"""Tests for install.sh's git floor check -- the hard-fail that makes the git
-version `README.md` § "Requirements" documents an enforced, install-time
-requirement rather than prose.
+"""Tests for install.sh's git floor check -- the hard-fail that enforces, at
+install time, the git version `README.md` § "Requirements" documents.
 
 Sections:
 

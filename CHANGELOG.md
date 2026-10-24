@@ -9,7 +9,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
   - The failure names the running git and `README.md` § "Requirements".
-  - A conflict line now lists each path once, joined by `, `, with spaces in a path kept.
+  - A conflict line now joins paths with `, ` (the old `paste -sd', '` alternated `,` and a space) and keeps a path containing spaces whole (the old `$NF` split it).
   - The change is live on `git pull`.
 - **`/plan-it` Step 5 now runs one tested script, `plan-shape.py`, to scaffold a new plan's four headings and to check a plan's heading structure, instead of following prose rules.**
   - The headings, the placeholder and the Context hash are unchanged.
@@ -385,7 +385,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Removed
 
 - **git older than 2.43 is no longer supported: install git 2.43 or newer first on the PATH Claude Code starts with.**
-  - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`), so the floor sits above what the code needs, and `install.sh` refuses git 2.40 through 2.42, which the code would run on.
+  - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`). `install.sh` refuses git 2.40 through 2.42 although the code runs on them.
   - `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read.
   - CI tests the floor on one pinned Ubuntu 24.04 build of git 2.43.
   - Nothing checks the version at runtime. Below git 2.38, the commit gates mid-merge, rebase, cherry-pick or revert fall back to a plain `git diff --cached`, which over-gates. On 2.38 and 2.39, rebase, cherry-pick and revert do (merge does not, because its `merge-tree` call passes no `--merge-base`).

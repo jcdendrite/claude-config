@@ -181,7 +181,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: nproc
 
-      # Records the runner's git version and which awk implementation runs the cumulative-review normalizer's tests.
+      # Records the pinned git's version and which awk implementation runs the cumulative-review normalizer's tests.
       - name: Report runner git and awk versions
         if: steps.detect.outputs.changed == 'true'
         run: |

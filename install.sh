@@ -92,7 +92,7 @@ fi
 # markers below and runs them under a stubbed `git` on PATH. Keep both
 # markers on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: git-floor-check — start
-# README.md § "Requirements" states why the floor is 2.43.
+# README.md § "Requirements" states why this floor.
 # Compared field by field, because a lexical comparison ranks 2.100 below 2.43.
 GIT_MINIMUM_VERSION="2.43"
 git_version_pattern='^git version ([0-9]{1,9})\.([0-9]{1,9})'

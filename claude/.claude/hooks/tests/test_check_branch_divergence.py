@@ -269,8 +269,7 @@ class TestCheckBranchDivergence:
         result = _run_hook({}, cwd=repo_behind_conflict)
         assert result.returncode == 0
         ctx = _additional_context(result)
-        assert "Trial merge: CONFLICT in:" in ctx
-        assert "f" in ctx  # the conflicting file
+        assert "Trial merge: CONFLICT in: f" in ctx.splitlines()
 
     # (f2) behind > 0, trial merge cannot complete → NOT COMPUTED, never CLEAN
     def test_unrelated_histories_report_not_computed_naming_git_and_readme(self, feature_clone):
