@@ -37,6 +37,7 @@ from helpers import (
     cumulative_review_value,
     file_mode,
     git_config_isolation_env,
+    installed_locale_where,
     isolated_git_diff,
     isolated_git_env,
     require_cumulative_review_value,
@@ -3710,6 +3711,7 @@ class TestIgnoreCheckAndOutputTargets:
         _assert_halted_at(result, "ignore-check", 128)
         assert list(elsewhere.iterdir()) == []
 
+    @pytest.mark.timing
     def test_a_slow_check_ignore_exits_1_at_ignore_check_never_3(self, tmp_path):
         """The 5 s cap, scaled down by the repo's timeout shim, kills a stalled check-ignore."""
         repo, env, shim, listing_id = self._prepare(tmp_path)
@@ -3903,6 +3905,7 @@ _CAP_BY_SUBCOMMAND = {
 _CAPPED_PROGRAM_BY_SUBCOMMAND = {"diff-tree": "env"}
 
 
+@pytest.mark.timing
 class TestCapsTiedToCalls:
     @pytest.mark.parametrize("source", ["staged", "working-tree", "cumulative", "expect-diff"])
     def test_each_call_runs_under_its_cap(self, tmp_path, source):
@@ -5473,6 +5476,7 @@ class TestBaseResolutionBothModes:
         assert result.returncode == 1
         assert result.stderr == "pr-diff-against-base.sh: gh pr view failed and no default branch resolved from origin\n"
 
+    @pytest.mark.timing
     def test_default_mode_with_a_slow_gh_falls_to_the_guess_and_prints_what_a_failing_gh_prints(self, tmp_path):
         """The gh call runs under a 15 s cap; the repo's scaled timeout shim fires it in a third of that, and the
         test does not wait out 15 s."""
@@ -5579,6 +5583,7 @@ def test_worst_case_call_time_under_bash_timeout():
             assert worst < bash_tool_maximum_seconds - margin_seconds, (source, call, worst)
 
 
+@pytest.mark.timing
 def test_the_time_sum_accounts_for_every_capped_call_a_real_run_makes(tmp_path):
     """Ties the table above to the script: a happy-path run's capped calls fit inside the call list, per cap."""
     bin_dir = tmp_path / "scaled_timeout"
@@ -5595,7 +5600,8 @@ def test_the_time_sum_accounts_for_every_capped_call_a_real_run_makes(tmp_path):
         list_entries = started_log.read_text().split("\n")[:-1]
         started_log.write_text("")
 
-        _run_context(repo, env, *source_args, listing=listing_id, lanes=("staff-sdet",))
+        lane_result = _run_context(repo, env, *source_args, listing=listing_id, lanes=("staff-sdet",))
+        assert lane_result.returncode == 0, (source, lane_result.stderr)
         lane_entries = started_log.read_text().split("\n")[:-1]
 
         for call, entries in (("list", list_entries), ("lanes", lane_entries)):
@@ -5999,23 +6005,16 @@ class TestRemainingWiring:
         assert "# omitted untracked: nested_repo/\n" in _lane_files(result, "staff-sdet")["diff"].read_text()
 
     def test_a_content_line_that_is_invalid_utf_8_passes_through_under_a_utf_8_locale(self, tmp_path):
-        """A locale-aware tool would show: the run uses a UTF-8 LANG the runner has installed, and the bytes still arrive."""
-        locales = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
-        utf8_locale = next((name for name in locales if name.lower() in ("c.utf-8", "c.utf8", "en_us.utf-8", "en_us.utf8")), None)
-        if utf8_locale is None:
-            if os.environ.get("CI"):
-                pytest.fail("no UTF-8 locale on the runner, so the locale-sensitive path went unexercised")
-            pytest.skip("no UTF-8 locale installed")
-        probe_env = {**os.environ, "LANG": utf8_locale, "LC_ALL": ""}
-        probe = subprocess.run(["bash", "-c", "locale charmap"], capture_output=True, text=True, env=probe_env, check=False)
-        assert "UTF-8" in probe.stdout.upper(), probe.stdout
+        """Bytes that are not valid UTF-8 reach the lane diff unchanged under a UTF-8 locale."""
+        utf8_locale = installed_locale_where(
+            '[ "$(locale charmap)" = UTF-8 ]', "", absent_message="no UTF-8 locale installed"
+        )
 
         def add_invalid(repo: Path) -> None:
             (repo / "invalid.txt").write_bytes(b"valid line\nbad \xff\xfe byte line\nlast line\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_invalid)
-        env = _context_env(tmp_path, LANG=utf8_locale)
-        env.pop("LC_ALL", None)
+        env = _context_env(tmp_path, LC_ALL=utf8_locale)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
 
         result = _run_context(repo, env, "--staged", listing=listing_id, lanes=("staff-sdet",))

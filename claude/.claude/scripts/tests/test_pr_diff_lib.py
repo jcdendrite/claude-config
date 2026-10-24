@@ -10,7 +10,7 @@ import hashlib
 import os
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from helpers import HOOKS_DIR, run_hook
@@ -1407,37 +1407,53 @@ def _hook_data_extensions() -> list[str]:
     return extensions
 
 
-def _data_guard_tree(root: Path) -> list[str]:
-    """Relative names that exercise each data-file rule, plus allowed neighbours."""
-    plain_files = (
-        "src/app.py", "Downloads/notes.txt", "downloads/notes.txt",
-        "x/exports-private/a.txt", "x/PRIVATE/a.txt", "x/private/a.txt",
-    )
+# Each variant writes one spelling of the case-only-different names, so no fixture directory holds two of them: a
+# case-insensitive volume would make them one path.
+_DATA_GUARD_CASE_VARIANTS = {
+    "capitalised": ("Downloads/notes.txt", "x/PRIVATE/a.txt"),
+    "lowercase": ("downloads/notes.txt", "x/private/a.txt"),
+}
+
+
+def _data_guard_tree(root: Path, case_variant: str) -> list[str]:
+    """Relative names that exercise each data-file rule, plus allowed neighbours. Only the files are written under `root`."""
+    case_variant_files = _DATA_GUARD_CASE_VARIANTS[case_variant]
+    plain_files = ("src/app.py", "x/exports-private/a.txt", *case_variant_files)
+    names_by_directory: dict[PurePosixPath, list[str]] = {}
     for plain in plain_files:
         (root / plain).parent.mkdir(parents=True, exist_ok=True)
         (root / plain).write_text("plain text\n")
+        for written in (PurePosixPath(plain), *PurePosixPath(plain).parents):
+            if written.parent != written:
+                names_by_directory.setdefault(written.parent, []).append(written.name)
+    for directory, written_names in names_by_directory.items():
+        distinct = set(written_names)
+        assert len({name.casefold() for name in distinct}) == len(distinct), (directory, written_names)
     return [
         "src/app.py",
         "data/report.csv", "data/REPORT.CSV", "data/dump.parquet", "data/table.db", "data/model.pkl", "data/export.csv/",
         "data/report.csv.txt",
-        "Downloads/notes.txt", "downloads/notes.txt", "Downloads",
-        "x/exports-private/a.txt", "x/PRIVATE/a.txt", "x/private/a.txt",
+        *case_variant_files, "Downloads",
+        "x/exports-private/a.txt",
         *(f"data/x.{extension}" for extension in _hook_data_extensions()),
     ]
 
 
-def test_data_guard_scan_matches_the_data_file_read_hook_over_extension_downloads_glob_and_case(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case_variant", list(_DATA_GUARD_CASE_VARIANTS))
+def test_data_guard_scan_matches_the_data_file_read_hook_over_extension_downloads_glob_and_case(
+    tmp_path: Path, case_variant: str
+) -> None:
     root = tmp_path / "work"
     root.mkdir()
     home = _data_guard_home(tmp_path)
-    names = _data_guard_tree(root)
+    names = _data_guard_tree(root, case_variant)
 
     hook = [_data_guard_read_verdict(f"{root}/{name}", home) for name in names]
     scan = ["deny" if hit == 1 else "allow" for hit in _data_guard_scan(names, root, home)]
 
     assert scan == hook
     assert set(hook) == {"allow", "deny"}
-    assert dict(zip(names, hook, strict=True)) == {
+    expected_by_name = {
         **{f"data/x.{extension}": "deny" for extension in _hook_data_extensions()},
         "src/app.py": "allow",
         "data/report.csv": "deny", "data/REPORT.CSV": "allow", "data/dump.parquet": "deny", "data/table.db": "deny",
@@ -1445,13 +1461,20 @@ def test_data_guard_scan_matches_the_data_file_read_hook_over_extension_download
         "Downloads/notes.txt": "deny", "downloads/notes.txt": "allow", "Downloads": "allow",
         "x/exports-private/a.txt": "deny", "x/PRIVATE/a.txt": "deny", "x/private/a.txt": "allow",
     }
+    other_variant_files = {
+        name for variant, files in _DATA_GUARD_CASE_VARIANTS.items() if variant != case_variant for name in files
+    }
+    assert dict(zip(names, hook, strict=True)) == {
+        name: verdict for name, verdict in expected_by_name.items() if name not in other_variant_files
+    }
 
 
-def test_data_guard_scan_marks_nothing_while_the_guard_file_is_absent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case_variant", list(_DATA_GUARD_CASE_VARIANTS))
+def test_data_guard_scan_marks_nothing_while_the_guard_file_is_absent(tmp_path: Path, case_variant: str) -> None:
     root = tmp_path / "work"
     root.mkdir()
     home = _data_guard_home(tmp_path, armed=False)
-    names = _data_guard_tree(root)
+    names = _data_guard_tree(root, case_variant)
 
     assert _data_guard_scan(names, root, home) == [0] * len(names)
     assert {_data_guard_read_verdict(f"{root}/data/report.csv", home)} == {"allow"}

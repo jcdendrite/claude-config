@@ -8,7 +8,7 @@
 # reviewing.
 # Their Write tool's first sanctioned target is the caller's own <agent>-*.md findings file in an ignored agent-reviews directory.
 # Known gaps below state that rule's reach by depth and by path form.
-# The second is a new <agent>-*.md file the caller creates with the Write tool directly inside this session's /review-pr findings directory under /tmp.
+# Their Write tool's second sanctioned target is a new <agent>-*.md file the caller creates with the Write tool directly inside this session's /review-pr findings directory under /tmp.
 # A Bash write is sanctioned only under /tmp.
 # /dev/null is also exempt from the Bash write-target scan.
 # Per the harness's own agent listing, which this repo cannot pin, `Plan` is the only roster member holding Bash.
