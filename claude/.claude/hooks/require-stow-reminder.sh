@@ -6,9 +6,7 @@
 # changes `install.sh` (GH-465), require the PR
 # body (or a referenced body-source file, or a referenced commit message via
 # `--fill`) to mention `install.sh` or `stow`.
-# Reason: on a standard install, `install.sh` pre-creates `~/.claude` as a
-# real directory.
-# There, a new top-level entry under `claude/.claude/` always needs a re-run.
+# A new top-level entry under `claude/.claude/` needs a re-run.
 # A file nested under a top-level entry that exists on `main` arrives on
 # `git pull`, so it does not trip the gate.
 # `install.sh` itself is not stowed and only takes effect when invoked, so

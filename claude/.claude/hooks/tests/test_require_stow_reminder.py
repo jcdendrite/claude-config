@@ -400,10 +400,11 @@ class TestRequireStowReminder:
         assert "changes install.sh" in reason
 
     def test_failed_cat_file_probe_counts_added_paths_as_new_entries(self, stow_repo, tmp_path):
-        """`main` resolves but `git cat-file` fails with exit 124, a cap-kill status git never
-        returns for a missing path, so the probe cannot confirm any entry exists on `main` and
-        every added path's entry counts as new, including the nested add under `hooks/` that
-        a working probe would allow."""
+        """`main` resolves but the stubbed `git cat-file` exits 124, a cap-kill status git never
+        returns for a missing path.
+        A probe that fails cannot confirm any entry exists on `main`.
+        So every added path's entry counts as new.
+        That includes the nested add under `hooks/` that a working probe would allow."""
         real_git = shutil.which("git")
         assert real_git
         stub_dir = tmp_path / "stub-bin-git"
