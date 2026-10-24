@@ -856,6 +856,27 @@ def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
     return rec
 
 
+# Placeholder envelope: one element per line, as the harness emits it, so a match crosses the regex's re.DOTALL span.
+_TASK_NOTIFICATION_TEXT = (
+    "<task-notification>\n"
+    "<task-id>task-1</task-id>\n"
+    "<tool-use-id>toolu_placeholder</tool-use-id>\n"
+    "<output-file>/tmp/placeholder-task.output</output-file>\n"
+    "<status>completed</status>\n"
+    "<summary>background task finished</summary>\n"
+    "<result>Placeholder reviewer report.\n"
+    "\n"
+    "Second paragraph after a blank line.</result>\n"
+    "<usage><total_tokens>1</total_tokens></usage>\n"
+    "</task-notification>"
+)
+
+
+def _task_notification_msg(*, branch: str = "main", ts: str | None = None) -> dict:
+    """The user record the harness writes when a background task or subagent finishes."""
+    return {**_user_msg(_TASK_NOTIFICATION_TEXT, branch=branch, ts=ts), "origin": {"kind": "task-notification"}}
+
+
 def _bash_use(tool_id: str, command: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
 

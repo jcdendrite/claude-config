@@ -21,10 +21,11 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     - REVIEW OUTPUT: the last main-thread assistant turn with non-empty text in the
       window between the invocation and the next fresh user prompt (or next matching
       invocation, whichever comes first).
-    - USER RESPONSE: the first fresh user prompt text after that window closes.
+    - USER RESPONSE: the record at that window's end, when it is a fresh user prompt.
 
     Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
-    and isCompactSummary injections when locating the user response.
+    isCompactSummary injections, and task notifications when locating the user
+    response.
 
     --branches filters on the invocation record's attributed branch
     (scope._attributed_branch), not a single session-wide branch — a session

@@ -23,7 +23,15 @@ from pathlib import Path
 import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
 
-from .conftest import _dollars_per_output_token, _priced, _record_ids_in_dollars, _signed_priced_turn, _write_jsonl
+from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
+    _dollars_per_output_token,
+    _priced,
+    _record_ids_in_dollars,
+    _signed_priced_turn,
+    _task_notification_msg,
+    _write_jsonl,
+)
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -166,6 +174,11 @@ def _user_prompt(position: int, text: str = "carry on", **kwargs) -> dict:
     rec = _plain("user", position, **kwargs)
     rec["message"] = {"content": text}
     return rec
+
+
+def _task_notification_record(position: int, **kwargs) -> dict:
+    """The conftest `_task_notification_msg` shape (envelope text plus `origin`), with this file's position-stamped fields."""
+    return {**_user_prompt(position, _TASK_NOTIFICATION_TEXT, **kwargs), "origin": _task_notification_msg()["origin"]}
 
 
 def _slash_invocation(position: int, skill: str = "review-pr", **kwargs) -> dict:
@@ -786,6 +799,29 @@ class TestReviewPrWindows:
 
         assert window.close_idx == 3
         assert window.fallback_close_kind is None
+        assert window.end_ts == float("inf")
+
+    def test_a_task_notification_after_the_finish_does_not_close_the_window(self):
+        """GH-1312: the harness's delivery of a finished background task is not the human speaking."""
+        records = [
+            _slash_invocation(1),
+            _acquire_record(2),
+            _finish_record(3),
+            _task_notification_record(4),
+            _user_prompt(5),
+        ]
+
+        (window,) = period_cost._review_pr_windows(records)
+
+        assert window.close_idx == 4
+        assert window.end_ts == _epoch(5)
+
+    def test_a_task_notification_at_session_end_closes_the_finished_window_there(self):
+        records = [_slash_invocation(1), _acquire_record(2), _finish_record(3), _task_notification_record(4)]
+
+        (window,) = period_cost._review_pr_windows(records)
+
+        assert window.close_idx == 4
         assert window.end_ts == float("inf")
 
     def test_a_finished_window_closes_at_a_following_skill_invocation_which_opens_a_second_window(self):
