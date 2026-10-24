@@ -793,7 +793,7 @@ def _angle_block_text(agent_text: str, angle_name: str) -> str | None:
     before the next angle header or the end of the section. Assertion 9's
     hash check pins this slice: it is whitespace-collapsed and hashed with
     SHA-256. Rewording the block therefore changes the hash on purpose.
-    Returns None when the angle isn't found or the section is missing.
+    Returns None when the angle isn't found among the section's headers.
 
     A genuine angle header always opens a new paragraph, so it is preceded
     by the section start or a blank line. Requiring that excludes a decoy:
@@ -1987,6 +1987,22 @@ class TestFaultInjection:
         assert "do not also appear in 'must_pass'" in violations[0]
         assert "30" in violations[0]
 
+    def test_paragraph_readability_fixture_detects_trailing_digit_literal(self) -> None:
+        """must_pass's digit run is renumbered rather than dropped -- '30
+        days' corrupted to '305 days'. Embedding '30' in '305' puts the
+        longer alnum run on the trailing side, unlike the sibling test's
+        leading-side '130' form. Bare substring containment would let '30'
+        match inside '305' and miss this; the boundary-aware check's
+        trailing lookahead must still catch it."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass"] = fixture["must_pass"].replace("30 days", "305 days")
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "do not also appear in 'must_pass'" in violations[0]
+        assert "30" in violations[0]
+
     def test_paragraph_readability_fixture_detects_must_flag_with_no_literal(self) -> None:
         """must_flag carries neither a backticked span nor a digit run --
         two separate violations, one per missing literal class."""
@@ -2261,8 +2277,9 @@ class TestFaultInjection:
     def test_paragraph_readability_fixture_accepts_comma_led_so_cause_and_effect_carve_out(
         self,
     ) -> None:
-        """A cause_and_effect excerpt using the comma-led "so" form passes --
-        only "because" was previously exercised in the accepting branch."""
+        """A cause_and_effect excerpt using the comma-led "so" form passes,
+        exercising the causal-marker regex's comma-led alternative
+        separately from its "because" alternative."""
         fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
         fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
         so_excerpt = "A write must hold the lock, so two writers can't corrupt it."
@@ -2276,8 +2293,9 @@ class TestFaultInjection:
     def test_paragraph_readability_fixture_accepts_comma_led_but_claim_and_hedge_carve_out(
         self,
     ) -> None:
-        """A claim_and_hedge excerpt using the comma-led "but" form passes --
-        only "though" was previously exercised in the accepting branch."""
+        """A claim_and_hedge excerpt using the comma-led "but" form passes,
+        exercising the hedge-marker regex's "but" alternative separately
+        from its "though" alternative."""
         fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
         fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
         but_excerpt = "The design is solid, but edge cases remain untested."
