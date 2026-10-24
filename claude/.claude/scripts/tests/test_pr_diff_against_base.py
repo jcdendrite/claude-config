@@ -3117,7 +3117,7 @@ _CORE_FAILURES = [
     ("core-numstat", ("git", {"subcommand": "diff", "match": ["--numstat"]}), "staged", "core-numstat"),
     (
         "expect-diff-recompute",
-        ("git", {"subcommand": "diff", "absent": ["--raw", "--numstat", "--full-index"]}),
+        ("git", {"subcommand": "diff-tree"}),
         "expect-diff",
         "expect-diff",
     ),
@@ -3157,8 +3157,7 @@ def _repo_for_failure(tmp_path: Path, source: str) -> tuple[Path, tuple[str, ...
     if source == "expect-diff":
         repo = _small_repo(tmp_path, "cumulative")
         handed = tmp_path / "handed.diff"
-        merge_base = _git_out(repo, "merge-base", "origin/main", "HEAD").stdout.decode().strip()
-        handed.write_text(_git_out(repo, "diff", f"{merge_base}...HEAD").stdout.decode())
+        handed.write_bytes(_default_mode_stdout(repo, _context_env(tmp_path)))
         return repo, ("--expect-diff", str(handed))
     return _small_repo(tmp_path, "staged" if source == "working-tree" else source), _SOURCE_ARGS[source]
 
@@ -3876,9 +3875,11 @@ class TestIgnoreCheckAndOutputTargets:
 # The cap, in seconds, each git subcommand runs under (docs/scripts.md): the core diff calls and ls-files 60 s, enrichment and
 # merge-base 20 s, and the quick calls 5 s.
 _CAP_BY_SUBCOMMAND = {
-    "diff": 60, "ls-files": 60, "log": 20, "cat-file": 20, "merge-base": 20,
+    "diff": 60, "diff-tree": 60, "ls-files": 60, "log": 20, "cat-file": 20, "merge-base": 20,
     "rev-parse": 5, "symbolic-ref": 5, "check-ignore": 5,
 }
+# The subcommands whose capped command is not `git` itself: the shared cumulative-diff command starts with `env`.
+_CAPPED_PROGRAM_BY_SUBCOMMAND = {"diff-tree": "env"}
 
 
 class TestCapsTiedToCalls:
@@ -3902,11 +3903,14 @@ class TestCapsTiedToCalls:
 
         assert result.returncode == 0, result.stderr
         started = (bin_dir / "scaled-timeout-markers" / "started").read_text().split("\n")[:-1]
-        expected_git = sorted(f"{_CAP_BY_SUBCOMMAND[call['subcommand']]} git" for call in shim.calls())
-        assert sorted(entry for entry in started if entry.endswith(" git")) == expected_git
+        expected_git = sorted(
+            f"{_CAP_BY_SUBCOMMAND[call['subcommand']]} {_CAPPED_PROGRAM_BY_SUBCOMMAND.get(call['subcommand'], 'git')}"
+            for call in shim.calls()
+        )
+        assert sorted(entry for entry in started if entry.endswith((" git", " env"))) == expected_git
         expected_gh = ["15 gh"] if source in ("cumulative", "expect-diff") else []
         assert sorted(entry for entry in started if entry.endswith(" gh")) == expected_gh
-        assert all(entry.endswith((" git", " gh")) for entry in started)
+        assert all(entry.endswith((" git", " env", " gh")) for entry in started)
 
 
 # --- environment and configuration the script must neutralize -------------------------------------------------------------
@@ -5202,23 +5206,69 @@ class TestExpectDiff:
         header, _rows = _parse_index(_lane_files(result, "staff-sdet")["index"])
         assert header["mode"] == "cumulative" and header["head"] != "-"
 
-    def test_an_exported_diff_opts_that_produced_the_handed_file_reaches_the_recompute_and_does_not_mismatch(self, tmp_path):
-        """default mode runs under the caller's environment, so the recompute must too. Without the variable the same handed file
-        is a genuine mismatch, which shows the restored variable is what makes the round pass."""
+    @pytest.mark.parametrize(
+        ("setting_kind", "key", "value"),
+        [
+            pytest.param("env", "GIT_DIFF_OPTS", "--unified=5", id="exported-git-diff-opts"),
+            pytest.param("config", "diff.noprefix", "true", id="diff-noprefix"),
+            pytest.param("config", "diff.context", "0", id="diff-context-zero"),
+            pytest.param("config", "diff.renames", "false", id="diff-renames-false"),
+            pytest.param("config", "color.ui", "always", id="color-ui-always"),
+            pytest.param("config", "diff.external", "{script}", id="diff-external"),
+        ],
+    )
+    def test_a_handed_file_written_under_a_porcelain_diff_setting_does_not_mismatch(self, tmp_path, setting_kind, key, value):
+        """Default mode and the recompute both run the one shared plumbing command, which ignores diff.* and color.* config and
+        external diff drivers and sets its own GIT_DIFF_OPTS=-u3 over an exported value, so none of these settings reaches either
+        side. If the recompute ran a different command from default mode, a setting that reached only one of them would print a
+        false DIFF_MISMATCH."""
         repo = _small_repo(tmp_path, "cumulative")
-        hostile_env = _context_env(tmp_path, GIT_DIFF_OPTS="--unified=5")
-        clean_env = _context_env(tmp_path)
-        handed = tmp_path / "handed.diff"
-        handed.write_bytes(_default_mode_stdout(repo, hostile_env))
-        assert handed.read_bytes() != _default_mode_stdout(repo, clean_env), "the variable changes default mode's diff"
+        recording_script = tmp_path / "external-diff-recording.sh"
+        ran_log = tmp_path / "external-diff-ran.log"
+        ran_log.write_text("")
+        recording_script.write_text(f"#!/bin/sh\nprintf 'ran\\n' >> {shlex.quote(str(ran_log))}\n")
+        recording_script.chmod(0o755)
+        env = _context_env(tmp_path)
+        plain_diff_args = ("diff", "origin/main...HEAD", "--")
+        plain_diff_before = _git_out(repo, *plain_diff_args, env=env).stdout
+        handed_before_setting = _default_mode_stdout(repo, env)
 
-        listing_id, _count, _rows = _parse_listing(_run_context(repo, hostile_env, "--expect-diff", str(handed), list_only=True))
-        result = _run_context(repo, hostile_env, "--expect-diff", str(handed), listing=listing_id, lanes=("staff-sdet",))
-        without_the_variable = _run_context(repo, clean_env, "--expect-diff", str(handed), list_only=True)
+        if setting_kind == "env":
+            env = _context_env(tmp_path, **{key: value})
+        else:
+            _git_out(repo, "config", key, value.format(script=recording_script))
+        plain_diff_after = _git_out(repo, *plain_diff_args, env=env).stdout
+        assert plain_diff_after != plain_diff_before, "control: the setting changes a plain git diff"
+        if key == "diff.external":
+            assert ran_log.read_text() != "", "control: a plain git diff runs the recording script"
+            ran_log.write_text("")
+
+        handed = tmp_path / "handed.diff"
+        handed.write_bytes(_default_mode_stdout(repo, env))
+        assert handed.read_bytes() == handed_before_setting, "the setting does not reach default mode's diff"
+        listing_id, _count, _rows = _parse_listing(_run_context(repo, env, "--expect-diff", str(handed), list_only=True))
+        result = _run_context(repo, env, "--expect-diff", str(handed), listing=listing_id, lanes=("staff-sdet",))
 
         assert result.returncode == 0, result.stderr
         assert "DIFF_MISMATCH:" not in result.stderr
-        assert without_the_variable.returncode == 1 and "DIFF_MISMATCH:" in without_the_variable.stderr
+        if key == "diff.external":
+            assert ran_log.read_text() == "", "no step of the round ran the external diff"
+
+    def test_the_recompute_issues_the_same_diff_tree_argv_as_default_mode(self, tmp_path):
+        """Default mode wrote the handed file, so a recompute that issues any other diff-tree argv prints a false
+        DIFF_MISMATCH."""
+        repo = _small_repo(tmp_path, "cumulative")
+        shim = GitShim(tmp_path / "git_shim")
+        env = shim.env(_context_env(tmp_path))
+        handed = tmp_path / "handed.diff"
+        handed.write_bytes(_default_mode_stdout(repo, env))
+
+        result = _run_context(repo, env, "--expect-diff", str(handed), list_only=True)
+
+        assert result.returncode == 0, result.stderr
+        diff_tree_argvs = [call["argv"] for call in shim.calls() if call["subcommand"] == "diff-tree"]
+        assert len(diff_tree_argvs) == 2, diff_tree_argvs
+        assert diff_tree_argvs[0] == diff_tree_argvs[1]
 
     def test_a_handed_file_that_differs_by_one_byte_prints_diff_mismatch_in_both_calls(self, tmp_path):
         repo = _small_repo(tmp_path, "cumulative")
@@ -5311,7 +5361,7 @@ class TestExpectDiff:
         handed = tmp_path / "handed.diff"
         handed.write_bytes(_default_mode_stdout(repo, base_env))
         shim = GitShim(tmp_path / "git_shim")
-        shim.add_rule(subcommand="diff", absent=["--raw", "--numstat", "--full-index"], mode="fail", status=128)
+        shim.add_rule(subcommand="diff-tree", mode="fail", status=128)
 
         result = _run_context(repo, shim.env(base_env), "--expect-diff", str(handed), list_only=True)
 
@@ -5323,12 +5373,14 @@ class TestExpectDiff:
 
 class TestOutputHygieneAndTrap:
     def test_a_warning_on_every_git_diff_call_leaves_only_token_lines_in_an_expect_diff_round(self, tmp_path):
-        """The four diff call sites (raw, numstat, shared, recompute) redirect their own stderr, so a warning never leaks."""
+        """The diff call sites (raw, numstat, shared, diff-tree recompute) redirect their own stderr, so a warning never leaks."""
         repo = _small_repo(tmp_path, "cumulative")
         base_env = _context_env(tmp_path)
         handed = tmp_path / "handed.diff"
         handed.write_bytes(_default_mode_stdout(repo, base_env))
-        shim = GitShim(tmp_path / "git_shim").add_rule(subcommand="diff", mode="warn", stderr="warning: noisy diff\n")
+        shim = GitShim(tmp_path / "git_shim")
+        shim.add_rule(subcommand="diff", mode="warn", stderr="warning: noisy diff\n")
+        shim.add_rule(subcommand="diff-tree", mode="warn", stderr="warning: noisy diff\n")
         env = shim.env(base_env)
         listing_id = _parse_listing(_run_context(repo, env, "--expect-diff", str(handed), list_only=True))[0]
 
@@ -5338,6 +5390,7 @@ class TestOutputHygieneAndTrap:
         assert result.returncode == 0, result.stderr
         assert "noisy" not in result.stderr
         assert sum(1 for call in shim.calls() if call["subcommand"] == "diff") >= 4
+        assert any(call["subcommand"] == "diff-tree" for call in shim.calls()), "the recompute's call reached the shim"
 
     def test_a_warning_on_every_git_log_call_leaves_only_token_lines(self, tmp_path):
         repo = _history_repo(tmp_path, 2)

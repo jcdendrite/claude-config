@@ -44,6 +44,23 @@ _resolve_base_ref() {
   return 1
 }
 
+# Fills CUMULATIVE_DIFF_ARGV with the command that prints the cumulative diff from merge-base "$1" to HEAD.
+# Default mode and the --context-files --expect-diff recompute both run it, so no diff config or GIT_DIFF_OPTS value can make the handed file and the recompute differ.
+# The command uses plumbing `git diff-tree`, so porcelain-only diff config
+# (e.g. diff.relative, diff.submodule, diff.context) does not change its output.
+# Observed on git 2.56.0, and pinned by the tests in test_pr_diff_against_base.py.
+# See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md for the residual inputs.
+# GIT_DIFF_OPTS=-u3 fixes the context width at git's default of 3 lines: plumbing still reads GIT_DIFF_OPTS,
+# so only setting the variable itself pins it.
+# --ignore-submodules=none keeps a .gitmodules `ignore` setting from dropping a gitlink change.
+# --no-color and --no-ext-diff are defense in depth: plumbing emits neither color nor external-diff output.
+# The trailing `--` ends revision parsing, so git skips its revision-versus-filename ambiguity check.
+# Without it, a file named `HEAD` in the cwd makes git exit 128 ("ambiguous argument").
+# The leading `env` makes the array a real program, which `_lib_capped_for` needs for `timeout`.
+_cumulative_diff_argv() {
+  CUMULATIVE_DIFF_ARGV=(env GIT_DIFF_OPTS=-u3 git diff-tree -r -p -M --no-color --no-ext-diff --ignore-submodules=none "$1" HEAD --)
+}
+
 # ---------------------------------------------------------------- --context-files mode
 # The functions down to the argument loop belong to this mode; the other modes never call them.
 
@@ -54,8 +71,6 @@ CONTEXT_TMP_DIR=''
 CONTEXT_LANE_TEMPS=()   # lane output temps under agent-reviews/, removed by recorded path
 CONTEXT_MOVED_FILES=()  # final files already moved into place, removed again unless the call completes
 CONTEXT_COMPLETED=0     # 1 only once every file is in place and every token is printed
-CONTEXT_DIFF_OPTS_SET=0 # whether the caller exported GIT_DIFF_OPTS, which the mode unsets for every call but the --expect-diff recompute
-CONTEXT_DIFF_OPTS=''
 BASE_REF=''
 BASE_REF_GUESSED=0
 
@@ -166,11 +181,6 @@ _context_validate_args() {
 _context_prepare() {
   local physical_tmp_base='' physical_root=''
   # Pathspec variables change what git check-ignore and git log select, and GIT_DIFF_OPTS overrides the pinned -U3, so they are unset before the first git call.
-  # The --expect-diff recompute alone gets GIT_DIFF_OPTS back, because the handed file was produced under the caller's environment.
-  if [ -n "${GIT_DIFF_OPTS+set}" ]; then
-    CONTEXT_DIFF_OPTS_SET=1
-    CONTEXT_DIFF_OPTS=$GIT_DIFF_OPTS
-  fi
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_DIFF_OPTS
   if [ "$CONTEXT_SOURCE" = cumulative ] || [ "$CONTEXT_SOURCE" = expect-diff ]; then
     CONTEXT_STEP='base-resolution'
@@ -206,7 +216,6 @@ _context_prepare() {
 # Runs the core git calls into temp files and fills the PR_DIFF_ROW_* arrays; prints DIFF_EMPTY and exits 0 when nothing changed.
 _context_collect_rows() {
   local head_status=0 recompute_status=0 handed_status=0 handed='' recomputed=''
-  local -a recompute_env=()
   DIFF_PIN=(
     --no-color --no-ext-diff --no-textconv --no-relative -M
     --src-prefix=a/ --dst-prefix=b/ --submodule=short --ignore-submodules=none
@@ -252,11 +261,9 @@ _context_collect_rows() {
   fi
   if [ "$CONTEXT_SOURCE" = expect-diff ]; then
     CONTEXT_STEP='expect-diff'
-    # The handed file was written from default mode's own command substitution, so the same capture here agrees on the bytes it drops.
-    if [ "$CONTEXT_DIFF_OPTS_SET" -eq 1 ]; then
-      recompute_env=(env "GIT_DIFF_OPTS=$CONTEXT_DIFF_OPTS")
-    fi
-    { recomputed=$(_lib_capped_for "$CONTEXT_DIFF_CALL_SECONDS" "${recompute_env[@]}" git diff "$MERGE_BASE...HEAD" 2>/dev/null); } 2>/dev/null || recompute_status=$?
+    # This runs default mode's own command and capture, so no diff setting separates the two and both drop the same NULs.
+    _cumulative_diff_argv "$MERGE_BASE"
+    { recomputed=$(_lib_capped_for "$CONTEXT_DIFF_CALL_SECONDS" "${CUMULATIVE_DIFF_ARGV[@]}" 2>/dev/null); } 2>/dev/null || recompute_status=$?
     if [ "$recompute_status" -ne 0 ]; then
       _context_halt expect-diff "$recompute_status" ""
     fi
@@ -1054,17 +1061,8 @@ else
     exit 1
   fi
 
-  # The cumulative arm uses plumbing `git diff-tree`, so porcelain-only diff config
-  # (e.g. diff.relative, diff.submodule, diff.context) does not change the hashed text.
-  # Observed on git 2.56.0, and pinned by the tests in test_pr_diff_against_base.py.
-  # See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md for the residual inputs.
-  # GIT_DIFF_OPTS=-u3 fixes the context width at git's default of 3 lines: plumbing still reads GIT_DIFF_OPTS,
-  # so only setting the variable itself pins it.
-  # --ignore-submodules=none keeps a .gitmodules `ignore` setting from dropping a gitlink change.
-  # --no-color and --no-ext-diff are defense in depth: plumbing emits neither color nor external-diff output.
-  # The trailing `--` ends revision parsing, so git skips its revision-versus-filename ambiguity check.
-  # Without it, a file named `HEAD` in the cwd makes git exit 128 ("ambiguous argument").
-  if ! DIFF_TEXT=$(GIT_DIFF_OPTS=-u3 git diff-tree -r -p -M --no-color --no-ext-diff --ignore-submodules=none "$MERGE_BASE" HEAD -- 2>/dev/null); then
+  _cumulative_diff_argv "$MERGE_BASE"
+  if ! DIFF_TEXT=$("${CUMULATIVE_DIFF_ARGV[@]}" 2>/dev/null); then
     printf 'pr-diff-against-base.sh: could not compute the diff against %s\n' "$MERGE_BASE" >&2
     exit 1
   fi
