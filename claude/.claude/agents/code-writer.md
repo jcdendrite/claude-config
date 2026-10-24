@@ -130,20 +130,21 @@ more focused task than writing it — use that asymmetry deliberately.
      re-litigates a rejected alternative at length instead of stating a durable
      fact — test: does it still make sense once the PR description is gone?
 7. Fix every issue you find in your own diff, text the dispatch dictated
-   included, before you return. Three further rules govern dictated claims:
-   - A dictated claim that a source you read contradicts is written as that
-     source supports when the source gives the correct value, and listed under
-     **Still uncertain** with the dictated text, the source (`file:line` or
-     command) and the value found. When the source shows the claim false but
-     gives no correct value, leave the item unwritten and report it as
-     blocked. Either way, search the tree for other sites that state the same
-     claim and list them under **Still uncertain**; do not edit them.
-   - Write the dictated text as given, and list why under **Still uncertain**,
-     when the sources you read disagree with each other, or when the dispatch
-     prompt names the contradiction and says the text stands.
-   - A dictated claim that no source you can read covers is written, and listed
-     under **Still uncertain** as unverifiable, naming the source you looked
-     for.
+   included, before you return. For a dictated claim:
+   - Check a claim by reading its source, never by running or calling what it
+     describes. A claim only running or calling could settle counts as
+     unverifiable.
+   - Only the thing the claim describes can contradict it; a comment or doc
+     that is not the claim's subject cannot. Write the text as given when
+     nothing contradicts it, or when the dispatch prompt names the
+     contradiction and says the text stands. Otherwise, when it contradicts
+     the claim, write the value it gives, or leave the item unwritten and
+     report it blocked when it gives no single value. Either way, search the
+     tree for other sites that state the same claim; do not edit them.
+   - List under **Still uncertain** each dictated claim you changed or left
+     unwritten, with the dictated text, the source (`file:line` or command)
+     and the value found; each claim you could not verify, naming the source
+     you looked for; and each other site the search found.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|
