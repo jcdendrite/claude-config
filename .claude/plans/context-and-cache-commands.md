@@ -107,8 +107,8 @@ Every module starts with its docstring, then `from __future__ import annotations
     - It runs `_run("transcript-analysis.py", command, "--help")`. It asserts exit 0, that `f"transcript-analysis.py {command}"` is in stdout (row 26), and that each flag token is in stdout.
     - Docstring: `"""Proves, in a fresh interpreter, that build_parser calls the context-distribution, context-composition, and cache-efficiency registrars, and that each registrar still adds its --no-redact flag and, where it has one, its --since flag."""`
   - Three per-case callables:
-    - `_assert_context_distribution_seeded_cells` asserts `"Sessions in scope: 1   Total priced dollars: 2.00"` is in stdout.
-    - `_assert_context_composition_seeded_cells` asserts `"Sequences scanned: 1   Turns scanned: 1"` is in stdout.
+    - `_assert_context_distribution_seeded_cells` makes two `re.search` assertions on stdout, each followed by a `(?=\s)` right boundary: `Sessions in scope: 1` and `Total priced dollars: 2\.00`.
+    - `_assert_context_composition_seeded_cells` makes two `re.search` assertions on stdout, each followed by a `(?=\s)` right boundary: `Sequences scanned: 1` and `Turns scanned: 1`.
     - `_assert_cache_efficiency_seeded_cells` asserts `_table_cols(stdout, header_contains="Thread", row_contains="main", occurrence=1)["Turns"] == "1"`. Two roots print three `Thread` headers, one per table, and `occurrence=1` reads the all-roots table (row 50).
   - `test_transcript_analysis_context_and_cache_subprocess_finds_seeded_session` is parametrized over `(command, expected_token, resolved_root_token, assert_seeded_cells)` with the same `ids`.
     - Its tokens are `## Context distribution report`, `## Context composition report`, and `## Cache efficiency by thread`, each printed by one handler only (row 25).
