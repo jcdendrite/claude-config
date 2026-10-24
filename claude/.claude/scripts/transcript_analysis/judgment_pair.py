@@ -23,9 +23,8 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
       invocation, whichever comes first).
     - USER RESPONSE: the record at that window's end, when it is a fresh user prompt.
 
-    Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
-    isCompactSummary injections, and task notifications when locating the user
-    response.
+    _is_fresh_user_prompt() decides where the window ends and so which record is
+    the user response; see its docstring for what it filters.
 
     --branches filters on the invocation record's attributed branch
     (scope._attributed_branch), not a single session-wide branch — a session

@@ -4,6 +4,7 @@ from transcript_analysis import judgment_pair
 
 from ._skill_helpers import _judgment_pair_args, _review_asst, _user_reply
 from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
     _agent_use,
     _asst,
     _bash_use,
@@ -162,6 +163,20 @@ class TestJudgmentPair:
         out = capsys.readouterr().out
         assert "(no user response — end of session)" in out
         assert "<task-notification>" not in out
+
+    def test_prompt_with_envelope_beside_human_text_is_printed_as_the_user_response(self, fake_projects, capsys):
+        """GH-1312: a prompt with a task-notification envelope beside human text is still a fresh prompt, so it is
+        printed as recorded (envelope included) as the USER RESPONSE; a predicate keyed on envelope presence would skip it."""
+        recorded_prompt = f"{_TASK_NOTIFICATION_TEXT}\n\nthanks, merge it"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+            _review_asst("Looks good overall.", "2026-05-20T10:01:00.000Z"),
+            _user_reply(recorded_prompt),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert f"--- USER RESPONSE ---\n{recorded_prompt}\n---" in out
+        assert "(no user response — end of session)" not in out
 
     def test_ismeta_user_not_taken_as_response(self, fake_projects, capsys):
         """A user record with isMeta=True is skipped; the next real user turn is used."""
