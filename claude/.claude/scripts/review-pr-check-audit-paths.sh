@@ -11,11 +11,12 @@
 # - It guards a cooperative session that lost an AUDIT_FINDING line or was
 #   steered by PR text into dropping one. It does not defend against a session
 #   that rewrites provenance.
-# - Path names are attacker-chosen, so it compares each name only as its
-#   ASCII-escaped span, echoes at most REVIEW_PR_AUDIT_MATCH_LINE_LIMIT spans,
-#   each cut to REVIEW_PR_AUDIT_MISSING_SPAN_ECHO_LIMIT characters, and prints
-#   spans only after the directive sentence and between the BEGIN/END UNTRUSTED
-#   FILE NAMES lines, because their text is attacker-chosen.
+# - Path names are attacker-chosen.
+#   - It compares each name only as its ASCII-escaped span.
+#   - It echoes at most REVIEW_PR_AUDIT_MATCH_LINE_LIMIT spans, each cut to
+#     REVIEW_PR_AUDIT_MISSING_SPAN_ECHO_LIMIT characters.
+#   - It prints spans only after the directive sentence and between the
+#     BEGIN/END UNTRUSTED FILE NAMES lines.
 # - It checks presence only, not the tier or dismissal of a finding, or whether
 #   the span renders. A span inside an HTML comment passes.
 set -euo pipefail
