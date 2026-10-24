@@ -10845,6 +10845,46 @@ class TestTrialMergeVerdict:
         assert result.returncode == 0
         assert result.stdout == "Trial merge: CONFLICT in: added.txt\n"
 
+    def test_cleanly_merged_path_with_a_forged_stage_line_in_its_name_is_not_reported(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """Without --no-messages, the messages section prints a path unquoted, so
+        a newline in a cleanly merged path's name would forge a stage line there."""
+        forged_stage_line = "100644 " + "a" * 40 + " 1\tFORGED"
+        forged_stage_line_path = "notes\n" + forged_stage_line
+        # Both branches edit the forged-name path in non-overlapping hunks, so git
+        # content-merges it cleanly and prints an "Auto-merging" message for it.
+        # a.txt conflicts on purpose, because merge-tree prints the messages section
+        # by default only when the merge has conflicts.
+        base_lines = [f"line {number}\n" for number in range(1, 6)]
+        upstream_lines = ["line 1 upstream\n", *base_lines[1:]]
+        feature_lines = [*base_lines[:4], "line 5 feature\n"]
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path,
+            {"a.txt": "base\n", forged_stage_line_path: "".join(base_lines)},
+            {"a.txt": "upstream\n", forged_stage_line_path: "".join(upstream_lines)},
+            {"a.txt": "feature\n", forged_stage_line_path: "".join(feature_lines)},
+        )
+        # The merge exits 1 on conflict, so _run_git (check=True) does not fit.
+        messages_merge = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "upstream", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert messages_merge.returncode == 1, (
+            "the fixture must contain a real conflict, or merge-tree omits the messages section"
+        )
+        assert forged_stage_line in messages_merge.stdout.splitlines(), (
+            "the forged line is missing from raw merge-tree output: either git changed how "
+            "the messages section prints paths, or the fixture lost one of its preconditions, "
+            "so this test would pass without --no-messages"
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: a.txt\n"
+
     def test_unknown_upstream_ref_fails_with_one_stderr_line(
         self, tmp_path: Path, shell_mode: str
     ) -> None:

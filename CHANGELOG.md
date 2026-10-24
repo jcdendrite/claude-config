@@ -388,7 +388,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`). `install.sh` refuses git 2.40 through 2.42 although the code runs on them.
   - `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read.
   - CI tests the floor on one pinned Ubuntu 24.04 build of git 2.43.
-  - Nothing checks the version at runtime. Below git 2.38, the commit gates mid-merge, rebase, cherry-pick or revert fall back to a plain `git diff --cached`, which over-gates. On 2.38 and 2.39, rebase, cherry-pick and revert do (merge does not, because its `merge-tree` call passes no `--merge-base`).
+  - Nothing checks the version at runtime. Below git 2.38, the commit gates mid-merge, rebase, cherry-pick or revert fall back to a plain `git diff --cached`, which over-gates. On 2.38 and 2.39, rebase, cherry-pick and revert also fall back. Merge does not, because its `merge-tree` call passes no `--merge-base`.
   - The messages, comments and tests that served an older git are gone. The `skill-management` plugin's description now names the floor. No code changed there, so this is a patch bump (5.0.0 → 5.0.1) and updating it is optional.
   - **Migration:** from a terminal, run `git --version`. If it is below 2.43, install a newer git first on PATH (`brew install git` on macOS or Linux, or a distribution package of 2.43 or newer), restart Claude Code from a shell where that git resolves, and re-run `./install.sh`.
 - **macOS system bash 3.2 is no longer supported: hooks, plugins and scripts now need bash 5.2 or newer first on the PATH Claude Code starts with.**

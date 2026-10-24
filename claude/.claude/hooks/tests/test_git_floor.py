@@ -371,6 +371,8 @@ def _sha256_of_fixture(deb_file: str) -> str:
 
 
 # Stubs for the commands the pin step calls. `curl` supports only the flags the step passes and fails loudly on any other.
+# `sudo` accepts only `apt-get` and `apt-mark`, running the sibling stub of that name,
+# and exits 2 on any other command or flag form (such as `-n` or `env`).
 _CURL_STUB = """#!/bin/bash
 printf 'curl %s\\n' "$*" >> "$STUB_LOG"
 if [ -n "${STUB_CURL_EXIT_STATUS:-}" ]; then
@@ -393,7 +395,10 @@ _LOGGING_STUB = """#!/bin/bash
 printf '%s %s\\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
 """
 _SUDO_STUB = """#!/bin/bash
-exec "$@"
+case "$1" in
+  apt-get|apt-mark) exec "${0%/*}/$1" "${@:2}" ;;
+  *) echo "sudo stub: unstubbed command $1" >&2; exit 2 ;;
+esac
 """
 _GIT_VERSION_STUB = """#!/bin/bash
 echo 'git version 2.50.0'

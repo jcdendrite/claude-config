@@ -1369,7 +1369,8 @@ _lib_default_branch_from_origin_head() {
 _lib_trial_merge_verdict() {
   local upstream_ref="$1"
   local merge_output merge_status first_line conflict_paths git_version
-  if merge_output=$(git merge-tree --write-tree "$upstream_ref" HEAD 2>/dev/null); then
+  # --no-messages: the messages section prints paths unquoted, so a newline in a path could forge a stage line there.
+  if merge_output=$(git merge-tree --write-tree --no-messages "$upstream_ref" HEAD 2>/dev/null); then
     merge_status=0
   else
     merge_status=$?
