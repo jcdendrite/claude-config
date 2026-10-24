@@ -92,7 +92,7 @@ def commit_new_toplevel_file(repo: Path, name: str) -> None:
 
 def commit_inside_existing_toplevel(repo: Path) -> None:
     """Add a new file inside the existing `hooks/` directory. The top-level
-    entry exists on main, so the file arrives on `git pull`."""
+    entry exists on main, so no reminder is raised."""
     (repo / "claude" / ".claude" / "hooks" / "bar.md").write_text("# new hook doc\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "add hook doc bar"], cwd=repo, check=True)
@@ -241,8 +241,8 @@ class TestRequireStowReminder:
         ],
     )
     def test_new_file_inside_existing_toplevel_without_marker_allowed(self, stow_repo, commit_change):
-        """A new file under a top-level entry that exists on main arrives on
-        `git pull`, so it raises no reminder."""
+        """A new file under a top-level entry that exists on main raises no
+        reminder."""
         commit_change(stow_repo)
         cmd = "gh pr create --title T --body 'no marker here'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
@@ -598,6 +598,104 @@ class TestRequireStowReminder:
         with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
             decision = run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
         assert decision == "deny"
+
+    @pytest.mark.timing
+    @pytest.mark.parametrize(
+        ("killed_git_subcommand", "commit_change", "expected_decision"),
+        [
+            pytest.param("cat-file", commit_inside_existing_toplevel, "deny", id="cat-file-probe-killed-counts-as-new"),
+            pytest.param(
+                "diff",
+                lambda repo: commit_new_toplevel_dir(repo, "agents"),
+                "allow",
+                id="added-path-diff-killed-fails-open",
+            ),
+        ],
+    )
+    def test_git_call_cap_kill_resolves_per_header(
+        self, stow_repo, tmp_path, killed_git_subcommand, commit_change, expected_decision
+    ):
+        """A capped `git` call that the cap kills (exit 124) resolves per the header.
+        A killed `cat-file` probe counts its top-level entry as new, although `main` has it, so the gate denies.
+        A killed added-path `diff` yields no paths, although a new entry exists, so the gate fails open and allows.
+        The shim sleeps past the cap only on the targeted call, then runs the real git."""
+        commit_change(stow_repo)
+        cmd = "gh pr create --title T --body 'no marker here'"
+
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-git"
+        stub_dir.mkdir()
+        sleep_seconds = scaled_shim_sleep(5) if write_scaled_timeout_shim(stub_dir) else 5
+        # The install.sh probe also runs `git diff`, so the diff arm matches on the added-path filter.
+        killed_call_match = {
+            "cat-file": '[ "$1" = cat-file ]',
+            "diff": '[ "$1" = diff ] && [[ " $* " == *" --diff-filter=A "* ]]',
+        }[killed_git_subcommand]
+        fake_git = stub_dir / "git"
+        fake_git.write_text(
+            "#!/bin/bash\n"
+            f"if {killed_call_match}; then\n"
+            f"  sleep {sleep_seconds}\n"
+            "fi\n"
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="git"):
+            decision = run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
+        assert decision == expected_decision
+
+    @pytest.mark.timing
+    def test_killed_added_path_diff_counts_only_the_complete_paths_it_printed(self, stow_repo, tmp_path):
+        """The shim prints one complete NUL-terminated added path, then a truncated path with no NUL.
+        The shim then sleeps past the cap.
+        The cap kills the added-path `git diff` mid-output.
+        The hook counts the complete path's top-level entry and denies naming it.
+        The hook does not count the truncated path, so a read that kept the partial tail would name it.
+        Neither entry exists on `main`, so a probe of the truncated name would count it as new."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        for entry_name in ("agents", "rule"):
+            probe_on_main = subprocess.run(
+                ["git", "cat-file", "-e", f"main:claude/.claude/{entry_name}"], cwd=stow_repo, capture_output=True, check=False
+            )
+            assert probe_on_main.returncode != 0, f"fixture: {entry_name} must be absent from main"
+        cmd = "gh pr create --title T --body 'no marker here'"
+
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-git"
+        stub_dir.mkdir()
+        sleep_seconds = scaled_shim_sleep(5) if write_scaled_timeout_shim(stub_dir) else 5
+        # The install.sh probe also runs `git diff`, so the shim matches on the added-path filter.
+        fake_git = stub_dir / "git"
+        fake_git.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = diff ] && [[ " $* " == *" --diff-filter=A "* ]]; then\n'
+            "  printf 'claude/.claude/agents/file.md\\0'\n"
+            "  printf 'claude/.claude/rule'\n"
+            f"  sleep {sleep_seconds}\n"
+            "fi\n"
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="git"):
+            reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
+        assert reason is not None
+        assert "adds new files" in reason
+        assert "`claude/.claude/agents`" in reason
+        assert "claude/.claude/rule" not in reason
 
     def test_body_file_pseudo_path_is_not_read(self, stow_repo, tmp_path):
         """A `/dev/fd/N` --body-file is skipped, not read: the marker in the

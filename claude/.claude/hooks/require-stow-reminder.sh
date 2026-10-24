@@ -7,8 +7,8 @@
 # body (or a referenced body-source file, or a referenced commit message via
 # `--fill`) to mention `install.sh` or `stow`.
 # A new top-level entry under `claude/.claude/` needs a re-run.
-# A file nested under a top-level entry that exists on `main` arrives on
-# `git pull`, so it does not trip the gate.
+# A file nested under a top-level entry that exists on `main` does not trip
+# the gate.
 # `install.sh` itself is not stowed and only takes effect when invoked, so
 # a change to it ships on `git pull` only if it removes stowed behavior,
 # with the replacement landing only after a manual re-run.
