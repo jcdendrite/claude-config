@@ -1482,6 +1482,7 @@ class TestReviewLedgerSettledAndDeferAppend:
 
         assert result.returncode == 2
         assert "./install.sh" in result.stderr
+        assert "Ask the user to run ./install.sh" in result.stderr
         assert "claude/.claude/scripts/stow-packages.sh" in result.stderr
         assert not _ledger_path(isolated_home, git_repo).exists()
 

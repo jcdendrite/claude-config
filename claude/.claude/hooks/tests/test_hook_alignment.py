@@ -2981,6 +2981,10 @@ class TestGateHookBehavior:
         _assert_blocks(result, hook.name, "missing-lib-sh", "could not source _lib.sh")
         if hook.parent == _MAIN_HOOKS_DIR and hook.name not in _BARE_BOOTSTRAP_GATE_HOOKS:
             assert _BOOTSTRAP_RUNBOOK_POINTER_SENTENCE in result.stderr, result.stderr
+            # The deny defers re-install advice to the runbook, so neither phrase
+            # may appear beside the runbook sentence.
+            assert "does not relink" not in result.stderr, result.stderr
+            assert "pick up hook files" not in result.stderr, result.stderr
 
     def test_deny_envelope_schema_shape(self, hook: Path) -> None:
         """Every deny envelope must match the required JSON schema shape.
