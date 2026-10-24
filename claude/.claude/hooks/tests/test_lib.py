@@ -21,7 +21,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -9362,19 +9361,6 @@ def _assert_valid_tree_oid(repo: Path, oid: str) -> None:
     assert result.returncode == 0, f"{oid!r} is not a valid tree oid"
 
 
-def _git_supports_sha256_object_format() -> bool:
-    """Probed once at collection time: whether this git binary can create a
-    SHA-256 repository (`git init --object-format=sha256`). Gates the
-    SHA-256 fixture below rather than failing outright on a git build too
-    old for the flag, or one built without SHA-256 support."""
-    with tempfile.TemporaryDirectory() as probe_dir:
-        result = subprocess.run(
-            ["git", "init", "-q", "--object-format=sha256", "-b", "main", probe_dir],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
-
 class TestGitInprogressStateDetection:
     def test_detects_merge(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -9671,10 +9657,6 @@ class TestGateDiffBaseTrustedAnchor:
         _assert_valid_tree_oid(clone, base_result.stdout)
 
 
-@pytest.mark.skipif(
-    not _git_supports_sha256_object_format(),
-    reason="git build does not support --object-format=sha256",
-)
 class TestGateDiffBaseSha256ObjectFormat:
     def test_sha256_repo_mid_revert_returns_valid_64_hex_tree_oid(
         self, tmp_path: Path

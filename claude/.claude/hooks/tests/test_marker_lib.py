@@ -1405,6 +1405,22 @@ class TestLibMainRepoRoot:
         assert result.returncode != 0
         assert result.stdout == ""
 
+    def test_fails_closed_when_the_repo_directory_name_contains_a_newline(self, tmp_path):
+        """A directory name with a newline makes `--git-common-dir` print a
+        two-line answer, which the single-line contract must reject."""
+        repo = tmp_path / "newline\nrepo"
+        try:
+            init_git_repo(repo)
+        except OSError as error:
+            pytest.skip(f"filesystem under tmp_path cannot hold a newline in a directory name: {error}")
+
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
+            cwd=repo, capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert result.stdout == ""
+
 
 class TestLibReviewPrMarkerRepoHash:
     """Direct coverage for _lib_review_pr_marker_repo_hash -- the one key every
