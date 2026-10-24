@@ -1,0 +1,132 @@
+# Task notifications are not fresh user prompts
+
+## Context
+
+Goal: a `<task-notification>` user record stops counting as a fresh user prompt, so it no longer closes review-round windows early and `review-round-cost` stops under-pricing inline rounds.
+
+Ask: GH-1312 ("transcript-analysis: task-notification records count as fresh user prompts, closing round windows early"), whose body is the spec: add `render._is_task_notification`, have `_is_fresh_user_prompt` reject it, keep `rearm_backtest`'s boundary set unchanged, add the listed tests, and update `docs/transcript-analysis.md` and `docs/transcript-analysis-architecture.md`.
+
+Why now: Claude Code backgrounds reviewer spawns and the `/ready-for-review` CI watch, so a notification that lands while the main thread is idle closes the round window at the first reviewer's return. Main-thread turns and later dispatches then fall outside the round. This also makes routing-off rounds look cheaper than routing-on rounds in a `review_orchestrator_routing` comparison.
+
+Decision the issue leaves to this plan: whether `evals/review_bench/mine_review_rounds.py` keeps a reviewer-scoped boundary once the window widens. A test pins the choice.
+
+## Approach
+
+`render.py` gets one base predicate and two predicates built on it. `_is_main_thread_user_text` is today's `_is_fresh_user_prompt` body under a new name. `_is_task_notification` is true when that text is nothing but complete `<task-notification>` envelopes, and `_is_fresh_user_prompt` becomes the base minus task notifications. `rearm_backtest` switches to the base, so its boundary set stays as it is by construction. The other four call sites keep calling `_is_fresh_user_prompt` and pick up the fix with no code edit. The review-bench miner gets no reviewer-scoped boundary: it follows the wider shared window, and two tests pin that.
+
+**Design.**
+
+1. `render.py`:
+   - `_is_main_thread_user_text(rec)` takes today's body and today's docstring filter list unchanged. Its docstring lead says it accepts a human prompt or a harness-delivered task notification.
+   - `_is_task_notification(rec)` reads `content` as `(rec.get("message") or {}).get("content", "")`, as the base does, and returns `_is_main_thread_user_text(rec) and not _strip_task_notifications(_content_text(content)).strip()`. The base already requires non-blank text, and the strip removes only complete envelopes, so a blank remainder means at least one envelope was there. Its docstring is one line: a main-thread user record whose whole text is `<task-notification>` envelopes, the harness's delivery of a finished background task or subagent.
+   - `_is_fresh_user_prompt(rec)` returns `_is_main_thread_user_text(rec) and not _is_task_notification(rec)`. Its docstring names those two predicates rather than restating the filter list.
+   - A record with human text beside an envelope stays fresh. So does a record whose envelope is unterminated or self-quoting, which `_strip_task_notifications` leaves in place (row 5). That record closes windows as it does today. An anchored whole-text check would also cover the self-quoting shape without `origin`. This plan keeps `_strip_task_notifications`' semantics so all four readers of the helper agree on what an envelope is.
+   - No helper moves. `_strip_task_notifications` sits below the predicates, and Python resolves the name at call time.
+2. `rearm_backtest.py:59` calls `render._is_main_thread_user_text`. The docstring sentence at :34-37 names that predicate and says it counts a task notification as well as a genuine user message.
+3. `judgment_pair.py:26-27`'s docstring adds task notifications to what the user-response search skips.
+4. `transcript-analysis.py` re-exports `_is_task_notification` beside `_is_fresh_user_prompt` (:215) for the new tests. It carries the same `# noqa: F401 -- read only via _mod.<name> from test files` comment.
+5. `mine_review_rounds.py` changes no code. `_main_thread_edited_between`'s docstring gains one sentence: an edit inside the earlier round's own window, such as a fix made before the next round opens, is not counted.
+6. The tests and docs listed in Critical files.
+
+**Miner decision: no reviewer-scoped boundary.** The miner keeps reading `detect_round_windows` as-is. A backgrounded round's window therefore now runs past its reviewers' notifications, as a foreground round's window already does. The grounds:
+
+- The module's own contract says it never redefines round detection (row 11).
+- Only backgrounded rounds close early today, and they close at the first background completion of any kind, a CI watch included. That boundary was never reviewer-scoped (row 12).
+- The wider window adds second-wave reviewer dispatches to the earlier round's scope and to the later round's citations.
+
+The cost falls on the edit scan. A fix edited after the reviewers return and before the next round opens now sits inside the earlier window. `main_thread_edited_between` therefore reads False for it, as it already does on foreground rounds (row 13). Candidates mined before this change keep their True flags on a rerun (row 14). A review-end boundary that fixes both kinds of round is in Out of scope.
+
+**Alternatives set aside.**
+
+- Key `_is_task_notification` on `origin.kind`. Every envelope-led record checked carries it (row 2), but no `transcript_analysis` module reads `origin` (row 10). It would also give the module a second definition of a notification, one that can disagree with the three existing callers of `_strip_task_notifications`, since no existing envelope fixture carries `origin`.
+- Keep rearm on `_is_fresh_user_prompt(rec) or _is_task_notification(rec)`. That equals the old predicate only if `_is_task_notification` carries the base's gates, so the base exists either way. Calling it directly is the lighter form.
+- A content-only `_is_task_notification` with no base gates. A sidechain or `isMeta` envelope would read as a notification, and a tool_result record's blank text would need its own guard.
+- Inline the strip check in `_is_fresh_user_prompt` with no named predicate. The Ask names `render._is_task_notification`, and rearm still needs the old semantics.
+- Give the miner a window that still closes at a notification. That keeps an arbitrary boundary and breaks the module contract (row 11).
+
+**Dispatch split.** One `code-writer` dispatch covers every file, because every file depends on the predicate's semantics and a split would restate them per dispatch. Write each notification test first and confirm it fails before editing `render.py`. The rearm test is the exception: it passes both before and after.
+
+**Assumption ledger**
+
+Root: `_is_fresh_user_prompt` accepts a main-thread user record whose whole text is a `<task-notification>` envelope. So every window that closes at a fresh user prompt closes when a background task finishes, not when the human next speaks. That covers the round windows that review-round-cost and the review-bench miner get from `detect_round_windows`, judgment-pair's pairs, and period-cost's `/review-pr` windows.
+
+Givens:
+- G1: The harness's record shapes for notifications and hand-backs: `type`, the content envelope, `origin`, `isMeta`. Claude Code owns them, and this repo only reads them.
+
+Rows:
+1. [verified: render.py:35-59] `_is_fresh_user_prompt` rejects non-user, sidechain, `isMeta`, `isCompactSummary`, tool_result-bearing and blank-text records. It accepts every other record, envelope-only text included. anchors: root
+2. [verified: grep of this repo's own session transcripts on one account] Every main-session user record whose string content opens with `<task-notification>` carries `origin.kind: "task-notification"`, and none carries `isMeta: true`. Each one's content is the envelope alone, from opening tag to closing tag. One record carrying that `origin` did not open with the envelope, and its shape was not inspected. anchors: root
+3. [verified: one record in the dispatching session's own transcript] A notification absorbed mid-turn is written as a `type: "attachment"` record (`attachment.commandMode: "task-notification"`), which already fails the `type == "user"` filter. Only one such record was read. anchors: root
+4. [verified: same grep as row 2] Subagent hand-back records, whose content opens "Another Claude session sent a message:", carry `isMeta: true` with one exception, so they already fail the predicate. The exception was not inspected. One hand-back record is marked `origin.kind: "human"`, `promptSource: "typed"`, and if that is the exception, counting it fresh is correct. This sibling arm needs no change. anchors: root
+5. [verified: render.py:117-129; test_transcript_analysis.py:448-475] `_strip_task_notifications` removes only complete envelopes. It stops a self-quoting envelope at its first closer and leaves an unterminated one in place. anchors: M1
+6. [verified: repo-wide grep of `_is_fresh_user_prompt`] Its only production readers are review_rounds.py:207, judgment_pair.py:98 and :130, period_cost.py:332, and rearm_backtest.py:59. author_outcome.py:228 reads only each window's open_idx. mine_review_rounds.py:192 reads windows through `detect_round_windows`. anchors: M1, M2
+7. [verified: rearm_backtest.py:23-63] `_hook_observable_boundaries` reads only the predicate's boolean, so calling the base leaves its output identical for every input. anchors: M2
+8. [verified: `gh issue view 1312`, read in full by the dispatching session] GH-1312 asks for `render._is_task_notification`, `_is_fresh_user_prompt` rejecting it, rearm's boundary set unchanged, its listed tests (including the orchestrator-return variant and a test pinning the miner choice) and the two doc updates. It scopes out `user_input._is_fresh_user_prompt_for_narrative`. It proposes either the `_is_task_notification` predicate or a base-predicate split, and keys on content, not `origin.kind`. anchors: root
+9. [verified: user_input.py:20-44; test_transcript_user_input.py:54-72] user-input uses its own predicate and pins a notification as a fresh prompt. anchors: M1
+10. [verified: grep for `origin`, `turnOrigin` and `promptSource` under claude/.claude/scripts/; author_outcome.py:37-55] No transcript_analysis module reads `origin`. author_outcome's extracted-field list names user text but not `origin`. anchors: M1
+11. [verified: mine_review_rounds.py:9-12, :128-138, :180-234, :581] The miner uses `detect_round_windows`' windows as-is for round scope, for the later round's reviewer ids and for the edit scan's start. Its module docstring says it "never redefines round detection". anchors: M3
+12. [verified: render.py:55-58; test_transcript_review_rounds.py:1354-1370] A foreground dispatch returns as a tool_result record, which never closes a window. Only rounds whose reviewers ran in the background close early today, at the first background completion of any kind. anchors: M3
+13. [verified: mine_review_rounds.py:209-234] `_main_thread_edited_between` scans only from the earlier window's end. A fix edit inside that window goes uncounted on foreground rounds today, and after this change it goes uncounted on backgrounded rounds too. anchors: M3
+14. [verified: mine_review_rounds.py:643-660] A rerun merges each regenerated candidate with its prior entry and ORs each round pair's `main_thread_edited_between`, so a pair already mined as edited stays edited. anchors: M3
+15. [verified: CHANGELOG.md:3, :171, :325] The changelog records "All notable changes". Earlier output changes to review-round-cost and to task-notification handling each got an entry. anchors: M4
+16. [verified: CLAUDE.md "Plans in this repo affect all stow users"] Every stow consumer gets the wider windows on `git pull`. The three subcommands recompute from surviving transcripts, so a re-run gives a different figure than one published before the fix. The changelog and docs say this in words, with no figure. anchors: M4
+17. [verified: docs/design-decisions/review-orchestrator-routing-gate.md:80] The routing guard's doc already says that a guard failure read before this fix is re-run after it. This plan relies on that rule only. The doc's separate claim that a pass "stands" depends on the guard's carry term too, because turns after the loop leave carry and join the last round once the loop-end window widens. This plan does not check that direction and leaves the doc unedited. anchors: M4
+22. [verified: staff-backend-engineer findings R1; review_rounds.py:246-249, :428, :443; period_cost.py:458-462, :554-556] The wider window also moves dollars between buckets. review-round-cost's per-branch `branch $` and non-round share shift in either direction, because pass 2 of `_session_record_branches` rewrites every index in a window to the round's branch. period-cost reallocates dollars from branch and Other rows to the review row with its total unchanged, and a finished window raises no fallback notice. A window now ends at the next human prompt or round-open, which can be long after the review. anchors: M4
+23. [verified: staff-backend-engineer findings R6, a read of local transcripts] The harness owns the envelope shape (G1). If Claude Code changes the tag or wraps it, `_is_task_notification` returns False and the old behavior returns with no test failing. The tests use a placeholder envelope, so nothing pins a recorded real shape. anchors: root
+18. [engineer-verified: "CHANGELOG.md entry"] The engineer selected this label when asked which files beyond the issue's named deliverables stay in the PR. It covers the `CHANGELOG.md` edit only. anchors: M4
+19. [engineer-verified: "docs Terms entry"] Selected under the same question. It covers the new "fresh user prompt" entry in `docs/transcript-analysis.md` only. anchors: M4
+20. [engineer-verified: "miner docstring sentence"] Selected under the same question. It covers the one docstring sentence in `mine_review_rounds.py` only. anchors: M3
+21. [engineer-verified: "judgment_pair docstring"] Selected under the same question. It covers the `judgment_pair.py` docstring edit only. anchors: M1
+
+Mechanisms:
+- M1: the base, notification and fresh predicates in `render.py`, reusing `_strip_task_notifications`. That is one renamed body and one new function. anchors: root
+- M2: rearm calls the base, so its boundary set is the old predicate's by construction. anchors: row7
+- M3: the miner follows the shared window, with two pinning tests and one docstring sentence. anchors: row11
+- M4: one Terms entry plus pointers to it, the architecture doc's readers line, and one changelog entry. anchors: row15
+
+## Critical files
+
+- `claude/.claude/scripts/transcript_analysis/render.py`: the predicate split (Design item 1). It reuses `_content_text` and `_strip_task_notifications`.
+- `claude/.claude/scripts/transcript_analysis/rearm_backtest.py`: the :59 call and the docstring sentence at :34-37.
+- `claude/.claude/scripts/transcript_analysis/judgment_pair.py`: the docstring at :26-27 only.
+- `claude/.claude/scripts/transcript-analysis.py`: one re-export line in the `render` import block (:211-219).
+- `evals/review_bench/mine_review_rounds.py`: one docstring sentence in `_main_thread_edited_between` (:209-217).
+- `claude/.claude/scripts/tests/conftest.py`: adds `_TASK_NOTIFICATION_TEXT` and `_task_notification_msg(*, branch="main", ts=None)`, which is built on `_user_msg` (:852). The text is a placeholder envelope with `task-id`, `tool-use-id`, `status` and `summary` elements on separate lines, as the harness emits them, so at least one predicate row and one window test cross the regex's `re.DOTALL` span.
+- `claude/.claude/scripts/tests/test_transcript_analysis.py`:
+  - `TestIsFreshUserPrompt` (:3260) gains three cases. A notification-only record returns False. Human text beside an envelope returns True. An unterminated envelope returns True.
+  - `TestIsFreshUserPrompt` also gains a self-quoting-envelope case that returns True. Its docstring names it a known limitation that a future `origin`-based check would flip on purpose.
+  - A new parametrized `TestIsTaskNotification` returns True for a string envelope, two envelopes with whitespace between, and an envelope in a list text block. It returns False for a plain prompt, human text beside an envelope, an unterminated envelope, the envelope with `isSidechain`, the envelope with `isMeta`, a tool_result record and an assistant record.
+- `claude/.claude/scripts/tests/test_transcript_review_rounds.py`:
+  - A new test beside :273 builds an inline round from these records, in order: a `Skill` turn that dispatches reviewer `a1`, a launch-ack tool_result, a task notification, a main-thread turn that dispatches reviewer `a2`, a fresh prompt, and one turn after it. Each main-thread turn has a distinct `_priced` amount. It asserts that `main_dollars` equals the exact sum of the turns before the fresh prompt, so the turn after it is excluded. It also asserts `agent_dollars` covers both reviewers and `agents == 2`. A records-only `detect_round_windows(records)` assertion pins the exact window tuple, which is the cheaper layer and the invariant.
+  - `test_parent_turns_after_the_orchestrator_returns_are_priced_until_the_next_fresh_prompt` (:1354) gains a variant whose orchestrator return arrives as a task-notification user record. It asserts the same `main_dollars`, so the parent turns after the return stay priced. Its docstring drops the sentence saying a task-notification return reads as a fresh prompt and that the fixture does not cover it.
+- `claude/.claude/scripts/tests/test_transcript_judgment_pair.py`: a new test beside :100 runs review text, a task notification, a second review text, then a user reply. It asserts that the reply is the response, the second review text is the review output, and the output holds no `<task-notification>` text. A second test ends the window with a post-notification assistant turn that is not a review and asserts the intended REVIEW OUTPUT. A third runs review text, a notification and end of file, and asserts the end-of-session marker with no envelope text.
+- `claude/.claude/scripts/tests/test_transcript_period_cost.py`: a new test in `TestReviewPrWindows` (:764) runs slash, acquire, finish, `_user_prompt(4, _TASK_NOTIFICATION_TEXT)`, then `_user_prompt(5)`. It asserts `close_idx == 4`, `fallback_close_kind is None` and `end_ts == _epoch(5)`. A second test runs a finished window then a notification at end of file, and asserts the session-end close with `fallback_close_kind is None`.
+- `claude/.claude/scripts/tests/test_transcript_rearm_backtest.py`: a new test in `TestHookObservableBoundaries` (:40) runs a priced turn, a task notification, a priced turn, then `_user_msg("go on")`, and expects `[0, 1, 2]`. It pins the unchanged boundary set.
+- `evals/test_review_bench_mining.py`: two tests pin the miner decision. They use the file's own `_assistant`, `_user`, `_agent_use`, `_read_use` and `_write_subagent_dispatch` helpers with an inline envelope in the same multi-line shape as `_TASK_NOTIFICATION_TEXT` and a comment naming it, since the scripts `conftest.py` belongs to a different test tree. The `a2` dispatch uses a reviewer-typed `subagent_type` such as `staff-sdet`, because `_round_scope` counts only reviewer-typed dispatches.
+  - Skill, reviewer `a1`, a task notification, reviewer `a2`, then a fresh prompt. `_collect_round_entries` gives one entry with window `(0, 4, "code-review")`, the same window `detect_round_windows` returns. `_round_scope` holds a path that only `a2`'s subagent read.
+  - Skill, reviewer `a1`, a task notification, an `Edit` of `/repo/app.py`, then a second Skill round. `_main_thread_edited_between` is False for that path because the edit is inside the earlier window. The same fixture holds a positive control: an edit after the window end reads True, so the negative proves the window and not a path-key mismatch. The test's docstring says the miner keeps no reviewer-scoped boundary, that the False is a known false negative, and that a review-end boundary should flip it. The literal window tuple is the pin, and equality with `detect_round_windows` is only a guard.
+- `docs/transcript-analysis.md`:
+  - `## Terms` (:27-40) gains a "fresh user prompt" entry: a main-thread user record with its own text that is not a tool result, an `isMeta` injection, a compaction summary, or a task notification. It defines a task notification as a record whose whole text is `<task-notification>` envelopes, and names the three subcommands whose windows close at a fresh user prompt. One sentence says `user-input` counts notifications under its own predicate.
+  - In judgment-pair's Purpose (:574), "next user prompt" becomes "next fresh user prompt (see Terms)", and that pointer replaces the skip-list sentence.
+  - review-round-cost's Purpose (:1218) and period-cost's Review windows bullet (:1659) add "(see Terms)" after "fresh user prompt".
+  - review-round-cost's caveats gain one bullet after :1233: a task notification does not close the window. A round keeps pricing the main thread's response to a background reviewer or CI watch, and any dispatch after it. The bullet says the window now runs to the next human prompt or round-open, so it can include unrelated main-thread work, and treats `main $` as an upper bound.
+- `docs/transcript-analysis-architecture.md` (:231-235): the helper list adds the two new predicates. The readers sentence names `judgment_pair.py`, `review_rounds.py`'s round windows and `period_cost.py`'s review windows as readers of `_is_fresh_user_prompt`, and `rearm_backtest.py` as the reader of `_is_main_thread_user_text`.
+- `CHANGELOG.md`: one entry under `### Fixed` (:472). It says review-round-cost, judgment-pair and period-cost no longer end a window at a task notification, and states per consumer what moves. review-round-cost: round `total $` rises, `branch $` and the non-round share shift, and a window now ends at the next human prompt or round-open. period-cost: dollars move from branch and Other rows to the review row with the period total unchanged. judgment-pair: REVIEW OUTPUT can follow a notification, and the end-of-session label reaches loops a notification used to cut short. It says rearm-backtest and user-input are unchanged, and that the review-bench miner follows the wider windows, so a rerun can add candidates as well as change `main_thread_edited_between`. It gives no figure.
+
+## Verification
+
+1. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`, CLAUDE.md's documented scoped run. The diff touches `claude/.claude/scripts/` and a file matching `evals/test_review_bench*.py` (select-tests.py:61), so the run should select both suites. Confirm that from its output.
+2. `scripts/venv-run.sh ruff check claude/.claude/scripts/ evals/`.
+3. Fail first, with the expected pre-edit result stated per test. Behavioral red: the `TestIsFreshUserPrompt` notification-only case, the review-rounds inline test, the orchestrator-return variant, the judgment-pair tests that need a notification not to close the window, the period-cost window test and the miner pair. Green before and after: the `TestIsFreshUserPrompt` human-text-beside-envelope, unterminated-envelope and self-quoting cases, and the rearm test. `TestIsTaskNotification` is red by `AttributeError` until the function exists, so land its re-export with a stub returning False first to get a behavioral red on its False rows. After the edit, all of them pass.
+4. Corpus invariant, run locally, with figures kept out of every artifact. Capture `scripts/venv-run.sh python3 claude/.claude/scripts/transcript-analysis.py review-round-cost --this-repo --until <date before this session started>` to a `/tmp` file before the `render.py` edit, and again after it, so both read a frozen corpus. Join rows by branch and opening timestamp, not by ordinal. Windows only widen, so the round count must match and no round's `total $` may fall. The fix must also have acted: at least one round's `total $` rose. The `branch $` denominators and the non-round share are expected to move and are outside the invariant. Report only whether each held. A count mismatch, a fall, or no rise is a failure.
+
+## Out of scope
+
+- `user_input._is_fresh_user_prompt_for_narrative` and user-input's fresh-prompt count. The issue scopes them out (row 8), and test_transcript_user_input.py:54-72 keeps pinning a notification as a fresh prompt there (row 9).
+- A review-end boundary for the miner's edit scan, so that a fix edit inside the earlier window counts as edited-between on foreground and backgrounded rounds alike. It changes rounds this bug never touched. It also needs its own definition of where a review ends, such as a reviewer's return found by the envelope's `<tool-use-id>` or by the paired tool_result. This belongs in a follow-up issue.
+- An unterminated or self-quoting envelope still reads as a fresh prompt (row 5). That is the pre-fix behavior, and this plan keeps `_strip_task_notifications`' semantics.
+- `claude-skills/skills/review-loop-cost-audit/SKILL.md:72` says a round's fix "lands outside that window", which is no longer true for backgrounded rounds. Editing it adds a file and triggers `/skill-review`, so it belongs in a follow-up issue the engineer files.
+- The window-derived figures in `docs/cost-levers-considered.md` and `docs/case-studies/review-loop-cost-forensics.md` are dated records and stay as written.
+- `user_input.py`'s docstring difference list (:20-25) and `docs/transcript-analysis-architecture.md:632` stay unedited. The Terms entry carries the one sentence saying user-input counts notifications under its own predicate.
+- Whether the handoff-nudge hook really observes the session at every task notification. The issue holds rearm's boundary set unchanged.
+- `docs/design-decisions/review-orchestrator-routing-gate.md:80` stays as written, because its rule for a guard read before the fix still applies after it (row 17).
