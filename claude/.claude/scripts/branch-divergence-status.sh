@@ -2,10 +2,10 @@
 # Reports the current branch's divergence from its base in plain text to stdout -- always,
 # even when fully in sync. The base is origin/<default branch>, or origin/<stack base> when
 # `git config branch.<branch>.gh-merge-base` is set. Uses the same detection primitives as
-# check-branch-divergence.sh's SessionStart hook (default-branch resolution, bounded fetch,
-# behind-count, `git merge-tree --write-tree` trial merge), but that hook never reads the key
-# and fetches and measures through `origin/<default branch>` -- see
-# git-feature-branch-sync/SKILL.md's "Detecting divergence" section for the canonical recipe.
+# check-branch-divergence.sh's SessionStart hook: default-branch resolution, bounded fetch,
+# behind-count and the `git merge-tree --write-tree` trial merge.
+# That hook never reads the key, and it fetches and measures through `origin/<default branch>`.
+# git-feature-branch-sync/SKILL.md's "Detecting divergence" section holds the canonical recipe.
 # Requires git >= 2.38 for `git merge-tree --write-tree`.
 # Makes no gh call: it never reads an open PR's base.
 #

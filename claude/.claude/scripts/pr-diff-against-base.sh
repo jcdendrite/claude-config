@@ -79,7 +79,7 @@ if [ "$STAGED" -eq 1 ]; then
   fi
 else
   DIFF_MARKER_DIR_NAME="cumulative-review-diff-markers"
-  # Empty STACK_BRANCH marks the no-key path: the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch.
+  # Empty STACK_BRANCH marks the no-key path, whose base order the header states.
   STACK_BRANCH=""
   STACK_STATUS=0
   STACK_BASE_INFO=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD") || STACK_STATUS=$?

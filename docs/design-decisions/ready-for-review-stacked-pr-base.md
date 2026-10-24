@@ -29,6 +29,7 @@
 - All three git calls the helper makes (`symbolic-ref`, `config` and `check-ref-format`) go through `_lib_stack_base_git`, the one home of the read-failure line.
 - The HEAD and key reads run before any value exists, so their stop can fire on a branch with no key set.
 - `check-ref-format` runs only after a value was read.
+- Step 5 passes the `Base branch:` name to `pr-description`, which asks the engineer instead of running its comparison when the name holds a character outside the set that "Where each stop fires" lists for a usable name, or starts with `-` (`pr-description/SKILL.md`).
 
 Where each stop fires:
 
@@ -78,7 +79,7 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
 - **Folding the base ref into the `cumulative-review` hash.** It contradicts the decision cited above.
 - **Treating a key equal to the default branch as unset.** Such a key measures against the same branch, so only the output label would differ.
 - **A check that the stack base's own PR merged**, with an acknowledgement key. It is more machinery than the fail-closed rule needs.
-- **Widening the sync skill's frontmatter trigger to name a stack base.** The trigger clause reads "syncing a feature branch with the default branch", but the entry points this change touches invoke the skill by name (`ready-for-review` step 1, the SessionStart advisory) or route to it (`respond-pr`'s CONFLICT arm, which depends on the description's first line, "Rebase vs merge a feature branch; force-push safely."), and the description loads for every stow consumer.
+- **Widening the sync skill's frontmatter trigger to name a stack base.** The trigger clause reads "syncing a feature branch with the default branch". Of the entry points this change touches, `ready-for-review` step 1 and the SessionStart advisory invoke the skill by name. `respond-pr`'s CONFLICT arm routes to it instead, and that route depends on the description's first line, "Rebase vs merge a feature branch; force-push safely." The description loads for every stow consumer.
 
 ## Residuals
 
