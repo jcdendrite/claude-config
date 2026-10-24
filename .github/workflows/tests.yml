@@ -120,9 +120,14 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # The awk lines record which implementation runs the cumulative-review normalizer's tests on this runner.
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
-        run: nproc
+        run: |
+          nproc
+          git --version
+          readlink -f "$(command -v awk)" || true
+          { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
 
       # _locale_that_widens_ascii_ranges (test_config_lib.py) fails CI when no installed UTF-8 locale lets a bracket range accept a non-ASCII letter.
       - name: Generate a UTF-8 locale

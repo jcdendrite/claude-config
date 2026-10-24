@@ -28,6 +28,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Other dispatch sites** follow the convention when the dispatching session applies the bullet, with no skill edit. `docs/design-decisions/dispatch-prompts-mark-relayed-text-by-source.md` lists them. It also records why the convention uses no delimiter or fence and the convention's limits.
   - **Replaced:** the Opus routing bullet's narrower rule to name the files a `plan-architect` consult should read.
   - **Takes effect** for a session only if that session started after you pulled this change.
+- **The `cumulative-review` cache now survives a rebase that changes only hunk start line numbers, function-context text, or the blob ids of text files the PR touches.** Its value is the sha256 of the diff with each hunk header reduced to its line counts and each text entry's `index` line stripped of its blob ids; `docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md` states what else shares a value.
+  - Existing markers whose diff has a hunk read `historical` once, so the next step-3 pass on an open PR runs a full review.
+  - `pr-diff-against-base.sh`'s cumulative diff now comes from `git diff-tree -r -p -M`, so porcelain-only diff config no longer changes its text.
+    - It passes `--no-color --no-ext-diff`, `--ignore-submodules=none` and a context width pinned to 3 lines by an inline `GIT_DIFF_OPTS=-u3`.
+    - A `.gitmodules` `ignore` setting no longer drops a gitlink change from the text.
+    - `textconv` no longer applies: a text file with a `textconv` driver now prints its raw diff, unconverted, and a binary file with one prints `Binary files ... differ`.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
