@@ -86,6 +86,8 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
+
 # ------------------------------------------------------------------ #
 # Paths                                                               #
 # ------------------------------------------------------------------ #
@@ -2909,68 +2911,16 @@ def _assert_deny_schema(result: subprocess.CompletedProcess, hook_name: str, con
 # The sentence every runbook-pointer bootstrap deny carries after "could not
 # source _lib.sh.".
 _BOOTSTRAP_RUNBOOK_POINTER_SENTENCE = (
-    'For the recovery, see docs/hooks.md § "Gate deadlock recovery" in the claude-config '
+    f"For the recovery, see {HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text} in the claude-config "
     "repository; the user, not the agent, runs ./install.sh from the claude-config checkout "
     "in a separate terminal only if that runbook says so."
 )
 
-# Main-dir gate hooks whose `_lib.sh` bootstrap deny carries the runbook-pointer
-# wording. Each bootstrap is a hand copy that cannot source a shared helper, so
-# this set and the assertion in test_missing_lib_sh_denied keep the copies aligned.
-_RUNBOOK_POINTER_BOOTSTRAP_HOOKS: frozenset[str] = frozenset(
-    {
-        "block-gh-pr-merge.sh",
-        "check-claude-md-length.sh",
-        "check-skill-length.sh",
-        "deny-credential-bash-reads.sh",
-        "deny-credential-file-reads.sh",
-        "deny-data-file-reads.sh",
-        "deny-env-reads.sh",
-        "deny-escaped-backticks-in-pr-body.sh",
-        "deny-invisible-commit-content.sh",
-        "deny-network-installs.sh",
-        "deny-no-op-dispatch.sh",
-        "deny-pii-in-commits.sh",
-        "deny-private-project-refs.sh",
-        "deny-repo-relocation.sh",
-        "deny-reviewer-tree-mutation.sh",
-        "guard-settings-session-keys.sh",
-        "require-architect-consult.sh",
-        "require-code-review.sh",
-        "require-memory-skill.sh",
-        "require-plan-review.sh",
-        "require-ready-for-review.sh",
-        "require-respond-pr.sh",
-        "require-review-orchestrator-routing.sh",
-        "require-routing-read.sh",
-        "require-stow-reminder.sh",
-        "require-worktree-for-file-writes.sh",
-        "require-worktree-for-git-writes.sh",
-    }
-)
-
 # These two gates deny a failed `_lib.sh` source with a bare message and no runbook pointer.
+# Every other main-dir gate's missing-_lib.sh deny must carry the runbook sentence.
 _BARE_BOOTSTRAP_GATE_HOOKS: frozenset[str] = frozenset(
     {"deny-plan-writer-off-plan-writes.sh", "enforce-marker-script-shape.sh"}
 )
-
-
-def test_every_main_gate_hook_bootstrap_wording_is_classified() -> None:
-    """Each main-dir gate sits in exactly one bootstrap set, so no gate escapes the wording check.
-
-    Plugin gates are outside both sets: each carries its own bash-version
-    bootstrap wording in its own hooks directory.
-    """
-    main_gate_hook_names = {hook.name for hook in GATE_HOOKS if hook.parent == _MAIN_HOOKS_DIR}
-    in_both_sets = _RUNBOOK_POINTER_BOOTSTRAP_HOOKS & _BARE_BOOTSTRAP_GATE_HOOKS
-    unclassified = main_gate_hook_names - _RUNBOOK_POINTER_BOOTSTRAP_HOOKS - _BARE_BOOTSTRAP_GATE_HOOKS
-    assert not in_both_sets, f"in both bootstrap sets: {sorted(in_both_sets)}"
-    assert not unclassified, (
-        f"gate hooks in neither bootstrap set: {sorted(unclassified)}. "
-        "Add a new gate's name to _RUNBOOK_POINTER_BOOTSTRAP_HOOKS (runbook-pointer deny) "
-        "or _BARE_BOOTSTRAP_GATE_HOOKS (bare deny)."
-    )
-    assert main_gate_hook_names >= _RUNBOOK_POINTER_BOOTSTRAP_HOOKS
 
 
 @pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
@@ -3029,7 +2979,7 @@ class TestGateHookBehavior:
             payload = '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
             result = _run_hook_raw(tmp_hook, payload, cwd=Path(tmpdir))
         _assert_blocks(result, hook.name, "missing-lib-sh", "could not source _lib.sh")
-        if hook.name in _RUNBOOK_POINTER_BOOTSTRAP_HOOKS:
+        if hook.parent == _MAIN_HOOKS_DIR and hook.name not in _BARE_BOOTSTRAP_GATE_HOOKS:
             assert _BOOTSTRAP_RUNBOOK_POINTER_SENTENCE in result.stderr, result.stderr
 
     def test_deny_envelope_schema_shape(self, hook: Path) -> None:

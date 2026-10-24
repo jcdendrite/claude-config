@@ -67,11 +67,13 @@ Alternatives set aside:
 
 27. The PR owner answered the question whether to sweep the remaining wording: "This should be fixed for sure, yes." The engineer confirmed in chat: "I responded to your comment - you asked me if I wanted to fix more things, and I said yes." The quote supports sweeping the wording. The specific edits in row 7 (runbook-pointer wording in the bootstrap denies, doc reframing, record edit) are the planner's proposal. This reverses the earlier Out-of-scope decision that left the other hooks' bootstraps alone (previously settled, now reopened by the owner's answer). [engineer-verified: "This should be fixed for sure, yes."]
 
+28. `claude/.claude/scripts/worktree-ensure.sh:82` and `:86` fail the same way as `review-ledger.sh`: each sources a sibling lib and dies with bare installer advice. Round 51's architect consult marked rewording them ADDRESS, and the engineer chose to add the file to the plan and fix it. [engineer-verified: "Add it to the plan and fix it (Recommended)"] (the selected option label; "(Recommended)" was the planner's suffix)
+
 **Mechanisms:**
 - M1. `README.md` § "Updating after git pull" is the one current-behavior statement of the rule and carries the existence check. The gate, `docs/hooks.md`, and this PR's CHANGELOG entry all defer to it. anchors: row13
 - M2. Rewrite the gate's header and deny explanation, and narrow its trigger to new top-level entries plus `install.sh` changes. Keep `DENY_GATE_LABEL`, the `REASON_DETAIL` strings, the marker match, and the `_lib.sh` bootstrap deny. anchors: row4, row5, row21, row22, row24, row25, row26
 - M3. Make the `require-stow-reminder.sh` entry in `docs/hooks.md` describe the new-top-level-entry trigger and defer the rule to README. anchors: row6, row22
-- M4. Sweep the remaining sites that state the same premise so no gate gives conflicting guidance for a failed `_lib.sh` source. anchors: row27
+- M4. Sweep the remaining sites that state the same premise so no gate gives conflicting guidance for a failed `_lib.sh` source. anchors: row27, row28
 
 ## Critical files
 
@@ -142,16 +144,22 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 
 6. **`CHANGELOG.md`** (modify `## [Unreleased]`)
    - **Changed:** `require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`. It names README § Updating after git pull, and its example body line is conditional. The trigger narrows: a file added under a top-level entry that already exists on `main` no longer raises the reminder, and a file moved into a new top-level entry now does.
+   - **Changed:** one more entry covers the swept bootstraps: the "could not source _lib.sh" deny of 26 more gate hooks now points at `docs/hooks.md` § "Gate deadlock recovery" and says the user, not the agent, runs `./install.sh`. The script messages in `review-ledger.sh` and `worktree-ensure.sh` get no CHANGELOG line of their own.
 
-7. **Premise sweep** (modify; anchor row 27). Each site below states that stow does not relink a new file into an existing directory, or tells the agent to run the installer to pick up a pulled hook file.
+7. **Premise sweep** (modify; anchor row 27). Each site below states that stow does not relink a new file into an existing directory, or gives the agent a bare imperative to run the installer, such as "to pick up a pulled hook file".
    - **Edit:** each bootstrap deny becomes the sentence at `require-stow-reminder.sh:110` verbatim: `could not source _lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository; the user, not the agent, runs ./install.sh from the claude-config checkout in a separate terminal only if that runbook says so.` It keeps the leading `could not source _lib.sh` (pinned by `test_hook_alignment.py` and the denial classifier) and any existing prefix, such as `file-writes arm. ` in `require-worktree-for-file-writes.sh`.
    - **21 hooks carrying the parenthetical** under `claude/.claude/hooks/`: `block-gh-pr-merge.sh`, `check-claude-md-length.sh`, `check-skill-length.sh`, `deny-credential-bash-reads.sh`, `deny-credential-file-reads.sh`, `deny-data-file-reads.sh`, `deny-env-reads.sh`, `deny-escaped-backticks-in-pr-body.sh`, `deny-invisible-commit-content.sh`, `deny-network-installs.sh`, `deny-no-op-dispatch.sh`, `guard-settings-session-keys.sh`, `require-architect-consult.sh`, `require-code-review.sh`, `require-memory-skill.sh`, `require-plan-review.sh`, `require-ready-for-review.sh`, `require-respond-pr.sh`, `require-review-orchestrator-routing.sh`, `require-routing-read.sh`, `require-worktree-for-file-writes.sh`.
    - **5 denying bootstraps without the parenthetical** (same premise: "run ./install.sh to pick up hook files this update added"): `deny-pii-in-commits.sh`, `deny-repo-relocation.sh`, `require-worktree-for-git-writes.sh`, `deny-reviewer-tree-mutation.sh`, `deny-private-project-refs.sh`.
-   - `claude/.claude/scripts/review-ledger.sh`: the :12 header comment goes, and the :16 error message drops "to link it" and keeps its pointer to the installer for a missing sibling file.
+   - `claude/.claude/scripts/review-ledger.sh`: the header comment goes, and the error message now starts "Ask the user to run ./install.sh", naming the user as the runner (line numbers as of `main`: :12 and :16).
+   - `claude/.claude/scripts/worktree-ensure.sh:82` and `:86`: reword the two `die` messages so the last line names the user as the one who runs `./install.sh`, as the `review-ledger.sh` message does.
+     - The `:82` message covers a failed `hooks/_lib.sh` source, which also fails on a below-floor bash where the installer cannot help. It cites `docs/hooks.md` § "Gate deadlock recovery" in the claude-config repository instead of offering the installer as the only fix.
+     - Both messages keep the `worktree-ensure.sh: no-repo:` prefix and the substrings `hooks/_lib.sh` and `_worktree-lib.sh`.
+     - Extend the two-case sibling-lib test in `claude/.claude/scripts/tests/test_worktree_ensure.py` to assert that the last line names the user as the runner. Run it red before the script edit.
    - `docs/design-decisions/git-native-commit-hooks-declined.md:126`: reword the sentence to describe the current runbook-pointer bootstrap message (row 14 carve-out).
    - `docs/hooks.md:287`: reframe "When the hooks and scripts directories are real directories" as the unsupported legacy layout (row 22). The recovery stays: the user runs `./install.sh`.
    - `docs/hooks.md:411-413`: keep the sentence that authorizes the user to run `./install.sh` for an unlinked `_lib.sh` or `_config.sh`, reframed as the unsupported legacy layout (row 22). The heading `Gate deadlock recovery` stays byte-identical.
-   - **Named exceptions, untouched:** the fail-open stderr echoes in `capture-session-id.sh`, `record-session-end.sh` and `ask-review-permissions.sh` (no deny, the hook exits 0); `redact-credential-values.sh:17` and `worktree-ensure.sh`, which advise the installer for a stale link on a single-script failure like the exit-127 advice below; past CHANGELOG entries; other plans; `test_transcript_denials.py` fixtures, which copy historical text on purpose.
+   - **The line the sweep draws:** a bare imperative with no named runner is swept. A declarative cause statement (`redact-credential-values.sh:17`) or advice already addressed to the engineer (`claude-skills/skills/branch-management/SKILL.md:100-101`, `require-worktree-for-git-writes.sh:443`) stays.
+   - **Named exceptions, untouched:** the fail-open stderr echoes in `capture-session-id.sh`, `record-session-end.sh` and `ask-review-permissions.sh` (no deny, the hook exits 0); `redact-credential-values.sh:17`, which advises the installer for a stale link on a single-script failure like the exit-127 advice below; past CHANGELOG entries; other plans; `test_transcript_denials.py` fixtures, which copy historical text on purpose.
    - **Test pin:** extend the missing-`_lib.sh` alignment test in `claude/.claude/hooks/tests/test_hook_alignment.py` (parametrized over every hook). For the 26 swept hooks it asserts stderr or the deny reason cites `docs/hooks.md` § "Gate deadlock recovery", contains `the user, not the agent`, and omits `does not relink` and `pick up hook files`. The heading is resolved the way `TestFloorMessageCitationsResolve` does. The 26 bootstraps cannot source a shared helper, so this pin is what keeps the hand copies from drifting.
 
 8. **`.claude/plans/stale-install-advice.md`**: this plan.
@@ -164,6 +172,7 @@ One `code-writer` dispatch covers every file. Every file needs the same backgrou
 4. Replay the incident on this machine: `ls ~/.claude/scripts/transcript_analysis/session_pricing.py` succeeds, showing the README check reports a live file where the old advice said to re-run. Then run the hook's own tests, which replay a nested add (allowed) and a new top-level entry (denied) end to end.
 5. Sweep the whole false-premise family, not one sentence: `git grep -nEi "individually|alone (does not|doesn't|won't)|materializ|only appears|real director|relink|any depth|regardless of whether|adds any path|nested|rename"` over the hook, its tests, `docs/hooks.md`, and `README.md`. Every remaining hit must be a true statement (for example the "Updating after git pull" section on wrappers) or a record.
 6. Sweep the sweep: `git grep -nE "does not relink|until it is re-run|Stow links a new file|pick up hook files" -- claude docs ':!CHANGELOG.md'` returns only the three fail-open stderr echoes row 7 names as exceptions and the two omit-assertions in `test_hook_alignment.py`.
+7. `git grep -n "re-run \./install\.sh" -- claude/.claude/scripts` returns no hit that lacks a named runner.
 
 ## Out of scope
 
