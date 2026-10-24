@@ -894,6 +894,18 @@ class TestStackBaseKeyPath:
         assert "own.txt" in result.stdout
         assert "base.txt" not in result.stdout
 
+    def test_diff_is_measured_against_the_remote_tracking_stack_base_not_a_local_branch_of_the_same_name(self, tmp_path):
+        """A local `stack` sitting at the default tip would put base.txt in the diff if the
+        script measured against it, so the base must be refs/remotes/origin/stack."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "-f", "stack", "main"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
     @pytest.mark.parametrize(
         ("key_value", "reason_fragment"),
         [

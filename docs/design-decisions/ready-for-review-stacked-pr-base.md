@@ -15,7 +15,7 @@
 ## The one rule
 
 - With the key set, a step uses its value or stops.
-- With no key set, `pr-diff-against-base.sh` resolves its base from the open PR's base, else the default branch, and `branch-divergence-status.sh` uses the default branch. Both scripts also:
+- With no key set, `pr-diff-against-base.sh` resolves its base from the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch, and `branch-divergence-status.sh` uses the default branch. Both scripts also:
   - a failed git read of HEAD or the key stops the step;
   - measurement goes through the fully qualified `refs/remotes/origin/<base>` ref.
 - With no key set, of the two scripts, only `branch-divergence-status.sh` fetches the default branch, using a named destination plus a verify, and a verify failure prints the "failed or timed out" line.
@@ -77,7 +77,7 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
 - **Letting an open PR's base silently override a disagreeing key.** It hides a retarget or a wrong base.
 - **Folding the base ref into the `cumulative-review` hash.** It contradicts the decision cited above.
 - **Treating a key equal to the default branch as unset.** Such a key measures against the same branch, so only the output label would differ.
-- **A check that the stack base's own PR merged**, with an acknowledgement key. It was dropped as more machinery than the fail-closed rule needs.
+- **A check that the stack base's own PR merged**, with an acknowledgement key. It is more machinery than the fail-closed rule needs.
 - **Widening the sync skill's frontmatter trigger to name a stack base.** The trigger clause reads "syncing a feature branch with the default branch", but the entry points this change touches invoke the skill by name (`ready-for-review` step 1, the SessionStart advisory) or route to it (`respond-pr`'s CONFLICT arm, which depends on the description's first line, "Rebase vs merge a feature branch; force-push safely."), and the description loads for every stow consumer.
 
 ## Residuals
@@ -102,9 +102,9 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
   - Unsetting the key falls back to the wider review.
   - Pre-check: after step 1's fetch, `git log --oneline origin/<stack-base>..HEAD` lists the commits the review covers.
 - **A stack base whose history is unrelated to HEAD**, at the divergence script.
-  - Condition: the base shares no history with HEAD. Not yet run on this branch: the expected behavior is that `git merge-tree` fails, the capture ends `|| true`, and the script prints `Trial merge: CLEAN`.
+  - Condition: the base shares no history with HEAD. Inferred from the `git merge-tree` documentation, not exercised by a test: the expected behavior is that `git merge-tree` fails, the capture ends `|| true`, and the script prints `Trial merge: CLEAN`.
   - Consequence: `/respond-pr`'s precheck proceeds on the false CLEAN, and step 1's sync defaults to a rebase onto the unrelated tip, which rewrites the branch and offers a force-push.
-  - If that rebase completes, a merge-base probably then exists (also not yet run), so step 3's stop would not fire and the cost is a rewritten branch and a whole-history diff, not an unreviewed pass.
+  - If that rebase completes, a merge-base probably then exists (inferred from the `git rebase` documentation, also not exercised by a test), so step 3's stop would not fire and the cost is a rewritten branch and a whole-history diff, not an unreviewed pass.
   - Otherwise step 3's merge-base stop fires before the marker.
   - Signal: `Behind:` equals the base's whole commit count beside `Trial merge: CLEAN`.
   - The no-key form is recorded in [ready-for-review-base-drift.md](ready-for-review-base-drift.md).

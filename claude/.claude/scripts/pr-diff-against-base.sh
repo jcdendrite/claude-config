@@ -2,7 +2,7 @@
 # Prints the cumulative PR-vs-base diff /ready-for-review's step 3
 # reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
 # <base-branch> is the stack base in `git config branch.<branch>.gh-merge-base`
-# when that key is set, else the open PR's base, else the default branch.
+# when that key is set, else the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch.
 # With the key set, the script uses its value or exits 1 with one stderr line.
 # Each of these stops exits 1:
 # - The value is unusable.
@@ -79,7 +79,7 @@ if [ "$STAGED" -eq 1 ]; then
   fi
 else
   DIFF_MARKER_DIR_NAME="cumulative-review-diff-markers"
-  # Empty STACK_BRANCH marks the no-key path: the open PR's base, else the default branch.
+  # Empty STACK_BRANCH marks the no-key path: the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch.
   STACK_BRANCH=""
   STACK_STATUS=0
   STACK_BASE_INFO=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD") || STACK_STATUS=$?
