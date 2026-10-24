@@ -11750,6 +11750,44 @@ class TestLibConfiguredStackBase:
         result = _configured_stack_base(worktree)
         assert (result.returncode, result.stdout) == (0, "linked-branch stack\n")
 
+    def test_key_set_only_in_the_global_config_file_is_read(self, tmp_path: Path) -> None:
+        """The key is read from every config scope, not only the repository's."""
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", None)
+        global_config = tmp_path / "global.gitconfig"
+        subprocess.run(
+            ["git", "config", "--file", str(global_config), "branch.feat/x.gh-merge-base", "stack"],
+            check=True,
+        )
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(global_config)}
+        result = _configured_stack_base(repo, env)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "feat/x stack\n", "")
+
+    def test_rejects_a_non_ascii_letter_under_a_locale_that_widens_bracket_ranges(
+        self, tmp_path: Path
+    ) -> None:
+        """With `globasciiranges` off, a collating locale widens `[A-Za-z]` to admit an
+        accented letter; the charset check lists its letters, so it still rejects one.
+        The script first asserts, in the same shell and locale, that the range form
+        would accept the probe, so a locale that does not widen fails the premise."""
+        premise_failed = 3
+        accented_value = "caf" + chr(0xE9)
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", accented_value)
+        script = (
+            '. "$1"; shopt -u globasciiranges; '
+            f'case "$4" in *[!A-Za-z0-9._/-]*) exit {premise_failed} ;; esac; '
+            '_lib_configured_stack_base "$2" "$3"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(_LIB_SH), _STACK_BASE_STDERR_PREFIX, str(repo), accented_value],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+        assert result.returncode != premise_failed, "the range form rejects the probe, so this locale does not widen it"
+        _assert_stack_base_stop(result, "feat/x")
+        assert "outside A-Z" in result.stderr
+
     @pytest.mark.parametrize(
         ("value", "reason_fragment"),
         [

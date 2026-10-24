@@ -13,12 +13,15 @@
 # for a stack base.
 #
 # Exit 0: report printed, regardless of divergence state -- divergence is reported in the
-# text, never signaled via exit code. Exit 1: the base could not be resolved or the bounded
-# fetch failed, or the stack base is unusable -- a genuine failure, a different class than
-# "divergence exists." Any _lib_configured_stack_base status other than 0 and 1 exits 1 with
-# that helper's own line, a git read failure included, and that stop can fire with no key set.
-# A stack base's fetch failure reads the same for a timeout and a branch deleted on origin,
-# so the stop line tells the engineer to retry before changing the key.
+# text, never signaled via exit code.
+# Exit 1 is a genuine failure, a different class than "divergence exists." Each of these exits 1:
+# - The base could not be resolved.
+# - The bounded fetch failed.
+# - The stack base is unusable.
+# - _lib_configured_stack_base returned a status other than 0 and 1, printing its own line.
+#   A git read failure is one such stop, and it can fire with no key set.
+# A stack base's fetch failure reads the same for a timeout and a branch deleted on origin.
+# The stop line tells the engineer to retry, then to run `git ls-remote` to tell a base missing from origin apart from any other failure.
 
 set -euo pipefail
 
@@ -82,7 +85,7 @@ if ! GIT_TERMINAL_PROMPT=0 SSH_ASKPASS='' GIT_ASKPASS='' \
   || ! git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH^{commit}" >/dev/null 2>&1; then
   if [[ -n "$STACK_BRANCH" ]]; then
     _lib_print_unusable_stack_base "$SCRIPT_NAME" "$STACK_BRANCH" "$BASE_BRANCH" \
-      "fetch failed (network, or the stack base is gone from origin); retry the command before changing the key"
+      "fetch failed (network, or the stack base is gone from origin); retry the command before changing the key; if it fails again, run \"git ls-remote origin refs/heads/$BASE_BRANCH\": if it prints nothing, the base is not on origin and the fix that follows applies; otherwise run \"git fetch origin +refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH\" by hand to see git's own error, then retry"
   else
     echo "$SCRIPT_NAME: fetch of origin/$BASE_BRANCH failed or timed out" >&2
   fi

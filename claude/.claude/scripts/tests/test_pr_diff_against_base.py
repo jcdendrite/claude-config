@@ -55,7 +55,7 @@ def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str
     printed verbatim with exit 0 (so "" is an exit-0 empty reply) only when
     the argument after `--jq` is exactly `.state, .baseRefName`, so an
     inverted or altered filter reads as a gh failure. None leaves that call
-    failing with exit 1, as it always did.
+    failing with exit 1.
     """
     body = "sys.exit(1)" if base_ref is None else f"print({base_ref!r})"
     state_body = "sys.exit(1)" if state_reply is None else f"sys.stdout.write({state_reply!r})"
@@ -774,7 +774,7 @@ class TestDefaultBranchUnresolvable:
 
 class TestStackBaseKeyPath:
     """With branch.<branch>.gh-merge-base set the script uses its value or
-    stops; with no key it runs the pre-key code (the classes above)."""
+    stops; with no key it runs the default-branch path (the classes above)."""
 
     @pytest.mark.parametrize("stack_base", ["stack", "team/stack"])
     def test_key_set_with_no_pr_diffs_only_the_branches_own_commits(self, tmp_path, stack_base):
@@ -801,7 +801,41 @@ class TestStackBaseKeyPath:
         assert "base.txt" in result.stdout
         assert "defaulting base to main" in result.stderr
 
-    def test_open_pr_agreeing_with_the_key_gives_the_same_diff(self, tmp_path):
+    def test_gh_pr_view_failure_on_the_key_path_adds_a_clause_to_the_using_line(self, tmp_path):
+        """A gh failure reads as no open PR, so the `using` line says the open-PR check did not run.
+        The clause rides on that one line, never on a second stderr line."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        using_lines = result.stderr.splitlines()
+        assert len(using_lines) == 1
+        assert using_lines[0] == (
+            f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base"
+            "; gh pr view failed or found no PR, so no open-PR base was checked"
+        )
+
+    @pytest.mark.parametrize(
+        "state_reply",
+        [
+            pytest.param("OPEN\nstack\n", id="open-pr-agreeing-with-the-key"),
+            pytest.param("MERGED\nmain\n", id="merged-pr"),
+            pytest.param("", id="exit-0-empty-reply"),
+        ],
+    )
+    def test_gh_pr_view_exiting_zero_leaves_the_using_line_without_the_clause(self, tmp_path, state_reply):
+        """The clause fires on a non-zero gh exit only, not on a reply the parser reads as no open PR."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, state_reply))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base\n"
+
+    def test_open_pr_agreeing_with_the_key_diffs_only_the_branches_own_commits(self, tmp_path):
         local, _bare = _make_stacked_repo(tmp_path)
 
         result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\nstack\n"))
@@ -916,17 +950,6 @@ class TestStackBaseKeyPath:
 
         assert result.returncode == 0, result.stderr
         assert "diff --git a/staged.txt b/staged.txt" in result.stdout
-
-
-def _lib_hash_diff_text(text: str) -> str:
-    """Shell out to the real _lib_hash_diff_text against `text`."""
-    result = subprocess.run(
-        ["bash", "-c", f'. "{_LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
 
 
 def _lib_cumulative_diff_hash(repo_root: str, pr_diff_script: str, env: dict) -> str:

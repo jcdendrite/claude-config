@@ -265,10 +265,16 @@ class TestStackBaseKey:
 
         assert result.returncode == 1
         assert result.stdout == ""
+        assert result.stderr.count("\n") == 1
         assert result.stderr.startswith("branch-divergence-status.sh:")
         assert f"branch.{_STACKED_BRANCH}.gh-merge-base" in result.stderr
         assert "fetch failed" in result.stderr
         assert "retry the command before changing the key" in result.stderr
+        assert 'run "git ls-remote origin refs/heads/stack":' in result.stderr
+        assert "if it prints nothing, the base is not on origin" in result.stderr
+        assert '"git fetch origin +refs/heads/stack:refs/remotes/origin/stack" by hand' in result.stderr
+        assert "is stack, which cannot be used as the stack base" in result.stderr
+        assert "The engineer runs the fix, not the agent" in result.stderr
 
     def test_verify_stops_when_a_fetch_reports_success_but_the_ref_is_missing(self, tmp_path):
         """The verify, not the fetch status, is what keeps an unresolvable ref from being measured."""

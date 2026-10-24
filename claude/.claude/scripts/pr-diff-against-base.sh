@@ -2,12 +2,17 @@
 # Prints the cumulative PR-vs-base diff /ready-for-review's step 3
 # reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
 # <base-branch> is the stack base in `git config branch.<branch>.gh-merge-base`
-# when that key is set, else the open PR's base, else the default branch. With
-# the key set the script uses its value or exits 1 with one stderr line: the
-# value is unusable, no merge-base resolves against origin/<value>, or an OPEN
-# PR targets another base. Any _lib_configured_stack_base status other than 0
-# and 1 also exits 1 with that helper's own line, a git read failure included,
-# and that stop can fire with no key set. It never fetches.
+# when that key is set, else the open PR's base, else the default branch.
+# With the key set, the script uses its value or exits 1 with one stderr line.
+# Each of these stops exits 1:
+# - The value is unusable.
+# - No merge-base resolves against origin/<value>.
+# - An OPEN PR targets another base.
+# - _lib_configured_stack_base returns a status other than 0 and 1, printing
+#   its own line. A git read failure is one such stop, and it can fire with no key set.
+# On the key path, a `gh pr view` that exits non-zero adds a clause to the
+# `using branch.<b>.gh-merge-base` line saying no open-PR base was checked.
+# The script never fetches.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
@@ -82,11 +87,14 @@ else
     STACK_BRANCH="${STACK_BASE_INFO%% *}"
     BASE_REF="${STACK_BASE_INFO#* }"
     # A merged or closed PR's base is ignored; only an OPEN PR can disagree.
-    # A gh failure or a reply that is not two lines reads as no open PR,
-    # as a gh failure does on the no-key path.
+    # A gh failure or a reply that is not two lines reads as no open PR.
+    # Only a gh failure sets GH_PR_VIEW_FAILED, which the `using` line reports.
     PR_BASE=""
+    GH_PR_VIEW_FAILED=0
     if PR_REPLY=$(gh pr view --json state,baseRefName --jq '.state, .baseRefName' 2>/dev/null); then
       PR_BASE=$(_lib_open_pr_base "$PR_REPLY") || PR_BASE=""
+    else
+      GH_PR_VIEW_FAILED=1
     fi
     if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "$BASE_REF" ]; then
       # %q-quoted because a valid branch name can still hold shell metacharacters,
@@ -121,7 +129,11 @@ else
   fi
   # After the merge-base resolves, so a merge-base stop prints one line.
   if [ -n "$STACK_BRANCH" ]; then
-    printf 'pr-diff-against-base.sh: using branch.%s.gh-merge-base = %s as the base\n' "$STACK_BRANCH" "$BASE_REF" >&2
+    GH_FAILED_CLAUSE=""
+    if [ "$GH_PR_VIEW_FAILED" -eq 1 ]; then
+      GH_FAILED_CLAUSE="; gh pr view failed or found no PR, so no open-PR base was checked"
+    fi
+    printf 'pr-diff-against-base.sh: using branch.%s.gh-merge-base = %s as the base%s\n' "$STACK_BRANCH" "$BASE_REF" "$GH_FAILED_CLAUSE" >&2
   fi
 
   # The cumulative arm uses plumbing `git diff-tree`, so porcelain-only diff config

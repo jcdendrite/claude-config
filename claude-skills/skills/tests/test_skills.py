@@ -5285,9 +5285,9 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
 # `-`, because the agent composes the quoted command before the helper can
 # validate anything. It then halts unless the recipe confirms the base.
 _PINNED_STEP1_STACK_BASE_CHARSET_CLAUSE = (
-    "run it only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, "
-    "0-9, `.`, `_`, `/` and `-` and neither starts with `-` (otherwise ask "
-    "the engineer)."
+    "Run the command only when both `<branch>` and `<stack-base>` hold just "
+    "A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, and neither starts with `-`. "
+    "Otherwise, ask the engineer."
 )
 _PINNED_STEP1_STACK_BASE_HALT_CLAUSE = (
     "Halt unless the next bullet's recipe prints `Base branch: <stack-base>`."
@@ -5295,11 +5295,11 @@ _PINNED_STEP1_STACK_BASE_HALT_CLAUSE = (
 # The provenance clause keeps the key set only from the engineer's own words.
 _PINNED_STEP1_STACK_BASE_TRIGGER_CLAUSE = (
     "When the engineer has said this branch is stacked on another branch, run "
-    "`git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet:"
+    "`git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet."
 )
 _PINNED_STEP1_STACK_BASE_PROVENANCE_CLAUSE = (
-    "only `<stack-base>` comes from their words (no `origin/` prefix, never inferred), "
-    "and run it only when"
+    "Only `<stack-base>` comes from the engineer's words, with no `origin/` prefix "
+    "and never inferred."
 )
 
 
@@ -7199,12 +7199,12 @@ class TestReadyForReviewStep6BehindBaseRule:
 # and never route to /git-feature-branch-sync, whose detection runs the same
 # script. Mirrors ready-for-review step 6's pinned recipe-failure clause.
 _PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE = (
-    "When the recipe exits non-zero, re-run it once; if it fails again, abort "
-    "the skill, printing a message that names the PR number (captured in step "
-    "1), says the recipe was already re-run once, gives the recipe's stderr "
-    "and ends with the engineer's next action (fix the cause the stderr "
-    "names, then re-invoke `/respond-pr`), and do not route to "
-    "`/git-feature-branch-sync`, whose detection runs the same script."
+    "When the recipe exits non-zero, re-run it once. If it fails again, abort "
+    "the skill. The abort message names the PR number (captured in step 1), "
+    "says the recipe was already re-run once, gives the recipe's stderr, and "
+    "ends with the engineer's next action (fix the cause the stderr names, "
+    "then re-invoke `/respond-pr`). Do not route to "
+    "`/git-feature-branch-sync`, because its detection runs the same script."
 )
 
 

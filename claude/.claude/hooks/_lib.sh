@@ -1491,7 +1491,7 @@ _lib_configured_stack_base() {
   esac
   # check-ref-format accepts shell metacharacters, quotes and bidi controls;
   # the value reaches stop lines and commands the engineer copies, so the set is narrower.
-  # The letters are listed out because a bracket range follows the locale's collation order.
+  # The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
   case "$value" in
     *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*)
       _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'"
