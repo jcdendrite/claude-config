@@ -375,6 +375,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`require-stow-reminder.sh`'s deny text no longer says every new file needs `./install.sh`.**
   - It names README § "Updating after git pull" for the rule, and its example PR-body line is conditional.
   - The trigger narrows: a file added under a top-level entry that already exists on `main` no longer raises the reminder, and a file moved into a new top-level entry now does.
+- **The "could not source _lib.sh" deny of 26 more gate hooks now points at `docs/hooks.md` § "Gate deadlock recovery" and says the user, not the agent, runs `./install.sh`,** instead of telling the session to run it.
+  - `docs/hooks.md` now frames the real-directory hooks layout, where the hooks directory is a real directory of per-file links, as unsupported.
 - **`update-claude-config-plugins.sh` now handles `local`-scope entries like `project`-scope ones and no longer aborts on a failed update.**
   - `local`-scope entries are now filtered to the current repo like `project`-scope ones, unless `--all-projects` is passed.
   - Every project- or local-scope update now runs from inside the entry's `projectPath`, with or without `--all-projects`.
