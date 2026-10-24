@@ -366,7 +366,8 @@ Run these steps from the worktree root, for each phase.
      - the rollback statement (M11);
      - the manifest: each target file, each range's anchors with the base lines they resolved to, and each moved name's target file;
      - each declared locator edit, with its old and new text (M8);
-     - M5's post-delete line counts.
+     - M5's post-delete line counts;
+     - for every run of `test-ids`, `nodes`, `remainder`, the comment-block check and its seeded copy in steps 2–4, the command's printed output and exit status, labelled with the step and the input files it ran on.
 1. **Scoped suite.**
    - Stage the new files with `git add -- <paths>` (row 15).
    - Run `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -m "not timing"`, then the same command with `-m timing -n0`. Every selected test passes.
