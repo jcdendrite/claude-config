@@ -449,7 +449,7 @@ class TestSelectPytestTargets:
     def test_hooks_dir_shell_script_change_also_selects_skills_tests(self):
         """test_skills.py's test_scripts_doc_claims_about_code_review_callers_hold
         (SKILLS_TESTS_DIR) scans claude/.claude/hooks/*.sh for a caller of the
-        legacy staged-artifact mode docs/scripts.md says has none.
+        `--staged --diff-file` mode docs/scripts.md says has none.
         Without this cross-domain exception, a hook that adds such a caller
         leaves that check unrun."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])

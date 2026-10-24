@@ -48,7 +48,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 ## Disposition of #1103's known hook gaps
 
 - **Fixed here:** the Write-arm's general `/tmp` exemption (a create-only, session-bound `/review-pr` findings case remains, recorded under Decisions), and the overclaim in the hook's "flip to deny" comment.
-- **Retained, owned by #1295, reaching only `Plan`:**
+- **Retained, owned by #1295, reaching only `Plan` (with the qualifiers in the `Plan` bullet under "How each agent is contained"):**
   - the closed enumeration of write forms (`rm`, `ln`, the source of `mv`, interpreter writes, tools' output flags such as `git diff --output`, `sed -ni`, `--in-place`, a bare `&`, a redirect glued to the word before it, fd-numbered redirects);
   - the `/tmp` link gap and the writability of all of `/tmp`, including `/tmp/$VAR` and `$(cmd)` targets;
   - the leaf hard-link half of that gap (the symlink half rests on the Write tool's refusal);
@@ -61,7 +61,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 
 - Withholding fails open when a predicate's tool fails, and it does not cover a credential value inside a file that is not credential-named.
 - Withholding copies the data-file name rules only. A non-data-named file over the size threshold with a small diff reaches the lane `.diff` unblocked, though a direct `Read` of it is denied. The hook's lane-size block covers only a lane file over the threshold.
-- The three Read gates (`deny-env-reads.sh`, `deny-data-file-reads.sh`, `deny-credential-file-reads.sh`) match `Read` only, and no PreToolUse hook gates `Grep`. A persona's `Grep` of a withheld or credential path therefore meets no gate. The shared Input contract's "look for no other route" sentence applies only after a denied `Read` of a lane file, not to a `Grep` of a path the persona never read. `redact-credential-values.sh` is wired on `Grep` results (the PostToolUse matcher in `claude/.claude/settings.json` lists `Bash|Read|WebFetch|Grep|Task`), and its limits are in `docs/security-hardening.md` § "Limitations". Whether the `settings.json` `Read` deny rules reach `Grep` is unverified. No `Grep` gate is added.
+- The three Read gates (`deny-env-reads.sh`, `deny-data-file-reads.sh`, `deny-credential-file-reads.sh`) match `Read` only, and no PreToolUse hook gates `Grep`. A persona's `Grep` of a withheld or credential path therefore meets no gate. The Input contract bars a targeted `Read` or `Grep` of a withheld path, but a tree-wide `Grep` can still match one. `redact-credential-values.sh` is wired on `Grep` results (the PostToolUse matcher in `claude/.claude/settings.json` lists `Bash|Read|WebFetch|Grep|Task`), and its limits are in `docs/security-hardening.md` § "Limitations". Whether the `settings.json` `Read` deny rules reach `Grep` is unverified. No `Grep` gate is added.
 - A call ended by `SIGKILL` (or an untrapped signal) leaves a temp directory outside the repository that may hold withheld bytes, to be deleted by hand, and `SIGKILL` also leaves `agent-reviews/.<stem>.<kind>.*` lane temps. Nothing detects either.
 - The ignore check proves the folder rule ignores each lane-file kind, not every stem (row 109).
 - A script defect on an untested repository shape halts `/code-review` until fixed. The escape is a commit from the engineer's own terminal.
@@ -72,7 +72,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 - Lane files are bounded per lane except the `.diff`, which is unbounded, and nothing sweeps them.
 - The listing is uncapped, so above the harness's output limit the orchestrator reads the full output file.
 - A wrong in-range listing number is detected only by the orchestrator's `LANE_ROW:` comparison.
-- `/ready-for-review` still prints the whole cumulative diff into the session (#1296). The leak predates this change and the change leaves that skill unedited.
+- `/ready-for-review` still prints the whole cumulative diff into the session (#1296). The leak predates this change and the change leaves that skill unedited. That skill also leaves `pr-diff-against-base.sh`'s `--record` and `--diff-file` copies of the whole cumulative diff, withheld blocks included, under the config directory. `docs/scripts.md` § "Script reference" (that script's entry) says when each is written and removed. A session that never reaches `marker.sh deactivate ready-for-review` leaves the diff-file copy on disk, and nothing detects it. Step 4 hands that path to `skill-fidelity-reviewer` when the branch invoked a skill. No built-in name rule in a Read gate matches either directory.
 
 ## Alternatives set aside
 

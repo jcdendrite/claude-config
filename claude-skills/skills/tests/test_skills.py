@@ -5496,7 +5496,7 @@ def test_scripts_doc_claims_about_code_review_callers_hold() -> None:
     """docs/scripts.md states that `/code-review` runs `--context-files` and
     that no in-repo caller uses `--staged --diff-file`. The first holds while
     the skill's note carries the recipe; the second while no skill, agent,
-    hook or script invokes the legacy staged artifact mode.
+    hook or script invokes the `--staged --diff-file` mode.
     """
     scripts_doc = (REPO_ROOT / "docs" / "scripts.md").read_text()
     assert "`/code-review` runs the `--context-files` mode below" in scripts_doc

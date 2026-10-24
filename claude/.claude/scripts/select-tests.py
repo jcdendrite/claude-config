@@ -731,7 +731,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # exact-path constant. A read of any other file type would need one.
 # test_skills.py's test_scripts_doc_claims_about_code_review_callers_hold
 # (SKILLS_TESTS_DIR) also scans claude/.claude/hooks/*.sh for a caller of
-# pr-diff-against-base.sh's legacy staged-artifact mode.
+# pr-diff-against-base.sh's --staged --diff-file mode.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the

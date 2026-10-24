@@ -72,6 +72,13 @@ REVIEWER_INPUT_DENIED_READ_SENTENCE = (
     f"§ \"{CONTEXT_FILES_HALT_HEADING}\"."
 )
 
+# The persona sentence that bars a `Read` or `Grep` of a withheld path. The shared Input contract and
+# comment-discipline-reviewer's bespoke contract both state it.
+# What it leaves open is in `docs/design-decisions/reviewer-personas-hold-no-bash.md` § "Residuals".
+REVIEWER_INPUT_WITHHELD_BAR_SENTENCE = (
+    "A withheld path is one the `Read` gates deny, so neither `Read` nor `Grep` it."
+)
+
 # The field order of a lane index row, as docs/scripts.md states it; a rename or copy row appends its old path.
 LANE_INDEX_ROW_FIELDS = ("status", "lane", "base", "history", "notes", "path")
 
@@ -1448,16 +1455,24 @@ def ignore_agent_reviews(repo: Path) -> None:
     assert check.returncode == 0, f"agent-reviews/ is not ignored in {repo} after writing {exclude_file}"
 
 
+def git_config_isolation_env(config_home: Path) -> dict[str, str]:
+    """The variables that keep the contributor's git configuration and default global ignore file out of git's
+    verdicts. `config_home` stands in for XDG_CONFIG_HOME, which covers both $XDG_CONFIG_HOME/git/config and
+    $XDG_CONFIG_HOME/git/ignore (read even when no config names it), and the caller creates it.
+    GIT_CONFIG_GLOBAL needs git 2.32 (git's RelNotes/2.32.0), so on the README's git 2.31 floor only ~/.gitconfig
+    stays unisolated. GIT_CONFIG_NOSYSTEM and the XDG_CONFIG_HOME redirect work on 2.31."""
+    return {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": str(config_home),
+    }
+
+
 def isolated_git_config_env(home: Path) -> dict[str, str]:
     """Environment that keeps ambient git config from changing an ignore verdict. `home` is created if
     absent and stands in for both HOME and XDG_CONFIG_HOME."""
     home.mkdir(parents=True, exist_ok=True)
-    return {
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home),
-    }
+    return {**git_config_isolation_env(home), "HOME": str(home)}
 
 
 def unwrapped_check_ignore_status(repo: Path, relative_path: str, env: dict[str, str]) -> int:

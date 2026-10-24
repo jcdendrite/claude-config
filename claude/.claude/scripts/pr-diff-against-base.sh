@@ -45,7 +45,7 @@ _resolve_base_ref() {
 }
 
 # ---------------------------------------------------------------- --context-files mode
-# The functions down to the argument loop belong to this mode; the legacy modes never call them.
+# The functions down to the argument loop belong to this mode; the other modes never call them.
 
 CONTEXT_STEP=''         # the step the EXIT trap names when a command fails under set -e
 CONTEXT_EXIT_KIND=''    # deliberate (the script's own exit 2 or 3), halted (a halt printed its line) or signal

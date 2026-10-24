@@ -305,7 +305,7 @@ _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 # Every double-quoted denial string in this hook must not hold a backtick: inside a double-quoted string it runs a command substitution.
 DENIAL_DISCIPLINE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool."
-# The Bash arm's denial text. `Plan` is the only roster member that reaches it.
+# The Bash arm's denial text. `Plan` is the only roster member that reaches it, with the qualifiers stated at the top of this header.
 SANCTIONED_ALTERNATIVE="$DENIAL_DISCIPLINE Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
 # The Write arm's denial text: a reviewer has no scratch directory, so it names only the findings file.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # _pr-diff-lib.sh -- parsing, formatting and checking helpers for pr-diff-against-base.sh's --context-files mode.
 #
-# Sourced lazily by pr-diff-against-base.sh inside that mode only, so the legacy modes never depend on it.
+# Sourced lazily by pr-diff-against-base.sh inside that mode only, so the other modes never depend on it.
 # Not executable on its own; source it, do not invoke it directly.
 # A function returns its result in PR_DIFF_RESULT or in a documented PR_DIFF_* array, never on stdout, so a caller inside a per-path loop forks nothing.
 # test_pr_diff_lib.py sources this file directly; docs/scripts.md describes the mode itself.

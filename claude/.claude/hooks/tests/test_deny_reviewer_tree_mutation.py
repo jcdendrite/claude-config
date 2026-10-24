@@ -31,7 +31,8 @@ HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 
 # The first four sentences below are the denial discipline deny-reviewer-tree-mutation.sh
 # puts in its Bash-arm denial text. `Plan` is the only roster member that reaches
-# that arm, so they are its only discipline. The Write arm repeats only the
+# that arm, with the qualifiers stated at the top of the hook's header, so they
+# are its only discipline. The Write arm repeats only the
 # no-retry and read-tool sentences. DENIAL_INLINE_FALLBACK_SENTENCE is the Write arm's
 # own; the Bash-arm text lacks it.
 DENIAL_LINK_SENTENCE = (
@@ -1728,6 +1729,29 @@ class TestKnownGapBypass:
         """A persona's Write tool reaches the Write arm, which exempts no /tmp path except a new own-persona file in the
         session's /review-pr findings directory, which `/tmp/d/file` is not. Pins path shape only: no link is created."""
         _assert_write_arm_denied(write_input("/tmp/d/file", agent_type="ciso-reviewer"))
+
+    # These pin the CURRENT (imperfect) allow verdicts for the Write arm's path forms that `git check-ignore -q` judges
+    # as ignored without describing the file written. Each case sits under its Known gaps entry in the hook header:
+    # the `<repo>/.git/refs/heads/agent-reviews/` reach, and the `~` and leading `:/` path forms. A fix to either entry
+    # should make the matching assertion start failing; update it to "deny" then, not silently accept it.
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".git/refs/heads/agent-reviews/staff-sdet-1700000000-x.md",
+            "~/agent-reviews/staff-sdet-1700000000-x.md",
+            ":/agent-reviews/staff-sdet-1700000000-x.md",
+        ],
+        ids=["git-refs-heads-reach", "tilde-form", "leading-pathspec-magic-form"],
+    )
+    def test_persona_write_path_form_ignore_check_misjudges_allowed(self, repo_ignoring_agent_reviews, path):
+        payload = write_input(path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews))
+        _assert_clean_allow(payload)
+
+    def test_persona_write_absolute_git_refs_heads_reach_misjudges_allowed(self, repo_ignoring_agent_reviews):
+        """Pins the absolute-path spelling of the `git-refs-heads-reach` case, the shape the production Write tool sends."""
+        path = str(repo_ignoring_agent_reviews / ".git/refs/heads/agent-reviews/staff-sdet-1700000000-x.md")
+        payload = write_input(path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews))
+        _assert_clean_allow(payload)
 
     # Pins the deny boundary for `Plan`, the roster member that reaches the Bash arm. This `>` redirect form is not
     # the `git diff --output=src/x` flag form that `test_reviewer_git_write_shape_not_inspected_allowed`'s

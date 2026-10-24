@@ -34,6 +34,7 @@ from helpers import (
     LANE_INDEX_ROW_FIELDS,
     assert_cap_engaged,
     cumulative_review_value,
+    git_config_isolation_env,
     isolated_git_diff,
     isolated_git_env,
     require_cumulative_review_value,
@@ -1707,8 +1708,8 @@ def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: t
 
     A fresh TMPDIR lets a test assert the private temp directory is gone; HOME and CLAUDE_CONFIG_DIR keep the opt-in
     credential-file-guard.md lookup off the contributor's real files.
-    XDG_CONFIG_HOME keeps git off the contributor's global ignore file ($XDG_CONFIG_HOME/git/ignore), which an
-    inherited value would otherwise select despite the isolated HOME.
+    `git_config_isolation_env` keeps git off the contributor's global config and ignore file, which an inherited
+    XDG_CONFIG_HOME would otherwise select despite the isolated HOME; its docstring holds the git version floor.
     """
     env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "DIRENV_"))}
     gh_dir = tmp_path / "gh_shim"
@@ -1721,9 +1722,7 @@ def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: t
         TMPDIR=str(tmp_path / "tmp"),
         HOME=str(tmp_path / "home"),
         CLAUDE_CONFIG_DIR=str(tmp_path / "isolated-claude-config"),
-        XDG_CONFIG_HOME=str(tmp_path / "xdg-config"),
-        GIT_CONFIG_GLOBAL=os.devnull,
-        GIT_CONFIG_NOSYSTEM="1",
+        **git_config_isolation_env(tmp_path / "xdg-config"),
         PATH=os.pathsep.join([*(str(path) for path in extra_path), str(gh_dir), os.environ["PATH"]]),
     )
     env.update(extra_env)
@@ -2709,7 +2708,7 @@ class TestContextUsageErrors:
         for flag in named:
             assert flag in stderr
 
-    def test_missing_lib_exits_2_with_the_install_hint_while_the_legacy_modes_never_need_it(self, tmp_path):
+    def test_missing_lib_exits_2_with_the_install_hint_while_staged_mode_runs_without_it(self, tmp_path):
         """A pull without a re-run installer leaves a non-folded install without _pr-diff-lib.sh."""
         layout = tmp_path / "layout"
         (layout / "scripts").mkdir(parents=True)
@@ -2722,7 +2721,7 @@ class TestContextUsageErrors:
             [str(layout / "scripts" / "pr-diff-against-base.sh"), "--staged", "--context-files", _SUFFIX, "--list"],
             cwd=repo, env=env, capture_output=True, text=True, check=False,
         )
-        legacy = subprocess.run(
+        staged_without_context_files = subprocess.run(
             [str(layout / "scripts" / "pr-diff-against-base.sh"), "--staged"],
             cwd=repo, env=env, capture_output=True, text=True, check=False,
         )
@@ -2733,8 +2732,8 @@ class TestContextUsageErrors:
             "pr-diff-against-base.sh: could not source _pr-diff-lib.sh "
             "(run ./install.sh to pick up script files this update added)\n"
         )
-        assert legacy.returncode == 0
-        assert "diff --git a/one.txt b/one.txt" in legacy.stdout
+        assert staged_without_context_files.returncode == 0
+        assert "diff --git a/one.txt b/one.txt" in staged_without_context_files.stdout
 
     def test_usage_error_wins_over_a_failing_shared_diff_call(self, tmp_path):
         """An out-of-range number exits 2 even when the later shared `git diff` call is shimmed to fail."""
@@ -5757,9 +5756,12 @@ class TestScriptsDocHaltsSection:
     def test_every_halt_pointer_the_script_prints_names_an_existing_heading(self):
         assert f"\n## {CONTEXT_FILES_HALT_HEADING}\n" in _SCRIPTS_DOC.read_text()
 
-    @pytest.mark.parametrize("step", _step_names())
-    def test_the_section_holds_a_remedy_entry_for_each_step_name(self, step):
-        assert f"\n- **`{step}`** — " in _halts_section()
+    def test_the_section_holds_a_remedy_entry_for_each_step_name(self):
+        section = _halts_section()
+
+        steps_without_entry = [step for step in _step_names() if f"\n- **`{step}`** — " not in section]
+
+        assert steps_without_entry == []
 
     @pytest.mark.parametrize(
         "token",

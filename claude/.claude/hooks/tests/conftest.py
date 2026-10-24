@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    git_config_isolation_env,
     git_toplevel,
     init_git_repo_with_commit,
     install_shell_exec_guard,
@@ -461,16 +462,12 @@ def _guard_shell_exec(monkeypatch):
 @pytest.fixture
 def isolated_git_environment(monkeypatch, tmp_path_factory):
     """Keep the contributor's own git configuration out of a test's git calls and hook subprocesses, so an ignore
-    verdict comes from the fixture repository alone. Isolates the global and system config files, the default global
-    ignore file ($XDG_CONFIG_HOME/git/ignore, read even when no config names it), and removes every inherited GIT_*
-    variable. HOME is left alone. Global-config isolation depends on GIT_CONFIG_GLOBAL, which git added in 2.32
-    (git's RelNotes/2.32.0), so on the README's git 2.31 floor only ~/.gitconfig stays unisolated. GIT_CONFIG_NOSYSTEM
-    and the XDG_CONFIG_HOME redirect (which covers both $XDG_CONFIG_HOME/git/config and git/ignore) work on 2.31."""
+    verdict comes from the fixture repository alone. Sets the variables `git_config_isolation_env` returns (see its
+    docstring for the git version floor) and removes every inherited GIT_* variable first. HOME is left alone."""
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+    for name, value in git_config_isolation_env(tmp_path_factory.mktemp("xdg-config")).items():
+        monkeypatch.setenv(name, value)
 
 
 @pytest.fixture(autouse=True)

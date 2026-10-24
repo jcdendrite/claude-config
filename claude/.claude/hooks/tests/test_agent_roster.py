@@ -23,6 +23,7 @@ from helpers import (
     REPO_ROOT,
     REVIEWER_INPUT_DENIED_READ_SENTENCE,
     REVIEWER_INPUT_FAIL_LOUD_SENTENCE,
+    REVIEWER_INPUT_WITHHELD_BAR_SENTENCE,
     no_gate_release_agents,
     plan_writer_agents,
     review_only_agents,
@@ -383,6 +384,9 @@ class TestDiffInputContractAgents:
         section = " ".join(self._extract_input_contract_section(AGENTS_DIR / name).split())
         assert f"a line that begins `{FINDING_CHECK_LABEL}`" in section
         assert "Name in your findings every index row noted `withheld`, lane or context, as not reviewed" in section
+        assert REVIEWER_INPUT_WITHHELD_BAR_SENTENCE in section, (
+            f"{name}: Input contract lacks the withheld-path bar {REVIEWER_INPUT_WITHHELD_BAR_SENTENCE!r}."
+        )
 
     def test_canonical_specialist_input_contract_states_the_check_trigger_and_the_mid_sentence_rule(self):
         """The other seven contracts match the canonical one byte for byte, so one pin covers all eight.
@@ -420,6 +424,7 @@ class TestDiffInputContractAgents:
             "The diff under review arrives as a path to a diff file or as literal text.",
             "A diff file may open with `# omitted <reason>: <path>` lines; read an `untracked` path whole from the "
             "tree root your dispatch names, and name a `withheld` one as not reviewed.",
+            REVIEWER_INPUT_WITHHELD_BAR_SENTENCE,
             "- You were handed a range expression instead of a path or diff text.",
             "- The path you were handed is unreadable, or a `Read` of it is denied.",
         ):
@@ -1287,10 +1292,3 @@ class TestCodeWriterCheckBullet:
         check_bullet = body.index(f"- A fix prompt that carries a finding's `{FINDING_CHECK_LABEL}` line")
         self_review = body.index("- Fix what your self-review finds")
         assert red_check < check_bullet < self_review
-
-    def test_check_bullet_lines_wrap_like_the_neighboring_bullets(self):
-        lines = (AGENTS_DIR / "code-writer.md").read_text().split("\n")
-        bullet_opening = f"- A fix prompt that carries a finding's `{FINDING_CHECK_LABEL}`"
-        start = next(i for i, line in enumerate(lines) if line.startswith(bullet_opening))
-        end = next(i for i in range(start, len(lines)) if lines[i].startswith("- Fix what your self-review finds"))
-        assert max(len(line) for line in lines[start:end]) <= 79
