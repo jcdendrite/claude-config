@@ -22,4 +22,3 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
         check=False,
         env=env,
     )
-

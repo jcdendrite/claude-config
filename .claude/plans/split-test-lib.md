@@ -402,7 +402,7 @@ Run these steps from the worktree root, for each phase.
      - Rerun the check with the seeded copy's path in place of that file's. The copy keeps the file's name, which the map keys on. The run must exit non-zero and name that file.
    - Step 5 covers the `import-diff` findings.
 5. **Lint.** `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/` reports nothing. F401 and F821 prove that each file imports exactly what it reads.
-6. **Size.** `wc -l` shows at most 1,000 lines for `test_lib.py`, `_lib_sh_helpers.py` and each new file.
+6. **Size.** In every phase, `wc -l` shows at most 1,000 lines for `_lib_sh_helpers.py` and each file that phase creates. After phase 4 it also shows at most 1,000 for `test_lib.py`. Phases 1–3 check no size for `test_lib.py`, since its residual reaches the limit only after phase 4.
 7. **Citations.**
    - Run `git grep -n 'test_lib\.py' -- . ':!docs/reports' ':!.claude/plans'`. Every hit names a test or helper that is still in `test_lib.py`, apart from three stale hits that predate the split (row 20): `test_require_memory_skill.py:31`, `test_require_plan_review.py:47` and `.claude/rules/bash-unit-test-seams.md:19`.
    - `git diff --name-only <base>` lists only this phase's Critical files.
