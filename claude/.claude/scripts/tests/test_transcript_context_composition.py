@@ -1,23 +1,16 @@
-"""Tests for transcript-analysis.py's context-composition subcommand.
+"""Tests for transcript_analysis/context_composition.py's context-composition subcommand.
 
 Every fixture here is synthetic -- hand-built records, never sampled or copied from a real
 transcript. See .claude/plans/context-composition-analyzer.md for the algorithm this pins.
 """
-import importlib.util
 import math
 import re
-import sys
 from pathlib import Path
 
 import pytest
+from transcript_analysis import context_composition, corpus, read_scope, scope, subagents
 
 from .conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-_spec = importlib.util.spec_from_file_location("transcript_analysis_context_composition", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _context_composition_args(
@@ -49,7 +42,7 @@ class TestReconciliationIdentity:
             _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
         ]
         records[1]["message"]["usage"] = {"input_tokens": 150}  # hand-picked: 100 (item) + 50 (target)
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["residuals"] == [[50]]
 
 
@@ -70,16 +63,16 @@ class TestReconciliationGateIsPerSequence:
         ]
         seq_b[1]["message"]["usage"] = {"input_tokens": 310}  # residual = 310 - 10 = 300
 
-        stats_a = _mod._scan_context_composition_session([seq_a], None)
-        stats_b = _mod._scan_context_composition_session([seq_b], None)
+        stats_a = context_composition._scan_context_composition_session([seq_a], None)
+        stats_b = context_composition._scan_context_composition_session([seq_b], None)
         assert stats_a["residuals"] == [[50]]
         assert stats_b["residuals"] == [[300]]
 
-        stats = _mod._new_context_composition_stats()
-        _mod._merge_context_composition_stats(stats, stats_a)
-        _mod._merge_context_composition_stats(stats, stats_b)
+        stats = context_composition._new_context_composition_stats()
+        context_composition._merge_context_composition_stats(stats, stats_a)
+        context_composition._merge_context_composition_stats(stats, stats_b)
 
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" not in out
 
@@ -106,16 +99,16 @@ class TestRankingStability:
             "cache_creation_input_tokens": 5,
             "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 5},
         }
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["residuals"] == [[0, 0]]
 
-        big_category = f"{_mod._CATEGORY_TOOL_RESULT}:unknown"
-        small_category = _mod._CATEGORY_ASSISTANT_TEXT
+        big_category = f"{context_composition._CATEGORY_TOOL_RESULT}:unknown"
+        small_category = context_composition._CATEGORY_ASSISTANT_TEXT
         # Direct comparison on the computed data, immune to report-formatting changes -- the
         # text-position check below additionally pins the printed report's own ranking order.
         assert stats["weighted_by_category"][big_category] > stats["weighted_by_category"][small_category]
 
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" not in out
         assert big_category in out and small_category in out
@@ -140,10 +133,10 @@ class TestRankingStability:
         records[1]["message"]["usage"] = {"input_tokens": 50}  # static prefix only; "hi" rounds to 0 est
         # Real tokenizer billed the CJK text at ~300 tokens (3x the chars // 4 estimate of 100).
         records[3]["message"]["usage"] = {"input_tokens": 350}  # 50 (static) + 300 (real CJK cost)
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["residuals"] == [[50, 250]]
 
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" in out
         assert "## Category" not in out
@@ -151,11 +144,11 @@ class TestRankingStability:
 
 class TestRefusalGate:
     def test_below_threshold_prints_ranking(self, capsys):
-        stats = _mod._new_context_composition_stats()
+        stats = context_composition._new_context_composition_stats()
         stats["residuals"] = [[100, 100]]  # instability 0.0, well under threshold
         stats["weighted_by_category"]["user_text"] = 42.0
         stats["item_counts"]["user_text"] = 1
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" not in out
         assert "user_text" in out
@@ -163,10 +156,10 @@ class TestRefusalGate:
     def test_at_or_above_threshold_refuses(self, capsys):
         """Instability computed as exactly the threshold (0.5) still refuses -- the comparison
         is '>=', not '>'."""
-        stats = _mod._new_context_composition_stats()
+        stats = context_composition._new_context_composition_stats()
         stats["residuals"] = [[75, 125]]  # mean=100, spread=50, instability=50/100=0.5 -- exactly the threshold
         stats["weighted_by_category"]["user_text"] = 42.0
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" in out
         assert "## Category" not in out
@@ -177,7 +170,7 @@ class TestNegativeResidualInstability:
         """A negative residual (context_at_turn undercounts the reconstructed resident size) is
         unconditionally maximally unstable, distinct from the finite range/mean value the formula
         would otherwise compute from these same two numbers."""
-        assert _mod._context_composition_residual_instability([-5, 10]) == math.inf
+        assert context_composition._context_composition_residual_instability([-5, 10]) == math.inf
 
     def test_negative_residual_from_real_sequence_triggers_refusal(self, capsys):
         """usage.input_tokens (10) undercounts the 100-tok item actually introduced that turn,
@@ -188,21 +181,21 @@ class TestNegativeResidualInstability:
             _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
         ]
         records[1]["message"]["usage"] = {"input_tokens": 10}  # residual = 10 - 100 = -90
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["residuals"] == [[-90]]
 
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" in out
 
 
 class TestEmptyScan:
     def test_residual_instability_of_empty_sequence_is_zero(self):
-        assert _mod._context_composition_residual_instability([]) == 0.0
+        assert context_composition._context_composition_residual_instability([]) == 0.0
 
     def test_report_on_fresh_stats_prints_nothing_scanned_without_raising(self, capsys):
-        stats = _mod._new_context_composition_stats()
-        _mod._print_context_composition_report(stats, "")
+        stats = context_composition._new_context_composition_stats()
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "turns: 0 (nothing scanned)" in out
         assert "REFUSED" not in out
@@ -236,7 +229,7 @@ class TestCompaction:
         seq2[1]["message"]["usage"] = {"cache_creation_input_tokens": 1}
 
         group = [*seq1, compact_boundary, *seq2]
-        stats = _mod._scan_context_composition_session([group], None)
+        stats = context_composition._scan_context_composition_session([group], None)
 
         assert stats["sequences_scanned"] == 2
         assert stats["turns_scanned"] == 3  # 2 turns in seq1, 1 turn in seq2
@@ -251,7 +244,7 @@ class TestCompaction:
         # 10*1.45=14.5 -- 1 token-turn higher than the correct 13.5 asserted here.
         assert stats["weighted_by_category"]["user_text"] == pytest.approx(13.5 + 1.25)
         # And it must not leak into seq2's own (differently-categorized) item either.
-        assert stats["weighted_by_category"][f"{_mod._CATEGORY_TOOL_RESULT}:unknown"] == pytest.approx(1.25)
+        assert stats["weighted_by_category"][f"{context_composition._CATEGORY_TOOL_RESULT}:unknown"] == pytest.approx(1.25)
 
     def test_mid_file_compact_boundary_splits_sequence(self):
         records = [
@@ -263,7 +256,7 @@ class TestCompaction:
         ]
         records[1]["message"]["usage"] = {"input_tokens": 1}
         records[4]["message"]["usage"] = {"input_tokens": 1}
-        sequences = _mod._split_context_sequences(records)
+        sequences = context_composition._split_context_sequences(records)
         assert len(sequences) == 2
         assert len(sequences[0]) == 2
         assert len(sequences[1]) == 2
@@ -278,7 +271,7 @@ class TestCompaction:
         ]
         records[0]["message"]["usage"] = {"input_tokens": 900_000}
         records[1]["message"]["usage"] = {"input_tokens": 100}
-        sequences = _mod._split_context_sequences(records)
+        sequences = context_composition._split_context_sequences(records)
         assert len(sequences) == 1
         assert len(sequences[0]) == 2
 
@@ -304,7 +297,7 @@ class TestCompaction:
         records[1]["message"]["usage"] = {"input_tokens": 10}
         records[5]["message"]["usage"] = {"input_tokens": 30}
 
-        sequences = _mod._split_context_sequences(records)
+        sequences = context_composition._split_context_sequences(records)
         assert len(sequences) == 3
         assert [len(s) for s in sequences] == [2, 2, 2]
         assert not any(bool(rec.get("isSidechain")) for rec in sequences[0])
@@ -332,10 +325,10 @@ class TestRequestIdMerge:
         ]
         records[1]["message"]["usage"] = {"input_tokens": 100}
         records[2]["message"]["usage"] = {"input_tokens": 100}  # identical input_tokens -- no drift
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["turns_scanned"] == 1
         # Both content blocks landed in the merged turn's content, not just the first record's.
-        assert stats["item_counts"][_mod._CATEGORY_ASSISTANT_TEXT] == 2
+        assert stats["item_counts"][context_composition._CATEGORY_ASSISTANT_TEXT] == 2
 
 
 class TestSinceCutoff:
@@ -354,8 +347,8 @@ class TestSinceCutoff:
             "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 10},
         }
         records[2]["message"]["usage"] = {"cache_read_input_tokens": 10}
-        since_ts = _mod._parse_ts("2026-05-19T09:30:00.000Z")
-        stats = _mod._scan_context_composition_sequence(records, since_ts)
+        since_ts = corpus._parse_ts("2026-05-19T09:30:00.000Z")
+        stats = context_composition._scan_context_composition_sequence(records, since_ts)
 
         assert stats["since_excluded_turns"] == 1  # turn0 only
         # write_mult[0] excluded (0.0); read_mult[1] in-window (0.1) -- a bug that failed to
@@ -379,11 +372,11 @@ class TestLastTurnResidency:
             ),
         ]
         records[1]["message"]["usage"] = {"input_tokens": 1}
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # The assistant's own text block is classified (counted) but contributes zero weighted
         # token-turns -- it was generated on the sequence's only/last turn and never sent back.
-        assert stats["item_counts"][_mod._CATEGORY_ASSISTANT_TEXT] == 1
-        assert _mod._CATEGORY_ASSISTANT_TEXT not in stats["weighted_by_category"]
+        assert stats["item_counts"][context_composition._CATEGORY_ASSISTANT_TEXT] == 1
+        assert context_composition._CATEGORY_ASSISTANT_TEXT not in stats["weighted_by_category"]
 
 
 class TestRateWeighting:
@@ -410,10 +403,10 @@ class TestRateWeighting:
             "cache_creation_input_tokens": 10,
             "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 10},
         }
-        stats_1h = _mod._scan_context_composition_session([seq_1h], None)
-        stats_5m = _mod._scan_context_composition_session([seq_5m], None)
-        weighted_1h = stats_1h["weighted_by_category"][_mod._CATEGORY_USER_TEXT]
-        weighted_5m = stats_5m["weighted_by_category"][_mod._CATEGORY_USER_TEXT]
+        stats_1h = context_composition._scan_context_composition_session([seq_1h], None)
+        stats_5m = context_composition._scan_context_composition_session([seq_5m], None)
+        weighted_1h = stats_1h["weighted_by_category"][context_composition._CATEGORY_USER_TEXT]
+        weighted_5m = stats_5m["weighted_by_category"][context_composition._CATEGORY_USER_TEXT]
         assert weighted_1h == pytest.approx(10 * 2.0)
         assert weighted_5m == pytest.approx(10 * 1.25)
         assert weighted_1h > weighted_5m
@@ -444,7 +437,7 @@ class TestRateWeighting:
         }
         records[4]["message"]["usage"] = {"cache_read_input_tokens": 18}
 
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
 
         # Item A: last_turn=2. write_mult[0] = (10*2 + 5*1.25) / 15 = 1.75. read_span =
         # read_mult[1] + read_mult[2] = 0.1 + 0.1 = 0.2. per_item = 1.95. weighted = 10*1.95=19.5.
@@ -452,7 +445,7 @@ class TestRateWeighting:
 
         # Item B: last_turn=2. write_mult[1] = (0*2 + 8*1.25)/8 = 1.25. read_span =
         # read_mult[2] = 0.1. per_item = 1.35. weighted = 20*1.35 = 27.0.
-        assert stats["weighted_by_category"][f"{_mod._CATEGORY_TOOL_RESULT}:unknown"] == pytest.approx(27.0)
+        assert stats["weighted_by_category"][f"{context_composition._CATEGORY_TOOL_RESULT}:unknown"] == pytest.approx(27.0)
 
     def test_blended_write_tier_isolated_via_zero_read_span(self):
         """Same blended-tier usage as item A above (both eph_1h and eph_5m nonzero on one turn),
@@ -467,7 +460,7 @@ class TestRateWeighting:
             "cache_creation_input_tokens": 15,
             "cache_creation": {"ephemeral_1h_input_tokens": 10, "ephemeral_5m_input_tokens": 5},
         }
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # write_mult[0] = (10*2 + 5*1.25) / 15 = 1.75, read_span = 0 (no turn after intro).
         assert stats["weighted_by_category"]["user_text"] == pytest.approx(10 * 1.75)
 
@@ -481,7 +474,7 @@ class TestRateWeighting:
             _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
         ]
         records[1]["message"]["usage"] = {"input_tokens": 100}  # no cache_creation fields at all
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # write_mult[0] = 1.0 (plain input rate); a bug using the 5m-tier fallback would give 12.5.
         assert stats["weighted_by_category"]["user_text"] == pytest.approx(10.0)
 
@@ -496,7 +489,7 @@ class TestIntroducedVsResidentSplit:
             _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z"),
         ]
         records[1]["message"]["usage"] = {"input_tokens": 100}
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["introduced_size_total"] == stats["actual_new_size_total"] == 100
 
     def test_persistent_mismatch_surfaces_in_report_as_ambiguous_not_as_a_rate_bug(self, capsys):
@@ -519,12 +512,12 @@ class TestIntroducedVsResidentSplit:
             "cache_read_input_tokens": 65, "cache_creation_input_tokens": 5,
             "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 5},
         }
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert stats["residuals"] == [[50, 50]]
         assert stats["introduced_size_total"] == 20
         assert stats["actual_new_size_total"] == 10
 
-        _mod._print_context_composition_report(stats, "")
+        context_composition._print_context_composition_report(stats, "")
         out = capsys.readouterr().out
         assert "REFUSED" not in out
         assert "ambiguous" in out
@@ -552,7 +545,7 @@ class TestFastModeAndGeoWeighting:
         records[2]["message"]["usage"] = {"cache_read_input_tokens": 1, "speed": "fast"}
         records[3]["message"]["usage"] = {"cache_read_input_tokens": 1, "inference_geo": "us"}
 
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # write_mult[0] = 1.25 (5m tier, no scale). read_mult[1] = 0.1 * 2 (fast) = 0.2.
         # read_mult[2] = 0.1 * 1.1 (us geo) = 0.11. per_item = 1.25 + 0.2 + 0.11 = 1.56.
         # weighted = 10 * 1.56 = 15.6 -- a bug that dropped the scale would give 10*1.45=14.5.
@@ -573,7 +566,7 @@ class TestFastModeAndGeoWeighting:
         }
         records[2]["message"]["usage"] = {"cache_read_input_tokens": 1, "speed": "fast", "inference_geo": "us"}
 
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # write_mult[0] = 1.25 (5m tier, no scale). read_mult[1] = 0.1 * 2 * 1.1 = 0.22 (combined).
         # per_item = 1.25 + 0.22 = 1.47. weighted = 10 * 1.47 = 14.7 -- a bug that applied only one
         # factor would give 10*(1.25+0.2)=14.5 (fast alone) or 10*(1.25+0.11)=13.6 (geo alone).
@@ -602,7 +595,7 @@ class TestRedaction:
 
     def test_needle_absent_from_default_redacted_output(self, fake_projects, capsys):
         self._seed_needle_session(fake_projects)
-        _mod._context_composition_report(_context_composition_args())
+        context_composition._context_composition_report(_context_composition_args())
         combined = "".join(capsys.readouterr())
         assert self._FAKE_PATH not in combined
         assert self._FAKE_SESSION_UUID not in combined
@@ -611,9 +604,9 @@ class TestRedaction:
         """--no-redact prints the DO NOT PUBLISH banner but the report itself carries no
         text content to leak in the first place -- the needle stays absent either way."""
         self._seed_needle_session(fake_projects)
-        _mod._context_composition_report(_context_composition_args(no_redact=True))
+        context_composition._context_composition_report(_context_composition_args(no_redact=True))
         combined = "".join(capsys.readouterr())
-        assert _mod._DO_NOT_PUBLISH_BANNER in combined
+        assert scope._DO_NOT_PUBLISH_BANNER in combined
         assert self._FAKE_PATH not in combined
         assert self._FAKE_SESSION_UUID not in combined
 
@@ -628,7 +621,7 @@ class TestRedaction:
         regardless of `redact`."""
         self._seed_needle_session(fake_projects)
         real_root_parent = str(fake_projects.parent.parent)  # config_dir(), the segment redact hides
-        _mod.cmd_context_composition(_context_composition_args())
+        context_composition.cmd_context_composition(_context_composition_args())
         out = capsys.readouterr().out
         assert "context-composition: account-1: scanned" in out
         assert real_root_parent not in out
@@ -639,7 +632,7 @@ class TestRedaction:
         prints and the account-N label does not."""
         self._seed_needle_session(fake_projects)
         real_root_parent = str(fake_projects.parent.parent)
-        _mod.cmd_context_composition(_context_composition_args(no_redact=True))
+        context_composition.cmd_context_composition(_context_composition_args(no_redact=True))
         out = capsys.readouterr().out
         assert real_root_parent in out
         assert "account-1" not in out
@@ -648,10 +641,10 @@ class TestRedaction:
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
         self._seed_needle_session(default_dir / "projects")
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_context_composition(
+            context_composition.cmd_context_composition(
                 _context_composition_args(no_redact=True, extra_config_dirs=[str(acct_b)])
             )
         assert exc_info.value.code == 2
@@ -680,10 +673,10 @@ class TestRedaction:
         ]
         records[1]["message"]["usage"] = {"input_tokens": 100}  # keeps the residual non-negative
         _write_jsonl(proj / f"{self._FAKE_SESSION_UUID}.jsonl", records)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
 
-        _mod.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
+        context_composition.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
 
         assert "## Category" in out  # confirms the scan wasn't refused -- the table actually printed
@@ -704,10 +697,10 @@ class TestRedaction:
         proj_a_recs = [_asst("claude-sonnet-5", content=[{"type": "text", "text": "hello"}], ts="2026-05-19T10:00:00.000Z")]
         proj_a_recs[0]["message"]["usage"] = {"input_tokens": 1}
         _write_jsonl(proj_a / "sess.jsonl", proj_a_recs)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
 
-        _mod.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
+        context_composition.cmd_context_composition(_context_composition_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
 
         scan_summary_re = re.compile(r"^(WARNING: )?context-composition: account-\d+: (scanned|cannot scan|no transcripts found)")
@@ -723,33 +716,8 @@ class TestDirectCallerDefenseInDepth:
         calling it directly with roots=[...] rather than through cmd_context_composition."""
         args = _context_composition_args(no_redact=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod._context_composition_report(args, roots=[tmp_path / "root-a", tmp_path / "root-b"])
+            context_composition._context_composition_report(args, roots=[tmp_path / "root-a", tmp_path / "root-b"])
         assert exc_info.value.code == 2
-
-
-class TestConfigDirRouting:
-    def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
-        assert "context-composition" in _mod._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
-
-    def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
-        other_account = tmp_path / "other-account"
-        (other_account / "projects").mkdir(parents=True)
-        active_config_dir = tmp_path / "active-account"
-        (active_config_dir / "projects").mkdir(parents=True)
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active_config_dir))
-
-        monkeypatch.setattr(
-            sys, "argv",
-            ["transcript-analysis.py", "--config-dir", str(other_account), "context-composition"],
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
-
-        assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.scope.PROJECTS_DIR
-        err = capsys.readouterr().err
-        assert "--config-dir" in err
-        assert "context-composition" in err
 
 
 class TestCategoryCoverage:
@@ -774,19 +742,19 @@ class TestCategoryCoverage:
     def test_every_item_lands_in_exactly_one_category(self):
         records = self._mixed_shape_records()
         records[1]["message"]["usage"] = {"input_tokens": 1}
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         # 2 items in the first user record (text + image) + 3 in the assistant record
         # (thinking + tool_use + text) + 1 in the closing user record (tool_result) = 6.
         assert sum(stats["item_counts"].values()) == 6
         assert stats["unclassified_count"] == 1
-        assert stats["item_counts"][_mod._CATEGORY_UNCLASSIFIED] == 1
+        assert stats["item_counts"][context_composition._CATEGORY_UNCLASSIFIED] == 1
 
     def test_unclassified_shape_increments_counter_only_never_content(self):
         """The unclassified image block's own payload ('not-real-image-bytes') never appears
         anywhere in the returned stats structure -- only its structural size and a count."""
         records = self._mixed_shape_records()
         records[1]["message"]["usage"] = {"input_tokens": 1}
-        stats = _mod._scan_context_composition_session([records], None)
+        stats = context_composition._scan_context_composition_session([records], None)
         assert "not-real-image-bytes" not in repr(stats)
 
 
@@ -795,23 +763,23 @@ class TestClassifyContentItem:
     only indirectly through full sequences."""
 
     def test_compact_summary_text_classified_distinctly_from_a_fresh_prompt(self):
-        category, size = _mod._classify_content_item("user", "carried forward digest", is_compact_summary=True)
-        assert category == _mod._CATEGORY_COMPACT_SUMMARY
-        assert size == len("carried forward digest") // _mod._READ_SCOPE_CHARS_PER_TOKEN
+        category, size = context_composition._classify_content_item("user", "carried forward digest", is_compact_summary=True)
+        assert category == context_composition._CATEGORY_COMPACT_SUMMARY
+        assert size == len("carried forward digest") // read_scope._READ_SCOPE_CHARS_PER_TOKEN
 
     def test_ordinary_user_text_classified_as_user_text(self):
-        category, _size = _mod._classify_content_item("user", "hello", is_compact_summary=False)
-        assert category == _mod._CATEGORY_USER_TEXT
+        category, _size = context_composition._classify_content_item("user", "hello", is_compact_summary=False)
+        assert category == context_composition._CATEGORY_USER_TEXT
 
     def test_thinking_block_classified_as_assistant_thinking(self):
-        category, size = _mod._classify_content_item("assistant", {"type": "thinking", "thinking": "abcd"})
-        assert category == _mod._CATEGORY_ASSISTANT_THINKING
+        category, size = context_composition._classify_content_item("assistant", {"type": "thinking", "thinking": "abcd"})
+        assert category == context_composition._CATEGORY_ASSISTANT_THINKING
         assert size == 1
 
     def test_tool_use_sized_from_its_input_payload(self):
         block = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}
-        category, size = _mod._classify_content_item("assistant", block)
-        assert category == _mod._CATEGORY_TOOL_CALL
+        category, size = context_composition._classify_content_item("assistant", block)
+        assert category == context_composition._CATEGORY_TOOL_CALL
         assert size >= 0
 
     def test_mcp_tool_name_not_exposed_by_classify_itself(self):
@@ -819,10 +787,10 @@ class TestClassifyContentItem:
         MCP-name collapse happens in the sequence scan's own tool_name_by_id bookkeeping, using
         _normalize_composition_tool_name (asserted separately below)."""
         block = _agent_use("t1", "staff-backend-engineer", tool_name="mcp__github__list_prs")
-        category, _size = _mod._classify_content_item("assistant", block)
-        assert category == _mod._CATEGORY_TOOL_CALL
+        category, _size = context_composition._classify_content_item("assistant", block)
+        assert category == context_composition._CATEGORY_TOOL_CALL
 
     def test_normalize_composition_tool_name_collapses_mcp_names(self):
-        assert _mod._normalize_composition_tool_name("mcp__github__list_prs") == _mod._MCP_TOOL_BUCKET_LABEL
-        assert _mod._normalize_composition_tool_name("Bash") == "Bash"
-        assert _mod._normalize_composition_tool_name(None) == "unknown"
+        assert context_composition._normalize_composition_tool_name("mcp__github__list_prs") == subagents._MCP_TOOL_BUCKET_LABEL
+        assert context_composition._normalize_composition_tool_name("Bash") == "Bash"
+        assert context_composition._normalize_composition_tool_name(None) == "unknown"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -116,6 +117,8 @@ def test_transcript_analysis_turn_shape_samples_subprocess_finds_seeded_session(
 
     assert result.returncode == 0, result.stderr
     assert "DO NOT PUBLISH" in result.stdout
+    # The seed's one single-call turn is under samples' minimum streak (2), so this fails if holdout's handler is bound here.
+    assert "length=" not in result.stdout
 
 
 def test_transcript_analysis_turn_shape_holdout_samples_help_exits_zero():
@@ -147,6 +150,8 @@ def test_transcript_analysis_turn_shape_holdout_samples_subprocess_finds_seeded_
 
     assert result.returncode == 0, result.stderr
     assert "DO NOT PUBLISH" in result.stdout
+    # The seed's one single-call turn matches holdout's streak length (1), so this fails if samples' handler is bound here.
+    assert "length=1" in result.stdout
 
 
 def test_transcript_analysis_buckets_subprocess_finds_seeded_session(tmp_path):
@@ -571,6 +576,180 @@ def test_transcript_analysis_session_signal_subprocess_finds_seeded_session(tmp_
     )
     if argv[0] == "friction-count":
         assert json.loads(result.stdout)["failed_test_runs"] == 1
+
+
+def _seed_git_and_sessions_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one main-thread session holding a `git commit` Bash call and
+    one split subagent file beside it, so pr-link, commit-gate, and sessions each have something to print.
+    Returns the config dir."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    subagent_dir = proj / "bootstrap-sessions-probe" / "subagents"
+    subagent_dir.mkdir(parents=True)
+    branch = "bootstrap-git"
+    _write_jsonl(proj / "bootstrap-sessions-probe.jsonl", [
+        _asst("claude-sonnet-5", branch=branch, ts="2026-05-19T10:00:00.000Z",
+              content=[_bash_use("t1", "git commit -m wip")]),
+    ])
+    _write_jsonl(subagent_dir / "agent-probe.jsonl", [
+        _asst("claude-sonnet-5", branch=branch, ts="2026-05-19T10:01:00.000Z", sidechain=True),
+    ])
+    return config_dir
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_token"),
+    [
+        ("pr-link", "--author"),
+        ("commit-gate", "--by-permission-mode"),
+        ("sessions", "--include-subagents"),
+    ],
+    ids=["pr-link", "commit-gate", "sessions"],
+)
+def test_transcript_analysis_git_and_sessions_help_exits_zero(command, expected_token):
+    """Proves, in a fresh interpreter, that build_parser calls the pr-link, commit-gate, and sessions registrars."""
+    result = _run("transcript-analysis.py", command, "--help")
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout
+
+
+def _assert_pr_link_seeded_cells(stdout: str) -> None:
+    # The gh-err row has five cells against six header labels, so max_labels stops at Sonnet.
+    cols = _table_cols(stdout, header_contains="Branch", row_contains="bootstrap-git", max_labels=4)
+    assert cols["Sonnet"] == "1", cols
+
+
+def _assert_commit_gate_seeded_cells(stdout: str) -> None:
+    # The seed's 2026-05-19T10:00:00Z commit falls in ISO week 2026-W21.
+    cols = _table_cols(stdout, header_contains="skill/1k", row_contains="2026-W21", row_startswith=True)
+    assert (cols["commits"], cols["wo-skill"]) == ("1", "1"), cols
+
+
+def _assert_sessions_seeded_paths(stdout: str) -> None:
+    paths = stdout.splitlines()
+    assert [Path(line).name for line in paths] == ["bootstrap-sessions-probe.jsonl", "agent-probe.jsonl"], stdout
+    assert all(Path(line).is_absolute() for line in paths), stdout
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_token", "assert_seeded_cells"),
+    [
+        (("pr-link", "--repo", "owner/repo", "--branches", "bootstrap-git"), "gh-err", _assert_pr_link_seeded_cells),
+        (("commit-gate", "code-review"), "skill/1k", _assert_commit_gate_seeded_cells),
+        (("sessions", "--paths", "--include-subagents"), "agent-probe.jsonl", _assert_sessions_seeded_paths),
+    ],
+    ids=["pr-link", "commit-gate", "sessions"],
+)
+def test_transcript_analysis_git_and_sessions_subprocess_finds_seeded_session(
+    tmp_path, argv, expected_token, assert_seeded_cells
+):
+    """Proves, in a fresh interpreter, that real argparse dispatches pr-link, commit-gate, and sessions each to its
+    own handler through set_defaults(func=...). PATH holds no gh binary, so pr-link prints its gh-err row without a
+    network call."""
+    config_dir = _seed_git_and_sessions_account(tmp_path)
+    empty_path_dir = tmp_path / "empty-path"
+    empty_path_dir.mkdir()
+
+    result = _run(
+        "transcript-analysis.py", "--config-dir", str(config_dir), *argv,
+        env={**os.environ, "PATH": str(empty_path_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout, (
+        f"seeded session's {argv[0]} output never surfaced the handler's token: {result.stdout!r}"
+    )
+    assert_seeded_cells(result.stdout)
+
+
+@pytest.mark.parametrize(
+    ("command", "flag_tokens"),
+    [
+        # The usage-line form [--no-redact], because each registrar's --config-dir help also names --no-redact.
+        ("context-distribution", ("--since", "[--no-redact]")),
+        ("context-composition", ("--since", "[--no-redact]")),
+        ("cache-efficiency", ("[--no-redact]",)),
+    ],
+    ids=["context-distribution", "context-composition", "cache-efficiency"],
+)
+def test_transcript_analysis_context_and_cache_help_exits_zero(command, flag_tokens):
+    """Proves, in a fresh interpreter, that build_parser calls the context-distribution, context-composition, and
+    cache-efficiency registrars, and that each registrar still adds its --no-redact flag and, where it has one, its
+    --since flag."""
+    result = _run("transcript-analysis.py", command, "--help")
+    assert result.returncode == 0, result.stderr
+    assert f"transcript-analysis.py {command}" in result.stdout
+    for flag_token in flag_tokens:
+        assert flag_token in result.stdout
+
+
+def _assert_context_distribution_seeded_cells(stdout: str) -> None:
+    assert re.search(r"Sessions in scope: 1(?=\s)", stdout), stdout
+    assert re.search(r"Total priced dollars: 2\.00(?=\s)", stdout), stdout
+
+
+def _assert_context_composition_seeded_cells(stdout: str) -> None:
+    assert re.search(r"Sequences scanned: 1(?=\s)", stdout), stdout
+    assert re.search(r"Turns scanned: 1(?=\s)", stdout), stdout
+
+
+def _assert_cache_efficiency_seeded_cells(stdout: str) -> None:
+    # Two roots print three `Thread` headers, one per table; occurrence=1 reads the all-roots table.
+    cols = _table_cols(stdout, header_contains="Thread", row_contains="main", occurrence=1)
+    assert cols["Turns"] == "1", cols
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_token", "resolved_root_token", "assert_seeded_cells"),
+    [
+        (
+            "context-distribution",
+            "## Context distribution report",
+            "context-distribution: account-2: scanned 0 transcripts",
+            _assert_context_distribution_seeded_cells,
+        ),
+        (
+            "context-composition",
+            "## Context composition report",
+            "context-composition: account-2: scanned 0 transcripts",
+            _assert_context_composition_seeded_cells,
+        ),
+        (
+            "cache-efficiency",
+            "## Cache efficiency by thread",
+            "### account-2",
+            _assert_cache_efficiency_seeded_cells,
+        ),
+    ],
+    ids=["context-distribution", "context-composition", "cache-efficiency"],
+)
+def test_transcript_analysis_context_and_cache_subprocess_finds_seeded_session(
+    tmp_path, command, expected_token, resolved_root_token, assert_seeded_cells
+):
+    """Proves, in a fresh interpreter, that real argparse dispatches context-distribution, context-composition, and
+    cache-efficiency each to its own cmd_* handler through set_defaults(func=...), and that the subcommand-level
+    --config-dir reaches _resolve_cost_roots. All three refuse the top-level --config-dir, so _isolated_config_env
+    pins the first account and the subcommand flag adds an empty second one."""
+    config_dir = _seed_priced_account(tmp_path)
+    # scope._redaction_ordinals numbers roots by sorted resolved path.
+    # "account2" sorts after the "account" directory _seed_priced_account creates.
+    # So the extra root is account-2 in all three resolved_root_token cases.
+    extra_config_dir = tmp_path / "account2"
+    (extra_config_dir / "projects").mkdir(parents=True)
+
+    result = _run(
+        "transcript-analysis.py", command, "--config-dir", str(extra_config_dir),
+        env=_isolated_config_env(config_dir, tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_token in result.stdout, (
+        f"{command} never printed its own report heading {expected_token!r}: {result.stdout!r}"
+    )
+    assert resolved_root_token in result.stdout, (
+        f"{command} never resolved the --config-dir root through _resolve_cost_roots: {result.stdout!r}"
+    )
+    assert_seeded_cells(result.stdout)
 
 
 def test_transcript_analysis_read_scope_help_exits_zero():
