@@ -2128,6 +2128,8 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_plan_shape.py",
      "claude-skills/skills/plan-it/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_pr_create_preflight.py",
+     "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
      "claude-skills/skills/resume-context/SKILL.md"),
 )
