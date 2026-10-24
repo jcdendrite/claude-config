@@ -747,3 +747,5 @@ Reopening would need:
 - Citations that carry repo-relative paths.
 
 No code, skill, hook, or test change ships from this investigation.
+
+**2026-10-24 follow-up:** the suggested-fix-wording form of the lever above is adopted by judgment, not by measurement; the rule lives in `code-review/SKILL.md` § "Output format". The `code-writer` form stays deferred.

@@ -1253,26 +1253,137 @@ class TestAuditFindingKeepsEachMatchOnOneLine:
         assert long_name not in result.stderr
         assert f'"{"d" * path_limit}...[truncated]"' in result.stderr
 
-    def test_a_stop_document_that_cannot_be_formatted_prints_a_fixed_line_with_the_match_count(
+    def test_a_stop_document_whose_paths_cannot_be_recorded_aborts_after_the_fixed_match_count_line(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """The unformattable document is never echoed: `[1, 2]` has no `path`
-        field to print, and its own text must not reach stderr."""
+        """`[1, 2]` has no string `path` to record, so the run aborts: the audit matched, but a
+        finding whose paths no later check could confirm must not be reported as one. The
+        document's own text never reaches stderr."""
         _install_audit_script_that_runs(
             isolated_home,
             "import sys\nprint('{\"stop\": true, \"matches\": [1, 2]}')\nsys.exit(1)\n",
         )
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        assert not _git_commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
         )
-        assert result.returncode == 0, result.stderr
-        assert "AUDIT_FINDING" in result.stderr
+        assert result.returncode == 2, result.stderr
+        assert not _git_commit_is_present(repo, base_sha), "the abort comes before the base fetch"
+        assert "the passive-execution audit matched paths" in result.stderr
+        assert "could not be recorded" in result.stderr
         assert (
             "the audit reported 2 matched path(s), but its match list could not be formatted for display"
             in result.stderr
         )
+        assert "AUDIT_FINDING" not in result.stderr
         assert "[1, 2]" not in result.stderr
+        assert result.stdout == ""
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not (active_dir / f"{SID}.diff").exists()
+        assert not (active_dir / f"{SID}.provenance").exists()
+        assert not any(call[:2] == ["pr", "diff"] for call in _read_calls(call_log))
+
+
+# The characters Python's str.splitlines() treats as line boundaries that the gh shim passes through unchanged.
+# Built with chr() so no raw separator sits in this source.
+_LINE_SEPARATOR_CODEPOINTS = (0x0A, 0x0D, 0x0B, 0x85, 0x2028, 0x2029)
+
+_ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+_DIFF_ONLY_DISCLOSURE = "Reviewed from the PR diff only — no checkout, no checks run."
+
+
+class TestAuditPathsRecordedInProvenance:
+    @staticmethod
+    def _provenance(home: Path) -> Path:
+        return home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+
+    def test_a_clean_audit_records_an_empty_audit_paths_array_as_the_last_provenance_line(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"])
+        assert result.returncode == 0, result.stderr
+        assert self._provenance(isolated_home).read_text().splitlines()[-1] == "audit_paths=[]"
+
+    def test_a_stop_records_every_matched_path_in_order_and_none_that_did_not_match(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=[".claude/hooks/pre.sh", "docs/CLAUDE.md", ".claude/hooks/dir x/a=b*c$d.sh", "a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        fields = _provenance_fields(self._provenance(isolated_home))
+        assert json.loads(fields["audit_paths"]) == [
+            ".claude/hooks/pre.sh", "docs/CLAUDE.md", ".claude/hooks/dir x/a=b*c$d.sh",
+        ]
+        assert fields["mode"] == "diff-only"
+
+    @pytest.mark.parametrize("separator_codepoint", _LINE_SEPARATOR_CODEPOINTS, ids=hex)
+    def test_a_matched_name_holding_a_line_separator_cannot_forge_another_provenance_field(
+        self, isolated_home, repo_with_pr_ref, tmp_path, separator_codepoint
+    ):
+        """The name tries to start a `mode=checkout` line. The recorded value must stay one
+        printable-ASCII line, so the provenance keeps its six lines and its real mode."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        forging_name = ".claude/hooks/x" + chr(separator_codepoint) + "mode=checkout"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[forging_name],
+        )
+        assert result.returncode == 0, result.stderr
+        provenance = self._provenance(isolated_home)
+        assert len(provenance.read_text().splitlines()) == 6
+        fields = _provenance_fields(provenance)
+        assert fields["mode"] == "diff-only"
+        assert json.loads(fields["audit_paths"]) == [forging_name]
+
+    def test_a_marker_write_after_a_stop_over_more_paths_than_the_list_limit_needs_every_span(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Runs the diff script, then the real marker.sh. The refusal leg drops only the last
+        span, which the refusal must name. The passing leg names all of them. Each span is built
+        here from its name, not through the library."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        match_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        matched_names = [f".claude/hooks/hook{index:02d}.sh" for index in range(match_limit + 1)]
+        result, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=matched_names)
+        assert result.returncode == 0, result.stderr
+        spans = [f"`{name}`" for name in matched_names]
+        body_path = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.body"
+
+        def write_body_naming(named_spans: list[str]) -> None:
+            findings = "".join(f"- blocking: {span}\n" for span in named_spans)
+            body_path.write_text(
+                f"**[Claude Code]** # findings\n\n{findings}\n{_DIFF_ONLY_DISCLOSURE}\n\n{_ATTRIBUTION_TRAILER}\n"
+            )
+
+        def run_marker_write() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "review-pr"],
+                cwd=repo, env={"HOME": str(isolated_home), "PATH": os.environ["PATH"]},
+                capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            )
+
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        write_body_naming(spans[:-1])
+        refusal = run_marker_write()
+        assert refusal.returncode == 2, refusal.stderr
+        assert f"missing span 1: {spans[-1]}" in refusal.stderr
+        assert "missing span 2" not in refusal.stderr
+        assert not marker_dir.exists() or list(marker_dir.iterdir()) == []
+
+        write_body_naming(spans)
+        acceptance = run_marker_write()
+        assert acceptance.returncode == 0, acceptance.stderr
+        assert len(list(marker_dir.iterdir())) == 1
 
 
 class TestAuditThatReturnsNoVerdictIsNotAFinding:
