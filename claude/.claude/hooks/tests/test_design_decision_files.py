@@ -55,7 +55,8 @@ Assertion 9 checks that the committed regression fixture
 claude/.claude/hooks/tests/fixtures/paragraph-readability.json still names a
 current comment-discipline-reviewer.md angle header. It checks that the
 fixture's hash still matches that angle's current text, so a rewording is
-caught rather than silently drifting from what Phase 2 measured. It checks
+caught rather than silently drifting from what the fixture cells last
+measured. It checks
 that the fixture carries every literal and carve-out excerpt that keeps its
 must_flag/must_pass pair non-vacuous. It lives here because it reuses
 assertion 7's angle-header parser and angle-block boundaries.
@@ -872,7 +873,7 @@ def _paragraph_readability_fixture_violations(
             f"paragraph-readability.json: 'angle_text_sha256' {actual_hash!r} "
             f"does not match the angle's current text (recomputed: "
             f"{expected_hash!r}) -- the angle was reworded. Before updating "
-            "the hash, re-run the three Phase 2 fixture cells: old body on "
+            "the hash, re-run the three fixture cells: old body on "
             "must_flag <= 1/5, new body on must_flag >= 4/5, new body on "
             "must_pass <= 1/5 (see "
             "docs/design-decisions/paragraph-readability-review-angle.md "

@@ -46,9 +46,9 @@ any edit to the angle's wording:
 1. Recompute `angle_text_sha256` from the edited block (the test's failure
    message prints the recomputed value).
 2. Re-run the three fixture cells at K=5 — old body on `must_flag`, new
-   body on `must_flag`, new body on `must_pass` — and confirm the Phase 2
-   bars still hold: old body on `must_flag` ≤ 1/5, new body on `must_flag`
-   ≥ 4/5, new body on `must_pass` ≤ 1/5.
+   body on `must_flag`, new body on `must_pass` — and confirm the
+   fixture-cell bars still hold: old body on `must_flag` ≤ 1/5, new body
+   on `must_flag` ≥ 4/5, new body on `must_pass` ≤ 1/5.
 3. Write the measured rates, date, and model into the fixture's `note`
    field.
 
@@ -93,7 +93,7 @@ Three items were not achieved:
 
 - The pre-angle reviewer's fixture cell missed its bar. The fixture's
   `note` field holds the measured rate.
-- One complaint site scored against Phase 2's pass bar is a known
+- One complaint site caught in at least 2 of 3 runs is a known
   residual. A dense paragraph of mixed rules that already leads with
   its claim draws sentence splits, not a lead plus a list. Its rules
   are mixed in kind. They also sit interleaved with a definition and
@@ -102,7 +102,7 @@ Three items were not achieved:
   need a density rule. `.claude/plans/prose-density-reviewer-gaps.md`'s
   Alternatives list already declines a density mechanism, for the same
   reason.
-- One complaint site scored against Phase 2's pass bar gives no
+- One complaint site caught in at least 2 of 3 runs gives no
   evidence for the new angle. Both the pre-angle reviewer and the
   reviewer with this angle added caught it in every run, so the site
   doesn't separate them.
