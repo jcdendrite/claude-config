@@ -186,7 +186,10 @@ this section.
 **Breaking change: `unpriced_models` now defaults to populated.** `price_sessions_by_utc_day` gained the
 keyword-only `include_unpriced_model_ids` parameter, default `True`. A caller that wants `unpriced_models`
 withheld must now pass `include_unpriced_model_ids=False`. The `unpriced_model_count` field reports the
-count either way.
+count either way. This default diverges from `cost.py`'s own tiering for the identical model-ID exposure
+risk, which gives its automated public-PR-body path only a count and reserves raw IDs for its
+maintainer-only path. The divergence is deliberate, not an oversight: the original withhold-by-default
+design rested on a pre-announcement-name risk that had never been observed in practice.
 
 **Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
 path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
@@ -226,8 +229,9 @@ After a process has printed the usage-drift warning it prints it no more, but ea
   only when the call passed `include_unpriced_model_ids=False`.
   Its entries are `message.model` values, verbatim.
   They are untrusted transcript text of any length.
-  A model ID could carry an account-identifying pre-announcement name if the account has early access to
-  an unreleased model; pass `include_unpriced_model_ids=False` when the caller has nowhere safe to put that.
+  A model ID can carry an account-identifying pre-announcement name when the account has early access to
+  an unreleased model.
+  Pass `include_unpriced_model_ids=False` when the caller has nowhere safe to put that text.
   Also escape entries before rendering.
   `unpriced_model_count` carries no transcript content and is always populated.
   Prefer it over `include_unpriced_model_ids=True` wherever only the count is needed.
