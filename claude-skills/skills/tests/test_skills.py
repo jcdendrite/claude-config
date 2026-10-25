@@ -1903,24 +1903,6 @@ class TestRespondPrDivergencePrecheckFailure:
         )
 
 
-class TestReadyForReviewBodyFileGuard:
-    """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
-
-    The guard protects an unrecoverable state: once a PR exists carrying an
-    empty body, step 5 takes its sync path, which checks a body against branch
-    state rather than authoring one from nothing. A bare `-s` test passes a
-    file holding only a newline -- the shape a truncated write leaves behind --
-    so the check must strip whitespace before testing for content.
-
-    Reverting to `-s` is a silent regression: it reads as equivalent and passes
-    every other test in this suite.
-    """
-
-    def test_body_file_check_strips_whitespace_before_testing_content(self):
-        """step 8's guard must strip whitespace rather than rely on a byte-size test."""
-        assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
-
-
 class TestContinuityFileBucketCrosscheck:
     """Pin the autonomous-vs-authorization bucket cross-check in continuity skills.
 
@@ -6114,6 +6096,57 @@ class TestReadyForReviewContextBudgetDefers:
         assert all(earlier < later for earlier, later in zip(indices, indices[1:], strict=False)), (
             "ready-for-review/SKILL.md: step-1 context-budget clauses no longer appear in "
             f"_PINNED_CONTEXT_BUDGET_CLAUSES's own order (found at indices {indices})."
+        )
+
+
+_READY_FOR_REVIEW_STEP8_HEADING = "## 8. Create PR if missing (skip if PR already exists)"
+
+# ready-for-review clauses the session follows itself; pr-create-preflight.py's tests cover what the script computes.
+_PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES: dict[str, tuple[str, str]] = {
+    "step1_runs_ticket_mode_and_reads_its_output": (
+        _READY_FOR_REVIEW_STEP1_HEADING,
+        "Current branch is not the default branch (`main` / `master` / `develop`). Also run "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py ticket` here for step 5 to consume, and again "
+        "before step 5 if its value is no longer in context. When it exits 0 and prints a `TICKET_ID` line, "
+        "that line's value is the `<TICKET-ID>`, and `none` means there is none. Otherwise halt with every "
+        "`REASON` line, or the command's error if it printed none. When that error says the script file does "
+        "not exist, also tell the engineer to re-run `./install.sh` in their claude-config checkout from a "
+        "separate terminal, which links it.",
+    ),
+    "step8_runs_create_mode_then_chains_it_ahead_of_pr_creation": (
+        _READY_FOR_REVIEW_STEP8_HEADING,
+        "The body is step 5's file; this step composes none of its own. Run "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py create '<path>'`, writing step 5's reported path "
+        "as one single-quoted literal word. It derives the title from the branch and checks the path and the "
+        "file it names. Unless it exits 0 and prints a `TITLE` line, halt with every `REASON` line, or the "
+        "command's error if it printed none, and open no PR. Otherwise open the PR with "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py create '<path>' && gh pr create --title \"<title>\" "
+        "--body-file <path>` as one Bash call, writing the `TITLE` line's value and the same path as "
+        "**literal text** — not a `$VAR` holding either. `gh pr create --body-file` is scanned by a redaction "
+        "gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it "
+        "fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, "
+        "including a retry after a denial, a failure or a rewrite of the body file. A stop it prints halts "
+        "as above.",
+    ),
+}
+
+
+class TestReadyForReviewPreflightScriptClauses:
+    """Pin the ready-for-review clauses that run pr-create-preflight.py and read its output.
+
+    The chained step 8 call is what keeps a failed body check from reaching the PR-creation
+    command, so dropping the `create` prefix from the chain, or the instruction to re-run the
+    whole call on every attempt, silently reopens the empty-body hole.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES))
+    def test_pinned_preflight_clause_matches_live_text(self, clause_key: str) -> None:
+        heading, clause = _PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES[clause_key]
+        raw_section = _raw_heading_section_text(_skill_file("ready-for-review"), heading)
+        _assert_pinned_clause_right_bounded(
+            " ".join(clause.split()),
+            raw_section,
+            context=f"ready-for-review/SKILL.md: the {clause_key!r} clause no longer matches its pinned clause.",
         )
 
 

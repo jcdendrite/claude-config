@@ -693,7 +693,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # would break that test's invariant too.
 # READY_FOR_REVIEW_SKILL_MD (second row): test_findings_path_suffix.py
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
-# own findings_path template text. Same standalone-row rationale as
+# own findings_path template text. test_pr_create_preflight.py
+# (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
+# 1 and 8 name to the script's. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
 # RESUME_CONTEXT_SKILL_MD: test_resume_context_same_session.py
 # (SCRIPTS_TESTS_DIR) reads resume-context/SKILL.md by path, to tie the keys and
