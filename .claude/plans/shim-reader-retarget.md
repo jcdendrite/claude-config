@@ -14,7 +14,7 @@ Intended outcome: every test file imports the package modules it exercises and k
 
 Retarget every `_mod.<name>` read in the 13 test files that load the shim, except `_mod.build_parser` and `_mod.main`, to the owning package module's own binding. Then delete the 83 shim import bindings the shim's own code never reads. The work ships as two PRs cut by test file. PR 1 covers `tests/test_transcript_analysis.py`. PR 2 covers the other 12 files, is cut from `main` after PR 1 merges, and lands last. Each PR has two commits: a pure rename that a forward AST replay proves, then the deletions and prose fixes. No production code changes. CLI help and parser dumps stay byte-identical. Collected test IDs and outcomes stay the same, except that PR 2 adds one ID, the new pin.
 
-Line numbers are at this plan's base, HEAD `bec96afd`. Commit 1 adds import lines at the top of each test file, so the commit-2 edits in test files anchor on content, not line numbers.
+Line numbers and the aggregate counts in Context, Root, and rows 2 and 12 (83 unread bindings, 1,412 and 1,369 reads) are at this plan's base, HEAD `bec96afd`. PR 1's figures were re-derived at `f1a93927` after three rebases: 410 reads, 39 deletions (16 `cmd_*` and 23 leaves), and 84 F401 candidates, which leaves PR 2's 45. PR 2's file totals (965 and its per-file counts) are stale and PR 2 recounts them at its own base (Verification 4). Commit 1 adds import lines at the top of each test file, so the commit-2 edits in test files anchor on content, not line numbers.
 
 **Read form (M1).**
 - A retargeted read is `<binding>.<name>`, where `<binding>` is the file's own binding of the owning module.
@@ -36,11 +36,11 @@ Line numbers are at this plan's base, HEAD `bec96afd`. Commit 1 adds import line
 - `test_transcript_period_cost.py` has six module-level aliases (:37-42), `period_cost = _mod.period_cost` through `render_module = _mod.render`. They are removed, and their loads then read the module binding directly. `cost_module` becomes `cost` at :2501 and :2885, and the other four names stay as they are. `render_module` has no load, so `render` gets no import (row 9).
 
 **PR 1: `tests/test_transcript_analysis.py`.**
-- **Commit 1, the rename.** It retargets 404 reads (row 5) and adds one parenthesized `from transcript_analysis import (…)` statement, which ruff places.
+- **Commit 1, the rename.** It retargets 404 of row 5's 410 reads (the six `render._is_fresh_user_prompt` and `render._is_task_notification` reads land in commit 2, per M3) and adds one parenthesized `from transcript_analysis import (…)` statement, which ruff places.
 - **Commit 2, the semantic changes.**
   - In `TestRootsThreadingSpy`, delete the two `monkeypatch.setattr(_mod, …)` pairs (:2618-2619, :2659-2660) and the three-line "either call shape" comment below each (:2620-2622, :2661-2663). The `scope` patches that follow (:2623-2624, :2664-2665) patch what production reads (row 15). Verification 7's fail control proves this before the deletion.
   - In the same file, fix each docstring or comment line that spells a retargeted read with `_mod.` (e.g. :133). Change only that spelling.
-  - In the shim, delete the 38 bindings whose only reader was this file: 16 test-only `cmd_*` and 22 leaves (row 6).
+  - In the shim, delete the 39 bindings whose only reader was this file: 16 test-only `cmd_*` and 23 leaves (row 6).
     - Remove each one's import line and its `# noqa: F401` rationale.
     - Remove the three aliased-import statements, each with the comment line above it (:200-201, :261-262, :264-265).
     - Remove the `transcript_analysis.corpus` block, which loses all four of its names.
@@ -81,11 +81,11 @@ Line numbers are at this plan's base, HEAD `bec96afd`. Commit 1 adds import line
 - **`tests/test_transcript_analysis_cost_import_direction.py` :7-12 (PR 2).** The docstring's last sentence, from "This guard pins the production import-direction exception only" to its end, becomes "This guard pins the production import-direction exception only, not test files' own `from transcript_analysis import cost` imports, which reach cost.py's private helpers for patching."
 - **`tests/test_transcript_cli_bootstrap.py` :9 (PR 2).** "no `_mod.cmd_*`-style test exercises" becomes "no in-process test exercises".
 
-**Decision: cut by test file, not by binding kind (M2).** Whether a binding can be deleted depends on whether the shim's own code reads it bare, not on its kind (rows 2, 6). A cut by kind would touch every file in both PRs and would leave the production `cmd_*` reads for `cli.py` (row 18). PR 1 takes the one file that holds all 47 test-only `cmd_*` reads, the dead patches, and 38 of the deletions. The dead patches are the only non-mechanical test edit. PR 2 lands last because its deletions need every reader gone. It is cut from `main` after PR 1 merges, and Verification 0 checks that its base contains PR 1 (row 38). Stacking PR 2 on PR 1's branch was set aside: PR 1's squash merge would then force a rebase, and the Rebase rule voids every baseline that a rebase spans. A single PR was weighed. The proofs cost the same at any size, but one PR would put the dead-patch change in the same review as 1,369 mechanical edits.
+**Decision: cut by test file, not by binding kind (M2).** Whether a binding can be deleted depends on whether the shim's own code reads it bare, not on its kind (rows 2, 6). A cut by kind would touch every file in both PRs and would leave the production `cmd_*` reads for `cli.py` (row 18). PR 1 takes the one file that holds all 47 test-only `cmd_*` reads, the dead patches, and 39 of the deletions. The dead patches are the only non-mechanical test edit. PR 2 lands last because its deletions need every reader gone. It is cut from `main` after PR 1 merges, and Verification 0 checks that its base contains PR 1 (row 38). Stacking PR 2 on PR 1's branch was set aside: PR 1's squash merge would then force a rebase, and the Rebase rule voids every baseline that a rebase spans. A single PR was weighed. The proofs cost the same at any size, but one PR would put the dead-patch change in the same review as 1,375 mechanical edits.
 
 **Decision: read package modules directly, not as `_mod.<module>.<name>` (M1).** The documented convention is the `_mod.<module>.<name>` form (doc :782-784). That form would leave about 670 module reads to edit a second time at `cli.py`. `review_rounds`, `author_outcome`, and `audit_routing` have no module binding in the shim (row 2), so that form would also need new noqa'd re-exports, which contradicts G1's end state. The cost is reversing the documented convention, which both PRs' doc edits carry.
 
-**Decision: two commits per PR (M3).** Commit 1 is a pure rename, so the replay can prove it exactly. Commit 2 holds the deletions and prose, which need review attention. A squash merge drops the split, but review and the replay keep it.
+**Decision: two commits per PR (M3).** Commit 1 is a pure rename, so the replay can prove it exactly. PR 1 departs from this in one place: after the third rebase, the six `render._is_fresh_user_prompt` and `render._is_task_notification` retargets sit in commit 2, so commit 1 carries 404 of the 410 reads. The replay proves commit 1 once those six names are rewritten in a scratch copy, and the PR body says so. Commit 2 holds the deletions and prose, which need review attention. A squash merge drops the split, but review and the replay keep it.
 
 **Decision: a scratch replay checker, not a committed tool (M4).** Only the replay catches a wrong-but-existing target or an edit to an assertion that still passes. `nodes --rename` cannot express this table (row 13). A `retarget` subcommand would take `_move_fidelity.py` past the 1,000-line limit (G4, row 14). The checker has two uses, because the `cli.py` phase can prove its own retarget with `nodes` (row 26). Verification 5's seeded defects prove the checker non-vacuous in place of committed self-tests. PR 2 runs a subset of them on its own copies every time, because only PR 2's files reach the alias and aliased-binding paths (row 35). The checker and the codemod come from separate dispatches, so the proof does not just re-run the code it checks.
 
@@ -121,19 +121,19 @@ Line numbers are at this plan's base, HEAD `bec96afd`. Commit 1 adds import line
 3. The shim defines exactly two functions, `build_parser` (:326) and `main` (:1105). No shim function body therefore reads a by-name leaf. `[verified: read; survey item 1]`
 4. Every one of the 13 files reads `_mod.main` or `_mod.build_parser`, 43 reads in all. `[unverified: survey item 2]`
 5. Reads to retarget per file, each file's total minus its `build_parser` and `main` reads:
-   - PR 1: `test_transcript_analysis.py` 404.
+   - PR 1: `test_transcript_analysis.py` 410.
    - PR 2 (965 in all): `test_transcript_cost.py` 389, `_review_rounds` 91, `_cache_rebuild_ttl_rules` 84, `_ledger_common` 82, `_handoff_signal_response` 76, `_pr_cost_gh` 62, `_pr_cost_export` 62, `_plan_boundary` 44, `_cost_counts` 35, `_cache_rebuild` 16, `test_author_outcome.py` 14, and `_period_cost` 10, six of which sit on the alias lines.
 
    `[unverified: survey item 2; Verification 4 recounts]`
 6. Deletion partition:
-   - **PR 1 (38):**
+   - **PR 1 (39):**
      - 16 `cmd_*`: `cmd_buckets`, `cmd_cache_efficiency`, `cmd_commit_gate`, `cmd_context_composition`, `cmd_context_distribution`, `cmd_duration`, `cmd_edit_format`, `cmd_fail_seq`, `cmd_instrument_authoring`, `cmd_judgment_pair`, `cmd_pr_link`, `cmd_sessions`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_struggle`, `cmd_user_input`.
-     - 22 leaves:
+     - 23 leaves:
        - corpus: `SUBAGENT_SUBDIR`, `_parse_ts`, `_read_session_file_partitioned`, `iter_sessions`;
        - cache_efficiency: `_cache_efficiency_report`;
        - pricing: `_cache_miss_reason`, `_dedup_turns_by_request_id`;
        - redaction: `_project_family`, `_repo_tracked_agent_type_names`;
-       - render: `_content_text`, `_fam`, `_is_fresh_user_prompt`, `_sanitize_table_cell`, `_strip_task_notifications`;
+       - render: `_content_text`, `_fam`, `_is_fresh_user_prompt`, `_is_task_notification`, `_sanitize_table_cell`, `_strip_task_notifications`;
        - scope: `_iter_scoped_sessions`, `_parse_absolute_window_args`, `_parse_since_nd_arg`, `_repo_scoped_project_slugs`, `_resolved_scope_header`, `_scan_root_transcripts`, `_print_resolved_scope`, `_resolve_scan_roots`.
    - **PR 2 (45):**
      - 25 leaves:
@@ -394,6 +394,7 @@ Run each git command and each capture as its own literal call. Write seed and co
 3. **Rename dispatch R**, per Critical files, with a fresh `<attempt>`.
 4. **Rename proof.** This proves three things: only table reads changed, each new read is the same object as the old one, and no read changes meaning because of a patch or a local shadow.
    - For each file R touched, `<chk> --shim <shim> --before <scratch>/before-<file> --after <tests>/<file>` exits 0.
+   - In PR 1, commit 1 leaves the six `_mod._is_fresh_user_prompt` and `_mod._is_task_notification` reads in place (M3). For `test_transcript_analysis.py`, copy the file to `<scratch>/after-<file>`, rewrite those six reads to `render.<name>` in the copy, and pass the copy as `--after`. `replaced` is then row 5's 410.
    - `replaced` equals the file's count in row 5. For period_cost, `replaced` is 4, `alias-statements-removed` is 6, and `alias-loads-renamed` is 2. A mismatch stops the run, and the parent reports both numbers.
    - Save each file's `prose:` lines to `<attempt>/prose-<file>.txt` for D.
    - `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/` is clean.
@@ -427,7 +428,7 @@ Run each git command and each capture as its own literal call. Write seed and co
    - Undo the edit by hand, then run `sha256sum -c <attempt>/ctl-dead.sha256`.
    - This proves the `scope` patches are the only ones production reaches. Verification 10's parity then proves that deleting the shim patches leaves the class's outcomes unchanged.
 8. **Deletion set, before D.**
-   - **Candidates:** `scripts/venv-run.sh ruff check --no-cache --select F401 --ignore-noqa <shim>` lists every shim import that the shim's own code leaves unread (row 12). If ruff rejects `--ignore-noqa`, stop and report.
+   - **Candidates:** `scripts/venv-run.sh ruff check --no-cache --select F401 --ignore-noqa <shim>` lists every shim import that the shim's own code leaves unread (row 12). If ruff rejects `--ignore-noqa`, stop and report. Ruff names an aliased import by its original name, so map each candidate to the name the shim binds before grepping: `_dedup_turns_by_request_id`, `_print_resolved_scope`, and `_resolve_scan_roots` appear as `dedup_turns_by_request_id`, `print_resolved_scope`, and `resolve_scan_roots`.
    - **Readers:** run `git grep -ohE "_mod\.(<the candidates, as an alternation>)\b" -- '*.py' | sort | uniq -c`. A hit in a file whose loader does not name `transcript-analysis.py` is inspected and reported, not counted.
    - **Deletion set:** the candidates that have no reader. It must equal row 6's list for this PR. Any difference stops the run.
    - **Probe:** the same `git grep` run at `<base>`, as `git grep -ohE "…" <base> -- '*.py' | sort | uniq -c`, must count every deletion-set name at least once. This proves the scan can see the names it is checking for.
