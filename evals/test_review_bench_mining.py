@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import run_review_bench
+from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from review_bench import defects, mine_pr_comments, mine_review_rounds, mine_szz
 from review_bench.defects import Candidate, ConfirmedDefect
 from transcript_analysis import corpus, review_rounds, reviewer_yield
@@ -215,6 +216,15 @@ def _agent_use(tool_id: str, subagent_type: str) -> dict:
         "type": "tool_use", "id": tool_id, "name": "Agent",
         "input": {"subagent_type": subagent_type, "description": "x", "prompt": "y"},
     }
+
+
+def _edit_use(tool_id: str, path: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Edit", "input": {"file_path": path}}
+
+
+def _task_notification_user(*, ts: str) -> dict:
+    """Mirrors `_task_notification_msg` in the scripts conftest: envelope text plus the harness's `origin` field."""
+    return {**_user(_TASK_NOTIFICATION_TEXT, ts=ts), "origin": {"kind": "task-notification"}}
 
 
 def _write_subagent_dispatch(proj: Path, session_stem: str, agent_id: str, tool_use_id: str, records: list[dict]) -> None:
@@ -1867,6 +1877,65 @@ class TestCollectRoundEntries:
 
         assert windows == [(0, 1, skill)]
         assert [entry.window for entry in entries] == windows
+
+
+class TestMinerFollowsTheSharedWindowAcrossATaskNotification:
+    """The miner keeps no reviewer-scoped boundary: it reads review_rounds.detect_round_windows as-is, so a
+    task notification does not end a round's window here any more than it does for review-round-cost (GH-1312)."""
+
+    def test_round_scope_covers_a_reviewer_dispatched_after_a_task_notification(self, tmp_path):
+        only_second_reviewer_read = "/repo/only_second_reviewer.py"
+        records = [
+            _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
+            _assistant(ts="2026-01-01T00:00:10Z", content=[_agent_use("a1", "staff-backend-engineer")]),
+            _task_notification_user(ts="2026-01-01T00:01:00Z"),
+            _assistant(ts="2026-01-01T00:01:30Z", content=[_agent_use("a2", "staff-sdet")]),
+            _user("done", ts="2026-01-01T00:03:00Z"),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+        _write_subagent_dispatch(
+            tmp_path, "sess-1", "agent-2", "a2",
+            [_assistant(ts="2026-01-01T00:02:00Z", content=[_read_use("r1", only_second_reviewer_read)])],
+        )
+
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert [entry.window for entry in entries] == [(0, 4, "code-review")]
+        scope_keys = mine_review_rounds._round_scope(records, entries[0].window, entries[0].dispatch_index)
+        assert reviewer_yield._normalize_cited_path(only_second_reviewer_read, "/repo") in scope_keys
+
+    def test_fix_edited_after_a_task_notification_and_before_the_next_round_is_not_counted_as_edited_between(
+        self, tmp_path,
+    ):
+        """Known false negative: the fix sits inside the earlier round's window, so the edit scan, which starts
+        at that window's end, never sees it. A review-end boundary would flip this to True.
+
+        The edit after the window's end is the positive control, so the False above proves the window and not a
+        path-key mismatch.
+        """
+        fix_inside_window = "/repo/app.py"
+        edit_after_window = "/repo/other.py"
+        records = [
+            _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
+            _assistant(ts="2026-01-01T00:00:10Z", content=[_agent_use("a1", "staff-backend-engineer")]),
+            _task_notification_user(ts="2026-01-01T00:01:00Z"),
+            _assistant(ts="2026-01-01T00:01:30Z", content=[_edit_use("e1", fix_inside_window)]),
+            _user("done", ts="2026-01-01T00:03:00Z"),
+            _assistant(ts="2026-01-01T00:04:00Z", content=[_edit_use("e2", edit_after_window)]),
+            _assistant(ts="2026-01-01T00:05:00Z", content=[_skill_use("s2", "code-review")]),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert [entry.window for entry in entries] == [(0, 4, "code-review"), (6, 7, "code-review")]
+        earlier, later = entries
+        inside_key = reviewer_yield._normalize_cited_path(fix_inside_window, "/repo")
+        after_key = reviewer_yield._normalize_cited_path(edit_after_window, "/repo")
+        assert mine_review_rounds._main_thread_edited_between(earlier, later, inside_key) is False
+        assert mine_review_rounds._main_thread_edited_between(earlier, later, after_key) is True
 
 
 # --- mine_review_rounds: round-scope and citation matching -------------------

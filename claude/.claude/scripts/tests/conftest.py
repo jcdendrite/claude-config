@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -854,6 +855,11 @@ def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
     if ts:
         rec["timestamp"] = ts
     return rec
+
+
+def _task_notification_msg(*, branch: str = "main", ts: str | None = None) -> dict:
+    """The user record the harness writes when a background task or subagent finishes."""
+    return {**_user_msg(_TASK_NOTIFICATION_TEXT, branch=branch, ts=ts), "origin": {"kind": "task-notification"}}
 
 
 def _bash_use(tool_id: str, command: str) -> dict:

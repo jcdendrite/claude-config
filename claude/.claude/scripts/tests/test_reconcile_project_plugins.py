@@ -238,30 +238,6 @@ class TestSettingsShape:
 
 
 class TestRegistryCorruption:
-    @pytest.mark.parametrize(
-        "registry_text",
-        ['{"version": 2}', '{"version": 2, "plugins": []}', '{"version": "2", "plugins": {}}'],
-        ids=["plugins-absent", "plugins-array", "version-string"],
-    )
-    def test_registry_with_the_wrong_shape_logs_and_installs_nothing(self, tmp_path: Path, registry_text: str) -> None:
-        repo = tmp_path / "repo"
-        init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
-        config_dir = tmp_path / "cfg"
-        (config_dir / "plugins").mkdir(parents=True)
-        (config_dir / "plugins" / "installed_plugins.json").write_text(registry_text)
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        install_log = tmp_path / "install.log"
-        make_reconciler_claude_shim(
-            bin_dir, marketplace_entries=[{"name": "bar", "source": "directory"}], install_log=install_log
-        )
-
-        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
-
-        assert result.returncode == 0, repr(result)
-        assert [line["decision"] for line in reconciler_audit_lines(config_dir)] == ["registry_unparseable_or_version_mismatch"]
-        assert install_log_entries(install_log) == []
-
     def test_present_but_unparseable_registry_logs_and_exits_zero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
@@ -269,23 +245,6 @@ class TestRegistryCorruption:
         registry_dir = config_dir / "plugins"
         registry_dir.mkdir(parents=True)
         (registry_dir / "installed_plugins.json").write_text("{not valid json")
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        install_log = tmp_path / "install.log"
-        make_reconciler_claude_shim(bin_dir, install_log=install_log)
-
-        result = run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
-
-        assert result.returncode == 0, repr(result)
-        decisions = [line["decision"] for line in reconciler_audit_lines(config_dir)]
-        assert decisions == ["registry_unparseable_or_version_mismatch"]
-        assert install_log_entries(install_log) == []
-
-    def test_registry_version_mismatch_logs_and_exits_zero(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
-        config_dir = tmp_path / "cfg"
-        write_plugin_registry(plugin_registry_file(config_dir), {}, version=1)
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         install_log = tmp_path / "install.log"

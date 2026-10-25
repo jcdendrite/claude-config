@@ -5,21 +5,20 @@ CLI reference: where each piece of `transcript-analysis.py`'s logic lives, not w
 
 `transcript-analysis.py` stays a plain top-level script at its own path — every existing caller
 (the hook nudge, the `/transcript-analysis` skill, a contributor's own shell history) keeps working
-unchanged. Its own body still holds `build_parser()`, `main()`, and every not-yet-moved `cmd_*`
-subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus (starting with
+unchanged. Its own body holds `build_parser()` and `main()`, and defines no `cmd_*` subcommand
+handler. Leaf logic with no dependency on any `cmd_*` function, plus (starting with
 `cost.py`) whole command groups, have moved into the `transcript_analysis/` package
-(`claude/.claude/scripts/transcript_analysis/`), which the script imports from. `cli.py`
-(`build_parser()`/`main()`) is a later-phase move, once every command group has followed.
+(`claude/.claude/scripts/transcript_analysis/`), which the script imports from.
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
-circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
+circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
 `user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
-`sessions.py`, `context_distribution.py`, `context_composition.py`, and `cache_efficiency.py` are the only
+`sessions.py`, `context_distribution.py`, `context_composition.py`, `cache_efficiency.py`,
+`edit_format.py`, and `instrument_authoring.py` are the only
 modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
@@ -51,14 +50,19 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
-turn-shape-holdout-samples, sessions, context-distribution, context-composition, and cache-efficiency by calling each owning
+turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format, and
+instrument-authoring by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
 `cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, `cmd_user_input`, `cmd_commit_gate`, `cmd_pr_link`, and
-`cmd_sessions`, `cmd_context_distribution`, `cmd_context_composition`, `cmd_cache_efficiency`, and
+`cmd_sessions`, `cmd_context_distribution`, `cmd_context_composition`, `cmd_cache_efficiency`,
+`cmd_edit_format`, `cmd_instrument_authoring`, and
 `cache_efficiency.py`'s `_cache_efficiency_report`, and those
-bindings exist only for test files, which read them as `_mod.<name>`. They are read-only test
+bindings exist only for test files, which read them as `_mod.<name>`. Six leaf bindings are test-only
+too, each annotated at its import site: `_dedup_turns_by_request_id`, `_DO_NOT_PUBLISH_BANNER`,
+`_redaction_ordinals`, `_resolve_cost_roots`, `_resolve_project_scope`, and `_print_resolved_scope`.
+`TestRootsThreadingSpy` patches two of them with `raising=True`, so each must stay bound. They are read-only test
 affordances: a test that needs to steer a moved command patches the module whose binding the
 handler reads at call time, not the shim name.
 
@@ -179,6 +183,11 @@ change. Any other change to the list above is a breaking change, and so is remov
 breaking change updates the pins in `tests/test_transcript_session_pricing.py` and states the break in
 this section.
 
+**Breaking change: `unpriced_models` now defaults to empty.** `price_sessions_by_utc_day` gained the
+keyword-only `include_unpriced_model_ids` parameter (default `False`). A caller that read `unpriced_models`
+for its raw model IDs must now pass `include_unpriced_model_ids=True` to keep seeing them. The new
+`unpriced_model_count` field reports the count either way.
+
 **Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
 path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
 filesystem encoding), and `TypeError` for a wrongly typed argument, before it reads any session.
@@ -213,11 +222,14 @@ After a process has printed the usage-drift warning it prints it no more, but ea
 - `str()` of a `SessionPricingError` names only `session_index`.
 - `__cause__`, `__context__` and tracebacks are outside this guarantee and may carry a path or
   transcript content. Record only `session_index` and the exception class in output you share.
-- `unpriced_models` is the only result field whose strings come from transcript content.
+- `unpriced_models` is the only result field whose strings come from transcript content, and it is empty
+  unless the call passed `include_unpriced_model_ids=True`.
   Its entries are `message.model` values, verbatim.
   They are untrusted transcript text of any length.
   A model ID can carry an account-identifying pre-announcement name, so do not publish the list.
   Also escape entries before rendering.
+  `unpriced_model_count` carries no transcript content and is always populated.
+  Prefer it over `include_unpriced_model_ids=True` wherever only the count is needed.
 
 **Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
 `main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an
@@ -230,9 +242,11 @@ unbounded.
 
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
-`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
-one definition here; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
-`rearm_backtest.py`'s boundary detection all read it.
+`_strip_task_notifications`, `_is_main_thread_user_text`, `_is_task_notification`,
+`_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its one definition here, built
+on the other two predicates; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
+`period_cost.py`'s review windows read it. `rearm_backtest.py`'s boundary detection reads
+`_is_main_thread_user_text`, which also accepts a task notification.
 
 ### `cost.py`
 
@@ -392,7 +406,8 @@ The period-cost command shares four pieces of this module:
   is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps),
   `env`, which it forwards to the call, and `command_name`, which prefixes every message
   `_gh_call_with_backoff` prints. The merged and closed
-  discovery helpers go through it and keep their own abort messages.
+  discovery helpers go through it and keep their own abort messages. Each attempt is bounded by
+  `_GH_PR_LIST_TIMEOUT_S`, not the shorter `_GH_CALL_TIMEOUT_S` that every other gh call uses. The values are in `docs/transcript-analysis.md` § "period-cost".
 - **`_is_plain_owner_repo`** is the Python copy of the owner/repo grammar in `_lib_parse_pr_identity`
   (`claude/.claude/hooks/_lib.sh`), with parity tests against the bash parser.
 - **`_environ_without_gh_tokens`** returns a copy of `os.environ` without the four variables gh reads as
@@ -720,6 +735,24 @@ cache read and write tokens, with a per-account breakdown above one root, and th
 module (attribute access), matching `cost.py`'s convention. `_add_cache_efficiency_subparser` is the one
 name `build_parser()` reaches bare.
 
+### `edit_format.py`
+
+The edit-format command: `cmd_edit_format`, the Edit/Write/MultiEdit call census with per-tool failure
+classification, governance-hook re-bucketing, not_found cause attribution, and
+old_string/new_string/Write token overhead, with a per-account breakdown above one root, and the
+`_add_edit_format_subparser` registration. Imports `pricing`, `render`, and `scope` all by module
+(attribute access), matching `cost.py`'s convention. `_add_edit_format_subparser` is the one name
+`build_parser()` reaches bare.
+
+### `instrument_authoring.py`
+
+The instrument-authoring command: `cmd_instrument_authoring`, the aggregate-only census of Bash heredoc
+and inline-program calls and Write-to-scratchpad calls, size-bucketed by main-thread and subagent scope
+and split into zero-dispatch and dispatched session cohorts, and the `_add_instrument_authoring_subparser`
+registration. Imports `pricing`, `render`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. `_add_instrument_authoring_subparser` is the one name `build_parser()` reaches
+bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -755,7 +788,7 @@ itself — see `.claude/rules/test-tree-packaging.md` for why its own consumers 
 `_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. A test file that reads
 only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
-only the shim has — `build_parser`, `main`, or a `cmd_*` function the shim itself defines — loads
+only the shim has — `build_parser` or `main` — loads
 its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
 boilerplate `test_transcript_analysis.py` uses. It reaches package modules as
 `_mod.<module>.<name>` (e.g. `_mod.cost._cost_report`, `_mod.redaction._REDACT_MAP_MISS_TOKEN`)
@@ -936,3 +969,9 @@ read. The legacy file imports it too, as `from ._cache_efficiency_helpers import
 `.claude/rules/test-tree-packaging.md` for why. `TestCacheEfficiencyArgparseWiring` and
 `TestConfigDirRouting` stay in `tests/test_transcript_analysis.py` because they read `build_parser` and
 `main`, which only the shim has.
+
+The edit-format and instrument-authoring commands each have one test file:
+`tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither
+loads the shim: each imports its package modules directly. `_UNCONDITIONAL_HEADER_CASES` in
+`tests/test_transcript_analysis.py` reads `cmd_edit_format` and `cmd_instrument_authoring` through
+the shim.

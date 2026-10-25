@@ -38,7 +38,7 @@ instead of restating the recipe inline.
 
 Reports the base branch (the default branch, or the stack base when the key is set), the behind-count, and the result of a `git merge-tree --write-tree`
 trial merge (conflict files, if any) in plain text to stdout — always, not only when there's
-something to flag. Requires git ≥ 2.38.
+something to flag. A non-zero exit means the check could not run, and stderr names why (no default branch, a failed fetch, or a trial merge git could not complete).
 
 Behind-count = 0 → in sync, no action. Behind > 0 with a clean trial
 merge → safe fast-forward or rebase candidate; run the [pre-flight
@@ -70,7 +70,7 @@ For long-lived branches, set `rerere.enabled=true` — `rerere` caches conflict 
 |---|---|---|
 | `--force` | None. Unconditionally overwrites. | Never on its own. |
 | `--force-with-lease` | Fails if the remote ref moved since your last fetch. | Default for rebased feature branches. |
-| `--force-if-includes` | Also fails if local branch doesn't contain the remote's tip. | Git ≥ 2.30. Pair with `--force-with-lease`. |
+| `--force-if-includes` | Also fails if local branch doesn't contain the remote's tip. | Pair with `--force-with-lease`. |
 
 Recommended command after rebasing a personal branch:
 

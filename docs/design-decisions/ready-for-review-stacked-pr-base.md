@@ -103,10 +103,9 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
   - Unsetting the key falls back to the wider review.
   - Pre-check: after step 1's fetch, `git log --oneline origin/<stack-base>..HEAD` lists the commits the review covers.
 - **A stack base whose history is unrelated to HEAD**, at the divergence script.
-  - Condition: the base shares no history with HEAD. Inferred from the `git merge-tree` documentation, not exercised by a test: the expected behavior is that `git merge-tree` fails, the capture ends `|| true`, and the script prints `Trial merge: CLEAN`.
-  - Consequence: `/respond-pr`'s precheck proceeds on the false CLEAN, and step 1's sync defaults to a rebase onto the unrelated tip, which rewrites the branch and offers a force-push.
-  - If that rebase completes, a merge-base probably then exists (inferred from the `git rebase` documentation, also not exercised by a test), so step 3's stop would not fire and the cost is a rewritten branch and a whole-history diff, not an unreviewed pass.
-  - Otherwise step 3's merge-base stop fires before the marker.
-  - Signal: `Behind:` equals the base's whole commit count beside `Trial merge: CLEAN`.
+  - Condition: the base shares no history with HEAD, so `git merge-tree` cannot compute a verdict.
+  - Behavior: the script prints `Behind:` and exits 1 with one stderr line, "trial merge of origin/<base> into HEAD could not complete". `TestBehindWithUnrelatedHistories` in `test_branch_divergence_status.py` exercises it.
+  - Consequence: `/respond-pr`'s precheck re-runs the recipe once and then stops, and step 1's sync stops before any rebase, so the branch is not rewritten.
+  - Signal: `Behind:` equals the base's whole commit count and no `Trial merge:` line follows.
   - The no-key form is recorded in [ready-for-review-base-drift.md](ready-for-review-base-drift.md).
 - **No rebase recipe** for a squash-merged stack base, or for a stack base rewritten by a force-push, whose changed commits a plain `git rebase origin/<merged-into>` replays. `git-feature-branch-sync` carries none, and the engineer finds the stack base's last commit before the merge. A force-pushed stack base trips no stop, so step 1 sees behind > 0 and its sync does the plain rebase that replays the rewritten base commits. Only afterwards does the engineer find that commit and redo the rebase with `--onto`.

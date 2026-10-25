@@ -32,17 +32,16 @@ from ._skill_helpers import (
 )
 from ._subagent_helpers import _subagents_args
 from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
     _agent_use,
     _asst,
     _attr_ts,
     _audit_routing_args,
-    _bash_use,
     _context_distribution_args,
     _cost_args,
     _cost_ledger_args,
     _cost_trend_args,
     _extract_grand_total,
-    _hook_deny_current,
     _opus,
     _priced,
     _read_use,
@@ -51,7 +50,7 @@ from .conftest import (
     _skill_use,
     _skill_use_rec,
     _table_cols,
-    _thinking_block,
+    _task_notification_msg,
     _tool_result,
     _two_declared_roots,
     _user_msg,
@@ -59,7 +58,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
     _write_subagent_jsonl,
-    _write_use,
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -1518,547 +1516,6 @@ class TestDedupTurnsByRequestId:
         ]
 
 
-# ---------------------------------------------------------------------------
-# edit-format
-# ---------------------------------------------------------------------------
-
-
-def _edit_format_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _edit_tool_use(tool_id: str, *, file_path: str = "/foo.py", old_string: str = "", new_string: str = "") -> dict:
-    return {
-        "type": "tool_use", "id": tool_id, "name": "Edit",
-        "input": {"file_path": file_path, "old_string": old_string, "new_string": new_string},
-    }
-
-
-def _write_tool_use(tool_id: str, *, file_path: str = "/foo.py", content: str = "") -> dict:
-    return {
-        "type": "tool_use", "id": tool_id, "name": "Write",
-        "input": {"file_path": file_path, "content": content},
-    }
-
-
-def _multi_edit_tool_use(tool_id: str, *, file_path: str = "/foo.py") -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "MultiEdit", "input": {"file_path": file_path}}
-
-
-def _error_result(tool_id: str, text: str) -> dict:
-    """A user-record is_error tool_result — reuses _hook_deny_current's exact
-    record shape, generalized here beyond governance-hook denial text since
-    the shape itself (not the wording) is what edit-format's own error
-    classification depends on."""
-    return _hook_deny_current(text, tool_id=tool_id)
-
-
-def _extract_call_census_count(out: str, tool: str) -> int | None:
-    """Read one edit-family tool's top-of-report call count (unindented,
-    unlike every detail-table row below it, which lets this anchor on `^`
-    without also matching that tool's own indented failure rows)."""
-    match = re.search(rf"^{re.escape(tool)}\s+([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_known_failure_count(out: str, tool: str, label: str) -> int | None:
-    # count= is right-aligned to a fixed width, so its value is padded with
-    # leading spaces, not glued to the "=".
-    match = re.search(rf"^\s*{re.escape(tool)}\s+{re.escape(label)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_governance_count(out: str, label: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(label)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_cause_count(out: str, cause: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(cause)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_unclassified_count(out: str) -> int:
-    match = re.search(r"unclassified \(edit-family errors matching neither list above\): ([\d,]+)", out)
-    assert match is not None, "unclassified summary line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_unpaired_count(out: str) -> int:
-    match = re.search(r"unpaired \(is_error tool_result with no matching tool_use in this session\): ([\d,]+)", out)
-    assert match is not None, "unpaired summary line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_account_edit_calls(out: str, account_label: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(account_label)}\s+calls=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-class TestEditFormat:
-    def test_call_census_counts_each_tool_separately_and_multi_edit_stays_zero(self, fake_projects, capsys):
-        """Edit/Write calls tally under their own tool name; MultiEdit is
-        tracked (not hardcoded away) even though this fixture emits none."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_write_tool_use("w1", content="hello")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "Edit") == 2
-        assert _extract_call_census_count(out, "Write") == 1
-        assert _extract_call_census_count(out, "MultiEdit") == 0
-
-    def test_recognized_edit_tool_set_includes_multi_edit(self):
-        """A future rename or MultiEdit's reintroduction must be counted
-        against its own denominator, not silently zeroed — pinned by
-        asserting the recognized-tool constant directly."""
-        assert frozenset({"Edit", "Write", "MultiEdit"}) == _mod.EDIT_FAMILY_TOOLS
-
-    def test_multi_edit_reappearing_is_tracked_not_silently_zeroed(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_multi_edit_tool_use("m1")], out=10),
-            _error_result("m1", "has not been read yet"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "MultiEdit") == 1
-        assert _extract_known_failure_count(out, "MultiEdit", "unread") == 1
-        assert "rate=100.0% of MultiEdit" in out
-
-    def test_write_failure_rate_uses_write_denominator_not_edit(self, fake_projects, capsys):
-        """A Write-side 'file has not been read yet' failure is rated
-        against Write's own call count, not Edit's — the per-tool pairing
-        this subcommand exists to get right."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_write_tool_use("w1", content="x")], out=10),
-            _error_result("w1", "Error: file has not been read yet."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Write", "unread") == 1
-        assert "rate=100.0% of Write" in out
-        assert "rate=50.0% of Write" not in out
-
-    def test_non_edit_tool_error_with_matching_text_not_counted(self, fake_projects, capsys):
-        """A Bash error that happens to contain the literal 'String to
-        replace not found' text must not be misattributed to Edit — mirrors
-        test_current_format_denial_text_without_is_error_ignored's discipline
-        against substring-only matching, now that this session's own
-        transcript activity can genuinely contain that string in prose."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_bash_use("b1", "grep -r 'String to replace not found' .")], out=10),
-            _error_result("b1", "String to replace not found in grep output"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Edit", "not_found") is None
-
-    def test_unpaired_error_with_no_matching_tool_use_counted_explicitly(self, fake_projects, capsys):
-        """An is_error tool_result whose tool_use_id has no tool_use anywhere
-        in this session (e.g. a subagent boundary separating a call from its
-        own result) increments the unpaired counter instead of being
-        silently skipped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _error_result("orphan-1", "String to replace not found"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_unpaired_count(out) == 1
-        assert _extract_known_failure_count(out, "Edit", "not_found") is None
-
-    def test_noop_pattern_matches_real_error_text(self, fake_projects, capsys):
-        """The no-op classifier matches the real message Edit emits
-        ('old_string and new_string are exactly the same'), not a mismatched
-        pattern — a no-op silently falling into unclassified is the exact
-        miscount this pins against."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="same", new_string="same")], out=10),
-            _error_result("e1", "InputValidationError: old_string and new_string are exactly the same."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Edit", "noop") == 1
-        assert _extract_unclassified_count(out) == 0
-
-    def test_mechanical_total_excludes_noop_but_all_errors_total_includes_it(self, fake_projects, capsys):
-        """The 57-vs-63-style distinction: str_replace-mechanical (not_found +
-        unread + multi_match) excludes no-ops, while the all-non-governance
-        total includes them — asserted as two separate counts, not
-        collapsed into one."""
-        records: list[dict] = []
-        for i, message in enumerate([
-            "String to replace not found",
-            "String to replace not found",
-            "has not been read yet",
-            "but replace_all is false",
-        ]):
-            tid = f"e{i}"
-            records.append(_opus([_edit_tool_use(tid, old_string=f"x{i}", new_string=f"y{i}")], out=10))
-            records.append(_error_result(tid, message))
-        records.append(_opus([_edit_tool_use("e-noop", old_string="same", new_string="same")], out=10))
-        records.append(_error_result("e-noop", "old_string and new_string are exactly the same"))
-        _write_jsonl(fake_projects / "sess.jsonl", records)
-
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert "str_replace-mechanical (Edit not_found+unread+multi_match, no-ops excluded): 4 /" in out
-        assert "all non-governance Edit errors (no-ops included): 5 /" in out
-
-    def test_notfound_cause_not_misled_by_indentation_alone(self, fake_projects, capsys):
-        """The corrected classifier judges by diffing against the actual
-        retry, not by detecting indentation in isolation — an indented retry
-        whose content genuinely differs lands in content_differs, not
-        whitespace_only, pinning the exact defect the discarded regex
-        classifier had (it fired on indentation presence alone, at a 12x
-        over-attribution rate against the real corpus)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use(
-                "e2", file_path="/foo.py",
-                old_string="    def foo():\n        return 1",
-                new_string="    def foo():\n        return 2",
-            )], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "content_differs") == 1
-        assert _extract_cause_count(out, "whitespace_only") is None
-
-    def test_notfound_cause_genuine_whitespace_only_retry(self, fake_projects, capsys):
-        """The positive counterpart to the indentation-alone test above: a
-        retry whose old_string differs from the failed one ONLY in
-        whitespace lands in whitespace_only."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "whitespace_only") == 1
-
-    def test_notfound_cause_redacted_credential_bucket(self, fake_projects, capsys):
-        """A not_found failure whose old_string carries this repo's own
-        [REDACTED-CREDENTIAL] placeholder is attributed to the redaction
-        hook, not to content drift or abandonment."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use(
-                "e1", file_path="/foo.py",
-                old_string="token = '[REDACTED-CREDENTIAL]'", new_string="token = ''",
-            )], out=10),
-            _error_result("e1", "String to replace not found in file."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "redacted_credential") == 1
-
-    @pytest.mark.parametrize("message,expected_label", [
-        ("Blocked by plan-review gate: run /plan-review first.", "plan-review"),
-        ("Denied: deny-reviewer-tree-mutation.sh reviewer-tree-mutation detected.", "reviewer-tree"),
-        ("Blocked by worktree-enforcement: writes must land in a worktree.", "worktree"),
-        ("Error: path cannot be safely resolved.", "path-spelling"),
-        ("This action was denied by your permission settings.", "permissions"),
-        ("Error: writes must stay isolated in the worktree assigned to this session.", "worktree-isolation"),
-    ])
-    def test_governance_pattern_lands_in_named_bucket(self, fake_projects, capsys, message, expected_label):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", message),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_governance_count(out, expected_label) == 1
-
-    def test_unrecognized_denial_lands_in_unclassified_not_dropped(self, fake_projects, capsys):
-        """A denial matching none of the six governance patterns and none of
-        the four known failure patterns still surfaces in a reported count —
-        never silently dropped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", "Some unrelated tool failure with no known shape."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_unclassified_count(out) == 1
-
-    def test_old_string_and_write_char_sums_and_percentages(self, fake_projects, capsys):
-        """old_string/new_string/Write char sums and the derived overhead
-        percentages, hand-computed against a small deterministic fixture."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="12345", new_string="1234567890")], out=100),
-            _opus([_write_tool_use("w1", content="abcdefghij")], out=50),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert "old_string chars: 5" in out
-        assert "new_string chars: 10" in out
-        assert "write content chars: 10" in out
-        assert "old_string share of Edit payload: 33.3%" in out  # 5 / (5 + 10)
-        assert "total assistant output tokens (all sessions): 150" in out
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root
-        in scope, mirroring cost's and context-distribution's own refusal."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_edit_format(_edit_format_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected —
-        this report's content never varies with redact, since it carries no
-        project name or session ID, but the banner still prints for CLI
-        parity with cost/context-distribution."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        assert _extract_call_census_count(out, "Edit") == 1
-
-    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
-        """Per-account figures are emitted through the same account-N
-        labeling convention _build_redact_map documents — never the raw
-        config-dir path or account-identifying directory name."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_edit_tool_use("e3", old_string="e", new_string="f")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert "acct-alice-clientwork" not in out
-        assert "acct-bob-clientwork" not in out
-        assert "repo-a" not in out
-        assert "repo-b" not in out
-        assert str(root_a) not in out
-        assert str(root_b) not in out
-        assert _extract_account_edit_calls(out, "account-1") == 1
-        assert _extract_account_edit_calls(out, "account-2") == 2
-
-    def test_per_account_breakdown_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, capsys):
-        """account-N is assigned by resolved-path sort (_redaction_ordinals),
-        not by roots= list order -- "acct-b" sorts before "acct-empty", so
-        root_b is account-1 despite being passed second. The sibling test
-        above can't catch a regression to scan-order indexing because its
-        two root names already sort in scan order."""
-        root_empty = _write_cost_root(tmp_path, "acct-empty", "-home-user-repo-e", "sess-e", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_edit_tool_use("e3", old_string="e", new_string="f")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_empty, root_b])
-        out = capsys.readouterr().out
-        assert _extract_account_edit_calls(out, "account-1") == 2  # root_b, resolved-path-sorted first
-        assert _extract_account_edit_calls(out, "account-2") == 1  # root_empty
-
-    def test_per_account_zero_calls_prints_no_edit_family_line(self, tmp_path, capsys):
-        """An account contributing zero Edit/Write/MultiEdit calls prints the
-        'no edit-family calls' line for its row rather than a ZeroDivisionError
-        or a silently-omitted row — the per-account counterpart to
-        test_zero_edit_family_calls_prints_zeroes_without_division_error,
-        which only covers the case where every account is empty."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _user_msg("hi"),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert _extract_account_edit_calls(out, "account-1") == 1
-        assert "account-2  no edit-family calls" in out
-
-    def test_zero_edit_family_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no Edit/Write/MultiEdit calls anywhere) prints a
-        zero census and 0.0%/n-a shares rather than raising ZeroDivisionError."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "Edit") == 0
-        assert "mean old_string chars/edit: n/a" in out
-        assert "old_string share of Edit payload: 0.0%" in out
-
-    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path, capsys):
-        """Defense-in-depth: _edit_format_report must refuse the multi-root +
-        --no-redact combination itself rather than trusting that
-        _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_cost_report_itself_even_when_called_directly
-        — the in-function guard's own docstring claims this module's tests
-        exercise it directly; prior to this test, none did. Refusal happens
-        before any output is printed."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._edit_format_report(_edit_format_args(no_redact=True), roots=[root_a, root_b])
-        assert exc_info.value.code == 2
-        assert capsys.readouterr().out == ""
-
-
-class TestScanEditFormatSession:
-    """Direct unit tests for _scan_edit_format_session's returned stats dict
-    — the pure scan/classify/attribute layer this diff exposes, asserted on
-    directly rather than only through _edit_format_report's printed report
-    (TestEditFormat above), which additionally must survive the print
-    layer's own formatting to catch a classifier regression. Both layers are
-    warranted; this one is cheaper and more precise for the
-    classification/pairing/cause-attribution invariants specifically,
-    mirroring TestScanRootTranscripts' direct-dict/tuple assertion shape."""
-
-    def test_call_and_known_failure_counts(self):
-        records = [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _error_result("e2", "String to replace not found in file."),
-            _opus([_write_tool_use("w1", content="x")], out=10),
-            _error_result("w1", "Error: file has not been read yet."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["calls"] == {"Edit": 2, "Write": 1}
-        assert stats["known_failures"][("Edit", "not_found")] == 1
-        assert stats["known_failures"][("Write", "unread")] == 1
-
-    def test_unpaired_and_unclassified_and_governance_counted_directly(self):
-        records = [
-            _error_result("orphan-1", "String to replace not found"),
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", "Some unrelated tool failure with no known shape."),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _error_result("e2", "Blocked by plan-review gate: run /plan-review first."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["unpaired"] == 1
-        assert stats["unclassified"] == 1
-        assert stats["governance"]["plan-review"] == 1
-
-    def test_notfound_cause_attribution_direct(self):
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["whitespace_only"] == 1
-
-    def test_notfound_cause_abandoned_no_retry(self):
-        """A not_found failure with no later Edit call on the SAME
-        file_path (a later call on a different file doesn't count) — the
-        model gave up rather than retrying — lands in abandoned_no_retry,
-        not content_differs or any other bucket."""
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/bar.py", old_string="y=1", new_string="y=2")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["abandoned_no_retry"] == 1
-
-    def test_notfound_cause_identical_retry(self):
-        """A not_found failure whose next same-file Edit retries the exact
-        same old_string (byte-identical, not just whitespace-equivalent)
-        lands in identical_retry, not whitespace_only or content_differs."""
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 3")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["identical_retry"] == 1
-
-    def test_multi_edit_notfound_counted_as_owner_not_tracked_not_a_crash(self):
-        """A not_found failure whose owner is MultiEdit (not Edit) has no
-        old_string in edit_order to pair against — must be counted, not
-        raise, since edit_order only ever tracks Edit's own calls."""
-        records = [
-            _opus([_multi_edit_tool_use("m1")], out=10),
-            _error_result("m1", "String to replace not found in file."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["known_failures"][("MultiEdit", "not_found")] == 1
-        assert stats["cause"]["owner_not_tracked"] == 1
-
-    def test_known_failure_pattern_takes_precedence_over_governance(self):
-        """A tool_result whose text matches both a known-failure pattern and
-        a governance pattern classifies as the known failure — pinning the
-        early-continue ordering at the site that decides it, so a future
-        pattern addition that should instead take governance precedence
-        fails a test rather than silently misclassifying."""
-        records = [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result(
-                "e1",
-                "Error: file has not been read yet, denied by your permission settings.",
-            ),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["known_failures"][("Edit", "unread")] == 1
-        assert stats["governance"]["permissions"] == 0
-
-    @pytest.mark.parametrize("length,expected_bucket", [
-        (0, "0-99"), (99, "0-99"),
-        (100, "100-299"), (299, "100-299"),
-        (300, "300-699"), (699, "300-699"),
-        (700, "700-1499"), (1499, "700-1499"),
-        (1500, "1500+"), (5000, "1500+"),
-    ])
-    def test_old_string_size_bucket_boundaries(self, length, expected_bucket):
-        assert _mod._old_string_size_bucket(length) == expected_bucket
-
-    def test_old_string_size_histogram_direct(self):
-        records = [
-            _opus([_edit_tool_use("e1", old_string="x" * 50, new_string="y")], out=10),
-            _opus([_edit_tool_use("e2", old_string="x" * 200, new_string="y")], out=10),
-            _opus([_edit_tool_use("e3", old_string="x" * 50, new_string="y")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["old_string_size_hist"]["0-99"] == 2
-        assert stats["old_string_size_hist"]["100-299"] == 1
-
-    def test_multi_record_request_id_group_sums_output_tokens_once(self):
-        """A requestId group's output_tokens is taken once from the merged
-        turn's last record, not summed once per raw content-block record —
-        without dedup, stats["output_tokens"] would inflate by however many
-        blocks the response split into."""
-        records = [
-            _opus([_thinking_block()], out=3, request_id="req-1"),
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=3, request_id="req-1"),
-            _opus([], out=3111, request_id="req-1"),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["output_tokens"] == 3111
-        assert stats["calls"] == {"Edit": 1}
-
-
 def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
     tool_input: dict = {"file_path": file_path}
     if offset is not None:
@@ -2200,407 +1657,6 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
 
         assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
         assert meta_read_errors == 0
-
-
-# ---------------------------------------------------------------------------
-# instrument-authoring
-# ---------------------------------------------------------------------------
-
-
-def _instrument_authoring_args(
-    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _extract_instrument_authoring_call(out: str, shape_label: str, scope: str) -> tuple[int, int]:
-    """Read one census line's (count, chars) -- e.g. "Bash (heredoc/-c/-e)   main      count=...  chars=~..."."""
-    match = re.search(
-        rf"^\s*{re.escape(shape_label)}\s+{re.escape(scope)}\s+count=\s*([\d,]+)\s+chars=~\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{shape_label}/{scope} census line not found in output"
-    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
-
-
-def _extract_instrument_authoring_bucket_count(out: str, scope: str, label: str) -> int:
-    match = re.search(
-        rf"^\s*{re.escape(scope)}\s+{re.escape(label)}\s+count=\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{scope}/{label} bucket line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_instrument_authoring_cohort(out: str, cohort_label: str) -> tuple[int, int]:
-    """Read one cohort line's (session_n, payload_chars)."""
-    match = re.search(
-        rf"^\s*{re.escape(cohort_label)}\s+sessions=\s*([\d,]+).*?chars=~\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{cohort_label} cohort line not found in output"
-    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
-
-
-class TestInstrumentAuthoring:
-    def test_subagent_authoring_shapes_attributed_to_subagent_cohort_not_main(self, fake_projects, capsys):
-        """The same authoring shapes on a subagent (isSidechain: true) record
-        attribute to the subagent scope, not main -- exercised through a real
-        merged main+subagent transcript pair, pinning include_subagents=True."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_bash_use("m1", "git log --oneline -5")]),
-        ])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _bash_use("s1", "python3 -c 'print(1)'"),
-            ]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        main_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "main")
-        subagent_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "subagent")
-        assert main_count == 0
-        assert subagent_count == 1
-
-    def test_cohort_lines_printed_for_a_zero_dispatch_and_a_dispatched_session(self, fake_projects, capsys):
-        """Report-level smoke test: a zero-dispatch and a dispatched session
-        each land in their own printed cohort line -- the arithmetic itself
-        is TestScanInstrumentAuthoringSession's
-        test_cohort_arithmetic_sums_across_multiple_sessions' job."""
-        _write_jsonl(fake_projects / "sess-zero.jsonl", [
-            _opus([_bash_use("b1", "python3 -c 'print(1)'")]),
-        ])
-        _write_jsonl(fake_projects / "sess-dispatched.jsonl", [
-            _opus([_bash_use("b2", "python3 -c 'print(1)'")]),
-            _opus([_agent_use("a1", "general-purpose")]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        zero_sessions, _zero_chars = _extract_instrument_authoring_cohort(out, "zero_dispatch")
-        dispatched_sessions, _dispatched_chars = _extract_instrument_authoring_cohort(out, "dispatched")
-        assert zero_sessions == 1
-        assert dispatched_sessions == 1
-
-    def test_size_histogram_bucket_wired_through_report(self, fake_projects, capsys):
-        """The per-scan size bucket reaches the printed histogram section,
-        not just _scan_instrument_authoring_session's own returned dict."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", "python3 -c 'print(1)'")])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert _extract_instrument_authoring_bucket_count(out, "main", "0-99") == 1
-
-    def test_no_authored_payload_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-SENTINEL-PAYLOAD-MUST-NOT-LEAK"
-        command = f"python3 -c 'print(\"{sentinel}\")'"
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_no_heredoc_body_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-HEREDOC-SENTINEL-MUST-NOT-LEAK"
-        command = f"cat <<EOF > /tmp/instrument.py\n{sentinel}\nEOF\n"
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_no_write_content_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-WRITE-SENTINEL-MUST-NOT-LEAK"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_write_use("w1", sentinel, path="/tmp/scratch/instrument.py")]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_zero_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no authoring calls anywhere) prints a zero census
-        and 0.0% cohort shares rather than raising ZeroDivisionError."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert "zero_dispatch  sessions=     1 (100.0% of sessions)" in out
-        assert "dispatched     sessions=     0 (0.0% of sessions)" in out
-        assert "(0.0% of authored mass)" in out
-
-
-class TestScanInstrumentAuthoringSession:
-    """Direct unit tests for _scan_instrument_authoring_session's returned
-    stats dict, mirroring TestScanEditFormatSession's role: classification
-    invariants asserted directly on the dict, cheaper and more precise than
-    TestInstrumentAuthoring's report-level assertions."""
-
-    def test_heredoc_bash_call_counted_with_body_only_payload(self):
-        command = "cat <<EOF > /tmp/instrument.py\nprint('hi')\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("print('hi')")
-
-    def test_inline_python_one_liner_lands_in_smallest_bucket(self):
-        records = [_opus([_bash_use("b1", "python3 -c 'print(1)'")])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["size_hist"][("main", "0-99")] == 1
-
-    def test_write_scratchpad_paths_counted_repo_path_not_counted(self):
-        """Both /tmp/... and /private/tmp/... scratchpad forms count; an
-        ordinary repo file path does not."""
-        records = [
-            _opus([_write_use("w1", "x" * 40, path="/tmp/scratch/instrument.py")]),
-            _opus([_write_use("w2", "y" * 40, path="/private/tmp/scratch/instrument.py")]),
-            _opus([_write_use("w3", "z" * 40, path="/repo/src/module.py")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("write", "main")] == 2
-        assert stats["payload_chars"][("write", "main")] == 80
-
-    def test_write_scratchpad_path_component_outside_tmp_root_counted(self):
-        """A 'scratchpad' path segment counts even when the path isn't
-        rooted under /tmp or /private/tmp; a segment that only contains
-        'scratchpad' as a substring of a different directory name does not."""
-        records = [
-            _opus([_write_use("w1", "x" * 40, path="/repo/scratchpad/notes.py")]),
-            _opus([_write_use("w2", "y" * 40, path="/repo/scratchpad_utils.py")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("write", "main")] == 1
-        assert stats["payload_chars"][("write", "main")] == 40
-
-    def test_spawn_count_from_both_agent_and_task_tool_names(self):
-        records = [
-            _opus([_agent_use("a1", "general-purpose", tool_name="Agent")]),
-            _opus([_agent_use("a2", "code-writer", tool_name="Task")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["spawn_dispatch_n"] == 2
-
-    def test_subagent_spawn_dispatch_excluded_and_authoring_call_scoped_to_subagent(self):
-        """A subagent's own Agent/Task tool_use (isSidechain: true) must not
-        increment this session's main-thread spawn_dispatch_n -- only
-        main-thread dispatches decide the cohort split -- and a Bash
-        authoring call in the same sidechain record attributes to the
-        subagent scope, pinned directly on the scan dict rather than only
-        through the heavier report-level fixture test."""
-        subagent_records = [
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _agent_use("a1", "general-purpose", tool_name="Agent"),
-                _bash_use("b1", "python3 -c 'print(1)'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(subagent_records)
-        assert stats["spawn_dispatch_n"] == 0
-        assert stats["call_n"][("bash", "subagent")] == 1
-        assert stats["call_n"][("bash", "main")] == 0
-
-        main_records = [_opus([_agent_use("a2", "general-purpose", tool_name="Task")])]
-        main_stats = _mod._scan_instrument_authoring_session(main_records)
-        assert main_stats["spawn_dispatch_n"] == 1
-
-    def test_main_payload_chars_excludes_subagent_scope_authoring(self):
-        """main_payload_chars feeds cohort_totals[...]['payload_chars']
-        directly -- the reported "authored mass" figure -- so it must sum
-        only main-thread authoring calls, never subagent ones."""
-        records = [
-            _opus([_bash_use("b1", "python3 -c 'main-payload'")]),
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _bash_use("b2", "python3 -c 'subagent-payload-much-longer'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["main_payload_chars"] == len("main-payload")
-
-    def test_ordinary_bash_call_not_classified_as_authoring(self):
-        records = [
-            _opus([_bash_use("b1", "git log --oneline -10")]),
-            _opus([_bash_use("b2", "pytest claude/.claude/scripts/tests/")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_adversarial_dash_c_false_positives_not_counted(self):
-        """-c bound to a non-interpreter argv[0] (curl, tar, ssh) never
-        counts, mirroring TestEditFormat's
-        test_non_edit_tool_error_with_matching_text_not_counted's discipline
-        against substring-only matching."""
-        records = [
-            _opus([_bash_use("b1", "curl -c cookies.txt https://example.com")]),
-            _opus([_bash_use("b2", "tar -cf out.tar .")]),
-            _opus([_bash_use("b3", "ssh -c aes256-ctr host 'ls'")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    @pytest.mark.parametrize("command,inline_program", [
-        ("python3 -c 'print(1)'", "print(1)"),
-        ("python -c 'print(1)'", "print(1)"),
-        ("sh -c 'echo hi'", "echo hi"),
-        ("bash -c 'echo hi'", "echo hi"),
-        ("node -e 'console.log(1)'", "console.log(1)"),
-        ("perl -e 'print 1'", "print 1"),
-        ("ruby -e 'puts 1'", "puts 1"),
-    ])
-    def test_each_recognized_interpreter_matches_its_own_flag(self, command, inline_program):
-        """Every entry in _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS gets
-        a genuine positive match on its own flag, not just python3/node."""
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len(inline_program)
-
-    @pytest.mark.parametrize("command", [
-        "bash -e deploy.sh",  # errexit, not inline-eval
-        "python3 -m pytest",  # module flag, not -c
-    ])
-    def test_recognized_interpreter_with_wrong_flag_not_counted(self, command):
-        """A recognized interpreter bound to a flag other than its own
-        inline-eval flag (bash -e, python3 -m) never counts."""
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_heredoc_dash_variant_with_quoted_delimiter_strips_leading_tabs(self):
-        command = "cat <<-'EOF'\n\thello\n\tEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("hello")
-
-    def test_heredoc_non_eof_delimiter_recognized(self):
-        command = "cat <<PAYLOAD\nbody text\nPAYLOAD\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("body text")
-
-    def test_heredoc_body_containing_delimiter_word_as_data_does_not_truncate(self):
-        command = "cat <<EOF\nfirst line\nEOF is mentioned here, not a real terminator\nlast line\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        expected_body = "first line\nEOF is mentioned here, not a real terminator\nlast line"
-        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
-
-    def test_two_heredocs_chained_with_and_sum_payloads(self):
-        command = "cat <<A > /tmp/a.txt && cat <<B > /tmp/b.txt\nfirst\nA\nsecond\nB\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("first") + len("second")
-
-    def test_quoted_herestring_not_misparsed_as_heredoc(self):
-        """A bash here-string (`<<<`) with a quoted right-hand side is not
-        mistaken for a heredoc opener."""
-        command = 'cat <<< "$var"\necho after\n'
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_unquoted_herestring_not_misparsed_as_heredoc(self):
-        """Regression test: `cat <<<EOF` (an unquoted here-string, not a
-        heredoc) must not match the heredoc-opener regex starting one
-        character into the `<<<` operator -- doing so would consume every
-        following line as a fake heredoc body since no line ever equals the
-        delimiter "EOF"."""
-        command = "cat <<<EOF\necho after\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-        assert stats["payload_chars"][("bash", "main")] == 0
-
-    def test_heredoc_body_containing_inline_program_shape_not_double_counted(self):
-        """A heredoc body containing a line shaped like an inline-program
-        invocation (e.g. example code written as data) is not counted a
-        second time as its own separate authoring invocation -- the body's
-        own char count already includes it once."""
-        inline_example_line = "python3 -c 'foo'"
-        command = f"cat <<EOF > /tmp/instrument.py\nprint('hi')\n{inline_example_line}\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        expected_body = f"print('hi')\n{inline_example_line}"
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
-
-    def test_double_quoted_inline_program_argument_strips_quotes(self):
-        """_extract_shell_arg_at's double-quoted branch (vs. the single-
-        quoted/bare forms every other inline-program test here uses) also
-        strips the surrounding quotes from the payload it measures."""
-        command = 'python3 -c "print(1)"'
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
-
-    def test_versioned_python_interpreter_recognized(self):
-        """Regression test: `python3.11 -c '...'` must classify as authoring
-        -- a bare `\\bpython3\\b` word boundary fails between "3" and "."
-        (both word-adjacent-to-non-word), which previously blocked the match
-        entirely."""
-        command = "python3.11 -c 'print(1)'"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
-
-    def test_unparsed_bash_and_write_input_counted_in_own_cohort_not_dropped(self):
-        records = [
-            _opus([{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"__unparsedToolInput": "x"}}]),
-            _opus([{"type": "tool_use", "id": "w1", "name": "Write", "input": {"__unparsedToolInput": "y"}}]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["unparsed_n"]["main"] == 2
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_parallel_tool_use_blocks_in_one_turn_both_counted(self):
-        records = [
-            _opus([
-                _bash_use("b1", "python3 -c 'print(1)'"),
-                _bash_use("b2", "node -e 'console.log(2)'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 2
-
-    def test_bucket_boundary_at_largest_finite_bucket_edge(self):
-        """A payload of exactly 9999 chars (the largest finite bucket's own
-        upper edge) lands in "2000-9999", not the 10000+ overflow -- pins the
-        exclusive-upper-bound convention against an off-by-one."""
-        payload = "x" * 9999
-        command = f"python3 -c '{payload}'"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["size_hist"][("main", "2000-9999")] == 1
-        assert stats["size_hist"][("main", "10000+")] == 0
-
-    @pytest.mark.parametrize("chars,expected_bucket", [
-        (0, "0-99"), (99, "0-99"),
-        (100, "100-499"), (499, "100-499"),
-        (500, "500-1999"), (1999, "500-1999"),
-        (2000, "2000-9999"), (9999, "2000-9999"),
-        (10000, "10000+"), (50000, "10000+"),
-    ])
-    def test_instrument_authoring_size_bucket_boundaries(self, chars, expected_bucket):
-        assert _mod._instrument_authoring_size_bucket(chars) == expected_bucket
-
-    def test_cohort_arithmetic_sums_across_multiple_sessions(self):
-        """The load-bearing computation: two zero-dispatch sessions carrying
-        large payloads plus two dispatched sessions carrying small ones must
-        produce the two cohort totals the go/no-go rule reads."""
-        def _session_stats(*, spawn_dispatch_n, main_payload_chars):
-            stats = _mod._new_instrument_authoring_stats()
-            stats["spawn_dispatch_n"] = spawn_dispatch_n
-            stats["main_payload_chars"] = main_payload_chars
-            return stats
-
-        sessions = [
-            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
-            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
-            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
-            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
-        ]
-        _stats, cohort_totals = _mod._aggregate_instrument_authoring_sessions(sessions)
-        assert cohort_totals["zero_dispatch"]["session_n"] == 2
-        assert cohort_totals["dispatched"]["session_n"] == 2
-        assert cohort_totals["zero_dispatch"]["payload_chars"] == 1000
-        assert cohort_totals["dispatched"]["payload_chars"] == 20
 
 
 # ---------------------------------------------------------------------------
@@ -3300,6 +2356,87 @@ class TestIsFreshUserPrompt:
     def test_assistant_record_returns_false(self):
         rec = _asst("claude-sonnet-4-6", branch="main")
         assert _mod._is_fresh_user_prompt(rec) is False
+
+    def test_task_notification_only_record_returns_false(self):
+        """GH-1312: a harness-delivered task notification is not the human speaking."""
+        rec = _task_notification_msg()
+        assert _mod._is_fresh_user_prompt(rec) is False
+
+    def test_human_text_beside_a_task_notification_returns_true(self):
+        rec = _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step")
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+    def test_unterminated_task_notification_returns_true(self):
+        """An envelope with no closing tag is left in place by the strip, so the record stays fresh."""
+        rec = _user_msg("<task-notification>\n<summary>no closing tag here")
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+    def test_self_quoting_task_notification_returns_true(self):
+        """Known limitation: the strip stops at the first closer, so the outer envelope's tail survives as text.
+
+        A check keyed on the record's `origin` would flip this on purpose.
+        """
+        rec = _user_msg(
+            "<task-notification><summary>Sample record: "
+            "<task-notification><summary>inner</summary></task-notification>"
+            "</summary></task-notification>"
+        )
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+
+# ---------------------------------------------------------------------------
+# _is_task_notification (render.py)
+# ---------------------------------------------------------------------------
+
+
+class TestIsTaskNotification:
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_task_notification_msg(), id="string-envelope"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\n\n  {_TASK_NOTIFICATION_TEXT}"),
+                id="two-envelopes-with-whitespace-between",
+            ),
+            pytest.param(
+                _user_msg([{"type": "text", "text": _TASK_NOTIFICATION_TEXT}]),
+                id="envelope-in-list-text-block",
+            ),
+        ],
+    )
+    def test_envelope_only_record_returns_true(self, rec):
+        assert _mod._is_task_notification(rec) is True
+
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_user_msg("Please fix that"), id="plain-prompt"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step"),
+                id="human-text-beside-envelope",
+            ),
+            pytest.param(
+                _user_msg("<task-notification>\n<summary>no closing tag here"),
+                id="unterminated-envelope",
+            ),
+            pytest.param(
+                {**_task_notification_msg(), "isSidechain": True},
+                id="sidechain-envelope",
+            ),
+            pytest.param(
+                {**_task_notification_msg(), "isMeta": True},
+                id="meta-envelope",
+            ),
+            pytest.param(
+                _user_msg([_tool_result("t1", _TASK_NOTIFICATION_TEXT)]),
+                id="tool-result-record",
+            ),
+            pytest.param(_user_msg("   "), id="blank-text-record"),
+            pytest.param(_asst("claude-sonnet-4-6"), id="assistant-record"),
+        ],
+    )
+    def test_record_that_is_not_envelope_only_main_thread_user_text_returns_false(self, rec):
+        assert _mod._is_task_notification(rec) is False
 
 
 # ---------------------------------------------------------------------------

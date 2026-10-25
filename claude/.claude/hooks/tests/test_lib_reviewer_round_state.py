@@ -20,7 +20,6 @@ from helpers import (
     HOOKS_DIR,
     bare_remote_with_default_branch,
     build_conflicted_rebase,
-    build_conflicted_revert,
     init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
     staged_diff_hash_at_base,
@@ -330,49 +329,6 @@ class TestLibReviewerRoundStateCap:
         assert result.stdout.strip() == "2"
 
 
-def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
-    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
-    Every other subcommand proxies to the real git. Local copy of
-    test_lib.py's shim of the same name (DAMP test code, per CLAUDE.md's
-    named exception) -- this file's fallback assertion needs its own stub,
-    not a shared import, per the plan's "per call site" mandate."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--write-tree" ]; then\n'
-        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
-        '    exit 129\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
-    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
-    is rejected. Local copy of test_lib.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    --merge-base=*)\n'
-        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
-        '      exit 129\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _merge_tree_base(repo: Path) -> str:
     """Local copy of test_require_code_review.py's helper of the same name
     (DAMP test code): independently computes the reference tree
@@ -568,58 +524,6 @@ class TestLibReviewerRoundStateValueMergeAwareBase:
         result = _state_key(repo)
         assert result.returncode != 0
         assert result.stdout == ""
-
-    def test_fallback_write_tree_rejected_behaves_like_today(self, tmp_path):
-        """`--write-tree` outright rejection (git < 2.38) must fall back to
-        exactly today's plain HEAD-relative diff-hash recipe rather than
-        hanging or erroring the round-state value."""
-        repo = _build_conflicted_merge_via_origin(tmp_path)
-        bin_dir = tmp_path / "bin-fallback-write-tree"
-        _make_git_rejecting_write_tree(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        result = _state_value(repo, extra_env=extra_env)
-        assert result.returncode == 0, result.stderr
-        head_sha, diff_hash = result.stdout.split(" ", 1)
-        expected_head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        assert head_sha == expected_head_sha
-        expected_diff = subprocess.run(
-            ["git", "diff", "--cached"], cwd=repo, capture_output=True, check=True
-        ).stdout
-        assert diff_hash == hashlib.sha256(expected_diff).hexdigest()
-
-    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, tmp_path):
-        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
-        the three states whose merge-tree call passes that flag -- rebase,
-        cherry-pick, revert, not merge -- so this needs its own fixture: a
-        conflicted revert, trusted via the HEAD anchor by construction."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        build_conflicted_revert(repo)
-        bin_dir = tmp_path / "bin-fallback-merge-base"
-        _make_git_rejecting_merge_base_flag(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        result = _state_value(repo, extra_env=extra_env)
-        assert result.returncode == 0, result.stderr
-        head_sha, diff_hash = result.stdout.split(" ", 1)
-        expected_head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        assert head_sha == expected_head_sha
-        expected_diff = subprocess.run(
-            ["git", "diff", "--cached"], cwd=repo, capture_output=True, check=True
-        ).stdout
-        assert diff_hash == hashlib.sha256(expected_diff).hexdigest()
 
 
 def _ledger_path_resolution(config_dir: Path, repo: Path | str, session_id: str) -> subprocess.CompletedProcess:

@@ -49,6 +49,8 @@ PRODUCTION_MODULES = (
     "context_distribution.py",
     "context_composition.py",
     "cache_efficiency.py",
+    "edit_format.py",
+    "instrument_authoring.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -100,6 +102,8 @@ TEST_FILES = (
     "test_transcript_context_distribution.py",
     "test_transcript_context_composition.py",
     "test_transcript_cache_efficiency.py",
+    "test_transcript_edit_format.py",
+    "test_transcript_instrument_authoring.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

@@ -1905,6 +1905,22 @@ class TestRespondPrEditBoundary:
         )
 
 
+class TestRespondPrDivergencePrecheckFailure:
+    """Pins respond-pr step 3's failure arm.
+
+    The precheck script exits non-zero when it could not run (no default branch, a failed fetch, or a trial
+    merge git could not complete). The skill parses only CONFLICT and CLEAN, so without this arm a failed
+    check would read as neither and the skill would proceed unchecked. The full failed-recipe sentence is
+    pinned in TestRespondPrStep3FailedRecipeSentence; this test is the cheap failure-arm check.
+    """
+
+    def test_step3_aborts_when_the_precheck_exits_non_zero(self):
+        step3_text = " ".join(_respond_pr_step3_text().split())
+
+        assert "When the recipe exits non-zero, re-run it once." in step3_text
+        assert "abort the skill" in step3_text
+
+
 class TestReadyForReviewBodyFileGuard:
     """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 

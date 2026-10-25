@@ -79,11 +79,11 @@ CANON_CWD=$(pwd -P) || die no-repo "the working directory cannot be resolved"
 
 # shellcheck source=../hooks/_lib.sh
 if ! . "$(dirname "$0")/../hooks/_lib.sh"; then
-  die no-repo "could not source hooks/_lib.sh; re-run ./install.sh"
+  die no-repo "could not source hooks/_lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository. Ask the user to run ./install.sh from the claude-config checkout only if that runbook says so."
 fi
 # shellcheck source=_worktree-lib.sh
 if ! . "$(dirname "$0")/_worktree-lib.sh"; then
-  die no-repo "could not source _worktree-lib.sh; re-run ./install.sh"
+  die no-repo "could not source _worktree-lib.sh. Ask the user to run ./install.sh from the claude-config checkout."
 fi
 
 if [ "$#" -ne 1 ]; then

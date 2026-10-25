@@ -1,8 +1,6 @@
 """Unit tests for _lib.sh helpers.
 
-Covers _lib_parse_tool_input_or_deny and _lib_jq, plus the marker-read helper
-_lib_marker_value_present and the gate-release agent predicate
-_lib_is_no_gate_release_agent.
+Covers _lib_parse_tool_input_or_deny and _lib_jq.
 
 The parse tests drive the helper via a throwaway shell harness that defines
 emit_deny before sourcing _lib.sh (the canonical caller pattern), then calls
@@ -14,14 +12,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import posixpath
 import re
 import shlex
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -30,7 +26,6 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
-    _forced_fallback_path_env,
     _make_git_exiting_with_status,
     _make_git_recording_argv,
     _run_git,
@@ -46,7 +41,6 @@ from helpers import (
     build_path_without,
     build_rebase_merges_replay_conflict,
     init_git_repo_with_commit,
-    installed_locale_where,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     reviewer_round_state_key,
@@ -61,20 +55,11 @@ from helpers import (
     xargs_is_gnu,
 )
 
-from .conftest import (
-    REVIEW_WORKTREE_NAME,
-    _add_worktree_under_worktrees_dir,
-    _worktree_lock_reason,
-)
+from ._lib_sh_helpers import _LIB_SH, _SKILL_MANAGEMENT_PLUGIN_LIB, _run_lib_call
 from .test_config_lib import (
     _isolated_hooks_dir_missing_key_row,
     _locale_that_widens_ascii_ranges,
 )
-
-# Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
-_LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
-# The skill-management plugin ships its own copy of _lib_capped_for, since plugin hooks cannot source the stowed _lib.sh.
-_SKILL_MANAGEMENT_PLUGIN_LIB = HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "_lib.sh"
 
 # require-code-review.sh is an unmodified production caller of
 # _lib_parse_tool_input_or_deny, used by the delimiter-shift regression test
@@ -158,18 +143,6 @@ def _parse_ok_fields(stdout: str) -> dict[str, str]:
         # exactly that one byte to recover the raw shell value.
         "overflow": overflow[:-1] if overflow.endswith("\n") else overflow,
     }
-
-
-def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
-    """Source _lib.sh, then run one statement that calls a helper directly."""
-    harness = f". {_LIB_SH}; {call}"
-    return subprocess.run(
-        ["bash", "-c", harness],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
 
 
 def test_valid_bash_payload_returns_ok() -> None:
@@ -477,7 +450,7 @@ def test_read_variable_order_matches_jq_field_order() -> None:
 
 
 def test_jq_field_list_extraction_is_non_empty() -> None:
-    """Vacuity self-check mirroring test_lib.py's own builds_path_re
+    """Vacuity self-check mirroring test_lib_session_identity.py's own builds_path_re
     precedent: an empty extraction means the regex has drifted from the
     code, not that there are zero fields to guard."""
     assert _JQ_FIELDS, (
@@ -568,40 +541,6 @@ def test_command_containing_unit_separator_denies_via_require_code_review(
     assert result == "deny"
 
 
-def test_deny_gate_label_unset_falls_back_to_basename_derived_label() -> None:
-    """A hook that sources _lib.sh without declaring DENY_GATE_LABEL still
-    self-identifies, via a `${0##*/}`-minus-`.sh` derivation — the one
-    place the $0 fallback does real work, for a forgotten declaration."""
-    harness = f'. {_LIB_SH}; _lib_emit_deny "scratch body text"'
-    result = subprocess.run(
-        ["bash", "-c", harness, "scratch-hook.sh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-    assert reason == "Blocked by scratch-hook gate: scratch body text"
-
-
-def test_deny_gate_label_set_renders_in_reason() -> None:
-    """The common case, direct at the _lib_emit_deny unit layer: a hook that
-    declares DENY_GATE_LABEL gets that exact label in the rendered reason,
-    not the $0-derived fallback the sibling test above covers."""
-    harness = f'DENY_GATE_LABEL="a-declared-label"; . {_LIB_SH}; _lib_emit_deny "scratch body text"'
-    result = subprocess.run(
-        ["bash", "-c", harness, "scratch-hook.sh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-    assert reason == "Blocked by a-declared-label gate: scratch body text"
-
-
 @pytest.mark.timing
 def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """Hung jq (sleeping >5s) → DENY via timeout exit=124, within 6s.
@@ -683,392 +622,6 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
-# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps
-# end-to-end evidence that the binary itself enforces a cap.
-@pytest.mark.timing
-def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
-    """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
-    import shutil
-
-    timeout_path = shutil.which("timeout")
-    if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    sleep_path = shutil.which("sleep")
-    if not sleep_path:
-        pytest.skip("sleep not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "timeout").symlink_to(timeout_path)
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "sleep").symlink_to(sleep_path)
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_lib_call("_lib_capped_for 1 sleep 5", env=env)
-    elapsed = time.monotonic() - start
-
-    assert result.returncode == 124, repr(result)
-    assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
-
-
-# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test
-# would never execute and the exit-124 assertion would still pass.
-@pytest.mark.timing
-def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
-    """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
-    import shutil
-
-    timeout_path = shutil.which("timeout")
-    if not timeout_path:
-        pytest.skip("timeout(1) not available to alias as gtimeout — BSD/macOS without coreutils")
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    sleep_path = shutil.which("sleep")
-    if not sleep_path:
-        pytest.skip("sleep not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    # Alias the real timeout binary under the gtimeout name and omit timeout
-    # from PATH entirely, simulating a Homebrew-coreutils-only machine.
-    (tmp_path / "gtimeout").symlink_to(timeout_path)
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "sleep").symlink_to(sleep_path)
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_lib_call("_lib_capped_for 1 sleep 5", env=env)
-    elapsed = time.monotonic() - start
-
-    assert result.returncode == 124, repr(result)
-    assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
-
-
-# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.
-def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
-    tmp_path: Path,
-) -> None:
-    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for runs the command uncapped, not denied."""
-    import shutil
-
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    sleep_path = shutil.which("sleep")
-    if not sleep_path:
-        pytest.skip("sleep not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "sleep").symlink_to(sleep_path)
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    # seconds (0.2) is well under the sleep duration (0.6) — a real cap would
-    # kill this early, so completing at the full duration proves it ran uncapped.
-    result = _run_lib_call("_lib_capped_for 0.2 sleep 0.6", env=env)
-    elapsed = time.monotonic() - start
-
-    assert result.returncode == 0, repr(result)
-    assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
-
-
-def test_lib_capped_for_uncapped_fallback_emits_stderr_note(tmp_path: Path) -> None:
-    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for's uncapped
-    fallback emits a diagnostic naming the gap, so a caller or log can tell
-    the cap silently didn't apply rather than reading a clean exit as capped."""
-    import shutil
-
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    # `true` is a bash builtin, so it needs no PATH entry of its own.
-    result = _run_lib_call("_lib_capped_for 0.1 true", env=env)
-
-    assert result.returncode == 0, repr(result)
-    assert "_lib_capped_for" in result.stderr and "uncapped" in result.stderr, repr(result.stderr)
-
-
-def test_lib_capped_for_uncapped_fallback_note_fires_every_call(tmp_path: Path) -> None:
-    """The note above fires on every uncapped-fallback call, not just the
-    first -- each call independently ran without a cap, so each is worth
-    its own diagnostic."""
-    import shutil
-
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    result = _run_lib_call(
-        "_lib_capped_for 0.1 true; _lib_capped_for 0.1 true; _lib_capped_for 0.1 true", env=env,
-    )
-
-    assert result.returncode == 0, repr(result)
-    assert result.stderr.count("_lib_capped_for: neither timeout nor gtimeout") == 3, repr(result.stderr)
-
-
-# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
-# the fake was preferred rather than the real one.
-def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
-    """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
-
-    A fake gtimeout stands in for a swapped probe order — if _lib_capped_for
-    ever checked gtimeout before timeout, this test would observe the fake's
-    distinct output instead of the real command's.
-    """
-    import shutil
-
-    timeout_path = shutil.which("timeout")
-    if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    printf_path = shutil.which("printf")
-    if not printf_path:
-        pytest.skip("printf not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "timeout").symlink_to(timeout_path)
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "printf").symlink_to(printf_path)
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    fake_gtimeout = tmp_path / "gtimeout"
-    fake_gtimeout.write_text("#!/bin/bash\nprintf 'GTIMEOUT_WAS_USED'\nexit 99\n")
-    fake_gtimeout.chmod(0o755)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    result = _run_lib_call("_lib_capped_for 1 printf real-timeout-path", env=env)
-
-    assert result.returncode == 0, repr(result)
-    assert result.stdout == "real-timeout-path", repr(result.stdout)
-
-
-@pytest.mark.parametrize("lib_path", [_LIB_SH, _SKILL_MANAGEMENT_PLUGIN_LIB], ids=["stowed", "plugin"])
-@pytest.mark.parametrize("binary_name", ["timeout", "gtimeout"])
-def test_lib_capped_for_passes_kill_after_flag_before_the_duration(
-    tmp_path: Path, lib_path: Path, binary_name: str
-) -> None:
-    """`-k` and `2` arrive as two separate argv entries, in that order, both
-    ahead of SECONDS: timeout(1) requires OPTION before DURATION, and
-    BusyBox's timeout rejects the long `--kill-after=2` spelling. Pinned
-    against both binary names (the gtimeout case leaves `timeout` absent from
-    PATH) and both copies of the wrapper, so a later "tidy-up" to
-    `--kill-after=2` fails this test instead of shipping."""
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    argv_log = tmp_path / "argv.log"
-    fake_timeout = tmp_path / binary_name
-    fake_timeout.write_text(
-        "#!/bin/bash\n"
-        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_log))}\n"
-        "exit 0\n"
-    )
-    fake_timeout.chmod(0o755)
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    result = subprocess.run(
-        ["bash", "-c", f". {shlex.quote(str(lib_path))}; _lib_capped_for 5 echo hi"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-
-    assert result.returncode == 0, repr(result)
-    argv = argv_log.read_text().splitlines()
-    assert argv[:4] == ["-k", "2", "5", "echo"], (
-        f"expected -k and 2 as separate argv entries ahead of the duration, got {argv!r}"
-    )
-
-
-# A plain, untrapped `sleep N` (this block's sibling cases above) dies to a bare SIGTERM either way, so it
-# cannot show whether `-k` is present. The SIGTERM-immune child is described in
-# conftest's `_write_conditional_sleep_shim`; only `-k`'s grace-expiry SIGKILL can end it.
-@pytest.mark.timing
-def test_lib_capped_for_kills_a_sigterm_immune_child_via_the_grace(tmp_path: Path) -> None:
-    """A child that ignores SIGTERM outright must still return within
-    cap+grace, not hang to the fixture's own much longer sleep. The grace's
-    SIGKILL reports 137, not timeout(1)'s ordinary 124, so the wall time is
-    asserted alongside the status."""
-    timeout_path = shutil.which("timeout")
-    if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-    bash_path = shutil.which("bash")
-    if not bash_path:
-        pytest.skip("bash not found in PATH")
-    sleep_path = shutil.which("sleep")
-    if not sleep_path:
-        pytest.skip("sleep not found in PATH")
-    dirname_path = shutil.which("dirname")
-    if not dirname_path:
-        pytest.skip("dirname not found in PATH")
-
-    (tmp_path / "timeout").symlink_to(timeout_path)
-    (tmp_path / "bash").symlink_to(bash_path)
-    (tmp_path / "sleep").symlink_to(sleep_path)
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    (tmp_path / "dirname").symlink_to(dirname_path)
-
-    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_lib_call("_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'", env=env)
-    elapsed = time.monotonic() - start
-
-    assert result.returncode == 137, repr(result)
-    # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
-    # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
-    assert elapsed < 15, f"SIGTERM-immune child took {elapsed:.1f}s — the -k grace did not fire"
-
-
-@pytest.mark.parametrize("cap_kill_status", ["124", "137", "143"])
-def test_status_consistent_with_cap_kill_accepts_cap_kill_statuses(cap_kill_status: str) -> None:
-    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {cap_kill_status}", env=dict(os.environ))
-    assert result.returncode == 0, repr(result)
-    assert result.stdout == "" and result.stderr == ""
-
-
-@pytest.mark.parametrize("other_status", ["0", "1", "2", "125", "126", "127", "130"])
-def test_status_consistent_with_cap_kill_rejects_other_statuses(other_status: str) -> None:
-    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {other_status}", env=dict(os.environ))
-    assert result.returncode == 1, repr(result)
-    assert result.stdout == "" and result.stderr == ""
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        "_lib_status_consistent_with_cap_kill",
-        "_lib_status_consistent_with_cap_kill ''",
-        "_lib_status_consistent_with_cap_kill abc",
-    ],
-    ids=["absent", "empty", "non-numeric"],
-)
-def test_status_consistent_with_cap_kill_rejects_absent_empty_and_non_numeric_under_set_u(call: str) -> None:
-    """Returns exactly 1 with no output, and a shell under `set -u` reaches the next statement."""
-    result = _run_lib_call(f"set -u; {call}; echo reached-$?", env=dict(os.environ))
-    assert result.returncode == 0, repr(result)
-    assert result.stdout == "reached-1\n", repr(result.stdout)
-    assert result.stderr == ""
-
-
-def _cap_fire_path_env(tmp_path: Path) -> dict:
-    """A PATH holding only the real timeout(1) and the tools _lib.sh and the composition cases need."""
-    for name in ("timeout", "bash", "sleep", "dirname"):
-        real_path = shutil.which(name)
-        if not real_path:
-            pytest.skip(f"{name} not found in PATH")
-        (tmp_path / name).symlink_to(real_path)
-    return {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-
-
-@pytest.mark.timing
-def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_cap_fire(tmp_path: Path) -> None:
-    env = _cap_fire_path_env(tmp_path)
-    result = _run_lib_call(
-        "_lib_capped_for 1 sleep 5; _lib_status_consistent_with_cap_kill $?; echo classified-$?", env=env
-    )
-    assert result.stdout == "classified-0\n", repr(result)
-
-
-@pytest.mark.timing
-def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_immune_cap_fire(tmp_path: Path) -> None:
-    env = _cap_fire_path_env(tmp_path)
-    result = _run_lib_call(
-        "_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'; "
-        "_lib_status_consistent_with_cap_kill $?; echo classified-$?",
-        env=env,
-    )
-    assert result.stdout == "classified-0\n", repr(result)
-
-
-def test_status_consistent_with_cap_kill_rejects_a_child_that_exits_one(tmp_path: Path) -> None:
-    env = _cap_fire_path_env(tmp_path)
-    result = _run_lib_call(
-        "_lib_capped_for 5 bash -c 'exit 1'; _lib_status_consistent_with_cap_kill $?; echo classified-$?",
-        env=env,
-    )
-    assert result.stdout == "classified-1\n", repr(result)
-
-
-def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
-    """An empty or unset SECONDS -- e.g. _lib_capped_for "$UNSET_VAR" cmd --
-    hard-aborts the sourcing script via bash's ${1:?msg} rather than falling
-    through to run the command uncapped, per _lib_capped_for's own header
-    comment in _lib.sh."""
-    harness = (
-        f'. {_LIB_SH}; '
-        '_lib_capped_for "$UNSET_VAR" echo should-not-run; '
-        'echo SHOULD_NOT_REACH'
-    )
-    result = subprocess.run(
-        ["bash", "-c", harness],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 0, repr(result)
-    assert "SHOULD_NOT_REACH" not in result.stdout, repr(result.stdout)
-    assert "should-not-run" not in result.stdout, repr(result.stdout)
-    assert "_lib_capped_for requires a seconds argument" in result.stderr, repr(result.stderr)
-
-
 def test_missing_emit_deny_loud_fail() -> None:
     """Source _lib.sh WITHOUT defining emit_deny, call helper on empty stdin.
 
@@ -1110,168 +663,6 @@ def test_missing_emit_deny_loud_fail() -> None:
     )
 
 
-def test_lib_emit_allow_with_context_emits_expected_envelope() -> None:
-    """Emits the PreToolUse allow envelope with additionalContext set to
-    the jq-encoded message, mirroring _lib_emit_deny's envelope shape but
-    with permissionDecision "allow" and no permissionDecisionReason."""
-    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=dict(os.environ))
-    assert result.returncode == 0, repr(result)
-    payload = json.loads(result.stdout)
-    assert payload == {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "additionalContext": "test message",
-        }
-    }
-
-
-def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_path: Path) -> None:
-    """No jq on PATH -> _lib_jq's degrade path returns empty, and the
-    caller-facing contract is a silent allow (no stdout). Unlike
-    _lib_emit_deny, which hard-blocks (exit 2) on this same jq-absent case,
-    losing an informational note is not the fail-closed case _lib_emit_deny
-    protects against."""
-    farm_dir = tmp_path / "path-farm"
-    farm_dir.mkdir()
-    restricted_path = build_path_without("jq", farm_dir)
-
-    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
-    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=env)
-    assert result.returncode == 0, repr(result)
-    assert result.stdout == "", repr(result.stdout)
-    assert result.stderr == "", repr(result.stderr)
-
-
-def test_lib_hook_claude_pid_equal_to_ppid_is_accepted() -> None:
-    """`_run_lib_call` spawns bash directly (no intervening shell), so that
-    bash process's own $PPID is this pytest process's pid -- matching
-    $CLAUDE_PID exactly, the no-shim disjunct."""
-    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
-    result = _run_lib_call("_lib_hook_claude_pid", env)
-    assert result.returncode == 0, repr(result)
-    assert result.stdout.strip() == str(os.getpid())
-
-
-def test_lib_hook_claude_pid_equal_to_ppids_parent_is_accepted() -> None:
-    """The shim disjunct: $CLAUDE_PID equals $PPID's immediate parent, not
-    $PPID itself. An intervening `sh` forks the bash process that sources
-    _lib.sh, so that bash's own $PPID is the shim's (sh's) pid, and
-    $CLAUDE_PID (this test's own pid) is that shim's parent."""
-    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
-    result = subprocess.run(
-        ["sh", "-c", f'bash -c ". {_LIB_SH}; _lib_hook_claude_pid"'],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 0, repr(result)
-    assert result.stdout.strip() == str(os.getpid())
-
-
-def test_lib_hook_claude_pid_rejects_unrelated_live_pid() -> None:
-    """A numeric, live $CLAUDE_PID outside the one-hop bound (not $PPID, not
-    $PPID's immediate parent) must be rejected, falling back to $PPID -- the
-    sole invariant the one-hop design exists to enforce. A `sleep` child of
-    pytest is live but not an ancestor of the harness process at all."""
-    sleeper = subprocess.Popen(["sleep", "30"])
-    try:
-        env = {**os.environ, "CLAUDE_PID": str(sleeper.pid)}
-        result = _run_lib_call("_lib_hook_claude_pid", env)
-        assert result.returncode == 0, repr(result)
-        assert result.stdout.strip() == str(os.getpid())
-    finally:
-        sleeper.terminate()
-        sleeper.wait()
-
-
-def test_lib_hook_claude_pid_rejects_non_numeric_value() -> None:
-    """A non-numeric $CLAUDE_PID must fall back to $PPID rather than being
-    compared against it or used as-is."""
-    env = {**os.environ, "CLAUDE_PID": "abc"}
-    result = _run_lib_call("_lib_hook_claude_pid", env)
-    assert result.returncode == 0, repr(result)
-    assert result.stdout.strip() == str(os.getpid())
-
-
-@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
-    """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but
-    unreadable". chmod 000 on the git-dir denies stat(2) on the lock file
-    inside it with EACCES. Empirically `[ -e ]` resolves that denial to
-    false, so _lib_worktree_lock_absent reports the lock "absent" (returns
-    0/true) even though it is actually present underneath. Pins this
-    resolution so a future change to the pre-check's implementation can't
-    silently flip it."""
-    git_dir = tmp_path / "git-dir"
-    git_dir.mkdir()
-    (git_dir / "locked").write_text("claude-code pid 1\n")
-    git_dir.chmod(0o000)
-    try:
-        result = _run_lib_call(f'_lib_worktree_lock_absent "{git_dir}"', env=dict(os.environ))
-    finally:
-        git_dir.chmod(0o755)
-    assert result.returncode == 0, (
-        f"expected _lib_worktree_lock_absent to report 'absent' (exit 0) under EACCES: {result!r}"
-    )
-
-
-def test_lib_worktree_lock_absent_stale_read_survives_opposite_race(
-    isolated_home: Path, opted_in_with_worktree: tuple[Path, Path]
-) -> None:
-    """Deterministic version of the "opposite-direction race" the header
-    comments document:
-
-    1. The pre-check reads "locked" (WAS_UNLOCKED=false).
-    2. The lock is then cleared, standing in for a genuinely concurrent
-       `git worktree unlock`.
-    3. The guard performs a real fresh acquisition.
-
-    WAS_UNLOCKED stays false, since the pre-check's stale read is never
-    corrected retroactively. So a caller wired this way emits no
-    fresh-lock message despite the real acquisition that just happened."""
-    opted_in_repo, worktree = opted_in_with_worktree
-    subprocess.run(
-        ["git", "-C", str(worktree), "worktree", "lock", str(worktree), "--reason", "pre-existing"],
-        check=True,
-    )
-    common_dir = subprocess.run(
-        ["git", "-C", str(opted_in_repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    git_dir = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-    script = textwrap.dedent(f"""
-        . "{_LIB_SH}"
-        WAS_UNLOCKED=false
-        _lib_worktree_lock_absent "{git_dir}" && WAS_UNLOCKED=true
-        git -C "{worktree}" worktree unlock "{worktree}"
-        _lib_worktree_collision_guard "{worktree}" "{common_dir}" >/dev/null
-        printf '%s' "$WAS_UNLOCKED"
-    """)
-    env = {**os.environ, "HOME": str(isolated_home)}
-    env.pop("CLAUDE_CONFIG_DIR", None)
-    result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env, check=False
-    )
-    assert result.returncode == 0, repr(result)
-    assert result.stdout == "false", (
-        f"pre-check's stale WAS_UNLOCKED read must not be corrected by the "
-        f"guard's later real acquisition: {result!r}"
-    )
-    assert _worktree_lock_reason(worktree) is not None, (
-        "the guard's own call is expected to have genuinely re-locked the worktree"
-    )
-
-
 def test_null_literal_input_denied() -> None:
     """JSON null literal → DENY (empty TOOL_NAME after jq, path c).
 
@@ -1300,168 +691,11 @@ def test_newline_injection_in_tool_name_denied() -> None:
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
 
 
-# --- _lib_marker_value_present -------------------------------------------
-#
-# Completion markers are content-addressed: the stored value is the whole
-# authorization, and the filename prefix only namespaces concurrent writers
-# apart. These tests pin that read contract, plus the two shell-level
-# properties the helper depends on — whole-line matching, and a zero-match
-# glob reporting "not found" rather than erroring on an unexpanded pattern.
-
-
-def _marker_value_present(
-    markers_dir: Path, expected: str, *prefixes: str
-) -> subprocess.CompletedProcess:
-    """Run _lib_marker_value_present; returncode 0 means found."""
-    argv = [
-        "bash", "-c", f'. {_LIB_SH}; _lib_marker_value_present "$@"', "bash",
-        str(markers_dir), expected, *prefixes,
-    ]
-    return subprocess.run(argv, capture_output=True, text=True, check=False)
-
-
-def _write_marker(
-    markers_dir: Path, name: str, value: str, *, trailing_newline: bool = True
-) -> None:
-    markers_dir.mkdir(parents=True, exist_ok=True)
-    (markers_dir / name).write_text(value + ("\n" if trailing_newline else ""))
-
-
-def test_marker_value_present_matches_stored_value(tmp_path: Path) -> None:
-    """A marker holding the expected value under a matching prefix is found."""
-    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
-
-
-def test_marker_value_present_matches_across_session_keys(tmp_path: Path) -> None:
-    """The session suffix is not part of the read predicate.
-
-    This is the defect the helper exists to close: a marker written under one
-    session id must authorize a read from any other session, because the stored
-    hash — not the filename — proves which state was reviewed.
-    """
-    _write_marker(tmp_path, "repohash.session-that-has-since-ended", "deadbeef")
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
-
-
-def test_marker_value_present_rejects_different_value(tmp_path: Path) -> None:
-    """A marker under a matching prefix holding a different value is not a match."""
-    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
-    assert _marker_value_present(tmp_path, "cafebabe", "repohash.").returncode != 0
-
-
-def test_marker_value_present_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
-    """A stored value with no trailing newline still matches.
-
-    grep treats a final unterminated line as a line, so the read side does not
-    depend on the writer's newline discipline.
-    """
-    _write_marker(tmp_path, "repohash.session-a", "deadbeef", trailing_newline=False)
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode == 0
-
-
-def test_marker_value_present_scans_multiple_prefixes(tmp_path: Path) -> None:
-    """A match under any supplied prefix counts — the sibling-worktree fallback tier."""
-    _write_marker(tmp_path, "siblinghash.session-a", "deadbeef")
-    result = _marker_value_present(tmp_path, "deadbeef", "currenthash.", "siblinghash.")
-    assert result.returncode == 0
-
-
-def test_marker_value_present_ignores_non_matching_prefix(tmp_path: Path) -> None:
-    """The right value stored under the wrong repo-hash prefix must not release.
-
-    This is the cross-repo boundary: dropping the repo key entirely would let a
-    review performed against a different codebase authorize this one.
-    """
-    _write_marker(tmp_path, "otherrepohash.session-a", "deadbeef")
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
-
-
-def test_marker_value_present_requires_whole_line_match(tmp_path: Path) -> None:
-    """A stored value that merely CONTAINS the expected value is not a match.
-
-    Pins the `-x` (whole-line) flag: a regression to bare `-F` would let a
-    longer digest sharing this one as a substring release the gate.
-    """
-    _write_marker(tmp_path, "repohash.session-a", "deadbeefextra")
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
-
-
-def test_marker_value_present_rejects_stored_value_shorter_than_expected(tmp_path: Path) -> None:
-    """The inverse substring direction: stored value is a proper prefix of expected."""
-    _write_marker(tmp_path, "repohash.session-a", "dead")
-    assert _marker_value_present(tmp_path, "deadbeef", "repohash.").returncode != 0
-
-
-def test_marker_value_present_zero_match_glob_reports_not_found(tmp_path: Path) -> None:
-    """No marker for this prefix → clean not-found, not a grep error.
-
-    Without `nullglob`, bash expands a zero-match `prefix*` to the literal
-    unexpanded pattern string, which grep then fails to open. "No marker exists
-    yet" is the most common call, so that failure mode would misreport the
-    common case as an error. The empty-stderr assertion is what catches it.
-    """
-    result = _marker_value_present(tmp_path, "deadbeef", "nosuchrepohash.")
-    assert result.returncode != 0
-    assert result.stderr == "", repr(result.stderr)
-
-
-def test_marker_value_present_absent_directory_reports_not_found(tmp_path: Path) -> None:
-    """A markers directory that does not exist yet is not-found, not an error."""
-    result = _marker_value_present(tmp_path / "never-created", "deadbeef", "repohash.")
-    assert result.returncode != 0
-    assert result.stderr == "", repr(result.stderr)
-
-
-def test_marker_value_present_requires_a_prefix(tmp_path: Path) -> None:
-    """With no prefixes supplied, the helper reports not-found rather than scanning all."""
-    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
-    assert _marker_value_present(tmp_path, "deadbeef").returncode != 0
-
-
-def test_marker_value_present_empty_expected_value_reports_not_found(tmp_path: Path) -> None:
-    """An empty expected value never matches.
-
-    A caller reaches this helper with an uncomputed hash only by skipping its
-    own fail-closed check; matching an empty marker file there would convert a
-    hashing failure into a gate release.
-    """
-    _write_marker(tmp_path, "repohash.session-a", "")
-    assert _marker_value_present(tmp_path, "", "repohash.").returncode != 0
-
-
-def test_marker_value_present_ignores_subdirectories(tmp_path: Path) -> None:
-    """A stray subdirectory under the markers dir does not produce grep noise."""
-    _write_marker(tmp_path, "repohash.session-a", "deadbeef")
-    (tmp_path / "repohash.stray-subdir").mkdir()
-    result = _marker_value_present(tmp_path, "deadbeef", "repohash.")
-    assert result.returncode == 0
-    assert result.stderr == "", repr(result.stderr)
-
-
-def test_marker_value_present_restores_nullglob_state() -> None:
-    """The helper must not leak `nullglob` into its caller's shell.
-
-    Hooks source _lib.sh and then run their own globs; silently flipping a
-    shell option under them would change unrelated behavior far from this
-    call site.
-    """
-    harness = (
-        f". {_LIB_SH}; "
-        "_lib_marker_value_present /nonexistent-markers-dir val prefix. ; "
-        "shopt -q nullglob && echo LEAKED || echo RESTORED"
-    )
-    result = subprocess.run(
-        ["bash", "-c", harness], capture_output=True, text=True, check=False
-    )
-    assert result.stdout.strip() == "RESTORED", repr(result.stdout)
-
-
 # --- _lib_review_pr_completion_marker_fields -------------------------------
 #
 # review-pr-post.sh's only read of the completion marker /review-pr's
 # `write review-pr` arm writes -- session-scoped (never a cross-session
-# glob, unlike _lib_marker_value_present above), since this authorizes a
+# glob, unlike _lib_marker_value_present in test_lib_markers.py), since this authorizes a
 # `gh pr review` POST rather than releasing a gate for a read.
 
 
@@ -1528,7 +762,7 @@ def test_review_pr_completion_marker_fields_malformed_content_returns_1_with_no_
 
 def test_review_pr_completion_marker_fields_wrong_session_returns_1(tmp_path: Path) -> None:
     """Session-scoped, unlike _lib_marker_value_present's cross-session glob
-    above: a marker written under one session must not authorize a read from
+    in test_lib_markers.py: a marker written under one session must not authorize a read from
     another -- see test_other_sessions_marker_does_not_leak_bypass for the
     equivalent property on the active-bypass marker."""
     _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
@@ -1613,1405 +847,6 @@ def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path
     result = _parse_pr_identity("my-org/my.repo#5")
     assert result.returncode == 0, result.stderr
     assert result.stdout == "my-org/my.repo\n5\n"
-
-
-# --- _lib_skill_basename ----------------------------------------------------
-#
-# Hooks that match a Skill call by name call this helper, so none carries its
-# own copy of the qualified-name split.
-
-
-@pytest.mark.parametrize(
-    ("skill_name", "expected_basename"),
-    [
-        pytest.param("code-review", "code-review", id="bare_name"),
-        pytest.param("plugin-x:code-review", "code-review", id="plugin_qualified"),
-        pytest.param(
-            ".claude/worktrees/some-branch/claude:code-review",
-            "code-review",
-            id="directory_qualified",
-        ),
-        pytest.param("/code-review", "code-review", id="leading_slash"),
-        pytest.param("plugin:", "", id="trailing_colon_empty_name"),
-        pytest.param("code-review/", "", id="trailing_slash_empty_name"),
-        pytest.param("plugin:dir/", "", id="plugin_qualified_trailing_slash_empty_name"),
-        pytest.param("", "", id="empty_string"),
-    ],
-)
-def test_skill_basename_prints_final_name_component(skill_name: str, expected_basename: str) -> None:
-    argv = [
-        "bash", "-c", f'. {_LIB_SH}; _lib_skill_basename "$@"', "bash", skill_name,
-    ]
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == expected_basename + "\n"
-
-
-def test_skill_basename_with_no_argument_prints_empty_line() -> None:
-    argv = ["bash", "-c", f". {_LIB_SH}; _lib_skill_basename"]
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "\n"
-
-
-def test_skill_basename_with_no_argument_under_set_u_prints_empty_line() -> None:
-    """`${1:-}` keeps the helper callable with $1 unset under a caller's `set -u`."""
-    argv = ["bash", "-c", f". {_LIB_SH}; set -u; _lib_skill_basename"]
-    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
-    env = {**os.environ, "LC_ALL": "C"}
-    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "\n"
-    assert "unbound variable" not in result.stderr
-
-
-# --- _lib_args_lead_word_is -------------------------------------------------
-#
-# The review-orchestrator routing gate calls this helper to read the
-# `unrouted` lead word of a Skill call's args.
-
-
-def _args_lead_word_is(args: str, word: str, *, env_overrides: dict | None = None) -> int:
-    """Return the exit code of `_lib_args_lead_word_is args word`."""
-    argv = ["bash", "-c", f'. {_LIB_SH}; _lib_args_lead_word_is "$@"', "bash", args, word]
-    env = {**os.environ, **(env_overrides or {})}
-    return subprocess.run(argv, capture_output=True, text=True, check=False, env=env).returncode
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        pytest.param("unrouted", id="word_alone"),
-        pytest.param("unrouted /abs/x.diff", id="word_then_space"),
-        pytest.param("unrouted\t/abs/x.diff", id="word_then_tab"),
-        pytest.param("unrouted\n/abs/x.diff", id="word_then_newline"),
-        pytest.param("unrouted\r/abs/x.diff", id="word_then_carriage_return"),
-        pytest.param("unrouted ", id="word_then_trailing_space"),
-        pytest.param("  unrouted", id="leading_spaces"),
-        pytest.param("\tunrouted", id="leading_tab"),
-        pytest.param("\nunrouted", id="leading_newline"),
-        pytest.param("\r\n unrouted /abs/x.diff", id="leading_mixed_whitespace"),
-    ],
-)
-def test_args_lead_word_is_matches_the_word_alone_or_before_whitespace(args: str) -> None:
-    assert _args_lead_word_is(args, "unrouted") == 0
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        pytest.param("unroutedly", id="word_boundary_extension"),
-        pytest.param("unrouted:", id="colon_boundary"),
-        pytest.param("unrouted,", id="comma_boundary"),
-        pytest.param("Unrouted", id="capitalized"),
-        pytest.param("UNROUTED /abs/x.diff", id="uppercase"),
-        pytest.param("please run unrouted", id="prose_before_word"),
-        pytest.param("please run unrouted /abs/x.diff", id="prose_before_word_and_path"),
-        pytest.param('"unrouted"', id="double_quoted"),
-        pytest.param("'unrouted'", id="single_quoted"),
-        pytest.param("`unrouted`", id="backtick_wrapped"),
-        pytest.param("", id="empty_args"),
-        pytest.param("   ", id="only_spaces"),
-        pytest.param("\t\n\r", id="only_other_whitespace"),
-    ],
-)
-def test_args_lead_word_is_rejects_everything_but_the_exact_lead_word(args: str) -> None:
-    assert _args_lead_word_is(args, "unrouted") == 1
-
-
-def test_args_lead_word_is_rejects_an_empty_word() -> None:
-    assert _args_lead_word_is("", "") == 1
-
-
-def _locale_where_ideographic_space_is_space() -> str:
-    """An installed UTF-8 locale under which an unpinned `[[:space:]]` matches
-    U+3000, the exposure `local LC_ALL=C` removes. `C.UTF-8` is not guaranteed
-    to match, so a test that hardcodes it cannot tell the pinned helper from an
-    unpinned one."""
-    return installed_locale_where(
-        '[[ "$1" == [[:space:]] ]]', "\u3000", absent_message="no installed locale makes [[:space:]] match U+3000"
-    )
-
-
-@pytest.mark.parametrize(
-    "separator",
-    [
-        # Discriminates only on a libc that counts U+00A0 as space; glibc does not.
-        pytest.param("\u00a0", id="no_break_space"),
-        pytest.param("\u2003", id="em_space"),
-        pytest.param("\u3000", id="ideographic_space"),
-    ],
-)
-@pytest.mark.parametrize(
-    "build_args",
-    [
-        pytest.param(lambda separator: f"{separator}unrouted", id="before_word"),
-        pytest.param(lambda separator: f"unrouted{separator}/abs/x.diff", id="after_word"),
-    ],
-)
-def test_args_lead_word_is_ignores_non_ascii_whitespace_in_a_utf8_locale(separator: str, build_args) -> None:
-    locale = _locale_where_ideographic_space_is_space()
-    args = build_args(separator)
-    assert _args_lead_word_is(args, "unrouted", env_overrides={"LC_ALL": locale}) == 1
-
-
-def test_args_lead_word_is_leaves_the_caller_locale_unchanged() -> None:
-    """The helper's LC_ALL=C is function-local, so it must not leak into the
-    caller's own shell."""
-    locale = _locale_where_ideographic_space_is_space()
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; export LC_ALL={locale}; '
-            '_lib_args_lead_word_is x unrouted; printf %s "$LC_ALL"; [[ "$1" == [[:space:]] ]]',
-            "bash",
-            "\u3000",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.stdout == locale
-    assert result.returncode == 0, "U+3000 no longer matches [[:space:]] in the caller after the helper ran"
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        pytest.param("_lib_args_lead_word_is", id="no_arguments"),
-        pytest.param('_lib_args_lead_word_is "unrouted"', id="args_but_no_word"),
-    ],
-)
-def test_args_lead_word_is_with_missing_arguments_under_set_u_returns_one(call: str) -> None:
-    """`${n:-}` keeps the helper callable with positionals unset under a
-    caller's `set -u`, returning 1 rather than aborting on an unbound variable."""
-    argv = ["bash", "-c", f'. {_LIB_SH}; set -u; {call}; echo "status=$?"']
-    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
-    env = {**os.environ, "LC_ALL": "C"}
-    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "status=1"
-    assert "unbound variable" not in result.stderr
-
-
-# --- _lib_gh -----------------------------------------------------------
-
-
-def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
-    """PATH dir holding a fake `gh` that records argv and
-    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
-    exit_code."""
-    shim_dir = tmp_path / "gh-shim"
-    shim_dir.mkdir()
-    gh_shim = shim_dir / "gh"
-    gh_shim.write_text(textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import json
-        import os
-        import sys
-        record = {{
-            "args": sys.argv[1:],
-            "GH_HOST": os.environ.get("GH_HOST"),
-            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
-        }}
-        with open({str(call_log)!r}, "a") as f:
-            f.write(json.dumps(record) + chr(10))
-        sys.exit({exit_code})
-    """))
-    gh_shim.chmod(0o755)
-    return shim_dir
-
-
-class TestLibGh:
-    """Direct unit coverage for _lib_gh -- the one call every review-pr
-    script routes its own `gh` invocations through."""
-
-    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(self, tmp_path: Path) -> None:
-        call_log = tmp_path / "calls.jsonl"
-        shim_dir = _gh_shim_dir(tmp_path, call_log)
-        env = {
-            **os.environ,
-            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
-            "GH_HOST": "ghe.example.com",
-            "GH_ENTERPRISE_TOKEN": "enterprise-token",
-        }
-        result = _run_lib_call('_lib_gh 5 pr view 42 -R foo/bar --json headRefOid', env=env)
-        assert result.returncode == 0, result.stderr
-        record = json.loads(call_log.read_text())
-        assert record["args"] == ["pr", "view", "42", "-R", "foo/bar", "--json", "headRefOid"]
-        assert record["GH_HOST"] == "ghe.example.com"
-        assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
-
-    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path) -> None:
-        call_log = tmp_path / "calls.jsonl"
-        shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
-        env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
-        result = _run_lib_call('_lib_gh 5 pr view 42', env=env)
-        assert result.returncode == 1
-
-
-# --- _lib_origin_owner_repo ----------------------------------------------
-
-
-class TestLibOriginOwnerRepo:
-    """Direct unit coverage for _lib_origin_owner_repo -- the one shared
-    extraction review-pr-checkout.sh and review-pr-diff.sh (REPO_ROOT form)
-    and review-pr-post.sh and require-respond-pr.sh's own cross-repo check
-    (cwd form) all call."""
-
-    @staticmethod
-    def _origin_owner_repo(repo: Path, resolution_form: str) -> subprocess.CompletedProcess:
-        """Run the function against repo in one of its two resolution forms.
-        The ambient git config is isolated so a contributor's own `insteadOf`
-        rules cannot change either form's answer."""
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-        if resolution_form == "repo_root":
-            return _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=env)
-        return subprocess.run(
-            ["bash", "-c", f'. "{_LIB_SH}"; _lib_origin_owner_repo'],
-            cwd=repo, capture_output=True, text=True, env=env,
-        )
-
-    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
-    @pytest.mark.parametrize(
-        "origin_url",
-        [
-            "https://github.com/foo/bar.git",
-            "https://github.com/foo/bar",
-            "git@github.com:foo/bar.git",
-            "ssh://git@github.com:22/foo/bar.git",
-            "https://user:token@github.com/foo/bar.git",
-            "/srv/remotes/foo/bar.git",
-        ],
-        ids=["https_dot_git", "https_no_suffix", "scp_like", "ssh_with_port", "https_with_userinfo", "local_path"],
-    )
-    def test_extracts_owner_repo_from_each_url_shape_in_both_resolution_forms(
-        self, tmp_path: Path, origin_url: str, resolution_form: str
-    ) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo)
-        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
-        result = self._origin_owner_repo(repo, resolution_form)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == "foo/bar"
-
-    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
-    @pytest.mark.parametrize(
-        "origin_url",
-        ["https://github.com/foo/bar/", "https://github.com/foo/bar.git/"],
-        ids=["trailing_slash", "dot_git_trailing_slash"],
-    )
-    def test_a_trailing_slash_fails_closed_in_both_resolution_forms(
-        self, tmp_path: Path, origin_url: str, resolution_form: str
-    ) -> None:
-        """A URL ending in `/` does not parse to an owner/repo shape, so a
-        caller denies rather than comparing a wrong slug."""
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo)
-        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
-        result = self._origin_owner_repo(repo, resolution_form)
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
-    def test_an_instead_of_rewrite_yields_the_same_owner_repo_in_both_resolution_forms(
-        self, tmp_path: Path, resolution_form: str
-    ) -> None:
-        """`git remote get-url` applies a `url.<base>.insteadOf` rewrite and
-        `git config --get` does not, so the two forms read different URLs here
-        and must still agree on the slug."""
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo)
-        subprocess.run(["git", "remote", "add", "origin", "alias:foo/bar.git"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "url.https://github.com/.insteadOf", "alias:"], cwd=repo, check=True)
-        result = self._origin_owner_repo(repo, resolution_form)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == "foo/bar"
-
-    def test_fails_closed_with_no_origin_remote(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo)
-        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-
-class TestLibCaseInsensitiveNe:
-    """Direct unit coverage for _lib_case_insensitive_ne -- the shared
-    nocasematch comparison for owner/repo slugs, since GitHub treats them
-    case-insensitively."""
-
-    def test_exact_match_returns_false(self) -> None:
-        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
-        assert result.returncode == 1
-
-    def test_case_differing_match_returns_false(self) -> None:
-        result = _run_lib_call('_lib_case_insensitive_ne "Foo/Bar" "foo/bar"', env=dict(os.environ))
-        assert result.returncode == 1
-
-    def test_genuine_mismatch_returns_true(self) -> None:
-        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/baz"', env=dict(os.environ))
-        assert result.returncode == 0
-
-    @pytest.mark.parametrize("initial_option_state", ["-s", "-u"], ids=["caller_set", "caller_unset"])
-    def test_leaves_the_callers_nocasematch_setting_as_it_found_it(self, initial_option_state: str) -> None:
-        result = _run_lib_call(
-            f'shopt {initial_option_state} nocasematch; _lib_case_insensitive_ne "foo/bar" "foo/baz"; '
-            "shopt -p nocasematch",
-            env=dict(os.environ),
-        )
-        assert result.stdout == f"shopt {initial_option_state} nocasematch\n"
-
-
-# --- _lib_is_no_gate_release_agent ---------------------------------------
-
-
-def _is_no_gate_release_agent(agent_type: str) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_is_no_gate_release_agent "$1"', "bash", agent_type],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _no_gate_release_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_no_gate_release_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
-def test_no_gate_release_set_covers_every_review_only_agent() -> None:
-    """The set is a superset of the review-only roster, by derivation not by copy."""
-    review_only = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert review_only, "review-only roster must not be empty"
-    assert set(review_only) <= set(_no_gate_release_agents())
-
-
-def test_no_gate_release_set_includes_code_writer() -> None:
-    """code-writer is an implementer, so it is absent from the review-only roster —
-    but it is exactly the identity that can release a gate it could not have
-    earned, so the no-release set must name it separately."""
-    assert "code-writer" in _no_gate_release_agents()
-
-
-def _plan_writer_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_plan_writer_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
-def _is_plan_writer_agent(agent_type: str) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_is_plan_writer_agent "$1"', "bash", agent_type],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def test_no_gate_release_set_covers_every_plan_writer_agent() -> None:
-    """The set is a superset of the plan-writer registry, by derivation not by copy."""
-    plan_writers = _plan_writer_agents()
-    assert plan_writers, "plan-writer registry must not be empty"
-    assert set(plan_writers) <= set(_no_gate_release_agents())
-
-
-def test_plan_writer_predicate_accepts_every_registry_member() -> None:
-    for agent_type in _plan_writer_agents():
-        assert _is_plan_writer_agent(agent_type), agent_type
-
-
-@pytest.mark.parametrize(
-    "agent_type",
-    ["", "plan-architect-x", "PLAN-ARCHITECT", "plan_architect", "code-writer", "general-purpose"],
-)
-def test_plan_writer_predicate_rejects_non_members(agent_type: str) -> None:
-    """Exact match only; an empty agent_type is the main session and must not match."""
-    assert not _is_plan_writer_agent(agent_type)
-
-
-@pytest.mark.parametrize(
-    "agent_type",
-    ["code-writer", "plan-architect", "staff-sdet", "ciso-reviewer", "Explore", "Plan"],
-)
-def test_no_gate_release_agent_matches_roster_members(agent_type: str) -> None:
-    assert _is_no_gate_release_agent(agent_type)
-
-
-@pytest.mark.parametrize(
-    "agent_type",
-    ["general-purpose", "claude", "", "code-write", "code-writer-x", "CODE-WRITER"],
-)
-def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
-    """Exact match only.
-
-    Empty agent_type is the main session and must pass. general-purpose and
-    claude carry the full tool set and can genuinely run a review skill, so
-    they keep the documented delegation escape hatch. The near-miss strings
-    pin that the predicate is not doing prefix or case-insensitive matching.
-    """
-    assert not _is_no_gate_release_agent(agent_type)
-
-
-def _reviewer_persona_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
-def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
-    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
-
-    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
-    this literal. A new harness built-in added to the review-only roster with
-    the exclusion left untouched passes, since the name lands on both sides.
-    """
-    review_only = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert review_only, "review-only roster must not be empty"
-    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
-
-
-def _is_reviewer_persona(agent_type: str) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
-    roster = _reviewer_persona_agents()
-    assert roster, "reviewer-persona roster must not be empty"
-    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
-    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
-
-
-@pytest.mark.parametrize(
-    "agent_type",
-    [
-        "Explore",
-        "Plan",
-        "code-writer",
-        "plan-architect",
-        "general-purpose",
-        "",
-        "staff-sdet-x",
-        "staff-sde",
-        "STAFF-SDET",
-        "ciso-reviewer comment-discipline-reviewer",
-    ],
-)
-def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
-    agent_type: str,
-) -> None:
-    """Every agent outside the reviewer-persona array is rejected.
-
-    Explore and Plan are review-only roster members but harness built-ins.
-    code-writer is an implementer. plan-architect is a design consultant that a
-    caller branches on separately. general-purpose is a harness built-in outside
-    the review-only roster. The empty case is a dispatch payload with no
-    subagent_type. The staff-sdet variants pin that the predicate is not doing
-    prefix or case-insensitive matching. The space-joined pair of two real
-    roster members pins that a value is not accepted as a substring or word
-    list of the roster.
-    """
-    assert not _is_reviewer_persona(agent_type)
-
-
-# --- _lib_valid_session_id_component --------------------------------------
-#
-# Every call site that builds a filesystem path from a hook-payload-supplied
-# session id ("$STATE_DIR/$SESSION_ID") relies on this predicate to reject a
-# value that would escape the intended directory once concatenated in.
-
-
-def _valid_session_id_component(session_id: str) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", session_id],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def test_valid_session_id_component_rejects_a_non_ascii_letter_under_a_widening_locale() -> None:
-    """Under a locale whose collation puts accented letters inside `[A-Za-z]`,
-    a bracket range accepts `sess<e-acute>`. The predicate spells its allowed
-    characters out, so a revert to a range fails here on any runner that has
-    such a locale."""
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", "sess\u00e9"],
-        env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 0
-
-
-@pytest.mark.parametrize(
-    "session_id",
-    [
-        "550e8400-e29b-41d4-a716-446655440000",  # a real harness session id (UUID)
-        "abc123",
-        "session_ID-with-underscores",
-    ],
-)
-def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> None:
-    assert _valid_session_id_component(session_id)
-
-
-@pytest.mark.parametrize(
-    "session_id",
-    [
-        "",
-        "../canary",
-        "../../etc/passwd",
-        "foo/bar",
-        "/absolute/path",
-        "session id with spaces",
-        "session;rm -rf /",
-        ".",
-        "..",
-        "abc\n",  # trailing newline: `$` must not stop matching before it
-        "\nabc",
-        "ab\ncd",
-    ],
-)
-def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -> None:
-    """Each of these, concatenated into "$DIR/$SESSION_ID", would either
-    escape DIR (`../`, an absolute path), carry a newline, or otherwise fail
-    to name a single safe path component."""
-    assert not _valid_session_id_component(session_id)
-
-
-# --- _lib_active_bypass_marker_live ---------------------------------------
-#
-# The four bypass-shaped gates (require-{memory-skill,plan-review,
-# ready-for-review,respond-pr}.sh), plus nudge-handoff-near-context-cap.sh's
-# hard-block suppression, share this helper, so the liveness,
-# orphan-eviction, and traversal properties are pinned once here rather than
-# five times over. Each caller's own test file still asserts the disposition
-# it produces when the helper returns false, which is what differs by caller.
-
-_MARKER_DIR_NAME = ".test-skill-active.d"
-
-
-def _active_bypass_marker_live(home: Path, session_id: str) -> bool:
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
-            "bash",
-            _MARKER_DIR_NAME,
-            session_id,
-        ],
-        capture_output=True,
-        text=True,
-        env={"HOME": str(home), "PATH": os.environ["PATH"]},
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _write_active_bypass_marker(home: Path, session_id: str, content: str) -> Path:
-    marker_dir = home / ".claude" / _MARKER_DIR_NAME
-    marker_dir.mkdir(parents=True, exist_ok=True)
-    marker = marker_dir / session_id
-    marker.write_text(content)
-    return marker
-
-
-def test_active_bypass_marker_live_true_for_live_pid(tmp_path) -> None:
-    """The whole point of the marker: a running skill's PID means the gate
-    should let that session's own calls through."""
-    _write_active_bypass_marker(tmp_path, "sess-live", str(os.getpid()))
-    assert _active_bypass_marker_live(tmp_path, "sess-live")
-
-
-def test_active_bypass_marker_live_false_when_no_marker(tmp_path) -> None:
-    assert not _active_bypass_marker_live(tmp_path, "sess-absent")
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        "2147483647",  # above the default pid_max — no such process
-        "",
-        "not-a-pid",
-        "-1",
-    ],
-    ids=["dead-pid", "empty", "non-numeric", "negative"],
-)
-def test_active_bypass_marker_live_evicts_orphan(tmp_path, content: str) -> None:
-    """A marker whose PID is dead or unreadable is an orphan from a session
-    that died before its cleanup step. It must not release the gate, and it
-    must be removed so it cannot accumulate."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-orphan", content)
-    assert not _active_bypass_marker_live(tmp_path, "sess-orphan")
-    assert not marker.exists(), "an orphaned marker must be evicted, not left in place"
-
-
-def test_active_bypass_marker_live_keeps_live_marker(tmp_path) -> None:
-    """Eviction is for orphans only — a live marker must survive being read,
-    or the first gate hit would revoke the running skill's own bypass."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-keep", str(os.getpid()))
-    assert _active_bypass_marker_live(tmp_path, "sess-keep")
-    assert marker.exists()
-
-
-def test_active_bypass_marker_live_false_for_traversal_id_without_touching_target(
-    tmp_path,
-) -> None:
-    """The guard is inside the helper, so a path-escaping id must be rejected
-    before the marker path is built — even when a live-PID file sits exactly
-    where the traversal would resolve. Planting the PID there is what
-    discriminates: without the guard the helper would read it, find it live,
-    and return true."""
-    (tmp_path / ".claude" / _MARKER_DIR_NAME).mkdir(parents=True)
-    canary = tmp_path / ".claude" / "canary"
-    canary.write_text(str(os.getpid()))
-
-    assert not _active_bypass_marker_live(tmp_path, "../canary")
-    assert canary.exists(), "a traversal id must not let the eviction rm escape the marker dir"
-
-
-# The plan-review skill also writes a `.planmode-path` sibling into the same
-# active-marker directory as the PID file this helper reads (see marker.sh's
-# `write plan-review` and require-plan-review.sh's ExitPlanMode branch). The
-# two are read by entirely separate code -- this helper vs. a plain `cat` of
-# the sibling -- so the two-way non-interference property below is what that
-# design depends on: neither read may perturb the other.
-
-
-def _sibling_path(home: Path, session_id: str) -> Path:
-    return home / ".claude" / _MARKER_DIR_NAME / f"{session_id}.planmode-path"
-
-
-def test_active_bypass_marker_live_true_with_sibling_present_does_not_alter_it(
-    tmp_path,
-) -> None:
-    """A live PID marker still liveness-checks correctly with a sibling file
-    present alongside it, and the sibling's content survives the read
-    untouched -- this helper only ever reads/evicts the exact session-id
-    file it was called with."""
-    _write_active_bypass_marker(tmp_path, "sess-with-sibling", str(os.getpid()))
-    sibling = _sibling_path(tmp_path, "sess-with-sibling")
-    sibling.write_text("/home/user/.claude/plans/scratch-plan.md")
-
-    assert _active_bypass_marker_live(tmp_path, "sess-with-sibling")
-    assert sibling.read_text() == "/home/user/.claude/plans/scratch-plan.md", (
-        "a live-PID read must not alter the sibling file's content"
-    )
-
-
-def test_active_bypass_marker_live_evicts_dead_pid_without_touching_sibling(
-    tmp_path,
-) -> None:
-    """The reverse direction: evicting a dead-PID marker removes only the
-    PID file, never the sibling sharing its directory -- the sibling's own
-    content/hash-read logic (marker.sh's job, not this helper's) is
-    unaffected by the PID file's liveness state."""
-    _write_active_bypass_marker(tmp_path, "sess-dead-with-sibling", "99999999")
-    sibling = _sibling_path(tmp_path, "sess-dead-with-sibling")
-    sibling.write_text("/home/user/.claude/plans/scratch-plan.md")
-
-    assert not _active_bypass_marker_live(tmp_path, "sess-dead-with-sibling")
-    assert sibling.exists(), "evicting the dead-PID marker must not remove the sibling"
-    assert sibling.read_text() == "/home/user/.claude/plans/scratch-plan.md"
-
-
-# Empty session_id is deliberately NOT tested here. `$HOME/.claude/<dir>/` with
-# an empty id names the marker directory itself, which `[ -f ]` rejects whether
-# or not the guard ran — no canary placement can separate the two states, so any
-# such test would pass with the guard deleted and pin nothing. Empty-id
-# rejection is pinned where it is discriminating: the parametrized rejection
-# table for _lib_valid_session_id_component above, which includes "".
-
-
-# --- _lib_active_bypass_marker_live_and_touch -------------------------------
-#
-# The idle-window expiry (60 minutes) is touch-on-use, not a hard age cap: the
-# four gating hooks (require-{memory-skill,plan-review,ready-for-review,
-# respond-pr}.sh) call this wrapper, which refreshes a live marker's mtime so
-# the window keeps sliding for as long as the owning skill keeps gating. The
-# base predicate above must never do that refresh itself, or a status-only
-# read (marker.sh status, nudge-handoff-near-context-cap.sh's enumeration)
-# would keep every marker artificially fresh just by observing it.
-
-
-def _active_bypass_marker_live_and_touch(home: Path, session_id: str) -> bool:
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
-            "bash",
-            _MARKER_DIR_NAME,
-            session_id,
-        ],
-        capture_output=True,
-        text=True,
-        env={"HOME": str(home), "PATH": os.environ["PATH"]},
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def test_active_bypass_marker_live_and_touch_advances_mtime_on_live_check(tmp_path) -> None:
-    """A gating call that finds the marker live must refresh its mtime -- this
-    is what makes the idle window slide forward instead of expiring a
-    long-running skill mid-review."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-touch-live", str(os.getpid()))
-    old_time = time.time() - 300  # well within the 60-minute idle window
-    os.utime(marker, (old_time, old_time))
-
-    assert _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-live")
-    assert marker.stat().st_mtime > old_time + 1, (
-        "a live check through the wrapper must refresh the marker's mtime"
-    )
-
-
-def test_active_bypass_marker_live_and_touch_does_not_touch_dead_pid_eviction(tmp_path) -> None:
-    """A dead-PID marker's eviction propagates through the wrapper's own
-    short-circuit, not just the underlying predicate called directly --
-    the predicate evicts before the wrapper's touch line is ever reached."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-touch-dead", "99999999")
-    old_time = time.time() - 300
-    os.utime(marker, (old_time, old_time))
-
-    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-dead")
-    assert not marker.exists(), "a dead-PID marker must be evicted, not refreshed and kept"
-
-
-def test_active_bypass_marker_live_and_touch_evicts_idle_expired_live_pid(tmp_path) -> None:
-    """The wrapper must reach the same idle-expiry verdict as the base
-    predicate for a live PID whose mtime has aged past the 60-minute window --
-    this is the exact combination the idle window exists to handle when
-    reached through a gate hook's own call path, not just inferable by
-    composing the wrapper's fresh-marker test with the predicate's own
-    idle-expiry test."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-touch-idle", str(os.getpid()))
-    stale_time = time.time() - 3700  # just past the 60-minute idle window
-    os.utime(marker, (stale_time, stale_time))
-
-    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-idle")
-    assert not marker.exists(), (
-        "an idle-expired marker reached through the wrapper must be evicted"
-    )
-
-
-def test_active_bypass_marker_live_and_touch_false_when_no_marker(tmp_path) -> None:
-    """Mirrors test_active_bypass_marker_live_false_when_no_marker for the
-    wrapper's hottest real-world call shape: the overwhelming majority of
-    gate-hook invocations find no active-bypass marker at all."""
-    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-absent")
-
-
-def test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_first(
-    tmp_path,
-) -> None:
-    """Regression test for the -c (no-create) contract under the exact race it
-    guards against: a concurrent eviction (clear-stale, deactivate, another
-    gate hit) removing the marker between the wrapper's liveness check and its
-    own touch call. Shadows touch on PATH with a stub that deletes the marker
-    immediately before exec'ing the real touch, forcing the race
-    deterministically -- the same PATH-stub technique
-    test_hung_jq_denied_within_timeout and
-    test_timeout_absent_fallback_valid_payload_returns_ok use above."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-toctou", str(os.getpid()))
-
-    real_touch = shutil.which("touch")
-    if not real_touch:
-        pytest.skip("touch not found in PATH")
-
-    stub_dir = tmp_path / "stub-bin"
-    stub_dir.mkdir()
-    stub_touch = stub_dir / "touch"
-    stub_touch.write_text(f'#!/bin/bash\nrm -f "{marker}"\nexec {real_touch} "$@"\n')
-    stub_touch.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
-            "bash",
-            _MARKER_DIR_NAME,
-            "sess-toctou",
-        ],
-        capture_output=True,
-        text=True,
-        env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        check=False,
-    )
-    assert result.returncode == 0, (
-        "the wrapper must still grant the verdict already committed before the race"
-    )
-    assert not marker.exists(), "touch -c must not resurrect a marker evicted mid-race"
-
-
-@pytest.mark.timing
-def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -> None:
-    """Regression test for the `_lib_capped` wrap around this predicate's
-    `find -mmin -60` freshness check. A `find` that hangs past the 5s cap
-    must not hang the hook process, and the unresolved freshness read must
-    not grant the bypass -- the same fail-safe posture a dead PID or an
-    aged-out marker gets. Same PATH-stub technique as
-    test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_first
-    above and test_hung_jq_denied_within_timeout elsewhere in this file. The
-    stub sleeps past the cap, then -- only if not killed -- execs the real
-    `find`, which would emit the marker's own path and grant the bypass; a
-    working cap kills the stub before that exec runs, so this fails on a
-    missing/broken `_lib_capped` wrap instead of passing regardless of
-    whether the cap engaged."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-find-hang", str(os.getpid()))
-
-    real_find = shutil.which("find")
-    if not real_find:
-        pytest.skip("find not found in PATH")
-    if not shutil.which("timeout") and not shutil.which("gtimeout"):
-        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
-
-    stub_dir = tmp_path / "stub-bin-find"
-    stub_dir.mkdir()
-    write_scaled_timeout_shim(stub_dir)
-    stub_find = stub_dir / "find"
-    stub_find.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
-    stub_find.chmod(0o755)
-
-    with assert_cap_engaged(stub_dir, production_cap=5):
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
-                "bash",
-                _MARKER_DIR_NAME,
-                "sess-find-hang",
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
-            check=False,
-        )
-    assert result.returncode != 0, (
-        "a capped-out find must withhold the bypass, not grant it on an "
-        "unresolved freshness check"
-    )
-    assert not marker.exists(), "a capped-out freshness read must evict the marker"
-
-
-@pytest.mark.timing
-def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) -> None:
-    """Regression test for the `_lib_capped` wrap around this predicate's
-    `cat` read of the marker's stored PID. A `cat` that hangs past the 5s
-    cap must not hang the hook process, and the unresolved PID read must
-    not grant the bypass. Same PATH-stub technique as the find-hang test
-    above: the stub sleeps past the cap, then -- only if not killed -- execs
-    the real `cat`, which would emit the marker's stored PID and grant the
-    bypass; a working cap kills the stub before that exec runs, so this
-    fails on a missing/broken `_lib_capped` wrap instead of passing
-    regardless of whether the cap engaged.
-
-    cat and tr share the same 5s cap on this pipe; command="cat" isolates
-    cat's kill from tr's."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-cat-hang", str(os.getpid()))
-
-    real_cat = shutil.which("cat")
-    if not real_cat:
-        pytest.skip("cat not found in PATH")
-    if not shutil.which("timeout") and not shutil.which("gtimeout"):
-        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
-
-    stub_dir = tmp_path / "stub-bin-cat"
-    stub_dir.mkdir()
-    write_scaled_timeout_shim(stub_dir)
-    stub_cat = stub_dir / "cat"
-    stub_cat.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
-    stub_cat.chmod(0o755)
-
-    with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=1, command="cat"):
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
-                "bash",
-                _MARKER_DIR_NAME,
-                "sess-cat-hang",
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
-            check=False,
-        )
-    assert result.returncode != 0, (
-        "a capped-out cat must withhold the bypass, not grant it on an "
-        "unresolved PID read"
-    )
-    assert not marker.exists(), "a capped-out PID read must evict the marker"
-
-
-def test_active_bypass_marker_live_never_advances_mtime(tmp_path) -> None:
-    """Pins the gating/status-read split itself, not just the touch wrapper's
-    own behavior: the base predicate must stay side-effect-free on mtime
-    regardless of outcome, so status-only callers can safely share it."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-mtime-stable", str(os.getpid()))
-    old_time = time.time() - 300
-    os.utime(marker, (old_time, old_time))
-    before_mtime = marker.stat().st_mtime
-
-    assert _active_bypass_marker_live(tmp_path, "sess-mtime-stable")
-    assert marker.stat().st_mtime == before_mtime, "the base predicate must never refresh mtime"
-
-
-def test_marker_ages_out_despite_repeated_status_only_reads(tmp_path) -> None:
-    """Cross-hook-interference case: repeated status-only reads (the shape
-    marker.sh status and nudge-handoff-near-context-cap.sh's enumeration both
-    use) must neither refresh the marker's mtime nor prevent it from aging out
-    once the window has genuinely elapsed. Holds the marker in-window across
-    several reads first, then ages it past the boundary with no further gating
-    call, so the test actually exercises "idle detection survives repeated
-    reads while still in-window" rather than only "stays evicted once gone"."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-idle-ages-out", str(os.getpid()))
-    fresh_time = time.time() - 300  # well within the 60-minute idle window
-    os.utime(marker, (fresh_time, fresh_time))
-    before_mtime = marker.stat().st_mtime
-
-    for _ in range(3):
-        assert _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
-        assert marker.stat().st_mtime == before_mtime, (
-            "repeated status-only reads must not refresh the marker's mtime"
-        )
-
-    stale_time = time.time() - 3700  # just past the 60-minute idle window
-    os.utime(marker, (stale_time, stale_time))
-
-    assert not _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
-    assert not marker.exists(), (
-        "an idle-expired marker must be evicted even though prior status-only "
-        "reads left it untouched"
-    )
-
-
-def test_active_bypass_marker_live_at_3599_seconds_still_live(tmp_path) -> None:
-    """Brackets the 60-minute cutoff from the live side, 1 second inside the
-    window, rather than approaching it from a comfortable distance."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-live", str(os.getpid()))
-    boundary_time = time.time() - 3599
-    os.utime(marker, (boundary_time, boundary_time))
-
-    assert _active_bypass_marker_live(tmp_path, "sess-boundary-live")
-    assert marker.exists()
-
-
-def test_active_bypass_marker_live_at_3601_seconds_already_expired(tmp_path) -> None:
-    """Brackets the 60-minute cutoff from the expired side, 1 second past the
-    window."""
-    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-expired", str(os.getpid()))
-    boundary_time = time.time() - 3601
-    os.utime(marker, (boundary_time, boundary_time))
-
-    assert not _active_bypass_marker_live(tmp_path, "sess-boundary-expired")
-    assert not marker.exists()
-
-
-# --- Universal adoption of the session-id guard ----------------------------
-
-
-def test_every_hook_that_paths_a_session_id_validates_it() -> None:
-    """Any hook that interpolates SESSION_ID into a filesystem path must also
-    call the guard — either directly or via _lib_active_bypass_marker_live.
-
-    This is a convention test, not a behavior test: it proves the call is
-    written, not that it runs. Each hook's own traversal test pins the runtime
-    behavior. This one exists because the failure it catches is a NEW hook
-    added later that builds a marker path and forgets to validate — a file
-    that has no traversal test yet by definition, so no behavioral test can
-    cover it. Eight hooks currently qualify; the guard was applied to all of
-    them as a class rather than to the one where the defect first surfaced.
-    """
-    hooks_dir = _LIB_SH.parent
-    repo_root = hooks_dir.parents[3]
-    hook_files = [
-        path
-        for path in sorted(hooks_dir.glob("*.sh")) + sorted(repo_root.glob("plugins/*/hooks/*.sh"))
-        if path.name != "_lib.sh"
-    ]
-    assert hook_files, "no hook scripts found — the glob is wrong, not the repo"
-
-    # Matches "<anything>/$SESSION_ID" and "<anything>/${SESSION_ID}", which is
-    # the shape that turns an unvalidated id into a path outside the intended
-    # directory. A bare $SESSION_ID (logged, compared, passed as an argument)
-    # is not a path build and does not require the guard.
-    builds_path_re = re.compile(r"/\$\{?SESSION_ID\b")
-    guards = ("_lib_valid_session_id_component", "_lib_active_bypass_marker_live")
-
-    unguarded = []
-    matched_any = []
-    for hook in hook_files:
-        text = hook.read_text()
-        if not builds_path_re.search(text):
-            continue
-        matched_any.append(hook.name)
-        if not any(guard in text for guard in guards):
-            unguarded.append(hook.name)
-
-    assert matched_any, (
-        "no hook matched the path-building pattern — the regex has drifted from "
-        "the code and this test is now vacuous"
-    )
-    assert not unguarded, (
-        "these hooks build a filesystem path from session_id without validating "
-        f"it first: {unguarded}. Call _lib_valid_session_id_component, or route "
-        "the marker read through _lib_active_bypass_marker_live."
-    )
-
-
-# --- _lib_first_live_linked_worktree --------------------------------------
-
-
-def _first_live_linked_worktree(
-    repo_root: Path, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-
-
-def test_first_live_linked_worktree_finds_a_present_worktree(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    wt = tmp_path / "wt"
-    subprocess.run(
-        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
-    )
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(wt)
-
-
-def test_first_live_linked_worktree_ignores_a_stale_unpruned_entry(tmp_path: Path) -> None:
-    """`git worktree list` still reports an entry whose directory was deleted
-    without `git worktree prune` or `git worktree remove`. That stale entry
-    must not count as a live worktree."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    wt = tmp_path / "wt"
-    subprocess.run(
-        ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
-    )
-    subprocess.run(["rm", "-rf", str(wt)], check=True)
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-
-
-def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-
-
-def _add_review_worktree(repo: Path, name: str) -> Path:
-    return _add_worktree_under_worktrees_dir(repo, name)
-
-
-def test_first_live_linked_worktree_skips_a_review_worktree(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-
-
-def _env_with_git_shim_printing_worktree_list(tmp_path: Path, porcelain_text: str) -> dict[str, str]:
-    """An environment whose `git worktree list --porcelain` prints
-    `porcelain_text` verbatim, so a test controls record order and the missing
-    trailing blank line that real git always emits."""
-    porcelain_file = tmp_path / "porcelain.txt"
-    porcelain_file.write_text(porcelain_text)
-    shim_dir = tmp_path / "bin"
-    shim_dir.mkdir()
-    git_shim = shim_dir / "git"
-    git_shim.write_text(
-        "#!/usr/bin/env bash\n"
-        'case " $* " in\n'
-        "  *' worktree list --porcelain '*)\n"
-        f"    cat {shlex.quote(str(porcelain_file))}\n"
-        "    exit 0\n"
-        "    ;;\n"
-        "esac\n"
-        'echo "unexpected git call: $*" >&2\n'
-        "exit 1\n"
-    )
-    git_shim.chmod(0o755)
-    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
-
-
-@pytest.mark.parametrize("review_entry_first", [True, False], ids=["review-first", "branch-first"])
-def test_first_live_linked_worktree_returns_the_branch_worktree_in_either_listing_order(
-    tmp_path: Path, review_entry_first: bool
-) -> None:
-    """`git worktree list` does not promise an order, so a skipped review entry
-    must not end the scan whichever side of the branch worktree it lands on.
-    A `git` shim prints the porcelain text in a fixed order over real
-    directories. The last record has no trailing blank line, which pins the
-    end-of-input flush."""
-    repo = tmp_path / "repo"
-    worktrees_dir = repo / ".claude" / "worktrees"
-    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
-    branch_worktree = worktrees_dir / "feature"
-    review_worktree.mkdir(parents=True)
-    branch_worktree.mkdir()
-    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
-    review_record = f"worktree {review_worktree}\ndetached\n"
-    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
-    linked_records = [review_record, branch_record] if review_entry_first else [branch_record, review_record]
-
-    result = _first_live_linked_worktree(
-        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, *linked_records]))
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == str(branch_worktree)
-    assert result.stderr == ""
-
-
-def test_first_live_linked_worktree_returns_the_whole_path_of_a_worktree_whose_directories_contain_a_space(
-    tmp_path: Path,
-) -> None:
-    """The porcelain record is one line, `worktree <path>`, so a path with a
-    space must come back whole rather than cut at the first space."""
-    repo = tmp_path / "my repo"
-    branch_worktree = repo / ".claude" / "worktrees" / "my feature"
-    branch_worktree.mkdir(parents=True)
-    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
-    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
-
-    result = _first_live_linked_worktree(
-        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, branch_record]))
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == str(branch_worktree)
-
-
-def test_first_live_linked_worktree_skips_a_review_record_under_a_repo_path_containing_a_space_but_keeps_the_branch_record(
-    tmp_path: Path,
-) -> None:
-    """The review-shape comparison matches the entry's path against
-    `<repo>/.claude/worktrees`, so a space in the repo path must not defeat the
-    skip. The review record alone is not-found; a branch record after it is
-    returned whole."""
-    repo = tmp_path / "my repo"
-    worktrees_dir = repo / ".claude" / "worktrees"
-    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
-    branch_worktree = worktrees_dir / "feature"
-    review_worktree.mkdir(parents=True)
-    branch_worktree.mkdir()
-    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
-    review_record = f"worktree {review_worktree}\ndetached\n"
-    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
-
-    # The shim helper owns a fixed layout under its directory, so each listing gets its own.
-    review_alone_dir, review_then_branch_dir = tmp_path / "review-alone", tmp_path / "review-then-branch"
-    review_alone_dir.mkdir()
-    review_then_branch_dir.mkdir()
-    review_alone = _first_live_linked_worktree(
-        repo,
-        env=_env_with_git_shim_printing_worktree_list(review_alone_dir, "\n".join([main_record, review_record])),
-    )
-    review_then_branch = _first_live_linked_worktree(
-        repo,
-        env=_env_with_git_shim_printing_worktree_list(
-            review_then_branch_dir, "\n".join([main_record, review_record, branch_record])
-        ),
-    )
-
-    assert review_alone.returncode != 0
-    assert review_alone.stdout == ""
-    assert review_then_branch.returncode == 0
-    assert review_then_branch.stdout == str(branch_worktree)
-
-
-def test_first_live_linked_worktree_does_not_carry_a_detached_record_over_to_the_next_record(
-    tmp_path: Path,
-) -> None:
-    """A detached main checkout, common in CI, must not mark the record after
-    it detached: a review-shaped worktree on a branch still counts."""
-    repo = tmp_path / "repo"
-    review_named_branch_worktree = repo / ".claude" / "worktrees" / REVIEW_WORKTREE_NAME
-    review_named_branch_worktree.mkdir(parents=True)
-    detached_main_record = f"worktree {repo}\ndetached\n"
-    branch_record = f"worktree {review_named_branch_worktree}\nbranch refs/heads/feature\n"
-
-    result = _first_live_linked_worktree(
-        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([detached_main_record, branch_record]))
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == str(review_named_branch_worktree)
-
-
-def test_first_live_linked_worktree_counts_a_review_named_directory_outside_the_worktrees_dir(
-    tmp_path: Path,
-) -> None:
-    """Only a directory directly under .claude/worktrees is a review worktree,
-    so a detached worktree elsewhere that merely shares the name stays live."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    lookalike = tmp_path / REVIEW_WORKTREE_NAME
-    subprocess.run(
-        ["git", "worktree", "add", "--detach", str(lookalike)],
-        cwd=repo, check=True, capture_output=True,
-    )
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(lookalike)
-
-
-def test_first_live_linked_worktree_returns_a_branch_worktree_directly_under_the_worktrees_dir(
-    tmp_path: Path,
-) -> None:
-    """The repo's own layout is .claude/worktrees/<branch>; that worktree is
-    the one a main-tree session should be told to enter."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(branch_worktree)
-
-
-def test_first_live_linked_worktree_skips_a_review_sibling_but_returns_the_branch_worktree(
-    tmp_path: Path,
-) -> None:
-    """Real git porcelain output; the listing order is not pinned here (the
-    shim test above pins both orders)."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
-    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(branch_worktree)
-
-
-def test_first_live_linked_worktree_counts_a_user_named_review_prefixed_detached_worktree(
-    tmp_path: Path,
-) -> None:
-    """A name that only starts with review-pr- is not the shape
-    review-pr-checkout.sh creates, so it stays live even when detached."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    user_worktree = _add_review_worktree(repo, "review-pr-hardening")
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(user_worktree)
-
-
-def test_first_live_linked_worktree_counts_a_review_named_directory_nested_one_level_deeper(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    nested = _add_review_worktree(repo, f"nested/{REVIEW_WORKTREE_NAME}")
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(nested)
-
-
-def test_first_live_linked_worktree_counts_a_review_shaped_worktree_that_is_on_a_branch(
-    tmp_path: Path,
-) -> None:
-    """Review checkouts are always detached, so a branch worktree with the
-    review-shaped name is someone's real work tree."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    branch_worktree = _add_worktree_under_worktrees_dir(
-        repo, REVIEW_WORKTREE_NAME, branch="review-branch"
-    )
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(branch_worktree)
-
-
-def test_first_live_linked_worktree_counts_a_review_shaped_worktree_under_another_trees_worktrees_dir(
-    tmp_path: Path,
-) -> None:
-    """Only the repo's own .claude/worktrees directory qualifies, not any
-    directory with that tail."""
-    repo = tmp_path / "repo"
-    init_git_repo_with_commit(repo)
-    elsewhere = _add_worktree_under_worktrees_dir(
-        repo, REVIEW_WORKTREE_NAME, worktrees_root=tmp_path / "other-tree"
-    )
-
-    result = _first_live_linked_worktree(repo)
-
-    assert result.returncode == 0
-    assert result.stdout == str(elsewhere)
 
 
 # --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
@@ -5156,644 +2991,6 @@ def test_gh_help_root_no_value_placeholder_flags_stay_within_help_and_version() 
     )
 
 
-# --- _lib_realpath_m ---------------------------------------------------
-#
-# GNU `realpath -m` is available natively in this test environment, so a
-# bare call exercises only the fast path (native -m succeeds immediately).
-# The fallback path (walk to nearest existing ancestor + reattach) only
-# runs when BOTH native `-m` and `grealpath` are unavailable — forced here
-# via a PATH built from a fake `realpath` shim (errors on -m, delegates to
-# the real system realpath otherwise) plus /usr/bin:/bin only, deliberately
-# excluding /usr/local/bin, where this dev machine's Homebrew `grealpath`
-# actually lives. Without this, `command -v grealpath` would still find it
-# and the fallback branch under test would never run. The shim itself is
-# `helpers._FORCED_FALLBACK_REALPATH_SHIM`, shared with
-# test_ask_review_permissions.py, which forces the same fast-path failure
-# for the same reason.
-
-
-_REALPATH_M_FALLBACK_MAX_DEPTH = int(_sourced_value("_LIB_REALPATH_M_FALLBACK_MAX_DEPTH"))
-assert _REALPATH_M_FALLBACK_MAX_DEPTH >= 2, (
-    "exact-boundary tests below compute dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 2 and - 1; "
-    "a cap below 2 degenerates those to trivial near-zero-depth cases"
-)
-
-
-def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path | None = None) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    if forced_fallback:
-        assert tmp_path is not None, "forced_fallback requires tmp_path"
-        env["PATH"] = _forced_fallback_path_env(tmp_path)
-    script = f'set -uo pipefail; . {_LIB_SH}; _lib_realpath_m "$1"'
-    return subprocess.run(
-        ["bash", "-c", script, "bash", target],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-        # A regressed `|| return 1` on a capped call inside the fallback
-        # loop's `while true` retries forever against an always-hanging
-        # stub instead of terminating -- bound it so that regression fails
-        # the test fast instead of hanging the pytest worker.
-        timeout=30,
-    )
-
-
-# --- _lib_normalize_path_lexically -------------------------------------
-
-
-def _normalize_lexically(path: str, tmp_path: Path | None = None) -> str:
-    """Run the normalizer on PATH and return `_LIB_NORMALIZED_PATH`."""
-    script = (
-        f'set -uo pipefail; . {_LIB_SH}; '
-        '_lib_normalize_path_lexically "$1" || exit 9; printf "%s" "$_LIB_NORMALIZED_PATH"'
-    )
-    result = subprocess.run(
-        ["bash", "-c", script, "bash", path],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=tmp_path,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
-
-
-def _lexical_normalization_oracle(path: str) -> str:
-    """`posixpath.normpath` with the two documented differences: an empty path
-    stays empty, and a trailing slash is kept. normpath also keeps exactly two
-    leading slashes (POSIX leaves that case implementation-defined), where Linux
-    reads them as one and the normalizer collapses them."""
-    if path == "":
-        return ""
-    result = posixpath.normpath(path)
-    if result.startswith("//"):
-        result = result[1:]
-    if path.endswith("/") and not result.endswith("/"):
-        result += "/"
-    return result
-
-
-_LEXICAL_NORMALIZATION_INPUTS = [
-    pytest.param("/", id="root"),
-    pytest.param("//", id="double-slash-root"),
-    pytest.param("///", id="triple-slash-root"),
-    pytest.param(".", id="dot"),
-    pytest.param("./", id="dot-trailing-slash"),
-    pytest.param("..", id="dotdot-relative"),
-    pytest.param("../", id="dotdot-relative-trailing-slash"),
-    pytest.param("a", id="relative-single"),
-    pytest.param("a/b/c", id="relative-multi"),
-    pytest.param("a/b/", id="relative-trailing-slash"),
-    pytest.param("/a/b/c", id="absolute-multi"),
-    pytest.param("/a/b/", id="absolute-trailing-slash"),
-    pytest.param("//a/b", id="leading-double-slash"),
-    pytest.param("///a/b", id="leading-triple-slash"),
-    pytest.param("/a//b///c", id="interior-double-slashes"),
-    pytest.param("/a/./b/./c", id="interior-dot-segments"),
-    pytest.param("/a/b/.", id="trailing-dot-segment"),
-    pytest.param("/a/b/./", id="trailing-dot-segment-with-slash"),
-    pytest.param("/a/../b", id="dotdot-pops-one"),
-    pytest.param("a/../b", id="relative-dotdot-pops-one"),
-    pytest.param("a/..", id="relative-dotdot-pops-to-nothing"),
-    pytest.param("a/../", id="relative-dotdot-pops-to-nothing-with-slash"),
-    pytest.param("/a/b/..", id="trailing-dotdot"),
-    pytest.param("/a/b/../", id="trailing-dotdot-with-slash"),
-    pytest.param("/..", id="dotdot-at-root"),
-    pytest.param("/../a", id="dotdot-at-root-then-segment"),
-    pytest.param("/a/../..", id="dotdot-past-root"),
-    pytest.param("//..", id="dotdot-at-double-slash-root"),
-    pytest.param("../a", id="relative-leading-dotdot"),
-    pytest.param("../../a", id="relative-leading-dotdot-run"),
-    pytest.param("../../a/../b", id="relative-leading-dotdot-run-then-pop"),
-    pytest.param("a/b/../../..", id="relative-pops-past-start"),
-    pytest.param("/a/b/c/d/../../../x", id="deep-dotdot-chain"),
-    pytest.param("/a/b/c/../../../../../../x", id="deep-dotdot-chain-past-root"),
-    pytest.param("/x/ y/*/..z/..../w/.", id="spaces-glob-and-dot-lookalike-segments"),
-    pytest.param("/x/tab\there/new\nline/../ok", id="tab-and-newline-in-segments"),
-    pytest.param("/x/$HOME/`id`/;&|/..", id="shell-metacharacters-in-segments"),
-    pytest.param("/home/u/.claude//review-narrative-ledger/f.jsonl", id="ledger-doubled-slash"),
-    pytest.param("/home/u/.claude/./review-narrative-ledger/f.jsonl", id="ledger-dot-segment"),
-    pytest.param("/home/u/.claude/x/../review-narrative-ledger/f.jsonl", id="ledger-dotdot-segment"),
-]
-
-
-class TestLibNormalizePathLexically:
-    @pytest.mark.parametrize("path", _LEXICAL_NORMALIZATION_INPUTS)
-    def test_matches_the_normpath_oracle(self, path: str) -> None:
-        assert _normalize_lexically(path) == _lexical_normalization_oracle(path)
-
-    def test_empty_path_yields_an_empty_result(self) -> None:
-        assert _normalize_lexically("") == ""
-
-    @pytest.mark.parametrize(
-        ("path", "expected"),
-        [
-            pytest.param("//a//b", "/a/b", id="leading-double-slash-collapses-to-one"),
-            pytest.param("/..", "/", id="dotdot-at-root-is-dropped"),
-            pytest.param("../a", "../a", id="relative-leading-dotdot-is-kept"),
-            pytest.param("a/..", ".", id="relative-path-that-pops-to-nothing-is-dot"),
-            pytest.param("/a/b/", "/a/b/", id="trailing-slash-is-kept"),
-            pytest.param("/a/b/.", "/a/b", id="trailing-dot-segment-is-not-a-trailing-slash"),
-            pytest.param("/a/b/..", "/a", id="trailing-dotdot-is-not-a-trailing-slash"),
-            pytest.param("/a/x/../b//c/", "/a/b/c/", id="trailing-slash-survives-collapsing"),
-            pytest.param("a/../", "./", id="relative-dot-result-keeps-the-trailing-slash"),
-        ],
-    )
-    def test_documented_behavior(self, path: str, expected: str) -> None:
-        assert _normalize_lexically(path) == expected
-
-    def test_a_very_long_path_terminates_with_the_correct_result(self) -> None:
-        """A candidate comes from untrusted command text, so a segment count in
-        the tens of thousands must still finish and come out right. The
-        subprocess timeout is only a hang guard, not a scaling bound."""
-        path = "/" + "/".join(["a"] * 50000) + "/../../b"
-        assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
-
-    def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
-        (tmp_path / "matching-file").write_text("")
-        assert _normalize_lexically("*/x/../y", tmp_path=tmp_path) == "*/y"
-
-    def test_runs_no_external_command(self, tmp_path: Path) -> None:
-        """Sourcing _lib.sh needs `dirname`; the call itself runs with an empty
-        PATH, so any external command it ran would fail. A builtin-only
-        command substitution would still pass."""
-        empty_bin = tmp_path / "empty-bin"
-        empty_bin.mkdir()
-        script = (
-            f'. {_LIB_SH}; PATH="$1"; '
-            '_lib_normalize_path_lexically "/a//b/./c/../d/"; printf "%s" "$_LIB_NORMALIZED_PATH"'
-        )
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", str(empty_bin)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        assert (result.returncode, result.stdout, result.stderr) == (0, "/a/b/d/", "")
-
-    @pytest.mark.parametrize("caller_glob_state", ["set -f", "set +f"])
-    def test_leaves_the_callers_ifs_and_glob_setting_unchanged(self, caller_glob_state: str) -> None:
-        script = (
-            f'. {_LIB_SH}; {caller_glob_state}; IFS=":"; '
-            '_lib_normalize_path_lexically "/a/../b"; '
-            'case "$-" in *f*) printf "noglob " ;; *) printf "glob " ;; esac; printf "%s" "$IFS"'
-        )
-        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
-        expected_glob = "noglob" if caller_glob_state == "set -f" else "glob"
-        assert (result.returncode, result.stdout) == (0, f"{expected_glob} :")
-
-
-class TestLibRealpathM:
-    def test_native_fast_path_resolves_existing_dir(self) -> None:
-        result = _run_realpath_m("/tmp")
-        assert result.returncode == 0
-        assert result.stdout.strip() in ("/tmp", "/private/tmp")
-
-    def test_forced_fallback_resolves_nonexistent_leaf(self, tmp_path: Path) -> None:
-        target = tmp_path / "does-not-exist-xyz123.txt"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(target)
-
-    def test_forced_fallback_resolves_multi_level_nonexistent_path(self, tmp_path: Path) -> None:
-        target = tmp_path / "newdir1" / "newdir2" / "newfile.txt"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(target)
-
-    def test_forced_fallback_resolves_deep_nonexistent_ancestor_chain_under_cap(
-        self, tmp_path: Path
-    ) -> None:
-        """Regression test: a realistic, if unusually deep, nonexistent-
-        ancestor chain must still resolve, not fail closed.
-
-        Twenty levels models a fresh nested `.claude/` tree, not an attack
-        shape, and stays well under
-        `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH`'s iteration cap on the
-        fallback loop's ancestor walk."""
-        target = Path(tmp_path, *[f"level{i}" for i in range(20)], "newfile.txt")
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(target)
-
-    def test_forced_fallback_ancestor_chain_beyond_cap_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` itself:
-        a nonexistent-ancestor chain deeper than the cap must fail closed
-        (nonzero, empty stdout), not resolve.
-
-        70 levels clears the 64-deep cap by a comfortable margin, so this
-        pins the deny side symmetric to
-        test_forced_fallback_resolves_deep_nonexistent_ancestor_chain_under_cap's
-        allow side."""
-        target = Path(tmp_path, *[f"level{i}" for i in range(70)], "newfile.txt")
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode != 0, (
-            f"a chain beyond the cap must fail closed, got rc=0 stdout={result.stdout!r}"
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-
-    def test_forced_fallback_resolves_chain_at_exact_cap(self, tmp_path: Path) -> None:
-        """Exact-boundary pin for `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` itself,
-        distinct from the generous-margin tests above: the fallback loop's
-        depth counter reaches exactly the cap on a chain two directory
-        levels shorter than the cap (one iteration checks the leaf file,
-        one checks the existing base), so this must still resolve."""
-        dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 2
-        target = Path(tmp_path, *[f"level{i}" for i in range(dirs)], "newfile.txt")
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(target)
-
-    def test_forced_fallback_chain_one_level_beyond_exact_cap_fails_closed(self, tmp_path: Path) -> None:
-        """Exact-boundary pin symmetric to
-        test_forced_fallback_resolves_chain_at_exact_cap: one more directory
-        level pushes the depth counter one past the cap, so this must fail
-        closed."""
-        dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 1
-        target = Path(tmp_path, *[f"level{i}" for i in range(dirs)], "newfile.txt")
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode != 0, (
-            f"a chain one level beyond the cap must fail closed, got rc=0 stdout={result.stdout!r}"
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-
-    def test_forced_fallback_collapses_dot_in_unresolved_suffix(self, tmp_path: Path) -> None:
-        """Required regression test: a lone `.` component in the not-yet-
-        existing suffix must be dropped, not reattached verbatim, or a
-        caller comparing the result against a literal substring (e.g.
-        ask-review-permissions.sh's `.claude/settings` match) misses a path
-        that is semantically identical but textually decorated with `./`.
-        Uses an f-string rather than pathlib's `/` operator to build the
-        target, since pathlib silently collapses a `.` segment on
-        construction and would defeat the test."""
-        target = f"{tmp_path}/newdir1/./newfile.txt"
-        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{tmp_path}/newdir1/newfile.txt"
-
-    def test_forced_fallback_rejects_dotdot_in_unresolved_suffix(self, tmp_path: Path) -> None:
-        """Required regression test for a High-severity finding: the
-        fallback's not-yet-existing suffix must not be reattached verbatim
-        when it contains a `..` component, or a boundary check comparing
-        the result against a same-prefix glob (require-plan-review.sh's
-        agent-reviews/ exemption, its repo-boundary check, and
-        require-memory-skill.sh's memory-tree classification) can be
-        satisfied by a path that is semantically outside the intended
-        boundary. Fails closed (empty output, exit 1) instead."""
-        target = tmp_path / "agent-reviews" / "newdir" / ".." / ".." / ".." / "etc" / "passwd_pwned"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode != 0 or not result.stdout.strip(), (
-            f"expected fail-closed (empty/nonzero) for a `..`-bearing unresolved suffix, "
-            f"got stdout={result.stdout!r} rc={result.returncode}"
-        )
-
-    def test_forced_fallback_fails_closed_on_dangling_symlink(self, tmp_path: Path) -> None:
-        """A dangling symlink's own leaf is `[ -e ]`-false, so the fallback's
-        ancestor walk would otherwise skip past it and reattach its name as
-        a literal, unresolved suffix component -- letting a same-prefix
-        boundary check (require-plan-review.sh's plan-file and
-        agent-reviews/ exemptions) treat the symlink's own path as if it
-        resolved inside the boundary, when its real target does not. Fails
-        closed (empty output, exit 1) instead."""
-        symlink_path = tmp_path / "plans" / "evil.md"
-        symlink_path.parent.mkdir(parents=True)
-        symlink_path.symlink_to(tmp_path / "outside" / "target.py")
-        result = _run_realpath_m(str(symlink_path), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode != 0 or not result.stdout.strip(), (
-            f"expected fail-closed (empty/nonzero) for a dangling symlink, "
-            f"got stdout={result.stdout!r} rc={result.returncode}"
-        )
-
-    def test_forced_fallback_no_double_slash_when_ancestor_is_root(self, tmp_path: Path) -> None:
-        """Required regression test: when the nearest existing ancestor is
-        `/` itself, the reattached suffix must not produce a doubled
-        leading slash (`//foo` instead of `/foo`), which could desync from
-        a canonically-formed comparison path in a caller's boundary check."""
-        target = "/zzz-totally-nonexistent-root-for-test/x/y/z"
-        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        resolved = result.stdout.strip()
-        assert resolved == target
-        assert "//" not in resolved
-
-    def test_forced_fallback_dirname_failure_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test: a failing fallback-loop `dirname` call must not
-        corrupt the walk into resolving to the hook process's own CWD.
-
-        `_lib.sh`'s `current=$(dirname -- "$current") || return 1` checks
-        the exit status precisely so a failing call (empty stdout, nonzero
-        exit) returns nonzero instead of being read as success. Left
-        unchecked, the corruption chain is:
-
-        - `current` becomes "" on the swallowed failure.
-        - The loop's `/`/`.` termination guard never matches an empty
-          string.
-        - The next iteration's `test -e "."` resolves to the CWD with exit
-          0 (GNU dirname's empty-input return value) -- a result
-          indistinguishable from success to a caller that only guards
-          against nonzero exit.
-
-        The stub exits nonzero with empty stdout on the targeted
-        `--`-prefixed argument shape instead of running the real
-        `dirname`, which would let a broken/missing `|| return 1` pass
-        regardless of whether the stub fired."""
-        real_dirname = shutil.which("dirname")
-        if not real_dirname:
-            pytest.skip("dirname not found in PATH")
-
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        stub_dirname = shim_dir / "dirname"
-        # Scoped to the `--`-prefixed argument shape the fallback loop
-        # passes, so it doesn't also intercept _lib.sh's and _config.sh's
-        # own bare, load-time `dirname "${BASH_SOURCE[0]}"` bootstrap calls.
-        stub_dirname.write_text(
-            "#!/bin/bash\n"
-            'if [ "$1" = "--" ]; then\n'
-            "  exit 1\n"
-            "fi\n"
-            f'exec {real_dirname} "$@"\n'
-        )
-        stub_dirname.chmod(0o755)
-
-        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-
-        assert result.returncode != 0, (
-            "a failing dirname must fail closed, not return a corrupted resolution"
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-
-    def test_forced_fallback_basename_failure_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for the fallback loop's `basename` call
-        (`_lib.sh`'s `suffix_component=$(basename -- "$current") ||
-        return 1`).
-
-        Same target shape and PATH-stub technique as
-        test_forced_fallback_dirname_failure_fails_closed: the first
-        `basename -- "$current"` call in the walk is the one under test.
-
-        Pinned at a different call site than that sibling test, so a
-        future edit dropping just this site's `|| return 1` isn't left
-        uncaught -- independent pin, not redundant with that sibling."""
-        real_basename = shutil.which("basename")
-        if not real_basename:
-            pytest.skip("basename not found in PATH")
-
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        stub_basename = shim_dir / "basename"
-        # Scoped the same way as the dirname stub above, for consistency,
-        # though basename has no load-time bootstrap caller today.
-        stub_basename.write_text(
-            "#!/bin/bash\n"
-            'if [ "$1" = "--" ]; then\n'
-            "  exit 1\n"
-            "fi\n"
-            f'exec {real_basename} "$@"\n'
-        )
-        stub_basename.chmod(0o755)
-
-        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-
-        assert result.returncode != 0, (
-            "a failing basename must fail closed, not return a corrupted resolution"
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-
-    def test_forced_fallback_dot_branch_dirname_failure_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for the fallback loop's `.`-branch `dirname`
-        call (`_lib.sh`'s `current=$(dirname -- "$current") || return 1`
-        inside the `.` case).
-
-        Reached only after a literal `.` path segment resolves to its own
-        basename mid-walk. Same target shape as
-        test_forced_fallback_collapses_dot_in_unresolved_suffix.
-
-        Pins the `.`-branch's own `|| return 1` independently of
-        test_forced_fallback_dirname_failure_fails_closed, which only
-        exercises the bottom-of-loop dirname call one iteration earlier."""
-        real_dirname = shutil.which("dirname")
-        if not real_dirname:
-            pytest.skip("dirname not found in PATH")
-
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        stub_dirname = shim_dir / "dirname"
-        # For this target, the walk's first dirname call (bottom-of-loop,
-        # on the untouched target) must succeed to reach the `.`-branch at
-        # all. The second dirname call, against "<tmp_path>/newdir1/.", is
-        # the one under test.
-        dot_branch_arg = f"{tmp_path}/newdir1/."
-        stub_dirname.write_text(
-            "#!/bin/bash\n"
-            f'if [ "$1" = "--" ] && [ "$2" = "{dot_branch_arg}" ]; then\n'
-            "  exit 1\n"
-            "fi\n"
-            f'exec {real_dirname} "$@"\n'
-        )
-        stub_dirname.chmod(0o755)
-
-        target = f"{tmp_path}/newdir1/./newfile.txt"
-        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
-
-        assert result.returncode != 0, (
-            "a failing `.`-branch dirname must fail closed, not return a corrupted resolution"
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-
-    def test_forced_fallback_test_e_hang_capped_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test: a cap-fired `test -e` (nonzero, but not the
-        clean "does not exist" 1) must not be misread as "does not exist"
-        and fall through to the decomposition logic below.
-
-        `_lib.sh`'s `elif [ "$test_e_status" -ne 1 ]; then return 1` branch
-        exists precisely to catch that ambiguous status and fail closed
-        instead.
-
-        The ambiguous component is a real, existing directory one level up
-        from the nonexistent leaf, mirroring
-        test_forced_fallback_dot_branch_dirname_failure_fails_closed's
-        directory-walk setup.
-
-        Unlike the basename/dirname stubs above, `test -e`/`test -L` omit
-        `--` (the loop's own comment in _lib.sh explains why), so this stub
-        keys on the bare `-e PATH` shape instead of a `--`-prefix check."""
-        real_test = shutil.which("test")
-        if not real_test:
-            pytest.skip("test(1) not found in PATH")
-        if not shutil.which("timeout") and not shutil.which("gtimeout"):
-            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
-
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        write_scaled_timeout_shim(shim_dir)
-        ambiguous_dir = tmp_path / "realdir"
-        ambiguous_dir.mkdir()
-        stub_test = shim_dir / "test"
-        # Scoped to the bare `-e PATH` shape and the exact ambiguous
-        # component under test, so it doesn't also intercept every other
-        # `test -e` call the walk makes at other path depths.
-        stub_test.write_text(
-            "#!/bin/bash\n"
-            f'if [ "$1" = "-e" ] && [ "$2" = "{ambiguous_dir}" ]; then\n'
-            # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
-            # Only that SIGKILL path emits stderr signal-death text -- a plain SIGTERM
-            # kill exits quietly, so it can't discriminate the `2>/dev/null` fix below.
-            "  trap '' TERM\n"
-            f"  sleep {scaled_shim_sleep(10)}\n"
-            "fi\n"
-            f'exec {real_test} "$@"\n'
-        )
-        stub_test.chmod(0o755)
-
-        target = ambiguous_dir / "does-not-exist-xyz123.txt"
-        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
-            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-
-        assert result.returncode != 0, (
-            "a capped-out `test -e` must fail closed, not fall through as a clean \"does not exist\""
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-        assert "Terminated" not in result.stderr and "Killed" not in result.stderr, (
-            "the capped call's `2>/dev/null` must suppress the cap-firing signal-death "
-            f"line, got stderr={result.stderr!r}"
-        )
-
-    def test_forced_fallback_test_l_hang_capped_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for the ambiguous-status branch at `_lib.sh`'s
-        `elif [ "$test_l_status" -ne 1 ]; then return 1`.
-
-        The ambiguous component is a real, existing dangling symlink one
-        level up from the nonexistent leaf, so `test -e` on it legitimately
-        returns false and the walk reaches the `test -L` check before the
-        stub intercepts that second call.
-
-        Pins the same ambiguity as
-        test_forced_fallback_test_e_hang_capped_fails_closed,
-        independently at the `test -L` call one branch below."""
-        real_test = shutil.which("test")
-        if not real_test:
-            pytest.skip("test(1) not found in PATH")
-        if not shutil.which("timeout") and not shutil.which("gtimeout"):
-            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
-
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        write_scaled_timeout_shim(shim_dir)
-        ambiguous_symlink = tmp_path / "dangling_link"
-        ambiguous_symlink.symlink_to(tmp_path / "does-not-exist-symlink-target-xyz")
-        stub_test = shim_dir / "test"
-        # Scoped to the bare `-L PATH` shape and the exact ambiguous
-        # component, so the walk's earlier, legitimate `test -e`/`test -L`
-        # calls on other path depths still run against the real binary.
-        stub_test.write_text(
-            "#!/bin/bash\n"
-            f'if [ "$1" = "-L" ] && [ "$2" = "{ambiguous_symlink}" ]; then\n'
-            # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
-            # Only that SIGKILL path emits stderr signal-death text -- a plain SIGTERM
-            # kill exits quietly, so it can't discriminate the `2>/dev/null` fix below.
-            "  trap '' TERM\n"
-            f"  sleep {scaled_shim_sleep(10)}\n"
-            "fi\n"
-            f'exec {real_test} "$@"\n'
-        )
-        stub_test.chmod(0o755)
-
-        target = ambiguous_symlink / "leaf.txt"
-        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
-            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-
-        assert result.returncode != 0, (
-            "a capped-out `test -L` must fail closed, not fall through as a clean \"not a symlink\""
-        )
-        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
-        assert "Terminated" not in result.stderr and "Killed" not in result.stderr, (
-            "the capped call's `2>/dev/null` must suppress the cap-firing signal-death "
-            f"line, got stderr={result.stderr!r}"
-        )
-
-    def test_bare_invocation_under_set_e_reaches_caller_line_after_call(self, tmp_path: Path) -> None:
-        """Regression test scoped to the success path: a bare invocation of
-        `_lib_realpath_m` (not wrapped in `$(...)` or an `if`) must not let
-        the function's internal loop -- which runs as bare statements in
-        the caller's own shell -- spuriously trip the caller's `set -e` on
-        a resolution that ultimately succeeds. This does not make a bare
-        invocation safe in general: a call whose resolution legitimately
-        fails (nonzero return) still aborts the caller under `set -e`, by
-        design. Every current caller (ask-review-permissions.sh,
-        enforce-marker-script-shape.sh, require-memory-skill.sh,
-        require-plan-review.sh) already guards its invocation with
-        `$(...)`, `if`, or `||`, and must continue to. Unlike
-        `_run_realpath_m`'s `set -uo pipefail` (no `-e`), this test sources
-        `_lib.sh` under `set -e` itself so a regression is actually
-        exercised. The target is a normal nonexistent leaf directly under
-        an existing directory, so the fallback loop's first `test -e`
-        legitimately returns its ordinary false status -- the cap-timeout/
-        ambiguous case is already covered by
-        test_forced_fallback_test_e_hang_capped_fails_closed and
-        test_forced_fallback_test_l_hang_capped_fails_closed."""
-        env = dict(os.environ)
-        env["PATH"] = _forced_fallback_path_env(tmp_path)
-
-        target = tmp_path / "does-not-exist-invocation-safety.txt"
-        sentinel = "REACHED_LINE_AFTER_BARE_CALL"
-        script = f'set -e\n. {_LIB_SH}\n_lib_realpath_m "$1"\necho "{sentinel}"\n'
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", str(target)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=30,
-        )
-
-        assert result.returncode == 0, (
-            f"set -e aborted the caller before its line after the bare call: "
-            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
-        )
-        assert sentinel in result.stdout.splitlines(), (
-            f"caller never reached the line after the bare call: stdout={result.stdout!r}"
-        )
-
-    def test_bare_invocation_under_set_e_aborts_caller_on_failed_resolution(self, tmp_path: Path) -> None:
-        """Failure-side counterpart to
-        test_bare_invocation_under_set_e_reaches_caller_line_after_call:
-        that sibling test's docstring claims a legitimately-failing bare
-        invocation still aborts the caller under `set -e`, but only
-        exercises the success half. This exercises the failure half, using
-        the same `..`-in-unresolved-suffix target as
-        test_forced_fallback_rejects_dotdot_in_unresolved_suffix, which
-        reaches the loop's unguarded `return 1` in the `..` case arm."""
-        env = dict(os.environ)
-        env["PATH"] = _forced_fallback_path_env(tmp_path)
-
-        target = tmp_path / "agent-reviews" / "newdir" / ".." / ".." / ".." / "etc" / "passwd_pwned"
-        sentinel = "REACHED_LINE_AFTER_BARE_CALL"
-        script = f'set -e\n. {_LIB_SH}\n_lib_realpath_m "$1"\necho "{sentinel}"\n'
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", str(target)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=30,
-        )
-
-        assert result.returncode != 0, (
-            f"set -e should have aborted the caller on a failed resolution: "
-            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
-        )
-        assert sentinel not in result.stdout.splitlines(), (
-            f"caller reached the line after the bare call despite a failed resolution: "
-            f"stdout={result.stdout!r}"
-        )
-
-
 def _run_config_dir(env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_config_dir'],
@@ -6087,27 +3284,6 @@ class TestLibLinkedWorktreeRoot:
         subdirectory = worktree / "nested" / "deeper"
         subdirectory.mkdir(parents=True)
         assert _linked_worktree_root(str(subdirectory)) == (0, str(worktree.resolve()))
-
-    def test_git_older_than_2_31_echoing_path_format_flag_is_unknown(
-        self, git_repo: Path, tmp_path: Path
-    ) -> None:
-        """git before 2.31 prints the unknown --path-format flag as an output
-        line and exits 0; the leading-`/` check rejects that shape."""
-        worktree = _add_linked_worktree(git_repo, tmp_path / "linked-wt", "linked-branch")
-        stub_bin = tmp_path / "old-git-bin"
-        stub_bin.mkdir()
-        old_git = stub_bin / "git"
-        old_git.write_text(
-            "#!/bin/bash\n"
-            'if [ "$4" = "--path-format=absolute" ]; then\n'
-            "  printf '%s\\n' --path-format=absolute\n"
-            '  exec "$REAL_GIT" -C "$2" rev-parse --git-common-dir\n'
-            "fi\n"
-            'exec "$REAL_GIT" "$@"\n'
-        )
-        old_git.chmod(0o755)
-        env = {"PATH": f"{stub_bin}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git") or "git"}
-        assert _linked_worktree_root(str(worktree), env) == (1, "")
 
     def test_git_common_dir_with_an_extra_absolute_line_is_unknown(
         self, git_repo: Path, tmp_path: Path
@@ -8730,77 +5906,6 @@ class TestLengthRatchetExceeded:
         assert not _length_ratchet_exceeded(250, 300, "")
 
 
-# --- _lib_list_contains ----------------------------------------------------
-#
-# Shared by the roster-membership predicates (_lib_is_review_only_agent,
-# _lib_is_no_gate_release_agent, _lib_is_reviewer_persona,
-# _lib_is_plan_writer_agent); the helper uses _lib_words_start_with's
-# flatten-as-positional-args idiom.
-
-
-def _list_contains(value: str, items: tuple[str, ...]) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_list_contains "$@"', "bash", value, *items],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-class TestListContains:
-    def test_empty_list_does_not_crash_under_set_dash_u(self) -> None:
-        """Zero ITEM args (an empty array flattened via "${arr[@]}") must
-        reach the "$@" loop safely rather than aborting on an unbound
-        variable."""
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'set -uo pipefail; . {_LIB_SH}; _lib_list_contains "$@"',
-                "bash",
-                "anything",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 1
-        assert "unbound variable" not in result.stderr
-
-    def test_single_item_list_matches(self) -> None:
-        assert _list_contains("staff-sdet", ("staff-sdet",))
-
-    def test_single_item_list_rejects_non_match(self) -> None:
-        assert not _list_contains("staff-sdet", ("ciso-reviewer",))
-
-    def test_value_matching_more_than_one_item_still_found(self) -> None:
-        """No dedup required -- VALUE need only equal one ITEM among several
-        equal ones for the scan to report a match."""
-        assert _list_contains("staff-sdet", ("staff-sdet", "staff-sdet", "ciso-reviewer"))
-
-    def test_value_matching_later_position_still_found(self) -> None:
-        """Pins the loop-continuation branch directly: a match past the
-        first ITEM must still be found, not just one at index 0."""
-        assert _list_contains("c", ("a", "b", "c"))
-
-    def test_empty_string_value_matches_empty_string_item(self) -> None:
-        assert _list_contains("", ("a", "", "b"))
-
-    def test_empty_string_value_does_not_match_list_without_it(self) -> None:
-        assert not _list_contains("", ("a", "b"))
-
-    def test_glob_metacharacter_item_does_not_spuriously_match(self) -> None:
-        """The call sites rely on [ "$a" = "$b" ] string equality, not
-        a case glob match -- an ITEM shaped like a glob pattern must match
-        only that literal string, never a value it would otherwise
-        glob-match."""
-        assert not _list_contains("code-writer", ("code*",))
-
-    def test_glob_metacharacter_item_matches_its_own_literal_value(self) -> None:
-        assert _list_contains("code*", ("code*",))
-
-
 # --- _lib_command_concludes_commit / _lib_command_concludes_marker_gated_commit --
 #
 # The rebase carve-out's two named tri-state predicates: both delegate to
@@ -9383,19 +6488,6 @@ def _assert_valid_tree_oid(repo: Path, oid: str) -> None:
     assert result.returncode == 0, f"{oid!r} is not a valid tree oid"
 
 
-def _git_supports_sha256_object_format() -> bool:
-    """Probed once at collection time: whether this git binary can create a
-    SHA-256 repository (`git init --object-format=sha256`). Gates the
-    SHA-256 fixture below rather than failing outright on a git build too
-    old for the flag, or one built without SHA-256 support."""
-    with tempfile.TemporaryDirectory() as probe_dir:
-        result = subprocess.run(
-            ["git", "init", "-q", "--object-format=sha256", "-b", "main", probe_dir],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
-
 class TestGitInprogressStateDetection:
     def test_detects_merge(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -9692,10 +6784,6 @@ class TestGateDiffBaseTrustedAnchor:
         _assert_valid_tree_oid(clone, base_result.stdout)
 
 
-@pytest.mark.skipif(
-    not _git_supports_sha256_object_format(),
-    reason="git build does not support --object-format=sha256",
-)
 class TestGateDiffBaseSha256ObjectFormat:
     def test_sha256_repo_mid_revert_returns_valid_64_hex_tree_oid(
         self, tmp_path: Path
@@ -9983,48 +7071,6 @@ def test_merge_tree_merge_base_flag_changes_computed_tree(tmp_path: Path) -> Non
     assert auto == _run_git(repo, "rev-parse", f"{tip}^{{tree}}").strip()
 
 
-def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
-    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
-    Every other subcommand proxies to the real git (resolved via
-    $REAL_GIT), matching test_check_branch_divergence.py's _make_fake_git
-    shim shape."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--write-tree" ]; then\n'
-        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
-        '    exit 129\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
-    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
-    is rejected."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    --merge-base=*)\n'
-        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
-        '      exit 129\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
     """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
     line to stdout then blocks past the 5s cap; every other subcommand
@@ -10136,55 +7182,82 @@ def _make_call_logging_git(bin_dir: Path, log_file: Path) -> Path:
     return shim
 
 
-class TestGateDiffBaseGitVersionFallback:
-    """Two stub-git fallback bands, run against a real conflicted,
-    HEAD-anchor-trusted fixture so the merge-tree call is actually reached,
-    plus a genuine (non-stubbed) git-primitive band below: a root commit
-    (no parent), where REBASE_HEAD^/CHERRY_PICK_HEAD^ is itself invalid
-    regardless of git version."""
+class TestGateDiffBaseMergeTreeFailure:
+    """A real merge-tree failure falls back to the empty base."""
 
-    def test_write_tree_rejected_outright_falls_back_to_empty_base(
-        self, tmp_path: Path
-    ) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo, branch="main")
-        build_conflicted_revert(repo)
-        bin_dir = tmp_path / "bin-reject-write-tree"
-        _make_git_rejecting_write_tree(bin_dir)
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
-        result = _gate_diff_base(repo, env=env)
-        assert result.returncode == 1
-        assert result.stdout == ""
-
-    def test_merge_base_flag_rejected_falls_back_to_empty_base(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        init_git_repo_with_commit(repo, branch="main")
-        build_conflicted_revert(repo)  # revert's merge-tree call uses --merge-base=
-        bin_dir = tmp_path / "bin-reject-merge-base"
-        _make_git_rejecting_merge_base_flag(bin_dir)
-        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
-        result = _gate_diff_base(repo, env=env)
-        assert result.returncode == 1
-        assert result.stdout == ""
-
-    @pytest.mark.parametrize("state", ["rebase", "cherry-pick"])
-    def test_root_commit_state_oid_falls_back_to_empty_base(
-        self, tmp_path: Path, state: str
-    ) -> None:
-        """REBASE_HEAD^/CHERRY_PICK_HEAD^ is invalid when the state ref
-        names a root commit (no parent) -- a git-primitive fact, not a
-        version-specific stub, so the merge-tree call this design issues
-        fails the same way the stubbed-rejection bands above do."""
+    @staticmethod
+    def _repo_with_a_root_commit_and_a_second_commit(tmp_path: Path) -> tuple[Path, str, str]:
         repo = tmp_path / "repo"
         init_git_repo_with_commit(repo, branch="main")
         root_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         _run_git(repo, "commit", "-qm", "second")
+        second_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        return repo, root_oid, second_oid
+
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
+    def test_root_commit_state_oid_falls_back_to_empty_base(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """REBASE_HEAD^/CHERRY_PICK_HEAD^/REVERT_HEAD^ is invalid when the
+        state ref names a root commit (no parent) -- a git-primitive fact,
+        so the merge-tree call this design issues fails."""
+        repo, root_oid, _ = self._repo_with_a_root_commit_and_a_second_commit(tmp_path)
         _forge_state_marker(repo / ".git", state, root_oid)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
         assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
+    def test_same_forge_with_a_state_oid_that_has_a_parent_computes_a_base(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """Control for the root-commit test above: the identical forged
+        marker, but naming the second commit, reaches merge-tree and gets
+        a tree back. So that test's exit 1 comes from the merge-tree
+        failure, not from an earlier return."""
+        repo, _, second_oid = self._repo_with_a_root_commit_and_a_second_commit(tmp_path)
+        _forge_state_marker(repo / ".git", state, second_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 0
+        _assert_valid_tree_oid(repo, result.stdout)
+
+    def test_merge_of_an_unrelated_history_falls_back_to_empty_base(self, tmp_path: Path) -> None:
+        """origin/<default> forged at an orphan commit makes MERGE_HEAD pass
+        the anchor check, and `merge-tree` then refuses to merge unrelated
+        histories."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        _run_git(repo, "checkout", "-q", "--orphan", "orphan")
+        (repo / "orphan.txt").write_text("z\n")
+        _run_git(repo, "add", "orphan.txt")
+        _run_git(repo, "commit", "-qm", "orphan commit")
+        orphan_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "update-ref", "refs/remotes/origin/main", orphan_oid)
+        _forge_state_marker(repo / ".git", "merge", orphan_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_same_merge_forge_with_a_related_history_computes_a_base(self, tmp_path: Path) -> None:
+        """Control for the unrelated-history merge test above: origin/<default>
+        and MERGE_HEAD forged at a commit descending from HEAD reach
+        merge-tree and get a tree back."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "side.txt").write_text("s\n")
+        _run_git(repo, "add", "side.txt")
+        _run_git(repo, "commit", "-qm", "side commit")
+        side_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "update-ref", "refs/remotes/origin/main", side_oid)
+        _forge_state_marker(repo / ".git", "merge", side_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 0
+        _assert_valid_tree_oid(repo, result.stdout)
 
 
 def _timeout_binary_present() -> bool:
@@ -10734,6 +7807,261 @@ class TestConflictMarkerDenyPaths:
         assert result.stdout == ""
 
 
+# --- _lib_trial_merge_verdict -------------------------------------------------
+
+# The two `set` modes the helper's callers run under: the divergence script
+# (-e) and the SessionStart hook (no -e).
+_TRIAL_MERGE_CALLER_SHELL_MODES = ["set -euo pipefail", "set -uo pipefail"]
+
+_TRIAL_MERGE_TREE_OID_SHA1 = "a" * 40
+_TRIAL_MERGE_TREE_OID_SHA256 = "b" * 64
+
+
+def _trial_merge_verdict(
+    repo: Path, upstream_ref: str, shell_mode: str, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Run _lib_trial_merge_verdict inside an `if`, the way both callers do, so
+    the helper's own status reaches the test unmasked by `set -e`."""
+    harness = (
+        f'{shell_mode}; . {_LIB_SH}; '
+        'if _lib_trial_merge_verdict "$1"; then exit 0; else exit "$?"; fi'
+    )
+    return subprocess.run(
+        ["bash", "-c", harness, "bash", upstream_ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+
+
+def _commit_files(repo: Path, files: dict[str, str], message: str) -> None:
+    for relative_path, content in files.items():
+        file_path = repo / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content)
+        _run_git(repo, "add", "--", relative_path)
+    _run_git(repo, "commit", "-qm", message)
+
+
+def _repo_with_upstream_and_feature_edits(
+    tmp_path: Path,
+    base_files: dict[str, str],
+    upstream_files: dict[str, str],
+    feature_files: dict[str, str],
+) -> Path:
+    """A repo checked out on `feature`, with a diverged local branch `upstream`
+    that both descend from one base commit holding base_files."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo, branch="main")
+    _commit_files(repo, base_files, "base")
+    _run_git(repo, "checkout", "-qb", "upstream")
+    _commit_files(repo, upstream_files, "upstream edits")
+    _run_git(repo, "checkout", "-qb", "feature", "main")
+    _commit_files(repo, feature_files, "feature edits")
+    return repo
+
+
+def _make_git_printing_on_merge_tree(bin_dir: Path, stdout_text: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: `merge-tree` prints stdout_text and exits
+    exit_status; every other subcommand proxies to the real git. Callers must
+    set REAL_GIT in the shim's environment."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'if [ "$1" = "merge-tree" ]; then\n'
+        f'  printf "%s\\n" {shlex.quote(stdout_text)}\n'
+        f'  exit {exit_status}\n'
+        'fi\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _env_with_shim_first(bin_dir: Path) -> dict:
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+
+
+@pytest.mark.parametrize("shell_mode", _TRIAL_MERGE_CALLER_SHELL_MODES)
+class TestTrialMergeVerdict:
+    """The helper's contract: exit 0 with a CLEAN or CONFLICT line, or exit 1
+    with empty stdout and one stderr line when git merge-tree cannot complete."""
+
+    def test_clean_merge_reports_clean(self, tmp_path: Path, shell_mode: str) -> None:
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"upstream.txt": "u\n"}, {"feature.txt": "f\n"}
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CLEAN\n"
+
+    def test_one_file_conflict_names_the_file(self, tmp_path: Path, shell_mode: str) -> None:
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"shared.txt": "upstream\n"}, {"shared.txt": "feature\n"}
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: shared.txt\n"
+
+    def test_three_file_conflict_lists_paths_sorted_with_a_space_kept_whole(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        conflicted_paths = ["z.txt", "dir/b c.txt", "a.txt"]
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path,
+            {path: "base\n" for path in conflicted_paths},
+            {path: "upstream\n" for path in conflicted_paths},
+            {path: "feature\n" for path in conflicted_paths},
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: a.txt, dir/b c.txt, z.txt\n"
+
+    def test_modify_delete_conflict_reports_the_path_when_stage_2_is_absent(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """Upstream, the first argument of `git merge-tree --write-tree upstream HEAD`,
+        deleting the file leaves stage lines 1 and 3 only, because stage numbers
+        follow merge-tree's argument order. The path must still be reported,
+        so the filter cannot key on a single stage number."""
+        # The upstream.txt decoy only makes upstream's commit non-empty before the
+        # delete. It must stay dissimilar to shared.txt, or rename detection
+        # would pair the two and the merge would come out clean.
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"upstream.txt": "u\n"}, {"shared.txt": "feature\n"}
+        )
+        _run_git(repo, "checkout", "-q", "upstream")
+        _run_git(repo, "rm", "-q", "--", "shared.txt")
+        _run_git(repo, "commit", "-qm", "upstream deletes shared.txt")
+        _run_git(repo, "checkout", "-q", "feature")
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: shared.txt\n"
+
+    def test_add_add_conflict_reports_the_path_when_stage_1_is_absent(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """A path added on both branches has no merge base, so stage 1 is absent
+        and only stage lines 2 and 3 appear. The path must still be reported,
+        so the filter cannot key on a single stage number."""
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path, {"shared.txt": "base\n"}, {"added.txt": "upstream\n"}, {"added.txt": "feature\n"}
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: added.txt\n"
+
+    def test_cleanly_merged_path_with_a_forged_stage_line_in_its_name_is_not_reported(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """Without --no-messages, the messages section prints a path unquoted, so
+        a newline in a cleanly merged path's name would forge a stage line there."""
+        forged_stage_line = "100644 " + "a" * 40 + " 1\tFORGED"
+        forged_stage_line_path = "notes\n" + forged_stage_line
+        # Both branches edit the forged-name path in non-overlapping hunks, so git
+        # content-merges it cleanly and prints an "Auto-merging" message for it.
+        # a.txt conflicts on purpose, because merge-tree prints the messages section
+        # by default only when the merge has conflicts.
+        base_lines = [f"line {number}\n" for number in range(1, 6)]
+        upstream_lines = ["line 1 upstream\n", *base_lines[1:]]
+        feature_lines = [*base_lines[:4], "line 5 feature\n"]
+        repo = _repo_with_upstream_and_feature_edits(
+            tmp_path,
+            {"a.txt": "base\n", forged_stage_line_path: "".join(base_lines)},
+            {"a.txt": "upstream\n", forged_stage_line_path: "".join(upstream_lines)},
+            {"a.txt": "feature\n", forged_stage_line_path: "".join(feature_lines)},
+        )
+        # The merge exits 1 on conflict, so _run_git (check=True) does not fit.
+        messages_merge = subprocess.run(
+            ["git", "merge-tree", "--write-tree", "upstream", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert messages_merge.returncode == 1, (
+            "the fixture must contain a real conflict, or merge-tree omits the messages section"
+        )
+        assert forged_stage_line in messages_merge.stdout.splitlines(), (
+            "the forged line is missing from raw merge-tree output: either git changed how "
+            "the messages section prints paths, or the fixture lost one of its preconditions, "
+            "so this test would pass without --no-messages"
+        )
+        result = _trial_merge_verdict(repo, "upstream", shell_mode)
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT in: a.txt\n"
+
+    def test_unknown_upstream_ref_fails_with_one_stderr_line(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        result = _trial_merge_verdict(repo, "no-such-ref", shell_mode)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert len(result.stderr.splitlines()) == 1
+
+    def test_unrelated_histories_fail_with_one_stderr_line(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        _run_git(repo, "checkout", "-q", "--orphan", "orphan")
+        _commit_files(repo, {"orphan.txt": "o\n"}, "orphan commit")
+        result = _trial_merge_verdict(repo, "main", shell_mode)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert len(result.stderr.splitlines()) == 1
+
+    @pytest.mark.parametrize("merge_tree_status", [1, 128])
+    def test_merge_tree_exiting_with_no_output_fails_naming_status_git_and_readme(
+        self, tmp_path: Path, shell_mode: str, merge_tree_status: int
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        bin_dir = tmp_path / "bin-merge-tree-exits"
+        _make_git_exiting_with_status(bin_dir, "merge-tree", merge_tree_status)
+        result = _trial_merge_verdict(repo, "HEAD", shell_mode, env=_env_with_shim_first(bin_dir))
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert len(result.stderr.splitlines()) == 1
+        assert f"exited {merge_tree_status}" in result.stderr
+        assert "git version" in result.stderr
+        assert "README.md" in result.stderr
+
+    def test_exit_1_with_a_fatal_message_on_line_1_is_not_a_conflict(
+        self, tmp_path: Path, shell_mode: str
+    ) -> None:
+        """A bad ref also makes merge-tree exit 1, so only a tree OID on line 1
+        marks a conflict."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        bin_dir = tmp_path / "bin-merge-tree-fatal"
+        _make_git_printing_on_merge_tree(bin_dir, "fatal: bad revision 'nope'", 1)
+        result = _trial_merge_verdict(repo, "HEAD", shell_mode, env=_env_with_shim_first(bin_dir))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "tree_oid",
+        [_TRIAL_MERGE_TREE_OID_SHA1, _TRIAL_MERGE_TREE_OID_SHA256],
+        ids=["sha1", "sha256"],
+    )
+    def test_exit_1_with_a_tree_oid_and_no_stage_lines_reports_a_conflict_without_paths(
+        self, tmp_path: Path, shell_mode: str, tree_oid: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo, branch="main")
+        bin_dir = tmp_path / "bin-merge-tree-oid"
+        _make_git_printing_on_merge_tree(bin_dir, tree_oid, 1)
+        result = _trial_merge_verdict(repo, "HEAD", shell_mode, env=_env_with_shim_first(bin_dir))
+        assert result.returncode == 0
+        assert result.stdout == "Trial merge: CONFLICT\n"
+
+
 # --- Cross-copy parity of the shared gate-base closure -----------------------
 
 _SHARED_CLOSURE_FUNCTIONS = [
@@ -11115,11 +8443,12 @@ class TestLibMissingPluginIds:
         assert result.returncode == 2, repr(result)
         assert result.stdout.strip() == ""
 
-    def test_registry_version_mismatch_fails_closed(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("registry_version", [None, 1, 3], ids=["version-missing", "version-1", "version-3"])
+    def test_registry_version_mismatch_fails_closed(self, tmp_path: Path, registry_version: int | None) -> None:
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
         registry_file = tmp_path / "installed_plugins.json"
-        write_plugin_registry(registry_file, {}, version=1)
+        write_plugin_registry(registry_file, {}, version=registry_version)
 
         result = _missing_plugin_ids(settings_file, registry_file)
 

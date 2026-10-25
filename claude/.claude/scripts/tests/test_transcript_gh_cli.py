@@ -2,7 +2,6 @@
 preflight, effective-repo pinning, and merged/closed PR discovery)."""
 import json
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -1362,6 +1361,38 @@ class TestGhCallWithBackoffMaxAttempts:
         assert recorded_sleeps == [60.0]
 
 
+class TestGhCallWithBackoffTimeout:
+    """`timeout_s` bounds each attempt's gh process; omitting it keeps _GH_CALL_TIMEOUT_S."""
+
+    def test_default_timeout_is_read_from_the_module_constant_at_call_time(self, monkeypatch):
+        recorded_kwargs: list[dict] = []
+        sentinel_timeout_s = 17.0
+
+        def fake_run(cmd, *a, **kw):
+            recorded_kwargs.append(kw)
+            return _gh_result()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(gh_cli, "_GH_CALL_TIMEOUT_S", sentinel_timeout_s)
+
+        gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert [kw["timeout"] for kw in recorded_kwargs] == [sentinel_timeout_s]
+
+    def test_timeout_argument_reaches_subprocess_run_on_every_attempt(self, monkeypatch, recorded_sleeps):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *a, **kw):
+            recorded_kwargs.append(kw)
+            return _gh_result(1, stderr="connection reset\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", max_attempts=2, timeout_s=75.0)
+
+        assert [kw["timeout"] for kw in recorded_kwargs] == [75.0, 75.0]
+
+
 class TestGhCallWithBackoffEnvironment:
     """`env` reaches the gh child verbatim; None passes no environment, so the child inherits this process's."""
 
@@ -1468,6 +1499,26 @@ class TestGhPrList:
             "gh", "pr", "list", "--repo", "acme-corp.ghe.com/owner/repo", "--state", "all",
             "--limit", str(gh_cli._PR_COST_GH_PR_LIST_LIMIT), "--json", _PR_LIST_FIELDS,
         ]]
+
+    def test_each_attempt_is_bounded_by_the_bulk_list_timeout_not_the_single_call_timeout(
+        self, monkeypatch, recorded_sleeps
+    ):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *a, **kw):
+            recorded_kwargs.append(kw)
+            return _gh_result(1, stderr="connection reset\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        sentinel_timeout_s = 123.0
+        monkeypatch.setattr(gh_cli, "_GH_PR_LIST_TIMEOUT_S", sentinel_timeout_s)
+
+        _gh_pr_list_all(max_attempts=2)
+
+        assert [kw["timeout"] for kw in recorded_kwargs] == [sentinel_timeout_s] * 2
+
+    def test_the_bulk_list_timeout_exceeds_the_single_call_timeout(self):
+        assert gh_cli._GH_PR_LIST_TIMEOUT_S > gh_cli._GH_CALL_TIMEOUT_S
 
     def test_success_returns_parsed_payload_and_empty_status_without_printing(self, monkeypatch, capsys, recorded_sleeps):
         payload = [{"number": 7, "mergedAt": "2026-09-01T00:00:00Z"}]
@@ -2018,24 +2069,9 @@ class TestOriginIdentityAtFakedRun:
         assert captured.err == ""
 
 
-def _git_version_at_least(minimum: tuple[int, int]) -> bool:
-    if shutil.which("git") is None:
-        return False
-    try:
-        version_text = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout
-    except (subprocess.CalledProcessError, OSError):
-        return False
-    version_match = re.search(r"(\d+)\.(\d+)", version_text)
-    return version_match is not None and (int(version_match.group(1)), int(version_match.group(2))) >= minimum
-
-
 _ORIGIN_URL = "https://github.com/Acme/Widget.git"
 _ORIGIN_IDENTITY = ("github.com", "acme/widget")
 _OTHER_ORIGIN_URL = "https://github.com/Other/Elsewhere.git"
-_requires_safe_bare_repository = pytest.mark.skipif(
-    not _git_version_at_least((2, 38)),
-    reason="needs git 2.38 or later for safe.bareRepository; skipped here means the bare-layout deny path went unchecked",
-)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -2168,14 +2204,12 @@ class TestOriginIdentityAtRealGit:
         assert self._identity_at_silently(capfd, clone) == _ORIGIN_IDENTITY
         assert self._identity_at_silently(capfd, plain) is None
 
-    @_requires_safe_bare_repository
     def test_bare_repository_directory_itself_returns_none(self, capfd):
         bare = self._bare_repo_with_origin()
 
         assert self._direct_origin_url(bare) == _ORIGIN_URL, "control: with no -c pair the bare layout is read as a repository"
         assert self._identity_at_silently(capfd, bare) is None
 
-    @_requires_safe_bare_repository
     def test_bare_layout_committed_inside_a_clone_returns_none_from_itself_and_from_a_folder_inside_it(self, capfd):
         clone = self._clone_with_origin()
         embedded = clone / "embedded"

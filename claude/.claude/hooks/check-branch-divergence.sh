@@ -17,18 +17,10 @@
 # It never reads the stack-base key that branch-divergence-status.sh reads.
 #   git rev-list --count HEAD..origin/<default>   → behind count
 #   git merge-tree --write-tree origin/<default> HEAD  → trial merge
-# git merge-tree --write-tree requires git ≥ 2.38; the trial-merge line
-# is omitted in the stale-ref fallback (no behind-by-N check on stale
-# data — already-known divergence is enough signal).
+# The trial-merge line is omitted in the stale-ref fallback (no
+# behind-by-N check on stale data — already-known divergence is enough signal).
 #
-# Known gap on older git: when git < 2.38 the `--write-tree` flag is
-# rejected, the captured stdout is empty, and the conflict-files awk
-# returns nothing, so the advisory falsely reports "Trial merge: CLEAN".
-# The behind-count + advisory still surface (the false negative is only
-# on the trial-merge line). Acceptable because /ready-for-review and
-# /respond-pr run the same recipe and reach the same gap, and the hook
-# is advisory-only — pushes / replies are gated at the later checkpoints
-# anyway. Not worth a runtime version probe.
+# A trial merge git cannot complete is reported as NOT COMPUTED, never as CLEAN.
 #
 # Quiet-on-success: emits nothing when behind = 0 (or when no skip
 # condition can be evaluated). Mirrors session-marker-dashboard.sh.
@@ -106,16 +98,7 @@ BEHIND=$(git rev-list --count "HEAD..$REMOTE_REF" 2>/dev/null)
 [ "$BEHIND" = "0" ] && exit 0
 
 if [ "$FETCH_OK" = "1" ]; then
-  TRIAL_OUTPUT=$(git merge-tree --write-tree "origin/$DEFAULT_BRANCH" HEAD 2>/dev/null)
-  CONFLICT_FILES=$(printf '%s\n' "$TRIAL_OUTPUT" \
-    | awk '/^[0-9]+ /{print $NF}' \
-    | sort -u \
-    | paste -sd', ' -)
-  if [ -n "$CONFLICT_FILES" ]; then
-    TRIAL_LINE="Trial merge: CONFLICT in: $CONFLICT_FILES"
-  else
-    TRIAL_LINE="Trial merge: CLEAN"
-  fi
+  if verdict=$(_lib_trial_merge_verdict "origin/$DEFAULT_BRANCH" 2>&1); then TRIAL_LINE="$verdict"; else TRIAL_LINE="Trial merge: NOT COMPUTED ($verdict)"; fi
   HEAD_LINE="Branch \`$CURRENT_BRANCH\` is $BEHIND commits behind \`origin/$DEFAULT_BRANCH\`"
   ADDITIONAL_CONTEXT=$(printf '%s\n%s\n%s' \
     "$HEAD_LINE" \

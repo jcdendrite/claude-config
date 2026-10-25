@@ -6,7 +6,6 @@
 # behind-count and the `git merge-tree --write-tree` trial merge.
 # That hook never reads the key, and it fetches and measures through `origin/<default branch>`.
 # git-feature-branch-sync/SKILL.md's "Detecting divergence" section holds the canonical recipe.
-# Requires git >= 2.38 for `git merge-tree --write-tree`.
 # Makes no gh call: it never reads an open PR's base.
 #
 # Stdout starts with `Default branch: <name>` for the default branch and `Base branch: <name>`
@@ -20,6 +19,7 @@
 # - The stack base is unusable.
 # - _lib_configured_stack_base returned a status other than 0 and 1, printing its own line.
 #   A git read failure is one such stop, and it can fire with no key set.
+# - The trial merge could not complete (_lib_trial_merge_verdict returned non-zero).
 # A stack base's fetch failure reads the same for a timeout and a branch deleted on origin.
 # The stop line tells the engineer to retry, then to run `git ls-remote` to tell a base missing from origin apart from any other failure.
 
@@ -106,16 +106,9 @@ if [[ "$BEHIND" == "0" ]]; then
   exit 0
 fi
 
-# Non-zero exit on conflict is expected here, not a script failure -- capture stdout
-# regardless of exit status instead of letting `set -e` abort on a real conflict result.
-TRIAL_OUTPUT=$(git merge-tree --write-tree "refs/remotes/origin/$BASE_BRANCH" HEAD 2>/dev/null) || true
-CONFLICT_FILES=$(printf '%s\n' "$TRIAL_OUTPUT" \
-  | awk '/^[0-9]+ /{print $NF}' \
-  | sort -u \
-  | paste -sd', ' -)
-
-if [[ -n "$CONFLICT_FILES" ]]; then
-  echo "Trial merge: CONFLICT in: $CONFLICT_FILES"
+if verdict=$(_lib_trial_merge_verdict "refs/remotes/origin/$BASE_BRANCH"); then
+  echo "$verdict"
 else
-  echo "Trial merge: CLEAN"
+  echo "$SCRIPT_NAME: trial merge of origin/$BASE_BRANCH into HEAD could not complete" >&2
+  exit 1
 fi

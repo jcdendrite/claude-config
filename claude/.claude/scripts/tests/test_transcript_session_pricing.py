@@ -93,9 +93,16 @@ def _write_session(root: Path, index: int, records: list[dict]) -> Path:
 
 
 def _price(
-    session_paths, *, start: date = _START, end: date = _END, as_of: date = _AS_OF
+    session_paths,
+    *,
+    start: date = _START,
+    end: date = _END,
+    as_of: date = _AS_OF,
+    include_unpriced_model_ids: bool = False,
 ) -> session_pricing.SessionPricingResult:
-    return session_pricing.price_sessions_by_utc_day(session_paths, start=start, end=end, as_of=as_of)
+    return session_pricing.price_sessions_by_utc_day(
+        session_paths, start=start, end=end, as_of=as_of, include_unpriced_model_ids=include_unpriced_model_ids,
+    )
 
 
 def _turn(ts: str, **usage_tokens: int) -> dict:
@@ -423,9 +430,10 @@ class TestUnpriced:
         listed["message"]["model"] = ["claude-sentinel-model-9"]
         session = _write_session(tmp_path, 0, [absent, null, integer, listed])
 
-        result = _price([session])
+        result = _price([session], include_unpriced_model_ids=True)
 
         assert result.unpriced_models == ("",)
+        assert result.unpriced_model_count == 1
         assert result.total_unpriced_tokens == 4
 
     def test_synthetic_model_at_zero_tokens_is_excluded_but_another_unpriced_model_at_zero_is_included(self, tmp_path):
@@ -438,18 +446,20 @@ class TestUnpriced:
             ],
         )
 
-        result = _price([session])
+        result = _price([session], include_unpriced_model_ids=True)
 
         assert result.unpriced_models == (_UNPRICED_MODEL,)
+        assert result.unpriced_model_count == 1
         assert result.total_unpriced_tokens == 0
         assert result.sessions[0].unpriced_tokens_by_day == {}
 
     def test_synthetic_model_with_tokens_is_listed(self, tmp_path):
         session = _write_session(tmp_path, 0, [_priced(pricing._SYNTHETIC_MODEL_ID, input=3, ts="2026-05-19T10:00:00.000Z")])
 
-        result = _price([session])
+        result = _price([session], include_unpriced_model_ids=True)
 
         assert result.unpriced_models == (pricing._SYNTHETIC_MODEL_ID,)
+        assert result.unpriced_model_count == 1
 
     def test_models_are_sorted_and_one_seen_only_outside_the_window_is_excluded(self, tmp_path):
         session = _write_session(
@@ -462,9 +472,10 @@ class TestUnpriced:
             ],
         )
 
-        result = _price([session])
+        result = _price([session], include_unpriced_model_ids=True)
 
         assert result.unpriced_models == ("claude-sentinel-model-1", "claude-sentinel-model-9")
+        assert result.unpriced_model_count == 2
 
     @pytest.mark.parametrize("first_session_first", [True, False], ids=["a-then-b", "b-then-a"])
     def test_unpriced_models_union_sessions_and_list_synthetic_when_any_session_has_tokens_on_it(
@@ -487,9 +498,28 @@ class TestUnpriced:
             ],
         )
 
-        result = _price([session_a, session_b] if first_session_first else [session_b, session_a])
+        sessions = [session_a, session_b] if first_session_first else [session_b, session_a]
+        result = _price(sessions, include_unpriced_model_ids=True)
 
         assert result.unpriced_models == (pricing._SYNTHETIC_MODEL_ID, "claude-sentinel-model-1", "claude-sentinel-model-2")
+        assert result.unpriced_model_count == 3
+
+    def test_unpriced_models_is_empty_by_default_even_when_models_exist_but_the_count_still_reports_them(
+        self, tmp_path
+    ):
+        session = _write_session(
+            tmp_path,
+            0,
+            [
+                _priced("claude-sentinel-model-1", input=1, ts="2026-05-19T10:00:00.000Z"),
+                _priced("claude-sentinel-model-2", input=1, ts="2026-05-19T10:00:00.000Z"),
+            ],
+        )
+
+        result = _price([session])
+
+        assert result.unpriced_models == ()
+        assert result.unpriced_model_count == 2
 
 
 class TestReadability:
@@ -1554,6 +1584,21 @@ class TestOutputContract:
         for clause in self._UNPRICED_MODELS_DISCLOSURE_CLAUSES:
             assert clause in section, f"{clause!r} is not in the doc's session_pricing.py section"
 
+    def test_unpriced_models_disclosure_is_a_behavioral_control_not_just_documentation(self, tmp_path):
+        """The doc's disclosure clauses describe a real default-off gate, not prose a caller could ignore:
+        unpriced_models stays empty unless the caller opts in, with no transcript-derived text leaked."""
+        session = _write_session(
+            tmp_path, 0, [_priced("claude-sentinel-model-1", input=1, ts="2026-05-19T10:00:00.000Z")]
+        )
+
+        default_call = _price([session])
+        opted_in_call = _price([session], include_unpriced_model_ids=True)
+
+        assert default_call.unpriced_models == ()
+        assert default_call.unpriced_model_count == 1
+        assert opted_in_call.unpriced_models == ("claude-sentinel-model-1",)
+        assert opted_in_call.unpriced_model_count == 1
+
     def test_quiet_call_prints_nothing(self, tmp_path, capsys):
         session = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
 
@@ -1575,6 +1620,7 @@ _PROMISED_RESULT_FIELD_TYPES = {
     "total_micro_dollars": int,
     "total_unpriced_tokens": int,
     "unpriced_models": tuple[str, ...],
+    "unpriced_model_count": int,
     "stale_models": tuple[str, ...],
     "pricing_fetch_date": date,
     "pricing_reverify_by": date | None,

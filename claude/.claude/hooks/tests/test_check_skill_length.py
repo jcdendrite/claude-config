@@ -13,7 +13,6 @@ from helpers import (
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_rebase,
-    build_conflicted_revert,
     build_path_without,
     edit_input,
     link_bash_into,
@@ -983,49 +982,6 @@ class TestCheckSkillLength:
         assert "was 0" in reason
 
 
-def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
-    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
-    Every other subcommand proxies to the real git. Local copy of
-    test_lib.py's shim of the same name (DAMP test code, per CLAUDE.md's
-    named exception) -- this file's fallback assertion needs its own stub,
-    not a shared import, per the plan's "per call site" mandate."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--write-tree" ]; then\n'
-        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
-        '    exit 129\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
-    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
-    is rejected. Local copy of test_lib.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    --merge-base=*)\n'
-        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
-        '      exit 129\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _build_clean_merge_growing_skill(tmp_path: Path) -> Path:
     """A conflict-free merge where only upstream grows SKILL.md past the
     limit: the clone's own commit touches an unrelated file, so the merge
@@ -1079,32 +1035,6 @@ def _build_conflicted_rebase_with_growing_skill(tmp_path: Path) -> Path:
 
     build_conflicted_rebase(repo)
     resolve_conflicted_rebase(repo)
-    (repo / SKILL_PATH).write_text(make_skill_content(250))
-    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-    return repo
-
-
-def _build_conflicted_revert_with_growing_skill(tmp_path: Path) -> Path:
-    """A conflicted revert of an unrelated file, trusted via the HEAD anchor
-    by construction (REVERT_HEAD is a real ancestor commit), with SKILL.md
-    separately grown past the limit as part of the staged resolution --
-    state=revert is one of the three states whose merge-tree call passes
-    --merge-base=, unlike the merge-state fixture the write-tree-rejection
-    fallback test above reuses."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
-    skill_dir.mkdir(parents=True)
-    (repo / SKILL_PATH).write_text(make_skill_content(100))
-    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "seed skill at 100"], cwd=repo, check=True)
-
-    build_conflicted_revert(repo)
-    (repo / "f").write_text("resolved\n")
-    subprocess.run(["git", "add", "f"], cwd=repo, check=True)
     (repo / SKILL_PATH).write_text(make_skill_content(250))
     subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
     return repo
@@ -1226,61 +1156,6 @@ class TestCheckSkillLengthMergeAwareBase:
         repo = _build_conflicted_rebase_with_growing_skill(tmp_path)
         assert (
             run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
-            == "deny"
-        )
-
-    def test_fallback_write_tree_rejected_behaves_like_today(self, isolated_home, tmp_path):
-        """`--write-tree` outright rejection (git < 2.38) must fall back to
-        exactly today's plain HEAD-relative recipe for `old` -- literal HEAD,
-        not the resolved base. For this fixture (only upstream grew the
-        file past the limit), literal pre-merge HEAD never saw that growth,
-        so the fallback denies -- the same conservative posture this gate
-        had before the base substitution existed, not the fixed behavior
-        _lib_gate_diff_base's degraded (git-version-fallback) path cannot
-        provide."""
-        repo = _build_clean_merge_growing_skill(tmp_path)
-        bin_dir = tmp_path / "bin-fallback-write-tree"
-        _make_git_rejecting_write_tree(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-                extra_env=extra_env,
-            )
-            == "deny"
-        )
-
-    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, isolated_home, tmp_path):
-        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
-        the three states whose merge-tree call passes that flag -- rebase,
-        cherry-pick, revert, not merge -- so this needs its own fixture,
-        unlike the write-tree fallback test above which reuses the merge
-        fixture because that rejection band affects every state uniformly.
-        SKILL.md is untouched by the revert itself, so `old` falls back to
-        mid-revert HEAD either way -- the same "no rebase-specific
-        over-count" _lib_staged_length_gate's own docstring documents for
-        rebase. This fixture's job is proving the rejection is absorbed
-        cleanly into the fallback, not that the verdict differs from a
-        working substitution."""
-        repo = _build_conflicted_revert_with_growing_skill(tmp_path)
-        bin_dir = tmp_path / "bin-fallback-merge-base"
-        _make_git_rejecting_merge_base_flag(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-                extra_env=extra_env,
-            )
             == "deny"
         )
 

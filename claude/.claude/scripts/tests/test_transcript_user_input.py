@@ -251,6 +251,31 @@ class TestCmdUserInput:
         assert truncated == "x" * 50 + "… (truncated, 60 chars total)"
         assert user_input._truncate_prompt_text("x" * 10_000, 0) == "x" * 10_000
 
+    def test_fence_for_text_direct(self):
+        """Direct unit coverage of the pure fence-sizing function: plain text gets the
+        default 3-tilde fence, and text containing a run of N tildes gets a fence of
+        N+1, long enough that the embedded run can't close it early."""
+        assert user_input._fence_for_text("plain text, no tildes") == "~~~"
+        assert user_input._fence_for_text("a run of ~~~ three tildes") == "~~~~"
+        assert user_input._fence_for_text("a longer run of ~~~~~ five tildes") == "~~~~~~"
+
+    def test_a_prompt_containing_a_fence_sized_tilde_run_does_not_truncate_the_narrative(
+        self, fake_projects, capsys
+    ):
+        """A prompt quoting someone else's ~~~-fenced code block must not close the
+        narrative's own fence early and swallow every prompt rendered after it."""
+        quoting_prompt = "as seen in:\n~~~python\nprint('hi')\n~~~\nwhat does this do?"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user(quoting_prompt, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user("a later prompt that must still render", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert f"~~~~text\n{quoting_prompt}\n~~~~" in out
+        assert "a later prompt that must still render" in out
+
     def test_session_sort_order_and_missing_first_ts_placement(self, fake_projects, capsys):
         """Sessions sort ascending by first-prompt timestamp; a session whose first
         prompt has no parseable timestamp sorts first under the `first_ts or 0.0`

@@ -2,8 +2,9 @@
 only by them -- corpus-wide dollar-cost reporting by token class/model
 ID/thread/account/project, and per-ISO-week cost-trend accumulation.
 
-Imports scope, corpus, pricing, render, and redaction by module (attribute
-access, not by name) -- see scope.py's own top-of-file comment for why.
+Imports scope, corpus, pricing, redaction, render, and session_pricing by
+module (attribute access, not by name) -- see scope.py's own top-of-file
+comment for why.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from transcript_analysis import corpus, pricing, redaction, render, scope
+from transcript_analysis import corpus, pricing, redaction, render, scope, session_pricing
 
 # Printed as both render paths' first content line (see _cost_report).
 # The full report prints this sentence directly. --summary wraps it in
@@ -40,6 +41,17 @@ _PRE_BRANCH_MOVED_LINE = (
 )
 
 
+def _usage_is_invalid(usage: object) -> bool:
+    """True when usage's token fields fail session_pricing._validate_usage_token_fields -- the caller must
+    skip this turn instead of handing an untrusted negative or non-numeric field to pricing._price_turn's
+    arithmetic."""
+    try:
+        session_pricing._validate_usage_token_fields(usage)
+    except ValueError:
+        return True
+    return False
+
+
 def _new_pr_cost_agg() -> dict:
     """Zero-valued per-branch aggregate shape accumulated by
     _compute_pr_cost_branch_totals, and reused as the zero-cost default for
@@ -49,7 +61,7 @@ def _new_pr_cost_agg() -> dict:
         "tokens": dict.fromkeys(pricing._TOKEN_CLASSES, 0),
         # {model: {pricing variant: {token class: {"tokens": int, "dollars": float}}}}, priced turns only.
         "by_model": {},
-        "unpriced_turns": 0, "unpriced_tokens": 0,
+        "unpriced_turns": 0, "unpriced_tokens": 0, "invalid_usage_records": 0,
         "turn_count": 0, "sessions": set(), "opus_dollars": 0.0, "sum_context_at_turn": 0,
         "session_starts": [], "session_starts_seen": set(), "last_activity_ts": 0.0,
     }
@@ -83,6 +95,11 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
     so the leaves summed across models equal those totals up to
     float-summation order. An unpriced turn never
     reaches "by_model": its model identity is deliberately not recorded.
+
+    A record whose usage fails _usage_is_invalid is counted in its agg's
+    "invalid_usage_records" and excluded from every other aggregate below
+    (including "turn_count" and "session_starts") -- its token fields are
+    untrusted, so nothing about it is safe to accumulate.
     """
     branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)
     unbranched_totals: dict = _new_pr_cost_agg()
@@ -97,11 +114,16 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
             usage = (rec.get("message") or {}).get("usage")
             if not usage:
                 continue
-            model = (rec.get("message") or {}).get("model", "")
-            dollars_by_class, context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
 
             branch = scope._attributed_branch(rec, branch_context)
             agg = branch_totals[branch] if branch is not None else unbranched_totals
+
+            if _usage_is_invalid(usage):
+                agg["invalid_usage_records"] += 1
+                continue
+
+            model = (rec.get("message") or {}).get("model", "")
+            dollars_by_class, context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
 
             rec_ts = corpus._parse_ts(rec.get("timestamp"))
             if rec_ts is not None:
@@ -150,7 +172,9 @@ def _first_main_thread_turns_dollars_by_branch(
     `deduped_records` must already be pricing.dedup_turns_by_request_id's
     output. Sums fewer than `until_first_n_turns` turns per branch, never
     padded or scaled, when a branch has fewer main-thread turns than that
-    within this session.
+    within this session. A turn whose usage fails _usage_is_invalid
+    contributes 0 dollars but still consumes one of the branch's
+    `until_first_n_turns` slots, the same treatment an unpriced turn gets.
     """
     totals: dict[str, float] = defaultdict(float)
     counted_by_branch: dict[str, int] = defaultdict(int)
@@ -163,10 +187,11 @@ def _first_main_thread_turns_dollars_by_branch(
         branch = scope._attributed_branch(rec, branch_context)
         if branch is None or counted_by_branch[branch] >= until_first_n_turns:
             continue
-        model = (rec.get("message") or {}).get("model", "")
-        dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
-        if dollars_by_class is not None:
-            totals[branch] += sum(dollars_by_class.values())
+        if not _usage_is_invalid(usage):
+            model = (rec.get("message") or {}).get("model", "")
+            dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
+            if dollars_by_class is not None:
+                totals[branch] += sum(dollars_by_class.values())
         counted_by_branch[branch] += 1
     return dict(totals)
 
@@ -198,8 +223,10 @@ def _compute_workstream_dollars(session_iter, until_first_n_turns: int = 5) -> d
     "total_dollars" (every priced turn attributed to the branch, main-thread
     and subagent alike -- the same total pr-cost itself reports),
     "startup_burn_dollars" (summed across every non-first session's first
-    `until_first_n_turns` main-thread turns), and "last_activity_ts" (the
-    latest turn timestamp seen anywhere on the branch). A branch whose every
+    `until_first_n_turns` main-thread turns), "last_activity_ts" (the
+    latest turn timestamp seen anywhere on the branch), and
+    "invalid_usage_records" (this branch's agg["invalid_usage_records"] from
+    _compute_pr_cost_branch_totals, passed through unchanged). A branch whose every
     turn carries an unparseable timestamp reports session_count 0 despite
     having corpus activity (mirrors scope._session_branch_index's own exclusion).
     This session_count is derived from session_starts (timestamp-gated),
@@ -239,6 +266,7 @@ def _compute_workstream_dollars(session_iter, until_first_n_turns: int = 5) -> d
                 session_startup_dollars_by_branch.get(sid, {}).get(branch, 0.0) for sid in non_first_session_ids
             ),
             "last_activity_ts": agg["last_activity_ts"],
+            "invalid_usage_records": agg["invalid_usage_records"],
         }
     return result
 
@@ -512,6 +540,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     a sidechain record takes its dispatching main thread's branch at its timestamp, and a session's leading
     default-branch records count toward the first branch it enters. The full report prints the turns and
     dollars that second step moved into the filter set (_PRE_BRANCH_MOVED_LINE).
+    A usage-bearing turn whose token fields fail _usage_is_invalid is excluded before reaching
+    pricing._price_turn and counted in the MALFORMED USAGE banner.
     """
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
@@ -720,6 +750,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         else {}
     )
     unpriced_tokens: dict[str, int] = defaultdict(int)
+    # Usage-bearing turns dropped by _usage_is_invalid before pricing -- mirrors
+    # period_cost._accumulate_session's invalid_usage_records counter.
+    invalid_usage_records = 0
     # Turn counts (not re-priced dollars) tallied per branch a --branches
     # filter dropped a record for, plus the distinct transcript files those
     # drops span -- feeds _print_branch_exclusion_diagnostic below.
@@ -786,11 +819,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             usage = msg.get("usage")
             if not usage:
                 continue
-
-            # Parsed unconditionally (not just when since_ts is set) so
-            # root_earliest_ts reflects the corpus's actual earliest turn,
-            # not just the earliest turn inside an already-applied --since
-            # filter.
+            # Parsed and credited to root_earliest_ts unconditionally -- not gated on since_ts,
+            # and not gated on _usage_is_invalid below -- so root_earliest_ts reflects the
+            # corpus's actual earliest turn even when that turn's own usage is rejected for pricing.
             rec_ts = corpus._parse_ts(rec.get("timestamp"))
             if account_ordinal is not None and rec_ts is not None:
                 earliest_so_far = root_earliest_ts.get(account_ordinal)
@@ -812,6 +843,13 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 moved_into_filter = scope._timeline_entry(rec, branch_context)[0] not in branch_filter
                 if moved_into_filter:
                     pre_branch_moved_turns += 1
+
+            # Checked only once the record is confirmed in-scope (past the since_ts and
+            # branch-filter continues above), so invalid_usage_records -- like every other
+            # accumulator below -- counts only turns the report being rendered actually covers.
+            if _usage_is_invalid(usage):
+                invalid_usage_records += 1
+                continue
 
             model = msg.get("model", "")
             dollars_by_class, context_at_turn, turn_unpriced_tokens = pricing._price_turn(model, usage)
@@ -948,8 +986,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         # - Scope: print's blank line terminates the GFM alert and opens the table.
         #   Omitting it lets lazy continuation fold Scope: into the blockquote.
         # - The trailing print()'s blank line closes the table -- without it, a
-        #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
-        #   table's last row directly adjacent to the next section's heading.
+        #   no-op EXCLUDED SPEND/MALFORMED USAGE banner and no stale/drift warning
+        #   would leave the table's last row directly adjacent to the next section's heading.
         print(_LIST_PRICE_CAVEAT_ALERT)
         # The caption print below fails on non-UTF-8 ref-name bytes only when stdout uses strict error handling.
         # Under a C/POSIX locale or PYTHONUTF8=1 the raw byte is emitted instead.
@@ -990,6 +1028,21 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 "\nPRICING INTEGRITY — the transcript format may have drifted, so the figures below"
                 " may be structurally wrong. Re-run the report directly (not through"
                 " pr-cost-section.sh) to read the drift diagnostic on stderr.\n"
+            )
+
+    if invalid_usage_records:
+        if share_only:
+            # No count: a turn tally is outside the pooled-measurement carve-out's closed countable
+            # list (docs/private-project-redaction.md). _print_excluded_spend_banner's own
+            # share_only branch drops its unrecognized-model-ID count for the same reason.
+            print(
+                "\nMALFORMED USAGE — some turns had non-numeric or negative usage token fields and are"
+                " excluded from the figures below.\n"
+            )
+        else:
+            print(
+                f"\nMALFORMED USAGE — {invalid_usage_records:,} usage-bearing turns had non-numeric or negative"
+                " token fields and were excluded from the figures below.\n"
             )
 
     _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode, share_only=share_only)
@@ -1099,7 +1152,8 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
     relies on that absence. context_over is bucket-based dollar share
     (_context_bucket); context_class_dollars is the dollar share from
     context-class token pricing (cache_read + cache_write tiers) regardless
-    of bucket — cost-ledger's only consumer of the latter.
+    of bucket — cost-ledger's only consumer of the latter. A turn whose usage fails _usage_is_invalid is
+    excluded before pricing, uncounted, the same treatment an undated turn gets below.
     """
     data: dict[str, dict[str, float]] = defaultdict(
         lambda: {"total": 0.0, "opus": 0.0, "context_over": 0.0, "context_class_dollars": 0.0}
@@ -1115,6 +1169,10 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
             msg = rec.get("message") or {}
             usage = msg.get("usage")
             if not usage:
+                continue
+            if _usage_is_invalid(usage):
+                # Mirrors the undated-turn skip below: no counter at this call site. The record's
+                # own fields aren't trustworthy enough to attribute to a week.
                 continue
             rec_ts = corpus._parse_ts(rec.get("timestamp"))
             if rec_ts is None:

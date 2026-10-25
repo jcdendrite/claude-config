@@ -28,20 +28,23 @@ def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
     builds its own main_thread_turns list from -- so a returned boundary is
     directly usable as a slice/turn-count index into that list.
 
-    UserPromptSubmit and Stop both check the transcript's latest recorded
-    main-thread assistant usage (docs/handoff-nudge.md), so the two fire at
-    the same observable point: right after a run of tool-call-only turns
-    yields back to a genuine user message. Reusing _is_fresh_user_prompt for
-    that user-message half (see its own docstring for what it filters) marks
-    every INTERNAL boundary -- one per genuine user message, not one per
-    turn, so a multi-tool-call stretch between two user messages contributes
-    no boundary of its own. Session start (0, before any turn) and session
-    end (N, the full turn count) are the two boundaries no user message can
-    supply on their own, and both are always included: the hook's own header
-    comment states it is "registered on both events so a session that
-    crosses the threshold on its final turn, with no further user prompt,
-    still gets warned" -- a boundary set with no session-end entry would make
-    a last-turn crossing invisible to the simulation.
+    The hook checks the transcript's latest recorded main-thread assistant
+    usage (docs/handoff-nudge.md), so these boundaries are a transcript-side
+    proxy for its sampling points: right after a run of tool-call-only turns
+    yields back to a user message (a human prompt or a task notification).
+    Reusing _is_main_thread_user_text for that user-message half (see its own
+    docstring for what it filters) marks every INTERNAL boundary -- one per
+    user message, not one per turn, so a multi-tool-call stretch between two
+    user messages contributes no boundary of its own. A task notification
+    counts as a user message here. Whether the hook observes the session at a
+    notification is not checked.
+
+    Session start (0, before any turn) and session end (N, the full turn
+    count) are the two boundaries no user message can supply on their own, and
+    both are always included: the hook is registered on Stop so a toolless
+    final turn is still observed (docs/handoff-nudge.md) -- a boundary set
+    with no session-end entry would make a last-turn crossing invisible to
+    the simulation.
 
     A turn only counts toward the position (and thus toward a boundary) when
     it carries a usage block, matching exactly the predicate a caller uses to
@@ -56,7 +59,7 @@ def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
             if (rec.get("message") or {}).get("usage"):
                 main_turn_count += 1
             continue
-        if main_turn_count > 0 and render._is_fresh_user_prompt(rec) and boundaries[-1] != main_turn_count:
+        if main_turn_count > 0 and render._is_main_thread_user_text(rec) and boundaries[-1] != main_turn_count:
             boundaries.append(main_turn_count)
     if boundaries[-1] != main_turn_count:
         boundaries.append(main_turn_count)

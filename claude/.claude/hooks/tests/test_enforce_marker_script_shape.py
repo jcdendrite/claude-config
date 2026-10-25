@@ -782,7 +782,7 @@ MARKER_SPLIT_BY_BACKSLASH_NEWLINE = "~/.claude/scripts/marker.\\\nsh"
 MARKER_SPLIT_BY_QUOTES = '~/.claude/scripts/mark""er.sh'
 
 # Representative members of _LIB_NO_GATE_RELEASE_AGENTS. The full-roster
-# coverage lives in test_lib.py against the array itself; these exercise the
+# coverage lives in test_lib_payload_matchers.py against the array itself; these exercise the
 # hook end-to-end for an implementer, a stack specialist, the security
 # reviewer, and a harness built-in.
 NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore"]

@@ -26,6 +26,9 @@ from ._pr_cost_helpers import (
     _PRE_HOST_HEADER_LINE,
     _PRE_HOST_ROW_LINE,
     _PRE_HOST_ROW_PARSED,
+    _PRE_INVALID_USAGE_HEADER_LINE,
+    _PRE_INVALID_USAGE_ROW_LINE,
+    _PRE_INVALID_USAGE_ROW_PARSED,
     _PRE_MODEL_HEADER_LINE,
     _PRE_MODEL_ROW_LINE,
     _PRE_MODEL_ROW_PARSED,
@@ -38,6 +41,7 @@ from ._pr_cost_helpers import (
     _make_mkstemp_create_0644,
     _merged_pr,
     _pr_cost_args,
+    _pre_invalid_usage_row_line,
     _pre_model_row_line,
     _sample_model_breakdown,
     _sample_pr_cost_row,
@@ -311,18 +315,22 @@ class TestPrCostLedgerLegacyHostColumnMigration:
         assert rows[0]["host"] == "github.com"
 
     @pytest.mark.parametrize(
-        "header_line,make_row_line,expect_host_prefix",
+        "header_line,make_row_line,expect_host_prefix,expected_tail",
         [
-            pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, True, id="pre-host"),
-            pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, False, id="pre-model"),
+            pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, True, "\t\t0", id="pre-host"),
+            pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, False, "\t\t0", id="pre-model"),
+            pytest.param(
+                _PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, False, "\t0", id="pre-invalid-usage",
+            ),
         ],
     )
     def test_record_against_older_header_file_rewrites_every_prior_row_under_the_current_header(
-        self, fake_projects, tmp_path, monkeypatch, header_line, make_row_line, expect_host_prefix,
+        self, fake_projects, tmp_path, monkeypatch, header_line, make_row_line, expect_host_prefix, expected_tail,
     ):
         """A subsequent --record write against an older-header file rewrites the whole ledger under the
         current header -- no separate migration script needed. Each prior row keeps its original cells in
-        its original order, gaining only the cells its header lacked (host, then an empty model_breakdown)."""
+        its original order, gaining only the cells its header lacked (host, then the empty model_breakdown
+        and/or zero invalid_usage_records defaults)."""
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
@@ -360,7 +368,7 @@ class TestPrCostLedgerLegacyHostColumnMigration:
         written_lines = ledger_path.read_text().splitlines()
         assert written_lines[0] == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         host_prefix = "github.com\t" if expect_host_prefix else ""
-        assert written_lines[1:1 + len(seeded_lines)] == [host_prefix + line + "\t" for line in seeded_lines]
+        assert written_lines[1:1 + len(seeded_lines)] == [host_prefix + line + expected_tail for line in seeded_lines]
         assert len(written_lines) == 1 + len(seeded_lines) + 1
         new_row = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[-1]
         assert new_row["pr_number"] == 1
@@ -370,16 +378,21 @@ class TestPrCostLedgerLegacyHostColumnMigration:
 
 class TestPrCostLedgerFrozenHeaders:
     def test_production_older_headers_equal_the_hand_written_frozen_lines(self):
-        pre_host_line, pre_model_line = _FROZEN_PR_COST_HEADER_LINES
+        pre_host_line, pre_model_line, pre_invalid_usage_line = _FROZEN_PR_COST_HEADER_LINES
         assert pre_host_line == pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE, (
             "the pre-host header is frozen; never re-derive from the live tuple"
         )
         assert "\t".join(pr_cost_ledger._PR_COST_LEDGER_PRE_MODEL_COLUMNS) == pre_model_line, (
             "the pre-model header is frozen; never re-derive from the live tuple"
         )
+        assert "\t".join(pr_cost_ledger._PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS) == pre_invalid_usage_line, (
+            "the pre-invalid_usage_records header is frozen; never re-derive from the live tuple"
+        )
 
-    def test_current_header_is_the_newest_frozen_header_plus_model_breakdown(self):
-        assert _FROZEN_PR_COST_HEADER_LINES[-1] + "\tmodel_breakdown" == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, (
+    def test_current_header_is_the_newest_frozen_header_plus_invalid_usage_records(self):
+        assert (
+            _FROZEN_PR_COST_HEADER_LINES[-1] + "\tinvalid_usage_records" == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        ), (
             "the newest frozen header is frozen; never re-derive from the live tuple. The next column addition"
             " appends the outgoing header to _FROZEN_PR_COST_HEADER_LINES"
         )
@@ -407,6 +420,10 @@ class TestPrCostLedgerFrozenHeaders:
         [
             pytest.param(_PRE_HOST_HEADER_LINE, _PRE_HOST_ROW_LINE, _PRE_HOST_ROW_PARSED, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _PRE_MODEL_ROW_LINE, _PRE_MODEL_ROW_PARSED, id="pre-model"),
+            pytest.param(
+                _PRE_INVALID_USAGE_HEADER_LINE, _PRE_INVALID_USAGE_ROW_LINE, _PRE_INVALID_USAGE_ROW_PARSED,
+                id="pre-invalid-usage",
+            ),
         ],
     )
     def test_literal_row_parses_to_every_column_by_name_with_defaults_filled(self, header_line, row_line, expected_row):
@@ -418,12 +435,18 @@ class TestPrCostLedgerFrozenHeaders:
         "header_line,row_line,expected_row,expected_line",
         [
             pytest.param(
-                _PRE_HOST_HEADER_LINE, _PRE_HOST_ROW_LINE, _PRE_HOST_ROW_PARSED, "github.com\t" + _PRE_HOST_ROW_LINE + "\t",
+                _PRE_HOST_HEADER_LINE, _PRE_HOST_ROW_LINE, _PRE_HOST_ROW_PARSED,
+                "github.com\t" + _PRE_HOST_ROW_LINE + "\t\t0",
                 id="pre-host",
             ),
             pytest.param(
-                _PRE_MODEL_HEADER_LINE, _PRE_MODEL_ROW_LINE, _PRE_MODEL_ROW_PARSED, _PRE_MODEL_ROW_LINE + "\t",
+                _PRE_MODEL_HEADER_LINE, _PRE_MODEL_ROW_LINE, _PRE_MODEL_ROW_PARSED, _PRE_MODEL_ROW_LINE + "\t\t0",
                 id="pre-model",
+            ),
+            pytest.param(
+                _PRE_INVALID_USAGE_HEADER_LINE, _PRE_INVALID_USAGE_ROW_LINE, _PRE_INVALID_USAGE_ROW_PARSED,
+                _PRE_INVALID_USAGE_ROW_LINE + "\t0",
+                id="pre-invalid-usage",
             ),
         ],
     )
@@ -445,6 +468,7 @@ class TestPrCostLedgerFrozenHeaders:
         [
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
+            pytest.param(_PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, id="pre-invalid-usage"),
             pytest.param(
                 pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE,
                 lambda: pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()),
@@ -465,11 +489,13 @@ class TestPrCostLedgerFrozenHeaders:
             pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + shorter_line + "\n")
 
         assert str(wider_info.value) == f"line 2: expected {width} columns, got {width + 1}"
-        trim_suffix = " (if an editor trimmed trailing whitespace, append a tab to this line)"
-        if header_line == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE:
-            assert str(shorter_info.value) == f"line 2: expected {width} columns, got {width - 1}{trim_suffix}"
+        if header_line == _PRE_INVALID_USAGE_HEADER_LINE:
+            suffix = " (if an editor trimmed trailing whitespace, append a tab to this line)"
+        elif header_line == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE:
+            suffix = " (restore the column's correct value instead of a bare tab)"
         else:
-            assert str(shorter_info.value) == f"line 2: expected {width} columns, got {width - 1}"
+            suffix = ""
+        assert str(shorter_info.value) == f"line 2: expected {width} columns, got {width - 1}{suffix}"
 
     def test_header_equal_to_current_plus_an_extra_column_names_the_newer_version_remedy(self):
         header_line = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\tnewer_column"
@@ -626,7 +652,7 @@ class TestDecodeModelBreakdownCell:
             row = pr_cost_ledger._parse_pr_cost_ledger_file_text(text)[0]
 
             assert row["model_breakdown"] == _sample_model_breakdown()
-            rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
+            rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[_ledger_cell_index("model_breakdown")]
             assert rendered_cell == _CANONICAL_SAMPLE_BREAKDOWN_CELL
 
     def test_unknown_but_well_formed_variant_and_class_labels_are_accepted(self):
@@ -702,12 +728,12 @@ class TestFormatModelBreakdownCell:
         """Pins one cell's canonical encoding at cell level, not as a whole row; every other test compares
         cells via json.loads."""
         row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown())
-        rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
+        rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[_ledger_cell_index("model_breakdown")]
         assert rendered_cell == _CANONICAL_SAMPLE_BREAKDOWN_CELL
 
     def test_not_recorded_cell_renders_empty(self):
         rendered_line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row())
-        assert rendered_line.endswith("\tfalse\t")
+        assert rendered_line.endswith("\tfalse\t\t0")
 
     def test_empty_object_cell_renders_as_two_characters_and_round_trips_distinct_from_not_recorded(self):
         row = _sample_pr_cost_row(model_breakdown={})
@@ -715,7 +741,7 @@ class TestFormatModelBreakdownCell:
         line = pr_cost_ledger._format_pr_cost_ledger_row(row)
         parsed_row = pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2)
 
-        assert line.split("\t")[-1] == "{}"
+        assert line.split("\t")[_ledger_cell_index("model_breakdown")] == "{}"
         assert parsed_row["model_breakdown"] == {}
         assert parsed_row["model_breakdown"] is not None
         assert parsed_row == row
@@ -727,7 +753,8 @@ class TestFormatModelBreakdownCell:
         pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows)
 
         data_lines = ledger_path.read_text().splitlines()[1:]
-        assert [line.split("\t")[-1] for line in data_lines] == ["{}", ""]
+        model_breakdown_index = _ledger_cell_index("model_breakdown")
+        assert [line.split("\t")[model_breakdown_index] for line in data_lines] == ["{}", ""]
         parsed_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert [r["model_breakdown"] for r in parsed_rows] == [{}, None]
 
@@ -736,9 +763,9 @@ class TestFormatModelBreakdownCell:
         line = pr_cost_ledger._format_pr_cost_ledger_row(row)
         assert pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2) == row
 
-    def test_pre_model_line_formats_as_its_original_cells_plus_one_empty_cell(self):
+    def test_pre_model_line_formats_as_its_original_cells_plus_the_two_defaulted_ones(self):
         overrides = {"pr_number": 5, "additions": 99}
-        assert _pre_model_row_line(**overrides) + "\t" == pr_cost_ledger._format_pr_cost_ledger_row(
+        assert _pre_model_row_line(**overrides) + "\t\t0" == pr_cost_ledger._format_pr_cost_ledger_row(
             _sample_pr_cost_row(**overrides)
         )
 
@@ -1060,6 +1087,7 @@ class TestWritePrCostLedgerFilePostconditionOnTheUpgradingWrite:
         [
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
+            pytest.param(_PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, id="pre-invalid-usage"),
         ],
     )
     @pytest.mark.parametrize("defect", ["formatter-changes-a-value", "call-drops-a-row", "call-reorders-rows"])
@@ -1103,6 +1131,7 @@ class TestWritePrCostLedgerFilePostconditionCoversEveryPriorRow:
             pytest.param(pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, _current_header_row_line, id="current"),
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
+            pytest.param(_PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, id="pre-invalid-usage"),
         ],
     )
     @pytest.mark.parametrize("defect", ["formatter-changes-the-third-row", "call-changes-the-third-row"])
@@ -1250,6 +1279,7 @@ class TestWritePrCostLedgerFileReturnsWhetherItUpgraded:
         [
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
+            pytest.param(_PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, id="pre-invalid-usage"),
         ],
     )
     def test_returns_true_when_it_replaces_a_file_under_an_older_header(self, tmp_path, header_line, make_row_line):
@@ -1273,6 +1303,7 @@ class TestWritePrCostLedgerFileReturnsWhetherItUpgraded:
         [
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
+            pytest.param(_PRE_INVALID_USAGE_HEADER_LINE, _pre_invalid_usage_row_line, id="pre-invalid-usage"),
         ],
     )
     def test_upgrade_preserves_the_files_mode(self, tmp_path, header_line, make_row_line, mode):
@@ -1423,6 +1454,6 @@ class TestFormatPrCostLedgerRowColumnsParameterRegression:
             "\t2026-01-02T00:00:00Z\thigh\t\tok\t1.500000\t0.250000\t0.100000\t2.000000\t0.500000"
             "\t1000\t200\t100\t500\t300\t0\t0\t5\t2\t0.000000\t0.000000\t1500\t300.000000"
             "\t42\t10\t3\t4\t1\t2\t3\ttrue\ttrue\tfalse"
-            "\t"
+            "\t\t0"
         )
         assert pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()) == golden

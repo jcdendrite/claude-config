@@ -17,6 +17,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [Philosophy](#philosophy)
 - [Docs](#docs)
 - [Quickstart](#quickstart)
+  - [Updating after git pull](#updating-after-git-pull)
 - [Requirements](#requirements)
 - [What this installs](#what-this-installs)
 - [Configuration](#configuration)
@@ -87,14 +88,24 @@ cd ~/claude-config
 ./install.sh
 ```
 
-This symlinks `claude/.claude/` into `$HOME/.claude/`.
+This links the entries of `claude/.claude/` one by one into a real `$HOME/.claude/` directory. See "Updating after git pull" for what a later pull needs.
+
+### Updating after git pull
+
+Edits to existing files, and new files nested under a directory `~/.claude` already links into this checkout, are on disk after `git pull`. A running session may need a restart to read them.
+
+A new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` need `./install.sh`, because `~/.claude` and `~/.local/bin` are real directories.
+
+What only the installer produces needs it too: the `~/.local/bin` copy of `relocate-claude-config`, plugin registrations, migrations, the stow package list in `claude/.claude/scripts/stow-packages.sh`, and any change to `install.sh` itself.
+
+To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`, which assumes no same-named local file of yours sits there. "No such file or directory" means re-run the installer once the change is in the checkout.
 
 ## Requirements
 
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
 - **Shell:** bash 5.2 or newer, first on the PATH Claude Code starts with. Every hook, script, and `install.sh` uses `#!/usr/bin/env bash`. On macOS, `/bin/bash` is 3.2, so run `brew install bash` and put Homebrew's bin directory before `/bin` on PATH. Elsewhere, install bash 5.2 or newer by any means that puts it first on PATH: a distro package, Homebrew on Linux, or a source build. Below the floor, `install.sh` exits naming the bash it found, and every gate denies with "could not source _lib.sh"; `docs/hooks.md` § "Bash version" describes the rest. CI runs bash 5.2.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
-- **`git` version:** `git` >= 2.31, because the worktree hooks, `marker.sh`, and the `review-pr-*` scripts resolve the main tree with `git rev-parse --path-format=absolute`, an option added in git 2.31.0 (its release notes). `install.sh` does not check this.
+- **`git` version:** git 2.43 or newer, first on the PATH Claude Code starts with. 2.43 is the git Ubuntu 24.04 ships, and the floor follows that release, not the oldest git the code runs on. Debian 12 (git 2.39.5) and Ubuntu 22.04 (git 2.34.1) ship an older git; `brew install git` (Homebrew on macOS or Linux) or any other package that puts git 2.43 or newer first on PATH meets the floor. `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read. Nothing checks the version at runtime, so a `git pull` does not re-check it; re-run `./install.sh` from the shell that launches Claude Code to check.
 - **`jq` version:** `review-pr-checkout.sh`'s stacked-base audit needs a `jq` whose `jq -R -s` keeps NUL bytes in raw input. That behavior was verified on jq 1.8.2 only. A `jq` that truncates raw input at NUL makes every stacked PR with a non-empty delta exit 2 there.
 - **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
@@ -110,7 +121,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
-**Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+**Existing users:** `git pull` does not apply the owner-only permissions on `~/.claude` and `~/.claude.json`; only `./install.sh` does. "Updating after git pull" above says when new wrappers need it too. Re-run it once to apply the permissions. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
 Before pulling a change that raises the bash or Claude Code floor, update both from a terminal, restart any running Claude Code session, and pull from a separate terminal. `docs/hooks.md` § "Gate deadlock recovery" gives the full procedure, including what to do if gates deny after a pull.
 
@@ -250,7 +261,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 
 **`skill-fidelity-reviewer`** — a reviewer spawned by `/ready-for-review` (not by the two dispatchers, so it is outside the specialist-roster count above). It checks whether the skills a branch's work invoked were actually executed or silently abbreviated: it reads each invoked skill's body fresh and compares it to the delivered diff, so the observer never shares the deviating session's reasoning. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, because its task is closed-form (it is handed the skill-invocation list, not raw transcripts). Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
 
-**`comment-discipline-reviewer`** — a reviewer spawned by `/code-review`'s Ripple-effect-triage Change-type table (also outside the specialist-roster count above), for diffs that add or modify a comment or durable in-repo doc prose beyond a hygiene tweak. It checks the diff against CLAUDE.md §Durable text from a context the authoring session never touched, enumerating every violating site rather than the one a human happened to point at. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, same closed-form rationale as `skill-fidelity-reviewer`: the task is reading a diff against a fixed rule set, not shelling out. Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
+**`comment-discipline-reviewer`** — a reviewer spawned by `/code-review`'s Ripple-effect-triage Change-type table (also outside the specialist-roster count above), for diffs that add or modify a comment or durable in-repo doc prose beyond a hygiene tweak. It checks the diff against the CLAUDE.md prose rules its agent file names from a context the authoring session never touched, enumerating every violating site rather than the one a human happened to point at. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, same closed-form rationale as `skill-fidelity-reviewer`: the task is reading a diff against a fixed rule set, not shelling out. Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
 
 **`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §11.
 

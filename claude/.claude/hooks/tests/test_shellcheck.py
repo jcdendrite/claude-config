@@ -105,6 +105,29 @@ def _shellcheck_binary() -> str | None:
     return shutil.which("shellcheck")
 
 
+_REQUIREMENTS_DEV = REPO_ROOT / "requirements-dev.txt"
+_SHELLCHECK_PY_PIN_PATTERN = re.compile(r"^shellcheck-py==(\d+\.\d+)\.\*$")
+_SHELLCHECK_VERSION_LINE_PATTERN = re.compile(r"^version:\s*(\S+)", re.MULTILINE)
+
+
+def _pinned_shellcheck_minor_version() -> str:
+    """The "X.Y" prefix of requirements-dev.txt's shellcheck-py==X.Y.* pin."""
+    for line in _REQUIREMENTS_DEV.read_text().splitlines():
+        match = _SHELLCHECK_PY_PIN_PATTERN.match(line.strip())
+        if match:
+            return match.group(1)
+    raise AssertionError(f"{_REQUIREMENTS_DEV} has no shellcheck-py==X.Y.* pin to verify the resolved binary against")
+
+
+def _shellcheck_version(binary: str) -> str:
+    """The version reported by `<binary> --version`'s "version: X.Y.Z" line."""
+    result = subprocess.run([binary, "--version"], capture_output=True, text=True, check=True)
+    match = _SHELLCHECK_VERSION_LINE_PATTERN.search(result.stdout)
+    if match is None:
+        raise AssertionError(f"could not parse a version from `{binary} --version`:\n{result.stdout}")
+    return match.group(1)
+
+
 def _require_shellcheck() -> str:
     """Resolve shellcheck, failing rather than skipping when running in CI.
 
@@ -112,6 +135,10 @@ def _require_shellcheck() -> str:
     install-dev.sh. Skipping in CI is not: a failed shellcheck-py install would
     turn "lint everything" into a silent no-op while the job still reports
     green, which is the same silent-success failure this suite exists to catch.
+
+    Also fails loudly, in CI and locally, when the resolved binary's version does not match
+    requirements-dev.txt's shellcheck-py pin. A PATH-ordering regression (an actions/setup-python
+    bump, a runner-image change) would otherwise lint silently with an unpinned shellcheck.
     """
     binary = _shellcheck_binary()
     if binary is None:
@@ -122,6 +149,14 @@ def _require_shellcheck() -> str:
                 "reports green while checking nothing."
             )
         pytest.skip("shellcheck not installed; run ./install-dev.sh")
+    pinned_minor = _pinned_shellcheck_minor_version()
+    resolved_version = _shellcheck_version(binary)
+    if not resolved_version.startswith(f"{pinned_minor}."):
+        pytest.fail(
+            f"resolved shellcheck ({binary}) reports version {resolved_version}, which does not match the"
+            f" shellcheck-py=={pinned_minor}.* pin in requirements-dev.txt — PATH is resolving a shellcheck binary"
+            " other than the pinned shellcheck-py console script"
+        )
     return binary
 
 
@@ -161,6 +196,63 @@ class TestRequireShellcheck:
         with pytest.raises(BaseException) as outcome:
             _require_shellcheck()
         assert outcome.type is pytest.skip.Exception
+
+    # Catch BaseException and compare the outcome type exactly, as above: a
+    # resolved-but-unpinned binary must fail, not silently lint with it.
+    def test_fails_when_the_resolved_binary_reports_a_version_outside_the_pin(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: "/opt/other/shellcheck")
+        monkeypatch.setattr(sys.modules[__name__], "_pinned_shellcheck_minor_version", lambda: "0.11")
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_version", lambda binary: "0.9.0")
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.fail.Exception
+
+    def test_returns_the_binary_when_its_version_matches_the_pin(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: "/opt/pinned/shellcheck")
+        monkeypatch.setattr(sys.modules[__name__], "_pinned_shellcheck_minor_version", lambda: "0.11")
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_version", lambda binary: "0.11.0")
+        assert _require_shellcheck() == "/opt/pinned/shellcheck"
+
+
+class TestPinnedShellcheckVersion:
+    """`_pinned_shellcheck_minor_version` reads the shellcheck-py pin straight from requirements-dev.txt."""
+
+    def test_parses_the_minor_version_from_a_shellcheck_py_pin_line(self, tmp_path, monkeypatch):
+        fake_requirements = tmp_path / "requirements-dev.txt"
+        fake_requirements.write_text("pytest==8.*\nshellcheck-py==0.11.*\n")
+        monkeypatch.setattr(sys.modules[__name__], "_REQUIREMENTS_DEV", fake_requirements)
+
+        assert _pinned_shellcheck_minor_version() == "0.11"
+
+    def test_raises_when_no_shellcheck_py_pin_line_is_present(self, tmp_path, monkeypatch):
+        fake_requirements = tmp_path / "requirements-dev.txt"
+        fake_requirements.write_text("pytest==8.*\n")
+        monkeypatch.setattr(sys.modules[__name__], "_REQUIREMENTS_DEV", fake_requirements)
+
+        with pytest.raises(AssertionError):
+            _pinned_shellcheck_minor_version()
+
+
+class TestShellcheckVersionParsing:
+    """`_shellcheck_version` parses the "version:" line out of `shellcheck --version`'s multi-line output."""
+
+    def test_parses_the_version_from_multi_line_version_output(self, monkeypatch):
+        output = "ShellCheck - shell script analysis tool\nversion: 0.11.0\nlicense: GPLv3\nwebsite: https://www.shellcheck.net\n"
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=output, stderr=""),
+        )
+
+        assert _shellcheck_version("shellcheck") == "0.11.0"
+
+    def test_raises_when_the_output_has_no_version_line(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="not shellcheck output\n", stderr=""),
+        )
+
+        with pytest.raises(AssertionError):
+            _shellcheck_version("shellcheck")
 
 
 class TestDiscovery:

@@ -26,7 +26,7 @@ fi
 
 script_dir=$(dirname -- "${BASH_SOURCE[0]}")
 if ! common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
-  printf -v rerun_command 'git -C %q rev-parse --git-common-dir' "$script_dir"
+  printf -v rerun_command 'git -C %q rev-parse --path-format=absolute --git-common-dir' "$script_dir"
   fail 127 "git failed for the git common dir of $script_dir; rerun to see why: $rerun_command"
 fi
 

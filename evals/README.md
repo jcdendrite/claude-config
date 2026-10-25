@@ -412,10 +412,10 @@ run matrix live in
 this is a pointer, not a restatement.
 
 ```bash
-# Print the seven-run matrix without launching anything:
+# Print the nine-run matrix without launching anything:
 python evals/measure_subagent_model_resolution.py --list
 
-# Run a single matrix cell (1-7):
+# Run a single matrix cell (1-9):
 python evals/measure_subagent_model_resolution.py --run 1
 
 # Run the full matrix in order (stops if run 1's self-check fails):
@@ -429,6 +429,62 @@ live sessions.
 not reproduce interactive Shift+Tab plan mode's escalation to Opus — see
 [`docs/case-studies/plan-mode-model-resolution.md`](../docs/case-studies/plan-mode-model-resolution.md)
 for the measured discrepancy and what a valid re-verification requires.
+
+## Explore recall gate
+
+`measure_explore_recall.py` is a separate, one-off instrument — not a skill
+eval. It measures `Explore`'s Haiku-vs-Sonnet locate recall and precision
+against a stratified, hand-curated fixture (grep-derivable file-path cases
+and semantic `path:symbol` cases), scores each dispatch's structured JSON
+answer against the case's key, and evaluates the three-term adoption gate
+that decides whether `Explore`'s Haiku pin ships. Full design — the answer
+contract, matching rules, arithmetic, and gate — lives in
+[`.claude/plans/haiku-routing-surfaces.md`](../.claude/plans/haiku-routing-surfaces.md) —
+this is a pointer, not a restatement.
+
+The headless parent launches in its own empty temp project dir, which keeps
+the repo's hooks and CLAUDE.md out of it. That also means the dispatched
+`Explore` subagent has nothing to search unless pointed elsewhere, so a
+live run requires `--repo-dir` naming a clean checkout whose `HEAD` starts
+with the fixture's `pinned_commit` (an abbreviated SHA), validated at
+startup.
+
+```bash
+# Build every dispatch command and prompt without launching anything:
+python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json --dry-run
+
+# Run the gate for real (K=5 samples per case per model by default),
+# writing the full report:
+python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+  --repo-dir /path/to/clean/checkout --json /tmp/results.json
+```
+
+`--keep-artifacts DIR` retains each sample's session and subagent
+transcripts for diagnosis instead of discarding them. `DIR` is refused if
+it resolves inside any worktree of this repository (the main checkout or
+any linked worktree), since copied transcripts carry account-local session
+paths that must never be staged or committed.
+
+`--json`'s report carries the same class of account-local content
+(`repo_dir`'s absolute checkout path, plus each sample's answer text) and
+has no equivalent containment check, so point it outside the repository
+the way the example above does — it must never be staged or committed
+either.
+
+`--cumulative-stop-usd` aborts the whole batch once realized spend crosses
+it (default: `DEFAULT_CUMULATIVE_STOP_USD`). It is checked once per sample
+after that sample completes, so the batch can overshoot it by up to
+`(MAX_ARM_MISMATCH_RETRIES + 1) * budget_cap_usd` before the check blocks
+the next sample from starting.
+
+On an UNCALLABLE verdict, `run_recall_gate` runs one extra batch of
+`UNCALLABLE_K_INCREMENT` additional samples per case per model and
+re-evaluates the gate. `--max-k-raises` caps how many times this can
+happen (default: `DEFAULT_MAX_K_RAISES`); pass `0` to disable it. That
+extra batch still counts against `--cumulative-stop-usd`.
+
+Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
+sessions.
 
 ## Review bench
 

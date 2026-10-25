@@ -354,11 +354,17 @@ class TestArgumentsAndName:
         _assert_refused_output(_run_script(not_a_repo, [_BRANCH]), 1, "no-repo")
 
     @pytest.mark.parametrize(
-        ("missing_lib", "named_in_message"),
-        [(Path("hooks") / "_lib.sh", "hooks/_lib.sh"), (Path("scripts") / "_worktree-lib.sh", "_worktree-lib.sh")],
+        ("missing_lib", "named_in_message", "case_specific_advice"),
+        [
+            # The hooks/_lib.sh guard defers to the runbook; the installer is conditional advice.
+            (Path("hooks") / "_lib.sh", "hooks/_lib.sh", ("Gate deadlock recovery", "only if that runbook says so")),
+            (Path("scripts") / "_worktree-lib.sh", "_worktree-lib.sh", ()),
+        ],
         ids=["hooks-lib-missing", "worktree-lib-missing"],
     )
-    def test_partial_install_missing_a_sibling_lib_is_no_repo(self, tmp_path, missing_lib, named_in_message):
+    def test_partial_install_missing_a_sibling_lib_is_no_repo(
+        self, tmp_path, missing_lib, named_in_message, case_specific_advice
+    ):
         """Each source guard ends on the token line the skill reads, not a free-form message."""
         install_dir = tmp_path / "partial-install"
         claude_dir = _SCRIPT.parent.parent
@@ -385,6 +391,9 @@ class TestArgumentsAndName:
 
         _assert_refused_output(result, 1, "no-repo")
         assert named_in_message in _last_stderr_line(result)
+        assert "Ask the user to run ./install.sh" in _last_stderr_line(result)
+        for advice in case_specific_advice:
+            assert advice in _last_stderr_line(result)
 
 
 # ---------------------------------------------------------------------------
