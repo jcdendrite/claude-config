@@ -565,7 +565,7 @@ variables include:
 - `DISABLE_TELEMETRY` — disable usage telemetry.
 - `CLAUDE_CODE_ENABLE_TELEMETRY` — OpenTelemetry export (off unless set).
 - `DISABLE_ERROR_REPORTING` — disable error reporting to Anthropic.
-- `DISABLE_BUG_COMMAND` — disable the `/bug` command.
+- `DISABLE_FEEDBACK_COMMAND` — set to `1` to disable the `/feedback` command. Claude Code's [env-var reference](https://code.claude.com/docs/en/env-vars) says it also disables `/bug` and `/share`, and also accepts `DISABLE_BUG_COMMAND` as an alias. The overlay allowlist accepts both names.
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` — block non-essential external calls.
 
 Verify exact names against the docs before relying on them — the set
@@ -640,19 +640,43 @@ Windows path under `C:\ProgramData\` is no longer supported.
 These hooks reduce *accidental* exposure. They do not make a machine safe
 to hold PII/PHI or live credentials:
 
-- A non-default `CLAUDE_CONFIG_DIR` profile without a `settings.base.json`
-  gets zero `permissions.deny`/hook enforcement and no diagnostic until it
-  is rendered manually.
-  `install.sh` renders `~/.claude` only, and a new shell renders only a
-  profile that already holds a `settings.base.json`.
+- A non-default `CLAUDE_CONFIG_DIR` profile can run with zero
+  `permissions.deny`/hook enforcement and no diagnostic.
+  Whatever stows claude-config into a profile places its
+  `settings.base.json` there.
+  `install.sh` renders `~/.claude` only. A new shell renders only the profile
+  it resolves; `docs/scripts.md`'s `ensure-settings-render.sh` entry states
+  which.
+  Any other profile is rendered only by a command run for it, either by
+  whatever stows it or by hand; `docs/scripts.md`'s `render-settings.sh`
+  entry covers when to run it.
   `install.sh` warns when its own `CLAUDE_CONFIG_DIR` names another profile
   that holds a `settings.base.json`, and `ensure-settings-render.sh` prints a
   hint when that profile's render fails.
-  A profile without a `settings.base.json`, or one that holds the file but
-  that no new shell inherits and `install.sh` is not run under, gets no
-  diagnostic.
-  `docs/scripts.md`'s `render-settings.sh` entry covers rendering a profile
-  by hand.
+  - Before its first render, a profile whose `settings.json` is a regular
+    file copied from the old tracked `settings.json` keeps that file's
+    `permissions.deny` and hooks. A regular file with other content keeps
+    whatever `permissions.deny` and hooks it carries, possibly none. A profile
+    with no `settings.json` has no deny rules or hooks active. Claude Code's
+    silence for a dangling `settings.json` is confirmed only for
+    `claude doctor` and `claude auto-mode reset`. Interactive startup is
+    untested.
+  - After a `settings.base.json` change, a profile that nothing renders again
+    keeps its previous `permissions.deny` and hooks, again with no diagnostic.
+  - Hooks are registered at user scope in `settings.json`, so no such hook can
+    fail closed when that file is missing, dangling, or lacks base's
+    `permissions.deny` and `hooks`. The requirement on whatever stows a
+    profile is that a render of it exits 0 before the profile is first
+    launched, and that the profile's `settings.json` then carries base's
+    `permissions.deny` and `hooks`. When no render has exited 0, including
+    when the tool skipped the render, the tool exits non-zero.
+  - A launch check in whatever stows claude-config into the profile, such as
+    refusing to start `claude` unless `settings.json` resolves to a regular
+    file whose `permissions.deny` and `hooks` match base's, misses
+    direnv and `CLAUDE_CONFIG_DIR=<dir> claude` launches. Managed settings
+    is the one documented mechanism that applies to a bare `claude`. This
+    repo documents managed settings but does not deploy it; see "Enterprise
+    rollout: managed settings".
 - Every new bash and zsh shell runs `ensure-settings-render.sh` from this
   repo's checkout through the stow symlink, so a commit pulled into the
   checkout executes at the next shell start, with no Claude Code session or
