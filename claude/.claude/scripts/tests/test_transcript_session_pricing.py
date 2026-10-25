@@ -1601,7 +1601,7 @@ class TestOutputContract:
         )
 
     def test_unpriced_models_disclosure_is_a_behavioral_control_not_just_documentation(self, tmp_path):
-        """The doc's disclosure clauses describe a real opt-out gate, not prose a caller could ignore:
+        """The doc's disclosure clauses describe a real opt-out gate, not prose a caller could ignore.
         unpriced_models is populated unless the caller opts out, and opting out leaks no transcript-derived
         text."""
         session = _write_session(

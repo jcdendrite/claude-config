@@ -226,14 +226,13 @@ After a process has printed the usage-drift warning it prints it no more, but ea
   transcript content. Record only `session_index` and the exception class in output you share.
 - `unpriced_models` is the only result field whose strings come from transcript content, and it is empty
   only when the call passed `include_unpriced_model_ids=False`.
-  Its entries are `message.model` values, verbatim.
-  They are untrusted transcript text of any length.
-  A model ID can carry an account-identifying pre-announcement name when the account has early access to
-  an unreleased model.
-  Pass `include_unpriced_model_ids=False` when the caller has nowhere safe to put that text.
-  Also escape entries before rendering.
-  `unpriced_model_count` carries no transcript content and is always populated.
-  Prefer it over `include_unpriced_model_ids=True` wherever only the count is needed.
+  - Its entries are `message.model` values, verbatim, and are untrusted transcript text of any length.
+  - Pass `include_unpriced_model_ids=False` when the caller has nowhere safe to put that text. A model
+    ID can carry an account-identifying pre-announcement name when the account has early access to an
+    unreleased model.
+  - Also escape entries before rendering.
+  - `unpriced_model_count` carries no transcript content and is always populated. Prefer it over
+    `include_unpriced_model_ids=True` wherever only the count is needed.
 
 **Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
 `main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an
