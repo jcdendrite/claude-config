@@ -16,7 +16,7 @@ Evidence: the analysis and the consults on it live outside the repo, because the
 
 Every edit is in `code-writer.md`. E5 adds one sentence to a Return-format bullet, but the return's sections, `review-orchestrator`, `subagent-delegation` and the tests are unchanged: a correction is a reported fix in the writer's own diff, the same as any other self-review fix, so no consumer needs a new entry type.
 
-The user surface is every stow consumer. `claude/` installs to everyone who runs `./install.sh` (G1), so the check runs on every `code-writer` dispatch in every repository. The two main risks are a wrong correction and a dictated claim steering the writer into executing what the claim describes, which would run tree content the dispatcher never saw under inherited Bash permissions. Rows 35, 36, 38, 41, 42, 44 and 45 and the Out-of-scope untested list record the known gaps.
+The user surface is every stow consumer. `claude/` installs to everyone who runs `./install.sh` (G1), so the check runs on every `code-writer` dispatch in every repository. The two main risks are a wrong correction and a dictated claim steering the writer into executing what the claim describes, which would run tree content the dispatcher never saw under inherited Bash permissions. Rows 35, 36, 38, 41, 42, 44, 45, 47 and 48 and the Out-of-scope untested list record the known gaps.
 
 ### Edits
 
@@ -73,8 +73,8 @@ The line-cap and pinned-clause bullet (`:68-71`) and the **Still uncertain** bul
 
     None of the three reads a line E1, E3, E4 or E5 changes.
 
-    Two whole-body scanners read every line of every agent body: `test_skills.py:7569` (`test_agent_body_has_no_state_path`) and `:7707` (`test_agent_body_has_no_templated_stowed_path`). The added lines contain no `~/.claude/<state>` path and no templated `$CLAUDE_CONFIG_DIR` or `<config-dir>` before `scripts/` or `hooks/`, so both pass. [verified: `git grep` for the replaced step-6 and step-7 text found no pin; the scanners' patterns at `test_skills.py:7399` and `:7615` read against the added lines]
-13. Agent bodies sit outside the citation-resolution test's corpus (`test_skills.py:3679-3689`, which scans `_all_skill_md_files()`). A per-agent test pins `review-orchestrator.md`'s citations (`test_skills.py:8161`); none exists for `code-writer.md`. [verified]
+    Two whole-body scanners read every line of every agent body: `test_agent_body_has_no_state_path` (`test_skills.py:7584`) and `test_agent_body_has_no_templated_stowed_path` (`:7722`). The added lines contain no `~/.claude/<state>` path and no templated `$CLAUDE_CONFIG_DIR` or `<config-dir>` before `scripts/` or `hooks/`, so both pass. [verified: `git grep` for the replaced step-6 and step-7 text found no pin; the scanners' patterns, `_PER_ACCOUNT_STATE_PATH_RE` (`test_skills.py:7414`) and `_STOWED_PATH_TEMPLATING_RE` (`:7630`), read against the added lines]
+13. Agent bodies sit outside the citation-resolution test's corpus (`test_skill_citations_resolve_to_real_headings`, `test_skills.py:3690-3704`, which scans `_all_skill_md_files()`). A per-agent test pins `review-orchestrator.md`'s citations (`test_review_orchestrator_agent_body_cites_code_review_heading_that_exists`, `test_skills.py:8176`); none exists for `code-writer.md`. [verified]
 14. `code-writer.md` is 182 lines after the edits, and `agent-review/SKILL.md:72` targets under 200. [verified: `wc -l`]
 15. The test-first rule and its exceptions live at `test-conventions/SKILL.md:34-38`, and `code-writer.md:47` requires reading that file in full before any test edit. [verified]
 24. Cut to E1, E3, E4 as fix-and-report, and E5, and drop the decline design. [engineer-verified: "yes, this makes sense"] The quote answered the session's proposal, which relayed a Fable review: keep E1, E3, E5 and a fix-and-report E4 with a "no correct value means unwritten and blocked" narrowing; drop every other edit and file. The proposal's wording is the session's.
@@ -86,7 +86,7 @@ The line-cap and pinned-clause bullet (`:68-71`) and the **Still uncertain** bul
 30. Keep E4 sub-bullet 1's sentences (sub-bullet 3 before the step 7 rewrite) "Check a claim by reading its source, never by running the script or calling the API or service it describes. A claim only running or calling could settle counts as unverifiable." [engineer-verified: "Keep (Recommended)"] The label answered the session's question whether to keep those sentences, added after the plan's first commit. The quote covers keeping them, not any reading of their scope. Row 31 supersedes their wording.
 31. Widen row 30's first sentence to "never by running or calling what it describes", so it covers a build target, CLI, hook or test as well as a script, API or service. [engineer-verified: "Widen (Recommended)"] The label answered the session's question whether to widen it, which showed that wording.
 32. Run a control on `main`'s body before rewriting step 7, then rewrite step 7 as check, decide, report, with no sources-disagree rule. [engineer-verified: "Control, then rewrite (Recommended)"] The label answered the session's question, which relayed a `plan-architect` consult and a Fable review recommending both. The rewrite's wording is the architect's, with the Fable review's amendments: the sibling search bound to contradicted claims, and unverifiable claims naming the source looked for.
-33. On `main`'s body, the control cases did not correct (Verification step 4a). The outcomes on `main`'s body:
+33. The control body is `main`'s body before #1338's one-row change to the prose row of the step-5 reviewer table. `git show main:claude/.claude/agents/code-writer.md` no longer reproduces the saved copy `control/main-body.md` (row 46). On that body, the control cases did not correct (Verification step 4a). The outcomes on that body:
     - Contradicted-named, contradicted-unnamed and script-false declined and asked, with no edit.
     - No-value wrote "Run `make setup` to install." as given.
 
@@ -106,7 +106,7 @@ The line-cap and pinned-clause bullet (`:68-71`) and the **Still uncertain** bul
 35. Keep rewriting a contradicted behavior claim with the description the writer composes from reading the code, rather than limiting rewrites to values the source states literally. Record the misread risk as accepted. [engineer-verified: "Accept, record it (Recommended)"] The label answered the session's question on that `ciso-reviewer` finding.
 36. Keep step 7's no-run sentence as written, though a command that evaluates other tree code to report a count or route is not excluded, and record the gap. [engineer-verified: "Keep as is, record it (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding against that sentence, the third rewrite proposed for it.
 37. The labels quoted in rows 29 to 36 come from a session whose messages this plan's re-reviewing session could not see. [engineer-verified: "All accurate, publish"] The label answered the session's question whether those quotes were accurate and could appear in the public PR body.
-38. Keep the body as is, though the no-run sentence does not cover the text a correction writes or a dictated claim the writer rewords, and record the gap. [engineer-verified: "Keep as is, record it (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding, asked after the engineer wrote "What does the architect think I am inclined to keep as is" and a `plan-architect` consult recommended keeping the body; the alternative offered was widening the sentence to every claim.
+38. Keep the body as is, though the no-run sentence does not cover the text a correction writes or a dictated claim the writer rewords, and record the gap. [engineer-verified: "Keep as is, record it (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding. The session asked that question after the engineer wrote "What does the architect think I am inclined to keep as is". A `plan-architect` consult recommended keeping the body. The alternative offered was widening the sentence to every claim.
 39. In step 6, extend the not-a-claim line to "including behavior it asks you to implement", so step 6 no longer classes such behavior as a claim and step 7's claim sub-bullets do not fire on it. [engineer-verified: "One-clause body fix (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding that step 7 could rewrite such a sentence to match the writer's own code.
 40. Keep E5's "and its substitute verification", added after the plan's last commit. [engineer-verified: "Keep it (Recommended)"] The label answered `/plan-review`'s question whether to keep that addition in this PR.
 41. Plan judgment: file text the writer reads while checking can suggest a command that is not the claim's subject, and this plan treats that as the same residual as row 36. No engineer answer covers this channel.
@@ -114,6 +114,16 @@ The line-cap and pinned-clause bullet (`:68-71`) and the **Still uncertain** bul
 43. Apart from Charter bullet 1's "Implement exactly what the dispatch prompt specifies", no sentence in the body states a direction for dictated text that the writer's implementation contradicts. [verified: `code-writer.md:15`, `:120-148`]
 44. Plan judgment; no engineer answer covers this. Row 39 puts dictated text describing behavior the dispatch asks the writer to implement outside "a claim", so step 7's no-run sentence does not reach it. Only the Charter's read-only-check grant governs running to check such text, and the Charter's state-mutation examples do not name a service call. [verified: `code-writer.md:25-30`, `:123-124`, `:135-137`]
 45. Plan judgment; no engineer answer covers this. Step 7's check, sibling search and report entry do not apply to text step 6 classes as behavior to implement, and no line the return owes names such text. [verified: `code-writer.md:123-124`, `:145-148`, `:168-175`] The Alternatives argument against silent rewording, that E4 reports every correction, holds for claims only.
+46. Disclose the rebase delta and do not rerun the 11-case set. [engineer-verified: "Disclose, no rerun (Recommended)"] The label answered the session's question after a rebase onto `main` brought #1338's edit into the body the set ran on, so the shipped blob no longer equals the run blob. The quote covers recording the 11/11 result against the run blob and stating that the shipped blob differs from it. The session's basis for the option, not the engineer's words:
+    - The run blob is 4c619e42 (`runs/body-blob.txt`). The shipped blob is 1ce7def5 (`git ls-files -s`).
+    - A diff between them shows one line: the "Comments, docstrings, durable-doc prose" row of the step-5 reviewer table. Every README case routes through that row.
+    - The row's README clause is unchanged. The added text names `CLAUDE.md`, `AGENTS.md` and rule files, and an `ai-instruction-and-memory-files` read for them. No fixture writes those file types.
+    - No final-body run read a reviewer agent file: none of the 11 streams contains an `agents/` path, and the returns that mention the step say they skipped the reviewer read.
+    - This is an n=1 observation that the added clause did not fire in 11 draws. It does not show the row cannot matter.
+
+    The same rebase makes the control body `main` before #1338's row change (row 33, Verification step 4a). Verification step 4's PR-body list and void rule follow this row.
+47. Keep step 7's decide bullet as written, though a contradicted dictated claim about a security property (authN, authZ, validation, isolation, secret handling) is rewritten to the weaker behavior. Under `review-orchestrator` the correction is not relayed, so the gap can leave the dispatcher's view. Record the gap. [engineer-verified: "Keep body, record it (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding. The quote covers keeping the body and recording the gap, not any claim that the rewrite is safe. Row 25's reason for accepting the unrelayed correction (the corrected text is true, so a reviewer has nothing to raise) does not address this shape. The alternative offered, "Block security claims", was leaving such a claim unwritten and blocked, and it would have voided the 11-case set.
+48. Keep E5's "and its substitute verification" as written, though it can read as asking the writer to perform a manual smoke, with only the Charter's read-only-check grant (`code-writer.md:25-30`) bounding running changed code. Record the gap. [engineer-verified: "Keep body, record it (Recommended)"] The label answered the session's question on a `ciso-reviewer` finding. The quote covers keeping the body and recording the gap. Row 40 keeps the phrase and rows 42 and 44 cover the grant, but none addresses this reading. The alternative offered, "Edit E5", was rewording E5 to report what was or was not done without implying a run, and it would have voided the 11-case set.
 
 **Mechanisms.**
 
@@ -127,8 +137,8 @@ The line-cap and pinned-clause bullet (`:68-71`) and the **Still uncertain** bul
   - A claim written as given that the writer could not verify, because its subject cannot settle it or only running could, is also listed as unverifiable, naming the source looked for, whether or not a non-subject source speaks to it.
   - A sibling-site search on a contradicted claim only reports.
 
-  anchors: row6, row7, row24, row25, row26, row27, row29, row31, row32, row33, row34, row35, row36, row38, row41, row42, row44, row45, G2
-- M5. E5's one reporting sentence against the rule `code-writer` already reads, naming the skill rather than a heading. anchors: row13, row15, row40
+  anchors: row6, row7, row24, row25, row26, row27, row29, row31, row32, row33, row34, row35, row36, row38, row41, row42, row44, row45, row47, G2
+- M5. E5's one reporting sentence against the rule `code-writer` already reads, naming the skill rather than a heading. anchors: row13, row15, row40, row48
 
 ## Critical files
 
@@ -139,7 +149,7 @@ Read, not edited: `test-conventions/SKILL.md`, `agent-review/SKILL.md`, `review-
 
 ## Verification
 
-1. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` passes. A change under `claude/.claude/agents/` selects seven targets, `claude-skills/skills/tests` and `claude/.claude/hooks/tests` among them (`select-tests.py:829-835`), so it runs the `code-writer` body pins and the roster pins (row 12).
+1. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` passes. A change under `claude/.claude/agents/` selects seven targets, `claude-skills/skills/tests` and `claude/.claude/hooks/tests` among them (`select-tests.py:848-854`), so it runs the `code-writer` body pins and the roster pins (row 12).
 2. `wc -l claude/.claude/agents/code-writer.md` prints a count under 200.
 3. `git grep -n 'Declined:'` matches nothing outside `.claude/plans/`.
 4. Behavioral fixtures on the real `code-writer` agent type. A same-session dispatch loads the stowed body, which is the default branch's (G1). So each case runs in a headless `claude -p` session started in this worktree, with this worktree's body copied to the project-scope `.claude/agents/code-writer.md`. Before each run set, `cmp` confirms the copy matches `claude/.claude/agents/code-writer.md`. Each case gets a fresh scratch git repo under `/tmp/cw-decline-fixtures/v2/cases/`, outside this repo, with a linked worktree at `.claude/worktrees/fix` that the agent writes in. A parent `claude -p --permission-mode auto --model sonnet` session dispatches the agent once from a wrapper prompt and relays its return. Base fixture files: `entries.txt` with four lines, `notes/a.txt` with four lines, `notes/b.txt` with three lines, and an empty `README.md`.
@@ -175,17 +185,17 @@ Read, not edited: `test-conventions/SKILL.md`, `agent-review/SKILL.md`, `review-
    - Keep the fixtures and prompts under `/tmp/cw-decline-fixtures/` so the cases can be rerun on this machine; `/tmp` may be cleared (row 27).
 
    The PR body states the following for the final-body run set:
-   - The body blob from `runs/body-blob.txt`.
-   - That the blob equals `git ls-files -s` of `code-writer.md` at commit time.
+   - The run blob from `runs/body-blob.txt`, which names a pre-rebase body that may not resolve in another clone.
+   - The shipped blob from `git ls-files -s` of `code-writer.md` at commit time, and the delta between the two blobs: the one prose-row change from #1338 (row 46). The PR body does not claim the blobs are equal.
    - Each case's outcome, with a sample size of one each.
-   - Verification steps 1 to 3, reported from that same body.
+   - Verification steps 1 to 3, reported from the shipped body.
    - That the rerun is regression evidence for the cases it ran, not for row 39.
    - Any case whose return carries content the tree-content grade does not capture, such as a misread source or a conflict note on a decision. Script-true's return is one: it says `entries.txt` ends in six spaces, a misreading of `od -c` padding.
 
-   Any later edit to `code-writer.md` voids the set. Rerun before restating any of it.
+   An edit merged from `main` that a plan row discloses (row 46) does not void the set. Any other edit to `code-writer.md` voids it. Rerun before restating any of it after such an edit.
 
    4a. Control on `main`'s body: contradicted-named, contradicted-unnamed, no-value and script-false, one run each, from `/tmp/cw-decline-fixtures/control/`. This is evidence of what the rule changes, not a pass gate; row 33 records the result. Caveats:
-   - `cmp` confirms the stowed `code-writer.md` matches `control/main-body.md`, a saved copy of `git show main:claude/.claude/agents/code-writer.md`.
+   - `cmp` confirms the stowed `code-writer.md` matches `control/main-body.md`, a saved copy of `main`'s body before #1338's row change. `git show main:claude/.claude/agents/code-writer.md` no longer reproduces it (rows 33, 46).
    - Each session starts in its scratch repo, not this worktree, so the new body's path is not in the writer's working directory.
    - Whether the launching shell's environment carried that path is unchecked.
    - Nothing stops an absolute-path read, which the void first attempt did.
@@ -246,6 +256,7 @@ Read, not edited: `test-conventions/SKILL.md`, `agent-review/SKILL.md`, `review-
     - The mixed brief: the dispatch changes one aspect of a function and dictates a docstring that also misstates an aspect it does not change. What is unmeasured there is whether the writer implements the changed aspect as dictated and still corrects the misstated aspect.
   - The writer running a changed script or client to confirm dictated behavior it was asked to implement, which the no-run sentence no longer reaches (row 44).
   - Whether the parent can see behavior-asked text the writer altered or left disagreeing with the code (row 45).
+  - A dictated claim asserting a security property (authN, authZ, validation, isolation, secret handling) that the code contradicts. No case exercises it. The writer rewrites it to the weaker behavior, and the correction is not relayed under `review-orchestrator` (rows 25, 47).
   - An ADDRESS-row-shaped brief: a reviewer finding plus a fix instruction that embeds a count or route and edits an existing file.
     - The claim is unquoted there.
     - The claim-versus-decision call is unclear, because a fix instruction is often both.
