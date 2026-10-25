@@ -35,9 +35,13 @@ def _environ_without_gh_tokens() -> dict[str, str]:
 
 _GH_CALL_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
 # per-call timeout recommendation, so this is a considered guess generous
-# enough for one REST round trip, not a network SLA citation. It also bounds
-# each whole `gh pr list` call, which may need more than one round trip for up
-# to _PR_COST_GH_PR_LIST_LIMIT results, and the value was not measured against that size.
+# enough for one REST round trip, not a network SLA citation. It does not cover
+# the bulk `gh pr list`, which has _GH_PR_LIST_TIMEOUT_S.
+_GH_PR_LIST_TIMEOUT_S = 90.0  # Operational default, not vendor-specified: one
+# manual run of `gh pr list --state merged --limit 1000` took about 34 s (the
+# item count it returned was not recorded), and 90 s is roughly 2.6 times that
+# for a slower network. The `--state all` call period-cost makes was not
+# measured.
 _PR_COST_RATE_LIMIT_MIN_BACKOFF_S = 60.0  # GitHub REST API docs, "Rate
 # limits for the REST API" -- secondary-rate-limit guidance: wait at least
 # one minute between retries when no Retry-After header is present.
@@ -45,8 +49,9 @@ _PR_COST_RATE_LIMIT_MAX_ATTEMPTS = 5  # Operational default, not vendor-specifie
 # GitHub's rate-limit guidance above bounds the per-retry wait, not how many
 # retries to attempt before giving up on one gh call.
 _PR_COST_RATE_LIMIT_MAX_ELAPSED_S = 15 * 60  # Operational default, not
-# vendor-specified: a per-call ceiling generous enough to ride out one
-# secondary-rate-limit window without letting a single gh call stall the run.
+# vendor-specified: a per-call ceiling on accumulated backoff sleep time,
+# generous enough to ride out one secondary-rate-limit window. It does not bound
+# the time each gh attempt itself runs.
 _PR_COST_GH_PR_LIST_LIMIT = 1000  # gh pr list's own default (30) silently
 # truncates any larger population with no error. This repo's own population
 # is a few hundred merged PRs; 1000 is a generous fixed ceiling, not a
@@ -258,22 +263,25 @@ def _parse_gh_retry_after_seconds(stderr: str) -> float | None:
 
 def _gh_call_with_backoff(
     argv: Sequence[str], *, label: str, command_name: str = "pr-cost", max_attempts: int | None = None,
-    env: Mapping[str, str] | None = None,
+    env: Mapping[str, str] | None = None, timeout_s: float | None = None,
 ) -> tuple[subprocess.CompletedProcess | None, str]:
     """Run one gh call, retrying a rate-limit- or network-shaped failure with
     exponential backoff (starting at _PR_COST_RATE_LIMIT_MIN_BACKOFF_S,
     doubling each attempt, honoring a parsed "retry after" hint from gh's own
     stderr when present) up to `max_attempts` attempts (None reads
     _PR_COST_RATE_LIMIT_MAX_ATTEMPTS at call time) or
-    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
-    one call (attempt/elapsed/backoff are all function-local state), not
-    shared across the run: a --record sweep over many PRs can spend up to
-    that budget on each one in the worst case. An auth-shaped or
+    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S of accumulated backoff sleep time. The
+    time each gh attempt runs is not counted. This budget is local to one call
+    (attempt, elapsed, and backoff are function-local state) and is not shared
+    across the run. A --record sweep over many PRs can therefore spend up to
+    that budget on each PR in the worst case. An auth-shaped or
     GH_HOST-mismatch-shaped failure is never retried: gh auth status already
     ran as a preflight, and a local shell-config mismatch doesn't self-resolve
     by waiting either way. A `max_attempts` below 1 raises ValueError.
-    `command_name` prefixes every message this function prints. `env` is the child's environment; None inherits
-    this process's.
+    `command_name` prefixes every message this function prints. `env` is the
+    child's environment; None inherits this process's. `timeout_s` bounds each
+    attempt's gh process (None reads _GH_CALL_TIMEOUT_S at call time). A
+    timeout counts as a network failure and follows the same attempt limit.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
     with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
@@ -287,6 +295,7 @@ def _gh_call_with_backoff(
     if max_attempts is not None and max_attempts < 1:
         raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
     attempts_allowed = _PR_COST_RATE_LIMIT_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    attempt_timeout_s = _GH_CALL_TIMEOUT_S if timeout_s is None else timeout_s
     attempt = 0
     elapsed = 0.0
     backoff = _PR_COST_RATE_LIMIT_MIN_BACKOFF_S
@@ -294,7 +303,7 @@ def _gh_call_with_backoff(
         stderr = ""
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_GH_CALL_TIMEOUT_S,
+                argv, capture_output=True, text=True, timeout=attempt_timeout_s,
                 encoding="utf-8", errors="replace", env=env,
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -442,13 +451,14 @@ def _gh_pr_list(
     """One bulk `gh pr list` for `repo` in `state` with an explicit --limit, host-qualified (see
     _gh_host_qualified_repo). Returns (payload, "") on success, (None, <degraded status>) when the shared backoff
     gave up, or (None, _GH_PR_LIST_UNPARSEABLE) when gh's stdout is not JSON. Applies no shape check to the payload
-    and prints nothing itself; the backoff prints its own messages under `command_name`. `env` is forwarded to the call."""
+    and prints nothing itself; the backoff prints its own messages under `command_name`. `env` is forwarded to the call.
+    Each attempt is bounded by _GH_PR_LIST_TIMEOUT_S rather than the shorter default."""
     argv = [
         "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, repo), "--state", state,
         "--limit", str(_PR_COST_GH_PR_LIST_LIMIT), "--json", json_fields,
     ]
     proc, degraded = _gh_call_with_backoff(
-        argv, label=label, command_name=command_name, max_attempts=max_attempts, env=env,
+        argv, label=label, command_name=command_name, max_attempts=max_attempts, env=env, timeout_s=_GH_PR_LIST_TIMEOUT_S,
     )
     if degraded:
         return None, degraded

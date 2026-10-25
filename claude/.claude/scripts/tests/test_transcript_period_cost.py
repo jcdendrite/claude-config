@@ -543,7 +543,11 @@ class TestClockWrappers:
         assert before <= result <= after
 
     def test_the_run_deadline_leaves_room_for_one_in_flight_gh_call_under_the_600_second_ceiling(self):
-        assert period_cost._RUN_DEADLINE_S + gh_cli._GH_CALL_TIMEOUT_S < 600
+        foreground_ceiling_s = 600
+        margin_s = 30
+        longest_gh_call_timeout_s = max(gh_cli._GH_CALL_TIMEOUT_S, gh_cli._GH_PR_LIST_TIMEOUT_S)
+
+        assert period_cost._RUN_DEADLINE_S + longest_gh_call_timeout_s + margin_s <= foreground_ceiling_s
 
 
 # ---------------------------------------------------------------------------
@@ -1449,6 +1453,21 @@ class TestStoredGhLoginWorks:
 class TestFetchPrLists:
     _GITHUB = ("github.com", "acme/widgets")
     _ENTERPRISE = ("ghe.example", "acme/tools")
+
+    def test_the_bulk_list_runs_under_the_bulk_list_timeout(self, monkeypatch):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            recorded_kwargs.append(kwargs)
+            return _completed(cmd, stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        sentinel_timeout_s = 123.0
+        monkeypatch.setattr(gh_cli, "_GH_PR_LIST_TIMEOUT_S", sentinel_timeout_s)
+
+        period_cost._fetch_pr_lists([self._GITHUB], deadline=period_cost._RUN_DEADLINE_S)
+
+        assert [kwargs["timeout"] for kwargs in recorded_kwargs] == [sentinel_timeout_s]
 
     def test_a_github_repository_is_listed_directly_with_no_auth_check(self, monkeypatch):
         call_log = _install_fake(
