@@ -1707,13 +1707,13 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """A negative cache_read token count never reaches
-        _build_model_breakdown_cell at all: cost._compute_pr_cost_branch_totals's
+        _build_model_breakdown_cell at all. cost._compute_pr_cost_branch_totals's
         own validate-before-price gate (cost._usage_is_invalid) excludes it
-        upstream, so feature-a's branch ends up with no corpus activity --
-        the same "{}" cell TestPrCostRecordWritesAndReportsTheBreakdown's own
-        test_unpriced_only_branch_records_an_empty_object_cell_distinct_from_not_recorded
-        already pins for a genuinely-empty branch -- rather than a shape-rejected,
-        degraded row."""
+        upstream. feature-a's branch ends up with no corpus activity. Its cell
+        is the same "{}" shape that TestPrCostRecordWritesAndReportsTheBreakdown's
+        own test_unpriced_only_branch_records_an_empty_object_cell_distinct_from_not_recorded
+        already pins for a genuinely-empty branch. That is distinct from a
+        shape-rejected, degraded row."""
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b"))
         _write_jsonl(fake_projects / "sess-0.jsonl", [
             _priced("claude-sonnet-5", input=1_000, cache_read=-5, branch="feature-a"),

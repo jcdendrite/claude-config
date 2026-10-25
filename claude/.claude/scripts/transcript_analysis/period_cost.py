@@ -1,7 +1,7 @@
 """The period-cost command: cmd_period_cost and every helper used only by it -- per-PR and per-review Claude Code
 spend for an inclusive UTC date range across every repository the active account worked in, as Slack mrkdwn.
 
-Imports corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, scope, and session_pricing by module
+Imports corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, and scope by module
 (attribute access, not by name) -- see scope.py's own top-of-file comment for why.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, NoReturn
 
-from transcript_analysis import corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, scope, session_pricing
+from transcript_analysis import corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, scope
 
 _SECONDS_PER_DAY = 86400
 
@@ -536,9 +536,7 @@ def _accumulate_session(
         usage = _record_usage(rec)
         if usage is None:
             continue
-        try:
-            session_pricing._validate_usage_token_fields(usage)
-        except ValueError:
+        if cost._usage_is_invalid(usage):
             totals.invalid_usage_records += 1
             continue
         ts = corpus._parse_ts(rec.get("timestamp"))
