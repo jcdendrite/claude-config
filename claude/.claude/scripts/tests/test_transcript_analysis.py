@@ -167,7 +167,7 @@ class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
     distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
     test_projects_dir_honors_claude_config_dir covers above. Every test here
-    registers _mod.scope.PROJECTS_DIR with monkeypatch before calling main()
+    registers scope.PROJECTS_DIR with monkeypatch before calling main()
     (even when just re-setting it to its current value) so main()'s direct
     `scope.PROJECTS_DIR = ...` reassignment — which bypasses monkeypatch — is
     still restored to its pre-test value at teardown, protecting the rest of
@@ -1156,7 +1156,7 @@ class TestFormatDriftDetected:
 
 
 class TestDedupTurnsByRequestId:
-    """Direct tests for _dedup_turns_by_request_id, the shared turn iterator
+    """Direct tests for pricing.dedup_turns_by_request_id, the shared turn iterator
     cmd_audit_routing, _cost_report, _context_distribution_report,
     _cost_trend_report, and cmd_subagents all apply to their own per-session
     records before their per-record loops -- Claude Code writes one JSONL
@@ -2395,16 +2395,16 @@ class TestIsFreshUserPrompt:
     def test_task_notification_only_record_returns_false(self):
         """GH-1312: a harness-delivered task notification is not the human speaking."""
         rec = _task_notification_msg()
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_human_text_beside_a_task_notification_returns_true(self):
         rec = _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step")
-        assert _mod._is_fresh_user_prompt(rec) is True
+        assert render._is_fresh_user_prompt(rec) is True
 
     def test_unterminated_task_notification_returns_true(self):
         """An envelope with no closing tag is left in place by the strip, so the record stays fresh."""
         rec = _user_msg("<task-notification>\n<summary>no closing tag here")
-        assert _mod._is_fresh_user_prompt(rec) is True
+        assert render._is_fresh_user_prompt(rec) is True
 
     def test_self_quoting_task_notification_returns_true(self):
         """Known limitation: the strip stops at the first closer, so the outer envelope's tail survives as text.
@@ -2416,7 +2416,7 @@ class TestIsFreshUserPrompt:
             "<task-notification><summary>inner</summary></task-notification>"
             "</summary></task-notification>"
         )
-        assert _mod._is_fresh_user_prompt(rec) is True
+        assert render._is_fresh_user_prompt(rec) is True
 
 
 # ---------------------------------------------------------------------------
@@ -2440,7 +2440,7 @@ class TestIsTaskNotification:
         ],
     )
     def test_envelope_only_record_returns_true(self, rec):
-        assert _mod._is_task_notification(rec) is True
+        assert render._is_task_notification(rec) is True
 
     @pytest.mark.parametrize(
         "rec",
@@ -2471,7 +2471,7 @@ class TestIsTaskNotification:
         ],
     )
     def test_record_that_is_not_envelope_only_main_thread_user_text_returns_false(self, rec):
-        assert _mod._is_task_notification(rec) is False
+        assert render._is_task_notification(rec) is False
 
 
 # ---------------------------------------------------------------------------
@@ -2733,11 +2733,6 @@ class TestRootsThreadingSpy:
             header_calls.append(list(roots))
             return real_print(*a, **k)
 
-        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
-        # cost/cost-trend's cmd_* now live in cost.py and call scope._resolve_project_scope/
-        # scope.print_resolved_scope by module attribute access rather than the bare shim
-        # names above -- patched here too so the spy intercepts either call shape.
         monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
         monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
         monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
@@ -2745,7 +2740,7 @@ class TestRootsThreadingSpy:
         cmd_func(args_factory())
 
         assert scope_calls, f"{subcommand}: _resolve_project_scope was never called"
-        assert header_calls, f"{subcommand}: _print_resolved_scope was never called"
+        assert header_calls, f"{subcommand}: print_resolved_scope was never called"
         assert scope_calls[-1] == expected_roots, (
             f"{subcommand}: scope resolution did not receive the multi-root list — {scope_calls[-1]!r}"
         )
@@ -2774,11 +2769,6 @@ class TestRootsThreadingSpy:
             header_calls.append(list(roots))
             return real_print(*a, **k)
 
-        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
-        # cmd_review_trace now lives in review_trace.py and calls scope._resolve_project_scope/
-        # scope.print_resolved_scope by module attribute access rather than the bare shim
-        # names above -- patched here too so the spy intercepts either call shape.
         monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
         monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
 
@@ -2987,7 +2977,7 @@ class TestThisRepoUnionsAcrossRoots:
         roots[0]. Calls _resolve_project_scope directly with a hand-built
         multi-element `roots` list (unreachable through the real CLI today,
         since an explicit top-level --config-dir always collapses `roots` to
-        one element — see _resolve_scan_roots) as a robustness pin against a
+        one element — see scope.resolve_scan_roots) as a robustness pin against a
         future precedence change, per the plan's own framing."""
         root_a = tmp_path / "acct-a"
         root_a.mkdir()
@@ -3834,7 +3824,7 @@ class TestMultiRootFormatOutliers:
     subcommands (judgment-pair writes --out,
     audit-routing-samples is a JSON stream with the header on stderr, cost
     redacts by default) — each reached through the declared-roots file (the
-    default union _resolve_scan_roots builds from declared_transcript_roots()),
+    default union scope.resolve_scan_roots builds from declared_transcript_roots()),
     not cost's own --config-dir extra (already covered by
     TestCostMultiRootRedaction)."""
 
@@ -3902,7 +3892,7 @@ class TestMultiRootFormatOutliers:
 
 
 class TestResolveScanRoots:
-    """_resolve_scan_roots as a directly callable, unit-testable function --
+    """scope.resolve_scan_roots as a directly callable, unit-testable function --
     the explicit top-level --config-dir precedence over a populated
     declared-roots file, and getattr-based tolerance of a hand-built `args`
     Namespace that predates the config_dir attribute entirely (this file's

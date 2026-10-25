@@ -48,18 +48,12 @@ from transcript_analysis.audit_routing import (
 )
 from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
 from transcript_analysis.buckets import (
-    # _add_buckets_subparser is read bare by this file's own build_parser (the buckets
-    # subparser's registration). cmd_buckets is read only via _mod.cmd_buckets from test files.
+    # Read bare by this file's own build_parser (the buckets subparser's registration).
     _add_buckets_subparser,
-    cmd_buckets,  # noqa: F401
 )
 from transcript_analysis.cache_efficiency import (
-    # _add_cache_efficiency_subparser is read bare by this file's own build_parser (the cache-efficiency
-    # subparser's registration). cmd_cache_efficiency and _cache_efficiency_report are read only via
-    # _mod.<name> from test files.
+    # Read bare by this file's own build_parser (the cache-efficiency subparser's registration).
     _add_cache_efficiency_subparser,
-    _cache_efficiency_report,  # noqa: F401
-    cmd_cache_efficiency,  # noqa: F401
 )
 from transcript_analysis.cache_rebuild import (
     # Both names below are read bare by this file's own still-monolithic code:
@@ -71,30 +65,16 @@ from transcript_analysis.cache_rebuild import (
     cmd_cache_rebuild,
 )
 from transcript_analysis.commit_gate import (
-    # _add_commit_gate_subparser is read bare by this file's own build_parser (the commit-gate
-    # subparser's registration). cmd_commit_gate is read only via _mod.cmd_commit_gate from test files.
+    # Read bare by this file's own build_parser (the commit-gate subparser's registration).
     _add_commit_gate_subparser,
-    cmd_commit_gate,  # noqa: F401
 )
 from transcript_analysis.context_composition import (
-    # _add_context_composition_subparser is read bare by this file's own build_parser (the
-    # context-composition subparser's registration). cmd_context_composition is read only via
-    # _mod.cmd_context_composition from test files.
+    # Read bare by this file's own build_parser (the context-composition subparser's registration).
     _add_context_composition_subparser,
-    cmd_context_composition,  # noqa: F401
 )
 from transcript_analysis.context_distribution import (
-    # _add_context_distribution_subparser is read bare by this file's own build_parser (the
-    # context-distribution subparser's registration). cmd_context_distribution is read only via
-    # _mod.cmd_context_distribution from test files.
+    # Read bare by this file's own build_parser (the context-distribution subparser's registration).
     _add_context_distribution_subparser,
-    cmd_context_distribution,  # noqa: F401
-)
-from transcript_analysis.corpus import (
-    SUBAGENT_SUBDIR,  # noqa: F401 -- read only via _mod.SUBAGENT_SUBDIR from test files
-    _parse_ts,  # noqa: F401 -- read only via _mod._parse_ts from test files
-    _read_session_file_partitioned,  # noqa: F401 -- read only via _mod._read_session_file_partitioned from test files
-    iter_sessions,  # noqa: F401 -- read only via _mod.iter_sessions from test files
 )
 from transcript_analysis.cost import (
     # The seven noqa'd names below are read only via _mod.<name> from test files (unit-testing
@@ -117,22 +97,16 @@ from transcript_analysis.cost_ledger import (
     cmd_cost_ledger,
 )
 from transcript_analysis.duration import (
-    # _add_duration_subparser is read bare by this file's own build_parser (the duration
-    # subparser's registration). cmd_duration is read only via _mod.cmd_duration from test files.
+    # Read bare by this file's own build_parser (the duration subparser's registration).
     _add_duration_subparser,
-    cmd_duration,  # noqa: F401
 )
 from transcript_analysis.edit_format import (
-    # _add_edit_format_subparser is read bare by this file's own build_parser (the edit-format
-    # subparser's registration). cmd_edit_format is read only via _mod.cmd_edit_format from test files.
+    # Read bare by this file's own build_parser (the edit-format subparser's registration).
     _add_edit_format_subparser,
-    cmd_edit_format,  # noqa: F401
 )
 from transcript_analysis.fail_seq import (
-    # _add_fail_seq_subparser is read bare by this file's own build_parser (the fail-seq
-    # subparser's registration). cmd_fail_seq is read only via _mod.cmd_fail_seq from test files.
+    # Read bare by this file's own build_parser (the fail-seq subparser's registration).
     _add_fail_seq_subparser,
-    cmd_fail_seq,  # noqa: F401
 )
 from transcript_analysis.friction_count import (
     # Read bare by this file's own build_parser (the friction-count subcommand's registration).
@@ -144,18 +118,12 @@ from transcript_analysis.handoff_signal_response import (
     cmd_handoff_signal_response,
 )
 from transcript_analysis.instrument_authoring import (
-    # _add_instrument_authoring_subparser is read bare by this file's own build_parser (the
-    # instrument-authoring subparser's registration). cmd_instrument_authoring is read only via
-    # _mod.cmd_instrument_authoring from test files.
+    # Read bare by this file's own build_parser (the instrument-authoring subparser's registration).
     _add_instrument_authoring_subparser,
-    cmd_instrument_authoring,  # noqa: F401
 )
 from transcript_analysis.judgment_pair import (
-    # _add_judgment_pair_subparser is read bare by this file's own build_parser (the
-    # judgment-pair subcommand's registration). cmd_judgment_pair is read only via
-    # _mod.cmd_judgment_pair from test files.
+    # Read bare by this file's own build_parser (the judgment-pair subcommand's registration).
     _add_judgment_pair_subparser,
-    cmd_judgment_pair,  # noqa: F401
 )
 from transcript_analysis.period_cost import (
     # Read bare by this file's own build_parser (the period-cost
@@ -181,14 +149,11 @@ from transcript_analysis.pr_cost_export import (
     cmd_pr_cost_export,
 )
 from transcript_analysis.pr_link import (
-    # _add_pr_link_subparser is read bare by this file's own build_parser (the pr-link
-    # subparser's registration). cmd_pr_link is read only via _mod.cmd_pr_link from test files.
+    # Read bare by this file's own build_parser (the pr-link subparser's registration).
     _add_pr_link_subparser,
-    cmd_pr_link,  # noqa: F401
 )
 from transcript_analysis.pricing import (
     _TOKEN_CLASSES,  # noqa: F401 -- read only via _mod._TOKEN_CLASSES from test files
-    _cache_miss_reason,  # noqa: F401 -- read only via _mod._cache_miss_reason from test files
     _cache_write_split,  # noqa: F401 -- read only via _mod._cache_write_split from test files
     _context_at_turn,  # noqa: F401 -- read only via _mod._context_at_turn from test files
     _context_bucket,  # noqa: F401 -- read only via _mod._context_bucket from test files
@@ -196,9 +161,6 @@ from transcript_analysis.pricing import (
     _model_rates,  # noqa: F401 -- read only via _mod._model_rates from test files
     _price_turn,  # noqa: F401 -- read only via _mod._price_turn from test files
 )
-
-# _dedup_turns_by_request_id is read only via _mod._dedup_turns_by_request_id from test files.
-from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id  # noqa: F401
 from transcript_analysis.read_scope import (
     # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
@@ -213,19 +175,11 @@ from transcript_analysis.redaction import (
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
     _build_redact_map,  # noqa: F401 -- read only via _mod._build_redact_map from test files
     _corpus_fingerprint,  # noqa: F401 -- read only via _mod._corpus_fingerprint from test files
-    _project_family,  # noqa: F401 -- read only via _mod._project_family from test files
     _redact_proj_label,  # noqa: F401 -- read only via _mod._redact_proj_label from test files
     _redact_session_id,  # noqa: F401 -- read only via _mod._redact_session_id from test files
-    _repo_tracked_agent_type_names,  # noqa: F401 -- read only via _mod._repo_tracked_agent_type_names from test files
 )
 from transcript_analysis.render import (
-    _content_text,  # noqa: F401 -- read only via _mod._content_text from test files
-    _fam,  # noqa: F401 -- read only via _mod._fam from test files
     _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
-    _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
-    _is_task_notification,  # noqa: F401 -- read only via _mod._is_task_notification from test files
-    _sanitize_table_cell,  # noqa: F401 -- read only via _mod._sanitize_table_cell from test files
-    _strip_task_notifications,  # noqa: F401 -- read only via _mod._strip_task_notifications from test files
 )
 from transcript_analysis.review_rounds import (
     # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
@@ -248,41 +202,21 @@ from transcript_analysis.scope import (
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _add_project_scope_args,
     _iso_date,
-    _iter_scoped_sessions,  # noqa: F401 -- read only via _mod._iter_scoped_sessions from test files
-    _parse_absolute_window_args,  # noqa: F401 -- read only via _mod._parse_absolute_window_args from test files
-    _parse_since_nd_arg,  # noqa: F401 -- read only via _mod._parse_since_nd_arg from test files
     _redaction_ordinals,  # noqa: F401 -- read only via _mod._redaction_ordinals from test files
-    _repo_scoped_project_slugs,  # noqa: F401 -- read only via _mod._repo_scoped_project_slugs from test files
     _resolve_cost_roots,  # noqa: F401 -- read only via _mod._resolve_cost_roots from test files
     _resolve_project_scope,  # noqa: F401 -- read only via _mod._resolve_project_scope from test files
-    _resolved_scope_header,  # noqa: F401 -- read only via _mod._resolved_scope_header from test files
-    _scan_root_transcripts,  # noqa: F401 -- read only via _mod._scan_root_transcripts from test files
 )
-
-# _print_resolved_scope is read only via _mod._print_resolved_scope from test files.
-from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope  # noqa: F401
-
-# _resolve_scan_roots is read only via _mod._resolve_scan_roots from test files.
-from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots  # noqa: F401
 from transcript_analysis.sessions import (
-    # _add_sessions_subparser is read bare by this file's own build_parser (the sessions
-    # subparser's registration). cmd_sessions is read only via _mod.cmd_sessions from test files.
+    # Read bare by this file's own build_parser (the sessions subparser's registration).
     _add_sessions_subparser,
-    cmd_sessions,  # noqa: F401
 )
 from transcript_analysis.skill_invocation import (
-    # _add_skill_invocation_subparser is read bare by this file's own build_parser (the
-    # skill-invocation subcommand's registration). cmd_skill_invocation is read only via
-    # _mod.cmd_skill_invocation from test files.
+    # Read bare by this file's own build_parser (the skill-invocation subcommand's registration).
     _add_skill_invocation_subparser,
-    cmd_skill_invocation,  # noqa: F401
 )
 from transcript_analysis.skill_pair import (
-    # _add_skill_pair_subparser is read bare by this file's own build_parser (the
-    # skill-pair subcommand's registration). cmd_skill_pair is read only via
-    # _mod.cmd_skill_pair from test files.
+    # Read bare by this file's own build_parser (the skill-pair subcommand's registration).
     _add_skill_pair_subparser,
-    cmd_skill_pair,  # noqa: F401
 )
 from transcript_analysis.spend_over_threshold import (
     # Read bare by this file's own build_parser (the spend-over-threshold
@@ -290,10 +224,8 @@ from transcript_analysis.spend_over_threshold import (
     cmd_spend_over_threshold,
 )
 from transcript_analysis.struggle import (
-    # _add_struggle_subparser is read bare by this file's own build_parser (the struggle
-    # subparser's registration). cmd_struggle is read only via _mod.cmd_struggle from test files.
+    # Read bare by this file's own build_parser (the struggle subparser's registration).
     _add_struggle_subparser,
-    cmd_struggle,  # noqa: F401
 )
 from transcript_analysis.subagent_mix import (
     # Both names below are read bare by this file's own still-monolithic build_parser
@@ -312,10 +244,8 @@ from transcript_analysis.turn_shape import (
     _add_turn_shape_subparser,
 )
 from transcript_analysis.user_input import (
-    # _add_user_input_subparser is read bare by this file's own build_parser (the user-input
-    # subparser's registration). cmd_user_input is read only via _mod.cmd_user_input from test files.
+    # Read bare by this file's own build_parser (the user-input subparser's registration).
     _add_user_input_subparser,
-    cmd_user_input,  # noqa: F401
 )
 from transcript_analysis.workstream_cost import (
     # Read bare by this file's own still-monolithic build_parser (the workstream-cost
@@ -1135,7 +1065,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
-        # Every other subcommand's scan roots funnel through _resolve_scan_roots,
+        # Every other subcommand's scan roots funnel through scope.resolve_scan_roots,
         # which reads parsed.config_dir directly for its override branch rather
         # than through this reassignment -- so this can no longer diverge from
         # a subcommand's actual scan roots the way it could before.

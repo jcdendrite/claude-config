@@ -54,17 +54,10 @@ turn-shape-holdout-samples, sessions, context-distribution, context-composition,
 instrument-authoring by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
-The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, `cmd_skill_pair`, `cmd_buckets`,
-`cmd_duration`, `cmd_fail_seq`, `cmd_struggle`, `cmd_user_input`, `cmd_commit_gate`, `cmd_pr_link`, and
-`cmd_sessions`, `cmd_context_distribution`, `cmd_context_composition`, `cmd_cache_efficiency`,
-`cmd_edit_format`, `cmd_instrument_authoring`, and
-`cache_efficiency.py`'s `_cache_efficiency_report`, and those
-bindings exist only for test files, which read them as `_mod.<name>`. Six leaf bindings are test-only
-too, each annotated at its import site: `_dedup_turns_by_request_id`, `_DO_NOT_PUBLISH_BANNER`,
-`_redaction_ordinals`, `_resolve_cost_roots`, `_resolve_project_scope`, and `_print_resolved_scope`.
-`TestRootsThreadingSpy` patches two of them with `raising=True`, so each must stay bound. They are read-only test
-affordances: a test that needs to steer a moved command patches the module whose binding the
-handler reads at call time, not the shim name.
+The shim also binds, each with `# noqa: F401` and annotated at its import site, the package modules and
+leaf names that only shim-loading test files other than `tests/test_transcript_analysis.py` read through
+their copy. A test that needs to steer a command patches the module whose binding the handler reads at call
+time, not the shim.
 
 ## The package
 
@@ -767,8 +760,8 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 ## Tests
 
 Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
-`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which calls into
-the shim. `pricing.py`'s shared per-session step, staleness rule, and canary return values, and
+`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`). `pricing.py`'s
+shared per-session step, staleness rule, and canary return values, and
 `cost.py`'s accumulation of that step's counts, also have direct tests in
 `tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
 its stability promise relies on, live in `tests/test_transcript_session_pricing.py`. Every other package module has its own per-command-group (or, for `denials.py`,
@@ -793,9 +786,10 @@ only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
 only the shim has — `build_parser` or `main` — loads
 its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
-boilerplate `test_transcript_analysis.py` uses. It reaches package modules as
-`_mod.<module>.<name>` (e.g. `_mod.cost._cost_report`, `_mod.redaction._REDACT_MAP_MISS_TOKEN`)
-— the same channel the shim-reimport exception above relies on. `tests/conftest.py` carries the
+boilerplate `test_transcript_analysis.py` uses. `tests/test_transcript_analysis.py` reads only those two
+names through its copy and imports every other package module it reads directly, as above. The other
+shim-loading test files reach package modules through their copy, as `_mod.<module>.<name>` (e.g.
+`_mod.cost._cost_report`) or as a leaf name the shim re-exports. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
@@ -976,5 +970,5 @@ read. The legacy file imports it too, as `from ._cache_efficiency_helpers import
 The edit-format and instrument-authoring commands each have one test file:
 `tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither
 loads the shim: each imports its package modules directly. `_UNCONDITIONAL_HEADER_CASES` in
-`tests/test_transcript_analysis.py` reads `cmd_edit_format` and `cmd_instrument_authoring` through
-the shim.
+`tests/test_transcript_analysis.py` reads `edit_format.cmd_edit_format` and
+`instrument_authoring.cmd_instrument_authoring` directly.
