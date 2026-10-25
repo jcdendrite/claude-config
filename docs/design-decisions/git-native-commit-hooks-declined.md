@@ -123,7 +123,9 @@ Dispatcher, silent loss of consumer hooks, hook-manager matrix, and latency appl
   - git older than 2.31, which ignores `GIT_CONFIG_COUNT`. The README states no git floor.
   - A SessionStart writer that failed or did not run.
   - A subagent or headless session that does not source `CLAUDE_ENV_FILE`. Whether it does is unverified.
-  - A dispatcher directory that stow has not linked yet after `git pull`, or that was later unlinked or deleted. The existing bootstrap message says stow does not relink a new file into an existing directory (`claude/.claude/hooks/require-code-review.sh`, the "could not source _lib.sh" deny). This case also depends on git ignoring a missing hooks directory, which is unprobed (see above).
+  - A dispatcher directory that was unlinked or deleted.
+  - On the unsupported legacy layout, where the hooks directory is a real directory of per-file links, a dispatcher directory that stow has not linked yet after `git pull`. `docs/hooks.md` § "Gate deadlock recovery" covers that layout, and the "could not source _lib.sh" deny in `claude/.claude/hooks/require-code-review.sh` points there.
+  - Both cases also depend on git ignoring a missing hooks directory, which is unprobed (see above).
 - **`GIT_CONFIG_COUNT` namespace.** The count-indexed namespace is shared. A static write clobbers inherited pairs such as `safe.directory` and `url.*.insteadOf`. An appending write must stay idempotent across SessionStart re-fires and per-call re-sourcing.
 - **Installer collisions.** Inside a Claude session, `git config core.hooksPath` would return the dispatcher directory.
   - The pre-commit framework's installer may refuse to run while `core.hooksPath` is set. This is from memory and unprobed.

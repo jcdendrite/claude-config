@@ -9,11 +9,10 @@
 
 set -u
 
-# Stow links a new file into an existing directory only when ./install.sh re-runs.
 # The script runs with `set -u` only, so an unchecked failed `.` would continue.
 # shellcheck source=_review-ledger-lib.sh
 . "$(dirname "$0")/_review-ledger-lib.sh" || {
-  printf 'review-ledger.sh: could not load _review-ledger-lib.sh beside this script. Run ./install.sh from the claude-config checkout to link it, or re-run whichever installer stows the packages that claude/.claude/scripts/stow-packages.sh lists (./install.sh stows into the home directory only).\n' >&2
+  printf 'review-ledger.sh: could not load _review-ledger-lib.sh beside this script. Ask the user to run ./install.sh from the claude-config checkout, or to re-run whichever installer stows the packages that claude/.claude/scripts/stow-packages.sh lists (./install.sh stows into the home directory only).\n' >&2
   exit 2
 }
 

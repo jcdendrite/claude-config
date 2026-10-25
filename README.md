@@ -17,6 +17,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
 - [Philosophy](#philosophy)
 - [Docs](#docs)
 - [Quickstart](#quickstart)
+  - [Updating after git pull](#updating-after-git-pull)
 - [Requirements](#requirements)
 - [What this installs](#what-this-installs)
 - [Configuration](#configuration)
@@ -87,7 +88,17 @@ cd ~/claude-config
 ./install.sh
 ```
 
-This symlinks `claude/.claude/` into `$HOME/.claude/`.
+This links the entries of `claude/.claude/` one by one into a real `$HOME/.claude/` directory. See "Updating after git pull" for what a later pull needs.
+
+### Updating after git pull
+
+Edits to existing files, and new files nested under a directory `~/.claude` already links into this checkout, are on disk after `git pull`. A running session may need a restart to read them.
+
+A new entry directly under `claude/.claude/` and any new wrapper under `claude/.local/bin/` need `./install.sh`, because `~/.claude` and `~/.local/bin` are real directories.
+
+What only the installer produces needs it too: the `~/.local/bin` copy of `relocate-claude-config`, plugin registrations, migrations, the stow package list in `claude/.claude/scripts/stow-packages.sh`, and any change to `install.sh` itself.
+
+To check a new file, run `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/<path under claude/.claude/>"`, which assumes no same-named local file of yours sits there. "No such file or directory" means re-run the installer once the change is in the checkout.
 
 ## Requirements
 
@@ -110,7 +121,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
-**Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+**Existing users:** `git pull` does not apply the owner-only permissions on `~/.claude` and `~/.claude.json`; only `./install.sh` does. "Updating after git pull" above says when new wrappers need it too. Re-run it once to apply the permissions. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
 Before pulling a change that raises the bash or Claude Code floor, update both from a terminal, restart any running Claude Code session, and pull from a separate terminal. `docs/hooks.md` § "Gate deadlock recovery" gives the full procedure, including what to do if gates deny after a pull.
 

@@ -86,6 +86,8 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
+
 # ------------------------------------------------------------------ #
 # Paths                                                               #
 # ------------------------------------------------------------------ #
@@ -2906,6 +2908,21 @@ def _assert_deny_schema(result: subprocess.CompletedProcess, hook_name: str, con
     )
 
 
+# The sentence every runbook-pointer bootstrap deny carries after "could not
+# source _lib.sh.".
+_BOOTSTRAP_RUNBOOK_POINTER_SENTENCE = (
+    f"For the recovery, see {HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text} in the claude-config "
+    "repository; the user, not the agent, runs ./install.sh from the claude-config checkout "
+    "in a separate terminal only if that runbook says so."
+)
+
+# These two gates deny a failed `_lib.sh` source with a bare message and no runbook pointer.
+# Every other main-dir gate's missing-_lib.sh deny must carry the runbook sentence.
+_BARE_BOOTSTRAP_GATE_HOOKS: frozenset[str] = frozenset(
+    {"deny-plan-writer-off-plan-writes.sh", "enforce-marker-script-shape.sh"}
+)
+
+
 @pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
 class TestGateHookBehavior:
     def test_malformed_input_denied(self, hook: Path) -> None:
@@ -2962,6 +2979,12 @@ class TestGateHookBehavior:
             payload = '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
             result = _run_hook_raw(tmp_hook, payload, cwd=Path(tmpdir))
         _assert_blocks(result, hook.name, "missing-lib-sh", "could not source _lib.sh")
+        if hook.parent == _MAIN_HOOKS_DIR and hook.name not in _BARE_BOOTSTRAP_GATE_HOOKS:
+            assert _BOOTSTRAP_RUNBOOK_POINTER_SENTENCE in result.stderr, result.stderr
+            # The deny defers re-install advice to the runbook, so neither phrase
+            # may appear beside the runbook sentence.
+            assert "does not relink" not in result.stderr, result.stderr
+            assert "pick up hook files" not in result.stderr, result.stderr
 
     def test_deny_envelope_schema_shape(self, hook: Path) -> None:
         """Every deny envelope must match the required JSON schema shape.

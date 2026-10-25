@@ -49,7 +49,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment).
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
+  emit_deny "could not source _lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository; the user, not the agent, runs ./install.sh from the claude-config checkout in a separate terminal only if that runbook says so."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
