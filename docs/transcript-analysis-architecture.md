@@ -183,6 +183,11 @@ change. Any other change to the list above is a breaking change, and so is remov
 breaking change updates the pins in `tests/test_transcript_session_pricing.py` and states the break in
 this section.
 
+**Breaking change: `unpriced_models` now defaults to empty.** `price_sessions_by_utc_day` gained the
+keyword-only `include_unpriced_model_ids` parameter (default `False`). A caller that read `unpriced_models`
+for its raw model IDs must now pass `include_unpriced_model_ids=True` to keep seeing them. The new
+`unpriced_model_count` field reports the count either way.
+
 **Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
 path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
 filesystem encoding), and `TypeError` for a wrongly typed argument, before it reads any session.
@@ -217,11 +222,14 @@ After a process has printed the usage-drift warning it prints it no more, but ea
 - `str()` of a `SessionPricingError` names only `session_index`.
 - `__cause__`, `__context__` and tracebacks are outside this guarantee and may carry a path or
   transcript content. Record only `session_index` and the exception class in output you share.
-- `unpriced_models` is the only result field whose strings come from transcript content.
+- `unpriced_models` is the only result field whose strings come from transcript content, and it is empty
+  unless the call passed `include_unpriced_model_ids=True`.
   Its entries are `message.model` values, verbatim.
   They are untrusted transcript text of any length.
   A model ID can carry an account-identifying pre-announcement name, so do not publish the list.
   Also escape entries before rendering.
+  `unpriced_model_count` carries no transcript content and is always populated.
+  Prefer it over `include_unpriced_model_ids=True` wherever only the count is needed.
 
 **Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
 `main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an

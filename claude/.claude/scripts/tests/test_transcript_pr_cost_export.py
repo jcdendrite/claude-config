@@ -191,7 +191,7 @@ class TestRedactPrCostRowForExportColumnShape:
             "rate_stamp", "join_confidence", "status",
             "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
             "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
-            "unpriced_turns", "unpriced_tokens", "turn_count", "session_count",
+            "unpriced_turns", "unpriced_tokens", "invalid_usage_records", "turn_count", "session_count",
             "opus_dollars", "opus_dollar_share_pct", "sum_context_at_turn", "mean_context_at_turn",
             "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
             "distinct_top_level_dirs", "distinct_file_extensions",
@@ -221,7 +221,8 @@ class TestPrCostExportModelBreakdown:
         literal_model_id = "claude-test-literal"
         source_row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(literal_model_id))
         _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
-        source_cell = ledger_path.read_text().splitlines()[1].split("\t")[-1]
+        model_breakdown_index = _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")
+        source_cell = ledger_path.read_text().splitlines()[1].split("\t")[model_breakdown_index]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 

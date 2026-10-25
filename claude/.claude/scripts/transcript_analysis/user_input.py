@@ -113,6 +113,18 @@ def _truncate_prompt_text(text: str, limit: int) -> str:
     return text[:limit] + f"… (truncated, {len(text)} chars total)"
 
 
+def _fence_for_text(text: str) -> str:
+    """A `~`-fence longer than any run of `~` in text, so an embedded run (e.g. a prompt quoting
+    someone else's fenced code block) can't close the fence early. CommonMark closes a fence with
+    any same-character run at least as long as the opening one, so the fence must exceed the
+    longest run already in the text, not just match it."""
+    longest_run = current_run = 0
+    for char in text:
+        current_run = current_run + 1 if char == "~" else 0
+        longest_run = max(longest_run, current_run)
+    return "~" * max(3, longest_run + 1)
+
+
 def cmd_user_input(args: argparse.Namespace) -> None:
     """Per-session fresh user prompts, classified as INITIAL / FOLLOWUP / EXPLICIT_CORRECTION."""
     projects_glob = scope._projects_glob(args)
@@ -313,9 +325,11 @@ def cmd_user_input(args: argparse.Namespace) -> None:
                 )
             else:
                 lines.append(f"**[{prompt['time']} · {classification} · {prompt['model_fam']}]**")
-            lines.append("~~~text")
-            lines.append(_truncate_prompt_text(prompt["text"], truncate_chars))
-            lines.append("~~~")
+            prompt_text = _truncate_prompt_text(prompt["text"], truncate_chars)
+            fence = _fence_for_text(prompt_text)
+            lines.append(f"{fence}text")
+            lines.append(prompt_text)
+            lines.append(fence)
 
     output = "\n".join(lines) + "\n"
 

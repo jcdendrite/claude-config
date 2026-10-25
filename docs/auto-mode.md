@@ -165,14 +165,14 @@ no plan-mode-to-execution model switch the way `opusplan` provides. Every
 subagent that *inherits* the parent model runs on whatever that anchor model
 is.
 
-Subagent model resolution follows this **requested** order — not a
-guarantee outside auto mode's own resolution path either; see "Subagent
-delegation under plan mode" below for the measured mechanism and its
-falsification test.
+Subagent model resolution follows this **requested** order, current since
+Claude Code v2.1.251 — not a guarantee outside auto mode's own resolution
+path either; see "Subagent delegation under plan mode" below for the
+measured mechanism and its falsification test.
 
-1. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
-2. The `model` parameter on the `Agent` dispatch
-3. The `model:` frontmatter in the agent's definition file
+1. The `model` parameter on the `Agent` dispatch
+2. The `model:` frontmatter in the agent's definition file
+3. `CLAUDE_CODE_SUBAGENT_MODEL` environment variable (global override)
 4. The parent / main-conversation model (inherited)
 
 This repo ships a same-named override, `claude/.claude/agents/Explore.md`,
@@ -196,18 +196,22 @@ If the session is anchored to Opus (`claude-auto --model opus`, or a
 manual Shift+Tab into auto mode from an Opus session), dispatching
 `general-purpose` without an explicit model runs that work on Opus — roughly
 5x the per-token cost of Sonnet. Pass an explicit `model: sonnet` on the
-`Agent` dispatch to request Sonnet instead; resolution step 2 is a request
-that competes with step 4, not a guaranteed override.
+`Agent` dispatch to request Sonnet instead; the per-dispatch `model`
+parameter is a request that competes with parent inheritance, not a
+guaranteed override.
 
 Since a session cannot reliably tell whether it is in auto mode, or which
 model that session is anchored to, treat this as unconditional: always
 dispatch `general-purpose` with an explicit `model`. See the Model Routing
 section of the global `CLAUDE.md`.
 
-Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It sits at
-resolution step 1 and overrides *every* subagent's model — including the
-`staff-*` reviewers' Sonnet pin. The per-dispatch `model` parameter is the
-targeted instrument; the env var is a blunt global hammer.
+Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It is the
+env var, which ranks below frontmatter. It leaves an agent with its own
+`model:` frontmatter pin (like the `staff-*` reviewers' Sonnet pin)
+untouched. It still overrides every unpinned built-in's model (like
+`general-purpose`, which otherwise only inherits from the parent). The
+per-dispatch `model` parameter is the targeted instrument; the env var is
+a blunt global hammer that reaches every unpinned dispatch.
 
 ## Subagent delegation under plan mode
 

@@ -2996,6 +2996,7 @@ def _facts(**overrides):
         since_ts=_WINDOW_SINCE_TS,
         earliest_ts=None,
         undated_turns=0,
+        invalid_usage_records=0,
         unpriced_tokens={},
         stale_models=(),
         pricing_integrity=False,
@@ -3181,6 +3182,16 @@ class TestNoticeLines:
         assert "(no model field) (10 tokens)" in line
         assert "(no model field) (20 tokens)" in line
         assert "claude-x (30 tokens)" in line
+
+    def test_excluded_spend_names_the_count_of_turns_with_malformed_usage_token_fields(self):
+        facts = _facts(invalid_usage_records=3)
+
+        (line,) = _lines_for(period_cost._notice_lines(facts), period_cost._NOTICE_EXCLUDED_SPEND)
+
+        assert line == (
+            "usage left out of the figures: 3 usage-bearing turns with malformed usage token fields;"
+            " the figures understate the spend"
+        )
 
     def test_a_synthetic_model_at_zero_tokens_is_not_excluded_spend(self):
         facts = _facts(unpriced_tokens={"<synthetic>": 0})
@@ -3713,6 +3724,16 @@ class TestPeriodStreamTotals:
         assert totals.in_period_priced_dollars == 0
         assert totals.earliest_ts is None
         assert totals.dated_usage_in_period is False
+
+    def test_a_turn_with_a_negative_token_field_is_counted_invalid_and_never_priced(self):
+        rec = _hand_priced(1, 1)
+        rec["message"]["usage"]["output_tokens"] = -1
+
+        totals = _totals([rec])
+
+        assert totals.invalid_usage_records == 1
+        assert totals.in_period_priced_dollars == 0
+        assert dict(totals.unpriced_tokens) == {}
 
     def test_the_earliest_timestamp_is_taken_before_the_period_filter(self):
         records = [_hand_priced(5, 1, day=3), _hand_priced(6, 1, day=15), _hand_priced(7, 1, day=2)]
@@ -4882,6 +4903,26 @@ class TestVariantSelection:
         assert "undated usage-bearing turns: 1" in no_activity
         assert _lines_for(notices, "EXCLUDED SPEND") == [
             "usage left out of the figures: 1 usage-bearing turns with no timestamp; the figures understate the spend"
+        ]
+
+    def test_malformed_usage_token_fields_alone_gives_the_first_variant_the_excluded_note_and_no_activity(
+        self, projects_dir, monkeypatch
+    ):
+        malformed = _hand_priced(1, 1, day=_FIRST_DAY)
+        malformed["message"]["usage"]["output_tokens"] = -1
+        _write_session(projects_dir, "malformed", [malformed])
+        _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        lines = report.splitlines()
+        assert lines[2] == "No Claude Code usage was found in this period in the sessions this report covers."
+        assert "_Note: some usage could not be priced or dated and is left out, so these figures understate the spend._" in lines
+        (no_activity,) = _lines_for(notices, "NO ACTIVITY")
+        assert "transcripts: 1" in no_activity
+        assert _lines_for(notices, "EXCLUDED SPEND") == [
+            "usage left out of the figures: 1 usage-bearing turns with malformed usage token fields;"
+            " the figures understate the spend"
         ]
 
     def test_zero_transcripts_and_transcripts_with_nothing_in_range_give_different_no_activity_text(

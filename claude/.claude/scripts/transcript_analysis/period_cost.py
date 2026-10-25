@@ -1,8 +1,8 @@
 """The period-cost command: cmd_period_cost and every helper used only by it -- per-PR and per-review Claude Code
 spend for an inclusive UTC date range across every repository the active account worked in, as Slack mrkdwn.
 
-Imports corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, and scope by module (attribute
-access, not by name) -- see scope.py's own top-of-file comment for why.
+Imports corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, and scope by module
+(attribute access, not by name) -- see scope.py's own top-of-file comment for why.
 """
 from __future__ import annotations
 
@@ -436,6 +436,7 @@ class _StreamTotals:
     unpriced_tokens: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     priced_models: set[str] = field(default_factory=set)
     undated_turns: int = 0
+    invalid_usage_records: int = 0
     earliest_ts: float | None = None
     dated_usage_in_period: bool = False
     in_period_priced_dollars: float = 0.0
@@ -534,6 +535,9 @@ def _accumulate_session(
             totals.sidechain_turns += 1
         usage = _record_usage(rec)
         if usage is None:
+            continue
+        if cost._usage_is_invalid(usage):
+            totals.invalid_usage_records += 1
             continue
         ts = corpus._parse_ts(rec.get("timestamp"))
         if ts is None:
@@ -1485,6 +1489,7 @@ class _NoticeFacts:
     since_ts: float
     earliest_ts: float | None
     undated_turns: int
+    invalid_usage_records: int
     unpriced_tokens: Mapping[str, int]
     stale_models: tuple[tuple[str, date], ...]
     pricing_integrity: bool
@@ -1676,12 +1681,14 @@ def _notice_lines(facts: _NoticeFacts) -> list[str]:
             " check the account, the period, retention, and any non-zero undated or read-failure count",
         ))
     reportable_models = pricing._reportable_unpriced_model_ids(dict(facts.unpriced_tokens))
-    if reportable_models or facts.undated_turns:
+    if reportable_models or facts.undated_turns or facts.invalid_usage_records:
         excluded = [
             f"{_model_label(model_id)} ({facts.unpriced_tokens[model_id]:,} tokens)" for model_id in sorted(reportable_models)
         ]
         if facts.undated_turns:
             excluded.append(f"{facts.undated_turns} usage-bearing turns with no timestamp")
+        if facts.invalid_usage_records:
+            excluded.append(f"{facts.invalid_usage_records} usage-bearing turns with malformed usage token fields")
         lines.append(_notice(
             _NOTICE_EXCLUDED_SPEND,
             "usage left out of the figures: " + "; ".join(excluded) + "; the figures understate the spend",
@@ -1767,7 +1774,7 @@ def _period_cost_report(
     flags = _ReportFlags(
         coverage_date=_coverage_gap_date(totals.earliest_ts, window.since_ts),
         read_failures=read_failure_floor > 0,
-        excluded_spend=bool(reportable_unpriced) or totals.undated_turns > 0,
+        excluded_spend=bool(reportable_unpriced) or totals.undated_turns > 0 or totals.invalid_usage_records > 0,
         stale_date=min(due for _model, due in stale_models).isoformat() if stale_models else None,
         directories_not_checked=assembly.directories_not_checked,
         dated_usage_in_period=totals.dated_usage_in_period,
@@ -1786,7 +1793,8 @@ def _period_cost_report(
         not_checked_directories=len(assembly.undetermined.not_checked_directory_dollars),
         no_anchor_records=assembly.undetermined.no_anchor_records, unlinked_cents=unlinked_cents, total_cents=total_cents,
         since_ts=window.since_ts, earliest_ts=totals.earliest_ts, undated_turns=totals.undated_turns,
-        unpriced_tokens=totals.unpriced_tokens, stale_models=tuple(stale_models),
+        invalid_usage_records=totals.invalid_usage_records, unpriced_tokens=totals.unpriced_tokens,
+        stale_models=tuple(stale_models),
         pricing_integrity=pricing._format_drift_detected(), fallback_notices=_fallback_notices(totals, resolution),
         unavailable_repositories=tuple(
             _UnavailableRepository(_display_name(identity), identity[0], result.unavailable_kind)

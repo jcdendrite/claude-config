@@ -3155,6 +3155,22 @@ class TestCostShareOnly:
         assert not re.search(r"\d", line)
         self._assert_share_table_structure(out, "token class", "Class")
 
+    def test_malformed_usage_banner_share_only_variant_has_no_turn_count(self, fake_projects, capsys):
+        """A turn tally is outside the pooled-measurement carve-out's closed
+        countable list, the same reason EXCLUDED SPEND's share_only variant
+        above drops its own count."""
+        bad = _priced("claude-sonnet-5", input=1_000_000)
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [bad, _priced("claude-sonnet-5", input=100_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if ln.startswith("MALFORMED USAGE"))
+        assert line == (
+            "MALFORMED USAGE — some turns had non-numeric or negative usage token fields and are"
+            " excluded from the figures below."
+        )
+        assert not re.search(r"\d", line)
+
     # -- Zero-session multi-root scope ---------------------------------------
 
     def test_zero_session_multi_root_scope_renders_clean_caption_and_warnings(self, tmp_path, capsys):
@@ -3520,6 +3536,80 @@ class TestPricingIntegrityBanner:
         assert "STALE PRICING" in out
         assert "PRICING INTEGRITY" in out
         assert "EXCLUDED SPEND" in out
+
+
+class TestMalformedUsageBanner:
+    """MALFORMED USAGE: cost.py's own validate-before-price gate
+    (_usage_is_invalid), mirroring period_cost.py's invalid_usage_records
+    counter -- a negative or non-numeric usage token field must never reach
+    pricing._price_turn's arithmetic."""
+
+    def test_negative_token_field_excluded_from_the_total_and_counted(self, fake_projects, capsys):
+        """A negative output_tokens field is skipped rather than silently
+        producing a wrong dollar total, and the banner reports the count."""
+        bad = _priced("claude-sonnet-5", input=1_000_000)  # $2.00 if (wrongly) priced
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=100_000),  # $0.20
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "MALFORMED USAGE — 1 usage-bearing turns" in out
+        assert _extract_grand_total(out) == pytest.approx(0.20)
+
+    def test_non_numeric_token_field_does_not_crash_the_report(self, fake_projects, capsys):
+        """A non-numeric output_tokens field -- the shape `int(usage.get(...))`
+        inside pricing._price_turn would raise ValueError on -- must not
+        reach that arithmetic at all, so the report completes instead of
+        crashing the whole cost run over one malformed turn."""
+        bad = _priced("claude-sonnet-5", input=1_000_000)
+        bad["message"]["usage"]["output_tokens"] = "not-a-number"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=100_000),  # $0.20
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "MALFORMED USAGE — 1 usage-bearing turns" in out
+        assert _extract_grand_total(out) == pytest.approx(0.20)
+
+    def test_silent_on_clean_corpus(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        assert "MALFORMED USAGE" not in capsys.readouterr().out
+
+    def test_malformed_usage_outside_the_since_window_does_not_fire_the_banner(self, fake_projects, capsys):
+        """A malformed-usage record timestamped outside the --since window is out of scope for this
+        report -- the usage-validity check must run after the since_ts continue, so this record never
+        reaches invalid_usage_records at all (not merely excluded from the printed count)."""
+        old_ts = "2020-01-01T00:00:00.000Z"  # far in the past -- always out-of-window
+        new_ts = "2099-12-31T00:00:00.000Z"  # far in the future -- always in-window
+        bad = _priced("claude-sonnet-5", input=1_000_000, ts=old_ts)
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=100_000, ts=new_ts),  # $0.20, in-window
+        ])
+        _mod._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "MALFORMED USAGE" not in out
+        assert _extract_grand_total(out) == pytest.approx(0.20)
+
+    def test_malformed_usage_outside_the_branch_filter_does_not_fire_the_banner(self, fake_projects, capsys):
+        """A malformed-usage record on a branch --branches excludes is out of scope for this report --
+        the usage-validity check must run after the branch-filter continue, so this record never
+        reaches invalid_usage_records at all."""
+        bad = _priced("claude-sonnet-5", input=1_000_000, branch="feature-a")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=100_000, branch="main"),  # $0.20, in-scope
+        ])
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "MALFORMED USAGE" not in out
+        assert _extract_grand_total(out) == pytest.approx(0.20)
 
 
 class TestCostWorktreeAgentBranchCarryForward:
@@ -4039,6 +4129,21 @@ class TestCostTrend:
         assert row is not None and row["total"] == "2.00"
         # _opus()'s turn: input 50 + output 400 + cache_read 0 = 450 unpriced tokens.
         assert "1 unpriced turns / 450 tokens excluded from priced spend" in out
+
+    def test_negative_token_field_excluded_from_the_week_and_not_mispriced_or_crashing(self, fake_projects, capsys):
+        """A negative output_tokens field must never reach pricing._price_turn's
+        arithmetic -- the turn is excluded from its week's total rather than
+        silently skewing it or raising."""
+        bad = _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=100_000, ts="2026-06-01T11:00:00.000Z"),  # $0.20
+        ])
+        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        out = capsys.readouterr().out
+        row = _extract_cost_trend_row(out, "2026-W23")
+        assert row is not None and row["total"] == "0.20"
 
     def test_multi_record_request_id_group_priced_exactly_once(self, fake_projects, capsys):
         """Three assistant records sharing one requestId (one JSONL record per

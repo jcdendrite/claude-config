@@ -55,6 +55,21 @@ class TestComputeWorkstreamDollars:
         assert agg["total_dollars"] == pytest.approx(2.00)
         assert agg["startup_burn_dollars"] == pytest.approx(0.0)
 
+    def test_malformed_usage_record_is_counted_separately_from_priced_turns(self, fake_projects):
+        """A negative usage token field reaches this branch's own invalid_usage_records count rather than
+        being silently dropped or folded into total_dollars/session_count."""
+        bad = _priced("claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=500_000, branch="feature-a", ts="2026-08-01T10:01:00.000Z"),  # $1.00
+        ])
+
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-a"]
+        assert agg["invalid_usage_records"] == 1
+        assert agg["total_dollars"] == pytest.approx(1.00)
+
     def test_three_sessions_in_reverse_file_path_order_use_timestamp_not_iteration_order(self, fake_projects):
         """iter_sessions yields sessions in file-path sort order, not
         chronological order -- these three files sort sess-1, sess-2, sess-3
@@ -260,6 +275,34 @@ class TestComputeWorkstreamDollars:
         # 6th turn is excluded by the window it filled a slot in.
         assert agg["startup_burn_dollars"] == pytest.approx(5.00)
 
+    def test_non_first_session_invalid_usage_turn_consumes_slot_without_adding_dollars_or_crashing(
+        self, fake_projects,
+    ):
+        """A negative output_tokens field in a non-first session's
+        first-N-turns window must never reach pricing._price_turn's
+        arithmetic -- it is skipped (contributing $0, like an unpriced
+        turn) but still consumes one of until_first_n_turns' slots, the
+        same treatment the unpriced-turn case above gets."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $1.00, first session by time
+        bad = _priced("claude-sonnet-5", input=1_000_000, branch="feature-z", ts="2026-08-02T10:01:00.000Z")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess-2.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:00:00.000Z"),  # $1.00, slot 1
+            bad,  # invalid usage, slot 2 -- contributes $0, not a crash or a negative figure
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-z", ts="2026-08-02T10:02:00.000Z"),  # $2.00, slot 3
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:03:00.000Z"),  # $1.00, slot 4
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:04:00.000Z"),  # $1.00, slot 5
+            # window now full -- 6th turn below is excluded from startup burn.
+            _priced("claude-sonnet-5", input=2_500_000, branch="feature-z", ts="2026-08-02T10:05:00.000Z"),  # $5.00
+        ])
+
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-z"]
+        assert agg["session_count"] == 2
+        assert agg["startup_burn_dollars"] == pytest.approx(5.00)  # 1.00 + 0 + 2.00 + 1.00 + 1.00
+
     def test_empty_corpus_returns_empty_dict(self, fake_projects):
         """No session files at all -- no branch to report, not a KeyError
         or a spurious zero-valued entry."""
@@ -433,9 +476,9 @@ class TestPrintWorkstreamSessionStats:
         # total_dollars = 1.00 + 3.00 + 4.00 = 8.00;
         # startup_burn_dollars = 0 + 2.00 + 3.00 = 5.00; 5/8 = 62.5%.
         workstream = {
-            "branch-a": {"session_count": 1, "total_dollars": 1.00, "startup_burn_dollars": 0.0},
-            "branch-b": {"session_count": 2, "total_dollars": 3.00, "startup_burn_dollars": 2.00},
-            "branch-c": {"session_count": 4, "total_dollars": 4.00, "startup_burn_dollars": 3.00},
+            "branch-a": {"session_count": 1, "total_dollars": 1.00, "startup_burn_dollars": 0.0, "invalid_usage_records": 0},
+            "branch-b": {"session_count": 2, "total_dollars": 3.00, "startup_burn_dollars": 2.00, "invalid_usage_records": 0},
+            "branch-c": {"session_count": 4, "total_dollars": 4.00, "startup_burn_dollars": 3.00, "invalid_usage_records": 0},
         }
         workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out
@@ -443,6 +486,24 @@ class TestPrintWorkstreamSessionStats:
             "Sessions per branch -- mean: 2.33, median: 2.00\n"
             "Startup-burn dollars: $5.00 of $8.00 total branch dollars (62.5%)\n"
         )
+
+    def test_prints_malformed_usage_caveat_summed_across_branches_only_when_nonzero(self, capsys):
+        """Mirrors the unpriced-turns caveat other cost commands print: silent when every branch's
+        invalid_usage_records is 0, and summed across branches (not per-branch) when any is nonzero."""
+        workstream = {
+            "branch-a": {"session_count": 1, "total_dollars": 1.00, "startup_burn_dollars": 0.0, "invalid_usage_records": 2},
+            "branch-b": {"session_count": 2, "total_dollars": 3.00, "startup_burn_dollars": 2.00, "invalid_usage_records": 3},
+        }
+        workstream_cost._print_workstream_session_stats(workstream)
+        out = capsys.readouterr().out
+        assert "  (5 usage-bearing turns excluded for malformed usage, across every branch)" in out
+
+    def test_prints_no_malformed_usage_caveat_when_every_branch_is_zero(self, capsys):
+        workstream = {
+            "branch-a": {"session_count": 1, "total_dollars": 1.00, "startup_burn_dollars": 0.0, "invalid_usage_records": 0},
+        }
+        workstream_cost._print_workstream_session_stats(workstream)
+        assert "malformed usage" not in capsys.readouterr().out
 
     def test_renders_sanely_when_a_branch_has_zero_total_dollars(self, capsys):
         """A branch whose every turn used an unrecognized/synthetic model
@@ -453,8 +514,12 @@ class TestPrintWorkstreamSessionStats:
         # session_counts = [1, 3] -> mean 2.00, median 2.00.
         # total_dollars = 0.00 + 5.00 = 5.00; startup_burn_dollars = 0 + 2.00 = 2.00; 2/5 = 40.0%.
         workstream = {
-            "branch-zero": {"session_count": 1, "total_dollars": 0.0, "startup_burn_dollars": 0.0},
-            "branch-a": {"session_count": 3, "total_dollars": 5.00, "startup_burn_dollars": 2.00},
+            "branch-zero": {
+                "session_count": 1, "total_dollars": 0.0, "startup_burn_dollars": 0.0, "invalid_usage_records": 0,
+            },
+            "branch-a": {
+                "session_count": 3, "total_dollars": 5.00, "startup_burn_dollars": 2.00, "invalid_usage_records": 0,
+            },
         }
         workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out

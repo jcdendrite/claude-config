@@ -309,7 +309,10 @@ class TestResolutionFailures:
         _assert_wrapper_failure(
             result,
             returncode=127,
-            fragments=("git", str(outside_scripts_dir), f"git -C {outside_scripts_dir} rev-parse --git-common-dir"),
+            fragments=(
+                "git", str(outside_scripts_dir),
+                f"git -C {outside_scripts_dir} rev-parse --path-format=absolute --git-common-dir",
+            ),
         )
 
     def test_rerun_command_is_shell_quoted_when_the_script_directory_contains_a_space(
@@ -323,7 +326,9 @@ class TestResolutionFailures:
 
         _assert_wrapper_failure(result, returncode=127, fragments=("git",))
         _, _, rerun_command = result.stderr.strip().partition("rerun to see why: ")
-        assert shlex.split(rerun_command) == ["git", "-C", str(outside_scripts_dir), "rev-parse", "--git-common-dir"]
+        assert shlex.split(rerun_command) == [
+            "git", "-C", str(outside_scripts_dir), "rev-parse", "--path-format=absolute", "--git-common-dir",
+        ]
 
     def test_exits_127_naming_the_main_checkout_when_it_has_no_venv_despite_a_worktree_local_one(
         self, venv_checkout
