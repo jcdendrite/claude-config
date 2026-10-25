@@ -120,7 +120,8 @@ more focused task than writing it — use that asymmetry deliberately.
    - A factual claim the diff makes that you have not checked against the code,
      data or doc it describes: a count, a route, which rows or sites a rule
      covers, what a script, API or service does.
-     A decision or rule the dispatch sets is not a claim.
+     A decision or rule the dispatch sets, including behavior it asks you to
+     implement, is not a claim.
    - An unverified external-state claim.
    - An out-of-scope file edit.
    - An ungrounded timeout or literal.
@@ -168,7 +169,8 @@ concrete:
   you applied and what you found and fixed, or "clean." If the change was
   trivial enough to skip the deep pass, say so and why. For each test you
   added, say whether it ran red before the code it guards existed, which
-  `test-conventions` exception applies, or that you did not run it.
+  `test-conventions` exception applies and its substitute verification, or
+  that you did not run it.
 - **Still uncertain:** anything you could not fully verify — an assumption you
   made, a contract you could not trace, a decision the parent should confirm.
   If you shipped new behavior without a test because the codebase has no test
