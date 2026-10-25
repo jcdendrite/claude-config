@@ -6,7 +6,7 @@ argument-hint: "[PR number or URL]"
 
 Review a pull request, whether authored by someone else or by the operator (the account `gh` runs as): acquire it, audit it for passive-execution risk, check it out (or fetch only its diff, for a restricted PR), delegate the line-level review to `/code-review`, run checks only with confirmation, and post findings only on explicit human approval. This is the reviewer-side mirror of `/respond-pr`. **Self-authored mode** applies when step 1's document carries `selfAuthored: true` (advisory; the post script re-checks). It changes only step 8's post route; every other step runs as written, with the same reviewers and depth.
 
-**Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own, in self-authored mode too: report findings, change nothing, write no completion marker, edit no PR body.** After step 1 and before any reviewer spawns, run the script below, and re-run it before a later spawn if you no longer hold the directory it printed (a re-run prints the same path). In every `findings_path` that `/code-review` or `/plan-review` gives a reviewer, replace the leading `agent-reviews` with the directory it prints, so each file is `<printed directory>/<agent-name>-<suffix>.md` (`REFERENCES.md` § "Why spawned reviewers write findings to a temporary directory"). If the script exits non-zero, leave each `findings_path` as the dispatcher gave it and tell the human once, quoting the script's stderr. `Read` only the path you handed that reviewer. A reviewer that reports a write whose file you cannot `Read`, or reports a path that names a different file, has not reviewed: re-dispatch it once with no `findings_path` and tell the human, naming any path it reported.
+**Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own, in self-authored mode too: report findings, change nothing, write no completion marker, edit no PR body.** After step 1 and before any reviewer spawns, run the script below, and re-run it before a later spawn if you no longer hold the directory it printed (a re-run prints the same path). In every `findings_path` that `/code-review` or `/plan-review` gives a reviewer, replace the leading `agent-reviews` with the directory it prints, so each file is `<printed directory>/<agent-name>-<suffix>.md` (`REFERENCES.md` § "Why spawned reviewers write findings to a temporary directory"). If the script exits non-zero, leave each `findings_path` as the dispatcher gave it and tell the human once, quoting the script's stderr, and say that reviewers may then return findings inline, where the dispatcher sets a token budget, or write them to a file under the `agent-reviews/` directory of the tree you dispatched from. `Read` only the path you handed that reviewer. A reviewer that reports a write whose file you cannot `Read`, or reports a path that names a different file, has not reviewed: re-dispatch it once with no `findings_path` and tell the human, naming any path it reported.
 ```
 ~/.claude/scripts/review-pr-reviewer-findings-dir.sh
 ```
@@ -42,15 +42,14 @@ Re-running this step resets provenance to mode `acquired`, so re-run step 2 befo
 
 ## Step 2 — Checkout or diff-only
 
-Branch on the printed document's `authorAssociation` and cross-repo signal, but the branch is advisory, not authoritative: each script below independently re-derives and enforces its own trust decision, so a wrong choice here is caught, not trusted. Never skip this reasoning on the strength of author standing.
+Branch on the printed document's `authorAssociation` and cross-repo signal, but the branch is advisory, not authoritative: each script below independently re-derives its own file list and `headRefOid`, and the checkout script enforces its own trust decision, so a wrong choice here is caught, not trusted. Never skip this reasoning on the strength of author standing.
 
 **Trusted** (`MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR`, same repo):
 ```
 ~/.claude/scripts/review-pr-checkout.sh <owner>/<repo>#<number>
 ```
-- It re-derives its own file list and `headRefOid`.
-- It refuses unconditionally, naming `review-pr-diff.sh` as the alternative, on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head.
-- It audits the file list before ever fetching the PR's ref. For a base branch other than the default branch, it also audits every path the head changes from the default branch, before creating the worktree.
+- It exits 3 on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head, refusing unconditionally and naming `review-pr-diff.sh` as the alternative.
+- It audits the file list before ever fetching the PR's ref. For a base branch other than the default branch, it also audits every path the head changes from the default branch, before creating the worktree. A stop verdict from either audit also exits 3.
 - It checks out into a linked worktree and rewrites provenance with mode `checkout`. Every run gets its own worktree, including a second run against the same PR. The target repo should list `.claude/worktrees/` in a `.gitignore` (see `REFERENCES.md`).
 - It prints the worktree path, the path of a file holding the PR's three-dot diff against its base, and the base commit (`baseRefOid`) as a full-hex line. It then prints the line `BASE_IS_DEFAULT_BRANCH` only when the PR's base is the default branch.
 
@@ -65,7 +64,6 @@ Read its exit status:
 ```
 There is no checkout and no worktree. The script:
 
-- Re-derives its own file list and `headRefOid`.
 - Writes `gh pr diff`'s own output to a file and prints that file's path. When it fetched the base commit, it then prints that commit (`baseRefOid`) as a full-hex line. It prints the line `BASE_IS_DEFAULT_BRANCH` only when it printed the base commit and the PR's base is the default branch.
 - Reports `review-pr-diff.sh: BASE_UNAVAILABLE <token>` on stderr, and still exits 0, when it could not fetch the base commit. Skip base reads, keep each base-dependent claim open naming the base read that would settle it, and say in step 8, outside the body, that base content was unreadable and why.
 - Rewrites provenance with mode `diff-only`.
@@ -173,6 +171,7 @@ The write mechanically re-checks the prefix, the trailer, balanced `<details>` t
 - Every finding or claim a step 7 pass dropped, downgraded, or moved, with its evidence source.
 - Every body finding that restates or rests on ticket text, naming the ticket.
 - The `AUDIT_FINDING` matched paths as the script printed them (the first 20, each cut at 80 characters), so an omission from the body is visible. For any further match, use Step 1's file list.
+- Every note a reviewer gave, in its findings file or its inline return, that it left findings out, such as lower-severity items omitted for its token budget, quoted with the reviewer's name, by excerpt only, as plain text with control characters stripped, and with any secret value reduced to location-and-type (step 7 item 6).
 - Every `Edit` made after the last consult and not shown at an earlier presentation, each as its verbatim old and new strings, marked as not reviewed by any consult.
 - The non-actionable notes, including findings step 7 moved out of the body as pre-existing and the reason step 3 skipped the plan pass. When step 1's stacked-target question redirected this review here, name every PR the redirects started from, to re-run once a review is posted here. Each may still be refused on other ancestors. When the engineer chose `proceed` over a stack, name each `baseStack.concerns` code (such as `changes-requested`) they proceeded over.
 
