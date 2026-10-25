@@ -55,9 +55,8 @@ instrument-authoring by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 The shim also binds package modules, leaf names, and the stdlib `os` and `tempfile` that shim-loading test
-files read through their copy. Each carries `# noqa: F401` and a comment at its import site naming the reader.
-A test that needs to steer a command patches the module whose binding the handler reads at call time, not the
-shim.
+files read through their copy. A test that needs to steer a command patches the module whose binding the
+handler reads at call time, not the shim.
 
 ## The package
 
@@ -789,7 +788,7 @@ its own independent copy of `transcript-analysis.py` via `spec_from_file_locatio
 boilerplate `test_transcript_analysis.py` uses. `tests/test_transcript_analysis.py` reads only those two
 names through its copy and imports every other package module it reads directly, as above. The other
 shim-loading test files reach package modules through their copy, as `_mod.<module>.<name>` (e.g.
-`_mod.cost._cost_report`) or as a leaf name the shim re-exports. `tests/conftest.py` carries the
+`_mod.cost._print_scan_coverage_table`) or as a leaf name the shim re-exports. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
