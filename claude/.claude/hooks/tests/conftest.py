@@ -462,8 +462,8 @@ def _guard_shell_exec(monkeypatch):
 @pytest.fixture
 def isolated_git_environment(monkeypatch, tmp_path_factory):
     """Keep the contributor's own git configuration out of a test's git calls and hook subprocesses, so an ignore
-    verdict comes from the fixture repository alone. Sets the variables `git_config_isolation_env` returns (see its
-    docstring for the git version floor) and removes every inherited GIT_* variable first. HOME is left alone."""
+    verdict comes from the fixture repository alone. Sets the variables `git_config_isolation_env` returns and removes
+    every inherited GIT_* variable first. HOME is left alone."""
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
     for name, value in git_config_isolation_env(tmp_path_factory.mktemp("xdg-config")).items():

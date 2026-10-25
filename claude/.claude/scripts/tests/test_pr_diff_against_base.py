@@ -1712,7 +1712,7 @@ def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: t
     A fresh TMPDIR lets a test assert the private temp directory is gone; HOME and CLAUDE_CONFIG_DIR keep the opt-in
     credential-file-guard.md lookup off the contributor's real files.
     `git_config_isolation_env` keeps git off the contributor's global config and ignore file, which an inherited
-    XDG_CONFIG_HOME would otherwise select despite the isolated HOME; its docstring holds the git version floor.
+    XDG_CONFIG_HOME would otherwise select despite the isolated HOME.
     """
     env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "DIRENV_"))}
     gh_dir = tmp_path / "gh_shim"

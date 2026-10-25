@@ -3943,7 +3943,7 @@ class TestLibPathIgnoreStatus:
         assert result.stderr == "STATUS=3"
 
     def test_symlinked_agent_reviews_returns_128(self, tmp_path: Path) -> None:
-        """git refuses to look beyond a symbolic link (probe P8 row, git 2.43.0)."""
+        """git check-ignore exits 128 for a path beneath a symbolic link (observed on git 2.43.0)."""
         repo = _init_ignoring_repo(tmp_path / "repo")
         (tmp_path / "elsewhere").mkdir()
         (repo / "agent-reviews").symlink_to(tmp_path / "elsewhere")
@@ -3967,7 +3967,7 @@ class TestLibPathIgnoreStatus:
 
         assert _status_of(result) == 128
 
-    @pytest.mark.parametrize("shim_status", [3, 128])
+    @pytest.mark.parametrize("shim_status", [3, 124, 128, 137, 143])
     def test_the_cap_or_gits_own_status_passes_through_the_function(self, tmp_path: Path, shim_status: int) -> None:
         repo = _init_ignoring_repo(tmp_path / "repo")
         shim_dir = tmp_path / "shim"
@@ -3991,6 +3991,8 @@ class TestLibPathIgnoreStatus:
         assert _status_of(result) == 1
 
     def test_stderr_is_empty_with_timeout_on_path(self, tmp_path: Path) -> None:
+        if not (shutil.which("timeout") or shutil.which("gtimeout")):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         repo = _init_ignoring_repo(tmp_path / "repo")
 
         result = _path_ignore_status(str(repo), "agent-reviews/x.md")

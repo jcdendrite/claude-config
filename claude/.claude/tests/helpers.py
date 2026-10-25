@@ -1458,9 +1458,7 @@ def ignore_agent_reviews(repo: Path) -> None:
 def git_config_isolation_env(config_home: Path) -> dict[str, str]:
     """The variables that keep the contributor's git configuration and default global ignore file out of git's
     verdicts. `config_home` stands in for XDG_CONFIG_HOME, which covers both $XDG_CONFIG_HOME/git/config and
-    $XDG_CONFIG_HOME/git/ignore (read even when no config names it), and the caller creates it.
-    GIT_CONFIG_GLOBAL needs git 2.32 (git's RelNotes/2.32.0), so on the README's git 2.31 floor only ~/.gitconfig
-    stays unisolated. GIT_CONFIG_NOSYSTEM and the XDG_CONFIG_HOME redirect work on 2.31."""
+    $XDG_CONFIG_HOME/git/ignore (read even when no config names it), and the caller creates it."""
     return {
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
