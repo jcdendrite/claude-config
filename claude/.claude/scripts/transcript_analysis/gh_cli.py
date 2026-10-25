@@ -270,17 +270,18 @@ def _gh_call_with_backoff(
     doubling each attempt, honoring a parsed "retry after" hint from gh's own
     stderr when present) up to `max_attempts` attempts (None reads
     _PR_COST_RATE_LIMIT_MAX_ATTEMPTS at call time) or
-    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S of accumulated backoff sleep time (the
-    time each gh attempt runs is not counted) -- a budget local to this one
-    call (attempt/elapsed/backoff are all function-local state), not shared
-    across the run: a --record sweep over many PRs can spend up to that budget
-    on each one in the worst case. An auth-shaped or
+    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S of accumulated backoff sleep time. The
+    time each gh attempt runs is not counted. This budget is local to one call
+    (attempt, elapsed, and backoff are function-local state) and is not shared
+    across the run. A --record sweep over many PRs can therefore spend up to
+    that budget on each PR in the worst case. An auth-shaped or
     GH_HOST-mismatch-shaped failure is never retried: gh auth status already
     ran as a preflight, and a local shell-config mismatch doesn't self-resolve
     by waiting either way. A `max_attempts` below 1 raises ValueError.
-    `command_name` prefixes every message this function prints. `env` is the child's environment; None inherits
-    this process's. `timeout_s` bounds each attempt's gh process (None reads
-    _GH_CALL_TIMEOUT_S at call time); a timeout counts as a network failure and follows the same attempt limit.
+    `command_name` prefixes every message this function prints. `env` is the
+    child's environment; None inherits this process's. `timeout_s` bounds each
+    attempt's gh process (None reads _GH_CALL_TIMEOUT_S at call time). A
+    timeout counts as a network failure and follows the same attempt limit.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
     with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
