@@ -135,7 +135,7 @@ more focused task than writing it — use that asymmetry deliberately.
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
-| Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies) | `comment-discipline-reviewer` |
+| Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies, CLAUDE.md/AGENTS.md, rule files) | `comment-discipline-reviewer`; for `CLAUDE.md`, `AGENTS.md`, or a rule file, also `ai-instruction-and-memory-files` for prose altitude/placement |
 
 ## Return format
 
