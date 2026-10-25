@@ -1888,6 +1888,21 @@ class TestRespondPrEditBoundary:
         )
 
 
+class TestRespondPrDivergencePrecheckFailure:
+    """Pins respond-pr step 3's failure arm.
+
+    The precheck script exits non-zero when it could not run (no default branch, a failed fetch, or a trial
+    merge git could not complete). The skill parses only CONFLICT and CLEAN, so without this arm a failed
+    check would read as neither and the skill would proceed unchecked.
+    """
+
+    def test_step3_aborts_when_the_precheck_exits_non_zero(self):
+        assert (
+            "A non-zero exit means the check did not run: abort the skill and report its stderr cause with the PR number."
+            in _skill_file("respond-pr").read_text()
+        )
+
+
 class TestReadyForReviewBodyFileGuard:
     """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 

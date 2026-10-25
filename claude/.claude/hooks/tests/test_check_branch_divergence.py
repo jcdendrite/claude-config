@@ -269,8 +269,22 @@ class TestCheckBranchDivergence:
         result = _run_hook({}, cwd=repo_behind_conflict)
         assert result.returncode == 0
         ctx = _additional_context(result)
-        assert "Trial merge: CONFLICT in:" in ctx
-        assert "f" in ctx  # the conflicting file
+        assert "Trial merge: CONFLICT in: f" in ctx.splitlines()
+
+    # (f2) behind > 0, trial merge cannot complete → NOT COMPUTED, never CLEAN
+    def test_unrelated_histories_report_not_computed_naming_git_and_readme(self, feature_clone):
+        _git_q(feature_clone, "checkout", "-q", "--orphan", "orphan-feature")
+        (feature_clone / "orphan").write_text("o\n")
+        _git_q(feature_clone, "add", "orphan")
+        _git_q(feature_clone, "commit", "-qm", "orphan work")
+        result = _run_hook({}, cwd=feature_clone)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "commits behind" in ctx
+        assert "Trial merge: NOT COMPUTED" in ctx
+        assert "git version" in ctx
+        assert "README.md" in ctx
+        assert "CLEAN" not in ctx
 
     # (g1) fetch fails + locally-cached origin/main shows behind = 0 → exit 0 silent
     def test_fetch_fail_cached_behind_zero(self, repo_in_sync, tmp_path):

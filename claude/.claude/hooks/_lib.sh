@@ -612,10 +612,10 @@ _lib_repo_root() {
 # directory from any linked worktree (git-worktree(1), "Details").
 # review-pr-checkout.sh, review-pr-finish.sh, and
 # _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
-# git before 2.31 echoes the unknown --path-format flag as an output line and
-# exits 0, so the result is accepted only when it is a single absolute path.
-# Exit 1, empty stdout: not inside a git repository, git is absent, the call
-# timed out, or git is older than 2.31.
+# The result is accepted only when it is a single-line absolute path, which
+# also rejects a failed call's empty output.
+# Exit 1, empty stdout: not inside a git repository, git is absent, or the call
+# timed out.
 _lib_main_repo_root() {
   local common_git_dir root
   common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -1357,6 +1357,47 @@ _lib_default_branch_from_origin_head() {
   printf '%s' "$default_branch"
 }
 
+# _lib_trial_merge_verdict UPSTREAM_REF
+# Print `Trial merge: CLEAN` or `Trial merge: CONFLICT in: <paths>` for merging
+# UPSTREAM_REF into HEAD, one line, paths sorted and joined by `, `.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the verdict line above.
+#   - exit 1, empty stdout: `git merge-tree` could not complete. One stderr line
+#     names its exit status, the running git and README.md's git floor.
+# A merge-tree exit of 1 counts as a conflict only with a tree OID on line 1,
+# because a bad ref also exits 1.
+_lib_trial_merge_verdict() {
+  local upstream_ref="$1"
+  local merge_output merge_status first_line conflict_paths git_version
+  # --no-messages: the messages section prints paths unquoted, so a newline in a path could forge a stage line there.
+  if merge_output=$(git merge-tree --write-tree --no-messages "$upstream_ref" HEAD 2>/dev/null); then
+    merge_status=0
+  else
+    merge_status=$?
+  fi
+  if [ "$merge_status" -eq 0 ]; then
+    printf 'Trial merge: CLEAN\n'
+    return 0
+  fi
+  first_line="${merge_output%%$'\n'*}"
+  if [ "$merge_status" -eq 1 ] && [[ "$first_line" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    # Stage lines read `<mode> <oid> <stage><TAB><path>`; the path may hold spaces.
+    conflict_paths=$(printf '%s\n' "$merge_output" \
+      | awk -F'\t' '$1 ~ /^[0-7]+ [0-9a-f]+ [1-3]$/ { print $2 }' \
+      | sort -u \
+      | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
+    if [ -n "$conflict_paths" ]; then
+      printf 'Trial merge: CONFLICT in: %s\n' "$conflict_paths"
+    else
+      printf 'Trial merge: CONFLICT\n'
+    fi
+    return 0
+  fi
+  git_version=$(git --version 2>/dev/null) || git_version="git version unreadable"
+  printf '%s\n' "_lib_trial_merge_verdict: git merge-tree exited $merge_status (running $git_version); an unsupported git is one cause, see README.md § \"Requirements\"" >&2
+  return 1
+}
+
 # _lib_default_branch_or_guess REPO_ROOT
 # Resolve REPO_ROOT's default branch: first via
 # _lib_default_branch_from_origin_head, then, on its failure, by falling
@@ -1470,7 +1511,7 @@ _lib_git_inprogress_state() {
 #   - exit 0, stdout = a tree OID: an in-progress state was detected, its
 #     OID reached a trusted anchor, and the reference tree was computed.
 #   - exit 1, stdout empty: no in-progress state, or one whose OID reached
-#     no anchor, or a topology/git-version this design computes no base
+#     no anchor, or a topology this design computes no base
 #     for. This is the correct answer, not a degraded one.
 #   - exit 2, stdout empty: undetermined -- a capped git call inside
 #     detection or tree computation timed out, was killed, or its binary
@@ -5015,8 +5056,7 @@ _lib_print_recovery_hint() {
 #     common dir, or `rev-parse --git-dir` exited 128 (not a repository).
 #   - exit 1, empty stdout: unknown -- an empty DIR (no git runs), any other git
 #     status (a fired cap, a missing git, a later call failing), a git dir or
-#     common dir that is not a single-line absolute path (git older than 2.31
-#     echoes --path-format=absolute as output and exits 0), or a linked root that
+#     common dir that is not a single-line absolute path, or a linked root that
 #     fails the allowlist.
 # 128 is also git's status for other fatal errors, so each of these reads as
 # "not linked": a dubious-ownership refusal, a DIR that no longer exists, and a

@@ -427,7 +427,7 @@ fi
 # remote get-url) is unaffected: those correctly hit the shared object/ref/config
 # store from either tree.
 MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
-  echo "review-pr-checkout.sh: could not resolve this repository's main tree root (not inside a git repository, or git older than 2.31, which lacks rev-parse --path-format). Abort with no worktree created." >&2
+  echo "review-pr-checkout.sh: could not resolve this repository's main tree root (not inside a git repository, git is absent, or the call timed out). Abort with no worktree created." >&2
   exit 2
 }
 

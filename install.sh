@@ -88,6 +88,42 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 
 fi
 # INSTALL_TEST_FIXTURE: python-floor-check — end
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under a stubbed `git` on PATH. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: git-floor-check — start
+# README.md § "Requirements" gives the reason for this floor.
+# Compared field by field, because a lexical comparison ranks 2.100 below 2.43.
+GIT_MINIMUM_VERSION="2.43"
+git_version_pattern='^git version ([0-9]{1,9})\.([0-9]{1,9})'
+git_version_status=0
+git_version_output=$(git --version) || git_version_status=$?
+git_resolved_path=$(command -v git) || git_resolved_path=""
+git_floor_problem=""
+if (( git_version_status == 0 )) && [[ "$git_version_output" =~ $git_version_pattern ]]; then
+  IFS=. read -r git_minimum_major git_minimum_minor <<< "$GIT_MINIMUM_VERSION"
+  git_found_major=$((10#${BASH_REMATCH[1]}))
+  git_found_minor=$((10#${BASH_REMATCH[2]}))
+  if (( git_found_major < 10#$git_minimum_major )) ||
+    (( git_found_major == 10#$git_minimum_major && git_found_minor < 10#$git_minimum_minor )); then
+    git_floor_problem="\`git --version\` printed \"$git_version_output\", which is older than the git $GIT_MINIMUM_VERSION this repo requires."
+  fi
+else
+  git_floor_problem="\`git --version\` exited with status $git_version_status and printed \"${git_version_output:-<nothing>}\" on stdout, but the check needs a \`git version X.Y\` line first and exit status 0, so it cannot confirm the git $GIT_MINIMUM_VERSION this repo requires."
+fi
+if [ -n "$git_floor_problem" ]; then
+  {
+    printf '%s\n' "$git_floor_problem"
+    printf 'git resolved on PATH: %s\n' "${git_resolved_path:-none found}"
+    printf '%s\n' \
+      "Install git $GIT_MINIMUM_VERSION or newer and put it first on PATH: \`brew install git\` (Homebrew on macOS or Linux), or a distribution package of $GIT_MINIMUM_VERSION or newer." \
+      "Confirm with \`git --version\`, re-run ./install.sh, and restart Claude Code so its hooks resolve the same git." \
+      "See claude-config's README.md § \"Requirements\"."
+  } >&2
+  exit 1
+fi
+# INSTALL_TEST_FIXTURE: git-floor-check — end
+
 mkdir -p "$HOME/.local/bin"
 # Both target directories are created before stow runs so stow links their
 # contents entry by entry. Without this, stow tree-folds a target that does

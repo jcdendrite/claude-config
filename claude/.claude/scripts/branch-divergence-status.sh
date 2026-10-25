@@ -4,11 +4,11 @@
 # check-branch-divergence.sh's SessionStart hook (default-branch resolution, bounded fetch,
 # behind-count, `git merge-tree --write-tree` trial merge) -- see
 # git-feature-branch-sync/SKILL.md's "Detecting divergence" section for the canonical recipe.
-# Requires git >= 2.38 for `git merge-tree --write-tree`.
 #
 # Exit 0: report printed, regardless of divergence state -- divergence is reported in the
-# text, never signaled via exit code. Exit 1: the default branch could not be resolved or the
-# bounded fetch failed -- a genuine failure, a different class than "divergence exists."
+# text, never signaled via exit code. Exit 1: the default branch could not be resolved, the
+# bounded fetch failed, or the trial merge could not complete -- a genuine failure, a
+# different class than "divergence exists."
 
 set -euo pipefail
 
@@ -68,16 +68,9 @@ if [[ "$BEHIND" == "0" ]]; then
   exit 0
 fi
 
-# Non-zero exit on conflict is expected here, not a script failure -- capture stdout
-# regardless of exit status instead of letting `set -e` abort on a real conflict result.
-TRIAL_OUTPUT=$(git merge-tree --write-tree "origin/$DEFAULT_BRANCH" HEAD 2>/dev/null) || true
-CONFLICT_FILES=$(printf '%s\n' "$TRIAL_OUTPUT" \
-  | awk '/^[0-9]+ /{print $NF}' \
-  | sort -u \
-  | paste -sd', ' -)
-
-if [[ -n "$CONFLICT_FILES" ]]; then
-  echo "Trial merge: CONFLICT in: $CONFLICT_FILES"
+if verdict=$(_lib_trial_merge_verdict "origin/$DEFAULT_BRANCH"); then
+  echo "$verdict"
 else
-  echo "Trial merge: CLEAN"
+  echo "$SCRIPT_NAME: trial merge of origin/$DEFAULT_BRANCH into HEAD could not complete" >&2
+  exit 1
 fi
