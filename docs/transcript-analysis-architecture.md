@@ -54,10 +54,10 @@ turn-shape-holdout-samples, sessions, context-distribution, context-composition,
 instrument-authoring by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
-The shim also binds, each with `# noqa: F401` and annotated at its import site, the package modules, leaf
-names, and the stdlib `os` and `tempfile` that shim-loading test files read through their copy but the
-shim's own code does not. A test that needs to steer a command patches the module whose binding the handler reads at call
-time, not the shim.
+The shim also binds package modules, leaf names, and the stdlib `os` and `tempfile` that shim-loading test
+files read through their copy. Each carries `# noqa: F401` and a comment at its import site naming the reader.
+A test that needs to steer a command patches the module whose binding the handler reads at call time, not the
+shim.
 
 ## The package
 
