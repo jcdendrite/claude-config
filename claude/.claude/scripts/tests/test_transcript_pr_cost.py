@@ -173,6 +173,25 @@ class TestComputePrCostBranchTotals:
         assert agg["unpriced_tokens"] == 1_000_000
         assert sum(agg["dollars"].values()) == pytest.approx(0.0)
 
+    def test_negative_token_field_counted_invalid_not_mispriced_or_crashing(self, fake_projects):
+        """A negative output_tokens field is counted in invalid_usage_records
+        and contributes nothing to dollars/tokens/turn_count -- it must
+        never reach pricing._price_turn's arithmetic (which would otherwise
+        either crash on a non-numeric field or silently produce a wrong,
+        e.g. negative, dollar figure)."""
+        bad = _priced("claude-sonnet-5", input=1_000_000, branch="feature-a")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [bad])
+
+        session_iter, _scope = scope._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
+        agg = branch_totals["feature-a"]
+        assert agg["invalid_usage_records"] == 1
+        assert agg["turn_count"] == 0
+        assert sum(agg["dollars"].values()) == pytest.approx(0.0)
+
     def test_per_class_token_totals_accumulate_correctly(self, fake_projects):
         """agg["tokens"] accumulates each _TOKEN_CLASSES key from
         _token_counts(usage) correctly -- distinct values per class, not
@@ -519,6 +538,43 @@ class TestPrCostReportOrchestration:
         assert row["input_usd"] == pytest.approx(0.0)
         assert row["unpriced_turns"] == 0
         assert "no matching" not in capsys.readouterr().err
+
+    def test_malformed_usage_record_reaches_the_persisted_ledger_row(self, fake_projects, tmp_path, monkeypatch):
+        """invalid_usage_records reaches the ledger row _new_pr_cost_row returns -- the same propagation
+        path unpriced_turns already has."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        bad = _priced("claude-sonnet-5", input=1_000_000, branch="feature-a")
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            bad,
+            _priced("claude-sonnet-5", input=500_000, branch="feature-a"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert rows[0]["invalid_usage_records"] == 1
+
+    def test_malformed_unbranched_usage_record_is_named_in_the_stderr_diagnostic(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """invalid_usage_records reaches the unbranched_agg stderr line alongside the existing
+        dollars/turn_count fields."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        bad = _priced("claude-sonnet-5", input=1_000_000)
+        bad["gitBranch"] = None  # unbranched
+        bad["message"]["usage"]["output_tokens"] = -1
+        _write_jsonl(fake_projects / "sess.jsonl", [bad])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert "1 further turns excluded for malformed usage" in capsys.readouterr().err
 
     def test_renamed_branch_mismatch_warns_but_still_writes_zero_valued_row(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -1647,22 +1703,32 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         assert _REJECTED_MARKER not in captured.err + captured.out
         _assert_no_markers(captured)
 
-    def test_real_decoder_rejection_from_a_negative_token_count_degrades_instead_of_aborting_the_run(
+    def test_negative_token_count_is_excluded_before_pricing_so_no_breakdown_degrade_is_needed(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
+        """A negative cache_read token count never reaches
+        _build_model_breakdown_cell at all: cost._compute_pr_cost_branch_totals's
+        own validate-before-price gate (cost._usage_is_invalid) excludes it
+        upstream, so feature-a's branch ends up with no corpus activity --
+        the same "{}" cell TestPrCostRecordWritesAndReportsTheBreakdown's own
+        test_unpriced_only_branch_records_an_empty_object_cell_distinct_from_not_recorded
+        already pins for a genuinely-empty branch -- rather than a shape-rejected,
+        degraded row."""
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b"))
         _write_jsonl(fake_projects / "sess-0.jsonl", [
             _priced("claude-sonnet-5", input=1_000, cache_read=-5, branch="feature-a"),
         ])
 
-        with pytest.raises(SystemExit) as exc_info:
-            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
-        assert exc_info.value.code == 1
         rows = _ledger_rows(ledger_path)
-        assert [(r["pr_number"], r["model_breakdown"] is None) for r in rows] == [(1, True), (2, False)]
+        # Neither row is None (degraded/unrecorded); PR #1's feature-a branch has no
+        # surviving activity at all once the invalid record is excluded, so its cell
+        # is the empty-but-recorded "{}" shape, distinct from PR #2's real breakdown.
+        assert [(r["pr_number"], r["model_breakdown"] is None) for r in rows] == [(1, False), (2, False)]
+        assert next(r for r in rows if r["pr_number"] == 1)["model_breakdown"] == {}
         captured = capsys.readouterr()
-        assert _per_pr_degrade_line(1, rule="shape") in captured.err.splitlines()
+        assert _PER_PR_DEGRADE_STEM not in captured.err
         _assert_no_markers(captured)
 
     def test_cell_construction_defect_aborts_the_run_and_leaves_the_seeded_ledger_unchanged(
@@ -1921,7 +1987,8 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
 
         pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
-        assert ledger_path.read_text().splitlines()[1].split("\t")[-1] == "{}"
+        model_breakdown_index = pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")
+        assert ledger_path.read_text().splitlines()[1].split("\t")[model_breakdown_index] == "{}"
         recorded_row = _ledger_rows(ledger_path)[0]
         assert recorded_row["model_breakdown"] == {}
         assert recorded_row["model_breakdown"] is not None
@@ -1996,16 +2063,19 @@ def _run_read_record_and_export(fake_projects, tmp_path, capsys, export_name: st
 
 class TestPrCostPrescribedHandEdits:
     @staticmethod
-    def _current_line_with_cell(cell: str) -> str:
+    def _current_line_with_cell(column: str, cell: str) -> str:
         cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number=50)).split("\t")
-        cells[-1] = cell
+        cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = cell
         return "\t".join(cells)
 
     @pytest.mark.parametrize(
         "broken_cell_or_tail,expected_fragments",
         [
             pytest.param(f"{_REJECTED_MARKER} not json", ("line 2", "model_breakdown"), id="corrupt-populated-cell"),
-            pytest.param(None, ("line 2", "append a tab to this line"), id="editor-stripped-trailing-tab"),
+            pytest.param(
+                None, ("line 2", "restore the column's correct value instead of a bare tab"),
+                id="editor-stripped-trailing-tab",
+            ),
         ],
     )
     def test_each_mode_refuses_the_broken_ledger_unchanged_and_accepts_it_after_the_prescribed_edit(
@@ -2014,11 +2084,14 @@ class TestPrCostPrescribedHandEdits:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         header = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         if broken_cell_or_tail is None:
-            broken_line = self._current_line_with_cell("")[:-1]  # the editor stripped the trailing tab
-            fixed_line = broken_line + "\t"
+            # invalid_usage_records (the current header's own trailing column) has no legitimate blank
+            # state, unlike model_breakdown -- blanked here purely as the mechanical vehicle to reproduce
+            # "one cell short", then fixed with its real default rather than a bare restored tab.
+            broken_line = self._current_line_with_cell("invalid_usage_records", "")[:-1]
+            fixed_line = self._current_line_with_cell("invalid_usage_records", "0")
         else:
-            broken_line = self._current_line_with_cell(broken_cell_or_tail)
-            fixed_line = self._current_line_with_cell("")  # blank the cell, keeping its tab
+            broken_line = self._current_line_with_cell("model_breakdown", broken_cell_or_tail)
+            fixed_line = self._current_line_with_cell("model_breakdown", "")  # blank the cell, keeping its tab
         ledger_path.write_text(header + "\n" + broken_line + "\n")
         before_bytes = ledger_path.read_bytes()
 

@@ -826,12 +826,11 @@ def execute_one_sample_attempt(
         attempted = msmr.run_skill_evals.detect_dispatch_in_lines(lines)
         extracted_cost_usd = msmr._extract_total_cost_usd(lines)
         if timed_out or extracted_cost_usd is None:
-            # A harness-level timeout, or any other path that kills the
-            # process before the stream's "result" event, incurs real API
-            # spend the sidecar never reports -- charge the per-dispatch cap
-            # as a conservative upper bound so the cumulative stop can't be
-            # silently defeated by under-counted spend, the exact pattern
-            # that masked real spend in the first K=5 run.
+            # A harness-level timeout, or any other path that kills the process
+            # before the stream's "result" event, leaves real API spend the
+            # sidecar never reports. Charge the per-dispatch cap as a conservative
+            # upper bound so under-counted spend can't silently defeat the
+            # cumulative stop.
             cost_usd = budget_cap_usd
             cost_source = COST_SOURCE_CAP
         else:

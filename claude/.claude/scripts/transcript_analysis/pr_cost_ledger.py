@@ -42,10 +42,15 @@ _PR_COST_LEDGER_PRE_MODEL_COLUMNS: tuple[str, ...] = (
     "distinct_top_level_dirs", "distinct_file_extensions",
     "tests_changed", "plan_file_added", "risk_surface_flag",
 )
-_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
+# Exact column order of pre-invalid_usage_records ledgers; never edit, and never revert to code that lacks it.
+_PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS: tuple[str, ...] = (
     *_PR_COST_LEDGER_PRE_MODEL_COLUMNS,
     # Empty cell: not recorded. `{}`: recorded, no priced turns.
     "model_breakdown",
+)
+_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
+    *_PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS,
+    "invalid_usage_records",
 )
 _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
 
@@ -64,12 +69,19 @@ _PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
 # -- see docs/pr-cost.md § "Schema" for how a new column is added.
 _PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE: dict[str, tuple[str, ...]] = {
     "\t".join(columns): columns
-    for columns in (_PR_COST_LEDGER_COLUMNS, _PR_COST_LEDGER_PRE_MODEL_COLUMNS, _PR_COST_LEDGER_LEGACY_COLUMNS)
+    for columns in (
+        _PR_COST_LEDGER_COLUMNS, _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS,
+        _PR_COST_LEDGER_PRE_MODEL_COLUMNS, _PR_COST_LEDGER_LEGACY_COLUMNS,
+    )
 }
 # Cell text for each column added after the first header, read by name for a row whose header lacks it.
 _PR_COST_LEDGER_COLUMN_DEFAULTS: dict[str, str] = {
     "host": _PR_COST_LEDGER_LEGACY_HOST_DEFAULT,
     "model_breakdown": "",
+    # A row under an older header predates the malformed-usage check entirely (it wasn't skipped
+    # and wasn't counted), not verified to have carried zero -- "0" is this column's least-wrong
+    # default, the same reasoning _PR_COST_LEDGER_LEGACY_HOST_DEFAULT already applies to "host".
+    "invalid_usage_records": "0",
 }
 
 _PR_COST_FLOAT_COLUMNS = (
@@ -81,7 +93,7 @@ _PR_COST_INT_COLUMNS = (
     "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
     "unpriced_turns", "unpriced_tokens", "turn_count", "session_count", "sum_context_at_turn",
     "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
-    "distinct_top_level_dirs", "distinct_file_extensions",
+    "distinct_top_level_dirs", "distinct_file_extensions", "invalid_usage_records",
 )
 _PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
 _PR_COST_JSON_COLUMNS = ("model_breakdown",)
@@ -281,8 +293,11 @@ def _current_cells_from_file_row(cells: list[str], file_columns: tuple[str, ...]
     lacks filled from _PR_COST_LEDGER_COLUMN_DEFAULTS."""
     if len(cells) != len(file_columns):
         message = f"line {line_no}: expected {len(file_columns)} columns, got {len(cells)}"
-        if "\t".join(file_columns) == _PR_COST_LEDGER_HEADER_LINE and len(cells) == len(file_columns) - 1:
-            message += " (if an editor trimmed trailing whitespace, append a tab to this line)"
+        if len(cells) == len(file_columns) - 1:
+            if file_columns == _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS:
+                message += " (if an editor trimmed trailing whitespace, append a tab to this line)"
+            elif file_columns == _PR_COST_LEDGER_COLUMNS:
+                message += " (restore the column's correct value instead of a bare tab)"
         raise _PrCostLedgerParseError(message)
     cell_by_column = dict(zip(file_columns, cells, strict=True))
     return [

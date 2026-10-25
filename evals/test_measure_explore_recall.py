@@ -21,7 +21,7 @@ from pathlib import Path
 import measure_explore_recall as m
 import measure_subagent_model_resolution as msmr
 import pytest
-from test_review_bench_mining import _commit, _git, _init_repo, _write
+from test_review_bench_mining import _commit, _git, _init_repo, _write, _write_jsonl
 
 # --- Fixture-data helpers ------------------------------------------------------
 
@@ -51,11 +51,6 @@ def _valid_fixture_data() -> dict:
     stratum_a = [_stratum_a_case(i, 5 if i < 5 else 1) for i in range(8)]
     stratum_b = [_stratum_b_case(i, 5 if i < 3 else 1) for i in range(5)]
     return {"pinned_commit": "abc123def456", "cases": stratum_a + stratum_b}
-
-
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
 
 def _text_record(text: str) -> dict:

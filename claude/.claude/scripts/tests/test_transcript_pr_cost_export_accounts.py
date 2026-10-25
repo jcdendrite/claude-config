@@ -504,7 +504,8 @@ class TestPrCostExportMixedSchemaAccounts:
         pr_cost_ledger._write_pr_cost_ledger_file(
             acct_c / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=3, model_breakdown=source_breakdown)],
         )
-        source_cell = (acct_c / "pr-cost-ledger.tsv").read_text().splitlines()[1].split("\t")[-1]
+        model_breakdown_index = pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")
+        source_cell = (acct_c / "pr-cost-ledger.tsv").read_text().splitlines()[1].split("\t")[model_breakdown_index]
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
         monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file = tmp_path / "roots"
