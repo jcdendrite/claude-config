@@ -2386,7 +2386,7 @@ _lib_fragment_concludes_commit() {
 # produce a false match. The one residual is a future gh flag with no value
 # placeholder at a gated scope (root/`pr`/`issue`). Present-day instances --
 # `-h`/`--help` (registered broadly) and `--version` (root only) -- are
-# harmless since they exit before any network call; test_lib.py's
+# harmless since they exit before any network call; test_lib_tool_argv.py's
 # traversal-scope guard fails if a non-terminating one is ever added.
 _lib_tool_argv_from_subcmd() {
   local fragment="$1" tool="$2"

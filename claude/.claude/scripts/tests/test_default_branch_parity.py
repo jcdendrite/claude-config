@@ -51,7 +51,7 @@ def _title(repo: Path, isolated_home: Path) -> str | None:
 
 def _run_layer(func: str, repo_root: Path) -> subprocess.CompletedProcess:
     """Invoke one of _lib.sh's two default-branch layers directly, with no
-    script or hook wrapper around it -- matches test_lib.py's
+    script or hook wrapper around it -- matches test_lib_git_refs.py's
     _resolve_default_branch helper."""
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; {func} "$1"', "bash", str(repo_root)],
@@ -133,7 +133,7 @@ class TestOriginHeadUnsetNoGuessSitesRefuse:
     checked-out branch is still `develop`, so it cannot independently
     distinguish a correct `origin/develop` probe from a hypothetical
     regression that reads the local branch name instead -- that
-    distinction is closed at the unit layer, in test_lib.py."""
+    distinction is closed at the unit layer, in test_lib_git_refs.py."""
 
     def test_branch_divergence_status_aborts(self, tmp_path):
         local, _bare = _make_repo_with_remote(tmp_path, default_branch="develop")
