@@ -32,8 +32,9 @@ def _content_text(content) -> str:
     return ""
 
 
-def _is_fresh_user_prompt(rec: dict) -> bool:
-    """Return True iff rec is a genuine new user message (not a tool result or injected record).
+def _is_main_thread_user_text(rec: dict) -> bool:
+    """Return True iff rec is a main-thread user record with its own text: a human prompt or a
+    harness-delivered task notification, not a tool result or injected record.
 
     Filters out:
     - Records that are not type=="user"
@@ -57,6 +58,19 @@ def _is_fresh_user_prompt(rec: dict) -> bool:
     ):
         return False
     return bool(_content_text(content).strip())
+
+
+def _is_task_notification(rec: dict) -> bool:
+    """Return True iff rec is a main-thread user record whose whole text is `<task-notification>`
+    envelopes, the harness's delivery of a finished background task or subagent."""
+    content = (rec.get("message") or {}).get("content", "")
+    return _is_main_thread_user_text(rec) and not _strip_task_notifications(_content_text(content)).strip()
+
+
+def _is_fresh_user_prompt(rec: dict) -> bool:
+    """Return True iff rec is a new message from the human: main-thread user text
+    (`_is_main_thread_user_text`) that is not a task notification (`_is_task_notification`)."""
+    return _is_main_thread_user_text(rec) and not _is_task_notification(rec)
 
 
 def _fmt_usd(amount: float) -> str:

@@ -4,11 +4,13 @@ from transcript_analysis import judgment_pair
 
 from ._skill_helpers import _judgment_pair_args, _review_asst, _user_reply
 from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
     _agent_use,
     _asst,
     _bash_use,
     _skill_use,
     _skill_use_rec,
+    _task_notification_msg,
     _tool_result,
     _user_msg,
     _write_jsonl,
@@ -109,6 +111,72 @@ class TestJudgmentPair:
         out = capsys.readouterr().out
         assert "I'll add the null check." in out
         assert "tool output text" not in out
+
+    def test_task_notification_neither_closes_the_window_nor_is_taken_as_response(self, fake_projects, capsys):
+        """GH-1312: a task notification between two review turns does not end the window, so the
+        later review text is the output and the next human reply is the response."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+            _review_asst("First-wave findings.", "2026-05-20T10:01:00.000Z"),
+            _task_notification_msg(),
+            _review_asst("Second-wave synthesis of both reviewers.", "2026-05-20T10:03:00.000Z"),
+            _user_reply("I'll fix the second-wave items."),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert (
+            "Second-wave synthesis of both reviewers.\n\n"
+            "--- USER RESPONSE ---\nI'll fix the second-wave items.\n---"
+        ) in out
+        assert "First-wave findings." not in out
+        assert "<task-notification>" not in out
+
+    def test_assistant_turn_without_text_after_a_task_notification_keeps_the_prior_review_output(
+        self, fake_projects, capsys,
+    ):
+        """GH-1312: a tool-only assistant turn after the notification is no review text, so the
+        review output stays the last turn that had text."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+            _review_asst("Missing null check in parser.", "2026-05-20T10:01:00.000Z"),
+            _task_notification_msg(),
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-20T10:03:00.000Z",
+                  content=[_bash_use("b1", "ls")]),
+            _user_reply("I'll add the null check."),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert (
+            "Missing null check in parser.\n\n"
+            "--- USER RESPONSE ---\nI'll add the null check.\n---"
+        ) in out
+        assert "<task-notification>" not in out
+
+    def test_task_notification_at_end_of_session_emits_end_of_session_marker(self, fake_projects, capsys):
+        """GH-1312: with a notification as the last record there is still no human response."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+            _review_asst("Looks good overall.", "2026-05-20T10:01:00.000Z"),
+            _task_notification_msg(),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert "(no user response — end of session)" in out
+        assert "<task-notification>" not in out
+
+    def test_prompt_with_envelope_beside_human_text_is_printed_as_the_user_response(self, fake_projects, capsys):
+        """GH-1312: a prompt with a task-notification envelope beside human text is still a fresh prompt, so it is
+        printed as recorded (envelope included) as the USER RESPONSE; a predicate keyed on envelope presence would skip it."""
+        recorded_prompt = f"{_TASK_NOTIFICATION_TEXT}\n\nthanks, merge it"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
+            _review_asst("Looks good overall.", "2026-05-20T10:01:00.000Z"),
+            _user_reply(recorded_prompt),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert f"--- USER RESPONSE ---\n{recorded_prompt}\n---" in out
+        assert "(no user response — end of session)" not in out
 
     def test_ismeta_user_not_taken_as_response(self, fake_projects, capsys):
         """A user record with isMeta=True is skipped; the next real user turn is used."""

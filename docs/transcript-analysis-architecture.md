@@ -234,9 +234,11 @@ unbounded.
 
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
-`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
-one definition here; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
-`rearm_backtest.py`'s boundary detection all read it.
+`_strip_task_notifications`, `_is_main_thread_user_text`, `_is_task_notification`,
+`_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its one definition here, built
+on the other two predicates; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
+`period_cost.py`'s review windows read it. `rearm_backtest.py`'s boundary detection reads
+`_is_main_thread_user_text`, which also accepts a task notification.
 
 ### `cost.py`
 

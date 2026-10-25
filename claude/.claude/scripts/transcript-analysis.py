@@ -223,6 +223,7 @@ from transcript_analysis.render import (
     _fam,  # noqa: F401 -- read only via _mod._fam from test files
     _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
     _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
+    _is_task_notification,  # noqa: F401 -- read only via _mod._is_task_notification from test files
     _sanitize_table_cell,  # noqa: F401 -- read only via _mod._sanitize_table_cell from test files
     _strip_task_notifications,  # noqa: F401 -- read only via _mod._strip_task_notifications from test files
 )

@@ -32,6 +32,7 @@ from ._skill_helpers import (
 )
 from ._subagent_helpers import _subagents_args
 from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
     _agent_use,
     _asst,
     _attr_ts,
@@ -49,6 +50,7 @@ from .conftest import (
     _skill_use,
     _skill_use_rec,
     _table_cols,
+    _task_notification_msg,
     _tool_result,
     _two_declared_roots,
     _user_msg,
@@ -2354,6 +2356,87 @@ class TestIsFreshUserPrompt:
     def test_assistant_record_returns_false(self):
         rec = _asst("claude-sonnet-4-6", branch="main")
         assert _mod._is_fresh_user_prompt(rec) is False
+
+    def test_task_notification_only_record_returns_false(self):
+        """GH-1312: a harness-delivered task notification is not the human speaking."""
+        rec = _task_notification_msg()
+        assert _mod._is_fresh_user_prompt(rec) is False
+
+    def test_human_text_beside_a_task_notification_returns_true(self):
+        rec = _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step")
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+    def test_unterminated_task_notification_returns_true(self):
+        """An envelope with no closing tag is left in place by the strip, so the record stays fresh."""
+        rec = _user_msg("<task-notification>\n<summary>no closing tag here")
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+    def test_self_quoting_task_notification_returns_true(self):
+        """Known limitation: the strip stops at the first closer, so the outer envelope's tail survives as text.
+
+        A check keyed on the record's `origin` would flip this on purpose.
+        """
+        rec = _user_msg(
+            "<task-notification><summary>Sample record: "
+            "<task-notification><summary>inner</summary></task-notification>"
+            "</summary></task-notification>"
+        )
+        assert _mod._is_fresh_user_prompt(rec) is True
+
+
+# ---------------------------------------------------------------------------
+# _is_task_notification (render.py)
+# ---------------------------------------------------------------------------
+
+
+class TestIsTaskNotification:
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_task_notification_msg(), id="string-envelope"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\n\n  {_TASK_NOTIFICATION_TEXT}"),
+                id="two-envelopes-with-whitespace-between",
+            ),
+            pytest.param(
+                _user_msg([{"type": "text", "text": _TASK_NOTIFICATION_TEXT}]),
+                id="envelope-in-list-text-block",
+            ),
+        ],
+    )
+    def test_envelope_only_record_returns_true(self, rec):
+        assert _mod._is_task_notification(rec) is True
+
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_user_msg("Please fix that"), id="plain-prompt"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step"),
+                id="human-text-beside-envelope",
+            ),
+            pytest.param(
+                _user_msg("<task-notification>\n<summary>no closing tag here"),
+                id="unterminated-envelope",
+            ),
+            pytest.param(
+                {**_task_notification_msg(), "isSidechain": True},
+                id="sidechain-envelope",
+            ),
+            pytest.param(
+                {**_task_notification_msg(), "isMeta": True},
+                id="meta-envelope",
+            ),
+            pytest.param(
+                _user_msg([_tool_result("t1", _TASK_NOTIFICATION_TEXT)]),
+                id="tool-result-record",
+            ),
+            pytest.param(_user_msg("   "), id="blank-text-record"),
+            pytest.param(_asst("claude-sonnet-4-6"), id="assistant-record"),
+        ],
+    )
+    def test_record_that_is_not_envelope_only_main_thread_user_text_returns_false(self, rec):
+        assert _mod._is_task_notification(rec) is False
 
 
 # ---------------------------------------------------------------------------

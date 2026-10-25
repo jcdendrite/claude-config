@@ -19,6 +19,7 @@ from .conftest import (
     _priced,
     _skill_block,
     _slash_user,
+    _task_notification_msg,
     _tool_result,
     _user_msg,
     _write_jsonl,
@@ -293,6 +294,55 @@ class TestComputeReviewRoundCosts:
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
         assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+
+    @staticmethod
+    def _round_with_a_task_notification_between_two_reviewer_dispatches() -> list[dict]:
+        return [
+            _priced(  # opening turn: $0.20, dispatches reviewer a1
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg(  # launch acknowledgement for the backgrounded a1
+                [_tool_result("a1", "launched")], branch="feat", ts="2026-08-01T10:00:05.000Z",
+            ),
+            _task_notification_msg(branch="feat", ts="2026-08-01T10:01:00.000Z"),  # a1 finished
+            _priced(  # response turn: $0.40, dispatches reviewer a2
+                "claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z",
+                content=[_agent_use("a2", "staff-backend-engineer")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),  # closes the window
+            _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
+        ]
+
+    def test_task_notification_does_not_end_the_window_of_a_backgrounded_round(self):
+        """GH-1312: the window runs past a reviewer's task notification to the next human prompt."""
+        records = self._round_with_a_task_notification_between_two_reviewer_dispatches()
+        assert review_rounds.detect_round_windows(records) == [(0, 4, "code-review")]
+
+    def test_round_prices_the_turns_and_dispatches_after_a_task_notification(self, fake_projects):
+        """GH-1312: the main-thread turn answering a reviewer's notification, and the second-wave
+        reviewer it dispatches, are priced into the round; the turn after the next human prompt is not."""
+        session_id = "sess-1"
+        _write_jsonl(
+            fake_projects / f"{session_id}.jsonl",
+            self._round_with_a_task_notification_between_two_reviewer_dispatches(),
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_priced("claude-sonnet-5", input=250_000, branch="feat", ts="2026-08-01T10:02:30.000Z")],  # $0.50
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["main_dollars"] == pytest.approx(0.20 + 0.40)
+        assert r["agent_dollars"] == pytest.approx(1.00 + 0.50)
+        assert r["agents"] == 2
 
     def test_nested_dispatch_from_inside_a_subagent_is_priced_into_the_round(self, fake_projects):
         """An Agent/Task tool_use inside a subagent's own transcript, whose
@@ -1353,11 +1403,29 @@ class TestOrchestratorRoundCosts:
 
     def test_parent_turns_after_the_orchestrator_returns_are_priced_until_the_next_fresh_prompt(self, fake_projects):
         """The fixture's return is a tool_result record, which is never a
-        fresh prompt. A task-notification return reads as a fresh prompt and
-        ends the window, which this fixture does not cover."""
+        fresh prompt."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
             _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),  # $0.40
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
+        ])
+        _write_orchestrator_subagent_tree(fake_projects, "sess-1")
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert len(data["rounds"]) == 1
+        assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+
+    def test_parent_turns_after_a_task_notification_return_are_priced_until_the_next_fresh_prompt(
+        self, fake_projects,
+    ):
+        """GH-1312: a backgrounded orchestrator returns as a task-notification user record, which is
+        not a fresh prompt, so the parent turn answering it stays inside the window."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            _task_notification_msg(branch="feat", ts="2026-08-01T10:01:00.000Z"),
             _priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),  # $0.40
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
             _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
