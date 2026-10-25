@@ -393,7 +393,7 @@ def test_unreadable_config_keys_psv_does_not_fire(armed_home, dirty_repo, tmp_pa
     commit_stall_block section for why, and
     test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed
     below for the isolated regression test of that exit-3 arm itself.
-    Mirrors test_lib.py's _lib_sh_with_unreadable_schema technique and
+    Mirrors test_lib_config_gates.py's _lib_sh_with_unreadable_schema technique and
     test_restore_authorization_boundary_on_compact.py's own exit-3 test:
     symlink the hook plus _lib.sh/_config.sh into a directory with no
     config-keys.psv sibling, so _config_schema_field sees an absent

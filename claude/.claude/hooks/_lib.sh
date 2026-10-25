@@ -4998,8 +4998,8 @@ _lib_resume_context_tmpdir_root() {
 # caught by `[ -O ]` evaluating false, since forging EUID ownership needs
 # privilege an attacker doesn't have. The different-owner pre-creation case
 # this closes can't be reproduced in single-uid CI -- see
-# TestLibResumeContextIndexDir's docstring in test_lib.py for the full
-# POSIX argument, recorded there rather than as an executable test.
+# TestLibResumeContextIndexDir's docstring in test_lib_resume_context.py for
+# the full POSIX argument, recorded there rather than as an executable test.
 # Also returns 1 if the tmpdir root is other- or group-writable without the
 # sticky bit -- see the guard below for why.
 _lib_resume_context_index_dir() {

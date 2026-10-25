@@ -2,7 +2,7 @@
 shapes that handoff/SKILL.md §7 and brief/SKILL.md §7.5 prescribe.
 
 The templates are read at test time, so a reword of either section that changes what the
-parser answers fails here. test_lib.py's TestLibContinuityFileResumeCwd copies hand-written
+parser answers fails here. test_lib_resume_context.py's TestLibContinuityFileResumeCwd copies hand-written
 shapes and cannot see that drift.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from helpers import write_continuity_body
 
-from .test_lib import _UNUSABLE, _continuity_file_resume_cwd
+from .test_lib_resume_context import _UNUSABLE, _continuity_file_resume_cwd
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _HANDOFF_SKILL = _REPO_ROOT / "claude-skills" / "skills" / "handoff" / "SKILL.md"
