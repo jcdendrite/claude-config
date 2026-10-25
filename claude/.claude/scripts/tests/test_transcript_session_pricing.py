@@ -98,7 +98,7 @@ def _price(
     start: date = _START,
     end: date = _END,
     as_of: date = _AS_OF,
-    include_unpriced_model_ids: bool = False,
+    include_unpriced_model_ids: bool = True,
 ) -> session_pricing.SessionPricingResult:
     return session_pricing.price_sessions_by_utc_day(
         session_paths, start=start, end=end, as_of=as_of, include_unpriced_model_ids=include_unpriced_model_ids,
@@ -504,9 +504,13 @@ class TestUnpriced:
         assert result.unpriced_models == (pricing._SYNTHETIC_MODEL_ID, "claude-sentinel-model-1", "claude-sentinel-model-2")
         assert result.unpriced_model_count == 3
 
-    def test_unpriced_models_is_empty_by_default_even_when_models_exist_but_the_count_still_reports_them(
+    def test_unpriced_models_is_populated_by_default_and_the_count_matches(
         self, tmp_path
     ):
+        assert inspect.signature(
+            session_pricing.price_sessions_by_utc_day
+        ).parameters["include_unpriced_model_ids"].default is True
+
         session = _write_session(
             tmp_path,
             0,
@@ -518,7 +522,7 @@ class TestUnpriced:
 
         result = _price([session])
 
-        assert result.unpriced_models == ()
+        assert result.unpriced_models == ("claude-sentinel-model-1", "claude-sentinel-model-2")
         assert result.unpriced_model_count == 2
 
 
@@ -1493,7 +1497,7 @@ class TestOutputContract:
     _UNPRICED_MODELS_DISCLOSURE_CLAUSES = (
         "untrusted transcript text of any length",
         "account-identifying pre-announcement name",
-        "do not publish the list",
+        "nowhere safe to put that",
         "escape entries before rendering",
     )
 
@@ -1584,20 +1588,33 @@ class TestOutputContract:
         for clause in self._UNPRICED_MODELS_DISCLOSURE_CLAUSES:
             assert clause in section, f"{clause!r} is not in the doc's session_pricing.py section"
 
+    def test_breaking_change_note_states_the_live_default(self):
+        """Pins the doc's "Breaking change" paragraph against the live signature default, so a future flip
+        of include_unpriced_model_ids cannot leave this paragraph stating the opposite default."""
+        section = " ".join(_architecture_doc_section().split())
+        live_default = inspect.signature(
+            session_pricing.price_sessions_by_utc_day
+        ).parameters["include_unpriced_model_ids"].default
+
+        assert f"default `{live_default}`" in section or f"default {live_default}" in section, (
+            f"the doc's Breaking change paragraph does not state the live default {live_default!r}"
+        )
+
     def test_unpriced_models_disclosure_is_a_behavioral_control_not_just_documentation(self, tmp_path):
-        """The doc's disclosure clauses describe a real default-off gate, not prose a caller could ignore:
-        unpriced_models stays empty unless the caller opts in, with no transcript-derived text leaked."""
+        """The doc's disclosure clauses describe a real opt-out gate, not prose a caller could ignore:
+        unpriced_models is populated unless the caller opts out, and opting out leaks no transcript-derived
+        text."""
         session = _write_session(
             tmp_path, 0, [_priced("claude-sentinel-model-1", input=1, ts="2026-05-19T10:00:00.000Z")]
         )
 
         default_call = _price([session])
-        opted_in_call = _price([session], include_unpriced_model_ids=True)
+        opted_out_call = _price([session], include_unpriced_model_ids=False)
 
-        assert default_call.unpriced_models == ()
+        assert default_call.unpriced_models == ("claude-sentinel-model-1",)
         assert default_call.unpriced_model_count == 1
-        assert opted_in_call.unpriced_models == ("claude-sentinel-model-1",)
-        assert opted_in_call.unpriced_model_count == 1
+        assert opted_out_call.unpriced_models == ()
+        assert opted_out_call.unpriced_model_count == 1
 
     def test_quiet_call_prints_nothing(self, tmp_path, capsys):
         session = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])

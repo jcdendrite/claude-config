@@ -69,9 +69,9 @@ class SessionPricingResult:
     total_micro_dollars: the sum of every session's micro_dollars_by_day values.
     total_unpriced_tokens: the sum of every session's unpriced_tokens_by_day values.
     unpriced_models: sorted model IDs of in-window turns whose model has no rate, except "<synthetic>" at zero
-        tokens, populated only when the call passed include_unpriced_model_ids=True; otherwise empty. An
-        absent, null, or non-string model is "". Before publishing or rendering entries, see the doc section's
-        "What the output can disclose" list.
+        tokens, empty only when the call passed include_unpriced_model_ids=False. An absent, null, or
+        non-string model is "". Before publishing or rendering entries, see the doc section's "What the
+        output can disclose" list.
     unpriced_model_count: the count of distinct model IDs unpriced_models would hold, computed the same way
         regardless of include_unpriced_model_ids.
     stale_models: sorted model IDs priced in-window, zero-token turns included, whose re-verify-by date is
@@ -278,7 +278,7 @@ def price_sessions_by_utc_day(
     start: date,
     end: date,
     as_of: date,
-    include_unpriced_model_ids: bool = False,
+    include_unpriced_model_ids: bool = True,
 ) -> SessionPricingResult:
     """Price every session's in-window assistant turns by UTC day, plus the facts that span the whole call.
 
@@ -286,9 +286,10 @@ def price_sessions_by_utc_day(
         passing a subagent file or one path twice double-counts.
     start, end: inclusive UTC dates.
     as_of: the date stale_models is judged against.
-    include_unpriced_model_ids: False (the default) leaves the result's unpriced_models empty; pass True only
-        when the caller has somewhere safe to put untrusted transcript text with a possible account-identifying
-        pre-announcement model name. unpriced_model_count is populated either way.
+    include_unpriced_model_ids: True (the default) populates the result's unpriced_models with the unpriced
+        model-ID strings. Pass False when the caller has nowhere safe to put untrusted transcript text that
+        could carry an account-identifying pre-announcement model name. unpriced_model_count is populated
+        either way.
 
     Raises ValueError or TypeError for a bad argument, and SessionPricingError for the first session that
     cannot be priced. The session_pricing.py section of docs/transcript-analysis-architecture.md is the
