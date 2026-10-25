@@ -1434,7 +1434,7 @@ class TestRequireSkillReview:
             f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
-    # Mirrors test_lib.py's four test_lib_capped_for_* functions, split the
+    # Mirrors test_lib_capped_for.py's four test_lib_capped_for_* functions, split the
     # same way: each case gets its own skip guard, since pytest.skip()
     # aborts the whole function and would otherwise let a PATH missing
     # timeout(1) also skip the neither-present uncapped-fallback case below.

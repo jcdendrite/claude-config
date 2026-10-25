@@ -611,7 +611,7 @@ class TestSelectPytestTargets:
         assert not _mod._is_plugin_manifest_change("vendor/claude-hook-review/.claude-plugin/plugin.json")
 
     def test_lovable_cloud_hooks_change_also_selects_hooks_tests(self):
-        """test_hook_alignment.py and test_lib.py both glob
+        """test_hook_alignment.py and test_lib_session_identity.py both glob
         plugins/*/hooks/*.sh into HOOKS_TESTS_DIR's checks. Without this
         cross-domain exception, LOVABLE_CLOUD_DIR's broad domain rule claims
         the path first and those checks go unrun."""
@@ -883,7 +883,7 @@ class TestSelectPytestTargets:
         assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
     def test_skill_management_hooks_and_skills_change_selects_matching_domain_tests(self):
-        """test_hook_alignment.py and test_lib.py glob plugins/*/hooks/*.sh
+        """test_hook_alignment.py and test_lib_session_identity.py glob plugins/*/hooks/*.sh
         generically, across every plugin, not only lovable-cloud, so a
         skill-management hooks change selects HOOKS_TESTS_DIR.
         test_skills.py globs plugins/*/skills/*/SKILL.md just as generically,
