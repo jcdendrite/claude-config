@@ -37,7 +37,7 @@ characters neither end nor expand a word inside the double-quoted `--title` argu
 - not-plain-word: the title fails the sink rule. A slug with no words fails here.
 - not-plain-word: the body path fails the sink rule, before any file access.
 - body-unreadable: `os.stat` on the path finds a file that is not regular, or the `stat`, the open or
-  the read raises OSError. `os.stat` follows a symlink, as `[ -f ]` does. A FIFO is refused before any
+  the read raises OSError. `os.stat` follows a symlink. A FIFO is refused before any
   open, so nothing blocks.
 - body-empty: the file holds no byte outside the six whitespace bytes space, tab, LF, VT, FF and CR.
   NUL is content, so a file of only NUL and whitespace bytes passes.
@@ -145,9 +145,7 @@ def _run(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
-    # GIT_NO_LAZY_FETCH keeps a read of a missing object from fetching, on a git that honors it.
-    env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1"}
-    return _run(["git", *args], env)
+    return _run(["git", *args], dict(os.environ))
 
 
 def _read_branch() -> str:

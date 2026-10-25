@@ -368,7 +368,7 @@ class TestBodyCheck:
         assert stop is not None
         assert stop[0] == "body-unreadable"
 
-    def test_a_symlink_to_a_regular_file_passes_as_the_shell_file_test_does(
+    def test_a_symlink_to_a_regular_file_passes(
         self, preflight, tmp_path: Path
     ) -> None:
         target = tmp_path / "target"
@@ -410,15 +410,26 @@ class MainResult:
         return self.stdout[:-1].split("\n")
 
 
-def _pretend_head(preflight, monkeypatch: pytest.MonkeyPatch, branch: str | None) -> None:
-    """Makes the script's git call answer as a checkout of `branch`, or as a detached HEAD when None."""
+_HEAD_LOOKUP_ARGV = ("symbolic-ref", "--quiet", "HEAD")
 
-    def fake_git(*_arguments: str) -> subprocess.CompletedProcess:
-        if branch is None:
-            return subprocess.CompletedProcess([], 1, stdout="", stderr="")
-        return subprocess.CompletedProcess([], 0, stdout="refs/heads/" + branch + "\n", stderr="")
+
+def _install_head_lookup_double(preflight, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str) -> None:
+    """Replaces the script's git call with one that answers the HEAD lookup and fails the test on any other argv."""
+
+    def fake_git(*arguments: str) -> subprocess.CompletedProcess:
+        if arguments != _HEAD_LOOKUP_ARGV:
+            pytest.fail(f"unexpected git argv: {arguments!r}")
+        return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
 
     monkeypatch.setattr(preflight, "_git", fake_git)
+
+
+def _pretend_head(preflight, monkeypatch: pytest.MonkeyPatch, branch: str | None) -> None:
+    """Makes the script's git call answer as a checkout of `branch`, or as a detached HEAD when None."""
+    if branch is None:
+        _install_head_lookup_double(preflight, monkeypatch, 1, "")
+    else:
+        _install_head_lookup_double(preflight, monkeypatch, 0, "refs/heads/" + branch + "\n")
 
 
 def _run_main(preflight, capsysbinary, argv: list[str]) -> MainResult:
@@ -512,9 +523,7 @@ class TestMain:
         assert result.stdout.startswith("REASON: not-on-branch: ")
 
     def test_a_head_outside_refs_heads_is_not_on_a_branch(self, preflight, monkeypatch, capsysbinary) -> None:
-        monkeypatch.setattr(
-            preflight, "_git", lambda *_a: subprocess.CompletedProcess([], 0, stdout="refs/tags/v1\n", stderr="")
-        )
+        _install_head_lookup_double(preflight, monkeypatch, 0, "refs/tags/v1\n")
 
         result = _run_main(preflight, capsysbinary, ["ticket"])
 

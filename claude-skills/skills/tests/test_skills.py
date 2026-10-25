@@ -6125,8 +6125,8 @@ _PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES: dict[str, tuple[str, str]] = {
         "**literal text** — not a `$VAR` holding either. `gh pr create --body-file` is scanned by a redaction "
         "gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it "
         "fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, "
-        "including a retry after a denial, a failure or a rewrite of the body file, and a stop it prints "
-        "halts as above.",
+        "including a retry after a denial, a failure or a rewrite of the body file. A stop it prints halts "
+        "as above.",
     ),
 }
 
