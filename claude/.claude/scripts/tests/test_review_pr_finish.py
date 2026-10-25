@@ -3,7 +3,7 @@
 aborted). Idempotent, and safe to run with nothing in flight.
 
 The worktree sweep's selection rules (which paths count as this session's)
-are covered against synthetic porcelain text in test_lib.py's
+are covered against synthetic porcelain text in test_lib_review_pr.py's
 TestLibReviewPrSelectSessionWorktrees; the subprocess tests here use real
 git and cover one case per branch of the sweep itself.
 """

@@ -538,7 +538,7 @@ def _ledger_path_resolution(config_dir: Path, repo: Path | str, session_id: str)
 
 def _set_origin_head(repo: Path, default_branch: str) -> None:
     """Point refs/remotes/origin/HEAD at origin/<default_branch> without a
-    real remote, the same local-refs-only setup test_lib.py's default-branch
+    real remote, the same local-refs-only setup test_lib_git_refs.py's default-branch
     tests use."""
     subprocess.run(["git", "update-ref", f"refs/remotes/origin/{default_branch}", "HEAD"], cwd=repo, check=True)
     subprocess.run(
