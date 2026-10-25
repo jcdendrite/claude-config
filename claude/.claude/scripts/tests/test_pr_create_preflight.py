@@ -155,7 +155,7 @@ _PREFIXED_FIVE_WORDS_64 = "TICKET-1: aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd
 _TITLE_ROWS = [
     pytest.param("topic/fix-the-bug", "fix the bug", id="plain-slug"),
     pytest.param("TICKET-1/fix-the-bug", "TICKET-1: fix the bug", id="plain-slug-with-id"),
-    pytest.param("GH-42", "GH-42: GH 42", id="bare-id-branch-uses-the-uniform-rule"),
+    pytest.param("GH-42", "GH-42: GH 42", id="bare-id-branch"),
     pytest.param("topic/" + _SEVEN_WORDS_70, _TITLE_70, id="exactly-70"),
     pytest.param(
         "TICKET-1/aaaaaaaaaa-bbbbbbbbbb-cccccccccc-dddddddddd-eeeeeeeeee-ggggg",
@@ -355,10 +355,7 @@ class TestBodyCheck:
             assert stop[0] == "body-unreadable"
 
     def test_a_character_device_is_unreadable_not_empty(self, preflight) -> None:
-        """This is the in-process row that needs the regular-file check.
-
-        Opening a directory raises OSError into the same code anyway.
-        """
+        """This is the in-process row that needs the regular-file check."""
         null_device = Path(os.devnull)
         if not null_device.exists() or not stat.S_ISCHR(null_device.stat().st_mode):
             pytest.skip(f"{null_device} is not a character device on this platform")
