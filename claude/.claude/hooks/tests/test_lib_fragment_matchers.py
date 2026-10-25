@@ -1,6 +1,6 @@
-"""Unit tests for _lib.sh's fragment matchers (_lib_fragment_command_word, _lib_fragment_invokes_tool
-and the primitives through _lib_commit_fragment_has_worktree_target), their quote-blindness
-composition with _lib_strip_shell_quotes, and _lib_strip_shell_quotes itself.
+"""Unit tests for _lib.sh's fragment matchers (_lib_fragment_command_word through
+_lib_commit_fragment_has_worktree_target), _lib_extract_git_subcmd and _lib_extract_git_subcmd_args,
+their quote-blindness composition with _lib_strip_shell_quotes, and _lib_strip_shell_quotes itself.
 """
 from __future__ import annotations
 

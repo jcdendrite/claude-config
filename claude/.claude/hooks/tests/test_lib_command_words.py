@@ -1,5 +1,7 @@
 """Unit tests for _lib.sh's _lib_command_words and the extractors built on it
-(_lib_extract_git_subcmd and its siblings).
+(_lib_gh_body_source_paths and _lib_git_commit_message_source_paths), plus its
+failure-handling helpers (_lib_command_words_failure_clause,
+_lib_command_words_deny_reason and _lib_command_words_tokenizer_path).
 """
 from __future__ import annotations
 
