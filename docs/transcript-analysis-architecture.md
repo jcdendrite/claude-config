@@ -183,13 +183,12 @@ change. Any other change to the list above is a breaking change, and so is remov
 breaking change updates the pins in `tests/test_transcript_session_pricing.py` and states the break in
 this section.
 
-**Breaking change: `unpriced_models` now defaults to populated.** `price_sessions_by_utc_day` gained the
-keyword-only `include_unpriced_model_ids` parameter, default `True`. A caller that wants `unpriced_models`
-withheld must now pass `include_unpriced_model_ids=False`. The `unpriced_model_count` field reports the
-count either way. This default diverges from `cost.py`'s own tiering for the identical model-ID exposure
-risk, which gives its automated public-PR-body path only a count and reserves raw IDs for its
-maintainer-only path. The divergence is deliberate, not an oversight: the original withhold-by-default
-design rested on a pre-announcement-name risk that had never been observed in practice.
+**Breaking change: `unpriced_models` now defaults to populated.** `price_sessions_by_utc_day`'s
+keyword-only `include_unpriced_model_ids` parameter changed from default `False` to default `True`.
+A caller that wants `unpriced_models` withheld must now pass `include_unpriced_model_ids=False`.
+The `unpriced_model_count` field reports the count either way. This default diverges from `cost.py`'s
+own tiering for the identical model-ID exposure risk, a deliberate tradeoff rather than an oversight.
+See `cost.py`'s `_print_excluded_spend_banner` docstring for that tiering's own rationale.
 
 **Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
 path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
