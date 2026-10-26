@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`cost-counts` "Subagent spawns" now counts reviewer agents spawned inside a `review-orchestrator` transcript, and any other subagent's, not only main-thread dispatches.** The subcommand now always reads each session's `subagents/*.jsonl` files.
+  - **Retroactive:** figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure.
+  - **Caption:** the pinned spawns caption now reads "Counts every recorded spawn call, including agents dispatched by another agent, such as the reviewers a `review-orchestrator` spawns."
+  - **Rounds:** round counts are unchanged, since only a main-thread dispatch or skill invocation opens a round.
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
   - The failure names the running git and `README.md` § "Requirements".

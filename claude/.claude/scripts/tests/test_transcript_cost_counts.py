@@ -17,6 +17,8 @@ from .conftest import (
     _attr_ts,
     _skill_use,
     _slash_user,
+    _tool_result,
+    _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
 )
@@ -341,10 +343,15 @@ class TestCostCounts:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """Real layout: the main-thread review-orchestrator dispatch sits in sess.jsonl and the
-        reviewers it spawns sit in sess/subagents/*.jsonl, flagged isSidechain. Both count as spawns,
-        and only the main-thread dispatch is a round: a flagged review-orchestrator dispatch and a flagged
-        Skill code-review block inside a subagents/ file leave the round count unchanged. Reads the
-        subagents/ directory, so it fails if cmd_cost_counts loads main transcripts alone."""
+        reviewers it spawns sit in sess/subagents/*.jsonl, flagged isSidechain.
+        Both the main-thread dispatch and the nested reviewers count as spawns.
+        Only the main-thread dispatch is a round.
+        A flagged review-orchestrator dispatch and a flagged Skill code-review block inside a
+        subagents/ file leave the round count unchanged.
+        The flagged user prompt and tool_result records in the subagents/ file are layout realism only.
+        They mirror what the harness writes and guard no asserted value.
+        test_flagged_slash_command_record_in_a_subagent_file_opens_no_round owns the round guard.
+        Reads the subagents/ directory, so it fails if cmd_cost_counts loads main transcripts alone."""
         self._isolate_allowlist(
             tmp_path, monkeypatch, tracked=["review-orchestrator", "staff-sdet", "ciso-reviewer"],
         )
@@ -357,6 +364,7 @@ class TestCostCounts:
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-orchestrator", "o1",
             [
+                {**_user_msg("run the review round", branch="feat", ts=_attr_ts(1)), "isSidechain": True},
                 _asst(
                     "claude-opus-4-7", branch="feat", sidechain=True, ts=_attr_ts(1),
                     content=[
@@ -366,18 +374,28 @@ class TestCostCounts:
                         _skill_use("k1", "code-review"),
                     ],
                 ),
+                {
+                    **_user_msg([_tool_result("r1", "done")], branch="feat", ts=_attr_ts(2)),
+                    "isSidechain": True,
+                },
             ],
             agent_type="review-orchestrator",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-second-reviewer", "r1",
             [
+                {**_user_msg("review the diff", branch="feat", ts=_attr_ts(2)), "isSidechain": True},
                 _asst(
                     "claude-opus-4-7", branch="feat", sidechain=True, ts=_attr_ts(2),
                     content=[_agent_use("r3", "staff-sdet")],
                 ),
+                {
+                    **_user_msg([_tool_result("r3", "done")], branch="feat", ts=_attr_ts(3)),
+                    "isSidechain": True,
+                },
             ],
             agent_type="staff-sdet",
+            spawn_depth=2,
         )
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],

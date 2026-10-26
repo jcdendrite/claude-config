@@ -1532,12 +1532,25 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_counts", _recording_compute_review_round_counts)
 
+        spawn_counts_seen_by_command: list[dict] = []
+        real_spawn_counts_by_agent_type = _mod.subagent_mix._spawn_counts_by_agent_type
+
+        def _recording_spawn_counts_by_agent_type(*args, **kwargs):
+            spawn_counts = real_spawn_counts_by_agent_type(*args, **kwargs)
+            spawn_counts_seen_by_command.append(spawn_counts)
+            return spawn_counts
+
+        monkeypatch.setattr(_mod.subagent_mix, "_spawn_counts_by_agent_type", _recording_spawn_counts_by_agent_type)
+
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         captured = capsys.readouterr()
 
         assert sum(round_counts["code-review"] for round_counts in round_counts_seen_by_command) == 1
+        # The nested staff-sdet spawn lives only in the subagents/ file, so it is counted only
+        # when cost-counts loads subagent transcripts.
+        assert sum(spawn_counts.get("staff-sdet", 0) for spawn_counts in spawn_counts_seen_by_command) == 1
         self._assert_prefix_absent(captured.out, captured.err)
 
 
