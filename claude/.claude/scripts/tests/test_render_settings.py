@@ -2000,25 +2000,24 @@ class TestBaseOverlayDisjointnessAtRuntime:
     @pytest.mark.parametrize(
         "overlay_key, vacuous_value",
         [
-            ("autoMode", None),
             ("autoMode", {}),
-            ("skillListingBudgetFraction", None),
             ("env", {}),
         ],
         ids=[
-            "autoMode-null",
             "autoMode-empty-object",
-            "skillListingBudgetFraction-null",
             "env-empty-object",
         ],
     )
     def test_overlay_key_present_with_a_vacuous_value_still_counts_as_an_override(
         self, tmp_path: Path, overlay_key: str, vacuous_value: object
     ) -> None:
-        """Pins current behavior: any overlay value that is present --
-        including null or {} -- counts as a valid override. jq's top-level
+        """Pins current behavior: any overlay value that passes type
+        validation -- including {} -- counts as a valid override. jq's top-level
         `+` fully replaces base's value once the overlay key is present, so
-        there is no partial-leak path regardless of the override's shape."""
+        there is no partial-leak path regardless of the override's shape. A
+        null overlay value for autoMode or skillListingBudgetFraction is refused
+        by overlay validation (covered by `_OVERLAY_REFUSAL_FIXTURES`), so it
+        never reaches the base-leak guard and has no case here."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(
