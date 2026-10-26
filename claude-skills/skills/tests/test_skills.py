@@ -4850,6 +4850,8 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
         "A defect outside the boundary that the change causes, activates, or "
         "newly reaches stays in scope for that spawn's flagging duty."
     ),
+    # The defer-invariant bar's reach into earlier commits of the PR in a
+    # staged round depends in part on this sentence.
     ("code-review", "SCOPE_RULE:code-review-disclosure-not-suppressed"): (
         "This narrows only speculative, undirected search for unrelated "
         "defects — it never suppresses disclosure of a defect a spawn "
@@ -6521,7 +6523,8 @@ _CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invari
 
 # The whole defer-invariant region: the enforcement-invariant class definition,
 # its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition, and
-# the scope of the bar (an invariant break a round notices anywhere in the PR).
+# the scope of the bar (an invariant break a round notices anywhere in the PR),
+# and its precedence over checklist item 14's informational-only route.
 # The contradiction-route region's *keep current text* carve-out takes its scope
 # from this class, so it is pinned whole by exact equality, like that region.
 _PINNED_DEFER_INVARIANT_CLAUSE = (
@@ -6538,16 +6541,21 @@ _PINNED_DEFER_INVARIANT_CLAUSE = (
     "for an invariant-break buried in the body. The bar applies to an "
     "invariant break a round notices anywhere in the PR, not only inside "
     "the diff that round enumerates (the staged diff in a staged round, "
-    "the PR against its base in the cumulative pass)."
+    "the PR against its base in the cumulative pass). Such a break enters "
+    "Finding disposition whoever surfaced it, the orchestrator's own pass "
+    "included, and checklist item 14's informational-only route does not "
+    "apply to it."
 )
 
 
 class TestCodeReviewDeferInvariantRegionPin:
     """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
     the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
-    dropping the blocking stop-and-ask disposition, or narrowing the bar to
-    the diff a round enumerates instead of an invariant break noticed anywhere
-    in the PR fails a test instead of drifting silently. On failure, update
+    dropping the blocking stop-and-ask disposition, narrowing the bar to the
+    diff a round enumerates instead of an invariant break noticed anywhere in
+    the PR, or dropping the sentence that keeps checklist item 14's
+    informational-only route from absorbing such a break, fails a test instead
+    of drifting silently. On failure, update
     the constant only if the new wording preserves what every sentence of the
     current pinned text guarantees.
     """
