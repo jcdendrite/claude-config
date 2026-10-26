@@ -4652,13 +4652,14 @@ _SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
 _SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
 
 # The anchor regions the staged-diff scope-boundary redesign introduced,
-# plus the comment/prose row's deferral clause nested inside the first one.
+# plus the clauses nested inside the first one.
 # Asserted as an exact set, not just "each found anchor is non-trivial" — a
 # corpus scan alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_SCOPE_ANCHORS = {
     ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
     ("code-review", "SCOPE_EXEMPT_ROW"),
     ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("code-review", "SCOPE_RULE:code-review-disclosure-not-suppressed"),
     ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
 }
@@ -4804,6 +4805,11 @@ def test_scope_rule_anchors_present() -> None:
         ),
         (
             "code-review",
+            "SCOPE_RULE:code-review-disclosure-not-suppressed",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
+        (
+            "code-review",
             "SCOPE_RULE:code-review-comment-row-deferred",
             "SCOPE_RULE:code-review-staged-diff-only",
         ),
@@ -4843,6 +4849,12 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
     ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
         "A defect outside the boundary that the change causes, activates, or "
         "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    ("code-review", "SCOPE_RULE:code-review-disclosure-not-suppressed"): (
+        "This narrows only speculative, undirected search for unrelated "
+        "defects — it never suppresses disclosure of a defect a spawn "
+        "already noticed during the full-file read required elsewhere in "
+        "this skill."
     ),
     ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"): (
         "whenever this boundary applies, that row does not spawn, whatever "
@@ -4898,10 +4910,9 @@ def test_pinned_scope_clause_matches_live_text(skill_name: str, marker_name: str
 
 class TestNormalizedAnchorText:
     """Direct coverage for _normalized_anchor_text's comparison machinery,
-    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. Both
-    live pinned regions currently sit on one unwrapped line, so neither the
-    mismatch nor the reflow path is exercised by the corpus-wide pin test
-    above.
+    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. The
+    `_PINNED_SCOPE_CLAUSES` regions currently sit on one unwrapped line, so
+    the reflow path is not exercised by the corpus-wide pin test above.
     """
 
     _MARKER = "SCOPE_RULE:example"
@@ -6509,7 +6520,8 @@ class TestCodeReviewContradictionRouteRegionPin:
 _CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
 
 # The whole defer-invariant region: the enforcement-invariant class definition,
-# its never-DEFER-eligible ruling, and the ADDRESS-or-blocking-stop disposition.
+# its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition, and
+# the scope of the bar (an invariant break a round notices anywhere in the PR).
 # The contradiction-route region's *keep current text* carve-out takes its scope
 # from this class, so it is pinned whole by exact equality, like that region.
 _PINNED_DEFER_INVARIANT_CLAUSE = (
@@ -6533,8 +6545,11 @@ _PINNED_DEFER_INVARIANT_CLAUSE = (
 class TestCodeReviewDeferInvariantRegionPin:
     """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
     the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
-    or dropping the blocking stop-and-ask disposition fails a test instead of
-    drifting silently.
+    dropping the blocking stop-and-ask disposition, or narrowing the bar to
+    the diff a round enumerates instead of an invariant break noticed anywhere
+    in the PR fails a test instead of drifting silently. On failure, update
+    the constant only if the new wording preserves what every sentence of the
+    current pinned text guarantees.
     """
 
     def test_defer_invariant_region_matches_live_text(self) -> None:
