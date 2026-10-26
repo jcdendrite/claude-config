@@ -94,12 +94,17 @@ def _write_plan(plans_dir: Path, name: str) -> Path:
 
 @pytest.fixture(scope="module")
 def linked_worktree_with_plan(tmp_path_factory):
-    """Read-only layout shared by the module; no test mutates it.
+    """Layout shared by the module; no test mutates it.
+
+    The MERGE_HEAD in the linked worktree's gitdir is deliberate: it is the
+    forged-anchor target for the per-worktree denial test. A test sensitive to
+    git in-progress state must build its own worktree.
 
     A repo with a sibling linked worktree and a worktree nested under the main
     tree's .claude/worktrees/. Each holds scaffolded plans. Also a source file,
     plan-directory symlinks, a loose remote-tracking ref under the common git
-    dir, and a foreign repo with its own plan."""
+    dir, a MERGE_HEAD in the linked worktree's own gitdir, and a foreign repo
+    with its own plan."""
     root = tmp_path_factory.mktemp("plan-writer-gate")
     main_repo = root / "main-repo"
     _init_repo(main_repo)
@@ -158,12 +163,17 @@ def linked_worktree_with_plan(tmp_path_factory):
     loose_ref.parent.mkdir(parents=True)
     loose_ref.write_text(_git(worktree, "rev-parse", "HEAD") + "\n")
 
+    worktree_git_dir = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-dir"))
+    assert worktree_git_dir != common_git_dir
+    per_worktree_merge_head = worktree_git_dir / "MERGE_HEAD"
+    per_worktree_merge_head.write_text(_git(worktree, "rev-parse", "HEAD") + "\n")
+
     foreign_repo = root / "foreign-repo"
     _init_repo(foreign_repo)
     foreign_plan = _write_plan(foreign_repo / ".claude" / "plans", "f.md")
 
     for path in (
-        plan, source_file, loose_ref, main_repo_plan, nested_plan, nested_subdir_plan,
+        plan, source_file, loose_ref, per_worktree_merge_head, main_repo_plan, nested_plan, nested_subdir_plan,
         non_plan_suffix_file, lexically_inside_plans_file, subdirectory_plan,
         plan_sharing_outside_basename, physical_parent_file, lexical_parent_file,
         foreign_plan, text_suffix_plan,
@@ -185,6 +195,7 @@ def linked_worktree_with_plan(tmp_path_factory):
         "subdirectory_plan": subdirectory_plan,
         "plans_subdir_link": plans_subdir_link,
         "loose_ref": loose_ref,
+        "per_worktree_merge_head": per_worktree_merge_head,
         "foreign_repo": foreign_repo,
         "foreign_plan": foreign_plan,
         "text_suffix_plan": text_suffix_plan,
@@ -449,6 +460,22 @@ class TestPlanWriterDenied:
         fixture = linked_worktree_with_plan
         payload = edit_input(
             str(fixture["loose_ref"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_denied(_run_gate(payload))
+
+    def test_edit_to_per_worktree_merge_head_denied(self, linked_worktree_with_plan):
+        """The forged-anchor route that
+        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+        describes, through the linked worktree's own gitdir, which is distinct from
+        the common dir and outside the worktree root.
+        This catches what test_edit_to_loose_remote_ref_denied does not: an
+        exemption keyed on the per-worktree git directory rather than the common one."""
+        fixture = linked_worktree_with_plan
+        assert fixture["per_worktree_merge_head"].is_file()
+        payload = edit_input(
+            str(fixture["per_worktree_merge_head"]),
+            agent_type=PLAN_WRITER,
+            cwd=str(fixture["worktree"]),
         )
         _assert_denied(_run_gate(payload))
 

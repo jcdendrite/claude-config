@@ -1698,6 +1698,8 @@ _LIB_PR_DIFF_SH = _SCRIPT.parent / "_pr-diff-lib.sh"
 _SCRIPTS_DOC = _SCRIPT.parents[3] / "docs" / "scripts.md"
 _SUFFIX = "1700000000-gh1208"
 _HALT_POINTER = f'see docs/scripts.md § "{CONTEXT_FILES_HALT_HEADING}"'
+# Holds the run at its first enrichment `cat-file -s`, after the lane `.diff` temps are cut and before any other lane temp exists.
+_HOLD_AT_FIRST_ENRICHMENT_CAT_FILE = {"subcommand": "cat-file", "match": ["-s"]}
 
 _INDEX_HEADER_KEYS = (
     "lane-index", "mode", "root", "base", "head", "generated", "lane", "diff-file", "base-file", "history-file",
@@ -3529,10 +3531,15 @@ class TestSignalsAndKills:
     def test_a_trapped_signal_leaves_no_temp_and_exits_with_the_signals_status(
         self, tmp_path, spawn_blocked_run, signal_number, expected_exit
     ):
+        """The hold sits after the lane `.diff` temps are cut, so the signal lands while they are live."""
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
-        process, _started, release = spawn_blocked_run(repo, env, listing_id, tmp_path)
+        process, _started, release = spawn_blocked_run(
+            repo, env, listing_id, tmp_path, hold=_HOLD_AT_FIRST_ENRICHMENT_CAT_FILE
+        )
+        held_temps = _dot_entries(repo)
+        assert any(f".staff-sdet-{_SUFFIX}.diff." in name for name in held_temps), held_temps
 
         process.send_signal(signal_number)
         release.write_text("go")
@@ -3599,7 +3606,7 @@ class TestSignalsAndKills:
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
         first_suffix, second_suffix = "1700000001-first", "1700000002-second"
         process, _started, release = spawn_blocked_run(
-            repo, env, listing_id, tmp_path, suffix=first_suffix, hold={"subcommand": "cat-file", "match": ["-s"]}, label="first"
+            repo, env, listing_id, tmp_path, suffix=first_suffix, hold=_HOLD_AT_FIRST_ENRICHMENT_CAT_FILE, label="first"
         )
         held_temps = _dot_entries(repo)
         assert any(f".staff-sdet-{first_suffix}.diff." in name for name in held_temps), held_temps
@@ -3657,7 +3664,7 @@ class TestSignalsAndKills:
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
         process, _started, release = spawn_blocked_run(
-            repo, env, listing_id, tmp_path, hold={"subcommand": "cat-file", "match": ["-s"]}
+            repo, env, listing_id, tmp_path, hold=_HOLD_AT_FIRST_ENRICHMENT_CAT_FILE
         )
 
         process.kill()
@@ -5670,6 +5677,7 @@ def test_worst_case_call_time_under_bash_timeout():
     """The caps are the script's only time bound, and the Bash tool's 600 s maximum bounds only the caller's wait: each
     source's worst-case call list, with every call at its cap and a 2 s kill grace on each capped call, plus 60 s for the
     uncapped local work this test cannot measure, stays under 600 s. `timeout: 600000` is the form the repo already passes."""
+    # The Bash tool's documented maximum timeout, 600000 ms (docs/scripts.md, the bullet stating the capped calls' sum).
     bash_tool_maximum_seconds, margin_seconds, kill_grace_seconds = 600, 60, 2
     for source in ("staged", "working-tree", "cumulative", "expect-diff"):
         for call in ("list", "lanes"):

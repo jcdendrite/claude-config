@@ -5436,7 +5436,8 @@ def test_code_review_resolving_note_pins() -> None:
         assert literal not in note_text, f"{skill_md_path}: the resolving note still carries the retired {literal!r}"
     for sentence in _RESOLVING_NOTE_PINNED_SENTENCES:
         assert sentence in note_text, f"{skill_md_path}: the resolving note no longer carries {sentence!r}"
-    # The script's worst case runs past the Bash tool's 120 s default, so each call must pass the 600 s maximum.
+    # The script's worst case runs past the Bash tool's 120 s default, so each call must pass the 600 s maximum
+    # (docs/scripts.md, the bullet stating the capped calls' sum).
     assert note_text.count("as its own Bash call with `timeout: 600000`") == 2, (
         f"{skill_md_path}: both calls must pass `timeout: 600000`"
     )

@@ -1055,14 +1055,13 @@ def _declared_tool_names(path) -> set[str]:
 
 
 class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
-    """docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
-    rates the residual Low on the invariant that every current or future agent
-    holding Write but not Bash is confined to _LIB_REVIEW_ONLY_AGENTS. Today
-    the ten reviewer personas (ciso-reviewer, the seven staff-* specialists,
-    comment-discipline-reviewer and skill-fidelity-reviewer) are the only such
-    agents, and all are already listed there. Without this test, a future
-    agent added with Write and no Bash, outside that roster, would silently
-    reopen the residual."""
+    """Every agent holding Write but not Bash is listed in _LIB_REVIEW_ONLY_AGENTS.
+
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    does not rest its Low rating on this roster.
+    The roster confinement is a cooperative guard, and this test pins only
+    membership. Without it, a future agent added with Write and no Bash,
+    outside the roster, would lack even that guard."""
 
     def test_write_without_bash_agents_are_review_only_confined(self):
         review_only = set(review_only_agents())
@@ -1072,22 +1071,23 @@ class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
                 assert path.stem in review_only, (
                     f"{path.name} declares Write without Bash but is not in "
                     "_LIB_REVIEW_ONLY_AGENTS (_lib.sh). A Write-without-Bash agent "
-                    "outside that roster reopens the residual "
-                    "docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md "
-                    "rates Low. Add it to _LIB_REVIEW_ONLY_AGENTS if it is genuinely "
-                    "review-only, or grant it Bash otherwise."
+                    "outside that roster has no cooperative write-scope guard "
+                    "(docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md "
+                    "records the residual it would reach). Add it to "
+                    "_LIB_REVIEW_ONLY_AGENTS if it is genuinely review-only."
                 )
 
 
 class TestEditWithoutBashAgentsAreWriteScopeConfined:
     """Every agent holding Edit or MultiEdit without Bash is write-scope confined.
 
-    The review-only roster is confined by the tree-mutation gate, and the
-    plan-writer registry by deny-plan-writer-off-plan-writes.sh. An Edit-holding
-    agent outside both would be an unconfined writer that no Bash-absence
-    argument covers, the same residual
+    The review-only roster is confined by the tree-mutation gate, a cooperative
+    guard, and the plan-writer registry by deny-plan-writer-off-plan-writes.sh,
+    an untrusted-input-tier gate. An Edit-holding agent outside both would be an
+    unconfined writer.
     docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
-    rates Low only while every writer without Bash is confined."""
+    does not rest its Low rating on this confinement. This test pins roster
+    membership only."""
 
     def test_edit_without_bash_agents_are_write_scope_confined(self):
         confined = set(review_only_agents()) | set(plan_writer_agents())
@@ -1099,7 +1099,8 @@ class TestEditWithoutBashAgentsAreWriteScopeConfined:
                     "in neither _LIB_REVIEW_ONLY_AGENTS nor _LIB_PLAN_WRITER_AGENTS "
                     "(_lib.sh). An Edit-without-Bash agent outside both rosters is "
                     "unconfined by any write-scope gate. Add it to the roster whose "
-                    "gate fits it, or grant it Bash otherwise."
+                    "gate fits it: _LIB_REVIEW_ONLY_AGENTS for a review-only agent, "
+                    "_LIB_PLAN_WRITER_AGENTS for a plan writer."
                 )
 
 

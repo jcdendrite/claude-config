@@ -191,7 +191,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
       - 20 s for `merge-base` and each enrichment call.
       - 60 s for the core diff calls and `ls-files`.
 
-      The capped calls sum to less than 600 s minus the 60 s margin that `test_worst_case_call_time_under_bash_timeout` asserts. Uncapped local work (slicing, copying and the shell's own loops) is unmeasured.
+      The capped calls sum to less than 600 s minus the 60 s margin that `test_worst_case_call_time_under_bash_timeout` asserts. The 600 s is the Bash tool's `timeout` parameter ceiling, which the tool describes as "Optional timeout in milliseconds (max 600000 for a foreground command)". Uncapped local work (slicing, copying and the shell's own loops) is unmeasured.
     - **Withholding.** A changed path (or a rename's old path) the `deny-credential-file-reads.sh` Read gate would deny is noted `withheld` when it matches one of these:
       - the built-in credential regex
       - the unsafe `.ssh` directory predicate
