@@ -6541,23 +6541,44 @@ _PINNED_DEFER_INVARIANT_CLAUSE = (
     "for an invariant-break buried in the body. The bar applies to an "
     "invariant break a round notices anywhere in the PR, not only inside "
     "the diff that round enumerates (the staged diff in a staged round, "
-    "the PR against its base in the cumulative pass). Such a break enters "
-    "Finding disposition whoever surfaced it, the orchestrator's own pass "
-    "included, and checklist item 14's informational-only route does not "
-    "apply to it."
+    "the PR against its base in the cumulative pass). Checklist item 14's "
+    "informational-only route does not apply to such a break."
+)
+
+
+_CODE_REVIEW_FINDING_DISPOSITION_HEADING = "## Finding disposition"
+_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-new-primitive-route"
+_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE = (
+    "For a finding the enforcement-invariant rule below covers, Endorsed with "
+    "no plan file and Rejected each end in that rule's blocking stop-and-ask, "
+    "since neither fixes the hole."
 )
 
 
 class TestCodeReviewDeferInvariantRegionPin:
-    """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
-    the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
-    dropping the blocking stop-and-ask disposition, narrowing the bar to the
-    diff a round enumerates instead of an invariant break noticed anywhere in
-    the PR, or dropping the sentence that keeps checklist item 14's
-    informational-only route from absorbing such a break, fails a test instead
-    of drifting silently. On failure, update the constant only if the new
-    wording preserves what every sentence of the current pinned text
-    guarantees.
+    """Pin the text that keeps an enforcement-invariant break from being
+    deferred or silently accepted, so drifting from it fails a test.
+
+    Whole-region equality against _PINNED_DEFER_INVARIANT_CLAUSE guards:
+    - the never-DEFER-eligible ruling;
+    - the enforcement-invariant class definition;
+    - the ADDRESS-or-blocking-stop-and-ask disposition;
+    - the bar covering an invariant break noticed anywhere in the PR, not only
+      the diff a round enumerates;
+    - the sentence keeping checklist item 14's informational-only route from
+      absorbing such a break.
+
+    Two narrower checks guard the rest:
+    - The Finding disposition section must contain the walk clause that adds an
+      orchestrator-noticed invariant break to the disposition walk. This pins
+      the clause's presence in that section, not the walk sentence's structure.
+    - The new-primitive-route region must contain
+      _ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE, which ends the
+      Endorsed-with-no-plan-file and Rejected returns of an enforcement-invariant
+      finding's heavier-mechanism consult in the blocking stop-and-ask.
+
+    On failure, update the pinned text only if the new wording preserves what
+    every sentence of the current pinned text guarantees.
     """
 
     def test_defer_invariant_region_matches_live_text(self) -> None:
@@ -6571,6 +6592,37 @@ class TestCodeReviewDeferInvariantRegionPin:
             f"matches its pinned text.\n"
             f"  live:   {live_text!r}\n"
             f"  pinned: {pinned_text!r}"
+        )
+
+    def test_disposition_walk_covers_orchestrator_noticed_invariant_break(self) -> None:
+        """The Finding disposition section carries the clause that routes an
+        orchestrator-noticed invariant break into the disposition walk."""
+        skill_md_path = _skill_file("code-review")
+        walk_clause = (
+            "plus any break the orchestrator's own pass noticed that the "
+            "enforcement-invariant rule below covers"
+        )
+        section_text = _heading_section_text(
+            skill_md_path, _CODE_REVIEW_FINDING_DISPOSITION_HEADING
+        )
+        assert " ".join(walk_clause.split()) in section_text, (
+            f"{skill_md_path}: the {_CODE_REVIEW_FINDING_DISPOSITION_HEADING} "
+            f"section must still contain {walk_clause!r}"
+        )
+
+    def test_enforcement_invariant_finding_ends_unfixing_consult_returns_in_human_stop(
+        self,
+    ) -> None:
+        """An enforcement-invariant finding's Endorsed-with-no-plan-file and
+        Rejected consult returns still end in the human stop."""
+        skill_md_path = _skill_file("code-review")
+        heavier_mechanism_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
+        )
+        stop_sentence = " ".join(_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE.split())
+        assert stop_sentence in heavier_mechanism_text, (
+            f"{skill_md_path}: the {_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR} region "
+            f"must still contain {stop_sentence!r}"
         )
 
 
@@ -6708,7 +6760,7 @@ class TestCodeReviewFixPlanPilotRegionPin:
             "must be the re-plan verdict (`Foundation is wrong`)"
         )
         heavier_mechanism_text = _normalized_anchor_text(
-            skill_md_path, "DISPOSITION_RULE:code-review-new-primitive-route"
+            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
         )
         assert heavier_mechanism_text.startswith(
             _CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING

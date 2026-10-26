@@ -337,7 +337,7 @@ If implementation-wrong-shape, replace the surface and re-run Step 1. If correla
 
 ## Finding disposition
 
-After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
+After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding, plus any break the orchestrator's own pass noticed that the enforcement-invariant rule below covers, and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
 
 Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 findings; a four-column table — Finding | Source | Disposition | Rationale — when there are 3+. The orchestrator's recommendation that follows can still propose grouping fixes into this PR vs follow-ups, but every finding has been seen, tagged, and either addressed or justified against the closed list.
 
@@ -363,6 +363,8 @@ The return decides what, if anything, follows:
 - **Endorsed, plan file exists.** Follow with `plan-it` Step 5's revision re-dispatch against that plan's path.
 - **Endorsed, no plan file.** No second dispatch — the endorsed mechanism enters through `/plan-it` on its own terms, not as a review fix.
 - **Rejected.** No second dispatch and no plan edit.
+
+For a finding the enforcement-invariant rule below covers, Endorsed with no plan file and Rejected each end in that rule's blocking stop-and-ask, since neither fixes the hole.
 
 The gate diverts the finding that trips it, not the round: state `plan-architect — consult` on the `Fix route:` line for that finding, and leave the remaining ADDRESS rows on whichever route they would otherwise have had. That line is written at disposition time, before the return is known, so it can only ever record the consult, never which branch of the follow-up fires. State the gate's verdict even when it doesn't fire, per the *Spawn decisions:* no-match precedent above.
 <!-- DISPOSITION_RULE:code-review-new-primitive-route end -->
@@ -400,7 +402,7 @@ A finding with no explicit per-finding verdict from the consult (failed dispatch
 - **"Pre-existing gap"** — pre-existing is a fact about the gap's age, not a disposition. A pre-existing gap that closes a correctness or security-invariant hole is ADDRESS; pre-existing alone is not a criterion.
 - **"Small" / "quick" / "cosmetic" / "non-blocking" / "advisory"** — implementation size and merge-blocking severity are not disposition axes. A reviewer's advisory or a one-line cosmetic fix in already-touched, already-tested code is ADDRESS; "it doesn't block merge" is a severity label, not a DEFER criterion.
 <!-- DISPOSITION_RULE:code-review-defer-invariant start -->
-- **"Enforcement invariant weakened, but disclosed"** — a finding that the diff opens a path around an enforcement invariant (a gate, hook, permission check, required-approval, or marker guarantee some mechanism currently makes unbypassable) is never DEFER-eligible, regardless of which criterion above seems to match. Disposition is ADDRESS (fix the hole) or a blocking stop-and-ask to the human, whose keep is logged with `--enforcement-invariant` and without `--carry-forward`: it is asked again on every re-raise, never carried, and never DEFERred. Approval of a diff or PR does not function as informed consent for an invariant-break buried in the body. The bar applies to an invariant break a round notices anywhere in the PR, not only inside the diff that round enumerates (the staged diff in a staged round, the PR against its base in the cumulative pass). Such a break enters Finding disposition whoever surfaced it, the orchestrator's own pass included, and checklist item 14's informational-only route does not apply to it.
+- **"Enforcement invariant weakened, but disclosed"** — a finding that the diff opens a path around an enforcement invariant (a gate, hook, permission check, required-approval, or marker guarantee some mechanism currently makes unbypassable) is never DEFER-eligible, regardless of which criterion above seems to match. Disposition is ADDRESS (fix the hole) or a blocking stop-and-ask to the human, whose keep is logged with `--enforcement-invariant` and without `--carry-forward`: it is asked again on every re-raise, never carried, and never DEFERred. Approval of a diff or PR does not function as informed consent for an invariant-break buried in the body. The bar applies to an invariant break a round notices anywhere in the PR, not only inside the diff that round enumerates (the staged diff in a staged round, the PR against its base in the cumulative pass). Checklist item 14's informational-only route does not apply to such a break.
 <!-- DISPOSITION_RULE:code-review-defer-invariant end -->
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
