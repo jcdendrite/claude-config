@@ -2359,9 +2359,6 @@ def test_tier_rationale_hook_sentence_pinned(
 
 
 def test_reviewer_tree_mutation_link_gap_sentence_is_quoted_in_the_tier_table_and_tracked_by_gh_1295() -> None:
-    """docs/hooks.md's tier-table row quotes the hook header's link-gap sentence verbatim, and both the row and the
-    hook header's link-gap bullet route the gap to GH-1295; a header that changes the sentence or the tracker without
-    the row (or the reverse) fails here."""
     link_gap_tracker = "GH-1295"
     hook_text = (_MAIN_HOOKS_DIR / "deny-reviewer-tree-mutation.sh").read_text()
     (sentence,) = _TIER_RATIONALE_HOOK_SENTENCES["deny-reviewer-tree-mutation.sh"]
@@ -2372,6 +2369,8 @@ def test_reviewer_tree_mutation_link_gap_sentence_is_quoted_in_the_tier_table_an
     )
     assert f'"{sentence}"' in row, "the tier-table row no longer quotes the header's link-gap sentence verbatim"
     assert link_gap_tracker in row, f"the tier-table row no longer routes the link gap to {link_gap_tracker}"
+    # The slice scopes the tracker check to this bullet: the header names GH-1295 for other gaps too,
+    # so a whole-header test would pass with this bullet's tracker deleted.
     link_gap_bullet = hook_text[hook_text.index("A symlink or hard link under /tmp launders") : hook_text.index(sentence)]
     assert link_gap_tracker in link_gap_bullet, (
         f"the hook header's link-gap bullet no longer routes the link gap to {link_gap_tracker}"

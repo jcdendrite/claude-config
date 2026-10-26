@@ -121,11 +121,8 @@ class TestFileWriteTools:
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
 
     def test_reviewer_write_to_nested_agent_reviews_path_allowed(self, repo_ignoring_agent_reviews):
-        """Accepted debt: the engineer answered "Accept nested depth as permanent debt (Recommended)", recorded in
-        docs/design-decisions/reviewer-personas-hold-no-bash.md. findings-path-suffix.sh writes an unanchored
-        ignore pattern, so a session started in a subdirectory relies on nested agent-reviews/ directories being
-        ignored, and the reach is any directory of that name. The caller's own-name rule is what limits a persona
-        to its own findings file there. Flip to deny only with a fresh stop-and-ask."""
+        """findings-path-suffix.sh writes an unanchored ignore pattern, so a session started in a subdirectory
+        relies on nested agent-reviews/ directories being ignored."""
         path = str(repo_ignoring_agent_reviews / "sub" / "agent-reviews" / "staff-sdet-1700000000-branch.md")
         cwd = str(repo_ignoring_agent_reviews)
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet", cwd=cwd)) == "allow"
@@ -1525,7 +1522,6 @@ class TestKnownGapBypass:
     def test_reviewer_quoted_command_name_bypass_allowed(self):
         # `bash -c "sed -i ..."`: the Bash arm strips the quote characters, leaving a bare `sed`.
         # The fragment's command word resolves to `bash`, which is not a runner word, so the `sed -i` check never fires.
-        # This is the nested-shell gap the header accepts under the cooperative model.
         assert run_hook(HOOK, bash_input('bash -c "sed -i s/a/b/ x"', agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_sed_combined_short_option_cluster_allowed(self):
@@ -1706,7 +1702,7 @@ class TestKnownGapBypass:
     # with a roster persona's name can give that persona Bash again. The hook
     # matches `/tmp/*` as literal text and never resolves links, so each form
     # launders a write onto a file outside /tmp. No link exists on disk in these pins, so only a
-    # Bash arm that inspects `ln` flips the two `ln` assertions. The `cat > /tmp/d/file` assertion flips
+    # Bash arm that inspects `ln` flips the `ln` assertions. The `cat > /tmp/d/file` assertion flips
     # on neither kind of fix, and a fix that resolves links needs its own real-link test.
     def test_plan_hard_link_into_tmp_allowed(self):
         assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="Plan")) == "allow"

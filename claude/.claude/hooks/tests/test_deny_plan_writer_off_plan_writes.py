@@ -94,17 +94,8 @@ def _write_plan(plans_dir: Path, name: str) -> Path:
 
 @pytest.fixture(scope="module")
 def linked_worktree_with_plan(tmp_path_factory):
-    """Layout shared by the module; no test mutates it.
-
-    The MERGE_HEAD in the linked worktree's gitdir is deliberate: it is the
-    forged-anchor target for the per-worktree denial test. A test sensitive to
-    git in-progress state must build its own worktree.
-
-    A repo with a sibling linked worktree and a worktree nested under the main
-    tree's .claude/worktrees/. Each holds scaffolded plans. Also a source file,
-    plan-directory symlinks, a loose remote-tracking ref under the common git
-    dir, a MERGE_HEAD in the linked worktree's own gitdir, and a foreign repo
-    with its own plan."""
+    """Module-shared and never mutated. The linked worktree's gitdir holds a
+    MERGE_HEAD, so a test sensitive to git in-progress state must build its own."""
     root = tmp_path_factory.mktemp("plan-writer-gate")
     main_repo = root / "main-repo"
     _init_repo(main_repo)
@@ -464,12 +455,8 @@ class TestPlanWriterDenied:
         _assert_denied(_run_gate(payload))
 
     def test_edit_to_per_worktree_merge_head_denied(self, linked_worktree_with_plan):
-        """The forged-anchor route that
-        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
-        describes, through the linked worktree's own gitdir, which is distinct from
-        the common dir and outside the worktree root.
-        This catches what test_edit_to_loose_remote_ref_denied does not: an
-        exemption keyed on the per-worktree git directory rather than the common one."""
+        """MERGE_HEAD is the merge anchor a plan-review forged-anchor route hand-writes, and in a linked worktree
+        it sits in the per-worktree gitdir, outside the worktree root."""
         fixture = linked_worktree_with_plan
         assert fixture["per_worktree_merge_head"].is_file()
         payload = edit_input(

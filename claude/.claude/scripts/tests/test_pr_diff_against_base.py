@@ -1691,14 +1691,14 @@ def test_unknown_argument_exits_before_any_git_work(tmp_path):
 # --context-files mode
 #
 # Every case below goes through _run_context, which asserts the exit-hygiene contract (stdout empty; stderr only
-# token lines on exit 0; one line ending with the docs pointer on exit 1), so a new case cannot skip it.
+# token lines on exit 0; one line ending with the docs pointer on exit 1) unless the case passes hygiene=False.
 # ---------------------------------------------------------------------------------------------------------------
 
 _LIB_PR_DIFF_SH = _SCRIPT.parent / "_pr-diff-lib.sh"
 _SCRIPTS_DOC = _SCRIPT.parents[3] / "docs" / "scripts.md"
 _SUFFIX = "1700000000-gh1208"
 _HALT_POINTER = f'see docs/scripts.md § "{CONTEXT_FILES_HALT_HEADING}"'
-# Holds the run at its first enrichment `cat-file -s`, after the lane `.diff` temps are cut and before any other lane temp exists.
+# The hold fires after the lane `.diff` temps exist and before any other lane temp does.
 _HOLD_AT_FIRST_ENRICHMENT_CAT_FILE = {"subcommand": "cat-file", "match": ["-s"]}
 
 _INDEX_HEADER_KEYS = (
@@ -3531,7 +3531,6 @@ class TestSignalsAndKills:
     def test_a_trapped_signal_leaves_no_temp_and_exits_with_the_signals_status(
         self, tmp_path, spawn_blocked_run, signal_number, expected_exit
     ):
-        """The hold sits after the lane `.diff` temps are cut, so the signal lands while they are live."""
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
@@ -3541,6 +3540,8 @@ class TestSignalsAndKills:
         held_temps = _dot_entries(repo)
         assert any(f".staff-sdet-{_SUFFIX}.diff." in name for name in held_temps), held_temps
 
+        # The signal goes out while the git call is held and the hold is released after, so the trap runs when
+        # the held call returns; releasing first lets the script finish with status 0.
         process.send_signal(signal_number)
         release.write_text("go")
         stdout, stderr = process.communicate(timeout=60)
@@ -5674,10 +5675,9 @@ def _worst_case_calls(source: str, call: str) -> list[tuple[int, int]]:
 
 
 def test_worst_case_call_time_under_bash_timeout():
-    """The caps are the script's only time bound, and the Bash tool's 600 s maximum bounds only the caller's wait: each
-    source's worst-case call list, with every call at its cap and a 2 s kill grace on each capped call, plus 60 s for the
-    uncapped local work this test cannot measure, stays under 600 s. `timeout: 600000` is the form the repo already passes."""
-    # The Bash tool's documented maximum timeout, 600000 ms (docs/scripts.md, the bullet stating the capped calls' sum).
+    """The caps are the script's only time bound: each source's worst-case call list, with every call at its cap and a kill
+    grace on each capped call, plus a margin for uncapped local work this test cannot measure, stays under the caller's wait."""
+    # Source for the 600: the Bash tool's `timeout` parameter documentation ("max 600000 for a foreground command").
     bash_tool_maximum_seconds, margin_seconds, kill_grace_seconds = 600, 60, 2
     for source in ("staged", "working-tree", "cumulative", "expect-diff"):
         for call in ("list", "lanes"):
@@ -6152,7 +6152,7 @@ class TestRemainingWiring:
 class TestNamedCases:
     def test_exit_hygiene_token_lines_only(self, tmp_path):
         """A happy round prints only token lines on stderr and nothing on stdout, and the helper every run goes through
-        rejects a polluted result, so a new case cannot skip the check."""
+        rejects a polluted result."""
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
