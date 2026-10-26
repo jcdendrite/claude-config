@@ -367,7 +367,9 @@ def _spawn_counts_by_agent_type(
                     continue
                 # A malformed spawn block's non-dict input or non-string
                 # subagent_type counts as unknown, not an abort. Attribution above
-                # still raises on a non-string timestamp or non-dict message.
+                # still raises on a non-string timestamp. The message and content
+                # reads in this loop still raise on a non-dict message or a
+                # non-iterable content.
                 spawn_input = block.get("input")
                 stype = spawn_input.get("subagent_type") if isinstance(spawn_input, dict) else None
                 if not isinstance(stype, str) or not stype:

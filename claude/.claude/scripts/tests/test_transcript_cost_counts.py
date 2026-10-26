@@ -76,8 +76,9 @@ class TestSpawnCountsByAgentType:
     def test_spawn_nested_inside_a_subagent_is_counted(self):
         """A record flagged isSidechain: true counts alongside a main-thread one.
         Record-level fixture: real transcripts keep flagged records in
-        <session>/subagents/*.jsonl, which the cmd_cost_counts layout tests
-        below cover."""
+        <session>/subagents/*.jsonl, which
+        TestCostCounts.test_reviewers_spawned_inside_subagent_files_count_alongside_the_main_thread_orchestrator
+        covers."""
         records = [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
@@ -320,8 +321,8 @@ class TestCostCounts:
         """A sidechain record's dispatch adds a spawn row but opens no
         code-review round: only a main-thread dispatch is a round. Record-level
         fixture with the flagged record inline in the main file; real
-        transcripts keep it under <session>/subagents/ (see the layout tests
-        below)."""
+        transcripts keep it under <session>/subagents/ (see
+        test_reviewers_spawned_inside_subagent_files_count_alongside_the_main_thread_orchestrator)."""
         self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
         _write_jsonl(fake_projects / "sess.jsonl", [
             # Carries branch "feat" to the sidechain record; without it the
@@ -486,6 +487,48 @@ class TestCostCounts:
         assert "| ciso-reviewer | 1 |" in feat_b_out
         assert "| **total** | **1** |" in feat_b_out.split("### Subagent spawns")[1]
         assert "staff-sdet" not in feat_b_out
+
+    def test_nested_spawn_after_a_branch_switch_leaves_its_dispatching_round_on_the_earlier_branch(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """A main-thread review-orchestrator dispatch on feat-a opens a round and a spawn there. The main
+        thread then switches to feat-b, and a reviewer the orchestrator spawns after the switch counts
+        under feat-b, so the round and its nested reviewer split across branches. Attributing the
+        nested spawn by its dispatching record's tag would count it under feat-a instead."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator", "staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="feat-a", ts=_attr_ts(0),
+                content=[_agent_use("o1", "review-orchestrator")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-b", ts=_attr_ts(2)),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-orchestrator", "o1",
+            [
+                _asst(
+                    "claude-opus-4-7", branch="feat-a", sidechain=True, ts=_attr_ts(3),
+                    content=[_agent_use("r1", "staff-sdet")],
+                ),
+            ],
+            agent_type="review-orchestrator",
+        )
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat-a", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        feat_a_out = capsys.readouterr().out
+        assert "| code-review | 1 |" in feat_a_out
+        assert "| review-orchestrator | 1 |" in feat_a_out
+        assert "| staff-sdet |" not in feat_a_out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat-b", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        feat_b_out = capsys.readouterr().out
+        assert "| code-review | 0 |" in feat_b_out
+        assert "| staff-sdet | 1 |" in feat_b_out
+        assert "| review-orchestrator |" not in feat_b_out
 
     def test_flagged_slash_command_record_in_a_subagent_file_opens_no_round(
         self, fake_projects, tmp_path, monkeypatch, capsys,
