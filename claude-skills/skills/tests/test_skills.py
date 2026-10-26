@@ -1905,22 +1905,6 @@ class TestRespondPrEditBoundary:
         )
 
 
-class TestRespondPrDivergencePrecheckFailure:
-    """Pins respond-pr step 3's failure arm.
-
-    The precheck script exits non-zero when it could not run (no default branch, a failed fetch, or a trial
-    merge git could not complete). The skill parses only CONFLICT and CLEAN, so without this arm a failed
-    check would read as neither and the skill would proceed unchecked. The full failed-recipe sentence is
-    pinned in TestRespondPrStep3FailedRecipeSentence; this test is the cheap failure-arm check.
-    """
-
-    def test_step3_aborts_when_the_precheck_exits_non_zero(self):
-        step3_text = " ".join(_respond_pr_step3_text().split())
-
-        assert "When the recipe exits non-zero, re-run it once." in step3_text
-        assert "abort the skill" in step3_text
-
-
 class TestContinuityFileBucketCrosscheck:
     """Pin the autonomous-vs-authorization bucket cross-check in continuity skills.
 
@@ -5362,6 +5346,21 @@ def test_ready_for_review_names_the_stack_base_key_and_the_base_branch_line() ->
     assert 'echo "Base branch: $BASE_BRANCH"' in divergence_script_source
 
 
+def test_ready_for_review_step2_gates_the_fallback_git_diff_base_on_the_charset() -> None:
+    """Step 2's pre-existing-failure check runs `git diff origin/<base>` with a base
+    that can come from a PR's `baseRefName`, so the skill asks the engineer instead
+    of running it when `<base>` holds characters outside the set pr-description
+    allows. Deleting the sentence leaves a base name with shell metacharacters
+    reaching the command line."""
+    step2_text = " ".join(
+        _raw_heading_section_text(_skill_file("ready-for-review"), "## 2. Verification (halt on fail)").split()
+    )
+    assert (
+        "If `<base>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, or starts with `-`, "
+        "ask the engineer instead of running that `git diff`."
+    ) in step2_text
+
+
 def test_claude_hook_review_section10_handoff_rules_present() -> None:
     """Section 10 hands the reviewers a hook path plus its diff, never a branch
     or range name, and says so when the diff is unavailable."""
@@ -6206,9 +6205,9 @@ _PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES: dict[str, tuple[str, str]] = {
         "file it names. Unless it exits 0 and prints a `TITLE` line, halt with every `REASON` line, or the "
         "command's error if it printed none, and open no PR. Otherwise open the PR with "
         "`python3 ~/.claude/scripts/pr-create-preflight.py create '<path>' && gh pr create --title \"<title>\" "
-        "--body-file <path>`, adding `--base \"<name>\"` to the `gh pr create` half when step 6 printed "
-        "`Base branch: <name>`, as one Bash call, writing the `TITLE` line's value, the `--base` name when "
-        "one is added, and the same path as **literal text** — not a `$VAR` or a command substitution "
+        "--body-file <path>`, as one Bash call. When step 6 printed `Base branch: <name>`, add "
+        "`--base \"<name>\"` to the `gh pr create` half. Write the `TITLE` line's value, the `--base` name "
+        "when one is added, and the same path as **literal text** — not a `$VAR` or a command substitution "
         "holding any of them. `gh pr create --body-file` is scanned by a redaction "
         "gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it "
         "fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, "
@@ -7203,16 +7202,27 @@ _PINNED_STEP6_BEHIND_BASE_CLAUSE = (
 )
 
 # Step 1's in-sync precondition: the bullet step 6 hands a conflict back to.
-# The pin also holds the sentence requiring step 7's completion marker to record
-# the post-resync HEAD SHA that the push-gate hook checks. No other test pins
-# that sentence, so trimming it needs a deliberate update here.
+# The pin also holds the PR-base-mismatch stop (behind > 0 and the captured PR
+# base differs from the branch the recipe names: run no sync, tell the engineer,
+# stop) and the sentence requiring step 7's completion marker to record the
+# post-resync HEAD SHA that the push-gate hook checks. No other test pins those
+# two rules, so trimming either needs a deliberate update here.
 _PINNED_STEP1_IN_SYNC_BULLET = (
     "**Branch is in sync with `origin/<base>`.** Run the canonical detection "
     "recipe (see `git-feature-branch-sync/SKILL.md` § \"Detecting "
-    "divergence\"). If behind > 0, invoke `/git-feature-branch-sync`, then "
-    "re-run step 2 against the synced tree; step 7's completion marker must "
-    "record the post-resync HEAD SHA so it matches what the push-gate hook "
-    "checks."
+    "divergence\"). If behind > 0 and step 1 captured an existing PR's base "
+    "that differs from the branch the recipe's `Default branch:` or "
+    "`Base branch:` line names, run no sync: tell the engineer the two "
+    "disagree, and stop. Otherwise, if behind > 0, invoke "
+    "`/git-feature-branch-sync`, then re-run step 2 against the synced tree; "
+    "step 7's completion marker must record the post-resync HEAD SHA so it "
+    "matches what the push-gate hook checks."
+)
+
+# Step 1's capture bullet: the source of the PR base the in-sync bullet compares.
+_PINNED_STEP1_PR_BASE_CAPTURE_SENTENCE = (
+    "If a PR exists for the branch, capture its number and base: "
+    "`gh pr view --json number,baseRefName`."
 )
 
 
@@ -7265,8 +7275,25 @@ class TestReadyForReviewStep6BehindBaseRule:
             _raw_heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING),
             context=(
                 "ready-for-review/SKILL.md: step 1's in-sync precondition has drifted from its pinned clause "
-                "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
+                "(the pin also holds the PR-base-mismatch stop: behind > 0 and the captured PR base differs "
+                "from the branch the recipe names, so run no sync, tell the engineer, and stop; and the rule "
+                "that step 7's completion marker records the post-resync HEAD SHA)"
             ),
+        )
+
+    def test_step1_captures_an_existing_prs_number_and_base_for_the_in_sync_mismatch_stop(self) -> None:
+        """The in-sync bullet's mismatch stop compares against the PR base that
+        step 1 captured, so dropping the `baseRefName` capture leaves that stop
+        with nothing to compare. Matched as a whitespace-collapsed substring:
+        the capture bullet continues with the no-PR sentence past the pinned
+        words."""
+        step1_collapsed = " ".join(
+            _heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING).split()
+        )
+
+        assert " ".join(_PINNED_STEP1_PR_BASE_CAPTURE_SENTENCE.split()) in step1_collapsed, (
+            "ready-for-review/SKILL.md: step 1 no longer captures an existing PR's number and base "
+            "with `gh pr view --json number,baseRefName`"
         )
 
 
@@ -7283,6 +7310,28 @@ _PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE = (
     "`/git-feature-branch-sync`, because its detection runs the same script."
 )
 
+# respond-pr step 3's CONFLICT bullet: its bold label, then abort naming the PR
+# number, route to /git-feature-branch-sync, and apply no FIXED changes onto a
+# stale tree, then the next bullet's `- **Trial merge is CLEAN.**` marker and
+# label. The leading label binds the clauses to CONFLICT and the trailing label
+# bounds the pin, so a clause appended inside the bullet fails it.
+_PINNED_RESPOND_PR_STEP3_CONFLICT_BULLET = (
+    "- **Trial merge reports CONFLICT.** Abort the skill — print a message naming "
+    "the PR number (captured in step 1) and route the user to "
+    "`/git-feature-branch-sync`. Do not apply `FIXED` changes onto a stale tree; "
+    "replies acknowledging fixes would refer to a commit the reviewer cannot "
+    "cleanly resolve. - **Trial merge is CLEAN.**"
+)
+
+# respond-pr step 3's CLEAN bullet: its bold label, then proceed even when behind,
+# since only an actual conflict blocks, then the next bullet's
+# `- **Recipe exits non-zero.**` marker and label as the right bound.
+_PINNED_RESPOND_PR_STEP3_CLEAN_BULLET = (
+    "- **Trial merge is CLEAN.** Proceed even when behind > 0. Small drift is "
+    "normal during review, and the precheck only blocks on actual conflicts. "
+    "- **Recipe exits non-zero.**"
+)
+
 
 def _respond_pr_step3_text() -> str:
     """Raw text of respond-pr's step 3 list item, from its `3.` marker to the
@@ -7297,9 +7346,16 @@ def _respond_pr_step3_text() -> str:
 
 
 class TestRespondPrStep3FailedRecipeSentence:
-    """Pin the whole failed-recipe sentence in respond-pr step 3. Deleting the
-    do-not-route clause, the PR number, the already-re-run fact, the stderr or
-    the next action fails it, as does appending a contradicting clause."""
+    """Pin respond-pr step 3's failed-recipe sentence, its CONFLICT bullet and
+    its CLEAN bullet. A non-zero recipe exit parses as neither CONFLICT nor
+    CLEAN, so without the failed-recipe arm the skill would proceed with no
+    divergence check. Deleting the do-not-route clause, the PR number, the
+    already-re-run fact, the stderr or the next action fails the failed-recipe
+    pin, as does appending a contradicting clause. That pin passes
+    `_assert_pinned_clause_right_bounded` only because its bullet is the last
+    in step 3. An indented sibling added directly after that bullet fails with
+    an "unbounded trailing content" message. A sibling or paragraph added after a blank line,
+    or a line starting `-` or `#` at column 0, passes."""
 
     def test_step3_reruns_a_failed_recipe_once_then_aborts_without_routing_to_sync(self) -> None:
         _assert_pinned_clause_right_bounded(
@@ -7312,24 +7368,56 @@ class TestRespondPrStep3FailedRecipeSentence:
             ),
         )
 
+    def test_step3_aborts_on_a_trial_merge_conflict_and_routes_to_sync_without_applying_fixes(self) -> None:
+        """Matched as a whitespace-collapsed substring that starts at the
+        CONFLICT label and ends at the next bullet's CLEAN label:
+        `_assert_pinned_clause_right_bounded` finds no structural boundary after
+        a nested bullet, so the next bullet's label is the right bound. Swapping
+        the label, deleting the abort, the PR number, the route to
+        `/git-feature-branch-sync` or the no-`FIXED`-onto-a-stale-tree clause,
+        or appending a clause inside the bullet fails it."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert " ".join(_PINNED_RESPOND_PR_STEP3_CONFLICT_BULLET.split()) in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3's CONFLICT bullet has drifted from its pinned text "
+            "(CONFLICT label, abort naming the PR number, route to /git-feature-branch-sync, "
+            "no FIXED changes onto a stale tree, then the CLEAN label)"
+        )
+
+    def test_step3_proceeds_on_a_clean_trial_merge_even_when_behind(self) -> None:
+        """Matched as a whitespace-collapsed substring that starts at the CLEAN
+        label and ends at the next bullet's recipe-failure label, for the same
+        reason as the CONFLICT pin. Swapping the label, deleting the proceed
+        clause, or appending a clause inside the bullet fails it."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert " ".join(_PINNED_RESPOND_PR_STEP3_CLEAN_BULLET.split()) in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3's CLEAN bullet has drifted from its pinned text "
+            "(CLEAN label, proceed even when behind, then the recipe-failure label)"
+        )
+
 
 # git-feature-branch-sync keeps its recipe examples on the default branch's
 # literal names, so the preamble names the base the recipe reports as what they
 # stand for. The detection section tells an agent that arrives from the
 # SessionStart advisory, which never reads the stack-base key, to sync to the
-# branch the recipe names, and to stop on a failed recipe. Both clauses are
+# branch the recipe names, and to stop on a failed recipe. It also says why: the
+# hook never reads the stack-base key, so its advisory counts against the default
+# branch. All three clauses (placeholder, advisory redirect, advisory reason) are
 # whitespace-collapsed substrings: the detection block's paragraph continues past
 # its last pinned word.
 _PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE = (
     "use `main` / `origin/main` as the placeholder for the base the recipe reports"
 )
 _PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE = (
+    "After the SessionStart advisory, run the recipe and sync to the branch "
+    "its `Default branch:` or `Base branch:` line names, not the advisory's; "
+    "if the recipe exits non-zero, report its stderr and stop, and sync "
+    "nothing against the advisory's branch."
+)
+_PINNED_SYNC_ADVISORY_REASON_CLAUSE = (
     "The hook never reads `git config branch.<branch>.gh-merge-base`, so on a "
-    "stacked branch its advisory counts against the default branch. After that "
-    "advisory, run the recipe and sync to the branch its `Default branch:` or "
-    "`Base branch:` line names, not the advisory's; if the recipe exits "
-    "non-zero, report its stderr and stop, and sync nothing against the "
-    "advisory's branch."
+    "stacked branch its advisory counts against the default branch."
 )
 _REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE = "Same detection primitive everywhere"
 
@@ -7339,8 +7427,11 @@ def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() ->
     recipe reports, and after the SessionStart advisory (default-branch only) the
     agent runs the recipe and syncs to the branch its `Default branch:` or
     `Base branch:` line names, stopping when the recipe exits non-zero. Deleting
-    either clause lets an agent primed by the advisory run a literal
-    `git rebase origin/main` on a stacked branch."""
+    the placeholder clause or the advisory-redirect clause lets an agent primed
+    by the advisory run a literal `git rebase origin/main` on a stacked branch.
+    Deleting the advisory-reason clause drops the sentence that the hook never
+    reads the stack-base key and so counts against the default branch, which is
+    why the redirect is needed."""
     skill_md_path = _skill_file("git-feature-branch-sync")
     lines = skill_md_path.read_text().splitlines(keepends=True)
     detecting_start, detecting_end = _section_between(lines, "## Detecting divergence", skill_md_path)
@@ -7353,6 +7444,9 @@ def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() ->
     assert " ".join(_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE.split()) in detecting_collapsed, (
         f"{skill_md_path}: '## Detecting divergence' no longer tells the agent to sync to the branch the recipe "
         "names rather than the advisory's, or no longer stops on a failed recipe"
+    )
+    assert " ".join(_PINNED_SYNC_ADVISORY_REASON_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer says the hook never reads the stack-base key"
     )
     assert _REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE not in skill_md_path.read_text(), (
         f"{skill_md_path}: the sentence calling the hook and the recipe one uniform detection primitive is back"

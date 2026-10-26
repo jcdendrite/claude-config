@@ -1489,8 +1489,8 @@ _lib_stack_base_git() {
 # `git check-ref-format "refs/heads/<value>"`, holds a character outside
 # [A-Za-z0-9._/-], is `HEAD`, or names the branch itself.
 # Callers capture with `rc=0; out=$(...) || rc=$?`: that suspends `set -e`
-# inside this function, so every status is tested explicitly, and a caller
-# treats every status other than 0 and 1 as a stop.
+# inside this function, so every status is tested explicitly.
+# A caller treats every status other than 0 and 1 as a stop.
 _lib_configured_stack_base() {
   local stderr_prefix="$1" repo_root="$2"
   local head_ref head_status=0 branch key value config_status=0 ref_format_status=0

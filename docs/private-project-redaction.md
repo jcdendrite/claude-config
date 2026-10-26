@@ -592,7 +592,9 @@ paragraphs list. Surfaces it never scans include `gh pr comment`, `gh pr review`
 classifies as binary or a `.gitattributes` rule marks `-diff`. A later commit
 scans a written file's added lines, never its path. The hook never reads the
 current branch name, so `git push` and a `gh pr create` without `--head`
-publish it unscanned. The backstop is a repo-owned pre-commit or
+publish it unscanned. A `gh pr create` without `--base` likewise publishes
+the `branch.<branch>.gh-merge-base` value unscanned; the hook header's Known
+gaps list states the conditions. The backstop is a repo-owned pre-commit or
 server-side check; see [Limitations](security-hardening.md#limitations).
 
 Four narrower gaps also leave content unscanned: the message of a commit with

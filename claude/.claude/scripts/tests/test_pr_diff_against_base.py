@@ -51,11 +51,12 @@ def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str
     pr-diff-against-base.sh's default-branch fallback path.
 
     state_reply answers the stack-base path's `gh pr view --json
-    state,baseRefName --jq '.state, .baseRefName'` call: the raw stdout is
-    printed verbatim with exit 0 (so "" is an exit-0 empty reply) only when
-    the argument after `--jq` is exactly `.state, .baseRefName`, so an
-    inverted or altered filter reads as a gh failure. None leaves that call
-    failing with exit 1.
+    state,baseRefName --jq '.state, .baseRefName'` call by printing its raw
+    value verbatim with exit 0, so "" is an exit-0 empty reply.
+    The shim answers only when the argument after `--jq` is exactly
+    `.state, .baseRefName`, so an inverted or altered filter reads as a gh
+    failure.
+    None leaves that call failing with exit 1.
     """
     body = "sys.exit(1)" if base_ref is None else f"print({base_ref!r})"
     state_body = "sys.exit(1)" if state_reply is None else f"sys.stdout.write({state_reply!r})"

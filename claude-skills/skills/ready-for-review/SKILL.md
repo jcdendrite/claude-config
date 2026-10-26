@@ -39,9 +39,12 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success.
 - Do not quote the raw `session_id` into prose that may reach the PR body.
 - See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
-- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`.
-- If no PR exists, step 5 authors the body and step 8 opens the PR from it. When the engineer has said this branch is stacked on another branch, run `git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet. `<branch>` is the current branch (`git branch --show-current`). Only `<stack-base>` comes from the engineer's words, with no `origin/` prefix and never inferred. Run the command only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, and neither starts with `-`. Otherwise, ask the engineer. Halt unless the next bullet's recipe prints `Base branch: <stack-base>`. With the key set, every base-dependent step uses it or stops.
-- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. If none exists, step 5 authors the body and step 8 opens the PR from it.
+- **Stacked branch (only when no PR exists).** When the engineer has said this branch is stacked on another branch, run `git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet. `<branch>` is the current branch (`git branch --show-current`).
+  - Only `<stack-base>` comes from the engineer's words, with no `origin/` prefix and never inferred.
+  - Run the command only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, and neither starts with `-`. Otherwise, ask the engineer.
+  - Halt unless the next bullet's recipe prints `Base branch: <stack-base>`. With the key set, every base-dependent step uses it or stops.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0 and step 1 captured an existing PR's base that differs from the branch the recipe's `Default branch:` or `Base branch:` line names, run no sync: tell the engineer the two disagree, and stop. Otherwise, if behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 
@@ -58,7 +61,7 @@ test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff contains no executable code — only markdown, plans, or non-executable config. Examples: skill bodies under `.claude/skills/**`, plans under `.claude/plans/**`, agent configs under `.claude/agents/**`, top-level `*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or application source — even alongside docs — run step 2.
 
-**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for the existing owner or open a separate branch. Rebase once the default branch is green.
+**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for the existing owner or open a separate branch. If `<base>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, or starts with `-`, ask the engineer instead of running that `git diff`. Rebase once the default branch is green.
 
 **Test-to-fit is forbidden:** fix the code, not the test — unless the product requirement genuinely changed.
 
@@ -74,7 +77,7 @@ On a cache miss, compute the **cumulative** PR-vs-base diff — not staged chang
 ~/.claude/scripts/pr-diff-against-base.sh --record --diff-file
 ```
 
-**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged or, when the script printed a `using branch.<b>.gh-merge-base` line, because that base already holds this branch's commits — halt `/ready-for-review` and report both facts.
+**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first. Exit 0 with no output means the branch's cumulative diff against its base is empty. That is usually because this branch's PR is already merged. When the script printed a `using branch.<b>.gh-merge-base` line, the cause can instead be that the stack base already holds this branch's commits. Halt `/ready-for-review` and report the empty diff and its cause.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
@@ -105,13 +108,8 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 
 ## 5. PR description (unconditional; warn + fix)
 
-Invoke the `pr-description` skill via the Skill tool. It owns body content in
-both directions and runs the same checks either way; the standard lives there,
-not here — don't restate it.
-Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), and the branch on step 1's `Base branch:` line (if one printed). With a PR open
-it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
-body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
+Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass.
+Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), and the branch on step 1's `Base branch:` line (if one printed). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Final hygiene recheck (halt on fail)
 
@@ -145,7 +143,7 @@ Otherwise, record the completed gate:
 
 ## 8. Create PR if missing (skip if PR already exists)
 
-Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." The body is step 5's file; this step composes none of its own. Run `python3 ~/.claude/scripts/pr-create-preflight.py create '<path>'`, writing step 5's reported path as one single-quoted literal word. It derives the title from the branch and checks the path and the file it names. Unless it exits 0 and prints a `TITLE` line, halt with every `REASON` line, or the command's error if it printed none, and open no PR. Otherwise open the PR with `python3 ~/.claude/scripts/pr-create-preflight.py create '<path>' && gh pr create --title "<title>" --body-file <path>`, adding `--base "<name>"` to the `gh pr create` half when step 6 printed `Base branch: <name>`, as one Bash call, writing the `TITLE` line's value, the `--base` name when one is added, and the same path as **literal text** — not a `$VAR` or a command substitution holding any of them. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, including a retry after a denial, a failure or a rewrite of the body file. A stop it prints halts as above.
+Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." The body is step 5's file; this step composes none of its own. Run `python3 ~/.claude/scripts/pr-create-preflight.py create '<path>'`, writing step 5's reported path as one single-quoted literal word. It derives the title from the branch and checks the path and the file it names. Unless it exits 0 and prints a `TITLE` line, halt with every `REASON` line, or the command's error if it printed none, and open no PR. Otherwise open the PR with `python3 ~/.claude/scripts/pr-create-preflight.py create '<path>' && gh pr create --title "<title>" --body-file <path>`, as one Bash call. When step 6 printed `Base branch: <name>`, add `--base "<name>"` to the `gh pr create` half. Write the `TITLE` line's value, the `--base` name when one is added, and the same path as **literal text** — not a `$VAR` or a command substitution holding any of them. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, including a retry after a denial, a failure or a rewrite of the body file. A stop it prints halts as above.
 
 Confirm the body landed by re-fetching with `gh pr view`, capture the PR number, and once that re-fetch succeeds run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence" with that number. A failed re-fetch, a failed `render`, or a failed or denied `gh pr edit` is a blocking stop per `code-review/SKILL.md` § "Review-narrative ledger": name the PR number, say it exists without the block, and neither launch the CI watch nor report ready. Otherwise launch the CI watch now (see "CI watch (out-of-band)" below).
 
