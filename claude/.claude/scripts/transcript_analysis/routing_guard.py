@@ -1,38 +1,21 @@
 """The routing-guard command: `--capture` publishes one write-once file per sampled branch, else it computes the guard.
 
 A file holds the token counts of a branch's review loops, so a later run can price them at the
-rate table current then. Compute reads no transcripts. It opens the note and, by exact name, each
-sampled (`on` or `off`) branch's capture file, and prices every loop at the current rate table. It prints a status
-line (PASSED, FAILED, or NOT RUN with each reason) and owner-only notices, never a figure. The figures go only to an
-`--out` file.
+rate table current then. `docs/transcript-analysis.md` § "routing-guard" states what compute reads and prints.
 
-Imports author_outcome, corpus, denials, ledger_common, pricing, render, review_rounds, and scope by module
-(attribute access, not by name), matching review_rounds.py's own convention.
-
-OUTPUT INVARIANT: no string read from transcript content or from a capture file reaches output, with one exception. The
-opaque `requestId` that each of pricing.dedup_turns_by_request_id's three rate-limited stderr
-prints carries (a usage-drift warning and the merged and rejected notices) can appear on stderr,
-which the DO NOT PUBLISH banner covers. Beyond that, compute prints only fixed messages and note-line locators.
-Capture prints those and exactly these computed values, and nothing else:
-- the project-directory progress count (`scanning project directory k of n`);
-- each row's round, loop, growth-defined and joined-denied-open counts;
-- the `published N files` count of a publish failure;
-- the UTC minute of a routing deny on an unlisted branch.
-An unexpected failure prints only what `cmd_routing_guard`'s docstring lists.
-No line carries a branch name, a config-dir path or an account label.
-
-The fields extracted from a main-thread record are:
-- each record's `type`, `timestamp`, `isSidechain` and `requestId`, and its branch through
-  review_rounds._session_record_branches, which this module never replaces with a read of its own;
-- an assistant record's `message.model` and `message.usage` token fields, and its content blocks'
-  `type`, `name` and `id`, plus the round-open fields review_rounds.detect_round_windows reads;
-- a Skill tool_use's `input.skill` and an Agent tool_use's `input.subagent_type`, through
-  review_rounds, and the Bash `input.command`, read only by author_outcome's marker matcher;
-- a tool_result's `tool_use_id`, `is_error` and text, read only to classify a hook denial;
-- an attachment record's `hookName` and `blockingError`, read only to classify a hook denial.
-
-Nothing else, in particular `input.args`, `prompt`, `description` and assistant text, is extracted,
-and no denial text is stored or printed.
+OUTPUT INVARIANT, each clause pinned by the tests it names:
+- Free text (assistant and user message text, `Skill` and `Agent` arguments, denial text, a dispatch's meta description)
+  reaches neither a capture file nor stdout or stderr. Denial text is read only to classify a record.
+  `TestFreeText` in test_transcript_routing_guard_capture.py.
+  No line names a branch, a config-directory path or an account label. `_invoke_routing_guard` in
+  _routing_guard_helpers.py asserts, on every exit, that no note branch, note config-dir cell, absolute cell's final
+  path segment or `--config-dir` argument appears in either stream.
+- A capture file stores `message.model` strings verbatim. Every other string it holds is a fixed label.
+  `TestGoldenFile` there.
+- A transcript `requestId` can reach stderr, and nothing else, through pricing.dedup_turns_by_request_id's rate-limited
+  prints. The DO NOT PUBLISH banner covers it. `TestFreeText` there.
+- Compute writes no string read from a capture file, a model string included, to stdout, stderr or the `--out` file.
+  `TestPricing` and `TestCaptureFiles` in test_transcript_routing_guard_compute.py.
 """
 from __future__ import annotations
 
@@ -75,6 +58,7 @@ _BOOTSTRAP_SEED = 0
 # pricing.py's rates are dollars per million tokens.
 _TOKENS_PER_MTOK = 1_000_000
 # The root of the checkout holding this module. Path.resolve() follows stow's symlinks into it.
+# Capture refuses a cwd outside a worktree of it, because scope._repo_scoped_project_slugs scopes the read to the cwd's repo.
 _CHECKOUT_ROOT = Path(__file__).resolve().parents[4]
 
 # Placeholder leaf for the git work tree check on the captures directory, which must see the directory itself.
@@ -91,6 +75,12 @@ _DO_NOT_PUBLISH_BANNER = (
     "`docs/private-project-redaction.md` section \"A wider corpus goes to the owner, never into a public artifact\""
     " allows a public artifact to state only whether the guard passed and whether the default flipped.\n"
     "Run and read routing-guard outside any agent session."
+)
+
+_DROPPED_DENY_NOTICE = (
+    f"{_COMMAND}: a routing-labeled denial whose tool_use is not in its session was not counted;"
+    " if it is a real routing deny, its branch may be missing from the note;"
+    ' see docs/transcript-analysis.md routing-guard "Deny reconciliation"'
 )
 
 _NOTE_COLUMN_COUNT = 5
@@ -269,6 +259,7 @@ class _ScanFacts:
     rounds_by_branch: dict[str, list[_RoundFacts]] = field(default_factory=dict)
     denies: list[_DenyFact] = field(default_factory=list)
     seen_deny_ids: set[str] = field(default_factory=set)
+    dropped_deny_without_tool_use: bool = False
 
 
 class _CaptureScope(NamedTuple):
@@ -293,6 +284,14 @@ def _expand_note_config_dir(cell: str, line_no: int) -> Path:
     if not os.path.isabs(cell):
         raise _NoteRefusal(line_no, "the config directory is not absolute")
     return Path(cell)
+
+
+def _resolve_note_config_dir(config_dir: Path, line_no: int) -> Path:
+    """`config_dir` resolved, or a _NoteRefusal when resolving raises (an embedded NUL, a symlink loop)."""
+    try:
+        return config_dir.resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise _NoteRefusal(line_no, "the config directory cannot be resolved") from None
 
 
 def _validate_note_arm_and_pilots(line_no: int, arm: str, round2_pilot: str, architect_pilot: str) -> None:
@@ -320,6 +319,7 @@ def _parse_note(text: str) -> list[_NoteRow]:
             raise _NoteRefusal(line_no, "wrong column count")
         config_cell, branch, arm, round2_pilot, architect_pilot = cells
         config_dir = _expand_note_config_dir(config_cell, line_no)
+        resolved_config_dir = _resolve_note_config_dir(config_dir, line_no)
         if not branch or branch != branch.strip():
             raise _NoteRefusal(line_no, "unknown branch value")
         _validate_note_arm_and_pilots(line_no, arm, round2_pilot, architect_pilot)
@@ -328,7 +328,7 @@ def _parse_note(text: str) -> list[_NoteRow]:
         if branch in seen_branches:
             raise _NoteRefusal(line_no, "the branch is listed twice")
         seen_branches.add(branch)
-        rows.append(_NoteRow(line_no, config_dir.resolve(), branch, arm, round2_pilot, architect_pilot))
+        rows.append(_NoteRow(line_no, resolved_config_dir, branch, arm, round2_pilot, architect_pilot))
     return rows
 
 
@@ -337,7 +337,11 @@ def _load_note_rows(note_arg: str) -> list[_NoteRow]:
     if not os.path.isabs(note_arg):
         _refuse(f"{_COMMAND}: --note must be an absolute path", 2)
     note_path = Path(note_arg)
-    if ledger_common._ledger_path_is_git_tracked(note_path.resolve(), _COMMAND):
+    try:
+        resolved_note_path = note_path.resolve()
+    except (OSError, ValueError, RuntimeError):
+        _refuse(f"{_COMMAND}: --note cannot be resolved to a path", 2)
+    if ledger_common._ledger_path_is_git_tracked(resolved_note_path, _COMMAND):
         _refuse(f"{_COMMAND}: --note is inside a git working tree; keep the note outside any git working tree", 2)
     try:
         text = note_path.read_bytes().decode("utf-8")
@@ -600,14 +604,51 @@ def _hook_denials_in_record(rec: dict) -> Iterable[tuple[str, str, str]]:
                 yield denial[0], "", denial_text if isinstance(denial_text, str) else ""
 
 
+def _main_thread_tool_use_ids(records: list[dict]) -> tuple[set[str], set[str]]:
+    """(the ids of this session's main-thread tool_use blocks, those among them that are `Skill(code-review)` calls)."""
+    tool_use_ids: set[str] = set()
+    code_review_skill_ids: set[str] = set()
+    for rec in records:
+        if rec.get("isSidechain") or rec.get("type") != "assistant":
+            continue
+        for block in review_rounds._assistant_content_blocks(rec):
+            if not (
+                isinstance(block, dict) and block.get("type") == "tool_use"
+                and isinstance(block.get("id"), str) and block["id"]
+            ):
+                continue
+            tool_use_ids.add(block["id"])
+            skill_input = block.get("input")
+            if block.get("name") == "Skill" and not (isinstance(skill_input, dict) and isinstance(skill_input.get("skill"), str)):
+                continue  # _skill_block_round_skill raises on a Skill block whose input or skill is not the expected type
+            if review_rounds._skill_block_round_skill([block]) == author_outcome._CODE_REVIEW_SKILL:
+                code_review_skill_ids.add(block["id"])
+    return tool_use_ids, code_review_skill_ids
+
+
 def _record_routing_denies(scan: _ScanFacts, records: list[dict], record_branches: list[str]) -> set[str]:
-    """Add this session's routing-gate denies to `scan`, deduped by tool_use_id, and return their tool_use_ids."""
+    """Add this session's routing-gate denies to `scan`, deduped by non-empty tool_use_id, and return those ids.
+
+    A tool_use_id that is not a string counts as empty.
+
+    A deny the harness attests with a `hookName` counts as it stands. A deny identified only by its text
+    signature counts only when its tool_use_id is a `Skill(code-review)` tool_use of the same session, so an
+    ordinary tool error that carries the gate's wording does not. A dropped one whose id matches no tool_use of
+    the session sets `scan.dropped_deny_without_tool_use`, because the deny may be real with its tool_use elsewhere.
+    """
+    tool_use_ids, code_review_skill_ids = _main_thread_tool_use_ids(records)
     denied_tool_use_ids: set[str] = set()
     for idx, rec in enumerate(records):
         if rec.get("isSidechain"):
             continue
         for tool_use_id, hook_name, message in _hook_denials_in_record(rec):
             if denials._denial_hook_label(hook_name, message) != _ROUTING_DENY_LABEL:
+                continue
+            if not isinstance(tool_use_id, str):
+                tool_use_id = ""
+            if not hook_name.strip() and tool_use_id not in code_review_skill_ids:
+                if tool_use_id not in tool_use_ids:
+                    scan.dropped_deny_without_tool_use = True
                 continue
             if tool_use_id:
                 denied_tool_use_ids.add(tool_use_id)
@@ -635,7 +676,7 @@ def _record_branch_activity(scan: _ScanFacts, records: list[dict], record_branch
 def _opens_with_denied_skill(rec: dict, denied_tool_use_ids: Collection[str]) -> bool:
     return any(
         isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Skill"
-        and block.get("id") in denied_tool_use_ids
+        and isinstance(block.get("id"), str) and block["id"] in denied_tool_use_ids
         for block in (rec.get("message") or {}).get("content") or []
     )
 
@@ -834,13 +875,17 @@ def _reconcile_denies(
             refused_off_rows.add(row.line_no)
             refusals.append(
                 f"{_COMMAND}: note line {row.line_no} is listed off but this root holds a routing deny for it;"
-                " the branch was worked with the key on"
+                " the branch was worked with the key on;"
+                ' see docs/transcript-analysis.md routing-guard "Deny reconciliation" for the sanctioned note edit'
             )
     for earliest_ts in unlisted_branches.values():
         refusals.append(
             f"{_COMMAND}: a routing deny at {_utc_minute(earliest_ts)} falls on a branch the note does not list;"
-            " run review-trace --this-repo --deny-only, match the row at that minute, and list its branch as on"
-            " if it merged, else as unmerged"
+            " in a terminal outside any agent session, run review-trace with the same top-level --config-dir"
+            " given to capture and --deny-only, once with --this-repo and, if no row matches that minute,"
+            f" once with --projects='<main-project-slug>{_WORKTREE_SLUG_INFIX}*' for a removed worktree's"
+            " sessions; match the row at that minute, and list its branch as on if it merged, else as unmerged;"
+            ' see docs/transcript-analysis.md routing-guard "Deny reconciliation"'
         )
 
     first_deny_ts = _earliest_ts(deny.ts for deny in denies)
@@ -909,7 +954,11 @@ def _standing_line(line_no: int, standing: bytes | _StandingFile) -> tuple[str, 
 
 
 def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count: int) -> NoReturn:
-    action = "written" if outcome is ledger_common._PublishOutcome.WRITE_FAILED else "linked into place"
+    """Exit 4 for any outcome that left no file published. An outcome this function does not name reads "published"."""
+    action = {
+        ledger_common._PublishOutcome.WRITE_FAILED: "written",
+        ledger_common._PublishOutcome.LINK_FAILED: "linked into place",
+    }.get(outcome, "published")
     _refuse(
         f"{_COMMAND}: a capture file could not be {action}; this run published {published_count} files,"
         " and a re-run reports them already captured",
@@ -1025,6 +1074,8 @@ def _run_capture(args: argparse.Namespace) -> None:
     }
     built_line_nos = {line_no for line_no, standing in standing_by_line.items() if standing is _StandingFile.ABSENT}
     reconciliation = _reconcile_denies(scan.denies, note_rows, resolved_account_dir, built_line_nos, scan.branches)
+    if scan.dropped_deny_without_tool_use:
+        print(_DROPPED_DENY_NOTICE, file=sys.stderr)
     for notice in reconciliation.notices:
         print(notice, file=sys.stderr)
     if reconciliation.refusals:
@@ -1033,9 +1084,10 @@ def _run_capture(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     all_good = _capture_account_rows(capturable_rows, standing_by_line, scan, account_dir)
-    if pricing._format_drift_detected():
+    drift = pricing._format_drift_detected()
+    if drift:
         print(_PRICING_INTEGRITY_LINE)
-    sys.exit(0 if all_good else 3)
+    sys.exit(0 if all_good and not drift else 3)
 
 
 # --- the compute run ---------------------------------------------------------

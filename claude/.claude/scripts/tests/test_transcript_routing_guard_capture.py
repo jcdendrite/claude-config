@@ -17,31 +17,39 @@ from typing import NamedTuple
 
 import _config
 import pytest
-from transcript_analysis import pricing, review_trace, routing_guard, scope
+from transcript_analysis import ledger_common, pricing, review_trace, routing_guard, scope
 
 from ._pr_cost_helpers import _enable_pr_cost
 from ._review_round_helpers import (
     _ORCHESTRATOR_AGENT_TYPE,
     _SONNET,
     _as_sidechain,
+    _leak_sentinel,
+    _marker_write_use,
+    _orchestrator_return_record,
+    _orchestrator_spawn_record,
+)
+from ._routing_guard_helpers import (
+    _assert_git_failure_diagnostic_precedes_note_refusal,
     _digest_name,
     _environment_unchanged,
+    _install_git_not_found,
     _install_path_spies,
     _install_subprocess_recorder,
     _invoke_routing_guard,
-    _leak_sentinel,
-    _marker_write_use,
     _note_line,
     _note_row,
-    _orchestrator_return_record,
-    _orchestrator_spawn_record,
     _Outcome,
+    _path_that_resolve_rejects_as_nul,
     _RecorderPositiveControls,
     _routing_deny_record,
+    _strings_the_output_must_not_name,
+    _symlink_loop_that_resolve_rejects,
 )
 from .conftest import (
     _agent_use,
     _asst,
+    _bash_use,
     _commit,
     _compact_boundary_rec,
     _hook_deny,
@@ -134,6 +142,21 @@ def _clean_loop(branch: str = _BRANCH, *, start: int = 0, tag: str = "a", later_
     ]
 
 
+def _denied_skill_call(*tool_use_ids: str, branch: str = _BRANCH, minute: int = 0) -> dict:
+    """A main-thread assistant record holding one `Skill(code-review)` tool_use per id, the calls a routing deny answers."""
+    return _asst(
+        _SONNET, branch=branch, ts=_ts(minute),
+        content=[_skill_block(tool_use_id, "code-review") for tool_use_id in tool_use_ids],
+    )
+
+
+def _legacy_routing_deny_with_hook_name(tool_use_id: str, hook_name: str) -> dict:
+    """A legacy attachment routing deny whose `hookName` is `hook_name`."""
+    record = _routing_deny_record(tool_use_id, shape="legacy", branch=_BRANCH, ts=_ts(1))
+    record["attachment"]["hookName"] = hook_name
+    return record
+
+
 def _published_files(world: _World) -> list[Path]:
     return sorted(world.captures_dir.glob("*.json")) if world.captures_dir.exists() else []
 
@@ -213,6 +236,7 @@ def _refusal_notes(config_dir: str) -> list[tuple[str, str]]:
         ("unknown-arm", note(row(arm="maybe"))),
         ("config-path-in-arm-column", note(row(arm=config_dir))),
         ("relative-dir", note(row(dir_cell="relative/dir"))),
+        ("nul-in-the-config-dir-cell", note(row(dir_cell="/placeholder/acct\x00dir"))),
         ("dash-on-an-on-row", note(row(pilots=("-", "off")))),
         ("one-dash-on-an-unmerged-row", note(row(arm="unmerged", pilots=("-", "on")))),
         ("pilot-value-on-an-unmerged-row", note(row(arm="unmerged", pilots=("on", "on")))),
@@ -237,6 +261,18 @@ class TestNoteParser:
         assert "note line 2" in outcome.err or "note line 3" in outcome.err
         assert _SENTINEL_BRANCH not in outcome.err + outcome.out
         assert str(world.config_dir) not in outcome.err + outcome.out
+        assert _published_files(world) == []
+
+    def test_refuses_a_config_dir_cell_through_a_symlink_loop_naming_the_line_and_no_path(self, world, capsys, tmp_path):
+        loop = _symlink_loop_that_resolve_rejects(tmp_path)
+        _write_note(world, text=f"# comment\n{_note_line(loop, _SENTINEL_BRANCH)}\n")
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 2
+        assert "note line 2: the config directory cannot be resolved" in outcome.err
+        assert str(loop) not in outcome.out + outcome.err
+        assert str(tmp_path) not in outcome.out + outcome.err
         assert _published_files(world) == []
 
     def test_refuses_a_tilde_dir_when_home_is_unset(self, world, capsys, monkeypatch):
@@ -308,6 +344,25 @@ class TestNoteLocation:
         assert "git working tree" in outcome.err
         assert str(world.repo) not in outcome.err
         assert _published_files(world) == []
+
+    def test_refuses_a_note_path_through_a_symlink_loop_with_the_fixed_resolve_message(self, world, capsys, tmp_path):
+        loop = _symlink_loop_that_resolve_rejects(tmp_path)
+
+        outcome = _run(capsys, world, note=str(loop))
+
+        assert outcome.code == 2
+        assert "--note cannot be resolved to a path" in outcome.err
+        assert str(loop) not in outcome.out + outcome.err
+        assert str(tmp_path) not in outcome.out + outcome.err
+
+    def test_refuses_a_note_path_with_an_embedded_nul_with_the_fixed_resolve_message(self, world, capsys, tmp_path):
+        note_with_nul = _path_that_resolve_rejects_as_nul(tmp_path)
+
+        outcome = _run(capsys, world, note=note_with_nul)
+
+        assert outcome.code == 2
+        assert "--note cannot be resolved to a path" in outcome.err
+        assert str(tmp_path) not in outcome.out + outcome.err
 
     def test_accepts_a_note_outside_any_git_work_tree(self, world, capsys):
         _write_note(world, _note_line(world.config_dir, "merged-elsewhere", "unmerged"))
@@ -710,6 +765,21 @@ class TestLoops:
 
         assert [loop.growth_tokens for loop in loops] == [100 - 10]
 
+    def test_each_loop_carries_the_later_turns_of_its_own_closing_round_not_of_its_first_round(self):
+        first_round = _round_facts(open_idx=0, open_ts=1.0, later_turns={"model-of-the-first-round": 1})
+        first_closing_round = _round_facts(
+            open_idx=5, open_ts=2.0, has_marker_write=True, later_turns={"model-of-the-first-closing-round": 2},
+        )
+        second_closing_round = _round_facts(
+            open_idx=9, open_ts=3.0, has_marker_write=True, later_turns={"model-of-the-second-closing-round": 3},
+        )
+
+        loops = routing_guard._assemble_loops([first_round, first_closing_round, second_closing_round])
+
+        assert [loop.later_turns for loop in loops] == [
+            {"model-of-the-first-closing-round": 2}, {"model-of-the-second-closing-round": 3},
+        ]
+
     def test_a_dangling_dispatch_in_only_the_first_round_marks_the_whole_loop_degraded(self):
         first_round = _round_facts(open_idx=0, open_ts=1.0, degraded=True)
         closing_round = _round_facts(open_idx=5, open_ts=2.0, has_marker_write=True, degraded=False)
@@ -854,6 +924,24 @@ class TestGrowthAndLaterTurns:
 
         assert _stored_loops(world, _BRANCH)[0]["later_turns"] == {_SONNET: 1, "model-after-every-window": 1}
 
+    def test_later_turns_start_at_the_closing_rounds_window_end_not_at_the_session_start_or_the_first_round(
+        self, world, capsys,
+    ):
+        records = [
+            _priced("model-before-the-loop", input=1, branch=_BRANCH, ts=_ts(0)),
+            *_round(_BRANCH, "a", 5, marker=False),
+            _priced("model-between-the-rounds", input=1, branch=_BRANCH, ts=_ts(8)),
+            *_round(_BRANCH, "b", 10, marker=True),
+            _priced("model-after-the-loop", input=1, branch=_BRANCH, ts=_ts(14)),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert "captured (2 rounds, 1 loops" in outcome.out
+        assert _stored_loops(world, _BRANCH)[0]["later_turns"] == {"model-after-the-loop": 1}
+
     def test_a_turn_after_a_second_loop_in_the_same_session_counts_for_both_loops(self, world, capsys):
         records = _round(_BRANCH, "a", 0, marker=True) + _round(_BRANCH, "b", 10, marker=True) + [
             _priced("model-after-both", input=1, branch=_BRANCH, ts=_ts(20)),
@@ -961,7 +1049,7 @@ class TestDenyExtraction:
     def test_both_deny_shapes_are_extracted_and_deduped_by_tool_use_id(self, world, shape):
         scan = routing_guard._ScanFacts()
         records = [
-            _asst(_SONNET, branch=_BRANCH, ts=_ts(0)),
+            _denied_skill_call("deny-1", "deny-2"),
             _routing_deny_record("deny-1", shape=shape, branch=_BRANCH, ts=_ts(1)),
             _routing_deny_record("deny-1", shape=shape, branch=_BRANCH, ts=_ts(2)),
             _routing_deny_record("deny-2", shape=shape, branch=_BRANCH, ts=_ts(3)),
@@ -974,7 +1062,7 @@ class TestDenyExtraction:
     def test_one_deny_recorded_in_both_shapes_is_counted_once(self, world):
         scan = routing_guard._ScanFacts()
         records = [
-            _asst(_SONNET, branch=_BRANCH, ts=_ts(0)),
+            _denied_skill_call("deny-1"),
             _routing_deny_record("deny-1", shape="legacy", branch=_BRANCH, ts=_ts(1)),
             _routing_deny_record("deny-1", shape="current", branch=_BRANCH, ts=_ts(1)),
         ]
@@ -1004,7 +1092,7 @@ class TestDenyExtraction:
 
     def test_a_deny_repeated_in_a_second_session_is_counted_once(self, world):
         scan = routing_guard._ScanFacts()
-        records = [_asst(_SONNET, branch=_BRANCH, ts=_ts(0)), _routing_deny_record("deny-1", branch=_BRANCH, ts=_ts(1))]
+        records = [_denied_skill_call("deny-1"), _routing_deny_record("deny-1", branch=_BRANCH, ts=_ts(1))]
 
         routing_guard._add_session_facts(scan, world.projects / "s1.jsonl", list(records))
         routing_guard._add_session_facts(scan, world.projects / "s2.jsonl", list(records))
@@ -1025,10 +1113,224 @@ class TestDenyExtraction:
         assert len(scan.denies) == 1
         assert [round_facts.denied_open for round_facts in skill_opens_of_second_session] == [True]
 
+    @pytest.mark.parametrize("answered_call", [
+        pytest.param(_bash_use("deny-1", "pytest hooks/tests"), id="a-bash-result-carrying-the-gate-wording"),
+        pytest.param(_skill_block("deny-1", "plan-review"), id="a-skill-call-other-than-code-review"),
+        pytest.param(None, id="a-result-with-no-tool-use-in-the-session"),
+    ])
+    def test_a_deny_whose_tool_use_is_not_a_code_review_skill_call_is_not_counted(self, world, answered_call):
+        scan = routing_guard._ScanFacts()
+        records = [_routing_deny_record("deny-1", branch=_BRANCH, ts=_ts(1))]
+        if answered_call is not None:
+            records.insert(0, _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[answered_call]))
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert scan.denies == []
+
+    def test_a_harness_attested_deny_with_no_tool_use_id_is_counted_each_time_beside_a_code_review_skill_call(self, world):
+        scan = routing_guard._ScanFacts()
+        records = [
+            _denied_skill_call("deny-1"),
+            _routing_deny_record("", shape="legacy", branch=_BRANCH, ts=_ts(1)),
+            _routing_deny_record("", shape="legacy", branch=_BRANCH, ts=_ts(2)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 2
+
+    def test_a_text_derived_deny_with_no_tool_use_id_is_not_counted_beside_a_code_review_skill_call(self, world):
+        scan = routing_guard._ScanFacts()
+        records = [
+            _denied_skill_call("deny-1", ""),
+            _routing_deny_record("", shape="current", branch=_BRANCH, ts=_ts(1)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert scan.denies == []
+
+    def test_a_plugin_qualified_code_review_skill_call_joins_a_text_derived_deny(self, world):
+        scan = routing_guard._ScanFacts()
+        records = [
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[_skill_block("deny-1", "plugin:code-review")]),
+            _routing_deny_record("deny-1", shape="current", branch=_BRANCH, ts=_ts(1)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 1
+
+    def test_a_code_review_skill_call_in_another_session_does_not_join_a_text_derived_deny(self, world):
+        scan = routing_guard._ScanFacts()
+
+        routing_guard._add_session_facts(scan, world.projects / "s1.jsonl", [_denied_skill_call("deny-1")])
+        routing_guard._add_session_facts(
+            scan, world.projects / "s2.jsonl", [_routing_deny_record("deny-1", shape="current", branch=_BRANCH, ts=_ts(1))],
+        )
+
+        assert scan.denies == []
+        assert scan.dropped_deny_without_tool_use
+
+    @pytest.mark.parametrize("unjoined_call", [
+        pytest.param(_bash_use("deny-x", "pytest hooks/tests"), id="id-of-a-bash-tool-use"),
+        pytest.param(None, id="id-with-no-tool-use-in-the-session"),
+    ])
+    def test_a_harness_attested_deny_counts_once_when_its_id_joins_no_code_review_skill_call(self, world, unjoined_call):
+        scan = routing_guard._ScanFacts()
+        records = [_routing_deny_record("deny-x", shape="legacy", branch=_BRANCH, ts=_ts(1))]
+        if unjoined_call is not None:
+            records.insert(0, _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[unjoined_call]))
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 1
+        assert not scan.dropped_deny_without_tool_use
+
+    @pytest.mark.parametrize("session_records", [
+        pytest.param(
+            [
+                _as_sidechain(_denied_skill_call("deny-1")),
+                _routing_deny_record("deny-1", shape="current", branch=_BRANCH, ts=_ts(1)),
+            ],
+            id="the-code-review-call-is-on-a-sidechain",
+        ),
+        pytest.param(
+            [
+                {**_denied_skill_call("deny-1"), "type": "user"},
+                _routing_deny_record("deny-1", shape="current", branch=_BRANCH, ts=_ts(1)),
+            ],
+            id="the-code-review-call-is-in-a-user-record",
+        ),
+        pytest.param(
+            [
+                _denied_skill_call("other-call"),
+                _legacy_routing_deny_with_hook_name("deny-1", "  "),
+            ],
+            id="a-whitespace-only-hook-name-is-text-derived",
+        ),
+    ])
+    def test_a_text_derived_deny_does_not_join_a_call_that_is_not_a_main_thread_assistant_code_review_call(
+        self, world, session_records,
+    ):
+        scan = routing_guard._ScanFacts()
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", session_records)
+
+        assert scan.denies == []
+        assert scan.dropped_deny_without_tool_use
+
+    def test_malformed_content_elements_beside_a_valid_code_review_call_neither_raise_nor_count(self, world):
+        scan = routing_guard._ScanFacts()
+        skill_call_without_id = {"type": "tool_use", "name": "Skill", "input": {"skill": "code-review"}}
+        records = [
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[
+                "a plain string element",
+                skill_call_without_id,
+                {**skill_call_without_id, "id": ["list-id"]},
+                _skill_block("deny-valid", "code-review"),
+            ]),
+            _routing_deny_record("deny-valid", shape="current", branch=_BRANCH, ts=_ts(1)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 1
+
+    @pytest.mark.parametrize("malformed_input", [
+        pytest.param({"skill": 5}, id="a-non-string-skill"),
+        pytest.param(["code-review"], id="a-list-input"),
+        pytest.param("code-review", id="a-string-input"),
+    ])
+    def test_a_skill_call_with_malformed_input_after_a_code_review_call_joins_the_tool_use_ids_only(
+        self, malformed_input,
+    ):
+        malformed_skill_call = {"type": "tool_use", "id": "malformed-1", "name": "Skill", "input": malformed_input}
+        records = [
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[_skill_block("valid-1", "code-review"), malformed_skill_call]),
+        ]
+
+        tool_use_ids, code_review_skill_ids = routing_guard._main_thread_tool_use_ids(records)
+
+        assert tool_use_ids == {"valid-1", "malformed-1"}
+        assert code_review_skill_ids == {"valid-1"}
+
+    @pytest.mark.parametrize("malformed_input", [
+        pytest.param({"skill": 5}, id="a-non-string-skill"),
+        pytest.param({"skill": ["code-review"]}, id="a-list-skill"),
+        pytest.param(["code-review"], id="a-list-input"),
+        pytest.param("code-review", id="a-string-input"),
+    ])
+    def test_a_code_review_call_after_a_skill_call_with_malformed_input_still_joins_both_id_sets(self, malformed_input):
+        malformed_skill_call = {"type": "tool_use", "id": "malformed-1", "name": "Skill", "input": malformed_input}
+        records = [
+            _asst(
+                _SONNET, branch=_BRANCH, ts=_ts(0),
+                content=[malformed_skill_call, _skill_block("valid-same-record", "code-review")],
+            ),
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(1), content=[_skill_block("valid-later-record", "code-review")]),
+        ]
+
+        tool_use_ids, code_review_skill_ids = routing_guard._main_thread_tool_use_ids(records)
+
+        assert tool_use_ids == {"malformed-1", "valid-same-record", "valid-later-record"}
+        assert code_review_skill_ids == {"valid-same-record", "valid-later-record"}
+
+    def test_a_skill_call_with_non_dict_input_after_a_round_opening_code_review_call_neither_raises_nor_blocks_its_deny(
+        self, world,
+    ):
+        scan = routing_guard._ScanFacts()
+        malformed_skill_call = {"type": "tool_use", "id": "malformed-1", "name": "Skill", "input": ["code-review"]}
+        records = [
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(0), content=[_skill_block("deny-valid", "code-review"), malformed_skill_call]),
+            _routing_deny_record("deny-valid", shape="current", branch=_BRANCH, ts=_ts(1)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 1
+
+    @pytest.mark.parametrize("non_string_id", [
+        pytest.param(["list-id"], id="a-list-id"),
+        pytest.param({"key": "dict-id"}, id="a-dict-id"),
+        pytest.param(7, id="an-int-id"),
+    ])
+    def test_a_text_derived_deny_with_a_non_string_tool_use_id_is_dropped_with_the_notice_flag(self, world, non_string_id):
+        scan = routing_guard._ScanFacts()
+        records = [
+            _denied_skill_call("deny-1"),
+            _routing_deny_record(non_string_id, shape="current", branch=_BRANCH, ts=_ts(1)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert scan.denies == []
+        assert scan.dropped_deny_without_tool_use is True
+
+    @pytest.mark.parametrize("non_string_id", [
+        pytest.param(["list-id"], id="a-list-id"),
+        pytest.param({"key": "dict-id"}, id="a-dict-id"),
+        pytest.param(7, id="an-int-id"),
+    ])
+    def test_a_harness_attested_deny_with_a_non_string_tool_use_id_is_counted_each_time_without_dedup(
+        self, world, non_string_id,
+    ):
+        scan = routing_guard._ScanFacts()
+        records = [
+            _routing_deny_record(non_string_id, shape="legacy", branch=_BRANCH, ts=_ts(1)),
+            _routing_deny_record(non_string_id, shape="legacy", branch=_BRANCH, ts=_ts(2)),
+        ]
+
+        routing_guard._add_session_facts(scan, world.projects / "s.jsonl", records)
+
+        assert len(scan.denies) == 2
+        assert scan.seen_deny_ids == set()
+
     def test_other_hooks_denials_and_sidechain_denials_are_ignored(self, world):
         scan = routing_guard._ScanFacts()
         records = [
-            _asst(_SONNET, branch=_BRANCH, ts=_ts(0)),
+            _denied_skill_call("deny-1"),
             _hook_deny("require-code-review", branch=_BRANCH, ts=_ts(1)),
             _as_sidechain(_routing_deny_record("deny-1", branch=_BRANCH, ts=_ts(2))),
         ]
@@ -1131,7 +1433,7 @@ class TestReconcileDenies:
 
     def test_end_to_end_an_unlisted_branch_deny_refuses_and_publishes_nothing(self, world, capsys):
         records = _clean_loop(_BRANCH) + [
-            _asst(_SONNET, branch="unlisted-work", ts=_ts(30)),
+            _denied_skill_call("deny-u", branch="unlisted-work", minute=30),
             _routing_deny_record("deny-u", branch="unlisted-work", ts=_ts(31)),
         ]
         _write_session(world, records)
@@ -1141,14 +1443,128 @@ class TestReconcileDenies:
 
         assert outcome.code == 2
         assert "2026-08-01 10:31 UTC" in outcome.err
-        assert (
-            "falls on a branch the note does not list; run review-trace --this-repo --deny-only, match the row at that"
-            " minute, and list its branch as on if it merged, else as unmerged"
-        ) in outcome.err
+        for load_bearing_token in (
+            "falls on a branch the note does not list", "review-trace", "--config-dir", "--deny-only", "--this-repo",
+            "--projects=", "docs/transcript-analysis.md",
+        ):
+            assert load_bearing_token in outcome.err
         assert "--deny-summary" not in outcome.err
         assert "unlisted-work" not in outcome.err + outcome.out
         assert _published_files(world) == []
         assert not world.captures_dir.exists()
+
+    def test_end_to_end_an_ordinary_error_carrying_the_gate_wording_on_an_unlisted_branch_does_not_refuse(
+        self, world, capsys,
+    ):
+        records = _clean_loop(_BRANCH) + [
+            _asst(_SONNET, branch="unlisted-work", ts=_ts(30), content=[_bash_use("bash-1", "pytest hooks/tests")]),
+            _routing_deny_record("bash-1", branch="unlisted-work", ts=_ts(31)),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0
+        assert "falls on a branch the note does not list" not in outcome.err
+        assert len(_published_files(world)) == 1
+
+    def test_end_to_end_text_derived_denies_whose_tool_use_is_not_in_the_session_print_one_notice_per_run(
+        self, world, capsys,
+    ):
+        records = _clean_loop(_BRANCH) + [
+            _routing_deny_record("orphan-1", branch=_BRANCH, ts=_ts(31)),
+            _routing_deny_record("orphan-2", branch=_BRANCH, ts=_ts(32)),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0
+        assert outcome.err.count(routing_guard._DROPPED_DENY_NOTICE) == 1
+
+    def test_end_to_end_a_text_derived_deny_answering_a_bash_call_prints_no_dropped_deny_notice(self, world, capsys):
+        records = _clean_loop(_BRANCH) + [
+            _asst(_SONNET, branch=_BRANCH, ts=_ts(30), content=[_bash_use("bash-1", "pytest hooks/tests")]),
+            _routing_deny_record("bash-1", branch=_BRANCH, ts=_ts(31)),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0
+        assert routing_guard._DROPPED_DENY_NOTICE not in outcome.err
+
+    def test_end_to_end_a_text_derived_deny_with_an_empty_tool_use_id_is_not_counted_and_prints_the_notice_once(
+        self, world, capsys,
+    ):
+        records = _clean_loop(_BRANCH) + [_routing_deny_record("", branch=_BRANCH, ts=_ts(31))]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0
+        assert outcome.err.count(routing_guard._DROPPED_DENY_NOTICE) == 1
+        assert "listed on but no routing deny was found" in outcome.err
+
+    def test_end_to_end_a_text_derived_deny_answering_a_non_code_review_skill_call_is_not_counted_and_prints_no_notice(
+        self, world, capsys,
+    ):
+        records = _clean_loop(_BRANCH) + [
+            _priced(_SONNET, input=1, branch=_BRANCH, ts=_ts(30), content=[_skill_block("plan-1", "plan-review")]),
+            _routing_deny_record("plan-1", branch=_BRANCH, ts=_ts(31)),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0
+        assert routing_guard._DROPPED_DENY_NOTICE not in outcome.err
+        assert "listed on but no routing deny was found" in outcome.err
+
+    def test_end_to_end_a_rerun_with_every_row_already_captured_refuses_an_unlisted_branch_deny_added_since(
+        self, world, capsys,
+    ):
+        _write_session(world, _clean_loop(_BRANCH))
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+        first = _run(capsys, world)
+        published_before = {path.name: path.read_bytes() for path in _published_files(world)}
+        _write_session(world, [
+            _denied_skill_call("deny-u", branch="unlisted-work", minute=30),
+            _routing_deny_record("deny-u", branch="unlisted-work", ts=_ts(31)),
+        ], session_id="sess-2")
+
+        second = _run(capsys, world)
+
+        assert first.code == 0
+        assert second.code == 2
+        assert "falls on a branch the note does not list" in second.err
+        assert second.out == routing_guard._DO_NOT_PUBLISH_BANNER + "\n"
+        assert {path.name: path.read_bytes() for path in _published_files(world)} == published_before
+
+    def test_end_to_end_a_rerun_with_every_row_already_captured_refuses_a_deny_added_since_on_an_off_row(
+        self, world, capsys,
+    ):
+        _two_branch_sessions(world)
+        _write_note(world, _note_line(world.config_dir, _BRANCH), _note_line(world.config_dir, _BETA, "off"))
+        first = _run(capsys, world)
+        published_before = {path.name: path.read_bytes() for path in _published_files(world)}
+        _write_session(world, [
+            _denied_skill_call("deny-b", branch=_BETA, minute=30),
+            _routing_deny_record("deny-b", branch=_BETA, ts=_ts(31)),
+        ], session_id="sess-2")
+
+        second = _run(capsys, world)
+
+        assert first.code == 0
+        assert second.code == 2
+        assert "note line 2 is listed off" in second.err
+        assert second.out == routing_guard._DO_NOT_PUBLISH_BANNER + "\n"
+        assert {path.name: path.read_bytes() for path in _published_files(world)} == published_before
 
 
 # --- memory ------------------------------------------------------------------
@@ -1274,6 +1690,20 @@ class TestScope:
         assert "Nothing was published" in outcome.err
         assert _published_files(world) == []
         assert str(world.projects) not in outcome.err
+
+
+class TestGitCheckFailure:
+    def test_a_failed_git_call_prints_the_diagnostic_under_the_routing_guard_label_before_the_note_refusal(
+        self, world, capsys, monkeypatch, tmp_path,
+    ):
+        _install_git_not_found(monkeypatch)
+        _write_session(world, _clean_loop())
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        _assert_git_failure_diagnostic_precedes_note_refusal(outcome, _DIGIT_SCAN_EXEMPT_PREFIXES, tmp_path)
+        assert _published_files(world) == []
 
 
 # --- the store ---------------------------------------------------------------
@@ -1597,6 +2027,21 @@ class TestStore:
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
         assert list(world.captures_dir.glob(".routing-guard-*")) == []
 
+    def test_an_unrecognized_publish_outcome_exits_4_with_a_message_that_claims_neither_a_write_nor_a_link_failure(
+        self, world, capsys, monkeypatch,
+    ):
+        _write_session(world, _clean_loop())
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+        monkeypatch.setattr(ledger_common, "_publish_new_file", lambda *args: object())
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 4
+        assert "a capture file could not be published" in outcome.err
+        assert "written" not in outcome.err
+        assert "linked into place" not in outcome.err
+        assert _published_files(world) == []
+
     def test_a_directory_creation_failure_exits_4_printing_only_the_strerror(self, world, capsys, monkeypatch):
         _write_session(world, _clean_loop())
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -1688,50 +2133,132 @@ class TestStore:
 # --- the validator -----------------------------------------------------------
 
 
+_DEFAULT_LOOP = {
+    "overhead_tokens": {_SONNET: {"standard": {"input": 5}}},
+    "growth_tokens": 1, "later_turns": {_SONNET: 1}, "degraded": False,
+}
+
+
+def _loop_dict(**overrides) -> dict:
+    return {**_DEFAULT_LOOP, **overrides}
+
+
 def _loop_json(**overrides) -> bytes:
-    loop = {
-        "overhead_tokens": {_SONNET: {"standard": {"input": 5}}},
-        "growth_tokens": 1, "later_turns": {_SONNET: 1}, "degraded": False,
-    }
-    loop.update(overrides)
-    return json.dumps({"loops": [loop]}).encode("utf-8")
+    return json.dumps({"loops": [_loop_dict(**overrides)]}).encode("utf-8")
 
 
+_REASON_NOT_VALID_JSON = "not valid JSON"
+_REASON_NOT_ONLY_LOOPS = "the file is not an object holding only loops"
+_REASON_LOOPS_EMPTY = "loops is not a non-empty list"
+_REASON_LOOP_KEYS = "a loop does not hold exactly the four loop keys"
+_REASON_GROWTH = "growth_tokens is neither an integer nor null"
+_REASON_TOKEN_COUNT = "a token count is not a non-negative integer"
+_REASON_LATER_TURNS = "later_turns is not an object of non-negative integers"
 _INVALID_CAPTURES = [
-    ("not-utf8", b"\xff\xfe"),
-    ("invalid-json", b"{"),
-    ("non-object-root", b"[]"),
-    ("empty-loops", b'{"loops": []}'),
-    ("loops-not-a-list", b'{"loops": {}}'),
-    ("loop-not-an-object", b'{"loops": [1]}'),
-    ("missing-loop-key", json.dumps({"loops": [{"overhead_tokens": {}, "growth_tokens": 1, "later_turns": {}}]}).encode()),
-    ("extra-loop-key", _loop_json(extra=1)),
-    ("boolean-growth", _loop_json(growth_tokens=True)),
-    ("float-growth", _loop_json(growth_tokens=1.5)),
-    ("string-growth", _loop_json(growth_tokens="1")),
-    ("boolean-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": True}}})),
-    ("float-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": 2.0}}})),
-    ("negative-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": -1}}})),
-    ("negative-turn-count", _loop_json(later_turns={_SONNET: -1})),
-    ("float-turn-count", _loop_json(later_turns={_SONNET: 1.0})),
-    ("non-boolean-degraded", _loop_json(degraded=1)),
-    ("unknown-variant", _loop_json(overhead_tokens={_SONNET: {"sentinel-variant": {"input": 1}}})),
-    ("unknown-class", _loop_json(overhead_tokens={_SONNET: {"standard": {"sentinel-class": 1}}})),
-    ("model-entry-not-an-object", _loop_json(overhead_tokens={_SONNET: 1})),
-    ("overhead-not-an-object", _loop_json(overhead_tokens=[])),
-    ("integer-past-the-digit-limit", b'{"loops": [{"overhead_tokens": {}, "growth_tokens": ' + b"9" * 5000
-     + b', "later_turns": {}, "degraded": false}]}'),
-    ("nesting-past-the-recursion-limit", b"[" * 500_000),
+    ("not-utf8", b"\xff\xfe", "not UTF-8"),
+    ("invalid-json", b"{", _REASON_NOT_VALID_JSON),
+    ("non-object-root", b'["loops"]', _REASON_NOT_ONLY_LOOPS),
+    ("empty-loops", b'{"loops": []}', _REASON_LOOPS_EMPTY),
+    ("loops-not-a-list", b'{"loops": {"k": 1}}', _REASON_LOOPS_EMPTY),
+    ("loop-not-an-object", b'{"loops": [1]}', _REASON_LOOP_KEYS),
+    (
+        "missing-loop-key",
+        json.dumps({"loops": [{"overhead_tokens": {}, "growth_tokens": 1, "later_turns": {}}]}).encode(), _REASON_LOOP_KEYS,
+    ),
+    ("extra-loop-key", _loop_json(extra=1), _REASON_LOOP_KEYS),
+    ("boolean-growth", _loop_json(growth_tokens=True), _REASON_GROWTH),
+    ("float-growth", _loop_json(growth_tokens=1.5), _REASON_GROWTH),
+    ("string-growth", _loop_json(growth_tokens="1"), _REASON_GROWTH),
+    ("boolean-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": True}}}), _REASON_TOKEN_COUNT),
+    ("float-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": 2.0}}}), _REASON_TOKEN_COUNT),
+    ("negative-token-count", _loop_json(overhead_tokens={_SONNET: {"standard": {"input": -1}}}), _REASON_TOKEN_COUNT),
+    ("negative-turn-count", _loop_json(later_turns={_SONNET: -1}), _REASON_LATER_TURNS),
+    ("float-turn-count", _loop_json(later_turns={_SONNET: 1.0}), _REASON_LATER_TURNS),
+    ("later-turns-a-list", _loop_json(later_turns=[]), _REASON_LATER_TURNS),
+    ("later-turns-null", _loop_json(later_turns=None), _REASON_LATER_TURNS),
+    ("non-boolean-degraded", _loop_json(degraded=1), "degraded is not a boolean"),
+    (
+        "unknown-variant", _loop_json(overhead_tokens={_SONNET: {"sentinel-variant": {"input": 1}}}),
+        "unknown pricing variant",
+    ),
+    (
+        "unknown-class", _loop_json(overhead_tokens={_SONNET: {"standard": {"sentinel-class": 1}}}),
+        "unknown token class",
+    ),
+    ("model-entry-not-an-object", _loop_json(overhead_tokens={_SONNET: 1}), "a model entry is not an object"),
+    (
+        "variant-entry-not-an-object", _loop_json(overhead_tokens={_SONNET: {"standard": 5}}),
+        "a variant entry is not an object",
+    ),
+    ("overhead-not-an-object", _loop_json(overhead_tokens=[]), "overhead_tokens is not an object"),
+    (
+        "integer-past-the-digit-limit",
+        b'{"loops": [{"overhead_tokens": {}, "growth_tokens": ' + b"9" * 5000 + b', "later_turns": {}, "degraded": false}]}',
+        _REASON_NOT_VALID_JSON,
+    ),
+    ("nesting-past-the-recursion-limit", b"[" * 500_000, _REASON_NOT_VALID_JSON),
 ]
 
 
-_VALID_LOOP_TEXT = json.dumps({
-    "overhead_tokens": {_SONNET: {"standard": {"input": 5}}},
-    "growth_tokens": 1, "later_turns": {_SONNET: 1}, "degraded": False,
-})
+# Each case puts a valid element first and the invalid one second at one nesting level.
+_SECOND_ELEMENT_INVALID_CAPTURES = [
+    (
+        "second-loop-with-a-boolean-growth",
+        json.dumps({"loops": [_loop_dict(), _loop_dict(growth_tokens=True)]}).encode(), _REASON_GROWTH,
+    ),
+    (
+        "second-model-with-a-negative-token-count",
+        json.dumps({"loops": [_loop_dict(
+            overhead_tokens={_SONNET: {"standard": {"input": 5}}, _OTHER_MODEL: {"standard": {"input": -1}}},
+        )]}).encode(),
+        _REASON_TOKEN_COUNT,
+    ),
+    (
+        "second-model-not-an-object",
+        json.dumps({"loops": [_loop_dict(overhead_tokens={_SONNET: {"standard": {"input": 5}}, _OTHER_MODEL: 1})]}).encode(),
+        "a model entry is not an object",
+    ),
+    (
+        "second-variant-unknown",
+        json.dumps({"loops": [_loop_dict(
+            overhead_tokens={_SONNET: {"standard": {"input": 5}, "sentinel-variant": {"input": 1}}},
+        )]}).encode(),
+        "unknown pricing variant",
+    ),
+    (
+        "second-variant-not-an-object",
+        json.dumps({"loops": [_loop_dict(
+            overhead_tokens={_SONNET: {"standard": {"input": 5}, "fast": 5}},
+        )]}).encode(),
+        "a variant entry is not an object",
+    ),
+    (
+        "second-token-class-unknown",
+        json.dumps({"loops": [_loop_dict(
+            overhead_tokens={_SONNET: {"standard": {"input": 5, "sentinel-class": 1}}},
+        )]}).encode(),
+        "unknown token class",
+    ),
+    (
+        "second-token-class-with-a-float-count",
+        json.dumps({"loops": [_loop_dict(
+            overhead_tokens={_SONNET: {"standard": {"input": 5, "output": 2.0}}},
+        )]}).encode(),
+        _REASON_TOKEN_COUNT,
+    ),
+    (
+        "second-later-turns-entry-negative",
+        json.dumps({"loops": [_loop_dict(later_turns={_SONNET: 1, _OTHER_MODEL: -1})]}).encode(), _REASON_LATER_TURNS,
+    ),
+    (
+        "second-later-turns-entry-boolean",
+        json.dumps({"loops": [_loop_dict(later_turns={_SONNET: 1, _OTHER_MODEL: True})]}).encode(), _REASON_LATER_TURNS,
+    ),
+]
+
+
+_VALID_LOOP_TEXT = json.dumps(_DEFAULT_LOOP)
 _VALID_FILE_TEXT = f'{{"loops": [{_VALID_LOOP_TEXT}]}}'
-_REASON_NOT_VALID_JSON = "not valid JSON"
-_REASON_NOT_ONLY_LOOPS = "the file is not an object holding only loops"
 # Each case differs from the valid file in one place, so only the guard it names can refuse it.
 _GUARD_CASES = [
     (
@@ -1772,12 +2299,26 @@ class TestValidator:
 
         assert refusal.value.reason == reason
 
-    @pytest.mark.parametrize(("case_id", "data"), _INVALID_CAPTURES, ids=[case_id for case_id, _data in _INVALID_CAPTURES])
-    def test_refuses_each_malformed_file_with_a_fixed_reason_that_echoes_no_cell(self, case_id, data):
+    @pytest.mark.parametrize(
+        ("case_id", "data", "reason"), _INVALID_CAPTURES, ids=[case[0] for case in _INVALID_CAPTURES],
+    )
+    def test_refuses_each_malformed_file_with_the_fixed_reason_of_the_guard_it_trips(self, case_id, data, reason):
         with pytest.raises(routing_guard._InvalidCapture) as refusal:
             routing_guard._parse_capture_bytes(data)
 
-        assert "sentinel" not in refusal.value.reason
+        assert refusal.value.reason == reason
+
+    @pytest.mark.parametrize(
+        ("case_id", "data", "reason"), _SECOND_ELEMENT_INVALID_CAPTURES,
+        ids=[case[0] for case in _SECOND_ELEMENT_INVALID_CAPTURES],
+    )
+    def test_refuses_a_file_whose_second_element_at_a_nesting_level_is_invalid_with_the_single_element_reason(
+        self, case_id, data, reason,
+    ):
+        with pytest.raises(routing_guard._InvalidCapture) as refusal:
+            routing_guard._parse_capture_bytes(data)
+
+        assert refusal.value.reason == reason
 
     def test_accepts_a_hand_written_literal_file_independent_of_the_writer(self):
         literal = (
@@ -1870,6 +2411,8 @@ class TestRowLines:
         outcome = _run(capsys, world)
 
         assert ("PRICING INTEGRITY" in outcome.out) == drift_detected
+        assert outcome.code == (3 if drift_detected else 0), outcome.err
+        assert (world.captures_dir / _digest_name(_BRANCH)).exists()
         integrity_lines = [line for line in outcome.out.splitlines() if "PRICING INTEGRITY" in line]
         assert not any(ch.isdigit() for line in integrity_lines for ch in line)
 
@@ -1932,7 +2475,11 @@ class TestCriterionThreeInCaptureMode:
         decoy = tmp_path / "decoy-account"
         decoy_project = decoy / "projects" / world.main_slug
         decoy_project.mkdir(parents=True)
-        _write_jsonl(decoy_project / "decoy-session.jsonl", _clean_loop() + [_routing_deny_record("decoy-deny", branch=_BRANCH)])
+        # A read decoy would refuse with exit 2: the joined deny sits on a branch the note does not list.
+        _write_jsonl(decoy_project / "decoy-session.jsonl", _clean_loop() + [
+            _denied_skill_call("decoy-deny", branch="decoy-unlisted", minute=30),
+            _routing_deny_record("decoy-deny", branch="decoy-unlisted", ts=_ts(31)),
+        ])
         roots_file = tmp_path / "declared-roots"
         roots_file.write_text(f"{decoy}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
@@ -2005,6 +2552,24 @@ class TestFreeText:
         for stream in (published_text, outcome.out, outcome.err):
             assert "LEAKSENTINEL" not in stream
 
+    def test_the_body_of_a_dropped_text_derived_deny_and_of_a_legacy_attachment_deny_reaches_no_output(self, world, capsys):
+        records = _clean_loop(_BRANCH) + [
+            _routing_deny_record("orphan-1", branch=_BRANCH, ts=_ts(31), body=_leak_sentinel("orphan-deny-body")),
+            _routing_deny_record(
+                "legacy-1", shape="legacy", branch=_BRANCH, ts=_ts(32), body=_leak_sentinel("legacy-deny-body"),
+            ),
+        ]
+        _write_session(world, records)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0, outcome.err
+        assert routing_guard._DROPPED_DENY_NOTICE in outcome.err
+        published_text = (world.captures_dir / _digest_name(_BRANCH)).read_text()
+        for stream in (published_text, outcome.out, outcome.err):
+            assert "LEAKSENTINEL" not in stream
+
     @pytest.mark.parametrize("drift_shape", ["contiguous-usage-disagrees", "non-contiguous-merged", "non-contiguous-rejected"])
     def test_a_request_id_may_show_on_stderr_through_a_dedup_print_and_nowhere_else(
         self, world, capsys, monkeypatch, drift_shape,
@@ -2025,7 +2590,8 @@ class TestFreeText:
 
         outcome = _run(capsys, world)
 
-        assert outcome.code == 0, outcome.err
+        # Only a contiguous run whose input usage disagrees trips the drift flag; a non-contiguous run never does.
+        assert outcome.code == (3 if drift_shape == "contiguous-usage-disagrees" else 0), outcome.err
         assert request_id in outcome.err
         assert request_id not in outcome.out
         assert request_id not in (world.captures_dir / _digest_name(_BRANCH)).read_text()
@@ -2064,6 +2630,7 @@ _OUTPUT_SCENARIOS = [
     ("no-deny-notice", 0, "listed on but no routing deny was found"),
     ("split-branch-notice", 3, "split across accounts"),
     ("unlisted-deny-refusal", 2, "falls on a branch the note does not list"),
+    ("dropped-deny-notice", 0, "was not counted"),
     ("scan-gap", 2, "Nothing was published"),
     ("publish-failure", 4, "published 1 files"),
     ("not-opted-in-refusal", 1, "not opted in"),
@@ -2106,9 +2673,12 @@ class TestOutput:
             _write_note(world, _note_line(world.config_dir, _BETA), _note_line(other_account, _BRANCH))
         elif scenario == "unlisted-deny-refusal":
             _write_session(world, _clean_loop(_BRANCH) + [
-                _asst(_SONNET, branch="unlisted-work", ts=_ts(30)),
+                _denied_skill_call("deny-u", branch="unlisted-work", minute=30),
                 _routing_deny_record("deny-u", branch="unlisted-work", ts=_ts(31)),
             ])
+            _write_note(world, _note_line(world.config_dir, _BRANCH))
+        elif scenario == "dropped-deny-notice":
+            _write_session(world, _clean_loop(_BRANCH) + [_routing_deny_record("orphan-1", branch=_BRANCH, ts=_ts(31))])
             _write_note(world, _note_line(world.config_dir, _BRANCH))
         elif scenario == "scan-gap":
             def sessions_with_a_gap(slugs, include_subagents, roots=None, *, scan_gaps=None):
@@ -2159,6 +2729,184 @@ class TestOutput:
 
         with pytest.raises(AssertionError, match="names 1 string"):
             _run(capsys, world)
+
+    @pytest.mark.parametrize("leak", [
+        pytest.param("note-cell", id="a-relative-config-dir-cell-of-the-note"),
+        pytest.param("cell-final-segment", id="the-final-segment-of-an-absolute-config-dir-cell"),
+        pytest.param("config-dir-argument", id="the-config-dir-argument"),
+        pytest.param("argument-final-segment-doubled-slash", id="the-final-segment-of-an-argument-with-a-doubled-slash"),
+        pytest.param("argument-final-segment-trailing-slash", id="the-final-segment-of-an-argument-with-a-trailing-slash"),
+        pytest.param("expanded-home-path", id="the-expanded-path-of-a-tilde-config-dir-cell"),
+        pytest.param("resolved-symlink-path", id="the-resolved-path-of-a-symlinked-config-dir-cell"),
+    ])
+    def test_the_shared_output_check_fails_a_run_that_prints_each_class_of_string_it_guards(
+        self, world, capsys, monkeypatch, tmp_path, leak,
+    ):
+        overrides = {"config_dir": None}
+        if leak == "note-cell":
+            note_cell, printed = "relative-account-cell", "relative-account-cell"
+        elif leak == "cell-final-segment":
+            note_cell, printed = str(tmp_path / "parent" / "account-final-segment"), "account-final-segment"
+        elif leak == "config-dir-argument":
+            note_cell, printed = str(world.config_dir), "config-dir-argument-only"
+            overrides["config_dir"] = printed
+        elif leak.startswith("argument-final-segment"):
+            note_cell, printed = str(world.config_dir), "argument-account"
+            parent = tmp_path.resolve() / "argument-parent"
+            overrides["config_dir"] = f"{parent}//{printed}" if leak.endswith("doubled-slash") else f"{parent}/{printed}/"
+        elif leak == "expanded-home-path":
+            home = tmp_path.resolve() / "home"
+            monkeypatch.setenv("HOME", str(home))
+            note_cell, printed = "~/account-under-home", str(home / "account-under-home")
+        else:
+            target = tmp_path.resolve() / "real-account"
+            link = tmp_path / "link-account"
+            link.symlink_to(target)
+            note_cell, printed = str(link), str(target)
+        _write_note(world, _note_line(note_cell, _BRANCH))
+
+        def printing_the_string(_args):
+            print(f"leaked {printed}", file=sys.stderr)
+            sys.exit(0)
+
+        monkeypatch.setattr(routing_guard, "cmd_routing_guard", printing_the_string)
+
+        with pytest.raises(AssertionError, match=r"names \d+ string"):
+            _run(capsys, world, **overrides)
+
+    def test_the_strings_a_run_must_not_name_for_an_absolute_cell_are_the_cell_and_its_final_segment(self, tmp_path):
+        account = tmp_path.resolve() / "account-abs"
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line(account, "branch-abs") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([str(account), "account-abs", "branch-abs"])
+
+    def test_the_strings_a_run_must_not_name_for_a_relative_cell_are_its_whole_text_only(self, tmp_path):
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line("relative/account-rel", "branch-rel") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted(["relative/account-rel", "branch-rel"])
+
+    def test_the_strings_a_run_must_not_name_skip_comment_and_blank_lines_and_drop_a_carriage_return(self, tmp_path):
+        account = tmp_path.resolve() / "account-crlf"
+        note = tmp_path / "note.tsv"
+        comment_row = _note_line(tmp_path / "account-comment", "branch-comment")
+        note.write_bytes(f"# {comment_row}\r\n\r\n{_note_line(account, 'branch-crlf')}\r\n".encode())
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([str(account), "account-crlf", "branch-crlf"])
+
+    def test_the_strings_a_run_must_not_name_for_a_tilde_cell_include_its_expanded_path(self, tmp_path, monkeypatch):
+        home = tmp_path.resolve() / "home"
+        monkeypatch.setenv("HOME", str(home))
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line("~/account-tilde", "branch-tilde") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted(["~/account-tilde", str(home / "account-tilde"), "account-tilde", "branch-tilde"])
+
+    def test_the_strings_a_run_must_not_name_for_a_symlinked_cell_include_its_resolved_path(self, tmp_path):
+        target = tmp_path.resolve() / "real-account"
+        target.mkdir()
+        link = tmp_path.resolve() / "link-account"
+        link.symlink_to(target)
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line(link, "branch-link") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([str(link), "link-account", str(target), "real-account", "branch-link"])
+
+    def test_the_strings_a_run_must_not_name_for_an_unresolvable_cell_omit_the_resolved_path_and_do_not_raise(self, tmp_path):
+        loop = _symlink_loop_that_resolve_rejects(tmp_path)
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line(loop, "branch-loop") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([str(loop), loop.name, "branch-loop"])
+
+    @pytest.mark.parametrize("blank_cell", [
+        pytest.param("", id="an-empty-cell"),
+        pytest.param("  ", id="a-whitespace-only-cell"),
+    ])
+    def test_the_strings_a_run_must_not_name_for_a_blank_config_dir_cell_include_no_blank_entry(self, tmp_path, blank_cell):
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line(blank_cell, "branch-blank") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert strings == ["branch-blank"]
+
+    def test_the_strings_a_run_must_not_name_for_a_root_cell_include_no_empty_entry(self, tmp_path):
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line("/", "branch-root") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted(["/", "branch-root"])
+
+    def test_the_strings_a_run_must_not_name_for_a_cell_ending_in_a_parent_segment_include_no_dot_dot_entry(self, tmp_path):
+        parent = tmp_path.resolve()
+        cell = str(parent / "account-up" / "..")
+        note = tmp_path / "note.tsv"
+        note.write_text(_note_line(cell, "branch-up") + "\n")
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([cell, str(parent), parent.name, "branch-up"])
+
+    def test_the_strings_a_run_must_not_name_read_a_bare_carriage_return_inside_a_row_as_part_of_its_cell(self, tmp_path):
+        cell = f"{tmp_path.resolve() / 'account-cr'}\r"
+        note = tmp_path / "note.tsv"
+        note.write_bytes(f"{cell}\tbranch-cr\ton\toff\toff\n".encode())
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([cell, "account-cr\r", "branch-cr"])
+
+    def test_the_strings_a_run_must_not_name_for_a_note_with_two_accounts_and_branches_include_both_rows(self, tmp_path):
+        first_account = tmp_path.resolve() / "account-first"
+        second_account = tmp_path.resolve() / "account-second"
+        note = tmp_path / "note.tsv"
+        note.write_text(
+            "\n".join([
+                _note_line(first_account, "branch-first"),
+                "",
+                f"# {_note_line(tmp_path / 'account-commented', 'branch-commented')}",
+                _note_line(second_account, "branch-second", "off"),
+                "",
+            ]),
+        )
+
+        strings = _strings_the_output_must_not_name(str(note), None)
+
+        assert sorted(strings) == sorted([
+            str(first_account), "account-first", "branch-first",
+            str(second_account), "account-second", "branch-second",
+        ])
+
+    def test_the_strings_a_run_must_not_name_for_an_absolute_config_dir_argument_are_the_argument_and_its_final_segment(
+        self, tmp_path,
+    ):
+        argument_account = tmp_path.resolve() / "account-argument"
+        missing_note = tmp_path / "missing-note.tsv"
+
+        strings = _strings_the_output_must_not_name(str(missing_note), f"{argument_account}//")
+
+        assert sorted(strings) == sorted([f"{argument_account}//", str(argument_account), "account-argument"])
+
+    def test_the_strings_a_run_must_not_name_for_an_unreadable_note_are_the_config_dir_argument_only(self, tmp_path):
+        missing_note = tmp_path / "missing-note.tsv"
+
+        assert _strings_the_output_must_not_name(str(missing_note), "argument-text") == ["argument-text"]
+        assert _strings_the_output_must_not_name(str(missing_note), None) == []
 
     def test_no_line_names_a_branch_a_slug_or_a_path_even_with_a_distinctive_worktree_name(self, world, capsys, monkeypatch):
         sentinel_branch = "sentinel-worktree-branch-xyz"

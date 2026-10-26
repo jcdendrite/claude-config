@@ -5,6 +5,7 @@ import json
 import math
 import random
 import re
+import shlex
 import stat
 import sys
 from collections import defaultdict
@@ -16,13 +17,15 @@ from typing import NamedTuple
 import _config
 import pytest
 from helpers import REPO_ROOT
-from transcript_analysis import corpus, pricing, review_rounds, routing_guard
+from transcript_analysis import corpus, pricing, review_rounds, routing_guard, scope
 
 from ._pr_cost_helpers import _enable_pr_cost
-from ._review_round_helpers import (
-    _SONNET,
+from ._review_round_helpers import _SONNET
+from ._routing_guard_helpers import (
+    _assert_git_failure_diagnostic_precedes_note_refusal,
     _digest_name,
     _environment_unchanged,
+    _install_git_not_found,
     _install_path_spies,
     _install_subprocess_recorder,
     _invoke_routing_guard,
@@ -44,6 +47,11 @@ _spec.loader.exec_module(_mod)
 # _SONNET's cache-read rate is $0.20 per million tokens.
 _OPUS = "claude-opus-5"  # cache-read rate $0.50 per million tokens
 _UNPRICED_MODEL = "claude-unlisted-model"
+_UNLISTED_MODEL_SENTINEL = "claude-unlisted-sentinel-model"
+# A model in the rate table that no fixture here samples, so only a scan of the whole table could find it expired.
+_LISTED_MODEL_NOT_IN_THE_SAMPLE = next(
+    model for model in pricing._MODEL_BASE_INPUT_RATES if model not in {_SONNET, _OPUS}
+)
 _CAPTURES_DIR = "routing-guard-captures"
 _LOCATOR = re.compile(r"note line \d+")
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees this read.
@@ -733,6 +741,23 @@ class TestPricing:
         assert routing_guard._DEGRADED_NOTICES["on"] in outcome.err.splitlines()
         assert routing_guard._DEGRADED_NOTICES["off"] not in outcome.err.splitlines()
 
+    def test_an_unlisted_model_name_in_a_capture_file_reaches_no_output_stream_and_the_run_completes_degraded(
+        self, lab, capsys,
+    ):
+        account = lab.account()
+        lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=5, growth=1, model=_UNLISTED_MODEL_SENTINEL)])
+        lab.row(account, "branch-off", "off", loops=[_loop(growth=2, later={_UNLISTED_MODEL_SENTINEL: 4})])
+        lab.write_note()
+        out_path = lab.root / "figures.txt"
+
+        outcome = _compute(capsys, lab, out=str(out_path))
+
+        assert outcome.code in (0, 1)
+        assert routing_guard._DEGRADED_NOTICES["on"] in outcome.err.splitlines()
+        assert routing_guard._DEGRADED_NOTICES["off"] in outcome.err.splitlines()
+        for stream_text in (outcome.out, outcome.err, out_path.read_text()):
+            assert _UNLISTED_MODEL_SENTINEL not in stream_text
+
     def test_a_model_unpriced_when_captured_is_priced_once_the_table_lists_it(self, lab, capsys, monkeypatch):
         account = lab.account()
         lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=1_000_000, growth=1, model="claude-future-1")])
@@ -766,16 +791,33 @@ class TestPricing:
 
         assert routing_guard._DEGRADED_NOTICES["off"] in outcome.err.splitlines()
 
-    @pytest.mark.parametrize("expired", [True, False])
+    @pytest.mark.parametrize(
+        ("expired_model", "line_prints", "key_on_overhead_model"),
+        [
+            pytest.param(_SONNET, True, _SONNET, id="expired-for-a-model-priced-through-overhead"),
+            pytest.param(_OPUS, True, _SONNET, id="expired-for-a-model-priced-only-through-a-key-off-rows-later-turns"),
+            pytest.param(
+                _LISTED_MODEL_NOT_IN_THE_SAMPLE, True, _LISTED_MODEL_NOT_IN_THE_SAMPLE,
+                id="expired-for-a-model-priced-only-through-a-key-on-rows-overhead",
+            ),
+            pytest.param(
+                _LISTED_MODEL_NOT_IN_THE_SAMPLE, False, _SONNET, id="expired-for-a-listed-model-the-sample-never-priced",
+            ),
+            pytest.param(None, False, _SONNET, id="expired-for-no-model"),
+        ],
+    )
     def test_the_stale_pricing_line_prints_only_for_an_expired_model_compute_priced(
-        self, lab, capsys, monkeypatch, expired,
+        self, lab, capsys, monkeypatch, expired_model, line_prints, key_on_overhead_model,
     ):
-        _minimal_pair(lab)
-        monkeypatch.setattr(pricing, "_rate_expired", lambda _model, _as_of: expired)
+        account = lab.account()
+        lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=1_000_000, growth=100, model=key_on_overhead_model)])
+        lab.row(account, "branch-off", "off", loops=[_loop(input_tokens=1_000_000, growth=300, later={_OPUS: 10})])
+        lab.write_note()
+        monkeypatch.setattr(pricing, "_rate_expired", lambda model, _as_of: model == expired_model)
 
         outcome = _compute(capsys, lab)
 
-        assert (routing_guard._STALE_PRICING_LINE in outcome.err.splitlines()) == expired
+        assert (routing_guard._STALE_PRICING_LINE in outcome.err.splitlines()) == line_prints
         assert not any(ch.isdigit() for ch in routing_guard._STALE_PRICING_LINE)
 
 
@@ -835,6 +877,48 @@ class TestPointNet:
         assert figures.gap == pytest.approx(400_000)
         assert figures.carry == pytest.approx(1.70)
         assert figures.net == pytest.approx(-2.70)
+
+    def test_a_key_off_branch_with_only_null_growth_loops_still_counts_in_the_per_loop_overhead_and_carry_denominators(self):
+        on = [routing_guard._BranchScalars("d1", 2, 200_000, 2, 10.0, 0.0, 0, frozenset())]
+        off = [
+            routing_guard._BranchScalars("d2", 1, 600_000, 1, 6.0, 4.0e-6, 0, frozenset()),
+            routing_guard._BranchScalars("d3", 2, 0, 0, 14.0, 6.0e-6, 0, frozenset()),
+        ]
+
+        figures = routing_guard._arm_net(on, off)
+
+        # On: $10 / 2 loops = $5. Off: $20 / 3 loops = $6.67, because the null-growth branch's 2 loops count.
+        # Gap: 600k over the 1 growth-defined key-off loop, less 200k over 2 key-on loops = 500k tokens.
+        # Carry: 500k * 10e-6 / 3 key-off loops = $1.67.
+        assert figures.overhead_difference == pytest.approx(5.0 - 20.0 / 3)
+        assert figures.gap == pytest.approx(500_000)
+        assert figures.carry == pytest.approx(500_000 * 10.0e-6 / 3)
+        assert figures.net == pytest.approx(5.0 - 20.0 / 3 - 500_000 * 10.0e-6 / 3)
+
+    def test_the_out_file_figures_of_an_arm_holding_a_null_growth_key_off_loop_equal_the_hand_computed_values(
+        self, lab, capsys,
+    ):
+        account = lab.account()
+        lab.row(account, "on-1", "on", loops=[_loop(input_tokens=1_000_000, growth=100_000)])
+        lab.row(account, "on-2", "on", loops=[_loop(input_tokens=1_000_000, growth=300_000)])
+        lab.row(account, "off-1", "off", loops=[_loop(input_tokens=2_000_000, growth=600_000, later={_SONNET: 10})])
+        lab.row(account, "off-2", "off", loops=[_loop(input_tokens=4_000_000, growth=None, later={_SONNET: 10})])
+        lab.write_note()
+        out_path = lab.root / "figures.txt"
+
+        outcome = _compute(capsys, lab, out=str(out_path))
+
+        figure_lines = out_path.read_text().splitlines()
+        # On: $4.00 / 2 loops = $2.00. Off: $12.00 / 2 loops = $6.00, the null-growth loop included.
+        # Gap: 600k over the 1 growth-defined key-off loop, less 200k over 2 key-on loops = 400k tokens.
+        # Carry: 400k * (10 + 10) * 0.2e-6 / 2 loops = $0.80.
+        assert outcome.code in (0, 1)
+        assert "overhead difference per loop: -$4.00" in figure_lines
+        assert "carry per loop: $0.80" in figure_lines
+        assert "growth gap, key-off minus key-on, tokens per loop: 400,000.0" in figure_lines
+        assert "net per loop: -$4.80" in figure_lines
+        assert "key-off loops: 2" in figure_lines
+        assert "key-off growth-defined loops: 1" in figure_lines
 
     def test_the_net_is_undefined_when_an_arm_has_no_growth_defined_loop(self):
         defined = routing_guard._BranchScalars("d1", 1, 5, 1, 1.0, 0.0, 0, frozenset())
@@ -928,10 +1012,9 @@ class TestBootstrap:
 
         routing_guard._bootstrap_net(on, off, replicates=3, rng=rng)
 
-        assert len(rng.calls) == 6
-        assert [([b.digest for b in population], k) for population, k in rng.calls[:2]] == [
-            (["a", "m", "z"], 3), (["b", "y"], 2),
-        ]
+        draws_per_replicate = [([b.digest for b in population], k) for population, k in rng.calls]
+        assert len(draws_per_replicate) == 6
+        assert draws_per_replicate == [(["a", "m", "z"], 3), (["b", "y"], 2)] * 3
 
     def test_the_result_does_not_depend_on_the_global_random_state_and_depends_on_the_injected_seed(self):
         on, off = _six_branch_arms()
@@ -1029,6 +1112,7 @@ class _PipelineSpy(NamedTuple):
     replicate_counts: list[int]
     sorted_nets: list[list[float]]
     bounds: list[tuple[float, float]]
+    results: list[routing_guard._BootstrapResult]
 
 
 def _six_branch_lab(lab: _Lab, account_names: Sequence[str] = ("acct-a",)) -> list[int]:
@@ -1054,7 +1138,7 @@ def _six_branch_lab(lab: _Lab, account_names: Sequence[str] = ("acct-a",)) -> li
 
 @pytest.fixture
 def pipeline_spy(monkeypatch) -> _PipelineSpy:
-    spy = _PipelineSpy([], [], [], [])
+    spy = _PipelineSpy([], [], [], [], [])
     real_percentile = review_rounds._resample_percentile
     real_bootstrap = routing_guard._bootstrap_net
 
@@ -1067,7 +1151,9 @@ def pipeline_spy(monkeypatch) -> _PipelineSpy:
 
     def bootstrap_spy(on, off, *, replicates, rng):
         spy.replicate_counts.append(replicates)
-        return real_bootstrap(on, off, replicates=replicates, rng=rng)
+        result = real_bootstrap(on, off, replicates=replicates, rng=rng)
+        spy.results.append(result)
+        return result
 
     monkeypatch.setattr(review_rounds, "_resample_percentile", percentile_spy)
     monkeypatch.setattr(routing_guard, "_bootstrap_net", bootstrap_spy)
@@ -1167,7 +1253,7 @@ class TestBootstrapThroughCompute:
         assert outcome.out.splitlines() == [_not_run_line(routing_guard._REASON_NON_FINITE)]
 
     def test_a_thin_growth_sample_runs_to_a_status_and_notes_the_undefined_replicates(
-        self, lab, capsys, production_bootstrap_replicates,
+        self, lab, capsys, pipeline_spy, production_bootstrap_replicates,
     ):
         account = lab.account()
         for index in range(10):
@@ -1187,9 +1273,9 @@ class TestBootstrapThroughCompute:
         assert "key-on growth-defined branches: 2" in figure_lines
         assert "key-on growth-defined loops: 2" in figure_lines
         assert "key-off growth-defined branches: 10" in figure_lines
-        undefined_line = next(line for line in figure_lines if line.startswith("undefined replicates: "))
-        assert int(undefined_line.split(": ")[1].split(" of ")[0]) > 250
-        assert undefined_line.endswith(" of 10000")
+        undefined_replicates = pipeline_spy.results[0].undefined_total
+        assert undefined_replicates > 250
+        assert f"undefined replicates: {undefined_replicates} of 10000" in figure_lines
 
 
 # --- output ------------------------------------------------------------------
@@ -1221,7 +1307,7 @@ class TestOutput:
         assert outcome.code == 0
         assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
         assert text.startswith(routing_guard._DO_NOT_PUBLISH_BANNER + "\n")
-        assert [line.split(":")[0] for line in text.splitlines()[3:]] == [
+        assert [line.split(":")[0] for line in text.splitlines()[len(routing_guard._DO_NOT_PUBLISH_BANNER.splitlines()):]] == [
             "net per loop", "95% interval", "overhead difference per loop", "carry per loop",
             "growth gap, key-off minus key-on, tokens per loop",
             "key-on branches", "key-on loops", "key-on growth-defined branches", "key-on growth-defined loops",
@@ -1448,6 +1534,65 @@ class TestUnexpectedFailures:
         assert "Traceback" not in outcome.err
 
 
+class TestGitCheckFailure:
+    def test_a_failed_git_call_prints_the_diagnostic_under_the_routing_guard_label_before_the_note_refusal(
+        self, lab, capsys, monkeypatch, tmp_path,
+    ):
+        _minimal_pair(lab)
+        _install_git_not_found(monkeypatch)
+
+        outcome = _compute(capsys, lab)
+
+        _assert_git_failure_diagnostic_precedes_note_refusal(outcome, _DIGIT_SCAN_EXEMPT_PREFIXES, tmp_path)
+
+
+class TestUnlistedDenyRemedyCommand:
+    """The command capture's unlisted-branch refusal names parses through the CLI's own parser."""
+
+    _SLUG_PLACEHOLDER = "<main-project-slug>"
+    _A_MAIN_CHECKOUT = "/placeholder/checkout"
+
+    @staticmethod
+    def _remedy_words() -> list[str]:
+        unlisted_deny = routing_guard._DenyFact("unlisted-branch", 1.0)
+        reconciliation = routing_guard._reconcile_denies([unlisted_deny], [], Path("/placeholder/account"), set(), {})
+        (refusal,) = reconciliation.refusals
+        return [word.rstrip(",;") for word in refusal.split()]
+
+    @pytest.mark.parametrize("scope_form", ["this-repo", "projects-glob"])
+    def test_the_named_review_trace_command_parses_in_each_scope_form(self, tmp_path, scope_form):
+        words = self._remedy_words()
+        assert {"--config-dir", "review-trace", "--deny-only"} <= set(words)
+        if scope_form == "this-repo":
+            assert "--this-repo" in words
+            scope_args = ["--this-repo"]
+        else:
+            (projects_word,) = (word for word in words if word.startswith("--projects"))
+            assert self._SLUG_PLACEHOLDER in projects_word
+            main_project_slug = scope._path_to_project_slug(self._A_MAIN_CHECKOUT)
+            scope_args = shlex.split(projects_word.replace(self._SLUG_PLACEHOLDER, main_project_slug))
+
+        args = _mod.build_parser().parse_args(
+            ["--config-dir", str(tmp_path), "review-trace", "--deny-only", *scope_args],
+        )
+
+        assert args.deny_only is True
+        if scope_form == "this-repo":
+            assert args.this_repo is True
+        else:
+            removed_worktree_slug = scope._path_to_project_slug(f"{self._A_MAIN_CHECKOUT}/.claude/worktrees/removed-branch")
+            projects_root = tmp_path / "projects"
+            removed_worktree_project = projects_root / removed_worktree_slug
+            removed_worktree_project.mkdir(parents=True)
+            session_file = removed_worktree_project / "sess-removed.jsonl"
+            _write_jsonl(session_file, [_user_msg("hello", branch="removed-branch")])
+            other_project = projects_root / scope._path_to_project_slug("/placeholder/other-checkout")
+            other_project.mkdir()
+            _write_jsonl(other_project / "sess-other.jsonl", [_user_msg("hello", branch="other")])
+
+            assert [path for path, _records in corpus.iter_sessions(projects_root, args.projects)] == [session_file]
+
+
 # --- criterion 3 in compute mode ---------------------------------------------
 
 
@@ -1603,3 +1748,20 @@ class TestRoutingGuardDocSection:
         section_text = "\n".join(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text()))
 
         assert [reason for reason in routing_guard._NOT_RUN_REASONS if reason not in section_text] == []
+
+    def test_the_heading_the_messages_cite_is_a_subheading_of_the_section_and_each_message_carries_the_pointer(self):
+        account = Path("/placeholder/account")
+        off_row_refusal, = routing_guard._reconcile_denies(
+            [routing_guard._DenyFact("off-branch", 1.0)], [_note_row(1, account, "off-branch", "off")], account, set(), {},
+        ).refusals
+        unlisted_branch_refusal, = routing_guard._reconcile_denies(
+            [routing_guard._DenyFact("unlisted-branch", 1.0)], [], account, set(), {},
+        ).refusals
+        pointer_opening = 'routing-guard "'
+        cited_from = off_row_refusal[off_row_refusal.index(pointer_opening) + len(pointer_opening):]
+        cited_heading = cited_from.split('"')[0]
+        section = _routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text())
+
+        assert f"### {cited_heading}" in section
+        for message in (off_row_refusal, unlisted_branch_refusal, routing_guard._DROPPED_DENY_NOTICE):
+            assert f'routing-guard "{cited_heading}"' in message

@@ -244,6 +244,13 @@ Column legend:
   sixth of the six rows affected.
 - Fail direction on resolution failure: exits with a diagnostic; recording
   is refused (matches `cost_ledger_recording`'s direction).
+- Second call site: `claude/.claude/scripts/transcript_analysis/routing_guard.py:353` (`_read_opt_in`,
+  the `routing-guard` subcommand's one read of this key, for both its capture and compute modes).
+  - Resolution: **config-dir**. It always passes an explicit `config_dir_override`, so `config_value`
+    reads that one directory with no `$HOME` union.
+  - Legacy-probe-on-resolution-failure: **false**. The fallback probe runs only without an override.
+  - Fail direction: **refused**. Either mode proceeds only when the read resolves opted in; any other
+    outcome stops it.
 
 ### `pr_cost_disclosure`
 

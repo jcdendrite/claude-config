@@ -164,18 +164,18 @@ def _resolve_machine_identity(
     # "Refusals" section for the cloud-sync-duplication collision discussion).
     token = secrets.token_hex(4)
     outcome = _publish_new_file(path, token, f"{_MACHINE_IDENTITY_FILENAME}.", "")
+    if outcome is _PublishOutcome.CREATED:
+        return token
     if outcome is _PublishOutcome.EXISTS:
         return _read_machine_identity_or_refuse(subcommand, path, location_label)
-    if outcome is not _PublishOutcome.CREATED:
-        # No OSError text: a real mkstemp/os.link failure embeds the full
-        # temp-file path via exc.filename/filename2, which sits inside
-        # this machine's own config dir.
-        print(
-            f"{subcommand}: could not create the machine identity file ({location_label})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return token
+    # Any other outcome fails closed. No OSError text: a real mkstemp/os.link
+    # failure embeds the full temp-file path via exc.filename/filename2, which
+    # sits inside this machine's own config dir.
+    print(
+        f"{subcommand}: could not create the machine identity file ({location_label})",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
@@ -307,6 +307,8 @@ def _publish_new_owner_file(out: str, text: str, command: str) -> None:
     # target the git-tree check validated.
     open_path = Path(out).parent.resolve() / Path(out).name
     outcome = _publish_new_file(open_path, text, f".{command}-", ".tmp")
+    if outcome is _PublishOutcome.CREATED:
+        return
     if outcome is _PublishOutcome.EXISTS:
         print(
             f"{command}: --out {out!r} already exists -- refusing to overwrite; pass a new path",
@@ -319,9 +321,9 @@ def _publish_new_owner_file(out: str, text: str, command: str) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    if outcome is _PublishOutcome.LINK_FAILED:
-        print(
-            f"{command}: --out {out!r} could not be published; pass a new path",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    # LINK_FAILED, and any outcome not named above, fails closed.
+    print(
+        f"{command}: --out {out!r} could not be published; pass a new path",
+        file=sys.stderr,
+    )
+    sys.exit(2)

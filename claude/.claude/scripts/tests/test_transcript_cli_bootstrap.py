@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 from helpers import REPO_ROOT, init_git_repo_with_commit
 
-from ._review_round_helpers import _marker_write_use, _note_line
+from ._review_round_helpers import _marker_write_use
+from ._routing_guard_helpers import _note_line
 from .conftest import _asst, _bash_use, _priced, _skill_block, _table_cols, _tool_result, _user_msg, _write_jsonl
 
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
