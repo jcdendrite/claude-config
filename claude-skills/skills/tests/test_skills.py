@@ -6523,7 +6523,10 @@ _PINNED_DEFER_INVARIANT_CLAUSE = (
     "`--enforcement-invariant` and without `--carry-forward`: it is "
     "asked again on every re-raise, never carried, and never DEFERred. "
     "Approval of a diff or PR does not function as informed consent "
-    "for an invariant-break buried in the body."
+    "for an invariant-break buried in the body. The bar applies to an "
+    "invariant break a round notices anywhere in the PR, not only inside "
+    "the diff that round enumerates (the staged diff in a staged round, "
+    "the PR against its base in the cumulative pass)."
 )
 
 
