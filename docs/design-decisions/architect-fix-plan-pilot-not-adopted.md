@@ -4,11 +4,11 @@
 
 The pilot in [A default-off pilot has `plan-architect` author each `/code-review` round's fix plan](architect-authored-fix-plan-pilot.md) is not adopted. The `architect_fix_plan_pilot` key stays `false` by default, its code stays dormant behind that key until a separate decision removes it, and any account that enabled it sets it back to `false`.
 
-The decision rests on absence of benefit and a failed guardrail, not on proof of harm. This record states what was measured, what could not be, and why the safe default wins.
+The decision rests on absence of benefit and a failed guardrail, not on proof of harm.
 
 ## What was assessed
 
-The assessment ran once, over existing transcripts, and is exploratory. It compared this repository's `/code-review` rounds with the key on against rounds from a comparison set outside this repository, read privately by the engineer, with the key off. The read was private and used no command that refuses a wider corpus, so this record publishes verdicts and method limits and no measurement. The key-on rounds are this repository's own. A verdict that involves the comparison set says only which way that comparison pointed. The assessment was not randomized: the engineer chose which work ran where, so workload, calendar time and session model all differ between the two sets.
+The assessment ran once, over existing transcripts, and is exploratory. It compared this repository's `/code-review` rounds with the key on against rounds from a comparison set outside this repository, read privately by the engineer, with the key off. The read was private and used no command that refuses a wider corpus, so this record publishes verdicts and method limits and no measurement. The key-on rounds are this repository's own. A verdict that involves the comparison set says only which way that comparison pointed. The assessment was not randomized: the engineer chose which work ran where, so the two sets are not matched on workload, calendar time or session model.
 
 Outcomes and guardrails, fixed before grading except for the three choices disclosed under "What the original pilot lacked". Each threshold's value is withheld, because a value paired with its verdict bounds the figure it was tested against:
 
@@ -24,31 +24,43 @@ Any failed guardrail means the pilot is not adopted, and an inconclusive one cou
 
 - **Rounds and asks per PR:** no detectable difference. The comparison cannot support adoption.
 - **Guardrail 1:** passed, including when every dispatch with no recorded outcome was counted as a stop.
-- **Guardrail 2:** passed, but the audit is weak. The graders saw finding text and no code, their error calls on DEFERs did not separate the two sets, and they disagreed with each other. It is a pass, not an inconclusive result under the rule above, and it supports no reading beyond that verdict and the failure-class flag used under "What this record does not claim". The graders were model sessions run inside the engineer's own sessions.
+- **Guardrail 2:** passed, but the audit is weak. The graders saw finding text and no code, their error calls on DEFERs did not separate the two sets, and they disagreed with each other. It is a pass, not an inconclusive result under the rule above. It supports no reading beyond that verdict, except that the graders flagged some DEFER dispositions as errors, in a way that did not separate the two sets, which is the failure class named under "What this record does not claim". The graders were model sessions run inside the engineer's own sessions.
 - **Guardrail 3:** failed. A DEFER of an enforcement-invariant finding went through without a stop, and a keyword screen of the rest was too narrow to say there were no others. The enforcement-invariant rule (`DISPOSITION_RULE:code-review-defer-invariant` in `claude-skills/skills/code-review/SKILL.md`) is read here with "the diff" meaning the whole PR against its base, not the round's own change, and that reading is what makes the finding a hit.
-- **Cost:** the pilot's architect consults added cost. That is gross cost: it excludes the dispatching session's own turns, and no saving elsewhere was found. The two-set comparison cannot attribute any cost difference to the pilot. No figure is published.
+- **Cost:** the pilot's architect consults added cost. That is gross cost, and it excludes the dispatching session's own turns. No saving elsewhere was found. The two-set comparison cannot attribute any cost difference to the pilot.
 
 ## Why not adopt, and why not keep running it
 
 - No measured benefit offsets the pilot's gross consult cost and a failed safety check.
-- Keeping the key on to gather more data buys little. The comparison is confounded by consult routing: the engineer can direct a session to consult the architect with or without the key, so the two sets differ in consult routing and not only in who writes the dispositions.
-- The 30-day transcript retention means the comparison cannot be repeated later on the same data.
+- Keeping the key on to gather more data buys little. The comparison is confounded by consult routing: the engineer can direct a session to consult the architect with or without the key, so the sets differ in more than who writes the dispositions.
+- At Claude Code's default transcript retention window (`cleanupPeriodDays`, 30 days, per `docs/pr-cost.md`), the sessions behind the comparison age out, so it cannot be repeated later on the same data.
 
 ## What the original pilot lacked
 
-The original record listed four conditions before enabling: a baseline, a pre-registered adopt-or-revert rule with a stop-rate threshold, a reader for the `fix-plan:` marks, and a deny/allow fixture pair. None existed when the key went on, so this assessment had to build its reader, its audit and its rule after the fact. Three choices were made after the numbers were visible, and the engineer made each: how an untagged dispatch counts as a stop, the floor on how many PRs the audit needs, and which reading of "the diff" the third guardrail uses. Each could move a result, so each is disclosed here.
+The original record listed four conditions before enabling:
+
+- A baseline.
+- A pre-registered adopt-or-revert rule with a stop-rate threshold.
+- A reader for the `fix-plan:` marks.
+- A deny/allow fixture pair.
+
+None existed when the key went on, so this assessment had to build its reader, its audit and its rule after the fact. The engineer made three choices after the numbers were visible:
+
+- How an untagged dispatch counts as a stop.
+- The floor on how many PRs the audit needs.
+- Which reading of "the diff" the third guardrail uses.
+
+Each could move a result, so each is disclosed here.
 
 The lesson for any later pilot is to write the baseline, the metric, the margin and the stopping rule before enabling it.
 
 ## What this record does not claim
 
-- That Sonnet dispositions are as good as the architect's. The audit and the outcome counts cannot show that, and the comparison set was not Sonnet-only.
-- That the architect should not review dispositions. A narrower design, where a reviewer challenges DEFER dispositions an orchestrator already wrote, targets a failure class the audit flagged and is expected to cost less. It needs its own record, with its metric and rule fixed first.
+- That Sonnet dispositions are as good as the architect's. The audit and the outcome counts cannot show that, and the comparison did not hold session model fixed.
+- That the architect should not review dispositions. A narrower design, where a reviewer challenges DEFER dispositions an orchestrator already wrote, targets the failure class the Guardrail 2 graders flagged (DEFER dispositions they judged wrong) and is expected to cost less. It needs its own record, with its metric and rule fixed first.
 
 ## Known limits
 
-- The two sets differ in diff size and in how much work was delegated to the architect by hand. The assessment removed Opus-orchestrated rounds from both sets.
-- The audit used text-only graders.
+- The two sets are not matched on diff size or on how much work was delegated to the architect by hand. The assessment removed Opus-orchestrated rounds from both sets.
 
 ## Sources
 
