@@ -13,6 +13,7 @@ from helpers import init_git_repo_with_commit
 from transcript_analysis import author_outcome as ao
 from transcript_analysis import corpus
 
+from ._review_round_helpers import _MARKER_WRITE_COMMAND, _marker_write_use
 from .conftest import (
     _agent_use,
     _asst,
@@ -59,13 +60,6 @@ def _config_dir_root(fake_projects: Path) -> Path:
 
 def _seed_ledger(fake_projects: Path, session_id: str, rows: list[dict]) -> Path:
     return _write_ledger_file(_config_dir_root(fake_projects), session_id, rows)
-
-
-_MARKER_WRITE_COMMAND = "marker.sh write code-review"
-
-
-def _marker_write_use(tool_id: str) -> dict:
-    return _bash_use(tool_id, _MARKER_WRITE_COMMAND)
 
 
 def _dispatch_start(tool_id: str, ts: str, *, agent_type: str = "code-writer", tool_name: str = "Agent") -> dict:

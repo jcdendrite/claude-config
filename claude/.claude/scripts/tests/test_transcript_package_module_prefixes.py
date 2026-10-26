@@ -54,6 +54,7 @@ PRODUCTION_MODULES = (
     "edit_format.py",
     "instrument_authoring.py",
     "review_cost_by_size.py",
+    "routing_guard.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -122,6 +123,8 @@ TEST_FILES = (
     "test_transcript_scope.py",
     "test_transcript_scope_scan.py",
     "test_transcript_corpus.py",
+    "test_transcript_routing_guard_capture.py",
+    "test_transcript_routing_guard_compute.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

@@ -4126,6 +4126,49 @@ def test_review_round_cost_citation_resolves_to_real_heading() -> None:
     )
 
 
+def test_routing_gate_design_record_cites_routing_guard_section() -> None:
+    """The routing-gate design record points to
+    `docs/transcript-analysis.md` § "routing-guard" for how the cost guard
+    reads each figure.
+
+    This test checks that the heading exists there.
+
+    The record defers to that section instead of restating how each figure
+    is read, and docs/*.md sits outside the generic skill-citation sweep, so
+    a heading rename would otherwise orphan the pointer with no
+    reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "design-decisions" / "review-orchestrator-routing-gate.md",
+        "docs/transcript-analysis.md",
+        "routing-guard",
+        repo_root=REPO_ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    "pr_cost_heading",
+    ["Data", "Residual replication paths the git-tree check doesn't close"],
+)
+def test_routing_guard_section_cites_real_pr_cost_headings(pr_cost_heading: str) -> None:
+    """docs/transcript-analysis.md's `routing-guard` section cites
+    `docs/pr-cost.md` § "Data" and § "Residual replication paths the git-tree
+    check doesn't close" for the capture store's rules — each resolves to a
+    real heading there.
+
+    The section defers to pr-cost's ledger rules instead of restating them,
+    and docs/*.md sits outside the generic skill-citation sweep, so a
+    heading rename in docs/pr-cost.md would otherwise orphan the pointer
+    with no reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        "docs/pr-cost.md",
+        pr_cost_heading,
+        repo_root=REPO_ROOT,
+    )
+
+
 _SHOW_WITHHELD_BARRED_LIST_FILES = (
     ".claude/skills/code-review-claude-config/SKILL.md",
     "docs/private-project-redaction.md",

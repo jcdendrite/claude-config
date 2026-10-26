@@ -4,11 +4,9 @@ corpus."""
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import os
 import sys
-import tempfile
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -337,39 +335,7 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    # Resolved (following any symlink at --out itself) so the git-tree check
-    # below sees where the path really points.
-    # For a dangling symlink, resolve() still reports that the target
-    # doesn't exist.
-    # This resolved path is never echoed to a diagnostic, since it can embed
-    # a home-rooted engagement directory -- see _config_dir.py's own "the
-    # path identifies an engagement" discipline.
-    # Only the operator's own literal `out` string is echoed below.
-    resolved_out = Path(out).resolve()
-    # lexists() here buys nothing over exists(), since resolve() above
-    # already followed every symlink. This check is therefore a UX-only
-    # fast path that fails fast on the common case. The actual symlink
-    # defense is below, at the unresolved open_path + os.link publish step.
-    # That step raises FileExistsError on an existing destination rather
-    # than dereferencing it.
-    if os.path.lexists(str(resolved_out)):
-        print(
-            f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    # resolved_out is re-resolved a second, independent time at the terminal
-    # os.open call below (open_path). A symlink retargeted between these two
-    # checks is a known, accepted TOCTOU window for this tool's
-    # single-operator threat model, not one this check closes.
-    if ledger_common._ledger_path_is_git_tracked(resolved_out, "pr-cost-export"):
-        print(
-            f"pr-cost-export: --out {out!r} is inside a git working tree -- this repo (and every"
-            " repo this subcommand might be run from) is potentially public; write outside any"
-            " git working tree",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    ledger_common._refuse_unusable_out_path(out, "pr-cost-export")
 
     roots = scope._resolve_cost_roots(args, "pr-cost-export")
     if len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
@@ -405,57 +371,7 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
-    # The final path component is left exactly as named, unlike resolved_out
-    # above, so the publish step's own symlink refusal (below) actually
-    # fires instead of silently following the link to wherever it points.
-    # The parent is still resolved, so a symlinked parent directory lands
-    # inside the same target the git-tree check above already validated.
-    open_path = Path(out).parent.resolve() / Path(out).name
-
-    # Materialized into a same-directory temp file first, then published into
-    # --out via a hard link, so a mid-write crash never leaves a truncated,
-    # non-empty file stuck at the operator-named path with no sign it's crash
-    # debris. Same mkstemp+os.link idiom as _resolve_machine_identity's own
-    # publish step.
-    #
-    # `mkstemp` creates the temp file `0600`, and `os.link`'s new name shares
-    # that same inode's mode. `--out` therefore ends up `0600` with no
-    # separate `chmod` needed.
-    tmp_name: str | None = None
-    try:
-        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(open_path.parent), prefix=".pr-cost-export-", suffix=".tmp")
-        with os.fdopen(tmp_fd, "w") as f:
-            f.write(file_text)
-    except OSError:
-        if tmp_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-        print(
-            f"pr-cost-export: --out {out!r} could not be written -- pass a new path",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    try:
-        try:
-            os.link(tmp_name, open_path)
-        except FileExistsError:
-            print(
-                f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        except OSError:
-            # Not over-specified to "parent directory missing or
-            # unwritable": os.link can also fail this way on EXDEV (--out on
-            # a different filesystem than the temp file) or ENOSPC.
-            print(
-                f"pr-cost-export: --out {out!r} could not be published; pass a new path",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
+    ledger_common._publish_new_owner_file(out, file_text, "pr-cost-export")
 
     print(
         f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"

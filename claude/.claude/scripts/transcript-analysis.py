@@ -140,6 +140,10 @@ from transcript_analysis.reviewer_yield import (
     # p_reviewer_yield.set_defaults.
     cmd_reviewer_yield,
 )
+from transcript_analysis.routing_guard import (
+    # Read bare by this file's own build_parser (the routing-guard subcommand's registration).
+    _add_routing_guard_subparser,
+)
 from transcript_analysis.scope import (
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _add_project_scope_args,
@@ -769,6 +773,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
     )
     p_author_outcome.set_defaults(func=cmd_author_outcome)
+
+    _add_routing_guard_subparser(sub)
 
     p_cost_counts = sub.add_parser(
         "cost-counts",

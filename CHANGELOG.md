@@ -539,6 +539,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The hook has no config key and no off switch other than removing its `settings.json` entry. `docs/session-config-keys-log.md` § "Notice" says what removal costs.
   - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then a real hooks directory leaves the new hook unlinked while `settings.json` already registers it.
   - Whether IDE and desktop sessions record a row is untested.
+- **`transcript-analysis.py routing-guard` captures each sampled branch's review loops per account and computes the review-orchestrator routing gate's cost guard.**
+  - `--capture` writes one file per branch into `<config-dir>/routing-guard-captures/`, gated per account on `pr_cost_recording`. Existing opt-ins authorize the new directory with no new prompt.
+  - Files are named by a digest of the branch, and each holds token counts and model strings, with no branch name, path or timestamp. The digest is unsalted, so anyone holding a directory listing and the public branch list can recover which branches were captured.
+  - Without `--capture`, it writes its figures only to a new owner-only `--out` file. Only the bare status word (PASSED, FAILED or NOT RUN) is publishable. A NOT RUN line also carries its reason, and that reason and the notices are owner-only.
+  - See `docs/transcript-analysis.md` § "routing-guard".
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.

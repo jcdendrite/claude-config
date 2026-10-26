@@ -18,7 +18,7 @@ circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
 `user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
 `sessions.py`, `context_distribution.py`, `context_composition.py`, `cache_efficiency.py`,
-`edit_format.py`, `instrument_authoring.py`, and `review_cost_by_size.py` are the only
+`edit_format.py`, `instrument_authoring.py`, `review_cost_by_size.py`, and `routing_guard.py` are the only
 modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
@@ -53,7 +53,7 @@ from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
 turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
-instrument-authoring, and review-cost-by-size by calling each owning
+instrument-authoring, review-cost-by-size, and routing-guard by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -390,7 +390,11 @@ reached bare from the shim — see the exception noted above. `context_compositi
 Recording primitives shared by the cost-ledger and pr-cost ledgers: the generated per-config-dir
 machine identity (`_resolve_machine_identity`, `_machine_identity_path`), the git-tracked
 destination check (`_ledger_path_is_git_tracked`), the machine-label format, the merge-conflict
-markers both parsers refuse, and the local-lock timing both `--record` paths use. A leaf: no
+markers both parsers refuse, and the local-lock timing both `--record` paths use. It also holds the
+create-new file publish helpers: the fsynced temp-file-plus-hard-link core `_publish_new_file`
+(returning a `_PublishOutcome`) and the two `--out` helpers built on it,
+`_refuse_unusable_out_path` (run before any work) and `_publish_new_owner_file` (run last).
+`routing_guard.py` publishes each captured branch's file through the core as well. A leaf: no
 dependency on any other package module. Binds `config_dir` by name from `_config_dir`, mirroring
 `scope.py`'s own binding (see the attribute-access discipline noted under `scope.py` above) — every
 package consumer (`cost_ledger.py`, `pr_cost_ledger.py`, `pr_cost.py`, `pr_cost_export.py`) reads
@@ -769,6 +773,51 @@ and split into zero-dispatch and dispatched session cohorts, and the `_add_instr
 registration. Imports `pricing`, `render`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_add_instrument_authoring_subparser` is the one name `build_parser()` reaches
 bare.
+
+### `routing_guard.py`
+
+The routing-guard command: `cmd_routing_guard` and `_add_routing_guard_subparser`. Its `--capture`
+mode reads one account's transcripts of this repo and publishes one write-once file per sampled
+branch into that account's `routing-guard-captures` directory, gated by the account's
+`pr_cost_recording` key. A file holds the token counts of the branch's review loops, so a later
+run can price them at the rate table current then. It is named
+`<sha256 of the branch>.r<_CAPTURE_REVISION>.json` and published through
+`ledger_common._publish_new_file`, so an existing file is never rebuilt.
+
+The decision rules are pure functions over in-memory facts: `_parse_note` (the owner's note of
+config dir, branch, arm and pilot states per branch), `_reconcile_denies` (the note against the
+review-orchestrator routing gate's denies), `_whole_reason` (whether a branch can be captured whole),
+`_assemble_loops`, `_parse_capture_bytes` (the one validator every reader and writer of a capture
+file goes through) and `_capture_file_name`. `_add_session_facts` folds one session into derived
+facts and keeps no record afterward. It takes each record's branch from
+`review_rounds._session_record_branches`, prices each `code-review` window through
+`review_rounds._price_session_rounds` with `collect_tokens=True`, and reads the loop-ending marker
+write from `author_outcome._round_has_marker_write`.
+
+`_CHECKOUT_ROOT` is the checkout holding the running module. Capture refuses a cwd outside a
+worktree of that checkout, because `scope._repo_scoped_project_slugs` would otherwise scope the read
+to the cwd's repo.
+
+A run without `--capture` computes the guard and reads no transcripts. It opens the note and, for
+each `on` and `off` row of an account that has an `on` row, the one capture file its branch digest and
+`_CAPTURE_REVISION` name. It never lists a captures directory, and it opens none of an account's files
+when that account's key is off or its captures directory is missing (`_account_is_ready`). Each file goes
+through `_parse_capture_bytes`, so a bad file fails only its own row. `_select_sample` holds the sample
+checks and returns every NOT RUN reason in `_NOT_RUN_REASONS` order, and compute never exits 1 for an
+opt-in or config outcome. `_branch_scalars` prices each loop's token counts at the current rate table
+through `pricing._price_turn`, and prices later turns at `pricing._model_rates`' cache-read rate for a
+key-off branch only. A model the table does not price is skipped and its loop counts as degraded.
+`_arm_net` turns two arms' scalars into the net per loop. `_bootstrap_net(on, off, *, replicates, rng)`
+resamples each arm's branches, sorted by digest, with the injected RNG. It ranks a replicate whose
+resample leaves an arm with no growth-defined loop as `math.inf` instead of redrawing it, and takes the
+bounds from `review_rounds._resample_percentile` at `_GUARD_CI_LEVEL`. Every module constant is read
+when the call runs. Figures reach output only through `--out`, published by
+`ledger_common._publish_new_owner_file`. Stdout and stderr carry a status, digit-free reasons and
+notices, and `note line` locators.
+
+Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`, and
+`scope` all by module (attribute access), and `_config` for the opt-in read. `_add_routing_guard_subparser`
+is the one name `build_parser()` reaches bare.
 
 ## Sibling scripts
 

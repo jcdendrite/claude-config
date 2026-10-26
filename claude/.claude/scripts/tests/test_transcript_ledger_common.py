@@ -1,5 +1,5 @@
-"""Tests for transcript_analysis/ledger_common.py (the shared machine-identity generation and
-git-tracked-destination check)."""
+"""Tests for transcript_analysis/ledger_common.py (the shared machine-identity generation,
+git-tracked-destination check and create-new file publish helpers)."""
 import importlib.util
 import os
 import stat
@@ -597,3 +597,233 @@ class TestLedgerPathIsGitTracked:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         assert ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is False
+
+
+_PUBLISHED_TEXT = "first line\nsecond line\n"
+_PUBLISH_PREFIX = ".publish-test-"
+_PUBLISH_SUFFIX = ".tmp"
+_OUT_COMMAND = "routing-guard"
+
+
+def _publish(path: Path):
+    return ledger_common._publish_new_file(path, _PUBLISHED_TEXT, _PUBLISH_PREFIX, _PUBLISH_SUFFIX)
+
+
+def _directory_entries(directory: Path) -> list[str]:
+    return sorted(entry.name for entry in directory.iterdir())
+
+
+def _raise_os_error(*_args):
+    raise OSError("simulated failure")
+
+
+class TestPublishNewFile:
+    def test_created_leaves_text_at_mode_0600_with_no_temp_file(self, tmp_path):
+        target = tmp_path / "published.txt"
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.CREATED
+        assert target.read_text() == _PUBLISHED_TEXT
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert _directory_entries(tmp_path) == ["published.txt"]
+
+    def test_created_fsyncs_the_temp_file_before_linking_it(self, tmp_path, monkeypatch):
+        target = tmp_path / "published.txt"
+        events: list[tuple[str, int]] = []
+        real_fsync, real_link = os.fsync, os.link
+
+        def recording_fsync(fd):
+            events.append(("fsync", os.fstat(fd).st_ino))
+            real_fsync(fd)
+
+        def recording_link(src, dst):
+            events.append(("link", os.stat(src).st_ino))
+            real_link(src, dst)
+
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        monkeypatch.setattr(os, "link", recording_link)
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.CREATED
+        assert [name for name, _inode in events] == ["fsync", "link"]
+        # Both calls saw the temp file's inode, which the final name shares.
+        assert {inode for _name, inode in events} == {target.stat().st_ino}
+
+    def test_exists_for_an_existing_file_leaves_it_as_it_was(self, tmp_path):
+        target = tmp_path / "published.txt"
+        target.write_text("preexisting\n")
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.EXISTS
+        assert target.read_text() == "preexisting\n"
+        assert _directory_entries(tmp_path) == ["published.txt"]
+
+    def test_exists_for_a_dangling_symlink_leaves_the_link_and_creates_no_target(self, tmp_path):
+        missing_target = tmp_path / "missing-target.txt"
+        link = tmp_path / "dangling-link.txt"
+        link.symlink_to(missing_target)
+
+        outcome = _publish(link)
+
+        assert outcome is ledger_common._PublishOutcome.EXISTS
+        assert link.is_symlink()
+        assert os.readlink(link) == str(missing_target)
+        assert not missing_target.exists()
+        assert _directory_entries(tmp_path) == ["dangling-link.txt"]
+
+    def test_write_failed_when_the_write_raises(self, tmp_path, monkeypatch):
+        target = tmp_path / "published.txt"
+        real_fdopen = os.fdopen
+
+        class _WriteFailsFile:
+            def __init__(self, fd):
+                self._real_file = real_fdopen(fd, "w")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                self._real_file.close()
+                return False
+
+            def write(self, text):
+                raise OSError("disk full")
+
+        monkeypatch.setattr(os, "fdopen", lambda fd, mode: _WriteFailsFile(fd))
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.WRITE_FAILED
+        assert not target.exists()
+        assert _directory_entries(tmp_path) == []
+
+    def test_write_failed_when_the_write_stores_part_of_the_text_then_raises(self, tmp_path, monkeypatch):
+        target = tmp_path / "published.txt"
+        real_fdopen = os.fdopen
+
+        class _PartialWriteFile:
+            def __init__(self, fd):
+                self._real_file = real_fdopen(fd, "w")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                self._real_file.close()
+                return False
+
+            def write(self, text):
+                self._real_file.write(text[: len(text) // 2])
+                self._real_file.flush()
+                raise OSError("disk full")
+
+        monkeypatch.setattr(os, "fdopen", lambda fd, mode: _PartialWriteFile(fd))
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.WRITE_FAILED
+        assert not target.exists()
+        assert _directory_entries(tmp_path) == []
+
+    def test_write_failed_when_the_fsync_raises(self, tmp_path, monkeypatch):
+        target = tmp_path / "published.txt"
+        monkeypatch.setattr(os, "fsync", _raise_os_error)
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.WRITE_FAILED
+        assert not target.exists()
+        assert _directory_entries(tmp_path) == []
+
+    def test_link_failed_when_the_link_raises(self, tmp_path, monkeypatch):
+        target = tmp_path / "published.txt"
+        monkeypatch.setattr(os, "link", _raise_os_error)
+
+        outcome = _publish(target)
+
+        assert outcome is ledger_common._PublishOutcome.LINK_FAILED
+        assert not target.exists()
+        assert _directory_entries(tmp_path) == []
+
+
+class TestOutPathHelpersNameTheCommand:
+    def test_refuse_unusable_out_path_names_the_command_for_an_existing_path(self, tmp_path, capsys):
+        existing = tmp_path / "existing.tsv"
+        existing.write_text("preexisting\n")
+
+        with pytest.raises(SystemExit) as exc_info:
+            ledger_common._refuse_unusable_out_path(str(existing), _OUT_COMMAND)
+
+        assert exc_info.value.code == 2
+        assert capsys.readouterr().err == (
+            f"{_OUT_COMMAND}: --out {str(existing)!r} already exists -- refusing to overwrite; pass a new path\n"
+        )
+
+    def test_refuse_unusable_out_path_names_the_command_for_a_git_working_tree(self, tmp_path, monkeypatch, capsys):
+        out_path = tmp_path / "export.tsv"
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(git_tracked=True))
+
+        with pytest.raises(SystemExit) as exc_info:
+            ledger_common._refuse_unusable_out_path(str(out_path), _OUT_COMMAND)
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert err.startswith(f"{_OUT_COMMAND}: --out {str(out_path)!r} is inside a git working tree")
+        assert "pr-cost-export" not in err
+
+    def test_refuse_unusable_out_path_accepts_a_new_path_outside_a_git_working_tree(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        ledger_common._refuse_unusable_out_path(str(tmp_path / "export.tsv"), _OUT_COMMAND)
+
+    def test_publish_new_owner_file_creates_a_0600_file_through_a_command_prefixed_temp_file(
+        self, tmp_path, monkeypatch,
+    ):
+        out_path = tmp_path / "export.tsv"
+        linked_sources: list[str] = []
+        real_link = os.link
+
+        def recording_link(src, dst):
+            linked_sources.append(Path(src).name)
+            real_link(src, dst)
+
+        monkeypatch.setattr(os, "link", recording_link)
+
+        ledger_common._publish_new_owner_file(str(out_path), _PUBLISHED_TEXT, _OUT_COMMAND)
+
+        assert out_path.read_text() == _PUBLISHED_TEXT
+        assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
+        assert len(linked_sources) == 1
+        assert linked_sources[0].startswith(f".{_OUT_COMMAND}-")
+        assert linked_sources[0].endswith(".tmp")
+        assert _directory_entries(tmp_path) == ["export.tsv"]
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_message"),
+        [
+            ("exists", "already exists -- refusing to overwrite; pass a new path"),
+            ("write", "could not be written -- pass a new path"),
+            ("link", "could not be published; pass a new path"),
+        ],
+    )
+    def test_publish_new_owner_file_names_the_command_in_each_failure_message(
+        self, failure, expected_message, tmp_path, monkeypatch, capsys,
+    ):
+        out_path = tmp_path / "export.tsv"
+        if failure == "exists":
+            out_path.symlink_to(tmp_path / "missing-target.tsv")
+        elif failure == "write":
+            monkeypatch.setattr(os, "fsync", _raise_os_error)
+        else:
+            monkeypatch.setattr(os, "link", _raise_os_error)
+
+        with pytest.raises(SystemExit) as exc_info:
+            ledger_common._publish_new_owner_file(str(out_path), _PUBLISHED_TEXT, _OUT_COMMAND)
+
+        assert exc_info.value.code == 2
+        assert capsys.readouterr().err == f"{_OUT_COMMAND}: --out {str(out_path)!r} {expected_message}\n"
+        assert not (tmp_path / "missing-target.tsv").exists()
+        assert [entry for entry in _directory_entries(tmp_path) if entry != "export.tsv"] == []

@@ -20,6 +20,8 @@ Subcommands that write to disk:
 - `friction-count --checkpoint` writes the checkpoint file it names. It is not gated on a config key.
 - `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`. It is gated on the `cost_ledger_recording` config key; see the `cost-ledger` section below.
 - `pr-cost --record` appends to `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default, overridable via `PR_COST_LEDGER_PATH`. It is gated on the `pr_cost_recording` config key; see the `pr-cost` section below.
+- `routing-guard --capture` publishes one write-once file per sampled branch into `<config-dir>/routing-guard-captures/`. It is gated on the `pr_cost_recording` config key of the account it writes to; see the `routing-guard` section below.
+- `routing-guard --out` writes the one file it names and never overwrites it. It is not gated on a config key of its own, but each `on`-row account's `pr_cost_recording` key still decides whether compute reaches the `--out` write; see the `routing-guard` section below.
 
 No other subcommand writes to disk.
 
@@ -45,7 +47,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ## Scoping to this repo: `--this-repo`
 
-Every subcommand except four accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, and `period-cost` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+Every subcommand except five accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, `period-cost`, and `routing-guard` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
 
 **`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
@@ -74,7 +76,7 @@ The four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ## Corpus scope: the declared-roots file
 
-Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below); `period-cost`, which reads the active account's whole projects directory only (see its section below); `cost-counts`, which reads the active account's `projects` directory only (see its section below); `review-cost-by-size` without `--all-accounts`, which reads the active account's `projects` directory only, scoped to this repository (see its section below); and `user-input`, which reads the active account's `projects` directory only, narrowed by `--projects GLOB`. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead. `review-cost-by-size` is also an exception: its header names the scope label and whether it read the active account or every declared account, with no root count. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below); `period-cost`, which reads the active account's whole projects directory only (see its section below); `cost-counts`, which reads the active account's `projects` directory only (see its section below); `review-cost-by-size` without `--all-accounts`, which reads the active account's `projects` directory only, scoped to this repository (see its section below); `routing-guard`, which under `--capture` reads only the one root the top-level `--config-dir` names and otherwise reads no transcripts (see its section below); and `user-input`, which reads the active account's `projects` directory only, narrowed by `--projects GLOB`. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead. `review-cost-by-size` is also an exception: its header names the scope label and whether it read the active account or every declared account, with no root count. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
 
 This union amplifies two costs, both linearly in the number of declared roots:
 
@@ -1674,6 +1676,320 @@ Data quality
 **Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED. A round whose `append` calls straddle the schema v2 rollout mid-session can also misclassify as PASS, if a pre-flip `ADDRESS` row lacks a `round` key while a post-flip `DEFER` row in the same round has one -- a one-time artifact bounded by this same sweep window, which is the other reason the accumulation wait matters.
 
 **When to reach for it.** Answer "what share of `code-writer`'s own diffs failed their own downstream review" -- no other subcommand joins the review's own structured disposition back to the dispatch that authored the reviewed diff. `reviewer-yield` classifies a *reviewer's* own verdict shape (findings-found/zero-finding/unclassified), not whether the diff under review passed; `review-round-cost` prices a round's dollars with no pass/fail axis at all.
+
+---
+
+## routing-guard
+
+**Purpose.** Capture each sampled branch's review loops per account, then compute the cost guard of the review-orchestrator routing gate: the net cost per review loop, key-on minus key-off, with its 95% bootstrap interval. The guard's definitions are fixed in `docs/design-decisions/review-orchestrator-routing-gate.md`. This section states how the subcommand reads each of them. The guard counts as failed until a compute run reaches PASSED.
+
+Capture and compute are two modes of one subcommand, like `pr-cost` and `pr-cost --record`:
+
+- `--capture` reads one account's transcripts of this repo and publishes one write-once file per sampled branch into that account's captures directory. A file holds token counts, not dollars, so compute can price them at the rate table current when it runs.
+- Without `--capture`, it reads no transcripts. It opens the note and each sampled (`on` or `off`) branch's capture file by name and prices every loop. It prints a status line (PASSED, FAILED, or NOT RUN with each reason) and owner-only notices, never a figure. The figures go only to an `--out` file.
+
+**Flags.**
+- `--note PATH` -- required, an absolute path outside any git work tree. See "The note" below.
+- `--capture` -- publish capture files instead of computing. Needs the top-level `--config-dir` (placed before the subcommand name) naming the one account to capture, and that account's `pr_cost_recording` key to resolve true.
+- `--out PATH` -- compute only: write the figures to this new file. Refused (exit 2) together with `--capture`.
+- A top-level `--config-dir` is refused (exit 2) in compute mode, because the note names each config directory.
+
+The subcommand takes neither `--projects` nor `--this-repo`. Capture's scope is its own, stated under "Capture scope" below.
+
+**Run both modes from a terminal outside any agent session.** A `--config-dir` or `--note` path on a command line, and any output the run prints, land in that session's transcript. Capture's stderr can also show an opaque transcript `requestId`, in each of the three rate-limited prints of `pricing.dedup_turns_by_request_id` (a usage-drift warning and the merged and rejected notices). The `DO NOT PUBLISH` banner that opens capture's stdout and the `--out` file cannot undo an in-session run, because the command line with its paths, and capture's per-row counts, are in that session's transcript already.
+
+### The note
+
+The note is the one source for each branch's arm, its pilot state and the key-off sample. No transcript records the routing key's state or either pilot key's state, and the subcommand makes no `gh` call, so it cannot rank merged branches by recency. The owner writes the note, one tab-separated row per branch:
+
+```text
+<config-dir> <TAB> <branch> <TAB> <on|off|unmerged> <TAB> <round_consult_round2_pilot: on|off|-> <TAB> <architect_fix_plan_pilot: on|off|->
+```
+
+- `on` is a merged branch worked with `review_orchestrator_routing` on.
+- `off` is a merged key-off branch in the sample. An account lists exactly as many `off` rows as it has `on` rows, its most recent eligible branches from before its key went on. A branch worked under a different pilot state than the account's `on` rows is not eligible.
+  - Requiring an account's `on` rows to agree on pilot state is this subcommand's own reading of the design record, which says only to skip key-off branches worked under a different pilot state. The record does not state it.
+  - An account whose `on` rows mix pilot states leaves the guard NOT RUN.
+  - Removing the odd `on` row clears that reason, but it shrinks the key-on arm below the branches the design record's sample lists. The guard cannot tell that from a corrected cell, so it is not a sanctioned route.
+  - The only sanctioned edits to a row already in the sample are correcting a cell it misstates (a pilot column or the config-dir column) and the forced `off`-row re-sample after a moved row (see "Run order"). Settle each pilot state before the tenth key-on PR.
+  - Changing the sample for an account that did mix pilot states is a design-record decision. This subcommand adds no exit for it.
+- `unmerged` is a branch with routing denies that has not merged. Its pilot columns hold `-`. `on` and `off` rows hold `on` or `off` in both pilot columns.
+- `#` lines and blank lines are skipped, and a trailing carriage return is dropped. Cells are not trimmed.
+- A leading `~/` in the config directory expands to `$HOME`. Any other config directory must be absolute. Config directories compare by resolved path, so two spellings of one directory name one account.
+
+The parser refuses (exit 2) a wrong column count, an unknown arm or pilot value, an empty or whitespace-padded branch cell, a relative config directory, a `~/` with an unusable `$HOME`, a branch named `main`, `master` or `develop`, and a branch listed twice anywhere in the note. It also refuses a note that is missing, unreadable, a directory or not UTF-8. Every refusal names the note line and never echoes a cell or a path, because a config directory can name a private account.
+
+Keep the note as an owner-only file outside any git work tree and any cloud-sync folder. A relative `--note`, or one inside a git work tree, is refused (exit 2). A note with any group or other permission bit prints a notice in both modes. Add a branch's row once its sessions end, oldest `off` rows first, because those age out first. List a branch still in progress as `unmerged`.
+
+### Run order
+
+Run each step from a terminal outside any agent session.
+
+1. Write the note, as under "The note".
+2. Run capture once for each config directory the note lists, each with that account's own top-level `--config-dir`, from a worktree of this checkout. Each account needs its `pr_cost_recording` opt-in first, or capture exits 1:
+
+   ```bash
+   transcript-analysis.py --config-dir <config-dir> routing-guard --note <note-path> --capture
+   ```
+
+   A run that exits 3 leaves rows `missing` or `invalid`, and compute then reports NOT RUN.
+   - A `missing` row clears on a re-run only when its cause under "Captured whole" has changed. A row listed under the wrong account is fixed by correcting that row's config-dir cell and capturing the right account. Moving a row changes two accounts' `on` and `off` counts, so compute re-evaluates both accounts' arm sizes. The sanctioned follow-up is the forced `off`-row re-sample: re-applying the design record's sample rule, which "The note" lists as one of the two sanctioned edits. By case:
+     - A moved `on` row: the donor account drops its oldest `off` row, which is the rule-conforming result, and the receiving account adds its next-older eligible one.
+     - A moved `off` row: the roles swap. The donor adds its next-older eligible `off` row and the receiving account drops its oldest.
+     - A receiving account with no `on` row yet: a moved `on` row gives it its most recent eligible `off` row, not a next-older one. It has no `off` arm before that, so compute ignores a moved `off` row there.
+
+     Three caveats apply to every case:
+     - A moved row is also checked on the receiving account against that account's pilot state (mixed pilot states among its `on` rows, and an `off` row worked under a different pilot state), as "The note" covers. A moved `off` row that is not eligible under the receiving account's pilot state cannot be the row that account adds.
+     - Dropping a row to clear a reason without a move stays an undetected shrink.
+     - A branch whose sessions have aged out leaves its arm short, and the guard does not run.
+   - An `invalid` row stays `invalid` on a re-run, because a file is never rebuilt. Delete its file first, as under "Re-capture", then re-capture while the branch's sessions are still inside `cleanupPeriodDays`.
+3. Run compute once, with no `--config-dir`:
+
+   ```bash
+   transcript-analysis.py routing-guard --note <note-path> --out <new-file-path>
+   ```
+
+4. Read the `--out` file, then delete it.
+
+### Capture scope
+
+Capture reads one transcript root: `<config-dir>/projects` of the top-level `--config-dir`, built directly. It never reads the declared-roots file, never switches container credentials, makes no `gh` call and sets no environment variable. The scope is this repo's project directories on that root:
+
+- the live worktree directories from `git worktree list`, and
+- every directory on the root named for the main checkout's slug followed by `--claude-worktrees-`, so a removed worktree's sessions stay in scope.
+
+A sibling clone such as `<repo>-fork` is not read. Only main-thread turns count. Subagent transcript files are not scanned as sessions, but a round's dispatch spend is still priced, from the dispatch transcripts the round spawned.
+
+Run capture with its cwd in a worktree of the checkout whose script is running. For the stowed `~/.claude/scripts` copy, that is the stowed checkout. Any other cwd exits 1 with a fixed message, or with `scope`'s own for a cwd outside a repo, because the cwd's repo would otherwise be the one read and could publish another repo's spend under a listed branch name. A checkout whose `git worktree list` path differs from its resolved path, as a symlinked checkout's can, may exit 1 as well.
+
+A scan gap, meaning part of the root that could not be read, refuses the run (exit 2) before anything is published. Capture prints one stderr line, `routing-guard: scanning project directory <k> of <n>`, when it reaches the first session of each project directory. The line carries no directory name, because a project directory's name encodes the checkout's path and a worktree's branch.
+
+### Deny reconciliation
+
+Before any publish, capture checks the routing gate's denies on the root against the note, so an unlisted branch with a routing deny on this root cannot silently shrink an arm. The check sees only routing denies on the capturing account's root. A deny counts once per `tool_use_id`, in either transcript shape.
+
+- A deny on an `off` row of this account is refused (exit 2), naming that note line, because the branch was worked with the key on.
+- A deny on a branch the note does not list is refused (exit 2). The message gives the deny's UTC time to the minute instead of the branch name. Run `transcript-analysis.py review-trace --this-repo --deny-only`, whose timeline prints each denial with its UTC timestamp and `branch=`, and match the row at that minute. List the branch as `on` if it merged, else as `unmerged`.
+- A deny on an `unmerged` row passes, and that row is not captured.
+- A deny on a branch listed for another account's row prints a notice, not a refusal, because no note edit could clear it. Capture prints it only when it runs on an account that has a note row, since capture refuses an account with none.
+- A deny on an empty branch name or a default-branch name prints a notice, because no sampled branch can carry it.
+- An `on` row built in this run with no deny prints a notice. A typed `/code-review` and the four inline `unrouted` cases of the design record leave none.
+- An `off` row built in this run with a record later than this account's first routing deny prints a notice, because the key may have been turned off again.
+- A branch the note lists for another config directory that has records on this root prints a notice naming that note line, because its rounds are split across accounts. Capture prints it only when it runs on an account that has a note row, since it refuses an account with none. Nothing merges the rounds, and compute has no split signal because a capture file has no field for one.
+
+### Captured whole
+
+A row is captured whole when all three conditions hold. The first that fails, in this order, is the reason on its `missing (<reason>)` line.
+
+1. The branch has at least one record on this root with a parseable timestamp. Otherwise `no-records`.
+2. Some round on this root writes the marker, so the branch has at least one complete loop. Otherwise `no-complete-loop`. This means no round on this root writes the marker. Records on another account's root are one possible cause, and a commit made outside Claude Code is another.
+3. No session holding one of its `code-review` rounds has an orchestrator transcript that could not be read. Otherwise `orchestrator-unreadable`, because a missed marker write would merge two loops.
+
+A missing row leaves its arm short, so the guard does not run. Whole does not prove that nothing was lost:
+
+- No condition reads the clock or `cleanupPeriodDays`. A branch whose earliest sessions aged out before its first capture reads whole while a later session on the root still writes the marker, so its cost can read low. No local source dates a branch's first session apart from its transcripts.
+- A lost dispatch transcript shows only as a degraded loop, which compute flags per arm.
+
+### Loops
+
+A branch's `code-review` rounds sort across sessions by timestamp, session path and open position. A loop is the run of rounds up to and including the first round whose outcome span holds a marker write. This is the marker-write signal `author-outcome` computes for every round (an attempted write, not a confirmed one; see "Known gaps" below). Rounds after a branch's last marker write belong to no loop and are not counted. On a key-on branch, the denied `Skill(code-review)` opens its own round and the `review-orchestrator` spawn opens the next. Both land in the loop's overhead.
+
+Each loop stores four values:
+
+- `overhead_tokens`: the token counts of every non-synthetic turn in the loop's rounds, the dispatches' turns included, by model, pricing variant and token class. Turns of a model with no price are stored too.
+- `growth_tokens`: the context at the first main-thread turn at or after the window end of the loop's last round, minus the context at the first main-thread turn at or after its first round-open. It is signed, because compaction can shrink context. It is null when the two turns are not in one session or either is absent.
+- `later_turns`: the main-thread turns in the last round's session, at or after that window end, that fall outside every review window, counted by model. A turn after a later loop in the same session counts for both loops.
+- `degraded`: true when a round in the loop has a dispatch with no transcript.
+
+### The captures directory
+
+Each account's store is `<config-dir>/routing-guard-captures/`, holding one file per captured branch per capture revision. The file is named `<digest>.r<rev>.json`. `<digest>` is the SHA-256 hex digest of the branch name's UTF-8 bytes, and `<rev>` is the module's `_CAPTURE_REVISION`. Compute opens each file by that exact name and never lists the directory, so a stale or unlisted file is never read.
+
+The store follows the pr-cost ledger rules: it is local, untracked, per account, and opt-in per account through the same `pr_cost_recording` key. See `docs/pr-cost.md` § "Data" and `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close". Capture refuses (exit 2), before it reads any transcript, when the directory sits inside a git work tree, a stow-folded config directory included, or is a symlink. It checks both again, and re-resolves the account's `pr_cost_recording` key, just before its first publish, because the scan can run long. A key turned off during the scan refuses the run (exit 1) with nothing published. The two residual replication paths that doc names (a cloud-sync folder and a bare-repo dotfile manager) apply to this directory too.
+
+- Existing `pr_cost_recording` opt-ins now also authorize this directory, with no new prompt. Turning the key off for a pr-cost reason disables both capture and compute for that account.
+- pr-cost stores a run-scoped opaque label for a branch. Here the file name carries a digest of the branch. The digest is an unsalted SHA-256 of the branch name, so anyone holding a directory listing and the public branch list can recover which branches an account captured. Treat the file name as sensitive.
+- A file holds token counts and model strings verbatim, an unpriced model's string included, and no branch name, path or timestamp.
+- Never hand-edit a capture file, since it carries no checksum. Delete it and re-capture inside retention instead.
+- Keep the directory at `0700`. Capture creates it `0700`, but a wider existing directory is not tightened.
+- Delete the whole directory when the guard concludes. It outlives `cleanupPeriodDays` by design.
+
+**Publishing.** Each file is written to a `0600` temp file in the directory, flushed and fsynced, and then hard-linked to its final name. A process or kernel crash therefore leaves at most an orphaned `.routing-guard-*.tmp` file, never a partial file at a final name. Orphaned temp files are safe to delete. Two limits remain. The directory is not fsynced, so a kernel crash can drop a name just linked, and the next run captures that row again. On macOS `os.fsync` does not flush the drive cache, so a power loss there can still leave a zero-length file at a final name, which reads `invalid`.
+
+A file is never rebuilt once it exists. A symlink at a file's name, live or dangling, reads `invalid` and is left as it is. A run that finds the name taken by a concurrent winner reads the standing file the same way.
+
+**Run capture only from a tree where this subcommand has merged.** A file stays valid at the revision of the build that wrote it, and compute opens only files at its own current revision. A capture from a branch whose capture logic review may still change can leave files that compute never reads. A later change that alters what a stored row means bumps the revision and leaves every earlier file unpoolable.
+
+**Read each per-row line right after a capture.** A file is never rebuilt, so the line printed when it is published is the owner's one check while the transcripts still exist. Read it against what you know of that branch.
+
+- `captured (<n> rounds, <n> loops, <n> with growth defined, <n> denied round-opens joined, degraded: <yes|no>)`.
+- `already captured (<n> loops, <n> with growth defined, degraded: <yes|no>)`, read from the validated standing file.
+- `invalid`: the file could not be opened (a symlink included), could not be read, or failed validation.
+- `missing (<reason>)`, with a reason from "Captured whole" above.
+
+The round, loop, growth-defined loop and joined denied round-open counts let you notice a branch that reads too few loops, or a key-on branch whose denied opens joined no orchestrator round. Capture also prints a `PRICING INTEGRITY` line on stdout when the pricing module detects transcript-format drift. The line prints after the rows are published, and the run still exits by its row outcomes. Once the drift is resolved, delete the files this run published, which its `captured` lines name by note line, and re-capture while the sessions are still inside `cleanupPeriodDays`.
+
+**Re-capture** is one owner action: delete that branch's file, then run capture again, only while every session of the branch is still inside `cleanupPeriodDays`. This is the bound pr-cost's re-record contract sets for its own forced re-capture; see `docs/pr-cost.md` § "Data". Find the file name with one `hashlib` command run in a terminal outside any agent session:
+
+```bash
+python3 -c 'import hashlib; print(hashlib.sha256(input("branch: ").encode("utf-8")).hexdigest())'
+```
+
+The command prompts for the branch name, so the shell never parses it and shell history never records it. The file is `<that digest>.r<rev>.json` in the captures directory.
+
+### Compute
+
+Compute reads only the note, the config files and schema that decide the key, and, for each `on` and `off` row of an account with an `on` row, the one capture file its branch digest and the current revision name. Its multi-account check is one boolean per such account: the account's key resolves true and its captures directory exists. It never counts accounts, reads no declared-roots file and opens no transcript, so it has no signal for a branch split across accounts. The order per account is the key check, then the captures-directory check, then the by-name opens. An account whose key is off, or whose captures directory is missing, has none of its files opened.
+
+Compute maps every opt-in outcome other than "opted in", a config fault included, to a NOT RUN reason or exit 4. It never exits 1 for one, so a config fault cannot read as FAILED. Each file is read through one validator that refuses non-UTF-8 bytes, invalid JSON, duplicate keys, a non-finite number, an unexpected shape, an unknown pricing variant or token class, and a negative or non-integer count. A bad file fails only its own row.
+
+**NOT RUN.** It prints one line per reason and note line that holds, each a fixed string followed by a note line where one applies, and exits 3. The first seven reasons print together. The last two are evaluated only when none of those holds, so clearing every printed reason can surface a new one. `off` rows of an account with no `on` row, and every `unmerged` row, are ignored. The reasons, in print order:
+
+- `fewer key-on branches than the guard's minimum`: fewer than 10 `on` rows, the minimum the design record chooses.
+- `an account with key-on branches has its key off, a config fault, or no captures directory`
+- `a listed branch has no capture file at the current revision`
+- `a listed branch's capture file cannot be read or fails validation`: a symlink included.
+- `an account's key-on branches mix pilot states, so no reference state exists`: removing an `on` row clears it but shrinks the key-on arm undetected. See "The note" for the sanctioned edits and "Known gaps" for the shrinkage.
+- `a key-off branch was worked under a different pilot state than its account's key-on branches`
+- `an account lists a different number of key-off branches than key-on branches`
+- `an arm has no loop whose growth is defined`
+- `the point net or its lower bound is not finite`
+
+**How each figure is read.** All of them come from the stored token counts, priced at the rate table current when compute runs.
+
+- **Overhead.** Each loop's `overhead_tokens` are priced turn by turn, so a loop's overhead matches the `total $` that `review-round-cost` prints for the loop's rounds, summed. A model the current table does not price is skipped and its loop counts as degraded. A model unpriced when its branch was captured is priced once the table lists it.
+- **Growth.** The mean growth of an arm is its total growth over its growth-defined loops.
+- **Carry.** Each key-off loop's `later_turns` are priced at the cache-read rate of each turn's model, per token, with a model the table does not price skipped and its loop counted as degraded. A key-on row's `later_turns` are never priced. The carry per loop is the growth gap times the key-off rate sum per loop. The gap is the key-off mean growth minus the key-on mean growth.
+- **Net.** The net per loop is key-on overhead per loop, less key-off overhead per loop, less the carry. Overhead per loop is total overhead over total loops in the arm.
+- **Interval.** A percentile bootstrap of 10,000 replicates with a fixed seed. Each replicate resamples branches with replacement within each arm, to the arm's own size, and recomputes every term, the gap included. The interval is 95%, and the guard reads its lower bound. Branches are sorted by digest before drawing, so the note's row order does not matter.
+
+**Status.** FAILED (exit 1) when the lower bound is above zero. Otherwise PASSED (exit 0). A lower bound of exactly zero is PASSED. A point net or lower bound that is not finite is NOT RUN.
+
+**Undefined replicates.** A replicate whose resample leaves an arm with no growth-defined loop has no gap, so it has no net. It is never redrawn. It stays one of the 10,000 replicates and ranks above every defined net, as infinity. That can only raise the lower bound, so a PASSED holds whatever net an undefined replicate could have had. What the rule implies:
+
+- With a fraction `u` of replicates undefined, the lower bound sits at about the defined replicates' `0.025 / (1 - u)` quantile.
+- Call a branch growth-defined when at least one of its loops has defined growth. An arm of `n` branches, `d` of them growth-defined, leaves a resample without one with probability `(1 - d/n)^n`. At ten branches that is about 0.35, 0.11, 0.028 and 0.006 for `d` from 1 to 4.
+- The NOT RUN check keeps `d` at least 1 in each arm, so `u` stays below about 0.60 at any arm size, and the lower bound stays below about the 6.3rd percentile of the defined replicates. At ten branches per arm, it sits at about the 5.9th percentile with `d` = 1 in both arms and about the 2.65th with `d` = 3 in both.
+- A thin growth sample therefore runs to a status instead of stopping as NOT RUN, and a borderline net can read FAILED.
+- When the upper bound falls on an undefined replicate, `--out` writes it as `unbounded`. The status never reads the upper bound.
+
+**Notices.** Compute prints these on stderr, yes-or-no and per arm, with no figure: some loops are degraded (a dispatch transcript was lost or a model has no price), and some replicates left an arm with no growth-defined loop. It also prints a `STALE PRICING` line when a model it priced is past its rate re-verify-by date, a notice when the note's permissions are too wide, and a fixed notice when the config reader reported a problem. The config reader's own message is withheld because it can name a path.
+
+### `--out`
+
+`--out PATH` writes the figures: the net with its interval, an upper bound that falls on an undefined replicate written as `unbounded`, the overhead difference, the carry, the gap, branches and loops per arm, growth-defined branches and loops per arm, and the undefined-replicate count. Dollar figures print to the cent. The file opens with the `DO NOT PUBLISH` banner.
+
+- The path must not exist and must sit outside any git work tree. It is published `0600`, through the same helpers as `pr-cost-export --out`. A refusal exits 2 before any work. The one exception is a dangling symlink at the path, which the publish step refuses (exit 2) after compute and before any status prints.
+- A NOT RUN run writes no file. Otherwise the file is published before the status prints.
+- After publishing, compute prints one stderr line saying the file is `DO NOT PUBLISH` and is read only outside an agent session.
+- The two residual replication paths in `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close" apply to the `--out` file as they do to the captures directory.
+- Delete the file once its figures are read.
+
+### Publication
+
+No quantity the guard computes is published. `docs/private-project-redaction.md` § "A wider corpus goes to the owner, never into a public artifact" governs it. A public artifact states only whether the guard passed and whether the default flipped. It never states an account count. Compute's stdout and stderr carry no figure and no digit outside `note line <n>` locators, the operator's own `--out` string and the shared git-tracked check's exit-code diagnostic. No line in either mode names a branch, a config-directory path or an account label.
+
+### Exit codes
+
+| Code | Capture | Compute |
+|---|---|---|
+| 0 | every row `captured` or `already captured` | PASSED |
+| 1 | the account is not opted in, its key read hit a config fault, or the cwd is not in a worktree of the running checkout | FAILED |
+| 2 | a refusal of a flag, the note, a scan gap, a deny, the captures directory or the `--out` path | a refusal of a flag, the note or the `--out` path |
+| 3 | a row is `missing` or `invalid` | NOT RUN |
+| 4 | an unexpected `OSError`, a failed publish, a built row that failed validation, or any other unexpected exception | an unexpected `OSError` or other unexpected exception |
+
+Exit 4 prints only a fixed message, the `OSError`'s `strerror`, or for any other exception its class name and its innermost function name, never a traceback, because a traceback can carry a path or a branch name. Files published in a capture run that exits 3 or 4 stay, and a re-run reports them `already captured`.
+
+### Known gaps
+
+- Claude Code deletes transcripts after `cleanupPeriodDays`, and the key-off arm ages out first until a capture runs. Whether age runs from a session's last write or its creation is unverified, so no condition reads it.
+- A branch whose earliest sessions aged out before its first capture reads whole while a later session still writes the marker.
+- A session that continues after its branch is captured adds records the file never sees, because a file is never rebuilt.
+- Rounds are not deduplicated across session files. If a resumed or forked session file replays a branch's earlier history, that round would count twice. Whether Claude Code replays history that way is unverified.
+- The carry does not model compaction. A compaction that shrinks context stores a negative growth, which the mean takes at face value.
+- The carry is priced at each model's base cache-read rate, with no fast-mode or US-geo multiplier. That understates it.
+- The marker-write signal is attempted, not confirmed: a write counts whether or not it succeeded, and a command that never ran can count too. See `author-outcome`'s "Orchestrator rounds" above. A failed marker write can end a loop early.
+- Deny-free key-on branches are possible, so a missing deny is a notice, not a refusal.
+- Removing the odd `on` row of an account whose `on` rows mix pilot states clears the mixed-pilot NOT RUN reason, and dropping one `off` row clears the arm-size one. That shrinks the key-on arm below the branches the design record's sample lists, and the guard cannot tell it from a corrected note cell. The only sanctioned edits to a row already in the sample are correcting a cell it misstates (a pilot column or the config-dir column) and the forced `off`-row re-sample after a moved row (see "Run order").
+- An unlisted key-on branch that left no routing deny on the capturing account's root shrinks its arm undetected, because deny reconciliation sees only denies. A typed `/code-review`, an inline `unrouted` case and a branch whose account never runs capture leave none. The note is the only record of which branches exist.
+- Degraded loops are flagged per arm and fixed at capture. A dispatch transcript lost before capture cannot be recovered.
+- A branch split across accounts is signalled only by a capture notice, and only when capture runs on an account that has a note row, since capture refuses an account with none. Compute has no split signal. Nothing merges its rounds.
+- A bare-repository layout reads no removed worktrees.
+- A foreign clone checked out under `.claude/worktrees/` is read as this repo's, and its sessions count only on a note-listed branch name.
+- A `capture_revision` bump leaves earlier files unpoolable.
+
+### Retirement
+
+The diff of the PR that added the subcommand is the checklist for code, tests and docs. Records stay as history, and the retirement adds its own, as `docs/design-decisions/review-orchestrator-routing-gate.md` § "Withdrawal form" does for the gate. The shared helpers that stay are the `ledger_common` publish core, the `pr-cost-export` changes and the review-round fixtures in `_review_round_helpers.py`. Four facts are easy to miss:
+
+- `_review_round_helpers.py` imports `routing_guard` at module level, and `test_transcript_review_rounds.py`, `test_author_outcome.py` and `test_transcript_cli_bootstrap.py` import that file. Remove that import and the routing-guard-only half (from `_ROUTING_DENY_LABEL_TEXT` onward) first, or collection breaks in tests of unrelated subcommands.
+- Removing the token-sink plumbing tests in `test_transcript_review_rounds.py` leaves `_class_tokens` and `_UNPRICED_MODEL` as dead code. Delete them by hand, because `ruff check` flags only the `defaultdict` import.
+- Keep `TestComputeReviewRoundCostsRoundKeys` unchanged. It guards that `window_end` never reaches the public round dict, and the reversed code satisfies it as written.
+- Keep the `CHANGELOG.md` entry for the subcommand and add a `Removed` entry. The `routing-guard-captures/` directories remain on disk, and that entry is the only notice that they exist.
+
+Each account's captures directory is removed by hand. A code revert leaves those directories inert.
+
+### Sample output
+
+Capture, stdout. Per-row lines name a note line only:
+
+```text
+DO NOT PUBLISH -- this output belongs to the owner alone.
+`docs/private-project-redaction.md` section "A wider corpus goes to the owner, never into a public artifact" allows a public artifact to state only whether the guard passed and whether the default flipped.
+Run and read routing-guard outside any agent session.
+routing-guard: note line <n>: captured (<n> rounds, <n> loops, <n> with growth defined, <n> denied round-opens joined, degraded: no)
+routing-guard: note line <n>: already captured (<n> loops, <n> with growth defined, degraded: no)
+routing-guard: note line <n>: missing (no-complete-loop)
+```
+
+Capture, stderr:
+
+```text
+routing-guard: scanning project directory <k> of <n>
+routing-guard: note line <n> is listed on but no routing deny was found for it; a typed /code-review or an unrouted round leaves none
+```
+
+Compute, stdout. A run prints one status line, or one NOT RUN line per reason and note line:
+
+```text
+routing-guard: PASSED
+```
+
+```text
+routing-guard: FAILED
+```
+
+```text
+routing-guard: NOT RUN: a listed branch has no capture file at the current revision (note line <n>)
+routing-guard: NOT RUN: a listed branch's capture file cannot be read or fails validation (note line <n>)
+```
+
+Compute, the `--out` file. The interval line prints the level as a percentage:
+
+```text
+DO NOT PUBLISH -- this output belongs to the owner alone.
+`docs/private-project-redaction.md` section "A wider corpus goes to the owner, never into a public artifact" allows a public artifact to state only whether the guard passed and whether the default flipped.
+Run and read routing-guard outside any agent session.
+net per loop: <net>
+<level> interval: <lower> to <upper or unbounded>
+overhead difference per loop: <overhead difference>
+carry per loop: <carry>
+growth gap, key-off minus key-on, tokens per loop: <gap>
+key-on branches: <n>
+key-on loops: <n>
+key-on growth-defined branches: <n>
+key-on growth-defined loops: <n>
+key-off branches: <n>
+key-off loops: <n>
+key-off growth-defined branches: <n>
+key-off growth-defined loops: <n>
+undefined replicates: <n> of <n>
+```
+
+A dollar figure prints as `$<amount>`, and a negative one as `-$<amount>`. A negative net means key-on costs less per loop than key-off.
+
+---
 
 ## cost-counts
 
