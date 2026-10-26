@@ -880,8 +880,8 @@ The subagent command family splits at command seams rather than one file per mod
   declared-pin path safety, `--since`, and multi-root disclosure
 - `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and `Counterfactual $` columns
   and `_dispatch_usage_summary`'s dedup-before-pricing
-- `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, disclosure
-  allowlist, and the agent-type charset pin
+- `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, nested-spawn counting and
+  attribution, disclosure allowlist, and the agent-type charset pin
 
 The first three share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
 `tests/test_transcript_analysis.py` imports it too. All four consumers import it relatively, as

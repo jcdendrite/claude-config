@@ -175,7 +175,8 @@ def round_opened_by_spawn(rec: dict) -> bool:
 
 def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
-    (already deduped, main-thread-only) records.
+    (already deduped) records. Tolerates sidechain records via the per-record
+    isSidechain flag.
 
     Re-expresses judgment_pair.cmd_judgment_pair's boundary rule. window_end
     is the index of the next fresh user prompt or the next round-open record,
@@ -336,7 +337,9 @@ def compute_review_round_costs(
     until_ts: float | None = None,
     resolved_roots: Sequence[Path] | None = None,
 ) -> dict:
-    """Single pass over session_iter, main-thread only.
+    """Single pass over session_iter, main-thread only. session_iter must not
+    carry merged subagent-file records, since subagent turns are priced
+    through the dispatch.
 
     Rounds are detected on the main thread only. A review skill run inside a
     dispatched subagent is already priced as that dispatch's own cost, so
@@ -474,7 +477,8 @@ def compute_review_round_counts(
     *,
     branch_filter: set[str] | None = None,
 ) -> dict[str, int]:
-    """Per-skill round counts across session_iter, main-thread only.
+    """Per-skill round counts across session_iter, main-thread only. Tolerates
+    sidechain records in session_iter via the per-record isSidechain flag.
 
     Every REVIEW_SKILLS member is a key in the returned dict, zeros
     included, so a caller never has to special-case an absent skill.

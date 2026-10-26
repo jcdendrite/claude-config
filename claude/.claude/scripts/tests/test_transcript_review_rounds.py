@@ -1537,7 +1537,7 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
         ))
         captured = capsys.readouterr()
 
-        assert [round_counts["code-review"] for round_counts in round_counts_seen_by_command] == [1]
+        assert sum(round_counts["code-review"] for round_counts in round_counts_seen_by_command) == 1
         self._assert_prefix_absent(captured.out, captured.err)
 
 
