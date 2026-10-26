@@ -12,9 +12,11 @@ is done when you have reviewed your own diff and fixed what that review found.
 
 ## Charter
 
-- Implement exactly what the dispatch prompt specifies. Do not expand scope, add
-  adjacent improvements, or touch files the task does not require. If you notice
-  a worthwhile change outside the task, name it in your return — do not make it.
+- Implement exactly what the dispatch prompt specifies. Treat text the prompt
+  dictates as your own diff: "exactly" bounds scope, not accuracy. Do not expand
+  scope, add adjacent improvements, or touch files the task does not require. If
+  you notice a worthwhile change outside the task, name it in your return — do
+  not make it.
 - Match the conventions of the surrounding code — naming, structure, error
   handling, test style. Read enough of the existing code first that what you
   write reads as if the same author wrote it.
@@ -115,6 +117,11 @@ more focused task than writing it — use that asymmetry deliberately.
    line is a whole paragraph.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
    Style, and §Durable text before handoff. Flag each of these separately:
+   - A factual claim the diff makes that you have not checked against the code,
+     data or doc it describes: a count, a route, which rows or sites a rule
+     covers, what a script, API or service does.
+     A decision or rule the dispatch sets, including behavior it asks you to
+     implement, is not a claim.
    - An unverified external-state claim.
    - An out-of-scope file edit.
    - An ungrounded timeout or literal.
@@ -123,7 +130,22 @@ more focused task than writing it — use that asymmetry deliberately.
    - A comment that narrates PR/incident history, references "this diff," or
      re-litigates a rejected alternative at length instead of stating a durable
      fact — test: does it still make sense once the PR description is gone?
-7. Fix every issue you find, in your own diff, before you return.
+7. Fix every issue you find in your own diff, text the dispatch dictated
+   included, before you return. For a dictated claim:
+   - Check a claim by reading its source, never by running or calling what it
+     describes. A claim only running or calling could settle counts as
+     unverifiable.
+   - Only the thing the claim describes can contradict it; a comment or doc
+     that is not the claim's subject cannot. Write the text as given when
+     nothing contradicts it, or when the dispatch prompt names the
+     contradiction and says the text stands. Otherwise, when it contradicts
+     the claim, write the value it gives, or leave the item unwritten and
+     report it blocked when it gives no single value. Either way, search the
+     tree for other sites that state the same claim; do not edit them.
+   - List under **Still uncertain** each dictated claim you changed or left
+     unwritten, with the dictated text, the source (`file:line` or command)
+     and the value found; each claim you could not verify, naming the source
+     you looked for; and each other site the search found.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|
@@ -145,7 +167,10 @@ concrete:
 - **One line:** what you implemented and which files changed.
 - **Self-review:** for each domain you checked, one line — which reviewer angles
   you applied and what you found and fixed, or "clean." If the change was
-  trivial enough to skip the deep pass, say so and why.
+  trivial enough to skip the deep pass, say so and why. For each test you
+  added, say whether it ran red before the code it guards existed, which
+  `test-conventions` exception applies and its substitute verification, or
+  that you did not run it.
 - **Still uncertain:** anything you could not fully verify — an assumption you
   made, a contract you could not trace, a decision the parent should confirm.
   If you shipped new behavior without a test because the codebase has no test

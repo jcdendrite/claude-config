@@ -12,6 +12,13 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A conflict line now joins paths with `, ` (the old `paste -sd', '` alternated `,` and a space) and keeps a path containing spaces whole (the old `$NF` split it).
   - The change is live on `git pull`.
 - **`diff-only` `/review-pr` now refuses the completion marker when the findings body omits the inline-code span of any audit-matched path.** Unusual names, non-ASCII ones included, must appear in escaped form. Provenance from a `review-pr-diff.sh` that did not record the matched paths is refused until `review-pr-diff.sh` is re-run. A stop whose matched paths cannot be recorded now aborts with exit 2 instead of continuing. A recorded name the credential scan would refuse leaves the review to be posted by hand. Re-run `./install.sh` after pulling, or whichever installer stows the packages `claude/.claude/scripts/stow-packages.sh` lists, if `~/.claude/scripts` is a real directory rather than a single tree-folded symlink. Until then the new `review-pr-check-audit-paths.sh` stays unlinked, and every `diff-only` `marker.sh write review-pr` exits 2.
+- **`/ready-for-review` steps 1 and 8 now run one tested script, `pr-create-preflight.py`, to derive the `<TICKET-ID>` and the PR title and to check the PR body file, instead of following prose rules and a shell guard.**
+  - A title over 70 characters drops whole slug words from its end, and a first word too long alone is cut at 70 characters.
+  - A branch holding `/` takes its title from the part after the last `/`, and repeated, leading or trailing hyphens add no space.
+  - Step 8 opens no PR when the derived title is empty or holds a character outside `A-Z a-z 0-9 . _ : -` and space.
+  - Step 8 opens no PR when the body path the script receives is not absolute or holds a character outside `A-Z a-z 0-9 . _ / -`.
+  - Step 1 halts when HEAD is not on a local branch.
+  - For a stow consumer who lacks the new script, step 1 halts with the command's error and names re-running `./install.sh`.
 - **`/plan-it` Step 5 now runs one tested script, `plan-shape.py`, to scaffold a new plan's four headings and to check a plan's heading structure, instead of following prose rules.**
   - The headings, the placeholder and the Context hash are unchanged.
   - These now stop and go to the engineer, before a dispatch or after one:

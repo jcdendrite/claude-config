@@ -132,7 +132,7 @@ _CITATION_LINK_TEXT_RE = re.compile(r"^§\d+$")
 _REASSIGNED_LEGACY_NUMBERS: tuple[int, ...] = (59, 60)
 # Matches both citation glyphs seen across the corpus for the same legacy
 # number -- e.g. guard-settings-session-keysshs-default-branch.md (legacy
-# §54) is cited as both `§54` (_lib.sh) and `#54` (test_lib.py).
+# §54) is cited as both `§54` (_lib.sh) and `#54` (test_lib_git_refs.py).
 _EXTERNAL_CITATION_NUMBER_RE = re.compile(r"[§#](\d+)")
 # A bare §N/#N is ambiguous -- handoff/SKILL.md's own §1-§7 section numbers,
 # and test-conventions/test-evaluation's §N anchors, are cited throughout
