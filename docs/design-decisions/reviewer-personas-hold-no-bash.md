@@ -68,7 +68,7 @@ Each answer quotes the label the engineer selected or the words they typed. The 
 - CI is Linux-only, so BSD tools and byte-exact `head`/`tail` on macOS are unverified.
 - The caps are the script's only time bound. A missing `timeout -k` voids them, and the uncapped local tools (`sha256sum`, `grep`, `head`, `tail`) void it on a network-mounted repository.
 - `withheld` wins over `untracked` in the preamble, and the index has no per-path diff range (row 123).
-- A reviewer cannot run a check itself. The `Check:` route is verified by text pins, two pre-merge rehearsals and one post-merge round, and no CI test runs a fix writer.
+- A reviewer cannot run a check itself. The `Check:` route is verified by text pins, and no CI test runs a fix writer.
 - Lane files are bounded per lane except the `.diff`, which is unbounded, and nothing sweeps them.
 - The listing is uncapped, so above the harness's output limit the orchestrator reads the full output file.
 - A wrong in-range listing number is detected only by the orchestrator's `LANE_ROW:` comparison.

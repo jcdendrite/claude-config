@@ -45,7 +45,9 @@ _resolve_base_ref() {
 }
 
 # Fills CUMULATIVE_DIFF_ARGV with the command that prints the cumulative diff from merge-base "$1" to HEAD.
-# Default mode and the --context-files --expect-diff recompute both run it, so no diff config or GIT_DIFF_OPTS value can make the handed file and the recompute differ.
+# Default mode and the --context-files --expect-diff recompute both run it.
+# Diff config and GIT_DIFF_OPTS cannot separate the two runs, because both read the caller's config and the command pins GIT_DIFF_OPTS itself.
+# A caller-set name in _LIB_GIT_REPOSITORY_SELECTING_ENV_VARS (see _context_prepare) can halt the call at DIFF_MISMATCH, because the handed file then describes other content.
 # The command uses plumbing `git diff-tree`, so porcelain-only diff config
 # (e.g. diff.relative, diff.submodule, diff.context) does not change its output.
 # Observed on git 2.56.0, and pinned by the tests in test_pr_diff_against_base.py.
@@ -180,8 +182,11 @@ _context_validate_args() {
 # Unsets the git environment, resolves the base, finds the repository root and makes the private temp directory.
 _context_prepare() {
   local physical_tmp_base='' physical_root=''
-  # Pathspec variables change what git check-ignore and git log select, and GIT_DIFF_OPTS overrides the pinned -U3, so they are unset before the first git call.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_DIFF_OPTS
+  # Unsets every name in _LIB_GIT_REPOSITORY_SELECTING_ENV_VARS, which _lib.sh defines.
+  # Command-scope config stays, so the recompute reads the config default mode read.
+  # A true-valued pathspec variable makes git check-ignore exit 128.
+  # GIT_DIFF_OPTS overrides the pinned -U3.
+  unset "${_LIB_GIT_REPOSITORY_SELECTING_ENV_VARS[@]}" GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_DIFF_OPTS
   if [ "$CONTEXT_SOURCE" = cumulative ] || [ "$CONTEXT_SOURCE" = expect-diff ]; then
     CONTEXT_STEP='base-resolution'
     if ! _resolve_base_ref; then

@@ -189,8 +189,7 @@ End with one of: **No fidelity concerns**, **Approve with concerns** (list), or 
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Use the Write tool — not `cat`, `echo`, heredocs, or Python file writes.
-   - A full review can exceed the shell command-length limit and abort mid-write; Write has no such limit.
+1. Use the Write tool.
    - Write auto-creates parent directories.
    - Write is explicitly authorized to create this file despite the general .md-creation default.
    Structure the file as:

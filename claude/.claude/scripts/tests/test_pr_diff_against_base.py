@@ -4110,8 +4110,10 @@ class TestHostileGitConfiguration:
         "variable", ["GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_LITERAL_PATHSPECS"]
     )
     def test_exported_pathspec_variables_leave_history_present_and_the_ignore_check_passing(self, tmp_path, variable):
-        """Each variable makes a bare `git check-ignore -q` or `git --literal-pathspecs log` exit 128 on the installed git
-        (git 2.43.0), so without the mode's unset the round would halt or lose its history."""
+        """Each variable makes a bare `git check-ignore -q` exit 128 on the installed git (git 2.43.0).
+        Without the mode's unset, the round halts at the ignore check before any history call.
+        The history assertions below are latent guards.
+        They decide the outcome only if a later change makes the ignore check stop halting."""
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path, **{variable: "1"})
 
@@ -4123,7 +4125,8 @@ class TestHostileGitConfiguration:
         assert "CONTEXT_DEGRADED" not in result.stderr
 
     def test_exported_diff_opts_leaves_lanes_unchanged(self, tmp_path, small_template):
-        """GIT_DIFF_OPTS=--unified=0 overrides the command-line -U3 of the shared diff and the history call."""
+        """GIT_DIFF_OPTS=--unified=0 overrides the command-line -U3 of the shared diff lane.
+        This fixture's `one.txt` line-3 edit makes that override visible."""
         clean = _copy_template(small_template, tmp_path / "clean")
         hostile = _copy_template(small_template, tmp_path / "hostile")
         clean_result = _two_calls(clean, _context_env(tmp_path / "clean"), lanes=("staff-sdet",))
@@ -4135,29 +4138,98 @@ class TestHostileGitConfiguration:
 
 class TestForeignGitEnvironment:
     @pytest.mark.parametrize(
-        "names", [("GIT_DIR",), ("GIT_WORK_TREE",), ("GIT_INDEX_FILE",), ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")]
+        "names",
+        [
+            ("GIT_DIR",),
+            ("GIT_WORK_TREE",),
+            ("GIT_INDEX_FILE",),
+            ("GIT_COMMON_DIR",),
+            ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"),
+        ],
     )
     def test_foreign_git_dir_leaves_context_mode_describing_the_working_directory_repository(
-        self, tmp_path, small_template, names
+        self, tmp_path, small_template, monkeypatch, names
     ):
-        """Deleting any of the three names from the mode's unset makes the lanes describe the other repository."""
         mine = _copy_template(small_template, tmp_path / "mine")
         repo = _copy_template(small_template, tmp_path / "also-mine")
+        # Fixed commit dates give the foreign repository commit ids the template's commits can never share.
+        monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+        monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
         foreign = _small_repo(tmp_path / "theirs")
         (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
-        _git_out(foreign, "add", "-A")
+        _commit_all(foreign, "foreign work")
         exported = {
             "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign), "GIT_INDEX_FILE": str(foreign / ".git" / "index"),
+            "GIT_COMMON_DIR": str(foreign / ".git"),
         }
         clean_result = _two_calls(mine, _context_env(tmp_path / "mine"), lanes=("staff-sdet",))
         polluted_env = {**_context_env(tmp_path / "also-mine"), **{name: exported[name] for name in names}}
+        if "GIT_COMMON_DIR" in names:
+            head_commit = _git_out(repo, "rev-parse", "HEAD").stdout.decode().strip()
+            held_by_foreign = _git_out(repo, "cat-file", "-e", head_commit, check=False, env=polluted_env)
+            assert held_by_foreign.returncode != 0, "premise: GIT_COMMON_DIR alone points git at an object store without HEAD"
 
         polluted = _two_calls(repo, polluted_env, lanes=("staff-sdet",))
 
-        header, rows = _parse_index(_lane_files(polluted, "staff-sdet")["index"])
+        header, _rows = _parse_index(_lane_files(polluted, "staff-sdet")["index"])
         assert header["root"] == str(repo)
         assert _lane_bytes(polluted, "staff-sdet") == _lane_bytes(clean_result, "staff-sdet")
-        assert "foreign-only.txt" not in {row["path"] for row in rows}
+
+    def test_foreign_object_directory_leaves_context_mode_describing_the_working_directory_repository(
+        self, tmp_path, small_template
+    ):
+        """Deleting GIT_OBJECT_DIRECTORY from the mode's unset makes every object read fail in the empty directory, so the
+        call exits non-zero."""
+        mine = _copy_template(small_template, tmp_path / "mine")
+        repo = _copy_template(small_template, tmp_path / "also-mine")
+        empty_object_directory = tmp_path / "empty-objects"
+        empty_object_directory.mkdir()
+        clean_result = _two_calls(mine, _context_env(tmp_path / "mine"), lanes=("staff-sdet",))
+        polluted_env = _context_env(tmp_path / "also-mine", GIT_OBJECT_DIRECTORY=str(empty_object_directory))
+
+        polluted = _two_calls(repo, polluted_env, lanes=("staff-sdet",))
+
+        header, _rows = _parse_index(_lane_files(polluted, "staff-sdet")["index"])
+        assert header["root"] == str(repo)
+        assert _lane_bytes(polluted, "staff-sdet") == _lane_bytes(clean_result, "staff-sdet")
+
+    def test_env_injected_command_scope_config_reaches_default_mode_and_the_recompute(self, tmp_path):
+        """GIT_CONFIG_COUNT and its key and value variables stay in the --context-files environment, so the recompute reads
+        the core.abbrev default mode read. Unsetting them there makes a correct handed file print DIFF_MISMATCH."""
+        repo = _small_repo(tmp_path, "cumulative")
+        clean_env = _context_env(tmp_path)
+        injected_env = _context_env(
+            tmp_path, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.abbrev", GIT_CONFIG_VALUE_0="12"
+        )
+        handed = tmp_path / "handed.diff"
+        handed.write_bytes(_default_mode_stdout(repo, injected_env))
+        clean_diff = _default_mode_stdout(repo, clean_env)
+        assert handed.read_bytes() != clean_diff, "premise: git reads core.abbrev from the injected config"
+
+        listing_id, _count, _rows = _parse_listing(_run_context(repo, injected_env, "--expect-diff", str(handed), list_only=True))
+        result = _run_context(repo, injected_env, "--expect-diff", str(handed), listing=listing_id, lanes=("staff-sdet",))
+
+        assert result.returncode == 0, result.stderr
+        assert "DIFF_MISMATCH:" not in result.stderr
+
+    def test_expect_diff_handed_a_foreign_git_dir_capture_exits_with_diff_mismatch(self, tmp_path):
+        """Deleting GIT_DIR from the mode's unset makes the recompute describe the foreign repository too, so a handed file
+        captured under a foreign GIT_DIR would match instead of printing DIFF_MISMATCH."""
+        repo = _small_repo(tmp_path / "mine", "cumulative")
+        foreign = _small_repo(tmp_path / "theirs", "cumulative")
+        (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
+        _commit_all(foreign, "foreign work")
+        clean_env = _context_env(tmp_path / "mine")
+        foreign_capture_env = {**clean_env, "GIT_DIR": str(foreign / ".git")}
+        handed = tmp_path / "handed.diff"
+        handed.write_bytes(_default_mode_stdout(repo, foreign_capture_env))
+        clean_capture = _default_mode_stdout(repo, clean_env)
+        assert handed.read_bytes() != clean_capture, "premise: the capture describes the foreign repository"
+
+        result = _run_context(repo, foreign_capture_env, "--expect-diff", str(handed), list_only=True)
+
+        assert result.returncode == 1, result.stderr
+        assert "DIFF_MISMATCH:" in result.stderr
 
     def test_default_mode_still_honors_the_ambient_git_environment(self, tmp_path):
         """The mode's unset sits inside the --context-files branch, never at the file top, because default mode's stdout is

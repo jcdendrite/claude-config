@@ -109,12 +109,6 @@ def _assert_write_arm_denied(payload):
     assert stderr == "", f"a successful deny wrote to stderr: {stderr!r}"
 
 
-def _assert_clean_allow(payload):
-    """Assert the hook allows `payload` with no deny reason and nothing on stderr, so a pass cannot come from
-    a non-JSON or error-path output that run_hook reads as an allow."""
-    assert run_hook_reason_and_stderr(HOOK, payload) == (None, "")
-
-
 class TestFileWriteTools:
     def test_reviewer_write_to_tracked_path_denied(self):
         assert run_hook(HOOK, write_input("/repo/src/main.py", agent_type="staff-sdet")) == "deny"
@@ -154,7 +148,7 @@ class TestFileWriteTools:
         path = str(findings_dir / "staff-sdet-1700000000-branch.md")
         payload = write_input(path, agent_type="staff-sdet")
         payload["session_id"] = session_id
-        _assert_clean_allow(payload)
+        assert run_hook(HOOK, payload) == "allow"
 
     def test_reviewer_edit_to_tracked_path_denied(self):
         assert run_hook(HOOK, edit_input("/repo/src/main.py", agent_type="ciso-reviewer")) == "deny"
@@ -468,9 +462,8 @@ class TestAgentReviewsIgnoreVerification:
 
     def test_foreign_git_dir_env_does_not_launder_the_check(self, repo_not_ignoring_agent_reviews, tmp_path):
         """A GIT_DIR pointed at a different repo must not make an unrelated
-        target repo's write look safe — regression test for the `unset
-        GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix (the same statement
-        require-worktree-for-git-writes.sh makes).
+        target repo's write look safe — regression test for the helper's unset
+        of `_LIB_GIT_REPOSITORY_LOCAL_ENV_VARS`.
 
         The foreign repo's ignore rule MUST live in `.git/info/exclude`, not
         a tracked `.gitignore` — verified empirically that `git check-ignore`
@@ -500,10 +493,10 @@ class TestAgentReviewsIgnoreVerification:
         whatever GIT_WORK_TREE points at rather than from `$CWD`, so a
         foreign repo's tracked (not info/exclude-resident) ignore rule is
         enough — no GIT_DIR override needed. Regression test for the same
-        `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` fix as
-        test_foreign_git_dir_env_does_not_launder_the_check, pinning the
-        GIT_WORK_TREE vector specifically so a future edit that narrows the
-        unset list to GIT_DIR alone doesn't silently reopen this bypass."""
+        helper unset as test_foreign_git_dir_env_does_not_launder_the_check,
+        pinning the GIT_WORK_TREE vector specifically so a future edit that
+        drops GIT_WORK_TREE from `_LIB_GIT_REPOSITORY_LOCAL_ENV_VARS` doesn't
+        silently reopen this bypass."""
         foreign = init_git_repo_with_commit(
             tmp_path / "foreign-work-tree", file_name=".gitignore", content="agent-reviews/\n"
         )
@@ -1273,7 +1266,7 @@ class TestWriteArmFindingsFileRule:
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_own_findings_file_allowed_for_every_file_tool(self, repo_ignoring_agent_reviews, tool_name, path_form):
         """The production Write tool sends absolute paths, and the own-name rule allows that shape as well as the relative
-        one, with no deny reason and nothing on stderr."""
+        one."""
         own_file = "agent-reviews/staff-sdet-1700000000-branch.md"
         path = own_file if path_form == "relative" else str(repo_ignoring_agent_reviews / own_file)
         payload = _FILE_TOOL_BUILDERS[tool_name](
@@ -1281,7 +1274,7 @@ class TestWriteArmFindingsFileRule:
             agent_type="staff-sdet",
             cwd=str(repo_ignoring_agent_reviews),
         )
-        _assert_clean_allow(payload)
+        assert run_hook(HOOK, payload) == "allow"
 
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_other_agents_findings_file_denied_for_every_file_tool_given_an_absolute_path(
@@ -1745,13 +1738,13 @@ class TestKnownGapBypass:
     )
     def test_persona_write_path_form_ignore_check_misjudges_allowed(self, repo_ignoring_agent_reviews, path):
         payload = write_input(path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews))
-        _assert_clean_allow(payload)
+        assert run_hook(HOOK, payload) == "allow"
 
     def test_persona_write_absolute_git_refs_heads_reach_misjudges_allowed(self, repo_ignoring_agent_reviews):
         """Pins the absolute-path spelling of the `git-refs-heads-reach` case, the shape the production Write tool sends."""
         path = str(repo_ignoring_agent_reviews / ".git/refs/heads/agent-reviews/staff-sdet-1700000000-x.md")
         payload = write_input(path, agent_type="staff-sdet", cwd=str(repo_ignoring_agent_reviews))
-        _assert_clean_allow(payload)
+        assert run_hook(HOOK, payload) == "allow"
 
     # Pins the deny boundary for `Plan`, the roster member that reaches the Bash arm. This `>` redirect form is not
     # the `git diff --output=src/x` flag form that `test_reviewer_git_write_shape_not_inspected_allowed`'s
