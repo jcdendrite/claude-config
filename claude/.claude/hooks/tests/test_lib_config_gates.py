@@ -1,8 +1,8 @@
 """Unit tests for _lib.sh's config-resolved gates (_lib_config_dir, _lib_worktree_enforcement_active,
 _lib_autonomous_shipping_sentinel_present, _lib_autonomous_shipping_active,
-_lib_permission_prompt_tracking_active and _lib_round_consult_gate_disabled), plus the
-test_sourcing_lib_sh_fails_when_config_sh_is_missing and test_standard_hook_guard_trips_when_config_sh_is_missing
-family, which pins that sourcing _lib.sh fails when its sibling _config.sh is missing so the standard hook source guard trips.
+_lib_permission_prompt_tracking_active and _lib_round_consult_gate_disabled).
+The test_sourcing_lib_sh_fails_when_config_sh_is_missing and test_standard_hook_guard_trips_when_config_sh_is_missing
+family also pins that sourcing _lib.sh fails when its sibling _config.sh is missing, so the standard hook source guard trips.
 """
 from __future__ import annotations
 
