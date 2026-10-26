@@ -2,6 +2,8 @@
 
 *2026-10-18.*
 
+**Partly superseded by [reviewer-personas-hold-no-bash](reviewer-personas-hold-no-bash.md) (2026-10-22):** no reviewer persona holds `Bash` any more, so only `Plan` reaches this gate's Bash arm, and the "Scratch execution" bullet below no longer describes the reviewers.
+
 Gates on the Bash tool match command text. Gates that run `_lib_strip_shell_quotes` delete quote characters before matching, so a trigger word, or a `>` that starts a word, inside a quoted argument or a heredoc body can deny a read-only command. For example, `git log --grep 'a > b'` in `deny-reviewer-tree-mutation.sh` reads as a redirect to `b`.
 
 This false deny is accepted. Gates keep reading command text, and no bash-grade tokenizer is shared across gates.

@@ -51,7 +51,15 @@ Before the first spawn this round, run `~/.claude/scripts/findings-path-suffix.s
 
 A project-layer reviewer that lacks the contract must not receive a `findings_path` — passing one anyway re-arms the heredoc-abort-on-large-findings failure the contract exists to prevent. Spawn synchronously (not `run_in_background`) — the mandatory read-back step must execute in the same turn. After the reviewer returns: if it reported a successful write, `Read` the whole findings file, whatever its finding count. If it reported a write failure, use the inline findings it fell back to instead. See `docs/design-decisions.md` §12 for the mechanism, its measurements, and rationale.
 
-A plan review runs no check; `code-review/SKILL.md` § "Requested checks" says how a code review settles one. A finding with a line that begins `Check:` may challenge a ledger row. If there is no such row, the finding stands. If the row is untagged, the finding stands. If the row is `[unverified]` with no Verification step that settles it, the finding stands. If the row is `[unverified]` and a Verification step settles it, keep the finding and mark it `settled by Verification step <n>`. If the row carries `[verified: <source>]` or `[engineer-verified: <quote>]`, keep the finding and mark it `reviewer could not re-verify`. No counted finding is dropped silently.
+A plan review runs no check; `code-review/SKILL.md` § "Requested checks" says how a code review settles one. A finding with a line that begins `Check:` may challenge a ledger row.
+
+- If there is no such row, the finding stands.
+- If the row is untagged, the finding stands.
+- If the row is `[unverified]` with no Verification step that settles it, the finding stands.
+- If the row is `[unverified]` and a Verification step settles it, keep the finding and mark it `settled by Verification step <n>`.
+- If the row carries `[verified: <source>]` or `[engineer-verified: <quote>]`, keep the finding and mark it `reviewer could not re-verify`.
+
+No counted finding is dropped silently.
 
 Other spawned specialists — those without a `findings_path`, and reviewers that fell back to inline output after a write failure — must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt. Findings written to a file must still be checklist-item-keyed, so item attribution survives the switch to file-based output.
 

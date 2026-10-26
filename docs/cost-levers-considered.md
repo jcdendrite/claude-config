@@ -213,14 +213,18 @@ in the row above are unaffected. Each already fetches its own diff, scoped
 to its lane. Handing them the shared unscoped artifact instead would widen
 what each reads.
 
-**2026-10-22 follow-up:** the sentence above that each Bash-having reviewer
-"already fetches its own diff" is superseded, as are two other statements in
-this file. The "Replacing in-context diff reads with deterministic scripts"
-row says the seven `staff-*` agents and `ciso-reviewer` carry `Bash` and
-re-fetch the diff. The "File-path handoff of diff text to the reviewers that
-lack `Bash`" row assumes only some reviewers lack it; every reviewer persona is
-now handed files for containment, and that row's cost verdict has not been
-re-measured. No reviewer persona holds
+**2026-10-22 follow-up:** three statements in this file are superseded:
+
+- The sentence above that each Bash-having reviewer "already fetches its own
+  diff".
+- The "Replacing in-context diff reads with deterministic scripts" row says the
+  seven `staff-*` agents and `ciso-reviewer` carry `Bash` and re-fetch the
+  diff.
+- The "File-path handoff of diff text to the reviewers that lack `Bash`" row
+  assumes only some reviewers lack it; every reviewer persona is now handed
+  files for containment, and that row's cost verdict has not been re-measured.
+
+No reviewer persona holds
 `Bash` any more, so `/code-review` makes two `pr-diff-against-base.sh
 --context-files` calls per round (a changed-path listing, then lanes by
 number) in place of one `git` turn per reviewer, and a claim a reviewer

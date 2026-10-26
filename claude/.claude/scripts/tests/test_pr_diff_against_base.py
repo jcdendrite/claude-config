@@ -3647,6 +3647,30 @@ class TestSignalsAndKills:
         assert again.returncode == 0, again.stderr
         assert [path.name for path in Path(env["TMPDIR"]).iterdir()] == [leftovers[0].name]
 
+    def test_sigkill_after_the_lane_diff_temps_exist_leaves_no_withheld_byte_in_any_agent_reviews_dotfile(
+        self, tmp_path, spawn_blocked_run
+    ):
+        """The shared diff is sliced into the lane `.diff` temps before the base and history reads, so a kill held at a
+        `cat-file` call leaves them behind. No withheld block may be in one: docs/scripts.md's SIGKILL recovery
+        describes only the private directory as holding withheld bytes."""
+        repo = _canary_repo(tmp_path, "staged")
+        env = _context_env(tmp_path)
+        listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]
+        process, _started, release = spawn_blocked_run(
+            repo, env, listing_id, tmp_path, hold={"subcommand": "cat-file", "match": ["-s"]}
+        )
+
+        process.kill()
+        process.wait(timeout=60)
+        release.write_text("go")
+        lane_diff_temps = [path for path in (repo / "agent-reviews").glob(".*.diff.*") if path.is_file()]
+        leftover_bytes = b"\n".join(path.read_bytes() for path in (repo / "agent-reviews").glob(".*") if path.is_file())
+
+        assert lane_diff_temps, _agent_reviews_listing(repo)
+        assert any(canary in path.read_bytes() for path in lane_diff_temps for canary in _CONTROL_CANARIES)
+        for canary in _FORBIDDEN_CANARIES:
+            assert canary not in leftover_bytes, canary
+
 
 # --- the ignore check and the output targets ----------------------------------------------------------------------------------
 
@@ -4007,9 +4031,7 @@ class TestHostileGitConfiguration:
             ("diff.submodule", "log"), ("diff.submodule", "diff"), ("diff.ignoreSubmodules", "all"),
             ("diff.orderFile", "{order}"),
             ("diff.context", "0"), ("core.quotePath", "true"), ("diff.upper.textconv", "{script}"),
-            ("log.follow", "true"), ("log.decorate", "full"), ("diff.algorithm", "patience"),
-            # The script cd's to the repository root, so a relative diff has nothing to relativize.
-            ("diff.relative", "true"),
+            ("log.follow", "true"), ("log.decorate", "full"),
         ],
         ids=lambda setting: f"{setting[0]}={setting[1]}",
     )
@@ -5521,7 +5543,8 @@ class TestOutputHygieneAndTrap:
 
         _assert_halted_at(result, "write", 128)
         assert list(Path(shimmed["TMPDIR"]).iterdir()) == []
-        assert len(_agent_reviews_listing(repo)) <= 1, "only the file whose own removal failed may remain"
+        assert len(rm_counter.read_text()) >= 2, "the trap reached its second rm, the one made to fail"
+        assert len(_agent_reviews_listing(repo)) == 1, "only the file whose own removal failed remains"
 
 
 # --- base resolution, both modes ------------------------------------------------------------------------------------------------

@@ -5816,8 +5816,17 @@ def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
 
     paragraph_index = next(i for i, line in enumerate(routing_lines) if line.startswith("A plan review runs no check;"))
     assert routing_lines[paragraph_index - 2].startswith("A project-layer reviewer that lacks the contract")
-    assert routing_lines[paragraph_index - 1] == "" and routing_lines[paragraph_index + 1] == ""
-    paragraph = routing_lines[paragraph_index]
+    closing_index = next(
+        i for i, line in enumerate(routing_lines) if line == "No counted finding is dropped silently."
+    )
+    assert routing_lines[paragraph_index - 1] == "" and routing_lines[closing_index + 1] == ""
+    assert routing_lines[paragraph_index + 1] == "" and routing_lines[closing_index - 1] == ""
+    rule_lines = routing_lines[paragraph_index + 2 : closing_index - 1]
+    assert len(rule_lines) == 5 and all(line.startswith("- If ") for line in rule_lines), (
+        "plan-review/ROUTING.md's Check: rules are no longer five `- If ` list items between the lead paragraph "
+        "and the closing sentence"
+    )
+    paragraph = "\n".join(routing_lines[paragraph_index : closing_index + 1])
     for sentence in (
         '`code-review/SKILL.md` § "Requested checks" says how a code review settles one.',
         f"A finding with a line that begins `{FINDING_CHECK_LABEL}` may challenge a ledger row.",
@@ -5826,7 +5835,6 @@ def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
         "If the row is `[unverified]` with no Verification step that settles it, the finding stands.",
         "keep the finding and mark it `settled by Verification step <n>`",
         "keep the finding and mark it `reviewer could not re-verify`",
-        "No counted finding is dropped silently.",
     ):
         assert sentence in paragraph, f"plan-review/ROUTING.md no longer carries {sentence!r}"
 
