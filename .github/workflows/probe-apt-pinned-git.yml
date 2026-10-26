@@ -1,0 +1,71 @@
+name: Probe apt pinned git
+
+# Throwaway probe. Never merge. Answers whether the runner's apt can still resolve and download the pinned git build.
+# The verdict is "Refresh apt indexes" and "Download the pinned build through apt, print digests" both green, since a green download after a red refresh may have resolved against stale lists.
+# The curl step is per-host data only, so a red curl step alone does not mean apt failed.
+on:
+  push:
+    branches:
+      - ci-probe-apt-pinned-git
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    # Budget: 2 apt steps capped at 3 min each + curl 4 hosts x 30 s worst case (2 min), about 8 min total, under the 10 min job cap.
+    timeout-minutes: 10
+    env:
+      PINNED_VERSION: "1:2.43.0-1ubuntu7.4"
+    steps:
+      - name: Image and apt sources
+        run: |
+          cat /etc/apt/apt-mirrors.txt || true
+          git --version
+          apt-cache policy git
+
+      - name: Refresh apt indexes
+        timeout-minutes: 3
+        run: sudo apt-get update --error-on=any
+
+      - name: Does apt still list the pinned build
+        if: ${{ !cancelled() }}
+        run: |
+          apt-cache policy git git-man
+          apt-cache madison git git-man
+          for package in git git-man; do
+            apt-cache madison "$package" | grep -F -- "| $PINNED_VERSION |" || { echo "pinned $PINNED_VERSION missing for $package"; exit 1; }
+          done
+
+      - name: Download the pinned build through apt, print digests
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          download_dir=$(mktemp -d "$RUNNER_TEMP/apt-dl.XXXXXX")
+          cd "$download_dir"
+          start_ns=$(date +%s%N)
+          apt-get download "git=$PINNED_VERSION" "git-man=$PINNED_VERSION"
+          echo "apt-get download took $(( ($(date +%s%N) - start_ns) / 1000000 )) ms"
+          ls -l
+          sha256sum ./*.deb
+
+      # Availability check only: one sample per host, git-man only, azure host is plain http and the other three are https, so it does not rank host speed or reliability; re-run the job for variance.
+      - name: Time each candidate source
+        if: ${{ !cancelled() }}
+        run: |
+          debian_version="${PINNED_VERSION#*:}"
+          deb_file="git-man_${debian_version}_all.deb"
+          any_curl_failed=0
+          for base in \
+            "http://azure.archive.ubuntu.com/ubuntu/pool/main/g/git" \
+            "https://archive.ubuntu.com/ubuntu/pool/main/g/git" \
+            "https://security.ubuntu.com/ubuntu/pool/main/g/git" \
+            "https://launchpad.net/ubuntu/+archive/primary/+files"; do
+            echo "== $base/$deb_file"
+            curl --fail --location --max-time 30 --silent --show-error --output /dev/null \
+              --write-out 'http=%{http_code} url_effective=%{url_effective} redirects=%{num_redirects} bytes=%{size_download} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} total=%{time_total}\n' \
+              "$base/$deb_file" || { echo "curl exit $?"; any_curl_failed=1; }
+          done
+          if [ "$any_curl_failed" -ne 0 ]; then
+            exit 1
+          fi
