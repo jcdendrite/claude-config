@@ -1833,18 +1833,20 @@ class TestHookClassHeader:
 
         'gate' fires PreToolUse and may deny a tool call. 'informational'
         fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
-        'turn-gate' fires on Stop and may block the *turn* from ending
-        (decision: "block") rather than a tool call from running — a
-        distinct contract from 'gate', which is why it is a separate value
-        rather than a Stop hook being mislabeled 'gate' (Layer 2's
+        'turn-gate' fires where an agent's run ends (Stop, SubagentStop or
+        PreToolUse SubagentHandback) and sends the agent back rather than
+        blocking a tool call from running, with top-level decision "block" on
+        the first two and hookSpecificOutput.permissionDecision on the third
+        — a distinct contract from 'gate', which is why it is a separate
+        value rather than an end-of-run hook being mislabeled 'gate' (Layer 2's
         PreToolUse-specific behavior checks, e.g.
         test_emit_deny_defined_before_lib_source, do not apply to it) or
         'informational' (which would be a false label on a hook that
         blocks). 'batch-gate' fires on PostToolBatch and may stop the
         agentic loop before the next model call (exit 2, reason on stderr)
         — PostToolBatch's own native block, distinct from both 'gate'
-        (PreToolUse deny, JSON envelope) and 'turn-gate' (Stop
-        block-to-force-continuation); Layer 2's PreToolUse-specific
+        (PreToolUse deny, JSON envelope) and 'turn-gate' (end-of-run
+        send-back); Layer 2's PreToolUse-specific
         behavior checks don't apply to it either.
         """
         value = _hook_class(hook)

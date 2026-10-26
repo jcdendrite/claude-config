@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`claude-hook-review` 2.6.0 (minor — the `turn-gate` definition widens and nothing is reversed) now defines `turn-gate` as firing where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, with an output shape that follows its event.** Run `claude plugin update claude-hook-review@claude-config --scope project` from the consuming repository's root directory, then `/reload-plugins` (or restart Claude Code), to refresh it.
 - **The `/period-cost-report` Slack report now separates its groups with a blank line, sizes each group's table on its own rows, and cuts titles at 32 code points instead of 40.**
   - A blank line now precedes each repository name and the Total.
   - Each group's table column widths come from that group's own displayed rows.
@@ -460,6 +461,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new hook, `send-back-skipped-self-review.sh`, with its evaluator `evaluate-code-writer-self-review.py`, sends a `code-writer` return back once when it shows no evidence of the self-review `code-writer.md` mandates.** It checks that each reviewer the `**Self-review:**` ledger names, and each reviewer the changed paths require, was Read in the dispatch, and that a diff re-read follows the last edit. The second return goes through, prefixed with a `SELF-REVIEW INCOMPLETE (hook-verified)` line in auto permission mode. The hook is fail-open and registers under PreToolUse `SubagentHandback` and SubagentStop `code-writer`.
+  - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix.
+  - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling, since until then the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
+  - The probe ran on Claude Code 2.1.310. The hook is unprobed on 2.1.295 through 2.1.309 and fails open there.
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.
