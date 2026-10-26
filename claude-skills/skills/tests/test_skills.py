@@ -6522,7 +6522,7 @@ class TestCodeReviewContradictionRouteRegionPin:
 _CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
 
 # The whole defer-invariant region: the enforcement-invariant class definition,
-# its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition, and
+# its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition,
 # the scope of the bar (an invariant break a round notices anywhere in the PR),
 # and its precedence over checklist item 14's informational-only route.
 # The contradiction-route region's *keep current text* carve-out takes its scope
@@ -6555,9 +6555,9 @@ class TestCodeReviewDeferInvariantRegionPin:
     diff a round enumerates instead of an invariant break noticed anywhere in
     the PR, or dropping the sentence that keeps checklist item 14's
     informational-only route from absorbing such a break, fails a test instead
-    of drifting silently. On failure, update
-    the constant only if the new wording preserves what every sentence of the
-    current pinned text guarantees.
+    of drifting silently. On failure, update the constant only if the new
+    wording preserves what every sentence of the current pinned text
+    guarantees.
     """
 
     def test_defer_invariant_region_matches_live_text(self) -> None:
