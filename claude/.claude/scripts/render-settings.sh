@@ -29,6 +29,12 @@ BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 # RULE4_DOTTED_PATHS_JSON.
 OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_FEEDBACK_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
 
+# Overlay-allowed top-level keys: never carried forward, so deleting one
+# from the overlay actually takes effect on the next render.
+# Declared ahead of the direct-invocation modes below for the same reason as
+# RULE4_DOTTED_PATHS_JSON.
+OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
+
 # Direct-invocation modes for tests: each prints one constant as JSON and exits
 # before any render logic runs, mirroring guard-settings-session-keys.sh's own
 # --print-guarded-keys mode.
@@ -42,6 +48,10 @@ if [[ "${1:-}" == "--print-base-owned-keys" ]]; then
 fi
 if [[ "${1:-}" == "--print-env-allowed-names" ]]; then
   printf '%s\n' "$OVERLAY_ENV_ALLOWED_NAMES_JSON"
+  exit 0
+fi
+if [[ "${1:-}" == "--print-overlay-allowed-keys" ]]; then
+  printf '%s\n' "$OVERLAY_ALLOWED_KEYS_JSON"
   exit 0
 fi
 
@@ -60,10 +70,9 @@ fi
 # carrying only `defaultMode` -- any other key or shape is rejected outright,
 # not merged. See docs/auto-mode.md for the full contract.
 #
-# A base-set overlay-allowed key must also be set by this account's
-# overlay, or it leaks unchanged into settings.json. autoMode's
-# per-account trust model forbids that. Rejected outright, same as an
-# unrecognized overlay key.
+# Refuses to render when base sets an overlay-allowed key that the overlay does
+# not override. The key would leak unchanged into every account, which
+# autoMode's per-account trust model forbids.
 #
 # Every top-level key base and the overlay don't claim carries forward from
 # the prior settings.json (theme/model/effortLevel and friends), since
@@ -83,9 +92,6 @@ base_file="$config_dir/settings.base.json"
 overlay_file="$config_dir/settings.overlay.json"
 target="$config_dir/settings.json"
 
-# Overlay-allowed top-level keys: never carried forward, so deleting one
-# from the overlay actually takes effect on the next render.
-OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 # defaultMode enum: default and plan are accepted.
 # bypassPermissions and acceptEdits are refused outright.
 # auto is refused until the shipped ask-review-permissions.sh's reason text is
@@ -225,8 +231,6 @@ base_json="$(jq -c '.' -- "$base_file")"
 # and overlay_json are both validated. An overlay that overrides the
 # key's value is exempt, the same as any other overlay-allowed key.
 if ! jq -n -e --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] == []' >/dev/null 2>&1; then
-  # Untested: this fallback fires only on a jq runtime error against already-validated JSON, which the rest of this script's checks make unreachable today.
-  # A PATH-shim fake-jq test (TestChmodPortability's technique, test_render_settings.py:624) is skipped here because it would only exercise a diagnostic message, not the fail-closed exit above, so the shim's build-and-maintenance cost outweighs its value.
   bad_keys="$(jq -rn --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] | join(", ")' 2>/dev/null)" || bad_keys='<unavailable: jq error>'
   echo "render-settings.sh: $base_file sets overlay-owned key(s) not overridden by $overlay_file: $bad_keys -- must be overridden by $overlay_file (or removed from $base_file), otherwise they leak unchanged to every account whose overlay doesn't override them -- refusing to render" >&2
   exit 1
