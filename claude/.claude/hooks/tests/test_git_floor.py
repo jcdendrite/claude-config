@@ -359,15 +359,13 @@ _FIXTURE_PACKAGE_VERSION = "1:9.99.0-1fixture1"
 _APT_POLICY_TABLE_MARKER = "stub apt-cache policy table"
 
 # Stubs for the commands the pin step calls.
-# `sudo` accepts only `apt-get` and `apt-mark`, running the sibling stub of that name with STUB_VIA_SUDO set,
-# and exits 2 on any other command or flag form (such as `-n` or `env`).
 # The logging stubs record `sudo ` ahead of a call that came through `sudo`.
 # Each argument is logged wrapped in `<` `>`, so a space inside one argument stays visible
 # and the log does not depend on the shebang bash's quoting rules.
-# The `apt-get` stub exits 100 on the subcommand named by STUB_APT_GET_FAILS_ON, after an error line of its own.
 _LOGGING_STUB = """#!/bin/bash
 { printf '%s%s' "${STUB_VIA_SUDO:+sudo }" "${0##*/}"; printf ' <%s>' "$@"; printf '\\n'; } >> "$STUB_LOG"
 """
+# The `apt-get` stub exits 100 on the subcommand named by STUB_APT_GET_FAILS_ON, after an error line of its own.
 _APT_GET_STUB = (
     _LOGGING_STUB
     + """if [ "$1" = "${STUB_APT_GET_FAILS_ON:-}" ]; then
@@ -377,6 +375,8 @@ fi
 """
 )
 _APT_CACHE_STUB = _LOGGING_STUB + f"echo '{_APT_POLICY_TABLE_MARKER}'\n"
+# `sudo` accepts only `apt-get` and `apt-mark`, running the sibling stub of that name with STUB_VIA_SUDO set,
+# and exits 2 on any other command or flag form (such as `-n` or `env`).
 _SUDO_STUB = """#!/bin/bash
 case "$1" in
   apt-get|apt-mark) STUB_VIA_SUDO=1 exec "${0%/*}/$1" "${@:2}" ;;
