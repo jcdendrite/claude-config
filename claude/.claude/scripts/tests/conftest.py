@@ -1654,7 +1654,8 @@ def _make_stacked_repo(tmp_path: Path, stack_base: str = "stack", *, key_value: 
 def _shim_call_logging_command(calls_log: Path) -> str:
     """The shell line a shim script runs first to append its arguments, one per line then a
     blank line, to calls_log. _read_logged_calls reads that format back."""
-    return f"{{ for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done; printf '\\n'; }} >> {shlex.quote(str(calls_log))}\n"
+    append_arguments = "for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done; printf '\\n'"
+    return f"{{ {append_arguments}; }} >> {shlex.quote(str(calls_log))}\n"
 
 
 def _read_logged_calls(calls_log: Path) -> list[list[str]]:
