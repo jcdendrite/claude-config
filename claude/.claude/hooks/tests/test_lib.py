@@ -3925,7 +3925,10 @@ class TestLibConfiguredStackBase:
     def test_key_set_in_main_worktree_is_read_from_a_linked_worktree(
         self, git_repo: Path, tmp_path: Path
     ) -> None:
-        worktree = _add_linked_worktree(git_repo, tmp_path / "linked-wt", "linked-branch")
+        worktree = tmp_path / "linked-wt"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "linked-branch", str(worktree)], cwd=git_repo, check=True
+        )
         subprocess.run(
             ["git", "config", "branch.linked-branch.gh-merge-base", "stack"], cwd=git_repo, check=True
         )
