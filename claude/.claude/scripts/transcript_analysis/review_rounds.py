@@ -474,8 +474,7 @@ def compute_review_round_counts(
     *,
     branch_filter: set[str] | None = None,
 ) -> dict[str, int]:
-    """Per-skill round counts across session_iter, main-thread only. A record in
-    session_iter flagged isSidechain never opens a round.
+    """Per-skill round counts across session_iter, main-thread only.
 
     Every REVIEW_SKILLS member is a key in the returned dict, zeros
     included, so a caller never has to special-case an absent skill.
