@@ -11,7 +11,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.
   - `comment-discipline-reviewer` gains a "Prose restating the code" angle and moves to `effort: high`.
   - `code-writer`'s baseline points at the new bullet.
-  - Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are no longer exempt from `comment-discipline-reviewer`'s "Prose at the wrong altitude" angle, and `ai-instruction-and-memory-files` gains a placement row for content that isn't a rule.
+  - Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are no longer exempt from `comment-discipline-reviewer`'s "Prose at the wrong altitude" angle.
+  - `ai-instruction-and-memory-files` gains a placement row for content that isn't a rule.
   - The change is live on `git pull`.
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.

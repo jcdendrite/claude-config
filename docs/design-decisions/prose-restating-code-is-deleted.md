@@ -10,7 +10,7 @@ A corrected or shorter restatement still restates the code, so it drifts at the 
 
 ## Why the remedy lives in item 5
 
-Item 5 shapes the suggested fix of every finding, from every reviewer. `claude-skills/skills/code-review/SKILL.md` § "Finding disposition" defines the fix route, which applies the fix on each ADDRESS row. It also defines the contradiction route, whose "apply this round's fix" verdict is an ordinary row on the fix route. Once item 5 names a deletion for restating prose, every route that applies a fix applies the deletion, so the contradiction route needs no verdict of its own. A finding that asks to restore deleted restating prose names no defect the current text has, so the contradiction route's consult keeps the current text.
+Item 5 shapes the suggested fix of every finding, from every reviewer. `claude-skills/skills/code-review/SKILL.md` § "Finding disposition" defines the fix route, which applies the fix on each ADDRESS row. It also defines the contradiction route, whose "apply this round's fix" verdict is an ordinary row on the fix route. Because item 5 names a deletion for restating prose, every route that applies a fix applies the deletion, so the contradiction route needs no verdict of its own. A finding that asks to restore deleted restating prose names no defect the current text has, so the contradiction route's consult keeps the current text.
 
 ## Why restating the code is its own review angle
 
@@ -18,13 +18,13 @@ Item 5 shapes the suggested fix of every finding, from every reviewer. `claude-s
 
 ## Why instruction files are not exempt from the altitude angle
 
-`claude/.claude/CLAUDE.md` § "Durable text" says what prose is acceptable, and it applies to instruction files like any other durable text. `ai-instruction-and-memory-files` decides which surface misplaced instruction-file content moves to, which is the domain-specific half of a relocation. A skill or rule that loads for a file type owns where all misplaced content in those files goes, not only rule content, so the skill gains a row for content that is not a rule in `ai-instruction-and-memory-files/SKILL.md` § "Where does a given rule belong?".
+`claude/.claude/CLAUDE.md` § "Durable text" says what prose is acceptable, and it applies to instruction files like any other durable text. `ai-instruction-and-memory-files` decides which surface misplaced instruction-file content moves to, which is the domain-specific half of a relocation. A skill or rule that loads for a file type owns where all misplaced content in those files goes, not only rule content, so the skill carries a row for content that is not a rule in `ai-instruction-and-memory-files/SKILL.md` § "Where does a given rule belong?".
 
 Exempting instruction files from the altitude angle would avoid running one angle twice when both reviewers run. But the skill's body applies no altitude test, so the exemption would leave instruction-file altitude unreviewed.
 
-## Why the reviewer moves to `effort: high`
+## Why the reviewer runs at `effort: high`
 
-The trigger in [paragraph-readability-review-angle.md](paragraph-readability-review-angle.md)'s "Revisiting the angle count" section fired: the new angle cross-references the altitude angle. The reviewer moves to `effort: high` and stays one agent. Its tool design stays closed-form, since it reads a diff against a fixed rule set and has no `Bash`. What changed is the judgment at the boundary between angles, now that one angle overrides another.
+The trigger in [paragraph-readability-review-angle.md](paragraph-readability-review-angle.md)'s "Revisiting the angle count" section fired: the restating angle cross-references the altitude angle and takes precedence over it. The reviewer runs at `effort: high` and is one agent. Its tool design is closed-form, since it reads a diff against a fixed rule set and has no `Bash`. The judgment at the boundary between angles is what needs the effort, because one angle overrides another.
 
 ## Why there is no published-API exception
 
