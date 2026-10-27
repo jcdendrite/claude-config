@@ -636,8 +636,10 @@ _SCOPE_SECTION_RE = re.compile(r"^## Scope$\n(.*?)(?=^## |\Z)", re.DOTALL | re.M
 # Update it whenever the Scope section cites a new angle.
 # The check runs only from the tuple to the file, so an angle the Scope section cites but the tuple omits goes unchecked.
 _SCOPE_CITED_ANGLE_NAMES = (
+    "Comment verbosity",
     "Multi-fact comment structure",
     "PR-defined terminology",
+    "Paragraph readability",
     "Prose at the wrong altitude",
     "Restated canonical rule",
 )

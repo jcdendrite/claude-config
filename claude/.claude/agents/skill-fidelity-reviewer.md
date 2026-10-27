@@ -21,7 +21,7 @@ Your dispatch prompt gives you:
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
 - **The `review-trace` timeline** — present whenever your dispatch prompt
   includes it, the output of `transcript-analysis.py review-trace
-  --this-repo --branches <branch>` for this branch. Consult Out of scope
+  --this-repo --branches <branch> --omit-plan-review-spawns` for this branch. Consult Out of scope
   when it additionally brings a completed `code-review` pass into scope.
   Consult "The architect-consult check" below, which fires on its presence
   alone. It carries `reviewer-spawn` rows (gated by

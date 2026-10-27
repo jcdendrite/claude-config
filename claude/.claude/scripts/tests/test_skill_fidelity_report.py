@@ -25,7 +25,9 @@ def _fake_transcript_analysis_source(
 ) -> str:
     """Source for a transcript-analysis.py stand-in that dispatches on its
     first positional argument, printing one fixed stdout line naming the
-    resolved --branches value and exiting with the configured code."""
+    resolved --branches value and exiting with the configured code. The
+    review-trace arm also echoes whether its argv carried
+    --omit-plan-review-spawns."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import sys
@@ -36,6 +38,7 @@ def _fake_transcript_analysis_source(
             sys.exit({skill_invocation_exit})
         elif subcommand == "review-trace":
             print("review-trace stdout for " + branch)
+            print("review-trace omit-plan-review-spawns=" + str("--omit-plan-review-spawns" in sys.argv))
             sys.exit({review_trace_exit})
         else:
             sys.exit(2)
@@ -83,6 +86,16 @@ class TestBothReportsSucceed:
         review_trace_pos = result.stdout.index("=== review-trace ===")
         review_trace_body_pos = result.stdout.index("review-trace stdout for main")
         assert skill_invocation_pos < skill_invocation_body_pos < review_trace_pos < review_trace_body_pos
+
+
+class TestReviewTraceFlags:
+    def test_review_trace_runs_with_omit_plan_review_spawns(self, tmp_path, make_script_fixture):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        script_copy = make_script_fixture()
+
+        result = _run_script(script_copy, repo)
+
+        assert "review-trace omit-plan-review-spawns=True" in result.stdout
 
 
 class TestFirstCallFails:

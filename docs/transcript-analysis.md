@@ -480,11 +480,14 @@ CLASSIFICATION SUMMARY
 - `--deny-only` — restrict to sessions containing at least one hook denial
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
 - `--skill NAME` — restrict skill-invocation matching to one skill name
+- `--omit-plan-review-spawns` — leave out reviewer rows whose `round=` reads `plan-review`, and print the rest without `round=`. `/ready-for-review`'s fidelity check reads this view through `skill-fidelity-report.sh`, because a spawn `/plan-review` made never satisfies a `/code-review` dispatch row. A run without the flag shows what the view left out.
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. A carried default-branch value recorded before the session's first real branch is credited to that branch, per the "Pre-branch default-branch attribution" block under `cost`. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
+
+Each reviewer row prints `round=<skill>` between the subagent type and the parenthetical, naming the review skill whose round window holds the spawn; the `review-round-cost` section below defines the window. A `plan-review` window here also ends at that run's own `marker.sh deactivate plan-review` call, so a spawn after the call reads `round=?`. `review-round-cost`'s window does not end there, so the two disagree for a spawn after the call: `review-round-cost` charges it to the `plan-review` round, and `review-trace` prints `round=?`. Only a main-thread spawn takes a label, and a nested invocation takes over the window. A `thread=sidechain` spawn, or a spawn outside every window, prints `round=?`.
 
 **Sample output.**
 ```
@@ -494,14 +497,14 @@ REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcrip
 branches=my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
   [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=my-feature model=opus)
   [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=my-feature model=opus)
-  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
-  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
-  [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
+  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  round=plan-review  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  round=plan-review  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  round=?  (branch=my-feature model=sonnet thread=sidechain)
   [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
-The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
+The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside a dispatched subagent, which is why it reads `round=?` — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has two limits:
 

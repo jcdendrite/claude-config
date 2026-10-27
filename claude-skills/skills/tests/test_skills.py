@@ -5509,6 +5509,54 @@ def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
         )
 
 
+def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
+    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip."""
+    routing_roles_text = _heading_section_text(_ROUTING_MD_PATH, "## Reviewer roles")
+    agent_input_contract_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Input contract"
+    )
+    for literal in (
+        "`plan_path:`",
+        "on every round that reaches Step 5 with a plan file",
+        "Skip it under `/review-pr`'s standing override",
+    ):
+        assert literal in routing_roles_text, (
+            f"{_ROUTING_MD_PATH}: Reviewer roles no longer carries {literal!r}"
+        )
+    assert "`plan_path:`" in agent_input_contract_text, (
+        "comment-discipline-reviewer.md: Input contract no longer names `plan_path:`"
+    )
+
+
+def test_plan_prose_findings_never_block_and_plan_diffs_stay_out_of_lane() -> None:
+    """These sentences keep plan prose non-blocking and reviewed once, before approval."""
+    output_format_text = _heading_section_text(_skill_file("plan-review"), "## Output format")
+    agent_scope_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Scope"
+    )
+    non_blocking_literal = "A plan prose finding never makes the verdict **Request changes**"
+    diff_exclusion_literal = (
+        "A plan file under `.claude/plans/` that appears in a diff is out of scope"
+    )
+    assert non_blocking_literal in output_format_text, (
+        f"plan-review Output format no longer carries {non_blocking_literal!r}"
+    )
+    assert diff_exclusion_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer carries {diff_exclusion_literal!r}"
+    )
+
+
+def test_ready_for_review_step_4_has_the_rerun_that_recovers_omitted_plan_review_rows() -> None:
+    """Step 4 must name the rerun that recovers the plan-review rows the omit flag drops."""
+    step_4_text = _heading_section_text(
+        _skill_file("ready-for-review"), "## 4. Skill-procedural-fidelity review (halt on findings)"
+    )
+    for literal in ("without `--omit-plan-review-spawns`", "`round=plan-review`"):
+        assert literal in step_4_text, (
+            f"ready-for-review step 4 no longer carries {literal!r}"
+        )
+
+
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
 
 
