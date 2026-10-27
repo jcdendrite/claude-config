@@ -400,14 +400,14 @@ def test_test_files_reference_only_real_module_attributes():
     on a real module raises AttributeError at collection or call time, not merely a failed
     assertion."""
     package_names = _package_module_names()
+    top_level_names_by_module = {module: _top_level_names(PACKAGE_DIR / f"{module}.py") for module in package_names}
     for filename in TEST_FILES:
         tree = ast.parse((TESTS_DIR / filename).read_text())
         reads = _package_module_attribute_reads(tree, package_names) + _mod_prefixed_module_attribute_reads(
             tree, package_names
         )
         for module_name, node in reads:
-            names = _top_level_names(PACKAGE_DIR / f"{module_name}.py")
-            assert node.attr in names, (
+            assert node.attr in top_level_names_by_module[module_name], (
                 f"{filename} reads {module_name}.{node.attr}, which {module_name}.py does not bind "
                 f"at module level -- stale rename or typo"
             )
