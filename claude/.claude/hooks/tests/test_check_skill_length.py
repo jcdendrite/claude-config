@@ -373,7 +373,7 @@ class TestCheckSkillLength:
         )
 
     def test_plan_review_uses_override(self, isolated_home, tmp_path):
-        """plan-review/SKILL.md keeps the 500-line cap."""
+        """plan-review/SKILL.md gets the 500-line cap."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
