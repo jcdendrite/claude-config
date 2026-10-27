@@ -75,14 +75,28 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_path_shim(bin_dir: Path, command_name: str, shim_body: str) -> None:
+    """An executable `command_name` in a new `bin_dir` that runs `shim_body`,
+    then execs the real command with the original arguments.
+
+    `shim_body` must end in a newline."""
+    real_command = shutil.which(command_name)
+    assert real_command is not None, f"{command_name} must be installed to run this test"
+    bin_dir.mkdir()
+    shim = bin_dir / command_name
+    shim.write_text(f'#!/bin/bash\n{shim_body}exec {shlex.quote(real_command)} "$@"\n')
+    shim.chmod(0o755)
+
+
+def _path_with_shim_first(bin_dir: Path) -> str:
+    return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+
+
 def _print_mode_json_from_render_settings(print_mode_flag: str) -> list[str]:
     """The JSON list render-settings.sh prints for one of its `--print-*` flags.
 
-    The print modes mirror guard-settings-session-keys.sh's --print-guarded-keys
-    mode -- drift-check interfaces only, not on the render's hot path. The
-    render keeps its own literals rather than calling the guard hook.
-    A test comparing a print mode to an independent literal checks drift only.
-    The rendering tests exercise the rule itself through the real script.
+    The render keeps its own literals instead of calling the guard hook, so
+    comparing against a print mode checks drift only.
     """
     result = subprocess.run(
         [str(_SCRIPT), print_mode_flag],
@@ -110,9 +124,8 @@ def _assert_refusal_lists_only(stderr: str, *, offending: str) -> None:
 def _assert_base_leak_refusal_lists_only(stderr: str, *, overlay_file: Path, offending: str) -> None:
     """The base-leak guard's refusal lists exactly `offending`.
 
-    The guard names the overlay file, then the comma-joined offenders, then
-    `-- must be overridden by`. A sibling key listed beside the offender, or a
-    path that merely contains a key name, breaks that adjacency.
+    A sibling key listed beside the offender, or a path that merely contains a
+    key name, breaks the adjacency this asserts.
     """
     assert f"not overridden by {overlay_file}: {offending} -- must be overridden by" in stderr, (
         f"base-leak refusal does not list only {offending!r}: {stderr!r}"
@@ -202,18 +215,13 @@ class TestJqCannotRun:
     def _write_jq_shim(bin_dir: Path, failing_operand_suffix: str, exit_status: int) -> None:
         """A jq that exits `exit_status` for any call naming a file ending in
         `failing_operand_suffix` and otherwise runs the real jq."""
-        real_jq = shutil.which("jq")
-        assert real_jq is not None, "jq must be installed to run this test"
-        bin_dir.mkdir()
-        shim = bin_dir / "jq"
-        shim.write_text(
-            "#!/bin/bash\n"
+        _write_path_shim(
+            bin_dir,
+            "jq",
             'for arg in "$@"; do\n'
             f'  case "$arg" in *{failing_operand_suffix}) exit {exit_status} ;; esac\n'
-            "done\n"
-            f'exec {shlex.quote(real_jq)} "$@"\n'
+            "done\n",
         )
-        shim.chmod(0o755)
 
     def test_absent_jq_is_reported_as_jq_not_running_rather_than_invalid_json(
         self, tmp_path: Path
@@ -248,7 +256,7 @@ class TestJqCannotRun:
         bin_dir = tmp_path / "jq-shim-bin"
         self._write_jq_shim(bin_dir, failing_operand_suffix, jq_exit_status)
 
-        result = _run_script(config_dir=config_dir, extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+        result = _run_script(config_dir=config_dir, extra_env={"PATH": _path_with_shim_first(bin_dir)})
 
         assert result.returncode != 0
         assert f"jq could not run (exit {jq_exit_status}" in result.stderr
@@ -792,8 +800,8 @@ _BASE_FAILURE_FIXTURES = {
 }
 
 
-# With no overlay, the leaking merge is base's own JSON, so using this as both
-# base and prior render makes the leaking render identical to the prior one.
+# With no overlay the render equals base, so as the prior render this value
+# makes the leaking render identical to it.
 _LEAKING_BASE_EQUAL_TO_ITS_OWN_RENDER = {
     "otherKey": "base-value",
     "autoMode": {"environment": ["$defaults", "base-only-entry"]},
@@ -801,9 +809,8 @@ _LEAKING_BASE_EQUAL_TO_ITS_OWN_RENDER = {
 
 # One entry per base-leak shape: (base content, overlay content or None for no
 # overlay file, key list the guard names, prior render content or None for the
-# class's default prior). The guard refuses before any write, so a prior
-# render must stay untouched. The equal-prior arm fails if the guard runs after
-# the skip-identical exit, which would pass the leaking render as unchanged.
+# class's default prior). The equal-prior arm fails if the guard runs after the
+# skip-identical exit, which would pass the leaking render as unchanged.
 _BASE_LEAK_REFUSAL_FIXTURES = {
     "auto-mode-no-overlay-file": (
         {"autoMode": {"environment": ["$defaults", "base-only-entry"]}},
@@ -1056,21 +1063,16 @@ class TestChmodPortability:
     def _write_bsd_style_chmod_shim(bin_dir: Path) -> None:
         """A chmod that rejects a literal `--` argument, as BSD chmod does, and
         otherwise runs the real chmod."""
-        real_chmod = shutil.which("chmod")
-        assert real_chmod is not None, "chmod must be installed to run this test"
-        bin_dir.mkdir()
-        shim = bin_dir / "chmod"
-        shim.write_text(
-            "#!/bin/bash\n"
+        _write_path_shim(
+            bin_dir,
+            "chmod",
             'for arg in "$@"; do\n'
             '  if [ "$arg" = "--" ]; then\n'
             '    echo "chmod: illegal option -- --" >&2\n'
             "    exit 1\n"
             "  fi\n"
-            "done\n"
-            f'exec {shlex.quote(real_chmod)} "$@"\n'
+            "done\n",
         )
-        shim.chmod(0o755)
 
     def test_bsd_style_chmod_shim_reports_no_warning_and_leaves_mode_600(self, tmp_path: Path) -> None:
         """CI runs Linux, where the real chmod accepts `--`, so this needs a
@@ -1087,7 +1089,7 @@ class TestChmodPortability:
 
         result = _run_script(
             config_dir=config_dir,
-            extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            extra_env={"PATH": _path_with_shim_first(fake_bin)},
         )
 
         assert result.returncode == 0, result.stderr
@@ -1968,14 +1970,7 @@ class TestGeneratedFilesAreGitignored:
 
 
 class TestBaseOverlayDisjointnessAtRuntime:
-    """The script refuses a base that sets an overlay-allowed key the overlay
-    does not override, whatever base_file it is given."""
-
-    # A realistic base value per overlay-allowed key, used by every test in
-    # this class that needs one. The script never validates base env, so these
-    # are unconstrained. The override env fixture below must use a name on the
-    # script's exact-name allowlist (OVERLAY_ENV_ALLOWED_NAMES_JSON) to be
-    # accepted rather than rejected on that separate ground.
+    # Base env names are unconstrained: the script never validates base env.
     _OVERLAY_ALLOWED_KEY_VALUES = {
         "autoMode": {"environment": ["$defaults", "base-only-entry"]},
         "env": {"DISABLE_TELEMETRY": "base-env-sentinel-value"},
@@ -1983,6 +1978,8 @@ class TestBaseOverlayDisjointnessAtRuntime:
     }
     # Base string values a refusal must not echo to stderr.
     _BASE_VALUE_SENTINELS = ("base-only-entry", "base-env-sentinel-value")
+    # The env name must be on OVERLAY_ENV_ALLOWED_NAMES_JSON, or the overlay is
+    # refused on that separate ground.
     _OVERLAY_ALLOWED_KEY_OVERRIDE_VALUES = {
         "autoMode": {"environment": ["$defaults"]},
         "env": {"DISABLE_TELEMETRY": "1"},
@@ -1992,7 +1989,6 @@ class TestBaseOverlayDisjointnessAtRuntime:
     def _assert_refused_naming_only(
         self, result: subprocess.CompletedProcess, config_dir: Path, offending: str
     ) -> None:
-        """Refusal names exactly `offending`, echoes no base value, and writes nothing."""
         assert result.returncode != 0
         _assert_base_leak_refusal_lists_only(
             result.stderr, overlay_file=config_dir / "settings.overlay.json", offending=offending
@@ -2093,10 +2089,8 @@ class TestBaseOverlayDisjointnessAtRuntime:
     ) -> None:
         """Any overlay value that passes type validation, including {}, counts
         as an override, because jq's top-level `+` fully replaces base's value.
-        A null overlay value for autoMode, skillListingBudgetFraction, or env
-        is refused upstream (`_OVERLAY_REFUSAL_FIXTURES`), so it has no case
-        here. The allow path for a non-vacuous override is
-        test_base_key_overridden_by_matching_overlay_key_is_accepted."""
+        A null overlay value is refused upstream (`_OVERLAY_REFUSAL_FIXTURES`),
+        so it has no case here."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(
@@ -2135,10 +2129,8 @@ class TestBaseOverlayDisjointnessAtRuntime:
     def test_several_unoverridden_base_keys_are_listed_comma_joined_in_sorted_order(
         self, tmp_path: Path
     ) -> None:
-        """The overridden middle key is absent, and the other two are joined
-        with `, `. The expected order differs from base's file order, so a
-        guard that lists keys in base's insertion order (`keys_unsorted`)
-        fails."""
+        """The expected order differs from base's file order, so a guard that
+        lists keys in base's insertion order (`keys_unsorted`) fails."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(
@@ -2159,9 +2151,8 @@ class TestBaseOverlayDisjointnessAtRuntime:
 
     @pytest.mark.parametrize("overlay_key", sorted(OVERLAY_ALLOWED_TOP_LEVEL_KEYS))
     def test_real_base_plus_a_leaked_overlay_key_is_refused(self, tmp_path: Path, overlay_key: str) -> None:
-        """Pins the guard on the shipped base's shape, since a textual git merge
-        of two branches that each add a key can land an overlay-owned key in the
-        real file."""
+        """A textual git merge of two branches that each add a key can land an
+        overlay-owned key in the real base file."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         real_base = json.loads(_SETTINGS_BASE_JSON.read_text())
@@ -2178,7 +2169,6 @@ class TestBaseOverlayDisjointnessAtRuntime:
     def test_overlay_allowed_key_names_nested_inside_a_base_owned_key_are_not_a_leak(
         self, tmp_path: Path
     ) -> None:
-        """The guard scans base's top-level keys only."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         base = {"permissions": {"deny": ["Bash(sudo *)"], **self._OVERLAY_ALLOWED_KEY_VALUES}}
@@ -2229,9 +2219,7 @@ class TestBaseOverlayDisjointnessAtRuntime:
         self._assert_refused_naming_only(result, config_dir, offending=overlay_key)
 
     def test_zero_valued_base_skill_listing_budget_fraction_is_refused(self, tmp_path: Path) -> None:
-        """The guard decides on whether base sets the key, never on its value.
-        A base 0 is refused like any other value. jq treats 0 as truthy, so
-        the jq-falsy null cases above are what pin a truthiness-based check."""
+        """The guard decides on whether base sets the key, never on its value, so 0 is refused like any other."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"skillListingBudgetFraction": 0})
@@ -2242,8 +2230,6 @@ class TestBaseOverlayDisjointnessAtRuntime:
 
     @pytest.mark.parametrize("overlay_key", ["autoMode", "env"])
     def test_empty_base_block_with_no_overlay_file_is_refused(self, tmp_path: Path, overlay_key: str) -> None:
-        """The guard decides on whether base sets the key, never on its value.
-        An empty block is refused like any other value."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {overlay_key: {}})
@@ -2252,29 +2238,48 @@ class TestBaseOverlayDisjointnessAtRuntime:
 
         self._assert_refused_naming_only(result, config_dir, offending=overlay_key)
 
+    def test_base_key_that_only_overlaps_an_overlay_allowed_name_is_not_a_leak(self, tmp_path: Path) -> None:
+        """`envFile` and `autoModeNotes` contain an allowed name; `nv` and `Mode`
+        are fragments of one. Substring matching in either direction flags them."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        base = {"envFile": "base-value", "autoModeNotes": "base-value", "nv": "base-value", "Mode": "base-value"}
+        _write_json(config_dir / "settings.base.json", base)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "overlay-owned key(s)" not in result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == base
+
+    def test_base_default_mode_with_no_overlay_file_passes_through(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        base = {"permissions": {"deny": ["a"], "defaultMode": "plan"}}
+        _write_json(config_dir / "settings.base.json", base)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"]["defaultMode"] == "plan"
+
 
 class TestBaseLeakGuardFailsClosed:
-    """A jq runtime error inside the base-leak guard refuses the render
-    instead of skipping the check."""
-
     @staticmethod
     def _write_failing_null_input_jq_shim(bin_dir: Path, *, also_fail_diagnostic_call: bool) -> None:
-        """A jq that exits 5 (a jq runtime error) for the guard's call, which
-        passes both `-n` and `-e`, and otherwise runs the real jq. With
-        `also_fail_diagnostic_call` it fails every null-input call, `-n` or
-        `-rn`, which adds the guard's offender-listing call."""
-        real_jq = shutil.which("jq")
-        assert real_jq is not None, "jq must be installed to run this test"
-        bin_dir.mkdir()
-        shim = bin_dir / "jq"
+        """Exits 5 (a jq runtime error) for the guard's call, the only one
+        passing both `-n` and `-e`. With `also_fail_diagnostic_call` it fails
+        every null-input call, which adds the offender-listing call (`-rn`)."""
         null_input_flags = "-n|-rn" if also_fail_diagnostic_call else "-n"
         failing_call_condition = (
             '[ "$null_input" = 1 ]'
             if also_fail_diagnostic_call
             else '[ "$null_input" = 1 ] && [ "$exit_status" = 1 ]'
         )
-        shim.write_text(
-            "#!/bin/bash\n"
+        _write_path_shim(
+            bin_dir,
+            "jq",
             "null_input=0\n"
             "exit_status=0\n"
             'for arg in "$@"; do\n'
@@ -2283,10 +2288,8 @@ class TestBaseLeakGuardFailsClosed:
             "    -e) exit_status=1 ;;\n"
             "  esac\n"
             "done\n"
-            f"{failing_call_condition} && exit 5\n"
-            f'exec {shlex.quote(real_jq)} "$@"\n'
+            f"{failing_call_condition} && exit 5\n",
         )
-        shim.chmod(0o755)
 
     def _render_leak_free_base_under_shim(
         self, tmp_path: Path, *, also_fail_diagnostic_call: bool
@@ -2302,7 +2305,7 @@ class TestBaseLeakGuardFailsClosed:
 
         result = _run_script(
             config_dir=config_dir,
-            extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            extra_env={"PATH": _path_with_shim_first(fake_bin)},
         )
         return result, config_dir
 

@@ -227,9 +227,9 @@ fi
 
 base_json="$(jq -c '.' -- "$base_file")"
 
-# Enforces the invariant in the header paragraph about refusing when base sets
-# an overlay-allowed key the overlay does not override, once base_json and
-# overlay_json are both validated. An overlay that sets the key is exempt.
+# A jq runtime error also lands in this branch, so the guard fails closed.
+# It runs before the skip-identical exit, so a leaking render that equals the
+# prior file is still refused.
 if ! jq -n -e --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] == []' >/dev/null 2>&1; then
   bad_keys="$(jq -rn --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] | join(", ")' 2>/dev/null)" || bad_keys='<unavailable: jq error>'
   echo "render-settings.sh: $base_file sets overlay-owned key(s) not overridden by $overlay_file: $bad_keys -- must be overridden by $overlay_file (or removed from $base_file), otherwise they leak unchanged to every account whose overlay doesn't override them -- refusing to render" >&2
