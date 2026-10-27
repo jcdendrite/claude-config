@@ -8,14 +8,13 @@ Sections:
 - the whole script, which must exit before its first mutation of `$HOME`;
 - the README bullet states the constant's value as the requirement;
 - the CI pin: tests.yml's `pin-git` step names a build of the floor's git, the runner runs that build,
-  and the step's `run:` body checks digests before it installs anything.
+  and the step's `run:` body refreshes the apt index before it installs that build by name and holds it.
 
 The block is extracted by its INSTALL_TEST_FIXTURE markers. A trailing sentinel line
 shows whether the run got past the block.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
@@ -33,7 +32,6 @@ _INSTALL_SH = REPO_ROOT / "install.sh"
 _README = REPO_ROOT / "README.md"
 _WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _PIN_STEP_ID = "pin-git"
-_PIN_STEP_ENV_KEYS = ("CI_GIT_PACKAGE_VERSION", "CI_GIT_DEB_SHA256", "CI_GIT_MAN_DEB_SHA256")
 _CONFIG_SH_REPO_PATH = Path("claude") / ".claude" / "hooks" / "_config.sh"
 _BASH = shutil.which("bash") or "bash"
 
@@ -311,13 +309,12 @@ def _upstream_version_of(package_version: str) -> str:
 class TestCiGitPinMatchesTheFloor:
     def test_ci_git_pin_matches_the_floor(self) -> None:
         """The pinned build's major.minor is the floor, so a floor change cannot leave CI testing another git."""
-        pin_env = _pin_step_env()
-        for key in _PIN_STEP_ENV_KEYS:
-            assert isinstance(pin_env.get(key), str), (
-                f"tests.yml's {_PIN_STEP_ID} step env {key} must be a quoted string, got {pin_env.get(key)!r}"
-            )
+        pinned_package_version = _pin_step_env().get("CI_GIT_PACKAGE_VERSION")
+        assert isinstance(pinned_package_version, str), (
+            f"tests.yml's {_PIN_STEP_ID} step env CI_GIT_PACKAGE_VERSION must be a quoted string, got {pinned_package_version!r}"
+        )
 
-        upstream_version = _upstream_version_of(pin_env["CI_GIT_PACKAGE_VERSION"])
+        upstream_version = _upstream_version_of(pinned_package_version)
         pinned_major_minor = ".".join(upstream_version.split(".")[:2])
         assert pinned_major_minor == _git_minimum_version(), (
             f"tests.yml pins git {upstream_version} but install.sh's GIT_MINIMUM_VERSION is {_git_minimum_version()}"
@@ -355,48 +352,34 @@ def test_ci_git_equals_the_floor() -> None:
         )
 
 
-_PINNED_PACKAGE_VERSION = "1:2.43.0-1ubuntu7.4"
-_GIT_DEB_FILE = "git_2.43.0-1ubuntu7.4_amd64.deb"
-_GIT_MAN_DEB_FILE = "git-man_2.43.0-1ubuntu7.4_all.deb"
-_LAUNCHPAD_FILES_URL = "https://launchpad.net/ubuntu/+archive/primary/+files/"
+# Differs from the workflow pin so a version hard-coded in the step body fails the tests.
+_FIXTURE_PACKAGE_VERSION = "1:9.99.0-1fixture1"
 
+# The `apt-cache` stub prints this on stdout, so a test can tell the step let the policy table reach its output.
+_APT_POLICY_TABLE_MARKER = "stub apt-cache policy table"
 
-def _fixture_deb_bytes(deb_file: str) -> bytes:
-    """What the stub `curl` writes for `deb_file`, so a test can compute the digest the step should accept."""
-    return f"fixture bytes of {deb_file}\n".encode()
-
-
-def _sha256_of_fixture(deb_file: str) -> str:
-    return hashlib.sha256(_fixture_deb_bytes(deb_file)).hexdigest()
-
-
-# Stubs for the commands the pin step calls. `curl` supports only the flags the step passes and fails loudly on any other.
-# `sudo` accepts only `apt-get` and `apt-mark`, running the sibling stub of that name,
-# and exits 2 on any other command or flag form (such as `-n` or `env`).
-_CURL_STUB = """#!/bin/bash
-printf 'curl %s\\n' "$*" >> "$STUB_LOG"
-if [ -n "${STUB_CURL_EXIT_STATUS:-}" ]; then
-  exit "$STUB_CURL_EXIT_STATUS"
-fi
-output=""
-url=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --fail|--location) shift ;;
-    --max-time|--retry) shift 2 ;;
-    --output) output="$2"; shift 2 ;;
-    -*) echo "curl stub: unsupported flag $1" >&2; exit 2 ;;
-    *) url="$1"; shift ;;
-  esac
-done
-printf 'fixture bytes of %s\\n' "${url##*/}" > "$output"
-"""
+# Stubs for the commands the pin step calls.
+# The logging stubs record `sudo ` ahead of a call that came through `sudo`.
+# Each argument is logged wrapped in `<` `>`, so a space inside one argument stays visible
+# and the log does not depend on the shebang bash's quoting rules.
 _LOGGING_STUB = """#!/bin/bash
-printf '%s %s\\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
+{ printf '%s%s' "${STUB_VIA_SUDO:+sudo }" "${0##*/}"; printf ' <%s>' "$@"; printf '\\n'; } >> "$STUB_LOG"
 """
+# The `apt-get` stub exits 100 on the subcommand named by STUB_APT_GET_FAILS_ON, after an error line of its own.
+_APT_GET_STUB = (
+    _LOGGING_STUB
+    + """if [ "$1" = "${STUB_APT_GET_FAILS_ON:-}" ]; then
+  echo "E: stub apt-get $1 failed" >&2
+  exit 100
+fi
+"""
+)
+_APT_CACHE_STUB = _LOGGING_STUB + f"echo '{_APT_POLICY_TABLE_MARKER}'\n"
+# `sudo` accepts only `apt-get` and `apt-mark`, running the sibling stub of that name with STUB_VIA_SUDO set,
+# and exits 2 on any other command or flag form (such as `-n` or `env`).
 _SUDO_STUB = """#!/bin/bash
 case "$1" in
-  apt-get|apt-mark) exec "${0%/*}/$1" "${@:2}" ;;
+  apt-get|apt-mark) STUB_VIA_SUDO=1 exec "${0%/*}/$1" "${@:2}" ;;
   *) echo "sudo stub: unstubbed command $1" >&2; exit 2 ;;
 esac
 """
@@ -404,41 +387,35 @@ _GIT_VERSION_STUB = """#!/bin/bash
 echo 'git version 2.50.0'
 """
 
+# The step's own sentence for a failed install; the apt-get stub's error line does not contain it.
+_INSTALL_FAILURE_SENTENCE = "apt could not install git and git-man"
+
 
 def _run_pin_step(
     tmp_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     """Run the `pin-git` step's `run:` body under bash against stub commands; return the result and the stubs' call log."""
-    real_sha256sum = shutil.which("sha256sum")
-    assert real_sha256sum is not None, "sha256sum is not on PATH; install.sh requires it and the pin step runs the real one"
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
     stub_texts = {
-        "curl": _CURL_STUB,
         "sudo": _SUDO_STUB,
-        "apt-get": _LOGGING_STUB,
+        "apt-get": _APT_GET_STUB,
         "apt-mark": _LOGGING_STUB,
-        "apt-cache": _LOGGING_STUB,
+        "apt-cache": _APT_CACHE_STUB,
         "git": _GIT_VERSION_STUB,
     }
     for command, text in stub_texts.items():
         _write_executable(stub_dir / command, text)
-    (stub_dir / "sha256sum").symlink_to(real_sha256sum)
-    runner_temp = tmp_path / "runner-temp"
-    runner_temp.mkdir()
     call_log = tmp_path / "stub-calls.log"
     call_log.touch()
     script_path = tmp_path / "pin-git-step.sh"
     script_path.write_text(_pin_step()["run"])
 
     env = {
-        "PATH": f"{stub_dir}:/usr/bin:/bin",
+        "PATH": str(stub_dir),
         "HOME": str(tmp_path),
-        "RUNNER_TEMP": str(runner_temp),
         "STUB_LOG": str(call_log),
-        "CI_GIT_PACKAGE_VERSION": _PINNED_PACKAGE_VERSION,
-        "CI_GIT_DEB_SHA256": _sha256_of_fixture(_GIT_DEB_FILE),
-        "CI_GIT_MAN_DEB_SHA256": _sha256_of_fixture(_GIT_MAN_DEB_FILE),
+        "CI_GIT_PACKAGE_VERSION": _FIXTURE_PACKAGE_VERSION,
         **(env_overrides or {}),
     }
     result = subprocess.run(
@@ -453,72 +430,26 @@ def _run_pin_step(
 
 
 def _calls_to(call_log: list[str], command: str) -> list[str]:
-    return [line for line in call_log if line.startswith(f"{command} ")]
+    return [line for line in call_log if line.startswith((f"{command} ", f"sudo {command} "))]
 
 
 class TestPinStepRunBody:
-    """The step's digest comparison is the only check on the downloaded files, so it runs here against stubs."""
+    """The step's apt calls and their order decide what CI runs on, so the `run:` body executes here against stubs."""
 
-    def test_matching_digests_install_both_local_files_without_removals_and_hold_them(self, tmp_path: Path) -> None:
-        result, call_log = _run_pin_step(tmp_path)
-
-        assert result.returncode == 0, _output_of(result)
-        assert f"{_LAUNCHPAD_FILES_URL}{_GIT_DEB_FILE}" in result.stdout, _output_of(result)
-        assert f"{_LAUNCHPAD_FILES_URL}{_GIT_MAN_DEB_FILE}" in result.stdout, _output_of(result)
-        install_calls = [line for line in _calls_to(call_log, "apt-get") if " install " in line]
-        assert len(install_calls) == 1, call_log
-        install_words = install_calls[0].split()
-        assert "--no-remove" in install_words, call_log
-        assert "--allow-downgrades" in install_words, call_log
-        local_paths = [word for word in install_words if word.endswith(".deb")]
-        assert [Path(path).name for path in local_paths] == [_GIT_DEB_FILE, _GIT_MAN_DEB_FILE], call_log
-        assert all(Path(path).is_absolute() and Path(path).is_file() for path in local_paths), call_log
-        assert _calls_to(call_log, "apt-mark") == ["apt-mark hold git git-man"], call_log
-
-    def test_the_epoch_is_stripped_from_the_downloaded_file_names(self, tmp_path: Path) -> None:
-        result, call_log = _run_pin_step(tmp_path)
-
-        assert result.returncode == 0, _output_of(result)
-        fetched_urls = [line.split()[-1] for line in _calls_to(call_log, "curl")]
-        assert fetched_urls == [f"{_LAUNCHPAD_FILES_URL}{_GIT_DEB_FILE}", f"{_LAUNCHPAD_FILES_URL}{_GIT_MAN_DEB_FILE}"]
-
-    def test_the_downloads_are_failing_following_and_bounded(self, tmp_path: Path) -> None:
-        result, call_log = _run_pin_step(tmp_path)
-
-        assert result.returncode == 0, _output_of(result)
-        for curl_call in _calls_to(call_log, "curl"):
-            for flag in ("--fail", "--location", "--max-time", "--retry"):
-                assert flag in curl_call.split(), curl_call
-
-    @pytest.mark.parametrize("wrong_digest_key", ["CI_GIT_DEB_SHA256", "CI_GIT_MAN_DEB_SHA256"])
-    def test_a_wrong_digest_for_either_file_exits_1_naming_the_file_and_installs_nothing(
-        self, tmp_path: Path, wrong_digest_key: str
+    def test_the_step_refreshes_the_index_shows_the_policy_then_installs_and_holds_both_packages_under_sudo(
+        self, tmp_path: Path
     ) -> None:
-        result, call_log = _run_pin_step(tmp_path, env_overrides={wrong_digest_key: "0" * 64})
+        result, call_log = _run_pin_step(tmp_path)
 
-        assert result.returncode == 1, _output_of(result)
-        mismatched_file = _GIT_DEB_FILE if wrong_digest_key == "CI_GIT_DEB_SHA256" else _GIT_MAN_DEB_FILE
-        assert mismatched_file in result.stderr, _output_of(result)
-        assert _calls_to(call_log, "apt-get") == [], call_log
-        assert _calls_to(call_log, "apt-mark") == [], call_log
-
-    @pytest.mark.parametrize("digest_key", ["CI_GIT_DEB_SHA256", "CI_GIT_MAN_DEB_SHA256"])
-    @pytest.mark.parametrize(
-        "malformed_digest",
-        [
-            pytest.param("", id="empty"),
-            pytest.param("abc123", id="too-short"),
-            pytest.param(("0123456789abcdef" * 4).upper(), id="uppercase-hex"),
-        ],
-    )
-    def test_a_malformed_digest_exits_1_naming_the_key_before_any_download(
-        self, tmp_path: Path, digest_key: str, malformed_digest: str
-    ) -> None:
-        result, call_log = _run_pin_step(tmp_path, env_overrides={digest_key: malformed_digest})
-
-        assert result.returncode == 1, _output_of(result)
-        assert digest_key in result.stderr, _output_of(result)
-        assert call_log == [], call_log
+        assert result.returncode == 0, _output_of(result)
+        assert _APT_POLICY_TABLE_MARKER in result.stdout, _output_of(result)
+        assert call_log == [
+            "sudo apt-get <update> <--error-on=any>",
+            "apt-cache <policy> <git> <git-man>",
+            "sudo apt-get <install> <-y> <--no-remove> <--allow-downgrades> "
+            f"<git={_FIXTURE_PACKAGE_VERSION}> <git-man={_FIXTURE_PACKAGE_VERSION}>",
+            "sudo apt-mark <hold> <git> <git-man>",
+        ]
 
     def test_a_missing_package_version_exits_non_zero_naming_the_key(self, tmp_path: Path) -> None:
         result, call_log = _run_pin_step(tmp_path, env_overrides={"CI_GIT_PACKAGE_VERSION": ""})
@@ -527,10 +458,22 @@ class TestPinStepRunBody:
         assert "CI_GIT_PACKAGE_VERSION" in result.stderr, _output_of(result)
         assert call_log == [], call_log
 
-    def test_a_failing_download_exits_non_zero_and_installs_nothing(self, tmp_path: Path) -> None:
-        result, call_log = _run_pin_step(tmp_path, env_overrides={"STUB_CURL_EXIT_STATUS": "22"})
+    def test_a_failing_index_refresh_exits_non_zero_and_makes_no_install_call(self, tmp_path: Path) -> None:
+        result, call_log = _run_pin_step(tmp_path, env_overrides={"STUB_APT_GET_FAILS_ON": "update"})
 
         assert result.returncode != 0, _output_of(result)
-        assert f"{_LAUNCHPAD_FILES_URL}{_GIT_DEB_FILE}" in result.stdout, _output_of(result)
-        assert _calls_to(call_log, "apt-get") == [], call_log
+        assert "E: stub apt-get update failed" in result.stdout + result.stderr, _output_of(result)
+        assert "sudo apt-get <update> <--error-on=any>" in call_log, call_log
+        assert not [line for line in _calls_to(call_log, "apt-get") if " <install> " in line], call_log
+        assert _calls_to(call_log, "apt-mark") == [], call_log
+
+    def test_a_failing_install_exits_1_explains_the_failure_and_does_not_hold(self, tmp_path: Path) -> None:
+        result, call_log = _run_pin_step(tmp_path, env_overrides={"STUB_APT_GET_FAILS_ON": "install"})
+
+        assert result.returncode == 1, _output_of(result)
+        assert _INSTALL_FAILURE_SENTENCE in result.stderr, _output_of(result)
+        assert _FIXTURE_PACKAGE_VERSION in result.stderr, _output_of(result)
+        assert _APT_POLICY_TABLE_MARKER in result.stdout, _output_of(result)
+        assert "E: stub apt-get install failed" in result.stdout + result.stderr, _output_of(result)
+        assert [line for line in _calls_to(call_log, "apt-get") if line.startswith("sudo apt-get <install> ")], call_log
         assert _calls_to(call_log, "apt-mark") == [], call_log

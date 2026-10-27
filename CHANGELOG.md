@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 525.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
   - The failure names the running git and `README.md` § "Requirements".
