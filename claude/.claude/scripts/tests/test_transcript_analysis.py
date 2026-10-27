@@ -1529,6 +1529,10 @@ def _text_marker_assistant(marker: str, *, sidechain: bool = True) -> dict:
     return _asst("claude-opus-4-7", sidechain=sidechain, content=[{"type": "text", "text": marker}])
 
 
+def _text_markers(records: list[dict]) -> list[str]:
+    return [rec["message"]["content"][0]["text"] for rec in records]
+
+
 class TestCorpusSubagentDirAndUtf8ErrorHandling:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent(self, fake_projects):
@@ -1551,8 +1555,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         assert result == expected
 
     def test_read_session_file_merges_direct_subagents_but_not_workflow_nested_ones(self, fake_projects):
-        """Pins the direct-children-only `subagents/*.jsonl` glob that `_spawn_counts_by_agent_type`'s docstring documents."""
-
+        """The reader merges only direct `subagents/*.jsonl` children, not `subagents/workflows/wf_*/` ones."""
         _write_jsonl(fake_projects / "sess.jsonl", [_text_marker_assistant("main-record", sidechain=False)])
         _write_subagent_jsonl(fake_projects, "sess", "agent-direct", [_text_marker_assistant("direct-subagent-record")])
         nested_dir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "workflows" / "wf_x"
@@ -1561,7 +1564,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
 
         records = _mod.corpus.read_session_file(fake_projects / "sess.jsonl", include_subagents=True)
 
-        markers = [rec["message"]["content"][0]["text"] for rec in records]
+        markers = _text_markers(records)
         assert sorted(markers) == ["direct-subagent-record", "main-record"]
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
@@ -1579,7 +1582,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         records_once_readable = _mod.corpus.read_session_file(main_jsonl, include_subagents=True)
 
         assert records_while_unreadable == []
-        markers = [rec["message"]["content"][0]["text"] for rec in records_once_readable]
+        markers = _text_markers(records_once_readable)
         assert sorted(markers) == ["direct-subagent-record", "main-record"]
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
@@ -1597,7 +1600,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         finally:
             os.chmod(sealed_jsonl, 0o644)
 
-        markers = [rec["message"]["content"][0]["text"] for rec in records]
+        markers = _text_markers(records)
         assert sorted(markers) == ["later-subagent-record", "main-record", "readable-subagent-record"]
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")

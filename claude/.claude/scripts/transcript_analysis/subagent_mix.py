@@ -338,31 +338,14 @@ def _spawn_counts_by_agent_type(
     for cost-counts.
 
     Counts the dispatches in a session's main transcript and its
-    subagent transcripts (not those nested in workflow directories),
-    including one made from inside another agent's transcript (an
-    isSidechain record). review-orchestrator spawns every reviewer from
-    inside its own transcript.
+    subagent transcripts, including one made from inside another agent's
+    transcript (an isSidechain record). review-orchestrator spawns every
+    reviewer from inside its own transcript.
     scope._attributed_branch ignores a sidechain record's own gitBranch tag.
     It attributes the record to the main-thread branch in effect at its
     timestamp. branch_filter matches that attributed branch, so a session's
     leading default-branch dispatches count toward the first branch it
     enters, as in review_rounds' carry-forward attribution.
-
-    Edge shapes:
-    - A spawn from a subagent that worked in another repo counts under the
-      attributed branch, so it adds to that branch's integers.
-    - Nested workflow-agent transcripts (subagents/workflows/wf_*/) are
-      unread, because the shared reader globs only direct subagents/*.jsonl.
-    - Unreadable input (bad JSON or UTF-8, an unreadable subagent file or
-      main transcript) is skipped with no signal, so it undercounts.
-    - A record without isSidechain is read as main-thread, so a flagless
-      review-orchestrator dispatch in a subagent file opens a round.
-    - A non-object record aborts the count.
-    - A spawn whose input is not an object, or whose subagent_type is
-      missing, empty or not a string, counts as `unknown`, which the
-      disclosure partition folds into the withheld row.
-    - No drift warning or banner signals a lost isSidechain flag for
-      cost-counts.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
@@ -384,10 +367,7 @@ def _spawn_counts_by_agent_type(
                 if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
                     continue
                 # A malformed spawn block's non-dict input or non-string
-                # subagent_type counts as unknown, not an abort. Attribution above
-                # still raises on a non-string timestamp. The message and content
-                # reads in this loop still raise on a non-dict message or a
-                # non-iterable content.
+                # subagent_type counts as unknown, not an abort.
                 spawn_input = block.get("input")
                 stype = spawn_input.get("subagent_type") if isinstance(spawn_input, dict) else None
                 if not isinstance(stype, str) or not stype:
