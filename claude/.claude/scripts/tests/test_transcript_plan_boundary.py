@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from transcript_analysis import handoff_nudge, plan_boundary, pricing, scope
 
 from ._handoff_nudge_helpers import _ramp_curve_from_records
 from .conftest import _asst, _exit_plan_mode, _priced, _skill_use, _user_msg, _write_cost_root, _write_jsonl
@@ -33,8 +34,8 @@ def _extract_arm_dollars(out: str, arm_label: str) -> float:
 def _plan_boundary_turn_index(records: list[dict]) -> int | None:
     """Run _extract_rearm_session_turns + _plan_boundary_turn_index end to
     end -- the shape _plan_boundary_report itself uses."""
-    data = _mod.handoff_nudge._extract_rearm_session_turns(records)
-    return _mod.plan_boundary._plan_boundary_turn_index(data["deduped"], data["main_thread_record_positions"])
+    data = handoff_nudge._extract_rearm_session_turns(records)
+    return plan_boundary._plan_boundary_turn_index(data["deduped"], data["main_thread_record_positions"])
 
 
 class TestPlanBoundaryTurnIndex:
@@ -130,9 +131,9 @@ class TestArmBBoundaryPlusOneDollars:
             "cache_creation_input_tokens": 0,
         }
         boundary_context_tokens = 200_000
-        result = _mod.plan_boundary._arm_b_boundary_plus_one_dollars(usage, boundary_context_tokens)
+        result = plan_boundary._arm_b_boundary_plus_one_dollars(usage, boundary_context_tokens)
 
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         expected = (
             boundary_context_tokens / 1_000_000 * rates["cache_write_5m"]
             + 500 / 1_000_000 * rates["input"]
@@ -146,8 +147,8 @@ class TestArmBBoundaryPlusOneDollars:
         as both a read and a write."""
         usage_no_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 0}
         usage_high_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 500_000}
-        assert _mod.plan_boundary._arm_b_boundary_plus_one_dollars(usage_no_read, 200_000) == pytest.approx(
-            _mod.plan_boundary._arm_b_boundary_plus_one_dollars(usage_high_read, 200_000)
+        assert plan_boundary._arm_b_boundary_plus_one_dollars(usage_no_read, 200_000) == pytest.approx(
+            plan_boundary._arm_b_boundary_plus_one_dollars(usage_high_read, 200_000)
         )
 
 
@@ -162,9 +163,9 @@ class TestArmBLaterTurnDollars:
             "cache_creation_input_tokens": 3_000,
             "cache_creation": {"ephemeral_1h_input_tokens": 1_000, "ephemeral_5m_input_tokens": 2_000},
         }
-        result = _mod.plan_boundary._arm_b_later_turn_dollars(usage)
+        result = plan_boundary._arm_b_later_turn_dollars(usage)
 
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         expected = (
             200 / 1_000_000 * rates["input"]
             + 800 / 1_000_000 * rates["output"]
@@ -179,9 +180,9 @@ class TestArmBLaterTurnDollars:
             "input_tokens": 100, "output_tokens": 100,
             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
         }
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         expected = 100 / 1_000_000 * rates["input"] + 100 / 1_000_000 * rates["output"]
-        assert _mod.plan_boundary._arm_b_later_turn_dollars(usage) == pytest.approx(expected)
+        assert plan_boundary._arm_b_later_turn_dollars(usage) == pytest.approx(expected)
 
 
 class TestArmCTurnDollars:
@@ -190,10 +191,10 @@ class TestArmCTurnDollars:
         rate -- never a scaled actual-dollars figure, which would double-
         count the model-price gap already embedded in the observed dollars."""
         ramp_curve = {"0-5": {"rate": 3.5, "mean_context": 10_000}}
-        assert _mod.plan_boundary._arm_c_turn_dollars(2_000, 0, ramp_curve) == pytest.approx((2_000 / 1000) * 3.5)
+        assert plan_boundary._arm_c_turn_dollars(2_000, 0, ramp_curve) == pytest.approx((2_000 / 1000) * 3.5)
 
     def test_falls_back_to_zero_rate_when_ramp_curve_has_no_bucket_entry(self):
-        assert _mod.plan_boundary._arm_c_turn_dollars(1_000, 0, {}) == 0.0
+        assert plan_boundary._arm_c_turn_dollars(1_000, 0, {}) == 0.0
 
 
 class TestPlanBoundaryWorkInflationBreakeven:
@@ -202,13 +203,13 @@ class TestPlanBoundaryWorkInflationBreakeven:
         post-boundary turns / 10,000 output tokens absorbs pct=4/6 more work
         (~66.67 extra turns, ~6,666.7 extra output tokens) before the
         advantage disappears."""
-        result = _mod.plan_boundary._plan_boundary_work_inflation_breakeven(6.0, 4.0, 100, 10_000)
+        result = plan_boundary._plan_boundary_work_inflation_breakeven(6.0, 4.0, 100, 10_000)
         assert result["pct"] == pytest.approx(4.0 / 6.0)
         assert result["extra_turns"] == pytest.approx(100 * (4.0 / 6.0))
         assert result["extra_output_tokens"] == pytest.approx(10_000 * (4.0 / 6.0))
 
     def test_zero_cheaper_dollars_returns_none_fields(self):
-        result = _mod.plan_boundary._plan_boundary_work_inflation_breakeven(0.0, 4.0, 100, 10_000)
+        result = plan_boundary._plan_boundary_work_inflation_breakeven(0.0, 4.0, 100, 10_000)
         assert result == {"pct": None, "extra_turns": None, "extra_output_tokens": None}
 
 
@@ -252,26 +253,26 @@ class TestPlanBoundaryReport:
         _PLAN_BOUNDARY_SONNET_MODEL's rates; an unpriced model must fail the
         whole report up front with a named message, not crash mid-scan on an
         arbitrary turn."""
-        monkeypatch.setattr(_mod.plan_boundary, "_PLAN_BOUNDARY_SONNET_MODEL", "claude-sonnet-5-unpriced-test-double")
+        monkeypatch.setattr(plan_boundary, "_PLAN_BOUNDARY_SONNET_MODEL", "claude-sonnet-5-unpriced-test-double")
         _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
         with pytest.raises(SystemExit) as exc_info:
-            _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+            plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         assert exc_info.value.code != 0
         assert "claude-sonnet-5-unpriced-test-double" in capsys.readouterr().err
 
     def test_redacts_by_default(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in out
+        assert scope._DO_NOT_PUBLISH_BANNER not in out
 
     def test_no_redact_prints_do_not_publish_banner(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
-        _mod.plan_boundary._plan_boundary_report(
+        plan_boundary._plan_boundary_report(
             _plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[fake_projects.parent]
         )
         out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        assert scope._DO_NOT_PUBLISH_BANNER in out
 
     def test_no_redact_refused_by_report_itself_when_multi_root(self, tmp_path):
         """Defense-in-depth, mirroring _cache_rebuild_report's own version of
@@ -280,7 +281,7 @@ class TestPlanBoundaryReport:
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _opus_boundary_session())
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
         with pytest.raises(SystemExit) as exc_info:
-            _mod.plan_boundary._plan_boundary_report(
+            plan_boundary._plan_boundary_report(
                 _plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[root_a, root_b]
             )
         assert exc_info.value.code == 2
@@ -292,10 +293,10 @@ class TestPlanBoundaryReport:
         combination."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.plan_boundary.cmd_plan_boundary(_plan_boundary_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+            plan_boundary.cmd_plan_boundary(_plan_boundary_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
@@ -313,7 +314,7 @@ class TestPlanBoundaryReport:
         )
         _write_jsonl(fake_projects / "sess.jsonl", session)
         for no_redact in (False, True):
-            _mod.plan_boundary._plan_boundary_report(
+            plan_boundary._plan_boundary_report(
                 _plan_boundary_args(no_redact=no_redact), date(2026, 8, 16), roots=[fake_projects.parent]
             )
             out = capsys.readouterr().out
@@ -333,7 +334,7 @@ class TestPlanBoundaryReport:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
         multi_root = [root_a, root_b]
 
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
 
         for kwargs, roots in (
             ({}, single_root),
@@ -342,7 +343,7 @@ class TestPlanBoundaryReport:
             ({}, multi_root),
             ({"this_repo": True}, single_root),
         ):
-            _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(**kwargs), date(2026, 8, 16), roots=roots)
+            plan_boundary._plan_boundary_report(_plan_boundary_args(**kwargs), date(2026, 8, 16), roots=roots)
             out = capsys.readouterr().out
             assert "sess-one" not in out
             assert "sess-two" not in out
@@ -361,7 +362,7 @@ class TestPlanBoundaryReport:
             _priced("claude-opus-4-9-unpriced", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "Plan-boundary sessions repriced: 1" in out
         assert "1 unpriced turns" in out
@@ -395,23 +396,23 @@ class TestPlanBoundaryReport:
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
         ramp_curve, _ramp_tokens = _ramp_curve_from_records(session)
-        boundary_context_tokens = _mod._context_at_turn(boundary_turn["message"]["usage"])
+        boundary_context_tokens = pricing._context_at_turn(boundary_turn["message"]["usage"])
 
         def priced_dollars(rec: dict) -> float:
-            dollars_by_class, _c, _u = _mod._price_turn("claude-opus-5", rec["message"]["usage"])
+            dollars_by_class, _c, _u = pricing._price_turn("claude-opus-5", rec["message"]["usage"])
             return sum(dollars_by_class.values())
 
         expected_arm_a = priced_dollars(priced_offset0) + priced_dollars(priced_offset2)
         expected_arm_b = (
-            _mod.plan_boundary._arm_b_boundary_plus_one_dollars(priced_offset0["message"]["usage"], boundary_context_tokens)
-            + _mod.plan_boundary._arm_b_later_turn_dollars(priced_offset2["message"]["usage"])
+            plan_boundary._arm_b_boundary_plus_one_dollars(priced_offset0["message"]["usage"], boundary_context_tokens)
+            + plan_boundary._arm_b_later_turn_dollars(priced_offset2["message"]["usage"])
         )
         expected_arm_c = (
-            _mod.plan_boundary._arm_c_turn_dollars(300, 0, ramp_curve)
-            + _mod.plan_boundary._arm_c_turn_dollars(250, 2, ramp_curve)
+            plan_boundary._arm_c_turn_dollars(300, 0, ramp_curve)
+            + plan_boundary._arm_c_turn_dollars(250, 2, ramp_curve)
         )
 
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "1 unpriced turns" in out
         assert _extract_arm_dollars(out, "A: continue on Opus") == pytest.approx(expected_arm_a, abs=0.005)
@@ -425,7 +426,7 @@ class TestPlanBoundaryReport:
                     content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "final main-thread turn (excluded, no post-boundary work): 1" in out
         assert "No plan-boundary sessions with post-boundary work found in scope." in out
@@ -436,7 +437,7 @@ class TestPlanBoundaryReport:
             _priced("claude-opus-5", input=2000, output=200, ts="2026-05-19T10:00:01.000Z"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "No plan boundary detected: 1" in out
 
@@ -453,7 +454,7 @@ class TestPlanBoundaryReport:
             _priced("claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:04.000Z"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "Sessions with a real model change observed at boundary+1: 1 of 1" in out
 
@@ -473,12 +474,12 @@ class TestPlanBoundaryReport:
             boundary_plus_one,
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "previous_message_not_found: 1" in out
 
     def test_zero_sessions_in_scope_prints_zero_state_without_crashing(self, fake_projects, capsys):
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "Sessions scanned: 0" in out
         assert "No plan-boundary sessions with post-boundary work found in scope." in out
@@ -509,11 +510,11 @@ class TestPlanBoundaryReport:
         # _opus_boundary_session's two post-boundary turns (output 300, 400)
         # both fall in the "0-5" turns-since-boundary bucket.
         expected_arm_c_dollars = (
-            _mod.plan_boundary._arm_c_turn_dollars(300, 0, sonnet_only_curve)
-            + _mod.plan_boundary._arm_c_turn_dollars(400, 1, sonnet_only_curve)
+            plan_boundary._arm_c_turn_dollars(300, 0, sonnet_only_curve)
+            + plan_boundary._arm_c_turn_dollars(400, 1, sonnet_only_curve)
         )
 
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert _extract_arm_dollars(out, "C: fresh Sonnet handoff") == pytest.approx(expected_arm_c_dollars, abs=0.005)
 
@@ -528,7 +529,7 @@ class TestPlanBoundaryReport:
             _priced("claude-sonnet-5", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod.plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+        plan_boundary._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "Sessions scanned: 1" in out
         assert "Opus-anchored: 0" in out
@@ -542,4 +543,4 @@ class TestPlanBoundaryArgparseWiring:
         assert args.since is None
         assert args.extra_config_dirs is None
         assert args.no_redact is False
-        assert args.func == _mod.plan_boundary.cmd_plan_boundary
+        assert args.func == plan_boundary.cmd_plan_boundary

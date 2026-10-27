@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import ledger_common, pr_cost, pr_cost_ledger, scope
 
 from ._pr_cost_helpers import (
     _argv_carries_repo_pin,
@@ -57,11 +58,11 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         monkeypatch.setattr(time, "sleep", lambda s: None)
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
-        assert rows[0]["status"] == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert rows[0]["status"] == pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
 
 
 class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
@@ -91,11 +92,11 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
         )
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
-        assert rows[0]["status"] == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
+        assert rows[0]["status"] == pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
 
     def test_gh_pr_view_gh_host_mismatch_failure_writes_degraded_network_not_degraded_host_mismatch(
         self, fake_projects, tmp_path, monkeypatch,
@@ -126,11 +127,11 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
         )
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
-        assert rows[0]["status"] == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
+        assert rows[0]["status"] == pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
 
 
 class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
@@ -166,7 +167,7 @@ class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
         )
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         gh_pr_list_calls = [c for c in call_log if c[:3] == ["gh", "pr", "list"]]
         gh_pr_view_calls = [c for c in call_log if c[:3] == ["gh", "pr", "view"]]
@@ -211,7 +212,7 @@ class TestPrCostGheHostQualifiesGhRepoCalls:
         )
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert ["gh", "auth", "status", "--hostname", "acme-corp.ghe.com"] in call_log
 
@@ -242,7 +243,7 @@ class TestPrCostCrossRepoLedgerIsolation:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row = _sample_pr_cost_row(repo="repo-a/x", pr_number=42, machine="ci1")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
 
         merged_prs = [{
             "number": 42, "headRefName": "ghost-branch", "additions": 1, "deletions": 1,
@@ -253,9 +254,9 @@ class TestPrCostCrossRepoLedgerIsolation:
         )
 
         args = _pr_cost_args(record=True, pr=42)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 2
         by_repo = {r["repo"]: r for r in rows}
         assert set(by_repo) == {"repo-a/x", "repo-b/y"}
@@ -287,16 +288,16 @@ class TestPrCostCrossHostLedgerIsolation:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
         monkeypatch.setattr(
             subprocess, "run",
             _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
         )
 
         args = _pr_cost_args(record=True, pr=42)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 2
         by_host = {r["host"]: r for r in rows}
         assert set(by_host) == {"acme-corp.ghe.com", "github.com"}
@@ -310,16 +311,16 @@ class TestPrCostCrossHostLedgerIsolation:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
         monkeypatch.setattr(
             subprocess, "run",
             _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
         )
 
         args = _pr_cost_args(record=True, pr=42, force=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 2
         by_host = {r["host"]: r for r in rows}
         assert by_host["github.com"]["supersedes"] == ""
@@ -335,7 +336,7 @@ class TestPrCostCrossHostLedgerIsolation:
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         distinctive_branch = "feature-cross-host"
         existing_row = _sample_pr_cost_row(host="acme-corp.ghe.com", repo="owner/repo", pr_number=99, machine="ci1")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [existing_row])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
         ])
@@ -348,7 +349,7 @@ class TestPrCostCrossHostLedgerIsolation:
             _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
         )
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         out = capsys.readouterr().out
         assert "PR #99" in out
@@ -372,7 +373,7 @@ class TestPrCostMultiRootRefusalRedaction:
         monkeypatch.setattr(subprocess, "run", fail_on_any_call)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(
+            pr_cost._pr_cost_report(
                 _pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent, other_root],
             )
         assert exc_info.value.code == 2
@@ -392,7 +393,7 @@ class TestPrCostReadModeRedaction:
         distinctive_branch = "acme-corp-secret-initiative-branch"
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=7)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=7)])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
         ])
@@ -402,7 +403,7 @@ class TestPrCostReadModeRedaction:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
@@ -420,7 +421,7 @@ class TestPrCostUnforcedReRecordRefusalRedaction:
         _enable_pr_cost(tmp_path)  # seeds machine-id with "c0ffee01"
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=42, machine="c0ffee01")])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=42, machine="c0ffee01")])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
         ])
@@ -432,7 +433,7 @@ class TestPrCostUnforcedReRecordRefusalRedaction:
 
         args = _pr_cost_args(record=True, pr=42)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
         err = capsys.readouterr().err
@@ -456,7 +457,7 @@ class TestPrCostAuthPreflightFailureAbortRedaction:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
         err = capsys.readouterr().err
@@ -491,7 +492,7 @@ class TestPrCostAllAccounts:
                 _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
             ])
         for account_config_dir in (acct_a, acct_b):
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+            pr_cost_ledger._write_pr_cost_ledger_file(
                 account_config_dir / "pr-cost-ledger.tsv",
                 [_sample_pr_cost_row(repo="owner/repo", pr_number=1, machine="ci1")],
             )
@@ -501,7 +502,7 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         out = capsys.readouterr().out
         assert "account-1/repo-1" in out
@@ -527,9 +528,9 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
-        rows_a = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_a = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_a) == 1
         assert not (acct_b / "pr-cost-ledger.tsv").exists()
 
@@ -545,7 +546,7 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
         assert not (acct_b / "pr-cost-ledger.tsv").exists()
@@ -574,9 +575,9 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
-        rows_a = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_a = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_a) == 2
         out = capsys.readouterr().out
         assert "recorded 1 of 2 declared accounts (1 not opted in, 0 skipped)" in out
@@ -602,7 +603,7 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())  # no merged PRs at all
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
         assert not (acct_b / "pr-cost-ledger.tsv").exists()
@@ -633,9 +634,9 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, pr=5, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
-        rows_a = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_a = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_a) == 1
         assert rows_a[0]["turn_count"] > 0
         assert not (acct_b / "pr-cost-ledger.tsv").exists()
@@ -674,9 +675,9 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, pr=5, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
-        rows_a = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_a = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_a) == 1
         assert rows_a[0]["turn_count"] > 0
         assert not (acct_b / "pr-cost-ledger.tsv").exists()  # skipped, not zero-recorded
@@ -708,14 +709,14 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
         args = _pr_cost_args(record=True, pr=7, all_accounts=True)
 
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # first call: captures the row
-        rows_after_first = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # first call: captures the row
+        rows_after_first = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_after_first) == 1
         capsys.readouterr()  # discard first call's output
 
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # second call: must not raise
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # second call: must not raise
 
-        rows_after_second = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_after_second = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
         assert len(rows_after_second) == 1  # no correcting row appended without --force
         captured = capsys.readouterr()
         assert "is already captured" in captured.err
@@ -744,7 +745,7 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, pr=9, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
         captured = capsys.readouterr()
@@ -764,10 +765,10 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         plain_output = capsys.readouterr()
 
-        _mod.pr_cost._pr_cost_report(
+        pr_cost._pr_cost_report(
             _pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent],
         )
         all_accounts_output = capsys.readouterr()
@@ -779,11 +780,11 @@ class TestPrCostAllAccounts:
         """account-N is assigned by resolved-path sort (_redaction_ordinals),
         not by --config-dir argument order or scan order -- mirrors
         subagent-mix's own regression test of the same name."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        monkeypatch.setattr(scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch="active-branch"),
         ])
@@ -803,7 +804,7 @@ class TestPrCostAllAccounts:
         ]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        _mod.pr_cost.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
+        pr_cost.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
 
         out = capsys.readouterr().out
         pr1_line = next(line for line in out.splitlines() if "PR #1" in line)
@@ -836,7 +837,7 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         assert (acct_a / "pr-cost-ledger.tsv").exists()
         assert (acct_b / "pr-cost-ledger.tsv").exists()
@@ -868,13 +869,13 @@ class TestPrCostAllAccounts:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
-        rows_a = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
-        rows_b = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        rows_a = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_b = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
         machine_a, machine_b = rows_a[0]["machine"], rows_b[0]["machine"]
-        assert _mod.ledger_common._MACHINE_IDENTITY_RE.match(machine_a)
-        assert _mod.ledger_common._MACHINE_IDENTITY_RE.match(machine_b)
+        assert ledger_common._MACHINE_IDENTITY_RE.match(machine_a)
+        assert ledger_common._MACHINE_IDENTITY_RE.match(machine_b)
         assert machine_a != machine_b
 
 
@@ -891,7 +892,7 @@ class TestPrCostAllAccountsForcedLedgerPathRefusal:
         monkeypatch.setattr(subprocess, "run", fail_on_any_call)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
+            pr_cost._pr_cost_report(_pr_cost_args(all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -921,13 +922,13 @@ class TestCmdPrCostEndToEndViaRealArgparse:
         parser = _mod.build_parser()
         args = parser.parse_args(["pr-cost", "--all-accounts", "--record", "--machine-label", "ci1"])
         assert args.all_accounts is True
-        assert args.func == _mod.pr_cost.cmd_pr_cost
+        assert args.func == pr_cost.cmd_pr_cost
 
         # Parsing succeeds; the refusal is body-level, not an argparse-level
         # constraint. cmd_pr_cost itself still refuses this namespace, since
         # --machine-label is no longer accepted with --record.
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost.cmd_pr_cost(args)
+            pr_cost.cmd_pr_cost(args)
         assert exc_info.value.code == 1
 
     def test_all_accounts_and_record_with_no_machine_label_drives_cmd_pr_cost_through_the_real_parser(
@@ -951,11 +952,11 @@ class TestCmdPrCostEndToEndViaRealArgparse:
         parser = _mod.build_parser()
         args = parser.parse_args(["pr-cost", "--all-accounts", "--record"])
         assert args.all_accounts is True
-        assert args.func == _mod.pr_cost.cmd_pr_cost
+        assert args.func == pr_cost.cmd_pr_cost
 
-        _mod.pr_cost.cmd_pr_cost(args)
+        pr_cost.cmd_pr_cost(args)
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         out = capsys.readouterr().out
         assert "recorded 1 of 1 declared accounts (0 not opted in, 0 skipped)" in out

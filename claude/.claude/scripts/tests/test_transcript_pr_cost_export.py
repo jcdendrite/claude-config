@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from transcript_analysis import pr_cost_export, pr_cost_ledger
 
 from ._pr_cost_helpers import (
     _PRE_MODEL_HEADER_LINE,
@@ -43,13 +44,13 @@ class TestPrCostExportRedaction:
         distinctive_host = "acme-corp.ghe.example"
         distinctive_repo = "acme-corp/super-secret-internal-project"
         distinctive_branch = "feature/acme-super-secret-launch"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(host=distinctive_host, repo=distinctive_repo, head_branch=distinctive_branch),
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         captured = capsys.readouterr()
         written = out_path.read_text()
@@ -70,11 +71,11 @@ class TestPrCostExportRedaction:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         distinctive_pr = 918273
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=distinctive_pr)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=distinctive_pr)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         captured = capsys.readouterr()
         written = out_path.read_text()
@@ -108,14 +109,14 @@ class TestPrCostExportRedaction:
         acct_a, acct_b = roots[0].parent, roots[1].parent
         for account_config_dir in (acct_a, acct_b):
             (account_config_dir / ".pr-cost-enabled").touch()
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+            pr_cost_ledger._write_pr_cost_ledger_file(
                 account_config_dir / "pr-cost-ledger.tsv",
                 [_sample_pr_cost_row(**row_kwargs)],
             )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         rows = out_path.read_text().splitlines()[2:]
         tokens = [_parse_pr_cost_export_row(r)[export_column] for r in rows]
@@ -129,12 +130,12 @@ class TestPrCostExportSchema:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         source_row = _sample_pr_cost_row()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
         call_log: list[list[str]] = []
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(call_log=call_log))
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         # pr-cost-export makes no gh call at all, unlike --record — it only
         # reads already-captured ledger rows. The sole expected call is
@@ -142,7 +143,7 @@ class TestPrCostExportSchema:
         assert call_log == [["git", "-C", str(tmp_path.resolve()), "rev-parse", "--is-inside-work-tree"]]
 
         lines = out_path.read_text().splitlines()
-        assert lines[1] == _mod.pr_cost_export._PR_COST_EXPORT_HEADER_LINE
+        assert lines[1] == pr_cost_export._PR_COST_EXPORT_HEADER_LINE
         header_cols = lines[1].split("\t")
         assert header_cols[0] == "account"
         assert "head_branch_label" in header_cols
@@ -152,8 +153,8 @@ class TestPrCostExportSchema:
 
         exported_cells = _parse_pr_cost_export_row(lines[2])
         source_cells = dict(zip(
-            _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS,
-            _mod.pr_cost_ledger._format_pr_cost_ledger_row(source_row).split("\t"),
+            pr_cost_ledger._PR_COST_LEDGER_COLUMNS,
+            pr_cost_ledger._format_pr_cost_ledger_row(source_row).split("\t"),
             strict=True,
         ))
         # Tokenized (host/repo/pr_number/head_branch/machine), truncated
@@ -164,7 +165,7 @@ class TestPrCostExportSchema:
         transformed_columns = {
             "host", "repo", "pr_number", "head_branch", "machine", "merged_at", "captured_at", "supersedes",
         }
-        for col in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS:
+        for col in pr_cost_ledger._PR_COST_LEDGER_COLUMNS:
             if col in transformed_columns:
                 continue
             assert exported_cells[col] == source_cells[col], col
@@ -177,8 +178,8 @@ class TestRedactPrCostRowForExportColumnShape:
         same tuple today, but a future caller that iterates .items() instead
         must not silently inherit the ledger's own stale head_branch/
         supersedes keys."""
-        result = _mod.pr_cost_export._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {}, {})
-        assert set(result) == set(_mod.pr_cost_export._PR_COST_EXPORT_COLUMNS)
+        result = pr_cost_export._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {}, {})
+        assert set(result) == set(pr_cost_export._PR_COST_EXPORT_COLUMNS)
 
     def test_every_ledger_column_is_triaged_for_export_redaction(self):
         """Guards against a new _PR_COST_LEDGER_COLUMNS member reaching the
@@ -203,7 +204,7 @@ class TestRedactPrCostRowForExportColumnShape:
         triaged = (
             tokenized | date_truncated | renamed_to_correction_count | approved_passthrough | model_bearing_row_level
         )
-        assert triaged == set(_mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS), (
+        assert triaged == set(pr_cost_ledger._PR_COST_LEDGER_COLUMNS), (
             "a new ledger column would silently reach the cross-account export unredacted "
             "unless triaged above"
         )
@@ -220,13 +221,13 @@ class TestPrCostExportModelBreakdown:
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         literal_model_id = "claude-test-literal"
         source_row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(literal_model_id))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
-        model_breakdown_index = _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
+        model_breakdown_index = pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")
         source_cell = ledger_path.read_text().splitlines()[1].split("\t")[model_breakdown_index]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         exported_cell = _parse_pr_cost_export_row(out_path.read_text().splitlines()[2])["model_breakdown"]
         assert literal_model_id in exported_cell
@@ -241,13 +242,13 @@ class TestPrCostExportModelBreakdown:
         ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=11) + "\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         before_path = tmp_path / "before.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(before_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(before_path)))
 
-        old_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, old_rows)
-        assert ledger_path.read_text().splitlines()[0] == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        old_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, old_rows)
+        assert ledger_path.read_text().splitlines()[0] == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         after_path = tmp_path / "after.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(after_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(after_path)))
 
         before_lines = before_path.read_text().splitlines()
         after_lines = after_path.read_text().splitlines()
@@ -265,7 +266,7 @@ class TestCollapsePrCostRowsToCurrent:
     def test_later_captured_at_wins_and_superseded_row_is_absent(self):
         older = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
         newer = _sample_pr_cost_row(additions=2, captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z")
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current([older, newer])
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([older, newer])
         assert len(collapsed) == 1
         row, correction_count = collapsed[0]
         assert row["additions"] == 2
@@ -282,7 +283,7 @@ class TestCollapsePrCostRowsToCurrent:
         """
         newer_appended_first = _sample_pr_cost_row(additions=10, captured_at="2026-01-01T09:00:10Z")
         older_appended_second = _sample_pr_cost_row(additions=20, captured_at="2026-01-01T09:00:05Z")
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current([newer_appended_first, older_appended_second])
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([newer_appended_first, older_appended_second])
         assert len(collapsed) == 1
         row, _correction_count = collapsed[0]
         assert row["additions"] == 10
@@ -293,13 +294,13 @@ class TestCollapsePrCostRowsToCurrent:
             _sample_pr_cost_row(captured_at="2026-01-02T00:00:00Z"),
             _sample_pr_cost_row(captured_at="2026-01-03T00:00:00Z"),
         ]
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current(rows)
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current(rows)
         assert len(collapsed) == 1
         _row, correction_count = collapsed[0]
         assert correction_count == 2
 
     def test_uncorrected_row_has_zero_correction_count(self):
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current([_sample_pr_cost_row()])
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([_sample_pr_cost_row()])
         _row, correction_count = collapsed[0]
         assert correction_count == 0
 
@@ -307,7 +308,7 @@ class TestCollapsePrCostRowsToCurrent:
         """machine is part of the collapse key, so two machines' rows for
         the same PR are two distinct keys, not a correction pair."""
         rows = [_sample_pr_cost_row(machine="ci1"), _sample_pr_cost_row(machine="ci2")]
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current(rows)
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current(rows)
         assert len(collapsed) == 2
         assert {row["machine"] for row, _cc in collapsed} == {"ci1", "ci2"}
 
@@ -318,7 +319,7 @@ class TestCollapsePrCostRowsToCurrent:
         explicit correction would be worse."""
         older_ok = _sample_pr_cost_row(status="ok", captured_at="2026-01-01T00:00:00Z")
         newer_degraded = _sample_pr_cost_row(status="degraded_network", captured_at="2026-01-02T00:00:00Z")
-        collapsed = _mod.pr_cost_export._collapse_pr_cost_rows_to_current([older_ok, newer_degraded])
+        collapsed = pr_cost_export._collapse_pr_cost_rows_to_current([older_ok, newer_degraded])
         assert len(collapsed) == 1
         row, _correction_count = collapsed[0]
         assert row["status"] == "degraded_network"
@@ -338,11 +339,11 @@ class TestPrCostExportCollapseAndTieBreakIntegration:
         row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
         row_b = _sample_pr_cost_row(additions=2, captured_at="2026-01-02T00:00:00Z")
         row_c = _sample_pr_cost_row(additions=3, captured_at="2026-01-02T00:00:00Z")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row_a, row_b, row_c])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row_a, row_b, row_c])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         rows = out_path.read_text().splitlines()[2:]
         assert len(rows) == 1
@@ -358,13 +359,13 @@ class TestPrCostExportTimestamps:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(merged_at="2026-03-04T05:06:07Z", captured_at="2026-03-08T09:10:11Z", rate_stamp="2026-08-02"),
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         exported = _parse_pr_cost_export_row(out_path.read_text().splitlines()[2])
         assert exported["merged_at"] == "2026-03-04"
@@ -376,7 +377,7 @@ class TestPrCostExportRefusals:
     def test_missing_out_exits_2(self, fake_projects, monkeypatch):
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=None))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=None))
         assert exc_info.value.code == 2
 
     def test_existing_out_refuses_fast_before_any_ledger_read_with_bytes_intact(
@@ -390,7 +391,7 @@ class TestPrCostExportRefusals:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert out_path.read_text() == "preexisting content\n"
@@ -404,7 +405,7 @@ class TestPrCostExportRefusals:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(git_tracked=True))
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
@@ -419,7 +420,7 @@ class TestPrCostExportRefusals:
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
@@ -440,7 +441,7 @@ class TestPrCostExportRefusals:
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -459,7 +460,7 @@ class TestPrCostExportRefusals:
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -479,14 +480,14 @@ class TestPrCostExportRefusals:
         roots = _two_declared_roots(tmp_path, monkeypatch)
         acct_a, acct_b = roots[0].parent, roots[1].parent
         (acct_a / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         (acct_b / ".pr-cost-enabled").touch()
         (acct_b / "pr-cost-ledger.tsv").write_text("not-the-header\nsome\tbad\trow\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -516,13 +517,13 @@ class TestPrCostExportRefusals:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**{column: malformed_value}))
-        ledger_path.write_text(_mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n")
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**{column: malformed_value}))
+        ledger_path.write_text(pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -544,23 +545,23 @@ class TestPrCostExportRefusals:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        real_format = _mod.pr_cost_ledger._format_pr_cost_ledger_row
+        real_format = pr_cost_ledger._format_pr_cost_ledger_row
 
-        def fake_format(row, *, columns=_mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS):
-            if columns == _mod.pr_cost_export._PR_COST_EXPORT_COLUMNS:
-                raise _mod.pr_cost_ledger._PrCostLedgerParseError(
+        def fake_format(row, *, columns=pr_cost_ledger._PR_COST_LEDGER_COLUMNS):
+            if columns == pr_cost_export._PR_COST_EXPORT_COLUMNS:
+                raise pr_cost_ledger._PrCostLedgerParseError(
                     "line 2: column 'host' contains a tab or newline -- refusing to write a corrupt row"
                 )
             return real_format(row, columns=columns)
 
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_format_pr_cost_ledger_row", fake_format)
+        monkeypatch.setattr(pr_cost_ledger, "_format_pr_cost_ledger_row", fake_format)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -581,14 +582,14 @@ class TestPrCostExportRefusals:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
         os.chmod(ledger_path, 0o000)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
         try:
             with pytest.raises(SystemExit) as exc_info:
-                _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+                pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
         finally:
             os.chmod(ledger_path, 0o600)
 
@@ -609,7 +610,7 @@ class TestPrCostExportSymlinks:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(live_link)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(live_link)))
 
         assert exc_info.value.code == 2
         assert real_target.read_text() == "preexisting\n"
@@ -630,7 +631,7 @@ class TestPrCostExportSymlinks:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(dangling_link)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(dangling_link)))
 
         assert exc_info.value.code == 2
         assert not (tmp_path / "does-not-exist.tsv").exists()
@@ -648,7 +649,7 @@ class TestPrCostExportSymlinks:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(git_tracked=True))
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
@@ -669,7 +670,7 @@ class TestPrCostExportPublishBackstop:
         monkeypatch.setattr(os.path, "lexists", lambda p: False)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert out_path.read_text() == "preexisting\n"
@@ -694,7 +695,7 @@ class TestPrCostExportPublishBackstop:
         monkeypatch.setattr(os, "link", fake_link)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
@@ -735,7 +736,7 @@ class TestPrCostExportWriteOSError:
         monkeypatch.setattr(os, "fdopen", fake_fdopen)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
@@ -750,7 +751,7 @@ class TestPrCostExportArgparseWiring:
         args = parser.parse_args(["pr-cost-export"])
         assert args.out is None
         assert args.extra_config_dirs is None
-        assert args.func == _mod.pr_cost_export.cmd_pr_cost_export
+        assert args.func == pr_cost_export.cmd_pr_cost_export
 
     def test_config_dir_wires_to_extra_config_dirs(self):
         parser = _mod.build_parser()
@@ -765,14 +766,14 @@ class TestPrCostExportArgparseWiring:
         args.extra_config_dirs to _resolve_cost_roots would fail here instead
         of passing every existing test silently."""
         _enable_pr_cost(tmp_path)
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         acct_b = fake_config_dir_factory("acct-b")
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path), extra_config_dirs=[str(acct_b)]))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path), extra_config_dirs=[str(acct_b)]))
 
         text = out_path.read_text()
         assert "declared=2" in text.splitlines()[0]

@@ -2481,7 +2481,7 @@ class TestCmdAuthorOutcomeReport:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        _mod.cmd_author_outcome(self._args())
+        ao.cmd_author_outcome(self._args())
         out = capsys.readouterr().out
         assert "AUTHOR OUTCOME SOURCES" in out
         assert "agent=code-writer  window=all time" in out
@@ -2500,7 +2500,7 @@ class TestCmdAuthorOutcomeReport:
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
 
-        _mod.cmd_author_outcome(self._args())
+        ao.cmd_author_outcome(self._args())
 
         out = capsys.readouterr().out
         counter_label = "rounds classified PASS with at least one SETTLED row"
@@ -2520,21 +2520,21 @@ class TestCmdAuthorOutcomeReport:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        _mod.cmd_author_outcome(self._args(agent="staff-sdet"))
+        ao.cmd_author_outcome(self._args(agent="staff-sdet"))
         out = capsys.readouterr().out
         assert "agent=staff-sdet  window=all time" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
 
     def test_agent_inline_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as excinfo:
-            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_INLINE))
+            ao.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_INLINE))
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "reserved sentinel" in err
 
     def test_agent_mixed_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as excinfo:
-            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_MIXED))
+            ao.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_MIXED))
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "reserved sentinel" in err
@@ -2542,7 +2542,7 @@ class TestCmdAuthorOutcomeReport:
 
     def test_agent_unknown_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as excinfo:
-            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_UNKNOWN))
+            ao.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_UNKNOWN))
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "reserved sentinel" in err
@@ -2560,7 +2560,7 @@ class TestCmdAuthorOutcomeReport:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        _mod.cmd_author_outcome(self._args(agent="Mixed"))
+        ao.cmd_author_outcome(self._args(agent="Mixed"))
         out = capsys.readouterr().out
         assert "agent=Mixed  window=all time" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
@@ -2576,7 +2576,7 @@ class TestCmdAuthorOutcomeReport:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        _mod.cmd_author_outcome(self._args(agent=""))
+        ao.cmd_author_outcome(self._args(agent=""))
         out = capsys.readouterr().out
         assert "agent=  window=all time" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
@@ -2592,7 +2592,7 @@ class TestCmdAuthorOutcomeReport:
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
             _user_msg("thanks, no review needed", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
-        _mod.cmd_author_outcome(self._args())
+        ao.cmd_author_outcome(self._args())
         out = capsys.readouterr().out
         assert "Failure share: 0 of 0 resolved dispatches (0.0%)" in out
 
@@ -3243,7 +3243,7 @@ class TestOrchestratorUnreadableTranscriptCounter:
         _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
         self._session_with_one_orchestrator_round(fake_projects)
 
-        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        ao.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
 
         output_lines = capsys.readouterr().out.splitlines()
         data_quality_block = output_lines[output_lines.index("Data quality") + 1:]
@@ -3354,7 +3354,7 @@ class TestFewerLedgerBlocksThanRoundOpensCounter:
         _seed_ledger(fake_projects, "sess-1", [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
         _write_jsonl(fake_projects / "sess-1.jsonl", [_inline_code_review_round("s1", "2026-08-01T10:00:00.000Z")])
 
-        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        ao.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
 
         output_lines = capsys.readouterr().out.splitlines()
         mismatch_line_index = next(
@@ -3616,7 +3616,7 @@ class TestOrchestratorTranscriptLeakTripwire:
 
         spawns = _collect_orchestrator_spawns(fake_projects)
         result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
-        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        ao.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
         captured = capsys.readouterr()
 
         # The arm ran: the spawn's transcript was read for its clean-marker write
@@ -3645,7 +3645,7 @@ class TestOrchestratorTranscriptLeakTripwire:
         )
 
         result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
-        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        ao.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
         captured = capsys.readouterr()
 
         assert result["outcomes"][expected_round_outcome] == 1, "the ledger row must be classified, or the test guards nothing"
@@ -3700,7 +3700,7 @@ class TestOrchestratorTranscriptLeakTripwire:
 
         _collect_orchestrator_spawns(fake_projects)
         ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
-        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        ao.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
         captured = capsys.readouterr()
 
         diagnostics = [line for line in captured.err.splitlines() if line.startswith(("WARNING:", "NOTICE:"))]

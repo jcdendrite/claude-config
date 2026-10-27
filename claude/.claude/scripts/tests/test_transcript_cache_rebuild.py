@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from transcript_analysis import cache_rebuild, cache_rebuild_rules
 
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
@@ -40,7 +41,7 @@ class TestCacheRebuildExcessPricing:
         otherwise a fast-mode call's excess would overstate the gap between
         what was paid and what a warm hit would have cost."""
         usage = _priced("claude-sonnet-5", ephemeral_5m=1_000_000, speed="fast")["message"]["usage"]
-        excess, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_excess_dollars("claude-sonnet-5", usage)
+        excess, unpriced_tokens = cache_rebuild_rules._cache_rebuild_excess_dollars("claude-sonnet-5", usage)
         # write: 1,000,000/1e6 * 2.00*1.25*2(fast) = 5.00; warm read:
         # 1,000,000/1e6 * 2.00*0.10*2(fast) = 0.40; excess = 4.60.
         assert excess == pytest.approx(4.60)
@@ -52,7 +53,7 @@ class TestCacheRebuildExcessPricing:
         'priced at zero' via the None sentinel, matching _price_turn's own
         unpriced-model contract."""
         usage = _priced("claude-unknown-model", ephemeral_5m=1_000_000, input=10, output=5)["message"]["usage"]
-        excess, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_excess_dollars("claude-unknown-model", usage)
+        excess, unpriced_tokens = cache_rebuild_rules._cache_rebuild_excess_dollars("claude-unknown-model", usage)
         assert excess is None
         assert unpriced_tokens > 0
 
@@ -66,7 +67,7 @@ class TestCacheRebuildExcessPricing:
         arithmetic only -- it never confirms "claude-fable-5-1" is the exact
         string Claude Code writes to message.model."""
         usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
-        excess, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
+        excess, unpriced_tokens = cache_rebuild_rules._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
         # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the
         # 0.025x reduced multiplier, not the standard 0.1x: 1,000,000/1e6 *
         # 10.00*0.025 = 0.25; excess = 12.25.
@@ -157,7 +158,7 @@ class TestCacheRebuildClassification:
         ]
         _write_jsonl(fake_projects / "sess.jsonl", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         # Dedup: 11 raw records collapse to 8 logical calls (the 3-record
@@ -213,7 +214,7 @@ class TestCacheRebuildGroupBoundary:
         subagent_rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_cache_rebuild_summary(out)
@@ -260,7 +261,7 @@ class TestCacheRebuildOriginSplit:
             rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 2
@@ -301,7 +302,7 @@ class TestCacheRebuildOriginSplit:
         )
         _write_jsonl(fake_projects / "sess.jsonl", [main_first, sidechain_first, main_second])
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         # Two session starts (main's own, and the sidechain's own first
@@ -341,7 +342,7 @@ class TestCacheRebuildCacheTierGapMismatch:
                 ts="2026-08-01T10:06:00.000Z", request_id="r2-pure-1h",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
         assert _extract_cache_rebuild_row(out, "unexplained")[0] == 1
@@ -358,7 +359,7 @@ class TestCacheRebuildCacheTierGapMismatch:
                 ts="2026-08-01T10:06:00.000Z", request_id="r2-mixed",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
         assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
@@ -373,7 +374,7 @@ class TestCacheRebuildThresholdBoundary:
             _priced("claude-sonnet-5", ephemeral_5m=99_999, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
             _priced("claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:01.000Z", request_id="r2"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         summary = _extract_cache_rebuild_summary(capsys.readouterr().out)
         assert summary["scanned"] == "2"
         assert summary["tail"] == "1"
@@ -417,7 +418,7 @@ class TestCacheRebuildConcurrencySplit:
         root_c = tmp_path / "acct-c"
         root_c.mkdir()  # valid directory, no project dirs or transcripts at all
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[root_a, root_b, root_c])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[root_a, root_b, root_c])
         out = capsys.readouterr().out
 
         assert "[unverified]" in out
@@ -472,7 +473,7 @@ class TestCacheRebuildMultiRootRegression:
         root_x = _write_cost_root(tmp_path, "acct-x", "-home-user-repo", "sess-x", _build_records("x"))
         root_y = _write_cost_root(tmp_path, "acct-y", "-home-user-repo", "sess-y", _build_records("y"))
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[root_x, root_y])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[root_x, root_y])
         out = capsys.readouterr().out
 
         expected_rebuilds = len(idle_gap_indices) * 2
@@ -504,7 +505,7 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
+            cache_rebuild._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
 
     def test_no_redact_refused_with_ttl_verdict_and_multi_root(self, tmp_path, capsys):
@@ -519,7 +520,7 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cache_rebuild._cache_rebuild_report(
+            cache_rebuild._cache_rebuild_report(
                 _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[root_a, root_b],
             )
         assert exc_info.value.code == 2
@@ -539,8 +540,8 @@ class TestCacheRebuildArgparseWiring:
         never catch the two drifting apart."""
         parser = _mod.build_parser()
         args = parser.parse_args(["cache-rebuild"])
-        assert args.since == _mod._CACHE_REBUILD_DEFAULT_SINCE
-        assert args.threshold == _mod._CACHE_REBUILD_DEFAULT_THRESHOLD
+        assert args.since == cache_rebuild._CACHE_REBUILD_DEFAULT_SINCE
+        assert args.threshold == cache_rebuild._CACHE_REBUILD_DEFAULT_THRESHOLD
         assert args.extra_config_dirs is None
 
         args = parser.parse_args([
