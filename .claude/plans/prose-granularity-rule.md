@@ -10,7 +10,7 @@ Why now: in later review rounds, prose that restates the code drifts every time 
 
 Intended outcome: prose that restates the code is not written in the first place. When a reviewer finds it, the fix the session relays is deletion, not a corrected rewrite.
 
-Counter-evidence the design must respect: many accuracy findings on prose are real user-facing doc errors where correction is right. In one branch, deletion caused its own churn as later reviewers flagged the removal. The rule must target restatement of code, not prose in general.
+Counter-evidence the design must respect: many accuracy findings on prose are real user-facing doc errors where correction is right. Deletion can cause its own churn when later reviewers flag the removal. The rule must target restatement of code, not prose in general.
 
 ## Approach
 

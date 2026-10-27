@@ -243,7 +243,7 @@ For each finding, state:
 2. **File and line**
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
-5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require). For prose that restates the code, per CLAUDE.md §Durable text, the fix names the lines to delete.
+5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require). Instead, for prose that restates the code, the fix names the lines to delete (CLAUDE.md §Durable text).
 
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 

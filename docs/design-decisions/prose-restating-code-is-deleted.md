@@ -20,7 +20,7 @@ Item 5 shapes the suggested fix of every finding, from every reviewer. `claude-s
 
 `claude/.claude/CLAUDE.md` § "Durable text" says what prose is acceptable, and it applies to instruction files like any other durable text. `ai-instruction-and-memory-files` decides which surface misplaced instruction-file content moves to, which is the domain-specific half of a relocation. A skill or rule that loads for a file type owns where all misplaced content in those files goes, not only rule content, so the skill gains a row for content that is not a rule in `ai-instruction-and-memory-files/SKILL.md` § "Where does a given rule belong?".
 
-Exempting instruction files from the altitude angle avoids running one angle twice when both reviewers run. The skill's body applies no altitude test, so the exemption leaves instruction-file altitude unreviewed.
+Exempting instruction files from the altitude angle would avoid running one angle twice when both reviewers run. But the skill's body applies no altitude test, so the exemption would leave instruction-file altitude unreviewed.
 
 ## Why the reviewer moves to `effort: high`
 
