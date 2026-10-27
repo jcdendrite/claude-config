@@ -5444,14 +5444,6 @@ def test_code_review_resolving_note_pins() -> None:
 
 
 def test_code_review_spawn_step_halts_on_a_reviewer_that_could_not_read_its_inputs() -> None:
-    """A reviewer handed no readable input, or denied a `Read` of its lane
-    files, did not review; the spawn step halts instead of reconciling an
-    empty return. A denied lane `Read` is not worked around: the orchestrator
-    quotes the return, takes no recovery step, and names the docs' halts
-    section to the engineer. The test also pins the Withholding bullet's
-    remedy, which that section's denied-`Read` entry cites when the
-    repository root matches a withholding predicate.
-    """
     text = _skill_file("code-review").read_text()
     for sentence in (
         "A reviewer whose return says it was handed no readable input did not review: "
@@ -5494,11 +5486,6 @@ def test_code_review_spawn_step_halts_on_a_reviewer_that_could_not_read_its_inpu
 
 
 def test_scripts_doc_claims_about_code_review_callers_hold() -> None:
-    """docs/scripts.md states that `/code-review` runs `--context-files` and
-    that no in-repo caller uses `--staged --diff-file`. The first holds while
-    the skill's note carries the recipe; the second while no skill, agent,
-    hook or script invokes the `--staged --diff-file` mode.
-    """
     scripts_doc = (REPO_ROOT / "docs" / "scripts.md").read_text()
     assert "`/code-review` runs the `--context-files` mode below" in scripts_doc
     assert "No in-repo caller uses `--staged --diff-file`" in scripts_doc
@@ -5570,13 +5557,8 @@ def _filled_lane_forms(note_text: str) -> list[str]:
 
 
 def test_resolving_note_flags_and_lane_forms_are_accepted_by_the_script(tmp_path: Path) -> None:
-    """Every flag the note's recipe names is one the script parses. A usage
-    error on an invalid suffix proves the flag was accepted; an unknown flag
-    would exit 2 with the unknown-argument message instead. A valid suffix with
-    every lane form the note names passes argument validation, and the same
-    run with a wrong separator in the listed form is rejected, so that pass
-    is a real validation pass.
-    """
+    """A usage error on an invalid suffix proves the flag was accepted; an unknown flag would exit 2 with the
+    unknown-argument message instead."""
     note_text = _code_review_resolving_note(_skill_file("code-review"))
     _, lane_command, source_flags = _resolving_note_recipe_shapes(note_text)
     assert set(source_flags) == {"--staged", "--working-tree", "--expect-diff"}, source_flags
@@ -5605,8 +5587,7 @@ def test_resolving_note_flags_and_lane_forms_are_accepted_by_the_script(tmp_path
         assert "unknown argument" not in result.stderr, (argv, result.stderr)
         assert "--context-files needs a suffix" in result.stderr, (argv, result.stderr)
 
-    # A valid suffix and listing id with every lane form the note names gets past argument validation. A non-git
-    # directory then ends the run at the repo-root step with exit 1, never a usage error (exit 2).
+    # A non-git directory ends the run at the repo-root step with exit 1, never a usage error (exit 2).
     lane_args = [lane_form.strip("'") for lane_form in _filled_lane_forms(note_text)]
     lane_call = ["--staged", "--context-files", valid_suffix, "--listing", listing_id, "--", *lane_args]
     accepted = run_script(lane_call)
@@ -5614,7 +5595,6 @@ def test_resolving_note_flags_and_lane_forms_are_accepted_by_the_script(tmp_path
     lane_usage_line = re.compile(r"^pr-diff-against-base\.sh: (lane |agent |unknown argument)", re.MULTILINE)
     assert not lane_usage_line.search(accepted.stderr), accepted.stderr
 
-    # Control: the listed form with a wrong separator is a usage error, so the run above is a real validation pass.
     listed_form = next(lane_arg for lane_arg in lane_args if "ciso-reviewer" in lane_arg)
     wrong_separator = [listed_form.replace("=", ":") if lane_arg == listed_form else lane_arg for lane_arg in lane_args]
     rejected = run_script(["--staged", "--context-files", valid_suffix, "--listing", listing_id, "--", *wrong_separator])
@@ -5733,11 +5713,6 @@ def _code_review_requested_checks_section(text: str) -> str:
 
 
 def test_requested_checks_subsection_pins() -> None:
-    """`### Requested checks` sits between the round-cap consult block and
-    `## Reconciliation` as heading, blank line, one-line paragraph, blank
-    line. It makes a `Check:` finding ordinary and counted, runs nothing for
-    it before the fix, and stops only on an unsupported report.
-    """
     text = _skill_file("code-review").read_text()
     consult_end = "<!-- DISPOSITION_RULE:code-review-round-cap-consult-verdict end -->\n\n"
     assert f"{consult_end}{_REQUESTED_CHECKS_HEADING}\n\n" in text
@@ -5802,10 +5777,6 @@ def test_finding_check_label_trigger_phrase_is_shared_by_the_dispatchers() -> No
 
 
 def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
-    """plan-review/ROUTING.md hands `staff-product-engineer` the ticket text,
-    and its `Check:` paragraph follows the findings-path paragraph on its own
-    line, resolving a challenged ledger row by the row's tag.
-    """
     routing_lines = _ROUTING_MD_PATH.read_text().split("\n")
     first_spawn_line = next(line for line in routing_lines if line.startswith("Before the first spawn this round"))
     assert first_spawn_line.endswith(

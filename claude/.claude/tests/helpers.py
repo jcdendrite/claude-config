@@ -1262,7 +1262,6 @@ def assert_gate_handles_traversal_session_id(
 
 
 def _lib_listed_names(lib_function: str) -> list[str]:
-    """Return the non-empty lines `lib_function` prints after sourcing _lib.sh."""
     result = subprocess.run(
         ["bash", "-c", f". {_LIB_SH}; {lib_function}"],
         capture_output=True,
@@ -1273,22 +1272,18 @@ def _lib_listed_names(lib_function: str) -> list[str]:
 
 
 def review_only_agents() -> list[str]:
-    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
     return _lib_listed_names("_lib_review_only_agents")
 
 
 def no_gate_release_agents() -> list[str]:
-    """Read _LIB_NO_GATE_RELEASE_AGENTS from _lib.sh — the shipping source of truth."""
     return _lib_listed_names("_lib_no_gate_release_agents")
 
 
 def plan_writer_agents() -> list[str]:
-    """Read _LIB_PLAN_WRITER_AGENTS from _lib.sh — the shipping source of truth."""
     return _lib_listed_names("_lib_plan_writer_agents")
 
 
 def reviewer_persona_agents() -> list[str]:
-    """Read the reviewer-persona roster _lib.sh derives from _LIB_REVIEW_ONLY_AGENTS — the shipping source of truth."""
     return _lib_listed_names("_lib_reviewer_persona_agents")
 
 

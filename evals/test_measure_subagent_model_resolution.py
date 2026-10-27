@@ -755,8 +755,7 @@ class TestClassifyAgentIdentity:
         )
 
     def test_already_broad_declared_toolset_hides_bash_substitution(self) -> None:
-        """With a synthetic declared set that includes Bash (no shipped
-        reviewer persona holds Bash), a Plan substitution that only used
+        """With a synthetic declared set that includes Bash, a Plan substitution that only used
         Bash-or-narrower tools looks identical to an as-requested run by
         this method alone — the documented limit
         named in plan M3's 'may never observe a true positive' validity

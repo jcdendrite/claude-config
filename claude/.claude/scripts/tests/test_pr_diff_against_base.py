@@ -1689,9 +1689,6 @@ def test_unknown_argument_exits_before_any_git_work(tmp_path):
 
 # ---------------------------------------------------------------------------------------------------------------
 # --context-files mode
-#
-# Every case below goes through _run_context, which asserts the exit-hygiene contract (stdout empty; stderr only
-# token lines on exit 0; one line ending with the docs pointer on exit 1) unless the case passes hygiene=False.
 # ---------------------------------------------------------------------------------------------------------------
 
 _LIB_PR_DIFF_SH = _SCRIPT.parent / "_pr-diff-lib.sh"
@@ -1739,7 +1736,6 @@ def _is_token_line(line: str) -> bool:
 
 
 def _assert_exit_hygiene(result: subprocess.CompletedProcess, *, lane_agents: tuple[str, ...] | None) -> None:
-    """Stdout is empty; exit 0 prints only token lines in a shape the mode allows; exit 1 ends its line with the docs pointer."""
     assert result.stdout == "", result.stdout
     lines = result.stderr.split("\n")
     assert lines[-1] == "", f"stderr must end with a newline: {result.stderr!r}"
@@ -1817,7 +1813,6 @@ def _run_context(
 
 
 def _parse_listing(result: subprocess.CompletedProcess) -> tuple[str, int, list[dict]]:
-    """The id, the count and the CHANGED_PATH rows of a --list call."""
     assert result.returncode == 0, result.stderr
     lines = result.stderr.split("\n")[:-1]
     header = lines[0].split(" ")
@@ -1838,7 +1833,6 @@ def _parse_listing(result: subprocess.CompletedProcess) -> tuple[str, int, list[
 def _list_then_lanes(
     repo: Path, env: dict, *source: str, lanes: tuple[str, ...], suffix: str = _SUFFIX
 ) -> tuple[str, list[dict], subprocess.CompletedProcess]:
-    """The two-call recipe: --list, then the lane call with the printed id."""
     listing_id, _count, rows = _parse_listing(_run_context(repo, env, *source, suffix=suffix, list_only=True))
     result = _run_context(repo, env, *source, suffix=suffix, listing=listing_id, lanes=lanes)
     return listing_id, rows, result
@@ -2471,7 +2465,7 @@ Every call is appended to the config's "log" file as one JSON line (the argv). T
   edit    run the real git, then rewrite its stdout: "append" (bytes), "drop_block" (n), "swap_blocks" (i, j) or
           "append_block" (the "path" of a header-bearing block for a path in no row).
   warn    run the real git and add "stderr" text, keeping its status.
-  after   run the real git and, when it succeeded, run "command" (argv[0] "git" means the real git) in the same cwd.
+  after   run the real git and, when it succeeded, run "command" (every "git" token is replaced by the real git) in the same cwd.
   sleep   sleep "seconds", then run the real git (a capped call outlasting a scaled cap).
   block   create "started_file", wait up to 30 s for "release_file" to exist, then run the real git.
 Calls no rule fits pass straight through.
@@ -3058,7 +3052,7 @@ class TestListingIdentity:
         assert not any(line.startswith(("DIFF_EMPTY", "LANE_INDEX")) for line in result.stderr.split("\n"))
 
     def test_output_counts_and_token_order_above_harness_limit(self, tmp_path):
-        """600 paths of 60 bytes print a listing past 30,000 bytes whose LISTING: count equals the row count and the highest
+        """600 paths print a listing past 30,000 bytes whose LISTING: count equals the row count and the highest
         CHANGED_PATH: number, and a lane call with that many LANE_ROW: lines puts every must-act line first. U+2028 and
         U+0085 stay raw in a path (C-quoting leaves bytes of 0x80 and above), and the output splits on \\n only."""
         names = [f"dir/{'p' * 53}{number:04d}.txt" for number in range(600)] + ["split here\u0085now.txt"]
@@ -3092,13 +3086,11 @@ class TestListingIdentity:
 
 
 def _agent_reviews_listing(repo: Path) -> list[str]:
-    """Every entry of agent-reviews/, dotfiles included; empty when the directory is absent."""
     directory = repo / "agent-reviews"
     return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
 
 
 def _assert_halted_at(result: subprocess.CompletedProcess, step: str, status: int, detail: str | None = None) -> None:
-    """Exit 1, one stderr line naming the step and the failing status, ending with the docs pointer, and no token line."""
     assert result.returncode == 1, (result.returncode, result.stderr)
     expected_detail = f": {detail}" if detail else ""
     expected = f"pr-diff-against-base.sh: --context-files failed at {step} (exit {status}){expected_detail}; {_HALT_POINTER}\n"
@@ -3147,7 +3139,6 @@ _CORE_FAILURE_CASES = [
 
 
 def _install_failure(tmp_path: Path, env: dict, kind: tuple, status: int) -> dict:
-    """Install the failing shim for one _CORE_FAILURES row and return the env that reaches it."""
     shim_kind, arguments = kind
     if shim_kind == "git":
         return GitShim(tmp_path / "git_shim").add_rule(mode="fail", status=status, **arguments).env(env)
@@ -3502,7 +3493,6 @@ def _spawn_blocked_run(
 
 
 def _release_and_reap(process: subprocess.Popen, release: Path) -> None:
-    """Let a held git call finish, then kill and reap the script if it is still running."""
     release.write_text("go")
     if process.poll() is None:
         process.kill()
@@ -3513,7 +3503,6 @@ def _release_and_reap(process: subprocess.Popen, release: Path) -> None:
 
 @pytest.fixture
 def spawn_blocked_run():
-    """`_spawn_blocked_run`, with every run it spawned released, killed if still running and reaped when the test ends."""
     spawned: list[tuple[subprocess.Popen, Path]] = []
 
     def spawn(*args, **kwargs) -> tuple[subprocess.Popen, Path, Path]:
@@ -4263,7 +4252,7 @@ class TestForeignGitEnvironment:
 
     def test_default_mode_still_honors_the_ambient_git_environment(self, tmp_path):
         """The mode's unset sits inside the --context-files branch, never at the file top, because default mode's stdout is
-        what _lib_cumulative_diff_hash hashes: a foreign GIT_DIR keeps steering default mode as it did before this mode."""
+        what _lib_cumulative_diff_hash hashes: a foreign GIT_DIR still steers default mode."""
         repo = _small_repo(tmp_path / "mine", "cumulative")
         foreign = _small_repo(tmp_path / "theirs", "cumulative")
         (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
@@ -4289,12 +4278,10 @@ def _write(repo: Path, name: str, text: str) -> None:
 
 
 def _write_credential_guard(env: dict, *globs: str) -> None:
-    """The opt-in credential-file-guard.md in the run's config dir, one glob per line."""
     (Path(env["CLAUDE_CONFIG_DIR"]) / "credential-file-guard.md").write_text("".join(f"{glob}\n" for glob in globs))
 
 
 def _write_data_guard(env: dict, *globs: str) -> None:
-    """The opt-in data-file-read-guard.md in the run's config dir, one glob per line."""
     (Path(env["CLAUDE_CONFIG_DIR"]) / "data-file-read-guard.md").write_text("".join(f"{glob}\n" for glob in globs))
 
 
@@ -4348,7 +4335,6 @@ _CONTROL_CANARIES = (b"control-history-canary", b"control-base-canary", b"contro
 
 
 def _every_byte_a_call_left(repo: Path, results: tuple[subprocess.CompletedProcess, ...]) -> bytes:
-    """All of agent-reviews/ (dotfiles included) plus the captured output of the calls."""
     pieces = []
     directory = repo / "agent-reviews"
     for path in sorted(directory.iterdir()) if directory.exists() else []:
@@ -5787,7 +5773,6 @@ def _build_spawn_repo(root: Path, repetitions: int, *, untracked: bool = False, 
 
 
 def _exec_counts(repo: Path, tmp_path: Path, lanes: tuple[str, ...], source_arg: str = "--staged") -> dict[str, int]:
-    """Per-tool exec counts of a two-call round under the counting PATH."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     log = tmp_path / "execs.log"
     log.write_text("")
@@ -6151,8 +6136,6 @@ class TestRemainingWiring:
 
 class TestNamedCases:
     def test_exit_hygiene_token_lines_only(self, tmp_path):
-        """A happy round prints only token lines on stderr and nothing on stdout, and the helper every run goes through
-        rejects a polluted result."""
         repo = _small_repo(tmp_path)
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(repo, env, "--staged", list_only=True))[0]

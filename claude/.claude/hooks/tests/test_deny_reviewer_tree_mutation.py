@@ -29,12 +29,6 @@ from .test_agent_roster import CANARY_AGENTS
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 
-# The first four sentences below are the denial discipline deny-reviewer-tree-mutation.sh
-# puts in its Bash-arm denial text. `Plan` is the only roster member that reaches
-# that arm, with the qualifiers stated at the top of the hook's header, so they
-# are its only discipline. The Write arm repeats only the
-# no-retry and read-tool sentences. DENIAL_INLINE_FALLBACK_SENTENCE is the Write arm's
-# own; the Bash-arm text lacks it.
 DENIAL_LINK_SENTENCE = (
     "A write through a symlink or hard link changes the linked file, "
     "wherever it lives, so a /tmp path can still change a file outside /tmp."
@@ -82,8 +76,7 @@ def repo_not_ignoring_agent_reviews(tmp_path):
 @pytest.fixture
 def repo_ignoring_agent_reviews_and_build(repo_ignoring_agent_reviews):
     """repo_ignoring_agent_reviews with a second ignored directory, so a path
-    that resolves out of agent-reviews/ into build/ is still ignored and only
-    the hook's own parent and name rules can deny it."""
+    that resolves out of agent-reviews/ into build/ is still ignored."""
     (repo_ignoring_agent_reviews / ".gitignore").write_text("agent-reviews/\nbuild/\n")
     return repo_ignoring_agent_reviews
 
@@ -187,9 +180,7 @@ class TestFileWriteTools:
 
     @pytest.mark.parametrize("tool_name", sorted(_FILE_TOOL_BUILDERS))
     def test_write_arm_deny_reason_names_only_the_findings_file(self, tool_name):
-        """The Write arm's denial keeps the no-retry and read-tool sentences, names the dispatch's `findings_path` and
-        the inline fallback, and offers no scratch directory, link rule or `Check:` line, because a reviewer holds no
-        Bash to use them with."""
+        """A reviewer holds no Bash, so the Write arm offers no scratch directory, link rule or `Check:` line."""
         payload = _FILE_TOOL_BUILDERS[tool_name]("/repo/src/main.py", agent_type="staff-sdet")
         reason, stderr = run_hook_reason_and_stderr(HOOK, payload)
         assert reason is not None
@@ -1156,20 +1147,17 @@ class TestMalformedInput:
 class TestTraversalGuard:
     """A case glob matches the literal string and does not resolve `..`, so a
     traversal path could satisfy the agent-reviews/* prefix while resolving to
-    a tracked repo file. The guard rejects any `..` segment. Only the
-    `back-into-agent-reviews` case below isolates the guard: the other
-    agent-reviews traversal paths here also fail the parent predicate, and the
-    /tmp traversal path matches no exemption arm."""
+    a tracked repo file. The guard rejects any `..` segment."""
 
     def test_tmp_traversal_path_matches_no_exemption_arm_and_denies(self):
         path = "/tmp/../home/user/repo/src/main.py"
         _assert_write_arm_denied(write_input(path, agent_type="staff-sdet"))
 
-    def test_agent_reviews_traversal_path_denied_by_the_parent_predicate(self):
+    def test_agent_reviews_path_with_dotdot_segment_denied_by_the_traversal_guard(self):
         path = "agent-reviews/../claude/.claude/hooks/deny-reviewer-tree-mutation.sh"
         _assert_write_arm_denied(write_input(path, agent_type="staff-sdet"))
 
-    def test_nested_traversal_path_denied_by_the_parent_predicate(self):
+    def test_nested_path_with_dotdot_segments_denied_by_the_traversal_guard(self):
         path = "/repo/agent-reviews/../../src/main.py"
         _assert_write_arm_denied(edit_input(path, agent_type="ciso-reviewer"))
 
@@ -1180,8 +1168,7 @@ class TestTraversalGuard:
             "agent-reviews/../build/staff-sdet-x.md",
             "sub/agent-reviews/../build/staff-sdet-x.md",
             # Discriminating case for the traversal guard: git check-ignore exits 0 on this path and its parent and
-            # name are both valid once `..` is resolved, so only the guard denies it. The parent rule also covers the
-            # two above.
+            # name are both valid once `..` is resolved, so only the guard denies it.
             "agent-reviews/../agent-reviews/staff-sdet-x.md",
         ],
         ids=["into-ignored-sibling", "nested-into-ignored-sibling", "back-into-agent-reviews"],

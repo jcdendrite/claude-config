@@ -64,7 +64,7 @@ CANARY_AGENTS = sorted(
     REVIEWER_AGENTS + ["comment-discipline-reviewer.md", "skill-fidelity-reviewer.md"]
 )
 
-# The two reviewers whose Input contract is bespoke: each is handed one diff
+# The reviewers whose Input contract is bespoke: each is handed one diff
 # artifact, never a lane index, so neither carries the shared contract text,
 # the fail-loud sentence or the `Check:` line.
 BESPOKE_INPUT_CONTRACT_AGENTS = (
@@ -72,7 +72,7 @@ BESPOKE_INPUT_CONTRACT_AGENTS = (
     "skill-fidelity-reviewer.md",
 )
 
-# The eight personas that carry the byte-identical Input contract.
+# The personas that carry the byte-identical Input contract.
 SHARED_INPUT_CONTRACT_AGENTS = [
     name for name in CANARY_AGENTS if name not in BESPOKE_INPUT_CONTRACT_AGENTS
 ]
@@ -276,8 +276,8 @@ def _declared_tools(agent_file_name: str) -> set[str]:
 class TestDiffInputContractAgents:
     """No reviewer holds Bash, so none can self-fetch a diff: each carries an
     Input contract telling it to read the artifact it is handed instead of
-    inferring scope from content. The eight specialist personas share one
-    byte-identical contract; the two bespoke reviewers state the shared
+    inferring scope from content. The specialist personas share one
+    byte-identical contract; the bespoke reviewers state the shared
     sentences in their own."""
 
     @staticmethod
@@ -389,7 +389,7 @@ class TestDiffInputContractAgents:
         )
 
     def test_canonical_specialist_input_contract_states_the_check_trigger_and_the_mid_sentence_rule(self):
-        """The other seven contracts match the canonical one byte for byte, so one pin covers all eight.
+        """The other contracts match the canonical one byte for byte, so one pin covers all of them.
         `You never run a check.` stays unpinned: the exact-tools pin and the no-Bash test enforce it."""
         section = " ".join(
             self._extract_input_contract_section(AGENTS_DIR / SHARED_INPUT_CONTRACT_AGENTS[0]).split()
