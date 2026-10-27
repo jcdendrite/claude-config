@@ -87,6 +87,7 @@ _PLACEMENTS = [
     ("destructive-action-confirm", "flag the risk and confirm the approach", "core"),
     ("stopping", "Stop when the work is genuinely blocked", "core"),
     ("durable-text-rules", "**No PR-defined terminology**", "core"),
+    ("dont-restate-the-code", "**Don't restate the code.**", "core"),
     # Rules a dispatched agent needs.
     ("dispatch-denial", "**Dispatching cannot clear a denial your child inherits.**", "core"),
     (

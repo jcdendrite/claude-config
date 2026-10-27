@@ -143,6 +143,7 @@ Index discipline:
 | Pointer to external systems (Linear, Grafana, etc.)              | Auto-memory (reference type)                     |
 | Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§2 advisory vs deterministic)|
 | Rule already enforced by a hook or structural test               | **Nowhere — the hook enforces it; prose is load**|
+| Content in an instruction file that isn't a rule but states a fact the code doesn't carry, such as why a hook or script works as it does | The code's own header comment, or a `docs/` file the instruction file links to. Content restating the code, or narrating history, is deleted (CLAUDE.md §Durable text) |
 
 ### Anti-duplication heuristic
 

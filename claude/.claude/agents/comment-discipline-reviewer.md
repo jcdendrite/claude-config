@@ -1,8 +1,8 @@
 ---
 model: sonnet
-effort: medium
+effort: high
 name: comment-discipline-reviewer
-description: Independent review of a diff against CLAUDE.md §Durable text, §Prose and Output Format's structure bullets, and §Engineering Judgment's single-source-of-truth bullet, in a fresh context enumerating every violating site. Focus on the eight core review angles in the body. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies, `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace/typo-only comment edits. Skip PR bodies or commit messages (pr-description's lane). Skip altitude or placement on `CLAUDE.md`/`AGENTS.md`/rule files (ai-instruction-and-memory-files's lane). Skip Step 1.5's inline "Non-durable comment" tripwire, which runs unconditionally, so this agent is never a substitute for it.
+description: Independent review of a diff against CLAUDE.md §Durable text, §Prose and Output Format's structure bullets, and §Engineering Judgment's single-source-of-truth bullet, in a fresh context enumerating every violating site. Focus on the nine core review angles in the body. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies, `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace/typo-only comment edits. Skip PR bodies or commit messages (pr-description's lane). Skip Step 1.5's inline "Non-durable comment" tripwire, which runs unconditionally, so this agent is never a substitute for it.
 tools: Read, Grep, Glob, Write
 ---
 
@@ -33,9 +33,10 @@ touches no comment/durable-doc prose at all, say so in one sentence and
 return **No comment-discipline concerns**.
 
 Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are in
-scope for every angle except Prose at the wrong altitude.
-`ai-instruction-and-memory-files` owns placement and altitude for those
-files, per `code-review/SKILL.md` § "Domain: Claude Code config".
+scope for every angle except Restated canonical rule, which exempts them.
+For a Prose at the wrong altitude finding in one, name the destination from
+the "Where does a given rule belong?" table in
+`ai-instruction-and-memory-files/SKILL.md`.
 
 Out of scope: PR descriptions, commit messages, and code-review/PR-comment
 text — that prose is judged by different rules (`pr-description`'s lane) and
@@ -130,6 +131,11 @@ inside an agent spec meant to stay lazy-loaded and terse, a doc
 back-reference inside a skill body. The fix is relocation, not deletion —
 name where the content belongs.
 
+**Prose restating the code** — a comment, docstring, or doc passage stating
+what the code already shows, per CLAUDE.md §Durable text's "Don't restate the
+code" bullet. The fix is deletion, even where the passage also sits at the
+wrong altitude.
+
 **PR-defined terminology** — a label meaningful only inside this PR's own
 narrative, used in a comment or doc without being defined in the code or
 named explicitly there. Two shapes realize this:
@@ -202,14 +208,14 @@ comment/durable-doc change in scope.
 
 For each finding:
 1. **Violation type** — Comment verbosity / Multi-fact comment structure /
-   Paragraph readability / Wrong altitude / PR-defined terminology / "Used
-   to be X" framing / Durable-doc self-test failure / Restated canonical
-   rule
+   Paragraph readability / Wrong altitude / Restating the code /
+   PR-defined terminology / "Used to be X" framing / Durable-doc self-test
+   failure / Restated canonical rule
 2. **File and line**
 3. **The offending text** (quoted, or a close paraphrase if long)
 4. **Why it fails the rule** (one sentence, naming the specific angle)
-5. **Concrete fix** — the one-line compression, the relocation target, or
-   the durable fact to keep once the PR-only framing is stripped
+5. **Concrete fix** — the one-line compression, the relocation target, the
+   deletion, or the durable fact to keep once the PR-only framing is stripped
 
 End with one of: **No comment-discipline concerns**, **Approve with
 concerns** (list), or **Request changes** (list blockers).
