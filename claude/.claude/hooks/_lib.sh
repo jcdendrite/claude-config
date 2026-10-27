@@ -1488,12 +1488,14 @@ _lib_stack_base_git() {
 # A value is unusable when it is empty, starts with `-` or `origin/`, fails
 # `git check-ref-format "refs/heads/<value>"`, holds a character outside
 # [A-Za-z0-9._/-], is `HEAD`, or names the branch itself.
+# The `-`, character-set, `origin/` and `HEAD` tests are _lib_stack_base_name_shape's statuses 1 to 4.
+# Any other nonzero status from that check is also unusable, so a status added there fails closed here.
 # Callers capture with `rc=0; out=$(...) || rc=$?`: that suspends `set -e`
 # inside this function, so every status is tested explicitly.
 # A caller treats every status other than 0 and 1 as a stop.
 _lib_configured_stack_base() {
   local stderr_prefix="$1" repo_root="$2"
-  local head_ref head_status=0 branch key value config_status=0 ref_format_status=0
+  local head_ref head_status=0 branch key value config_status=0 ref_format_status=0 name_shape_status=0
   head_ref=$(_lib_stack_base_git "$stderr_prefix" "git symbolic-ref HEAD" "$repo_root" symbolic-ref -q HEAD) || head_status=$?
   case "$head_status" in
     0) ;;
@@ -1515,12 +1517,11 @@ _lib_configured_stack_base() {
     _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is empty"
     return 2
   fi
-  case "$value" in
-    -*)
-      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with '-'"
-      return 2
-      ;;
-  esac
+  _lib_stack_base_name_shape "$value" || name_shape_status=$?
+  if [ "$name_shape_status" -eq 1 ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with '-'"
+    return 2
+  fi
   _lib_stack_base_git "$stderr_prefix" "git check-ref-format on the value of $key" "$repo_root" check-ref-format "refs/heads/$value" >/dev/null || ref_format_status=$?
   case "$ref_format_status" in
     0) ;;
@@ -1530,20 +1531,22 @@ _lib_configured_stack_base() {
       ;;
     *) return 2 ;;
   esac
-  # check-ref-format accepts shell metacharacters, quotes and bidi controls;
-  # the value reaches stop lines and commands the engineer copies, so the set is narrower.
-  # The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
-  case "$value" in
-    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*)
+  case "$name_shape_status" in
+    0) ;;
+    2)
       _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'"
       return 2
       ;;
-    origin/*)
+    3)
       _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with 'origin/'; give the branch name without that prefix"
       return 2
       ;;
-    HEAD)
+    4)
       _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is HEAD, not a branch name"
+      return 2
+      ;;
+    *)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value failed a name check this reader has no message for (status $name_shape_status)"
       return 2
       ;;
   esac
@@ -1552,6 +1555,28 @@ _lib_configured_stack_base() {
     return 2
   fi
   printf '%s %s\n' "$branch" "$value"
+}
+
+# _lib_stack_base_name_shape NAME
+# Classifies a branch name the caller will pass to git or print in a command the engineer copies. Prints nothing.
+# Exit 0: NAME starts with a character other than `-`, holds only [A-Za-z0-9._/-], does not start with `origin/` and is not `HEAD`.
+# Exit 1: NAME starts with `-`, which git would read as an option.
+# Exit 2: NAME holds a character outside that set.
+# Exit 3: NAME starts with `origin/`, which reads as a remote-tracking ref instead of a branch.
+# Exit 4: NAME is `HEAD`, which a fetch destination would resolve through the `origin/HEAD` symref.
+# The set is narrower than `git check-ref-format`, which accepts shell metacharacters, quotes and bidi controls.
+# The tests run in status order, so the first failing one wins. An empty NAME exits 0, so the caller owns the empty check.
+# The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
+# A caller under `set -e` captures the status with `|| status=$?` or calls it in a conditional context, since statuses 1 to 4 are answers and a bare call aborts the script.
+_lib_stack_base_name_shape() {
+  local name="$1"
+  case "$name" in
+    -*) return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 2 ;;
+    origin/*) return 3 ;;
+    HEAD) return 4 ;;
+  esac
+  return 0
 }
 
 # _lib_open_pr_base REPLY

@@ -1651,6 +1651,50 @@ def _make_stacked_repo(tmp_path: Path, stack_base: str = "stack", *, key_value: 
     return local, bare
 
 
+def _shim_call_logging_command(calls_log: Path) -> str:
+    """The shell line a shim script runs first to append its arguments, one per line then a
+    blank line, to calls_log. _read_logged_calls reads that format back."""
+    return f"{{ for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done; printf '\\n'; }} >> {shlex.quote(str(calls_log))}\n"
+
+
+def _read_logged_calls(calls_log: Path) -> list[list[str]]:
+    """The argument list of each call a shim wrote to calls_log, empty when it never ran."""
+    if not calls_log.exists():
+        return []
+    return [call.splitlines() for call in calls_log.read_text().split("\n\n") if call]
+
+
+def _make_gh_pr_view_shim(
+    shim_dir: Path, *, reply: str = "", exit_status: int = 1, stderr_line: str | None = None
+) -> Path:
+    """Write an executable `gh` into shim_dir that answers only
+    `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`, comparing
+    each argument, never a joined string. That call prints `reply` verbatim and
+    exits `exit_status`, after printing `stderr_line` to stderr when it is given.
+    Any other argv exits 1 with no output. Every call appends its arguments, one
+    per line, then a blank line, to the returned log (a call with an empty
+    argument is not representable). Rebuilding the shim clears the log."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    calls_log = shim_dir / "gh-calls.log"
+    reply_file = shim_dir / "gh-reply.txt"
+    calls_log.unlink(missing_ok=True)
+    reply_file.write_bytes(reply.encode())
+    stderr_command = f"printf '%s\\n' {shlex.quote(stderr_line)} >&2\n  " if stderr_line is not None else ""
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(
+        "#!/bin/sh\n"
+        f"{_shim_call_logging_command(calls_log)}"
+        "if [ \"$#\" -eq 6 ] && [ \"$1\" = pr ] && [ \"$2\" = view ] && [ \"$3\" = --json ] \\\n"
+        "  && [ \"$4\" = state,baseRefName ] && [ \"$5\" = --jq ] && [ \"$6\" = '.state, .baseRefName' ]; then\n"
+        f"  {stderr_command}cat {shlex.quote(str(reply_file))}\n"
+        f"  exit {exit_status}\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    gh_shim.chmod(0o755)
+    return calls_log
+
+
 def _make_feature_branch(repo: Path, branch_name: str, return_to: str = "main") -> None:
     """Create and push a feature branch in repo, then return to return_to."""
     subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)

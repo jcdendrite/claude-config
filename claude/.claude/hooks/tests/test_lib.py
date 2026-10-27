@@ -6231,6 +6231,13 @@ class TestLibConfiguredStackBase:
         result = _configured_stack_base(repo)
         assert (result.returncode, result.stdout, result.stderr) == (0, "feat/x feat/base\n", "")
 
+    def test_dotted_branch_name_reads_its_own_key(self, tmp_path: Path) -> None:
+        """Git's subsection grammar keeps every dot between the first and last in the
+        branch name, so a name such as `release/1.2` must still resolve to its key."""
+        repo = _repo_on_branch_with_key(tmp_path, "release/1.2", "feat/base")
+        result = _configured_stack_base(repo)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "release/1.2 feat/base\n", "")
+
     def test_detached_head_exits_1_even_with_a_key_on_some_branch(self, tmp_path: Path) -> None:
         repo = _repo_on_branch_with_key(tmp_path, "feat/x", "stack")
         subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
@@ -6434,6 +6441,105 @@ class TestLibConfiguredStackBase:
         result = _configured_stack_base(repo)
         _assert_stack_base_stop(result, "feat/x")
         assert rendered_value_clause in result.stderr
+
+    def test_name_shape_status_with_no_named_stop_is_still_a_stop(self, tmp_path: Path) -> None:
+        """A status `_lib_stack_base_name_shape` gains later must not let its value through."""
+        unmapped_status = 5
+        repo = _repo_on_branch_with_key(tmp_path, "feat/x", "feat/base")
+        script = f'. "$1"; _lib_stack_base_name_shape() {{ return {unmapped_status}; }}; _lib_configured_stack_base "$2" "$3"'
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(_LIB_SH), _STACK_BASE_STDERR_PREFIX, str(repo)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        _assert_stack_base_stop(result, "feat/x")
+        assert f"status {unmapped_status}" in result.stderr
+
+
+def _stack_base_name_shape(name: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", '. "$1"; _lib_stack_base_name_shape "$2"', "bash", str(_LIB_SH), name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLibStackBaseNameShape:
+    """Exit 0 for a name of allowed characters that has no leading `-`, no `origin/` prefix and
+    is not `HEAD`, exit 1 for a leading `-`, exit 2 for a character outside [A-Za-z0-9._/-],
+    exit 3 for an `origin/` prefix, exit 4 for `HEAD`. The first failing test in that order
+    wins. It prints nothing."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("main", id="plain"),
+            pytest.param("feat/base-2.x_y", id="every-allowed-punctuation"),
+            pytest.param("ABCxyz019", id="letters-and-digits"),
+            pytest.param("origin", id="origin-without-the-slash"),
+            pytest.param("feat/origin/x", id="origin-not-at-the-start"),
+            pytest.param("head", id="lowercase-head"),
+            pytest.param("HEAD2", id="head-prefix-only"),
+        ],
+    )
+    def test_allowed_name_exits_0_with_no_output(self, name: str) -> None:
+        result = _stack_base_name_shape(name)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+
+    def test_empty_name_exits_0_with_no_output(self) -> None:
+        result = _stack_base_name_shape("")
+        assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("-x", id="dash-then-letter"),
+            pytest.param("--upload-pack=x", id="option-lookalike"),
+            pytest.param("-a b", id="dash-wins-over-a-disallowed-character"),
+        ],
+    )
+    def test_leading_dash_exits_1_with_no_output(self, name: str) -> None:
+        result = _stack_base_name_shape(name)
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("a;b", id="semicolon"),
+            pytest.param("a b", id="space"),
+            pytest.param("a$(x)", id="command-substitution"),
+            pytest.param("caf" + chr(0xE9), id="non-ascii-letter"),
+            pytest.param("a:b", id="colon"),
+            pytest.param("re+x", id="plus"),
+            pytest.param("a*", id="asterisk"),
+            pytest.param("a?", id="question-mark"),
+            pytest.param("a[", id="open-bracket"),
+            pytest.param("a~1", id="tilde"),
+            pytest.param("a^", id="caret"),
+            pytest.param("a@b", id="at-sign"),
+            pytest.param("a\\b", id="backslash"),
+            pytest.param("a\nb", id="newline"),
+            pytest.param("a\tb", id="tab"),
+            pytest.param("a\rb", id="carriage-return"),
+        ],
+    )
+    def test_disallowed_character_exits_2_with_no_output(self, name: str) -> None:
+        result = _stack_base_name_shape(name)
+        assert (result.returncode, result.stdout, result.stderr) == (2, "", "")
+
+    def test_origin_prefix_exits_3_with_no_output(self) -> None:
+        result = _stack_base_name_shape("origin/x")
+        assert (result.returncode, result.stdout, result.stderr) == (3, "", "")
+
+    def test_head_exits_4_with_no_output(self) -> None:
+        result = _stack_base_name_shape("HEAD")
+        assert (result.returncode, result.stdout, result.stderr) == (4, "", "")
+
+    def test_origin_prefix_with_a_disallowed_character_exits_2_not_3(self) -> None:
+        result = _stack_base_name_shape("origin/x;y")
+        assert (result.returncode, result.stdout, result.stderr) == (2, "", "")
 
 
 def _open_pr_base(reply: str) -> subprocess.CompletedProcess:

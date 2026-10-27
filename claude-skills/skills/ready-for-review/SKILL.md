@@ -44,7 +44,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
   - Only `<stack-base>` comes from the engineer's words, with no `origin/` prefix and never inferred.
   - Run the command only when both `<branch>` and `<stack-base>` hold just A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, and neither starts with `-`. Otherwise, ask the engineer.
   - Halt unless the next bullet's recipe prints `Base branch: <stack-base>`. With the key set, every base-dependent step uses it or stops.
-- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0 and step 1 captured an existing PR's base that differs from the branch the recipe's `Default branch:` or `Base branch:` line names, run no sync: tell the engineer the two disagree, and stop. Otherwise, if behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 

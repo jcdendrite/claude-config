@@ -1,8 +1,11 @@
 """Tests for branch-divergence-status.sh.
 
-The script's only external dependency is git, run against a local bare-remote
-fixture built by conftest.py's helpers. Every run puts a fail-loud `gh` shim on
-PATH and asserts the script never called it.
+The script's external dependencies are git, run against a local bare-remote
+fixture built by conftest.py's helpers, and `gh pr view` for the no-key read of
+an open PR's base. Every run but the gh-absent one puts a `gh` shim first on
+PATH. The shim records its calls, prints the reply the test configures, and by
+default exits 1 with empty output. A run with a key set asserts the shim was
+never called.
 """
 from __future__ import annotations
 
@@ -12,7 +15,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from helpers import _make_git_exiting_with_status
+import pytest
+from helpers import (
+    _make_git_exiting_with_status,
+    assert_cap_engaged,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
+)
 
 from .conftest import (
     _STACKED_BRANCH,
@@ -20,25 +29,51 @@ from .conftest import (
     _curated_path_without_direnv,
     _init_repo,
     _make_feature_branch,
+    _make_gh_pr_view_shim,
     _make_repo_with_remote,
     _make_stacked_repo,
+    _read_logged_calls,
+    _shim_call_logging_command,
 )
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "branch-divergence-status.sh"
 
 
-def _run_script(repo: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run the script with a gh shim first on PATH that records any call and
-    exits 97, then assert no call was recorded: the script is gh-free."""
-    shim_dir = repo.parent / "fail-loud-gh-bin"
-    calls_log = repo.parent / "gh-calls.log"
-    shim_dir.mkdir(exist_ok=True)
-    gh_shim = shim_dir / "gh"
-    gh_shim.write_text(f'#!/bin/sh\necho "$@" >> {shlex.quote(str(calls_log))}\nexit 97\n')
-    gh_shim.chmod(0o755)
+def _branch_has_key(repo: Path) -> bool:
+    """True when the repo's current branch has `branch.<branch>.gh-merge-base` set."""
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=repo, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if not branch:
+        return False
+    key_read = subprocess.run(
+        ["git", "config", "--get", f"branch.{branch}.gh-merge-base"], cwd=repo, capture_output=True, check=False
+    )
+    return key_read.returncode == 0
+
+
+def _run_script(
+    repo: Path,
+    env: dict | None = None,
+    *,
+    gh_reply: str = "",
+    gh_exit_status: int = 1,
+    gh_stderr_line: str | None = None,
+    gh_installed: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run the script with a gh shim first on PATH (see conftest's
+    _make_gh_pr_view_shim) that records each call, prints gh_reply, writes
+    gh_stderr_line to stderr when given, and exits gh_exit_status (default:
+    exit 1, no output). With gh_installed False no shim is installed, so gh is
+    absent only when env's PATH holds none. When the current branch has a key
+    set, assert no call was recorded: a key wins without reading the PR."""
+    shim_dir = repo.parent / "gh-shim-bin"
+    branch_has_key = _branch_has_key(repo)
     run_env = dict(os.environ) if env is None else dict(env)
-    run_env["PATH"] = os.pathsep.join([str(shim_dir), run_env.get("PATH", "")])
+    if gh_installed:
+        _make_gh_pr_view_shim(shim_dir, reply=gh_reply, exit_status=gh_exit_status, stderr_line=gh_stderr_line)
+        run_env["PATH"] = os.pathsep.join([str(shim_dir), run_env.get("PATH", "")])
     result = subprocess.run(
         [str(_SCRIPT)],
         cwd=str(repo),
@@ -47,8 +82,14 @@ def _run_script(repo: Path, env: dict | None = None) -> subprocess.CompletedProc
         text=True,
         check=False,
     )
-    assert not calls_log.exists(), f"script called gh: {calls_log.read_text()}"
+    if branch_has_key:
+        assert _gh_calls(repo) == [], f"script called gh with a key set: {_gh_calls(repo)}"
     return result
+
+
+def _gh_calls(repo: Path) -> list[list[str]]:
+    """The argument list of each call the gh shim recorded for the last _run_script call."""
+    return _read_logged_calls(repo.parent / "gh-shim-bin" / "gh-calls.log")
 
 
 def _advance_remote_default_branch(bare: Path, tmp_path: Path, message: str) -> None:
@@ -209,6 +250,7 @@ class TestNoTimeoutBinary:
 
         assert result.returncode == 1
         assert "neither 'timeout' nor 'gtimeout' is available" in result.stderr
+        assert _gh_calls(local) == []
 
 
 def _advance_remote_stack(bare: Path, tmp_path: Path) -> None:
@@ -396,3 +438,333 @@ class TestStackBaseKey:
 
         assert result.returncode == 0, result.stderr
         assert "Base branch: stack" in result.stdout
+
+
+def _make_stacked_repo_without_key(tmp_path: Path) -> tuple[Path, Path]:
+    """The stacked layout of _make_stacked_repo with the gh-merge-base key unset,
+    so the script's no-key read of an open PR's base is what selects `stack`."""
+    local, bare = _make_stacked_repo(tmp_path)
+    subprocess.run(["git", "config", "--unset", f"branch.{_STACKED_BRANCH}.gh-merge-base"], cwd=local, check=True)
+    return local, bare
+
+
+_PR_VIEW_ARGUMENTS = ["pr", "view", "--json", "state,baseRefName", "--jq", ".state, .baseRefName"]
+
+
+_GH_PR_VIEW_CAP_SECONDS = 10
+
+
+def _make_logging_timeout_shim(shim_dir: Path) -> Path:
+    """Write a `timeout` into shim_dir that appends its arguments, one per line then a blank
+    line, to the returned log and then runs the real timeout(1)/gtimeout(1) with the same
+    arguments, so the cap still applies."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    calls_log = shim_dir / "timeout-calls.log"
+    real_timeout = shutil.which(_installed_timeout_name())
+    (shim_dir / "timeout").write_text(
+        "#!/bin/sh\n"
+        f"{_shim_call_logging_command(calls_log)}"
+        f"exec {shlex.quote(str(real_timeout))} \"$@\"\n"
+    )
+    (shim_dir / "timeout").chmod(0o755)
+    return calls_log
+
+
+def _installed_timeout_name() -> str:
+    """The first of `timeout` and `gtimeout` on PATH, the pair the script's own check accepts."""
+    return next(name for name in ("timeout", "gtimeout") if shutil.which(name))
+
+
+def _remote_tracking_refs(repo: Path) -> str:
+    """Every ref under refs/remotes/origin/ with its object name, for before/after comparison."""
+    return subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def _local_config_listing(repo: Path) -> str:
+    """Every entry of the repo's local git config, for before/after comparison."""
+    return subprocess.run(
+        ["git", "config", "--local", "--list"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+
+
+class TestNoKeyReadsAnOpenPrsBase:
+    def test_open_pr_on_another_base_prints_base_branch_and_writes_no_key(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        local_config_before = _local_config_listing(local)
+
+        result = _run_script(local, gh_reply="OPEN\nstack\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: stack" in result.stdout
+        assert "Default branch:" not in result.stdout
+        assert "In sync with origin/stack." in result.stdout
+        assert result.stderr == ""
+        assert _gh_calls(local) == [_PR_VIEW_ARGUMENTS]
+        key_read = subprocess.run(
+            ["git", "config", "--get", f"branch.{_STACKED_BRANCH}.gh-merge-base"], cwd=local, check=False
+        )
+        assert key_read.returncode == 1
+        assert _local_config_listing(local) == local_config_before
+
+    def test_open_pr_base_using_every_allowed_punctuation_class_is_fetched_and_measured(self, tmp_path):
+        """The push's own tracking-ref update is deleted first, so the script's fetch is
+        the only thing that can create `refs/remotes/origin/feat/base-2.x_y`."""
+        punctuated_base = "feat/base-2.x_y"
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        subprocess.run(["git", "push", "-q", "origin", f"stack:refs/heads/{punctuated_base}"], cwd=local, check=True)
+        subprocess.run(["git", "update-ref", "-d", f"refs/remotes/origin/{punctuated_base}"], cwd=local, check=True)
+        assert f"origin/{punctuated_base}" not in _remote_tracking_refs(local)
+
+        result = _run_script(local, gh_reply=f"OPEN\n{punctuated_base}\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Base branch: {punctuated_base}" in result.stdout
+        assert f"In sync with origin/{punctuated_base}." in result.stdout
+        assert result.stderr == ""
+
+    def test_behind_count_is_measured_against_an_open_prs_advanced_base(self, tmp_path):
+        """`main` has not advanced, so a count taken against the default branch would be 0."""
+        local, bare = _make_stacked_repo_without_key(tmp_path)
+        _advance_remote_stack(bare, tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nstack\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: stack" in result.stdout
+        assert "Behind: 1" in result.stdout
+        assert "CLEAN" in result.stdout
+        assert result.stderr == ""
+
+    def test_open_pr_on_the_default_branch_prints_default_branch(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nmain\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize(
+        "gh_reply",
+        [
+            pytest.param("MERGED\nstack\n", id="merged-pr"),
+            pytest.param("CLOSED\nstack\n", id="closed-pr"),
+            pytest.param("", id="empty-reply"),
+            pytest.param("OPEN\n", id="one-line-open"),
+            pytest.param("OPEN\nstack\nextra\n", id="three-lines"),
+        ],
+    )
+    def test_reply_that_is_not_an_open_prs_base_measures_the_default_branch_with_no_notice(self, tmp_path, gh_reply):
+        """`stack` exists on origin, so a reply read as an open PR's base would print `Base branch: stack`."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply=gh_reply, gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr == ""
+
+    def test_failed_gh_measures_the_default_branch_and_prints_the_notice(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="", gh_exit_status=1)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "gh pr view failed or found no PR; will measure against origin/main" in result.stderr
+
+    def test_base_failing_the_character_check_falls_back_with_a_notice_that_does_not_echo_it(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nstack;touch x\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "is not a usable branch name" in result.stderr
+        assert "will measure against origin/main" in result.stderr
+        assert "touch" not in result.stderr
+
+    def test_base_with_a_leading_dash_falls_back_with_a_notice_that_does_not_echo_it(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\n--upload-pack=x\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "is not a usable branch name" in result.stderr
+        assert "upload-pack" not in result.stderr
+
+    def test_origin_prefixed_base_falls_back_and_fetches_no_remote_tracking_ref_for_it(self, tmp_path):
+        """A remote branch `origin/stack` exists, so accepting the base would fetch and measure it
+        instead of the default branch. The push's own tracking-ref update is deleted first, so
+        a fetch of the base is the only thing that could bring `refs/remotes/origin/origin/stack` back."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        subprocess.run(["git", "push", "-q", "origin", "stack:refs/heads/origin/stack"], cwd=local, check=True)
+        subprocess.run(["git", "update-ref", "-d", "refs/remotes/origin/origin/stack"], cwd=local, check=True)
+        refs_before = _remote_tracking_refs(local)
+        assert "origin/origin/stack" not in refs_before
+
+        result = _run_script(local, gh_reply="OPEN\norigin/stack\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "is not a usable branch name" in result.stderr
+        assert _remote_tracking_refs(local) == refs_before
+
+    def test_head_base_falls_back_to_the_default_branch(self, tmp_path):
+        """No remote branch `HEAD` is pushed: a push to one writes through the local
+        origin/HEAD symref. Accepting the base would make the fetch of the missing
+        `refs/heads/HEAD` exit 1."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nHEAD\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "is not a usable branch name" in result.stderr
+
+    def test_base_with_a_non_breaking_space_falls_back_without_echoing_it(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nstack\u00a0x\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "is not a usable branch name" in result.stderr
+        assert "stack" not in result.stderr
+        assert "\u00a0" not in result.stderr
+
+    def test_failed_gh_stderr_is_not_forwarded_so_only_the_scripts_own_notice_remains(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_exit_status=1, gh_stderr_line="gh: no pull requests found for branch")
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "gh pr view failed or found no PR; will measure against origin/main" in result.stderr
+        assert "no pull requests found" not in result.stderr
+
+    def test_successful_gh_stderr_is_not_forwarded_so_a_run_that_reads_the_base_leaves_stderr_empty(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(
+            local, gh_reply="OPEN\nstack\n", gh_exit_status=0, gh_stderr_line="gh: a warning on a successful call"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: stack" in result.stdout
+        assert result.stderr == ""
+
+    def test_gh_absent_from_path_measures_the_default_branch_with_one_notice(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        path_without_gh = Path(_curated_path_without_direnv(tmp_path))
+        timeout_name = _installed_timeout_name()
+        (path_without_gh / timeout_name).symlink_to(shutil.which(timeout_name))
+        env = {"PATH": str(path_without_gh), "HOME": os.environ.get("HOME", "")}
+
+        result = _run_script(local, env=env, gh_installed=False)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "gh pr view failed or found no PR; will measure against origin/main" in result.stderr
+
+    def test_gh_pr_view_runs_under_a_10_second_cap_with_a_2_second_kill_grace(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        timeout_shim_dir = tmp_path / "timeout-shim-bin"
+        timeout_calls_log = _make_logging_timeout_shim(timeout_shim_dir)
+        env = {**os.environ, "PATH": os.pathsep.join([str(timeout_shim_dir), os.environ.get("PATH", "")])}
+
+        result = _run_script(local, env=env, gh_reply="OPEN\nstack\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: stack" in result.stdout
+        capped_gh_calls = [call for call in _read_logged_calls(timeout_calls_log) if "gh" in call]
+        assert capped_gh_calls == [["-k", "2", str(_GH_PR_VIEW_CAP_SECONDS), "gh", *_PR_VIEW_ARGUMENTS]]
+
+    def test_hung_gh_is_killed_at_the_cap_and_measures_the_default_branch_with_one_notice(self, tmp_path):
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        shim_dir = tmp_path / "hung-gh-bin"
+        shim_dir.mkdir()
+        hung_gh = shim_dir / "gh"
+        hung_gh.write_text(f"#!/bin/sh\nexec sleep {scaled_shim_sleep(_GH_PR_VIEW_CAP_SECONDS + 2)}\n")
+        hung_gh.chmod(0o755)
+        write_scaled_timeout_shim(shim_dir)
+        env = {**os.environ, "PATH": os.pathsep.join([str(shim_dir), os.environ.get("PATH", "")])}
+
+        with assert_cap_engaged(shim_dir, production_cap=_GH_PR_VIEW_CAP_SECONDS, command="gh"):
+            result = _run_script(local, env=env, gh_installed=False)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert result.stderr.count("\n") == 1
+        assert "gh pr view failed or found no PR; will measure against origin/main" in result.stderr
+
+    def test_reply_with_carriage_returns_is_unparsed_and_measures_the_default_branch_with_no_notice(self, tmp_path):
+        """`$(...)` strips only newlines, so the state reads `OPEN\\r`, which is not `OPEN`."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\r\nstack\r\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: main" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr == ""
+
+    def test_detached_head_with_no_key_attempts_one_gh_pr_view_call(self, tmp_path):
+        """A detached HEAD has no branch to hold a key, so the script still makes its one gh read.
+        What `gh pr view` returns there is gh's to decide, so only the attempt is asserted."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=local, check=True)
+
+        _run_script(local, gh_reply="OPEN\nstack\n", gh_exit_status=0)
+
+        assert _gh_calls(local) == [_PR_VIEW_ARGUMENTS]
+
+    def test_base_git_rejects_as_a_ref_name_exits_1_with_the_open_prs_base_fetch_line(self, tmp_path):
+        """`a..b` passes the shape check, so the fetch's own refspec validation is what stops it."""
+        local, _bare = _make_stacked_repo_without_key(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\na..b\n", gh_exit_status=0)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr.count("\n") == 1
+        assert "fetch of the open PR's base origin/a..b failed" in result.stderr
+
+    def test_pr_base_deleted_on_origin_prints_the_open_prs_base_fetch_line_and_exits_1(self, tmp_path):
+        local, bare = _make_stacked_repo_without_key(tmp_path)
+        subprocess.run(["git", "branch", "-D", "stack"], cwd=bare, check=True)
+
+        result = _run_script(local, gh_reply="OPEN\nstack\n", gh_exit_status=0)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr.count("\n") == 1
+        assert result.stderr.startswith("branch-divergence-status.sh:")
+        assert "fetch of the open PR's base origin/stack failed" in result.stderr
+        assert '"git fetch origin +refs/heads/stack:refs/remotes/origin/stack" by hand' in result.stderr
+        assert "gh-merge-base" not in result.stderr
+
+    def test_key_set_wins_and_makes_no_gh_call(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, gh_reply="OPEN\nmain\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: stack" in result.stdout
+        assert _gh_calls(local) == []

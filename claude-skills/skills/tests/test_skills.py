@@ -7202,27 +7202,16 @@ _PINNED_STEP6_BEHIND_BASE_CLAUSE = (
 )
 
 # Step 1's in-sync precondition: the bullet step 6 hands a conflict back to.
-# The pin also holds the PR-base-mismatch stop (behind > 0 and the captured PR
-# base differs from the branch the recipe names: run no sync, tell the engineer,
-# stop) and the sentence requiring step 7's completion marker to record the
-# post-resync HEAD SHA that the push-gate hook checks. No other test pins those
-# two rules, so trimming either needs a deliberate update here.
+# The pin also holds the sentence requiring step 7's completion marker to record
+# the post-resync HEAD SHA that the push-gate hook checks. No other test pins
+# that sentence, so trimming it needs a deliberate update here.
 _PINNED_STEP1_IN_SYNC_BULLET = (
     "**Branch is in sync with `origin/<base>`.** Run the canonical detection "
     "recipe (see `git-feature-branch-sync/SKILL.md` § \"Detecting "
-    "divergence\"). If behind > 0 and step 1 captured an existing PR's base "
-    "that differs from the branch the recipe's `Default branch:` or "
-    "`Base branch:` line names, run no sync: tell the engineer the two "
-    "disagree, and stop. Otherwise, if behind > 0, invoke "
-    "`/git-feature-branch-sync`, then re-run step 2 against the synced tree; "
-    "step 7's completion marker must record the post-resync HEAD SHA so it "
-    "matches what the push-gate hook checks."
-)
-
-# Step 1's capture bullet: the source of the PR base the in-sync bullet compares.
-_PINNED_STEP1_PR_BASE_CAPTURE_SENTENCE = (
-    "If a PR exists for the branch, capture its number and base: "
-    "`gh pr view --json number,baseRefName`."
+    "divergence\"). If behind > 0, invoke `/git-feature-branch-sync`, then "
+    "re-run step 2 against the synced tree; step 7's completion marker must "
+    "record the post-resync HEAD SHA so it matches what the push-gate hook "
+    "checks."
 )
 
 
@@ -7275,25 +7264,8 @@ class TestReadyForReviewStep6BehindBaseRule:
             _raw_heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING),
             context=(
                 "ready-for-review/SKILL.md: step 1's in-sync precondition has drifted from its pinned clause "
-                "(the pin also holds the PR-base-mismatch stop: behind > 0 and the captured PR base differs "
-                "from the branch the recipe names, so run no sync, tell the engineer, and stop; and the rule "
-                "that step 7's completion marker records the post-resync HEAD SHA)"
+                "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
             ),
-        )
-
-    def test_step1_captures_an_existing_prs_number_and_base_for_the_in_sync_mismatch_stop(self) -> None:
-        """The in-sync bullet's mismatch stop compares against the PR base that
-        step 1 captured, so dropping the `baseRefName` capture leaves that stop
-        with nothing to compare. Matched as a whitespace-collapsed substring:
-        the capture bullet continues with the no-PR sentence past the pinned
-        words."""
-        step1_collapsed = " ".join(
-            _heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING).split()
-        )
-
-        assert " ".join(_PINNED_STEP1_PR_BASE_CAPTURE_SENTENCE.split()) in step1_collapsed, (
-            "ready-for-review/SKILL.md: step 1 no longer captures an existing PR's number and base "
-            "with `gh pr view --json number,baseRefName`"
         )
 
 
@@ -7333,6 +7305,14 @@ _PINNED_RESPOND_PR_STEP3_CLEAN_BULLET = (
 )
 
 
+# respond-pr step 3's lead sentence: the ordering rule that puts the recipe ahead
+# of any FIXED change or reply. The rest of the sentence (the pointer and the
+# base-line clause) is not pinned.
+_PINNED_RESPOND_PR_STEP3_ORDERING_CLAUSE = (
+    "Before applying any `FIXED` change or posting any reply, run the canonical detection recipe"
+)
+
+
 def _respond_pr_step3_text() -> str:
     """Raw text of respond-pr's step 3 list item, from its `3.` marker to the
     line before step 4's `4.` marker. Both markers are asserted found, so a
@@ -7356,6 +7336,16 @@ class TestRespondPrStep3FailedRecipeSentence:
     in step 3. An indented sibling added directly after that bullet fails with
     an "unbounded trailing content" message. A sibling or paragraph added after a blank line,
     or a line starting `-` or `#` at column 0, passes."""
+
+    def test_step3_runs_the_recipe_before_any_fixed_change_or_reply(self) -> None:
+        """Deleting the lead sentence's ordering clause leaves the three outcome
+        bullets passing their pins while nothing runs the recipe first."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert _PINNED_RESPOND_PR_STEP3_ORDERING_CLAUSE in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3 no longer says to run the canonical detection recipe "
+            "before applying any `FIXED` change or posting any reply"
+        )
 
     def test_step3_reruns_a_failed_recipe_once_then_aborts_without_routing_to_sync(self) -> None:
         _assert_pinned_clause_right_bounded(
@@ -7403,11 +7393,18 @@ class TestRespondPrStep3FailedRecipeSentence:
 # SessionStart advisory, which never reads the stack-base key, to sync to the
 # branch the recipe names, and to stop on a failed recipe. It also says why: the
 # hook never reads the stack-base key, so its advisory counts against the default
-# branch. All three clauses (placeholder, advisory redirect, advisory reason) are
+# branch. The callers sentence and its worktree-bash-guard pointer stay adjacent,
+# and the advisory instruction opens its own paragraph after them. All four clauses
+# (placeholder, callers pointer, advisory redirect, advisory reason) are
 # whitespace-collapsed substrings: the detection block's paragraph continues past
 # its last pinned word.
 _PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE = (
     "use `main` / `origin/main` as the placeholder for the base the recipe reports"
+)
+_PINNED_SYNC_CALLERS_POINTER_CLAUSE = (
+    "at the `/ready-for-review` pre-push gate and the `/respond-pr` precheck. "
+    "See `docs/worktree-bash-guard.md` for why the two skill-driven callers go "
+    "through a dedicated script instead of restating the recipe inline."
 )
 _PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE = (
     "After the SessionStart advisory, run the recipe and sync to the branch "
@@ -7431,7 +7428,10 @@ def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() ->
     by the advisory run a literal `git rebase origin/main` on a stacked branch.
     Deleting the advisory-reason clause drops the sentence that the hook never
     reads the stack-base key and so counts against the default branch, which is
-    why the redirect is needed."""
+    why the redirect is needed. The callers-pointer assert guards the callers
+    sentence staying adjacent to its `docs/worktree-bash-guard.md` pointer. The
+    paragraph assert guards the post-advisory instruction staying in its own
+    paragraph."""
     skill_md_path = _skill_file("git-feature-branch-sync")
     lines = skill_md_path.read_text().splitlines(keepends=True)
     detecting_start, detecting_end = _section_between(lines, "## Detecting divergence", skill_md_path)
@@ -7440,6 +7440,13 @@ def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() ->
 
     assert _PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE in preamble_collapsed, (
         f"{skill_md_path}: the preamble no longer says `main` / `origin/main` stand for the base the recipe reports"
+    )
+    assert " ".join(_PINNED_SYNC_CALLERS_POINTER_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer keeps the callers sentence and its "
+        "`docs/worktree-bash-guard.md` pointer adjacent"
+    )
+    assert "\n\nAfter the SessionStart advisory" in "".join(lines[detecting_start:detecting_end]), (
+        f"{skill_md_path}: '## Detecting divergence' no longer puts the post-advisory instruction in its own paragraph"
     )
     assert " ".join(_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE.split()) in detecting_collapsed, (
         f"{skill_md_path}: '## Detecting divergence' no longer tells the agent to sync to the branch the recipe "

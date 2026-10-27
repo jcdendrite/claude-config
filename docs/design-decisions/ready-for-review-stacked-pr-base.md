@@ -10,16 +10,17 @@
 - gh's PR-create command reads this key when `--base` is absent. A custom key such as `branch.<name>.rfr-base` would work for the gate, but a hand-run PR create would still target the default branch.
 - Pointing the branch's upstream (`branch.<name>.merge`) at the stack base would break steps 6 and 8, which rely on the branch's own `origin/<branch>` tracking.
 - gh's checkout and create code never write the key. In the `cli/cli` trunk source, `pkg/cmd/pr/checkout/checkout.go` writes only `branch.<branch>.remote`, `pushRemote` and `merge`, and `pkg/cmd/pr/create/create.go` only reads the key. That covers those two files only.
-- Step 1 sets the key only from the engineer's own words, never by inference.
+- Step 1 sets the key only from the engineer's own words.
 
 ## The one rule
 
 - With the key set, a step uses its value or stops.
-- With no key set, `pr-diff-against-base.sh` resolves its base from the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch, and `branch-divergence-status.sh` uses the default branch. Both scripts also:
+- With no key set, `pr-diff-against-base.sh` resolves its base from the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch, and `branch-divergence-status.sh` reads an open PR's base itself, as "The no-key read" below states. Both scripts also:
   - a failed git read of HEAD or the key stops the step;
   - measurement goes through the fully qualified `refs/remotes/origin/<base>` ref.
-- With no key set, of the two scripts, only `branch-divergence-status.sh` fetches the default branch, using a named destination plus a verify, and a verify failure prints the "failed or timed out" line.
-- A stop exits non-zero with one stderr line.
+- With no key set, of the two scripts, only `branch-divergence-status.sh` fetches, and it fetches the base it measures (the default branch, or an open PR's other base) using a named destination plus a verify. A verify failure on the default branch prints the "failed or timed out" line.
+- A stop exits non-zero, and the stop itself is one stderr line.
+  - With no key set, a `gh` notice can precede that line, for example when `gh` fails and the default-branch fetch fails together.
   - An unusable value gets its line from `_lib_print_unusable_stack_base` (`claude/.claude/hooks/_lib.sh`), the one home of the fix text. The line names the script, the key, its value and the reason. It says the engineer runs the fix, not the agent.
   - A git read failure prints its own line instead, naming the failed git call and its status. The line says to retry the command and, if it fails again, to run that git call by hand to see its error. A key edit would not fix a git read failure, because the failure is git's, not the value's.
     - All three git calls the helper makes (`symbolic-ref`, `config` and `check-ref-format`) go through `_lib_stack_base_git`, the one home of the read-failure line.
@@ -45,11 +46,23 @@ Where each stop fires:
   - It parses the `gh pr view` reply with `_lib_open_pr_base`.
   - A merged or closed PR's base is ignored, because `gh pr view` with no argument can return one.
 
+## The no-key read
+
+With no key set, `branch-divergence-status.sh` runs one `gh pr view --json state,baseRefName` call through `_lib_gh`, capped at 10 seconds plus up to 2 seconds of kill grace, and parses the reply with `_lib_open_pr_base`. No key and no config are written. The fetch writes `refs/remotes/origin/<base>` and `FETCH_HEAD`.
+
+- The 10-second cap is the value `review-pr-acquire.sh`, `review-pr-checkout.sh`, `review-pr-diff.sh` and `review-pr-post.sh` each set for their own `gh pr view` calls, and `_review-pr-lib.sh` cites GitHub's documented 10-second GraphQL request termination as the vendor source. `_lib_capped_for` runs `timeout -k 2`, which adds a 2-second SIGKILL grace, so the gh read and the fetch add at most the 10-second cap, plus 2, plus the 2-second fetch.
+- An OPEN PR whose base differs from the default branch is fetched and measured, and the script prints `Base branch: <name>`. An OPEN PR on the default branch prints `Default branch: <name>`, as with no PR.
+- A merged or closed PR, or a reply the parser rejects, measures the default branch with no notice.
+- `gh` absent, failed, timed out or finding no PR measures the default branch and prints one stderr line saying `gh pr view failed or found no PR`.
+- A PR base that fails the key's name-shape checks (a leading `-`, a character outside `[A-Za-z0-9._/-]`, an `origin/` prefix, or `HEAD`) falls back to the default branch with one stderr line that lists the name rules and does not echo the base, because the base is remote text. Both reads share `_lib_stack_base_name_shape` in `_lib.sh`. A base git rejects as a ref name, such as `a..b` or `x.lock`, passes that check and fails the fetch with exit 1. GitHub cannot hold such names.
+- A PR-derived base that cannot be fetched, such as a PR base deleted on origin, prints one generic stderr line with the by-hand `git fetch` command and exits 1. It does not use the key-fix formatter, because no key was set.
+- A set key wins and no `gh` call is made. A set key that disagrees with an open PR keeps stopping at `pr-diff-against-base.sh`, with no new stop in the divergence script.
+
 `pr-diff-against-base.sh` never fetches, so it can read a deleted stack base's stale local ref. Step 1's fetch is what catches a deleted stack base, and step 1 runs before step 3. That ordering is a dependency. `git branch -D` removes the deleted branch's `branch.<name>` section, so a reused branch name does not inherit a stale key.
 
 A failed `status` recompute never reads `live`, so step 3 runs the script itself and halts on its failure. Every stop therefore lands before step 7's marker, on the CI-watch path too.
 
-`/respond-pr`'s precheck is a defined arm, not a residual: `respond-pr/SKILL.md` step 3 names CONFLICT, CLEAN and a failed recipe. The failed-recipe abort handles the skill's active marker as the CONFLICT arm's abort does. Neither abort names a deactivation, so step 9's `marker.sh deactivate respond-pr` is not reached. The skill's bypass marker therefore stays armed until eviction (`docs/hooks.md` § "Gate deadlock recovery"). While it is armed, `require-respond-pr.sh` releases every surface it gates, not only comment commands. Each Bash call in the session refreshes the marker, so it stays armed as long as the session keeps issuing Bash calls. Eviction happens when the session's process dies or after 60 idle minutes. The marker is not scoped to a repo, because its path carries no repo hash. `marker.sh deactivate respond-pr` ends it. That gate is a cooperative mistake-catcher, not a security boundary, and re-invoking `/respond-pr` re-activates the marker.
+`/respond-pr`'s precheck is a defined arm, not a residual: `respond-pr/SKILL.md` step 3 names CONFLICT, CLEAN and a failed recipe. The failed-recipe abort follows the CONFLICT arm's marker handling, so step 9's `marker.sh deactivate respond-pr` is not reached and the marker stays armed until eviction. That armed state is accepted. While it is armed, `require-respond-pr.sh` releases every surface it gates, not only comment commands. `docs/hooks.md` § "Gate deadlock recovery" holds the eviction conditions, the per-call refresh and the missing repo scope. That gate is a cooperative mistake-catcher, not a security boundary.
 
 When the stack base merged, the stop line's fix is `git rebase --onto origin/<merged-into> <old stack-base commit>` followed by `git config --unset-all` on the key. After a squash merge, a plain `git rebase origin/<merged-into>` replays the base's commits, because the squash commit is one combined patch, not one patch per base commit. The line names no fork point.
 
@@ -69,7 +82,8 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
 
 - **A `--base` flag on `pr-diff-against-base.sh`, or an environment variable.** Neither reaches `marker.sh status`.
 - **Auto-detecting the base from open PR heads.** It needs a network scan and a heuristic the engineer would confirm anyway.
-- **One resolver with a precedence chain** (open PR, key, closed PR, default). Only `pr-diff-against-base.sh` reads a PR, so "key set: use it or stop; no key: the default-branch path" gives the same answers. The no-key base resolution stays as "The one rule" lists it.
+- **One resolver with a precedence chain** (open PR, key, closed PR, default). A set key wins in both scripts, and the no-key paths each read the PR themselves, so "key set: use it or stop; no key: the PR path" gives the same answers. The no-key base resolution stays as "The one rule" lists it.
+- **Step 1 writing the key from an open PR's base.** It persists a key from text read off a remote, and it leaves a prose-only check between GitHub's text and a shell command the agent composes. Reading the PR base inside the script writes no key and no config. In `branch-divergence-status.sh`, the shared `_lib_stack_base_name_shape` check, not prose, is what keeps remote text out of the commands the agent composes from a printed key or PR base. The default branch name comes from `origin/HEAD` and has no shape check.
 - **A named trigger per cause, each with its own remedy text.** The causes differ only in the reason clause.
 - **Letting an open PR's base silently override a disagreeing key.** It hides a retarget or a wrong base.
 - **Folding the base ref into the `cumulative-review` hash.** It contradicts the decision cited above.
@@ -80,7 +94,7 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
 ## Residuals
 
 - **A stack base that merged but whose branch stays on origin.** GitHub retargets a stacked PR only when its merged base branch is deleted, and deleting head branches on merge is a per-repository setting. In a repository that keeps merged branches no stop fires, and the PR keeps targeting the merged branch.
-- **`branch-divergence-status.sh` with no key set** measures against the default branch for a PR with another base, such as a release-branch PR. See [ready-for-review-base-drift.md](ready-for-review-base-drift.md).
+- **A merged or closed PR with no key set.** `branch-divergence-status.sh` ignores it and measures the default branch, while `pr-diff-against-base.sh` still reads its base, so one run can sync against one branch and review against another. Unifying them means changing one script's PR-state handling, which this change leaves alone.
 - **The SessionStart advisory** (`check-branch-divergence.sh`) measures a stacked branch against the default branch.
   - The hook fetches and measures through `origin/<default branch>`, and its header says it never reads the key.
   - Under a narrowed `remote.origin.fetch` the advisory can read a stale ref.
@@ -95,7 +109,7 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
   - Once the base branch is gone from origin, the divergence script exits 1 on its fetch stop. The precheck re-runs it once and aborts. The skill's instruction, not a gate, keeps it from posting a review reply until the engineer applies the stop line's fix.
   - This is the accepted post-merge state for `/respond-pr` as well as for the gate. "No rebase recipe" below covers the missing fork-point.
 - **`respond-pr` measures against the key, not the open PR's base.** With the key set, its precheck runs `branch-divergence-status.sh`, which reads the key and never the PR. An OPEN PR retargeted to another branch while the stack base stays on origin therefore passes the precheck. `/ready-for-review` step 3 then stops on the mismatch, before the marker the push gate requires.
-- **An already-open stacked PR** has no key. The engineer moves it onto the key with `git config branch.<branch>.gh-merge-base <base>`, and step 3's open-PR check then passes because the key equals the PR's base. Until then, step 1's in-sync bullet stops when behind > 0 and the PR's base differs from the branch the recipe names, so no sync runs against the default branch.
+- **An already-open stacked PR** has no key. The divergence script reads the PR's base with no key set, so the sync check measures it, and `pr-diff-against-base.sh` already resolves the same base for the cumulative diff. When a key is set and disagrees with the PR's base, step 3 stops, and the divergence script does not.
 - **The review base is trusted from one write.**
   - Condition: the key's value alone selects the review scope, and any origin branch that shares history passes.
   - Consequence: a wrong value narrows the diff with no mechanical check beyond the origin fetch, and an empty diff halts at step 3. The missing check applies whenever step 3 finds no OPEN PR: before the PR exists, when only a merged or closed PR exists, and on the `gh pr view` failures or unparseable replies the residual above lists.
@@ -104,7 +118,7 @@ The push gate's two deny strings that named the cumulative diff (`gh pr ready` a
   - Pre-check: after step 1's fetch, `git log --oneline origin/<stack-base>..HEAD` lists the commits the review covers.
 - **A stack base whose history is unrelated to HEAD**, at the divergence script.
   - Condition: the base shares no history with HEAD, so `git merge-tree` cannot compute a verdict.
-  - Behavior: the script prints `Behind:` and exits 1 with one stderr line, "trial merge of origin/<base> into HEAD could not complete". `TestBehindWithUnrelatedHistories` in `test_branch_divergence_status.py` exercises the default-branch form, an orphan branch with no key set. The key path reaches the same `_lib_trial_merge_verdict` call.
+  - Behavior: the script prints `Behind:` and exits 1 with the stop line, "trial merge of origin/<base> into HEAD could not complete". `TestBehindWithUnrelatedHistories` in `test_branch_divergence_status.py` exercises the default-branch form, an orphan branch with no key set. The key path reaches the same `_lib_trial_merge_verdict` call.
   - Consequence: `/respond-pr`'s precheck re-runs the recipe once and then stops, and step 1's sync stops before any rebase, so the branch is not rewritten.
   - Signal: `Behind:` equals the base's whole commit count and no `Trial merge:` line follows.
   - The no-key form is recorded in [ready-for-review-base-drift.md](ready-for-review-base-drift.md).
