@@ -1,7 +1,7 @@
 """Tests for autonomous-shipping-active.sh.
 
 This script is a thin forwarder over _lib_autonomous_shipping_active
-(already exhaustively tested at hooks/tests/test_lib.py:1204-1344) — these
+(already exhaustively tested by TestAutonomousShippingActive in hooks/tests/test_lib_config_gates.py) — these
 tests cover only the wrapper's own behavior: resolving the repo root,
 forwarding the function's exit code unchanged, and failing loudly outside a
 git repo. They deliberately do not re-exercise every branch inside
