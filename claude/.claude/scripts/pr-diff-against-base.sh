@@ -5,7 +5,7 @@
 # - The stack base in `git config branch.<branch>.gh-merge-base`, when that key is set.
 # - The base of the PR `gh pr view` returns for this branch, merged or closed included.
 # - The default branch.
-# With the key set, the script uses its value or exits 1 with one stderr line.
+# With the key set, the script uses its value or exits 1 with a stderr line naming the cause.
 # Each of these stops exits 1:
 # - The value is unusable.
 # - No merge-base resolves against origin/<value>.
