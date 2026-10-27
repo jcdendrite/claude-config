@@ -339,8 +339,7 @@ def _spawn_counts_by_agent_type(
 
     Counts the dispatches in a session's main transcript and its
     subagent transcripts, including one made from inside another agent's
-    transcript (an isSidechain record). review-orchestrator spawns every
-    reviewer from inside its own transcript.
+    transcript (an isSidechain record).
     scope._attributed_branch ignores a sidechain record's own gitBranch tag.
     It attributes the record to the main-thread branch in effect at its
     timestamp. branch_filter matches that attributed branch, so a session's
@@ -536,8 +535,7 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     session_iter, _scope_label = scope._resolve_project_scope(
         args, "cost-counts", include_subagents=True, roots=roots,
     )
-    # Streams one session at a time because include_subagents=True makes each
-    # session's records include the direct subagents/*.jsonl transcripts.
+    # Streams one session at a time.
     round_counts = dict.fromkeys(review_rounds.REVIEW_SKILLS, 0)
     raw_spawn_counts: dict[str, int] = defaultdict(int)
     for session in session_iter:

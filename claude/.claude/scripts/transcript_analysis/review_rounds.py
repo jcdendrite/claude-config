@@ -175,8 +175,7 @@ def round_opened_by_spawn(rec: dict) -> bool:
 
 def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
-    (already deduped) records. Tolerates sidechain records via the per-record
-    isSidechain flag.
+    (already deduped) records. A record flagged isSidechain never opens a round.
 
     Re-expresses judgment_pair.cmd_judgment_pair's boundary rule. window_end
     is the index of the next fresh user prompt or the next round-open record,
@@ -338,14 +337,12 @@ def compute_review_round_costs(
     resolved_roots: Sequence[Path] | None = None,
 ) -> dict:
     """Single pass over session_iter, main-thread only. session_iter must not
-    carry merged subagent-file records, since subagent turns are priced
-    through the dispatch.
-
-    Rounds are detected on the main thread only. A review skill run inside a
-    dispatched subagent is already priced as that dispatch's own cost, so
-    counting it as its own round would double-count its dollars. That includes
-    a review-orchestrator's own `Skill` call: the dispatch itself opens the
-    round, so that call never opens a second one.
+    carry merged subagent-file records. Subagent turns are priced through the
+    dispatch, so a review skill run inside a dispatched subagent is already
+    priced as that dispatch's own cost, and counting it as its own round would
+    double-count its dollars. That includes a review-orchestrator's own `Skill`
+    call: the dispatch itself opens the round, so that call never opens a
+    second one.
 
     Computes every review-skill round window, its main-thread plus
     recursively-priced subagent dollars, and each touched branch's total
@@ -477,8 +474,8 @@ def compute_review_round_counts(
     *,
     branch_filter: set[str] | None = None,
 ) -> dict[str, int]:
-    """Per-skill round counts across session_iter, main-thread only. Tolerates
-    sidechain records in session_iter via the per-record isSidechain flag.
+    """Per-skill round counts across session_iter, main-thread only. A record in
+    session_iter flagged isSidechain never opens a round.
 
     Every REVIEW_SKILLS member is a key in the returned dict, zeros
     included, so a caller never has to special-case an absent skill.
