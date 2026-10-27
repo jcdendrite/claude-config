@@ -2007,7 +2007,7 @@ class TestBaseOverlayDisjointnessAtRuntime:
 
     def test_overlay_allowed_keys_match_the_scripts_own_list(self) -> None:
         """A key added to the script fails here, so the parametrized cases and
-        _OVERLAY_ALLOWED_KEY_VALUES below must be extended with it."""
+        _OVERLAY_ALLOWED_KEY_VALUES must be extended with it."""
         script_keys = _print_mode_json_from_render_settings("--print-overlay-allowed-keys")
 
         assert len(script_keys) == len(set(script_keys)), f"duplicate overlay-allowed keys: {script_keys}"
