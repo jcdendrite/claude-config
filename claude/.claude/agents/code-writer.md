@@ -79,6 +79,11 @@ language and stack:
   - Respect scope discipline (Axis 1–4).
   - Write any comment as a one-line durable fact, not PR narration — test: does
     it still make sense once the PR description is gone?
+  - Don't restate what the code already shows (§Durable text's "Don't restate
+    the code" bullet). Such prose only drifts. What earns a comment or
+    docstring is what the code can't carry: why this approach, an invariant
+    another site relies on, or an external fact such as a vendor quirk, a spec
+    clause, or a regression's issue.
 
 This baseline is what you check while writing. It does not replace the
 self-review pass below.
@@ -157,7 +162,7 @@ more focused task than writing it — use that asymmetry deliberately.
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
-| Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies, CLAUDE.md/AGENTS.md, rule files) | `comment-discipline-reviewer`; for `CLAUDE.md`, `AGENTS.md`, or a rule file, also `ai-instruction-and-memory-files` for prose altitude/placement |
+| Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies, CLAUDE.md/AGENTS.md, rule files) | `comment-discipline-reviewer`; for `CLAUDE.md`, `AGENTS.md`, or a rule file, also `ai-instruction-and-memory-files` for placement |
 
 ## Return format
 

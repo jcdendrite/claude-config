@@ -34,19 +34,7 @@ agent, or plugin files:
   on a bare `git pull`.
 - **`claude/.claude/hooks/config-keys.psv`** → `claude-hook-review` is
   invoked by the dispatcher but **not hook-enforced**. Enforcement is
-  narrower than the whole file. The five enforcement-critical rows:
-  - `worktree_required`
-  - `autonomous_shipping`
-  - `round_consult_gate`
-  - `commit_stall_block`
-  - `authorization_boundary_restore`
-
-  Only these four of each row's columns:
-  - `default`
-  - `resolution`
-  - `legacy-probe-on-resolution-failure`
-  - `legacy-import-locations`
-
-  Per this file's own header comment.
+  narrower than the whole file: it covers only the rows, and within them only
+  the columns, that the file's own header comment names as enforcement-critical.
 
 `/code-review` invokes whichever applies automatically.

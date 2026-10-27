@@ -484,7 +484,7 @@ class TestDenyCredentialBashReads:
         flag position still denies, in both the `=` and space argument
         forms. Proves the hook's scan-strip-re-scan wiring only -- the full
         credential-family sweep is pinned at the cheaper unit layer in
-        test_lib.py::test_lib_strip_env_file_flag_args_non_env_credential_family_unstripped."""
+        test_lib_credentials.py::test_lib_strip_env_file_flag_args_non_env_credential_family_unstripped."""
         command = flag_form.format(path="~/.netrc")
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
 
@@ -575,7 +575,7 @@ class TestDenyCredentialBashReads:
     # hook ever sees it, so the sed-failure path never actually receives an
     # invalid byte through the hook's JSON tool-input interface. Pinned
     # directly at the library level instead, in
-    # test_lib.py::test_lib_strip_env_file_flag_args_returns_original_text_unchanged_on_sed_failure,
+    # test_lib_credentials.py::test_lib_strip_env_file_flag_args_returns_original_text_unchanged_on_sed_failure,
     # which injects the byte via argv rather than through jq.
 
     # ------------------------------------------------------------------ #

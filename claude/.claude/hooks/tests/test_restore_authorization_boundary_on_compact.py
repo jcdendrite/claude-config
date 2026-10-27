@@ -83,7 +83,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
         authorization_boundary_restore's own safe direction is enforced (the
         boundary text still gets restated), unlike the accepted exit-2
         (config-dir-unresolvable) no-op this hook's own header already
-        documents. Mirrors test_lib.py's _lib_sh_with_unreadable_schema
+        documents. Mirrors test_lib_config_gates.py's _lib_sh_with_unreadable_schema
         technique: symlink the hook and _lib.sh/_config.sh into a dir with
         no config-keys.psv sibling."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"

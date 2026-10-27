@@ -151,7 +151,7 @@ def test_matches_source_field_only_not_timestamp(tmp_path: Path) -> None:
 # The destination's ownership check ([ -O "$dest" ], alongside the symlink
 # check exercised below) has no dedicated test: the different-owner case
 # can't be reproduced in single-uid CI, the same limitation
-# TestLibResumeContextIndexDir's docstring in test_lib.py documents for
+# TestLibResumeContextIndexDir's docstring in test_lib_resume_context.py documents for
 # the writer's structurally identical [ -O "$dir" ] guard. It's closed by
 # the same POSIX argument there: ownership can't be forged without
 # privilege an attacker doesn't have.

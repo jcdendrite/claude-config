@@ -104,6 +104,7 @@ TEST_FILES = (
     "test_transcript_cache_efficiency.py",
     "test_transcript_edit_format.py",
     "test_transcript_instrument_authoring.py",
+    "test_transcript_analysis.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

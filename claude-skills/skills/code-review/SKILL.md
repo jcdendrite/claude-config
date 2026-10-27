@@ -35,7 +35,7 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 Before forming any ripple judgment in Step 1 or the checklist, enumerate every row in the Change-type table (under *Ripple effect triage*) that matches the diff. Hold the list in working memory through the rest of the review — each row is an anchor the spawn decision must address. This step exists because the table is the institutional memory; the parent's first-pass judgment is not. Form judgment *against* the table, not in lieu of it. For compound diffs that match multiple rows, narrow the diff scope per spawn — pass each specialist only the file(s) within their lane, not the full diff, so their findings stay in-scope. Judge a lane by what each file's change does, the way the Change type column keys its rows, never by file type. The comment-discipline row's spawn instruction exempts that row from this per-spawn narrowing.
 
 <!-- SCOPE_RULE:code-review-staged-diff-only start -->
-When the diff under review is the currently-staged diff and `HEAD` is not the default branch, every spawned row's responsibility is bounded to that diff. The default branch is resolved via the same mechanism `require-ready-for-review.sh` uses: `git symbolic-ref --quiet refs/remotes/origin/HEAD`, falling back to checking `main`/`master`/`develop` as candidates only when that ref is unset. A spawn's exhaustive-enumeration duty covers only the boundary. <!-- SCOPE_RULE:code-review-causal-reach start -->A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty.<!-- SCOPE_RULE:code-review-causal-reach end --> The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. This narrows only speculative, undirected search for unrelated defects — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill. Two exceptions stay in scope regardless of the boundary:
+When the diff under review is the currently-staged diff and `HEAD` is not the default branch, every spawned row's responsibility is bounded to that diff. The default branch is resolved via the same mechanism `require-ready-for-review.sh` uses: `git symbolic-ref --quiet refs/remotes/origin/HEAD`, falling back to checking `main`/`master`/`develop` as candidates only when that ref is unset. A spawn's exhaustive-enumeration duty covers only the boundary. <!-- SCOPE_RULE:code-review-causal-reach start -->A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty.<!-- SCOPE_RULE:code-review-causal-reach end --> The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. <!-- SCOPE_RULE:code-review-disclosure-not-suppressed start -->This narrows only speculative, undirected search for unrelated defects — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill.<!-- SCOPE_RULE:code-review-disclosure-not-suppressed end --> Two exceptions stay in scope regardless of the boundary:
 
 - A matched Change-type row's own directed causal-reach instruction (e.g. "verify all consumers," "trace all auth paths").
 - Checklist item 14's duty to always flag a pre-existing issue you notice, which is unconditional and unaffected by this rule.
@@ -134,6 +134,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
    - Paragraph readability — parallel rules stacked as sentences, or an instruction placed after its rationale or exception
    - Prose at the wrong altitude — for its reader
+   - Prose restating the code — a comment, docstring, or doc passage stating what the code shows
    - PR-defined terminology
    - "Used to be X" framing
    - Survives-the-PR self-test on durable-doc content — a durable-doc paragraph that fails it
@@ -203,7 +204,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
-For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), duplication, length cap, and behavior test for instruction and memory files.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
@@ -242,7 +243,7 @@ For each finding, state:
 2. **File and line**
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
-5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require)
+5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require). Instead, for prose that restates the code, the fix names the lines to delete (CLAUDE.md §Durable text).
 
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 
@@ -337,7 +338,7 @@ If implementation-wrong-shape, replace the surface and re-run Step 1. If correla
 
 ## Finding disposition
 
-After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
+After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding, plus any break the orchestrator's own pass noticed that the enforcement-invariant rule below covers, and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
 
 Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 findings; a four-column table — Finding | Source | Disposition | Rationale — when there are 3+. The orchestrator's recommendation that follows can still propose grouping fixes into this PR vs follow-ups, but every finding has been seen, tagged, and either addressed or justified against the closed list.
 
@@ -363,6 +364,8 @@ The return decides what, if anything, follows:
 - **Endorsed, plan file exists.** Follow with `plan-it` Step 5's revision re-dispatch against that plan's path.
 - **Endorsed, no plan file.** No second dispatch — the endorsed mechanism enters through `/plan-it` on its own terms, not as a review fix.
 - **Rejected.** No second dispatch and no plan edit.
+
+For a finding the enforcement-invariant rule below covers, Endorsed with no plan file and Rejected each end in that rule's blocking stop-and-ask, since neither fixes the hole.
 
 The gate diverts the finding that trips it, not the round: state `plan-architect — consult` on the `Fix route:` line for that finding, and leave the remaining ADDRESS rows on whichever route they would otherwise have had. That line is written at disposition time, before the return is known, so it can only ever record the consult, never which branch of the follow-up fires. State the gate's verdict even when it doesn't fire, per the *Spawn decisions:* no-match precedent above.
 <!-- DISPOSITION_RULE:code-review-new-primitive-route end -->
@@ -400,7 +403,7 @@ A finding with no explicit per-finding verdict from the consult (failed dispatch
 - **"Pre-existing gap"** — pre-existing is a fact about the gap's age, not a disposition. A pre-existing gap that closes a correctness or security-invariant hole is ADDRESS; pre-existing alone is not a criterion.
 - **"Small" / "quick" / "cosmetic" / "non-blocking" / "advisory"** — implementation size and merge-blocking severity are not disposition axes. A reviewer's advisory or a one-line cosmetic fix in already-touched, already-tested code is ADDRESS; "it doesn't block merge" is a severity label, not a DEFER criterion.
 <!-- DISPOSITION_RULE:code-review-defer-invariant start -->
-- **"Enforcement invariant weakened, but disclosed"** — a finding that the diff opens a path around an enforcement invariant (a gate, hook, permission check, required-approval, or marker guarantee some mechanism currently makes unbypassable) is never DEFER-eligible, regardless of which criterion above seems to match. Disposition is ADDRESS (fix the hole) or a blocking stop-and-ask to the human, whose keep is logged with `--enforcement-invariant` and without `--carry-forward`: it is asked again on every re-raise, never carried, and never DEFERred. Approval of a diff or PR does not function as informed consent for an invariant-break buried in the body.
+- **"Enforcement invariant weakened, but disclosed"** — a finding that the diff opens a path around an enforcement invariant (a gate, hook, permission check, required-approval, or marker guarantee some mechanism currently makes unbypassable) is never DEFER-eligible, regardless of which criterion above seems to match. Disposition is ADDRESS (fix the hole) or a blocking stop-and-ask to the human, whose keep is logged with `--enforcement-invariant` and without `--carry-forward`: it is asked again on every re-raise, never carried, and never DEFERred. Approval of a diff or PR does not function as informed consent for an invariant-break buried in the body. The bar applies to an invariant break a round notices anywhere in the PR, not only inside the diff that round enumerates (the staged diff in a staged round, the PR against its base in the cumulative pass). Checklist item 14's informational-only route does not apply to such a break.
 <!-- DISPOSITION_RULE:code-review-defer-invariant end -->
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.

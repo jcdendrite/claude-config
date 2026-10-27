@@ -6,6 +6,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
+  - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
+  - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.
+  - `comment-discipline-reviewer` gains a "Prose restating the code" angle and moves to `effort: high`.
+  - `code-writer`'s baseline points at the new bullet.
+  - Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are no longer exempt from `comment-discipline-reviewer`'s "Prose at the wrong altitude" angle.
+  - `ai-instruction-and-memory-files` gains a placement row for content that isn't a rule.
+  - The change is live on `git pull`.
+- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 525.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
 - **`cost-counts` "Subagent spawns" now counts reviewer agents spawned inside a `review-orchestrator` transcript, and any other subagent's, not only main-thread dispatches.** Figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure.
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
