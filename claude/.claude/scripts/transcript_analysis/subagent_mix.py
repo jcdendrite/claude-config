@@ -340,11 +340,9 @@ def _spawn_counts_by_agent_type(
     Counts the dispatches in a session's main transcript and its
     subagent transcripts, including one made from inside another agent's
     transcript (an isSidechain record).
-    scope._attributed_branch ignores a sidechain record's own gitBranch tag.
-    It attributes the record to the main-thread branch in effect at its
-    timestamp. branch_filter matches that attributed branch, so a session's
-    leading default-branch dispatches count toward the first branch it
-    enters, as in review_rounds' carry-forward attribution.
+    branch_filter matches the branch scope._attributed_branch attributes, so
+    a session's leading default-branch dispatches count toward the first
+    branch it enters, as in review_rounds' carry-forward attribution.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
@@ -365,8 +363,6 @@ def _spawn_counts_by_agent_type(
                     continue
                 if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
                     continue
-                # A malformed spawn block's non-dict input or non-string
-                # subagent_type counts as unknown, not an abort.
                 spawn_input = block.get("input")
                 stype = spawn_input.get("subagent_type") if isinstance(spawn_input, dict) else None
                 if not isinstance(stype, str) or not stype:
@@ -531,7 +527,6 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     session_iter, _scope_label = scope._resolve_project_scope(
         args, "cost-counts", include_subagents=True, roots=roots,
     )
-    # Streams one session at a time.
     round_counts = dict.fromkeys(review_rounds.REVIEW_SKILLS, 0)
     raw_spawn_counts: dict[str, int] = defaultdict(int)
     for session in session_iter:
