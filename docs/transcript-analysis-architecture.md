@@ -54,8 +54,7 @@ turn-shape-holdout-samples, sessions, context-distribution, context-composition,
 instrument-authoring by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
-The shim also binds package modules, leaf names, and the stdlib `os` and `tempfile` that shim-loading test
-files read through their copy. A test that needs to steer a command patches the module whose binding the
+A test that needs to steer a command patches the module whose binding the
 handler reads at call time, not the shim.
 
 ## The package
@@ -785,10 +784,8 @@ only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
 only the shim has — `build_parser` or `main` — loads
 its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
-boilerplate `test_transcript_analysis.py` uses. `tests/test_transcript_analysis.py` reads only those two
-names through its copy and imports every other package module it reads directly, as above. The other
-shim-loading test files reach package modules through their copy, as `_mod.<module>.<name>` (e.g.
-`_mod.cost._print_scan_coverage_table`) or as a leaf name the shim re-exports. `tests/conftest.py` carries the
+boilerplate `test_transcript_analysis.py` uses. It reads only those two names through its copy and imports
+every package module it reads directly. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
@@ -798,8 +795,8 @@ docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.co
 `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
 live in `tests/test_author_outcome.py`: most exercise the package module directly
-(`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
-shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.
+(`from transcript_analysis import author_outcome as ao`), with a small `spec_from_file_location`-loaded
+shim copy reserved for the argparse-wiring tests, which read `build_parser`.
 
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
@@ -863,7 +860,8 @@ its `TEST_FILES` tuple, it checks both the `<module>.<name>` and `_mod.<module>.
 shapes. It requires at least one such read per file. It holds the file to an unaliased
 whole-module import. It also fails any test file that imports from `transcript_analysis` without
 loading the shim and is missing from `TEST_FILES` — a permanent check rather than a one-time
-migration-time script.
+migration-time script. It also requires every test file that loads a shim copy to read only
+`build_parser` and `main` through it.
 
 The subagent command family splits at command seams rather than one file per module:
 

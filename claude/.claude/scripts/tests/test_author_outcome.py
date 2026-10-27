@@ -2465,6 +2465,9 @@ class TestBuildParserWiring:
         assert parsed.agent == "staff-sdet"
         assert parsed.since == "14d"
 
+    def test_author_outcome_dispatches_to_cmd_author_outcome(self):
+        assert _mod.build_parser().parse_args(["author-outcome"]).func is ao.cmd_author_outcome
+
 
 class TestCmdAuthorOutcomeReport:
     """cmd_author_outcome end-to-end."""

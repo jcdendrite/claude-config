@@ -5,40 +5,10 @@ write a file; docs/transcript-analysis.md lists both sets.
 """
 
 import argparse
-import os  # noqa: F401 -- read only via _mod.os from test files, as a stdlib passthrough
 import sys
-import tempfile  # noqa: F401 -- test_transcript_ledger_common.py reads _mod.tempfile as a stdlib passthrough
 from pathlib import Path
 
-# cache_rebuild/cache_rebuild_rules/corpus/cost/cost_ledger/gh_cli/handoff_nudge/
-# handoff_signal_response/ledger_common/period_cost/plan_boundary/pr_cost/pr_cost_export/
-# pr_cost_ledger/pricing/redaction/render/subagent_mix are read only via _mod.<module> from
-# test files (unit-testing a private helper, or patching module-owned state). scope is the
-# one module this file's own code reads bare, as scope.PROJECTS_DIR.
-# A module dropped from this list (e.g. audit_routing, denials) has no `_mod`
-# reader left. Reintroducing a shim-loading test file for it without restoring its
-# binding here breaks that file's collection.
-from transcript_analysis import (  # noqa: F401
-    cache_rebuild,
-    cache_rebuild_rules,
-    corpus,
-    cost,
-    cost_ledger,
-    gh_cli,
-    handoff_nudge,
-    handoff_signal_response,
-    ledger_common,
-    period_cost,
-    plan_boundary,
-    pr_cost,
-    pr_cost_export,
-    pr_cost_ledger,
-    pricing,
-    redaction,
-    render,
-    scope,
-    subagent_mix,
-)
+from transcript_analysis import scope
 from transcript_analysis.audit_routing import (
     # All three names below are read bare by this file's own still-monolithic build_parser
     # (each audit-routing subcommand's own set_defaults).
@@ -77,17 +47,6 @@ from transcript_analysis.context_distribution import (
     _add_context_distribution_subparser,
 )
 from transcript_analysis.cost import (
-    # The seven noqa'd names below are read only via _mod.<name> from test files (unit-testing
-    # a private helper directly, or a monkeypatch retarget).
-    # cmd_cost and cmd_cost_trend are the two names this file's own code calls bare -- via
-    # p_cost/p_cost_trend.set_defaults below.
-    _accumulate_per_account_turn,  # noqa: F401
-    _cost_report,  # noqa: F401
-    _cost_trend_report,  # noqa: F401
-    _print_branch_exclusion_diagnostic,  # noqa: F401
-    _print_model_id_table,  # noqa: F401
-    _print_thread_table,  # noqa: F401
-    _print_token_class_table,  # noqa: F401
     cmd_cost,
     cmd_cost_trend,
 )
@@ -152,15 +111,6 @@ from transcript_analysis.pr_link import (
     # Read bare by this file's own build_parser (the pr-link subparser's registration).
     _add_pr_link_subparser,
 )
-from transcript_analysis.pricing import (
-    _TOKEN_CLASSES,  # noqa: F401 -- read only via _mod._TOKEN_CLASSES from test files
-    _cache_write_split,  # noqa: F401 -- read only via _mod._cache_write_split from test files
-    _context_at_turn,  # noqa: F401 -- read only via _mod._context_at_turn from test files
-    _context_bucket,  # noqa: F401 -- read only via _mod._context_bucket from test files
-    _context_window_for_model,  # noqa: F401 -- read only via _mod._context_window_for_model from test files
-    _model_rates,  # noqa: F401 -- read only via _mod._model_rates from test files
-    _price_turn,  # noqa: F401 -- read only via _mod._price_turn from test files
-)
 from transcript_analysis.read_scope import (
     # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
@@ -169,17 +119,6 @@ from transcript_analysis.rearm_backtest import (
     # Read bare by this file's own build_parser (the rearm-backtest
     # subcommand's own set_defaults).
     cmd_rearm_backtest,
-)
-from transcript_analysis.redaction import (
-    _BUILT_IN_AGENT_TYPES,  # noqa: F401 -- read only via _mod._BUILT_IN_AGENT_TYPES from test files
-    _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
-    _build_redact_map,  # noqa: F401 -- read only via _mod._build_redact_map from test files
-    _corpus_fingerprint,  # noqa: F401 -- read only via _mod._corpus_fingerprint from test files
-    _redact_proj_label,  # noqa: F401 -- read only via _mod._redact_proj_label from test files
-    _redact_session_id,  # noqa: F401 -- read only via _mod._redact_session_id from test files
-)
-from transcript_analysis.render import (
-    _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
 )
 from transcript_analysis.review_rounds import (
     # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
@@ -198,13 +137,9 @@ from transcript_analysis.reviewer_yield import (
     cmd_reviewer_yield,
 )
 from transcript_analysis.scope import (
-    _DO_NOT_PUBLISH_BANNER,  # noqa: F401 -- read only via _mod._DO_NOT_PUBLISH_BANNER from test files
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _add_project_scope_args,
     _iso_date,
-    _redaction_ordinals,  # noqa: F401 -- read only via _mod._redaction_ordinals from test files
-    _resolve_cost_roots,  # noqa: F401 -- read only via _mod._resolve_cost_roots from test files
-    _resolve_project_scope,  # noqa: F401 -- read only via _mod._resolve_project_scope from test files
 )
 from transcript_analysis.sessions import (
     # Read bare by this file's own build_parser (the sessions subparser's registration).
@@ -1041,7 +976,7 @@ def main() -> None:
         # rather than let it silently diverge from whatever scan roots the
         # subcommand actually resolves (this top-level one would validate
         # one account while the subcommand scans another). Most resolve
-        # their own scan roots via their own --config-dir (_resolve_cost_roots);
+        # their own scan roots via their own --config-dir (scope._resolve_cost_roots);
         # cost-counts and period-cost are the two exceptions, each registering no
         # --config-dir flag of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
         if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
