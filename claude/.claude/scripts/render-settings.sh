@@ -71,8 +71,8 @@ fi
 # not merged. See docs/auto-mode.md for the full contract.
 #
 # Refuses to render when base sets an overlay-allowed key that the overlay does
-# not override. The key would leak unchanged into every account, which
-# autoMode's per-account trust model forbids.
+# not set. Overlay-allowed keys are overlay-owned, so a base value would reach
+# every account unchanged.
 #
 # Every top-level key base and the overlay don't claim carries forward from
 # the prior settings.json (theme/model/effortLevel and friends), since
