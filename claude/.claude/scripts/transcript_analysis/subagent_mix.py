@@ -337,14 +337,32 @@ def _spawn_counts_by_agent_type(
     """Raw (undisclosed) subagent_type spawn counts across session_iter,
     for cost-counts.
 
-    Counts every dispatch, including one made from inside another agent's
-    transcript (an isSidechain record). review-orchestrator spawns every
-    reviewer from inside its own transcript.
+    Counts the dispatches in a session's main transcript and its
+    subagent transcripts (not those nested in workflow directories),
+    including one made from inside another agent's transcript (an
+    isSidechain record). review-orchestrator spawns every reviewer from
+    inside its own transcript.
     scope._attributed_branch ignores a sidechain record's own gitBranch tag.
     It attributes the record to the main-thread branch in effect at its
     timestamp. branch_filter matches that attributed branch, so a session's
     leading default-branch dispatches count toward the first branch it
     enters, as in review_rounds' carry-forward attribution.
+
+    Edge shapes:
+    - A spawn from a subagent that worked in another repo counts under the
+      attributed branch, so it adds to that branch's integers.
+    - Nested workflow-agent transcripts (subagents/workflows/wf_*/) are
+      unread, because the shared reader globs only direct subagents/*.jsonl.
+    - Unreadable input (bad JSON or UTF-8, an unreadable subagent file or
+      main transcript) is skipped with no signal, so it undercounts.
+    - A record without isSidechain is read as main-thread, so a flagless
+      review-orchestrator dispatch in a subagent file opens a round.
+    - A non-object record aborts the count.
+    - A spawn whose input is not an object, or whose subagent_type is
+      missing, empty or not a string, counts as `unknown`, which the
+      disclosure partition folds into the withheld row.
+    - No drift warning or banner signals a lost isSidechain flag for
+      cost-counts.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
@@ -496,8 +514,9 @@ _COST_COUNTS_ROUNDS_CAPTION = (
 )
 
 _COST_COUNTS_SPAWNS_CAPTION = (
-    "Counts every recorded spawn call, including agents dispatched by another agent, such as the reviewers"
-    " a `review-orchestrator` spawns."
+    "Counts recorded spawn calls in each session's main transcript and its subagent transcripts"
+    " (not those nested in workflow directories), including agents dispatched by another agent,"
+    " such as the reviewers a `review-orchestrator` spawns."
 )
 
 

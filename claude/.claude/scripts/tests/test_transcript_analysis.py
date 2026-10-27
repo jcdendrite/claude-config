@@ -1525,6 +1525,10 @@ def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, l
     return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
 
 
+def _text_marker_assistant(marker: str, *, sidechain: bool = True) -> dict:
+    return _asst("claude-opus-4-7", sidechain=sidechain, content=[{"type": "text", "text": marker}])
+
+
 class TestCorpusSubagentDirAndUtf8ErrorHandling:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent(self, fake_projects):
@@ -1545,6 +1549,56 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
 
         expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
         assert result == expected
+
+    def test_read_session_file_merges_direct_subagents_but_not_workflow_nested_ones(self, fake_projects):
+        """Pins the direct-children-only `subagents/*.jsonl` glob that `_spawn_counts_by_agent_type`'s docstring documents."""
+
+        _write_jsonl(fake_projects / "sess.jsonl", [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-direct", [_text_marker_assistant("direct-subagent-record")])
+        nested_dir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "workflows" / "wf_x"
+        nested_dir.mkdir(parents=True)
+        _write_jsonl(nested_dir / "agent-nested.jsonl", [_text_marker_assistant("workflow-nested-record")])
+
+        records = _mod.corpus.read_session_file(fake_projects / "sess.jsonl", include_subagents=True)
+
+        markers = [rec["message"]["content"][0]["text"] for rec in records]
+        assert sorted(markers) == ["direct-subagent-record", "main-record"]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_drops_subagent_files_when_main_transcript_unreadable(self, fake_projects):
+        """An unreadable main transcript drops the whole session, including its readable direct subagent files."""
+
+        main_jsonl = fake_projects / "sess.jsonl"
+        _write_jsonl(main_jsonl, [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-direct", [_text_marker_assistant("direct-subagent-record")])
+        os.chmod(main_jsonl, 0o000)
+        try:
+            records_while_unreadable = _mod.corpus.read_session_file(main_jsonl, include_subagents=True)
+        finally:
+            os.chmod(main_jsonl, 0o644)
+        records_once_readable = _mod.corpus.read_session_file(main_jsonl, include_subagents=True)
+
+        assert records_while_unreadable == []
+        markers = [rec["message"]["content"][0]["text"] for rec in records_once_readable]
+        assert sorted(markers) == ["direct-subagent-record", "main-record"]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_skips_only_the_unreadable_subagent_file(self, fake_projects):
+        """An unreadable subagent file drops only itself, keeping readable subagent files on either side."""
+        main_jsonl = fake_projects / "sess.jsonl"
+        _write_jsonl(main_jsonl, [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-readable", [_text_marker_assistant("readable-subagent-record")])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-sealed", [_text_marker_assistant("sealed-subagent-record")])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-z-later", [_text_marker_assistant("later-subagent-record")])
+        sealed_jsonl = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "agent-sealed.jsonl"
+        os.chmod(sealed_jsonl, 0o000)
+        try:
+            records = _mod.corpus.read_session_file(main_jsonl, include_subagents=True)
+        finally:
+            os.chmod(sealed_jsonl, 0o644)
+
+        markers = [rec["message"]["content"][0]["text"] for rec in records]
+        assert sorted(markers) == ["later-subagent-record", "main-record", "readable-subagent-record"]
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_index_subagent_dispatches_returns_empty_index_for_unreadable_subagents_dir(self, fake_projects):

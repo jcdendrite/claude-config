@@ -311,8 +311,9 @@ class TestCostCounts:
             " be included yet."
         ) in out
         assert (
-            "Counts every recorded spawn call, including agents dispatched by another agent, such as the reviewers"
-            " a `review-orchestrator` spawns."
+            "Counts recorded spawn calls in each session's main transcript and its subagent transcripts"
+            " (not those nested in workflow directories), including agents dispatched by another agent,"
+            " such as the reviewers a `review-orchestrator` spawns."
         ) in out
 
     def test_review_orchestrator_dispatch_from_inside_a_subagent_is_a_spawn_but_not_a_round(
