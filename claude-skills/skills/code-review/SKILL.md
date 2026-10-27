@@ -134,6 +134,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
    - Paragraph readability — parallel rules stacked as sentences, or an instruction placed after its rationale or exception
    - Prose at the wrong altitude — for its reader
+   - Prose restating the code — a comment, docstring, or doc passage stating what the code shows
    - PR-defined terminology
    - "Used to be X" framing
    - Survives-the-PR self-test on durable-doc content — a durable-doc paragraph that fails it
@@ -203,7 +204,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
-For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), duplication, length cap, and behavior test for instruction and memory files.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
@@ -242,7 +243,7 @@ For each finding, state:
 2. **File and line**
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
-5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require)
+5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require). Instead, for prose that restates the code, the fix names the lines to delete (CLAUDE.md §Durable text).
 
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 

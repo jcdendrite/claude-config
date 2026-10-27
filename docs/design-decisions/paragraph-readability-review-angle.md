@@ -2,6 +2,8 @@
 
 *2026-10-15.*
 
+**Superseded in part by [Prose that restates the code is deleted, not corrected](prose-restating-code-is-deleted.md) (2026-10-26):** instruction files are no longer exempt from Prose at the wrong altitude, so the paragraph below on the Change-type table's widening no longer describes a one-angle exemption. The angle-count trigger in "Revisiting the angle count" fired on that date, and the reviewer moved to `effort: high`. Every other section stands.
+
 Every existing `comment-discipline-reviewer` angle judges a sentence or a
 site, never how a paragraph's sentences are arranged. `Paragraph readability`,
 a new angle in `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles", closes that gap. The angle body states its own
