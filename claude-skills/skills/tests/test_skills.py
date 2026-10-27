@@ -1365,22 +1365,29 @@ class TestPrDescriptionTwoModeDispatch:
         """pr-description must not retain a precondition that halts when no PR exists."""
         assert "no PR to sync" not in _skill_file("pr-description").read_text()
 
-    def test_pr_description_states_base_name_charset_gate(self):
-        """pr-description tells the agent to ask the engineer when the base name
-        holds characters outside the allowed set.
+    def test_pr_description_takes_its_base_from_the_divergence_line(self):
+        """pr-description takes the base from the divergence script's printed
+        `Default branch:` or `Base branch:` line, never from the open PR's
+        `baseRefName`.
 
-        A retargeted PR can carry shell metacharacters in its base name, and
-        `<name>` must be bound to all three base sources so the gate covers them.
+        Only the `Base branch:` name has passed the script's name-shape check
+        (see the branch-divergence-status.sh header). The `Default branch:` name
+        comes from origin/HEAD and is not shape-checked.
         """
         body = " ".join(_skill_file("pr-description").read_text().split())
         assert (
-            "`<base>` is `origin/<name>` and `<name>` is the base branch the "
-            "caller passed, else the open PR's base, else the default branch"
+            "`<base>` is `origin/<name>`. `<name>` is the branch on the "
+            "`Default branch:` or `Base branch:` "
+            "line that `~/.claude/scripts/branch-divergence-status.sh` printed "
+            "for this branch's current state. Take it from no other source: "
+            "not a caller-passed name, not a fallback. Run the script first. "
+            "A run earlier in this session on this branch may be reused if no "
+            "stack key, retarget or sync has happened since. If the script exits "
+            "non-zero or prints neither line, report its stderr and stop. "
+            "Run none of the commands below:"
         ) in body
-        assert (
-            "If `<name>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, "
-            "or starts with `-`, ask the engineer instead of running these"
-        ) in body
+        assert "open PR's base" not in body
+        assert "baseRefName" not in body
 
 
 class TestPrDescriptionExternalStateCheck:
@@ -5346,19 +5353,22 @@ def test_ready_for_review_names_the_stack_base_key_and_the_base_branch_line() ->
     assert 'echo "Base branch: $BASE_BRANCH"' in divergence_script_source
 
 
-def test_ready_for_review_step2_gates_the_fallback_git_diff_base_on_the_charset() -> None:
+def test_ready_for_review_step2_takes_the_fallback_git_diff_base_from_the_recipe_line() -> None:
     """Step 2's pre-existing-failure check runs `git diff origin/<base>` with a base
-    that can come from a PR's `baseRefName`, so the skill asks the engineer instead
-    of running it when `<base>` holds characters outside the set pr-description
-    allows. Deleting the sentence leaves a base name with shell metacharacters
-    reaching the command line."""
+    taken from the `Default branch:` or `Base branch:` line step 1's recipe printed,
+    never from the `baseRefName` that `gh pr view` returned. Only the
+    `Base branch:` name has passed the script's name-shape check (see the
+    branch-divergence-status.sh header). The `Default branch:` name comes from
+    origin/HEAD and is not shape-checked. The rebase sentence after it names the
+    `<base>` step 1's recipe measured."""
     step2_text = " ".join(
         _raw_heading_section_text(_skill_file("ready-for-review"), "## 2. Verification (halt on fail)").split()
     )
     assert (
-        "If `<base>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, or starts with `-`, "
-        "ask the engineer instead of running that `git diff`."
+        "`<base>` is the branch on the `Default branch:` or `Base branch:` line step 1's recipe printed. "
+        "Rebase once `origin/<base>` is green."
     ) in step2_text
+    assert "baseRefName" not in step2_text
 
 
 def test_claude_hook_review_section10_handoff_rules_present() -> None:
@@ -7408,9 +7418,9 @@ _PINNED_SYNC_CALLERS_POINTER_CLAUSE = (
 )
 _PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE = (
     "After the SessionStart advisory, run the recipe and sync to the branch "
-    "its `Default branch:` or `Base branch:` line names, not the advisory's; "
-    "if the recipe exits non-zero, report its stderr and stop, and sync "
-    "nothing against the advisory's branch."
+    "its `Default branch:` or `Base branch:` line names, not the advisory's. "
+    "If the recipe exits non-zero, report its stderr and stop. "
+    "Sync nothing against the advisory's branch."
 )
 _PINNED_SYNC_ADVISORY_REASON_CLAUSE = (
     "The hook never reads `git config branch.<branch>.gh-merge-base`, so on a "

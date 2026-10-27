@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 # Reports the current branch's divergence from its base in plain text to stdout -- always,
-# even when fully in sync. The base is origin/<stack base> when
-# `git config branch.<branch>.gh-merge-base` is set. With no key set, it is the base of an
-# open PR for this branch when that differs from the default branch, else origin/<default branch>.
-# Shares default-branch resolution, bounded
-# fetch, behind-count and the `git merge-tree --write-tree` trial merge with
-# check-branch-divergence.sh's SessionStart hook, which differs in never reading the key, in never
-# reading a PR's base, and in fetching and measuring through `origin/<default branch>`.
+# even when fully in sync. The base is the first of these that applies:
+# - origin/<stack base>, when `git config branch.<branch>.gh-merge-base` is set.
+# - The base of an open PR for this branch, when no key is set and that base differs from the default branch.
+# - origin/<default branch>.
+# Shares default-branch resolution, bounded fetch, behind-count and the
+# `git merge-tree --write-tree` trial merge with check-branch-divergence.sh's SessionStart hook.
+# That hook never reads the key, never reads a PR's base, and fetches and measures through `origin/<default branch>`.
 # git-feature-branch-sync/SKILL.md's "Detecting divergence" section holds the canonical recipe.
-# With a key set it makes no gh call. With no key set it makes at most one `gh pr view` call, capped at
-# 10 seconds plus up to 2 seconds of kill grace, and writes no key and no config.
+#
+# The gh read:
+# - With a key set, the script makes no gh call.
+# - With no key set, it makes at most one `gh pr view` call, capped at 10 seconds plus up to 2 seconds of kill grace.
+# - It writes no key and no config.
 # The fetch writes `refs/remotes/origin/<base>` and FETCH_HEAD.
-# The shared shape check (_lib_stack_base_name_shape), not prose, keeps remote text out of the commands the agent composes from a printed key or PR base.
-# The default branch name comes from origin/HEAD unchecked.
-# A merged or closed PR, or a reply it cannot parse, measures the default branch with no notice.
-# A failed or timed-out `gh`, or no PR, measures the default branch and prints one stderr line.
-# A PR base the shape check rejects measures the default branch and prints one stderr line that does not echo the base.
-# The shape check rejects a leading `-`, a character outside [A-Za-z0-9._/-], an `origin/` prefix and `HEAD`.
+#
+# Name checks:
+# - A PR base passes _lib_stack_base_name_shape before it is fetched or printed.
+#   That shared check, not prose, keeps remote text out of the commands the agent composes from a printed key or PR base.
+#   It rejects a leading `-`, a character outside [A-Za-z0-9._/-], an `origin/` prefix and `HEAD`.
+# - The default branch name comes from origin/HEAD unchecked.
+#
+# With no key set, the default branch is measured in these cases:
+# - A merged or closed PR, or a reply the script cannot parse: no notice.
+# - A failed or timed-out `gh`, or no PR: one stderr line.
+# - A PR base the shape check rejects: one stderr line that does not echo the base.
 #
 # Stdout starts with `Default branch: <name>` for the default branch and `Base branch: <name>`
 # for a stack base or an open PR's other base.
@@ -28,14 +36,13 @@
 # - The base could not be resolved.
 # - Neither `timeout` nor `gtimeout` is available to bound the fetch.
 # - The bounded fetch failed.
-# - The stack base is unusable.
-# - An open PR's base could not be fetched.
+#   - A stack base's failure reads the same for a timeout and a branch deleted on origin.
+#     The stop line tells the engineer to retry, then to run `git ls-remote` to tell a base missing from origin apart from any other failure.
+#   - An open PR's base that fails to fetch prints a stop line naming the base and the `git fetch` to run by hand.
 # - _lib_configured_stack_base returned a status other than 0 and 1, printing its own line.
-#   A git read failure is one such stop, and it can fire with no key set.
+#   An unusable stack base is one such stop.
+#   A git read failure is another, and it can fire with no key set.
 # - The trial merge could not complete (_lib_trial_merge_verdict returned non-zero).
-# A stack base's fetch failure reads the same for a timeout and a branch deleted on origin.
-# The stop line tells the engineer to retry, then to run `git ls-remote` to tell a base missing from origin apart from any other failure.
-# An open PR's base that fails to fetch prints a stop line naming the base and the `git fetch` to run by hand.
 
 set -euo pipefail
 
@@ -91,11 +98,8 @@ if [[ -z "$TIMEOUT_CMD" ]]; then
   exit 1
 fi
 
-# With no key set, an open PR's base other than the default branch is the base measured.
-# The read is the only gh call, and it writes no key and no config.
-# A gh failure, no PR, a merged or closed PR and a malformed reply all leave the default branch.
-# A gh failure, no PR, or a base the shape check rejects each print one notice; a merged or closed PR and an unparseable reply print none.
-# The call has no -R, so a fork origin whose PR targets an upstream branch reads that base from the upstream repository; pr-diff-against-base.sh reads the PR the same way.
+# The call has no -R, so a fork origin whose PR targets an upstream branch reads that base from the upstream repository.
+# pr-diff-against-base.sh reads the PR the same way.
 # 10 seconds is the cap review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh each set for their own `gh pr view` calls.
 # Its vendor-grounded source is the GitHub documentation on the 10-second GraphQL request termination, which _review-pr-lib.sh cites above REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
@@ -106,9 +110,12 @@ if [[ -z "$STACK_BRANCH" ]]; then
   else
     echo "$SCRIPT_NAME: gh pr view failed or found no PR; will measure against origin/$BASE_BRANCH" >&2
   fi
-  # The comparison is byte-exact, so on a case-insensitive filesystem a PR base differing from the default branch only by case would fetch into a colliding remote-tracking ref.
-  # That needs a retarget to a case-variant branch that exists on origin and is not guarded.
-  # The same collision applies to a base named like `head`, whose fetch destination could resolve to the origin/HEAD symref, because _lib_stack_base_name_shape rejects only the exact name HEAD.
+  # The comparison is byte-exact.
+  # On a case-insensitive filesystem, a PR base differing from the default branch only by case would fetch into a colliding remote-tracking ref.
+  # That needs a retarget to a case-variant branch that exists on origin, and no check guards it.
+  #
+  # A base named like `head` passes the shape check, which rejects only the exact name HEAD.
+  # On a case-insensitive filesystem, its fetch destination could then resolve to the origin/HEAD symref.
   if [[ -n "$PR_BASE" && "$PR_BASE" != "$BASE_BRANCH" ]]; then
     PR_BASE_SHAPE_STATUS=0
     # A base git rejects as a ref name (for example `a..b` or `x.lock`) passes this check and fails the fetch below with exit 1.
@@ -119,7 +126,7 @@ if [[ -z "$STACK_BRANCH" ]]; then
       BASE_LABEL="Base branch"
       PR_BASE_IN_USE=1
     else
-      # The notice lists the name rules and does not echo the base, because the base is remote text.
+      # The notice does not echo the base, because the base is remote text.
       echo "$SCRIPT_NAME: the open PR's base is not a usable branch name (it starts with '-', is HEAD, starts with 'origin/', or holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'); will measure against origin/$BASE_BRANCH" >&2
     fi
   fi

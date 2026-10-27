@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Prints the cumulative PR-vs-base diff /ready-for-review's step 3
 # reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
-# <base-branch> is the stack base in `git config branch.<branch>.gh-merge-base`
-# when that key is set, else the base of the PR `gh pr view` returns for this branch (merged or closed included), else the default branch.
+# <base-branch> is the first of these that applies:
+# - The stack base in `git config branch.<branch>.gh-merge-base`, when that key is set.
+# - The base of the PR `gh pr view` returns for this branch, merged or closed included.
+# - The default branch.
 # With the key set, the script uses its value or exits 1 with one stderr line.
 # Each of these stops exits 1:
 # - The value is unusable.
@@ -86,7 +88,8 @@ else
   if [ "$STACK_STATUS" -eq 0 ]; then
     STACK_BRANCH="${STACK_BASE_INFO%% *}"
     BASE_REF="${STACK_BASE_INFO#* }"
-    # A merged or closed PR's base is ignored; only an OPEN PR can disagree.
+    # A merged or closed PR's base is ignored.
+    # Only an OPEN PR can disagree.
     # A gh failure or a reply that is not two lines reads as no open PR.
     # Only a gh failure sets GH_PR_VIEW_FAILED, which the `using` line reports.
     PR_BASE=""

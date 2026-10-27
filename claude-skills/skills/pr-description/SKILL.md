@@ -167,7 +167,7 @@ If nothing fires after a careful read, say so — naming the sections
 you read end to end. A bare negative cannot distinguish a coherent
 body from a skipped pass.
 
-Then compare the body against branch state with these commands. `<base>` is `origin/<name>` and `<name>` is the base branch the caller passed, else the open PR's base, else the default branch. If `<name>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, or starts with `-`, ask the engineer instead of running these commands:
+Then compare the body against branch state with these commands. `<base>` is `origin/<name>`. `<name>` is the branch on the `Default branch:` or `Base branch:` line that `~/.claude/scripts/branch-divergence-status.sh` printed for this branch's current state. Take it from no other source: not a caller-passed name, not a fallback. Run the script first. A run earlier in this session on this branch may be reused if no stack key, retarget or sync has happened since. If the script exits non-zero or prints neither line, report its stderr and stop. Run none of the commands below:
 
 - `git log <base>..HEAD --oneline`
 - `git diff <base>..HEAD --name-only`

@@ -30,16 +30,17 @@ pre-push gate and the `/respond-pr` precheck. See `docs/worktree-bash-guard.md` 
 skill-driven callers go through a dedicated script instead of restating the recipe inline.
 
 After the SessionStart advisory, run the recipe and sync to the branch its `Default branch:` or
-`Base branch:` line names, not the advisory's; if the recipe exits non-zero, report its stderr and
-stop, and sync nothing against the advisory's branch. The hook never reads
-`git config branch.<branch>.gh-merge-base`, so on a stacked branch its advisory counts against the
-default branch.
+`Base branch:` line names, not the advisory's.
+If the recipe exits non-zero, report its stderr and stop.
+Sync nothing against the advisory's branch.
+The hook never reads `git config branch.<branch>.gh-merge-base`, so on a stacked branch its
+advisory counts against the default branch.
 
 ```bash
 ~/.claude/scripts/branch-divergence-status.sh
 ```
 
-Reports the base branch (the default branch, the stack base when the key is set, or an open PR's other base when no key is set), the behind-count, and the result of a `git merge-tree --write-tree`
+Reports the base branch the preamble lists, the behind-count, and the result of a `git merge-tree --write-tree`
 trial merge (conflict files, if any) in plain text to stdout — always, not only when there's
 something to flag. A non-zero exit means the check could not run, and stderr names why. The script's header lists its stops.
 

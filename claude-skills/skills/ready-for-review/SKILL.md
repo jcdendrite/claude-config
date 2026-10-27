@@ -61,7 +61,7 @@ test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff contains no executable code — only markdown, plans, or non-executable config. Examples: skill bodies under `.claude/skills/**`, plans under `.claude/plans/**`, agent configs under `.claude/agents/**`, top-level `*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or application source — even alongside docs — run step 2.
 
-**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for the existing owner or open a separate branch. If `<base>` holds anything but A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, or starts with `-`, ask the engineer instead of running that `git diff`. Rebase once the default branch is green.
+**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for the existing owner or open a separate branch. `<base>` is the branch on the `Default branch:` or `Base branch:` line step 1's recipe printed. Rebase once `origin/<base>` is green.
 
 **Test-to-fit is forbidden:** fix the code, not the test — unless the product requirement genuinely changed.
 
@@ -109,7 +109,7 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 ## 5. PR description (unconditional; warn + fix)
 
 Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), and the branch on step 1's `Base branch:` line (if one printed). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
+Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Final hygiene recheck (halt on fail)
 

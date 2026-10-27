@@ -1467,31 +1467,32 @@ _lib_stack_base_git() {
 }
 
 # _lib_configured_stack_base STDERR_PREFIX REPO_ROOT
-# Reads the stack base the engineer set with
-# `git config branch.<branch>.gh-merge-base <stack-base>` (the key gh also
-# reads when its PR-create command gets no --base) for REPO_ROOT's current
-# branch, and validates it. Reads the key with `git config --get` (every config
-# scope), never the network.
-# Exit map:
-#   - exit 0: stdout is "<branch> <stack-base>" on one line. A branch name
-#     holds no space, so the split is unambiguous.
-#   - exit 1, empty stdout: no key is set, or HEAD is detached. The caller runs
-#     its no-key path.
-#   - exit 2, empty stdout: the key is set but unusable, or git could not be
-#     read (any `symbolic-ref`, `config` or `check-ref-format` status other
-#     than 0 and 1, a cap kill included). One stderr line prefixed with
-#     STDERR_PREFIX has already been written.
-#     An unusable value gets _lib_print_unusable_stack_base's line. A read
-#     failure gets _lib_stack_base_git's line, which names the failed git call
-#     and its status and carries no key value or key fix. A read failure can
-#     stop a branch that has no key set.
-# A value is unusable when it is empty, starts with `-` or `origin/`, fails
-# `git check-ref-format "refs/heads/<value>"`, holds a character outside
-# [A-Za-z0-9._/-], is `HEAD`, or names the branch itself.
+# Reads and validates the stack base the engineer set for REPO_ROOT's current branch with
+# `git config branch.<branch>.gh-merge-base <stack-base>`.
+# gh also reads that key when its PR-create command gets no --base.
+# The read is `git config --get` (every config scope) and never touches the network.
+#
+# Exit status:
+# - 0: stdout is "<branch> <stack-base>" on one line, and the split is unambiguous because a branch name holds no space.
+# - 1, empty stdout: no key is set, or HEAD is detached. The caller runs its no-key path.
+# - 2, empty stdout: the key is set but unusable, or git could not be read.
+#   One stderr line prefixed with STDERR_PREFIX has already been written.
+#   - An unusable value gets _lib_print_unusable_stack_base's line.
+#   - A read failure is any `symbolic-ref`, `config` or `check-ref-format` status other than 0 and 1, a cap kill included.
+#     It gets _lib_stack_base_git's line, which names the failed git call and its status and carries no key value or key fix.
+#     It can stop a branch that has no key set.
+#
+# A value is unusable when it:
+# - is empty
+# - starts with `-` or `origin/`
+# - fails `git check-ref-format "refs/heads/<value>"`
+# - holds a character outside [A-Za-z0-9._/-]
+# - is `HEAD`
+# - names the branch itself
 # The `-`, character-set, `origin/` and `HEAD` tests are _lib_stack_base_name_shape's statuses 1 to 4.
 # Any other nonzero status from that check is also unusable, so a status added there fails closed here.
-# Callers capture with `rc=0; out=$(...) || rc=$?`: that suspends `set -e`
-# inside this function, so every status is tested explicitly.
+#
+# Callers capture with `rc=0; out=$(...) || rc=$?`, which suspends `set -e` inside the function, so every status is tested explicitly.
 # A caller treats every status other than 0 and 1 as a stop.
 _lib_configured_stack_base() {
   local stderr_prefix="$1" repo_root="$2"
