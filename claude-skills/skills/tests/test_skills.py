@@ -8259,7 +8259,6 @@ def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -
 _CODE_REVIEW_SKILL_PATH = _skill_file("code-review")
 _PLAN_REVIEW_SKILL_PATH = _skill_file("plan-review")
 _CODE_REVIEW_STEP_1_HEADING = "## Step 1 — Implementation-fitness gate"
-_CODE_REVIEW_DISPOSITION_HEADING = "## Finding disposition"
 _PLAN_REVIEW_OUTPUT_HEADING = "## Output format"
 _ROUTING_ROLES_HEADING = "## Reviewer roles"
 
@@ -8313,7 +8312,6 @@ _DECLARATION_WIRING_CLAUSES = (
         _CODE_REVIEW_STEP_1_HEADING,
         "Defensive paths against an actor or input the declared tier excludes",
     ),
-    # Skip clauses come first, then the declaration block clauses.
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE),
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE),
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_CISO_SKIP_CLAUSE),
@@ -8354,12 +8352,12 @@ _DECLARATION_WIRING_CLAUSES = (
     ),
     (
         _CODE_REVIEW_SKILL_PATH,
-        _CODE_REVIEW_DISPOSITION_HEADING,
+        _CODE_REVIEW_FINDING_DISPOSITION_HEADING,
         "The DEFER's rationale quotes the `declared:` value the **Spawn decisions:** line reports",
     ),
     (
         _CODE_REVIEW_SKILL_PATH,
-        _CODE_REVIEW_DISPOSITION_HEADING,
+        _CODE_REVIEW_FINDING_DISPOSITION_HEADING,
         "Under `declared: undeclared`, the rationale rests on such a route or on Step 1's implementation-fitness answer",
     ),
     (
