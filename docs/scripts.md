@@ -317,13 +317,14 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   relocate-claude-config --allow-outside-home <new-path>   # permit a destination outside $HOME
   ```
 
-- **`render-settings.sh`** — generates `<config-dir>/settings.json` (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) from the tracked `settings.base.json`, an optional untracked `settings.overlay.json`, and the prior `settings.json`. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) states the contract: which keys base owns, which the overlay owns, what carries forward, what the stderr disclosure names, and what the overlay refuses.
+- **`render-settings.sh`** — generates `<config-dir>/settings.json` (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) from the tracked `settings.base.json`, an optional untracked `settings.overlay.json`, and the prior `settings.json`. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) states the contract: which keys base owns, which the overlay owns, what carries forward, what the stderr disclosure names, and what the render refuses.
 
   - A prior `settings.json` the render cannot read as one JSON object counts as no prior state and gets a stderr warning that the render replaced it without carrying forward keys outside base and the overlay. A missing or dangling one gets none. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) lists the individual cases.
   - The script exits without writing when the merged result equals a prior regular, non-symlink `settings.json`.
   - Otherwise it replaces the file through a same-directory temp file, so a symlinked target is replaced rather than written through.
   - The file's mode depends on render history. An unchanged render leaves the existing mode alone. A changed render writes the mode-600 file `mktemp` creates.
-  - A refusal or failure before the write leaves the previous `settings.json` in place, so an overlay defect holds back base changes until it is fixed. So does a base that sets an overlay-owned key the overlay does not override. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) lists the overlay-owned keys.
+  - A refusal or failure before the write leaves the previous `settings.json` in place, so an overlay defect holds back base changes until it is fixed.
+  - A base that sets an overlay-owned key the overlay does not override is also refused, so it holds back base changes the same way. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) lists the overlay-owned keys.
   - A jq that cannot run (status 126 or 127) is reported as such, not as invalid JSON.
   - `install.sh` renders `~/.claude` only. A new shell renders only the profile it resolves; the `ensure-settings-render.sh` entry below states which.
   - A profile's `settings.base.json` comes from whatever stows claude-config into it, an out-of-repo mechanism that consumes `stow-packages.sh`'s rows. `install.sh` stows only into `$HOME`.
