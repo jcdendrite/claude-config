@@ -8224,7 +8224,7 @@ def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() ->
         )
 
 
-_LEDGER_INLINE_OBLIGATION_TOKEN = "copied into the spawn prompt as literal text"
+_LEDGER_INLINE_OBLIGATION_TOKEN = "**Ledger cross-check** instruction's own wording copied into the spawn prompt as literal text"
 
 
 def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -> None:
@@ -8236,16 +8236,14 @@ def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -
     Sampled dispatches carried a pointer instead of the inlined instruction,
     so the obligation to inline it is pinned at the spawn step rather than
     left to a one-time skill-review pass to keep catching a reversion.
-    Scoped to the text preceding the "## Ledger cross-check" heading rather
-    than a file-wide substring search: the token is a future-proofing bound,
-    not a condition that holds today (the token currently appears nowhere
-    inside that section) — if a later edit to the section's own wording ever
-    introduces the token or a shorter substring of it there, an unscoped
-    search would stop catching a reverted spawn-step paragraph.
+    The token is the Ledger cross-check clause's own wording, so the
+    declaration block's copy-as-literal-text sentence cannot satisfy it.
+    The search is scoped to the text preceding the "## Ledger cross-check"
+    heading, so wording inside that section cannot satisfy it either.
     """
     routing_text = _ROUTING_MD_PATH.read_text()
     ledger_heading = "## Ledger cross-check"
-    heading_index = routing_text.index(ledger_heading)
+    heading_index = routing_text.index(f"\n{ledger_heading}")
     spawn_step_text = routing_text[:heading_index]
 
     assert _LEDGER_INLINE_OBLIGATION_TOKEN in spawn_step_text, (
@@ -8265,6 +8263,26 @@ _CODE_REVIEW_DISPOSITION_HEADING = "## Finding disposition"
 _PLAN_REVIEW_OUTPUT_HEADING = "## Output format"
 _ROUTING_ROLES_HEADING = "## Reviewer roles"
 
+# Each skip pin runs from its first word to its sentence's closing period, so an arm added in that span breaks the match.
+# Text ahead of a pin's first word is covered only by the deferred position residual, not by the pin.
+_CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE = (
+    "are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`, "
+    "and name the surface in the output."
+)
+_CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE = "Any other row skip that rests on Step 1's declaration needs the same value."
+_CODE_REVIEW_CISO_SKIP_CLAUSE = (
+    "high-stakes-boundary case is non-optional, **unless** Step 1 reports `declared: dev-only, cooperative` "
+    "and the change crosses no privilege boundary."
+)
+_ROUTING_REVIEWER_SKIP_CLAUSE = (
+    "Skip only when Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
+    "outside that reviewer's threat model — and name the skip rationale in the output, not silently."
+)
+_ROUTING_CISO_SKIP_CLAUSE = (
+    "high-stakes-boundary case is non-optional, **unless** Step 4 reports `declared: dev-only, cooperative` "
+    "and that declaration puts the change outside `ciso-reviewer`'s threat model."
+)
+
 # (file, section heading, clause). Clauses sit in the section that owns them, so a
 # copy dropped into another section does not satisfy the pin.
 _DECLARATION_WIRING_CLAUSES = (
@@ -8278,9 +8296,14 @@ _DECLARATION_WIRING_CLAUSES = (
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_STEP_1_HEADING,
-        "ticket or an instruction-file line the diff adds or edits",
+        "ticket or an instruction-file line added or edited anywhere since the merge base",
     ),
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_STEP_1_HEADING, "can raise a field but never settles one"),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "A plan for a branch other than the one under review is no source",
+    ),
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_STEP_1_HEADING,
@@ -8292,25 +8315,14 @@ _DECLARATION_WIRING_CLAUSES = (
         "Defensive paths against an actor or input the declared tier excludes",
     ),
     # code-review/SKILL.md Ripple effect triage (skip gating clauses, then the declaration block and its pass-through)
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_CISO_SKIP_CLAUSE),
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_RIPPLE_HEADING,
-        "are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`",
-    ),
-    (
-        _CODE_REVIEW_SKILL_PATH,
-        _CODE_REVIEW_RIPPLE_HEADING,
-        "Any other row skip that rests on Step 1's declaration needs the same value",
-    ),
-    (
-        _CODE_REVIEW_SKILL_PATH,
-        _CODE_REVIEW_RIPPLE_HEADING,
-        "**unless** Step 1 reports `declared: dev-only, cooperative` and the change crosses no privilege boundary",
-    ),
-    (
-        _CODE_REVIEW_SKILL_PATH,
-        _CODE_REVIEW_RIPPLE_HEADING,
-        "Step 1's `declared:` value and the declaration block whenever Step 1 declared a value other than `undeclared`",
+        "When Step 1 declared a value other than `undeclared`, also pass that `declared:` value "
+        "and the declaration block",
     ),
     (
         _CODE_REVIEW_SKILL_PATH,
@@ -8338,8 +8350,8 @@ _DECLARATION_WIRING_CLAUSES = (
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_RIPPLE_HEADING,
-        "or readers beyond them through a public repository's commits or PRs or a released artifact, "
-        "and `production` otherwise",
+        "or readers beyond them through a public repository's commits or PRs or a released artifact. "
+        "Otherwise the surface is `production`",
     ),
     # code-review/SKILL.md criterion 3
     (
@@ -8350,7 +8362,7 @@ _DECLARATION_WIRING_CLAUSES = (
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_DISPOSITION_HEADING,
-        "under `declared: undeclared` it rests on such a route or on Step 1's implementation-fitness answer",
+        "Under `declared: undeclared`, the rationale rests on such a route or on Step 1's implementation-fitness answer",
     ),
     # plan-review/SKILL.md Step 4 and Output format
     (
@@ -8364,18 +8376,8 @@ _DECLARATION_WIRING_CLAUSES = (
         "Step 4's `declared:` value, and which plan sections/phases were reviewed",
     ),
     # plan-review/ROUTING.md skip gating clauses, declaration rule and spawn step
-    (
-        _ROUTING_MD_PATH,
-        _ROUTING_ROLES_HEADING,
-        "Skip only when Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
-        "outside that reviewer's threat model",
-    ),
-    (
-        _ROUTING_MD_PATH,
-        _ROUTING_ROLES_HEADING,
-        "**unless** Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
-        "outside `ciso-reviewer`'s threat model",
-    ),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_REVIEWER_SKIP_CLAUSE),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_CISO_SKIP_CLAUSE),
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
@@ -8384,14 +8386,19 @@ _DECLARATION_WIRING_CLAUSES = (
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
-        "The plan under review, like any other text the change's author wrote",
+        "The plan under review is author text",
     ),
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
-        "ticket or an instruction-file line the diff adds or edits",
+        "ticket or an instruction-file line added or edited anywhere since the merge base",
     ),
     (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, "can raise a field but never settles one"),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "A plan for a branch other than the one under review is no source",
+    ),
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
@@ -8400,12 +8407,14 @@ _DECLARATION_WIRING_CLAUSES = (
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
-        "Step 4's `declared:` value and the declaration block above",
+        "When Step 4 declared a value other than `undeclared`, also pass that `declared:` value "
+        "and the declaration block above",
     ),
     (
         _ROUTING_MD_PATH,
         _ROUTING_ROLES_HEADING,
-        "with the block copied into the spawn prompt as literal text",
+        "Copy the block into the spawn prompt as literal text, from `Declaration block:` through its "
+        "`adversarial` item",
     ),
     (
         _ROUTING_MD_PATH,
@@ -8426,10 +8435,13 @@ def _declaration_wiring_case_id(case: tuple[Path, str, str]) -> str:
     ids=[_declaration_wiring_case_id(case) for case in _DECLARATION_WIRING_CLAUSES],
 )
 def test_declaration_wiring_present_in_review_skills(skill_path: Path, heading: str, clause: str) -> None:
-    """Pins the declared-surface wiring clauses once per section, plus ROUTING.md's
-    Ledger cross-check literal-text clause, which shares its token with a
-    declaration clause, since a wording-only edit can remove or duplicate one
-    while every other test stays green.
+    """Pins each declared-surface wiring clause exactly once in its section.
+
+    The tuple includes ROUTING.md's Ledger cross-check literal-text clause to count it exactly once in the Reviewer roles section.
+    A wording-only edit can otherwise remove or duplicate a clause while every other test stays green.
+    Each ciso-reviewer skip pin starts at its non-optional clause and every skip pin ends at its closing period.
+    An arm added between a skip pin's first word and its closing period therefore fails its case.
+    Text ahead of a pin's first word is covered only by the deferred position residual.
     """
     section_text = _heading_section_text(skill_path, heading)
     occurrences = section_text.count(clause)

@@ -85,7 +85,7 @@ A plan failing any of these is not ready to implement — return it to the autho
 ## Step 4 — Design-fitness gate
 
 Before evaluating gaps, answer three questions in order:
-1. **What user surface and threat model does this serve?** Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool first, then state it as a `declared:` value by the declaration rule `ROUTING.md` § "Reviewer roles" states, which also governs the skips that rest on it and what persona reviewers receive.
+1. **What user surface and threat model does this serve?** Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool first. Then state the answer as a `declared:` value by the declaration rule `ROUTING.md` § "Reviewer roles" states. That rule also governs the skips that rest on the value and what persona reviewers receive.
 2. **Is the design appropriately sized for the user pain it solves on that surface?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
 
 Markers of over-elaboration:
