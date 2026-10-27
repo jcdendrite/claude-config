@@ -1,8 +1,11 @@
 """Behavioural-parity tests for the shared default-branch-resolution
-helper's four gh-free entry points, against a single non-`main`-default
+helper's four entry points, against a single non-`main`-default
 fixture: branch-divergence-status.sh, check-branch-divergence.sh,
 set-session-title-from-branch.sh, and a direct `bash -c '. _lib.sh; ...'`
 call on each of _lib.sh's two layers.
+branch-divergence-status.sh reads an open PR's base with no key set, so its
+run puts a `gh` shim first on PATH that exits 1 unless a test configures both a
+reply and exit status 0.
 
 pr-diff-against-base.sh is excluded -- its own test file already carries
 deeper non-`main`-default coverage (trunk, slash-containing names,
@@ -10,19 +13,20 @@ multi-candidate precedence) that duplicating here would add nothing to.
 cleanup-merged-branches.sh is excluded -- test_cleanup_merged_branches.py's
 "resolves and excludes" test already covers its resolve/exclude parity,
 with the `gh` scaffolding that already exists in its own file.
-guard-settings-session-keys.sh is also gh-free and also calls the guess
+guard-settings-session-keys.sh is gh-free and also calls the guess
 layer, but is excluded here too -- test_guard_settings_session_keys.py
 already carries its own dedicated non-`main`-default and candidate-probe
 coverage.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 from helpers import HOOKS_DIR, run_hook_context, run_hook_session_start
 
-from .conftest import _commit, _make_repo_with_remote
+from .conftest import _commit, _make_gh_pr_view_shim, _make_repo_with_remote
 
 _BRANCH_DIVERGENCE_STATUS = Path(__file__).parent.parent / "branch-divergence-status.sh"
 _CHECK_BRANCH_DIVERGENCE = HOOKS_DIR / "check-branch-divergence.sh"
@@ -30,9 +34,14 @@ _SET_SESSION_TITLE = HOOKS_DIR / "set-session-title-from-branch.sh"
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
 
-def _run_branch_divergence_status(repo: Path) -> subprocess.CompletedProcess:
+def _run_branch_divergence_status(
+    repo: Path, *, gh_reply: str = "", gh_exit_status: int = 1
+) -> subprocess.CompletedProcess:
+    shim_dir = repo.parent / "gh-shim-bin"
+    _make_gh_pr_view_shim(shim_dir, reply=gh_reply, exit_status=gh_exit_status)
+    run_env = {**os.environ, "PATH": os.pathsep.join([str(shim_dir), os.environ.get("PATH", "")])}
     return subprocess.run(
-        [str(_BRANCH_DIVERGENCE_STATUS)], cwd=repo, capture_output=True, text=True, check=False,
+        [str(_BRANCH_DIVERGENCE_STATUS)], cwd=repo, env=run_env, capture_output=True, text=True, check=False,
     )
 
 
@@ -87,6 +96,29 @@ class TestOriginHeadSetReportsRealDefault:
         assert result.returncode == 0
         assert "Default branch: develop" in result.stdout
         assert "Default branch: main" not in result.stdout
+
+    def test_branch_divergence_status_treats_an_open_pr_on_develop_as_the_default_branch(self, tmp_path):
+        """A comparison against a literal `main` would print `Base branch: develop` for an ordinary PR."""
+        local, _bare = _make_repo_with_remote(tmp_path, default_branch="develop")
+
+        result = _run_branch_divergence_status(local, gh_reply="OPEN\ndevelop\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Default branch: develop" in result.stdout
+        assert "Base branch:" not in result.stdout
+        assert result.stderr == ""
+
+    def test_branch_divergence_status_treats_an_open_pr_on_a_non_default_main_as_a_base_branch(self, tmp_path):
+        """A comparison against a literal `main` would read this PR's base as the default branch."""
+        local, _bare = _make_repo_with_remote(tmp_path, default_branch="develop")
+        subprocess.run(["git", "push", "-q", "origin", "develop:refs/heads/main"], cwd=local, check=True)
+
+        result = _run_branch_divergence_status(local, gh_reply="OPEN\nmain\n", gh_exit_status=0)
+
+        assert result.returncode == 0, result.stderr
+        assert "Base branch: main" in result.stdout
+        assert "Default branch:" not in result.stdout
+        assert result.stderr == ""
 
     def test_check_branch_divergence_reports_develop(self, tmp_path):
         local, bare = _make_repo_with_remote(tmp_path, default_branch="develop")

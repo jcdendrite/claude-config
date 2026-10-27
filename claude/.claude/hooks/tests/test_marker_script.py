@@ -4150,6 +4150,46 @@ class TestMarkerScriptCumulativeReview:
         assert result.returncode == 0, result.stderr
         assert "cumulative-review: live" in result.stdout
 
+    def test_status_recomputes_through_the_stack_base_key(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`status` runs pr-diff-against-base.sh with no arguments, so the
+        stack base it recomputes against must come from repository state: live
+        while branch.<branch>.gh-merge-base is set, historical (not a failed
+        recompute) once it is unset and the diff falls back to origin/main."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        _arm_default_branch_ref(git_repo)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/own"], cwd=git_repo, check=True)
+        (git_repo / "stack.txt").write_text("stack work\n")
+        subprocess.run(["git", "add", "stack.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "stack work"], cwd=git_repo, check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/stack", "HEAD"], cwd=git_repo, check=True)
+        (git_repo / "own.txt").write_text("own work\n")
+        subprocess.run(["git", "add", "own.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "own work"], cwd=git_repo, check=True)
+        subprocess.run(
+            ["git", "config", "branch.feat/own.gh-merge-base", "stack"], cwd=git_repo, check=True
+        )
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(git_repo, isolated_home, env).returncode == 0
+        write_result = _run(
+            ["write", "cumulative-review"], cwd=git_repo, home=isolated_home, extra_env=env
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        live_result = _run(["status"], cwd=git_repo, home=isolated_home, extra_env=env)
+        subprocess.run(
+            ["git", "config", "--unset-all", "branch.feat/own.gh-merge-base"], cwd=git_repo, check=True
+        )
+        unset_result = _run(["status"], cwd=git_repo, home=isolated_home, extra_env=env)
+
+        assert live_result.returncode == 0, live_result.stderr
+        assert "cumulative-review: live" in live_result.stdout
+        assert unset_result.returncode == 0, unset_result.stderr
+        assert "cumulative-review: historical" in unset_result.stdout
+        assert "could not verify" not in unset_result.stdout + unset_result.stderr
+
     def test_status_historical_when_marker_hash_is_stale(
         self, isolated_home, cumulative_diff_repo, tmp_path
     ):
