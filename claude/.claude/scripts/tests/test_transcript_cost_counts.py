@@ -74,11 +74,7 @@ class TestSpawnCountsByAgentType:
     feeding cost-counts's ### Subagent spawns table."""
 
     def test_spawn_nested_inside_a_subagent_is_counted(self):
-        """A record flagged isSidechain: true counts alongside a main-thread one.
-        Record-level fixture: real transcripts keep flagged records in
-        <session>/subagents/*.jsonl, which
-        TestCostCounts.test_reviewers_spawned_inside_subagent_files_count_alongside_the_main_thread_orchestrator
-        covers."""
+        """A record flagged isSidechain: true counts alongside a main-thread one."""
         records = [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
@@ -319,11 +315,7 @@ class TestCostCounts:
     def test_review_orchestrator_dispatch_from_inside_a_subagent_is_a_spawn_but_not_a_round(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
-        """A sidechain record's dispatch adds a spawn row but opens no
-        code-review round: only a main-thread dispatch is a round. Record-level
-        fixture with the flagged record inline in the main file; real
-        transcripts keep it under <session>/subagents/ (see
-        test_reviewers_spawned_inside_subagent_files_count_alongside_the_main_thread_orchestrator)."""
+        """A sidechain record's dispatch adds a spawn row but opens no code-review round."""
         self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
         _write_jsonl(fake_projects / "sess.jsonl", [
             # Carries branch "feat" to the sidechain record; without it the

@@ -351,8 +351,8 @@ def _spawn_counts_by_agent_type(
     for the allowlist partition this raw count feeds.
     """
     counts: dict[str, int] = defaultdict(int)
-    # Counted per tool_use block with no id dedup: no id repeated across a
-    # session's transcript files has been observed.
+    # Counted per tool_use block with no id dedup. Assumes tool_use ids
+    # are not repeated across a session's transcript files.
     for _jsonl, records in session_iter:
         branch_context = scope._session_branch_context(records)
         for rec in records:
@@ -401,8 +401,7 @@ _DECLARED_PIN_BUILT_IN = "built-in"
 # Fallback subagent_type for a spawn tool_use whose input carries no
 # subagent_type field -- shared between cmd_subagent_mix and
 # _spawn_counts_by_agent_type as the raw string meaning "input missing this
-# field." Only _spawn_counts_by_agent_type also normalizes a non-dict input or
-# a non-string subagent_type to it; cmd_subagent_mix does not.
+# field."
 _UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
@@ -538,7 +537,7 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
         args, "cost-counts", include_subagents=True, roots=roots,
     )
     # Streams one session at a time because include_subagents=True makes each
-    # session's records include every subagent transcript.
+    # session's records include the direct subagents/*.jsonl transcripts.
     round_counts = dict.fromkeys(review_rounds.REVIEW_SKILLS, 0)
     raw_spawn_counts: dict[str, int] = defaultdict(int)
     for session in session_iter:
