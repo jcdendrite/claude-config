@@ -4254,9 +4254,13 @@ class TestStdinIsTerminal:
 
     def test_no_command_line_flag_reaches_the_seam(self, capsys):
         parser = run_review_bench.build_parser()
-        assert set(vars(parser.parse_args(["confirm"]))) == {
-            "subcommand", "local_dir", "defects_path", "source", "include_declined", "func",
+        default_args = parser.parse_args(["confirm"])
+        assert set(vars(default_args)) == {
+            "subcommand", "local_dir", "defects_path", "source", "include_declined", "ids_file", "answers_file",
+            "engineer_reviewed_answers", "func",
         }
+        assert default_args.answers_file is None
+        assert default_args.engineer_reviewed_answers is False
         for flag in ("--yes", "--tty", "--terminal", "--assume-yes", "--non-interactive"):
             with pytest.raises(SystemExit) as exit_info:
                 parser.parse_args(["confirm", flag])

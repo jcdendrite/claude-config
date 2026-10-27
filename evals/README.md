@@ -597,7 +597,7 @@ then `pr-comment`, then `szz`) and then by the miner's own order, so an early
 the schema, that its path exists at its introducing commit, and, when the
 candidate has a description, the description-provenance check against every
 `.local/` excerpt. It then prompts `[y/N/q]` for each candidate that passes,
-except one that `--source` or the declined IDs described below leave out. The
+except one that `--source`, `--ids-file`, or the declined IDs described below leave out. The
 prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
@@ -636,6 +636,59 @@ several: `review-round`, `pr-comment`, `szz`. Every shortlist still loads and
 every candidate still runs the checks, so the provenance check still sees every
 excerpt.
 
+`--ids-file FILE` restricts the prompts to the candidate IDs a UTF-8 text file
+lists, and prompts for them in the file's order instead of the source order. It
+combines with `--source` as an intersection.
+
+The file holds one ID per line. Blank lines and lines starting with `#` are
+skipped. A `#` after an ID is part of the line, so `c-1  # note` names an
+unknown ID.
+
+An ID is not unknown while a shortlist still holds its candidate, even when the
+checks rejected it, `defects.json` already holds it, or an earlier run declined it.
+`confirm` does not prompt for such an ID. `--include-declined` still re-includes
+a declined one. `confirm` prints how many listed IDs it left out and why.
+
+`confirm` exits 2 before any prompt, and writes and pins nothing, when an ID
+matches no shortlist candidate or when the file is missing, unreadable, not
+UTF-8, or empty of IDs.
+
+`--answers-file FILE --engineer-reviewed-answers` applies answers instead of
+prompting. The engineer's review of the answers file is the approval.
+`--engineer-reviewed-answers` is a self-attestation that the engineer reviewed
+every row. `confirm` cannot verify it, and `--answers-file` exits 2 without it.
+
+The file is a JSON list of `{"id", "answer", "description", "lens"}` objects,
+applied in the file's order. A `y` row's description replaces the candidate's
+own. An `n` row ignores `description` and `lens`, and appends its ID to
+`.local/confirm_declined_ids.json`.
+
+Every check a `y` at the prompt runs also runs for each row.
+
+`confirm` skips a row, and the summary counts each skip by reason, when:
+
+- The checks reject its candidate.
+- `defects.json` already holds its candidate. `defects.json` keeps the committed
+  text, so a `y` row with a different description or lens is skipped. An `n` row
+  prints a note that `confirm` does not remove an approved defect and that the
+  engineer must edit `defects.json` by hand.
+- An earlier run declined its candidate. To clear the decline, remove its ID from
+  `confirm_declined_ids.json` under `--local-dir`, or run
+  `confirm --include-declined` at a terminal.
+- A `y` row's candidate shares its head, fix, and path with a defect from another
+  source. That defect is one that `defects.json` already holds, whether or not a
+  shortlist still holds its candidate, or one that an earlier row of the same
+  file approves. The prompt only shows such a sibling, and the answers path
+  skips the second row.
+
+`confirm` prints each approved row and each newly declined ID, so the engineer
+can compare them with the answers file. A row names its candidate by ID alone, so
+a shortlist that a miner rewrote since the file was reviewed commits that
+rewritten location. The approved line shows it.
+
+`--answers-file` does not combine with `--ids-file`, `--source`, or
+`--include-declined`.
+
 The description policy:
 
 - A description may not hold a character that `is_terminal_unsafe_character`
@@ -643,7 +696,7 @@ The description policy:
   zero-width joiner, or a variation selector. The three tables that function
   reads are the one definition of the set.
 - The set includes LF and TAB. A mined description may keep both. A typed
-  one is a single line and may not hold TAB.
+  one, or an answers-file one, is a single line and may not hold TAB.
 - `ConfirmedDefect` enforces the policy when a record loads, so a
   `defects.json` edited past `confirm` fails to load in every subcommand that
   reads its records.
@@ -670,16 +723,16 @@ After the last prompt, `confirm` pins each accepted candidate's fix
 commit under `refs/review-bench/`, then appends the candidates to
 `defects.json`, each with `file_is_markdown` and the candidate's own path (the
 head path for a `pr-comment`). An interrupt in that pin-and-write phase can
-leave earlier pins in place and writes no defect. `confirm` aborts, exiting 1,
-when `defects.json` differs from what it loaded once the prompts end. It
-prints model-derived text with control characters as backslash escapes.
+leave earlier pins in place and writes no defect. `confirm` aborts
+when `defects.json` differs from what it loaded. It prints model-derived text
+with control characters as backslash escapes.
 
-`confirm` needs a terminal on stdin. Without one it runs every check that
+Without `--answers-file`, `confirm` needs a terminal on stdin. Without one it runs every check that
 needs no typed input, prints the rejections, writes and pins nothing, prints
-how many candidates await the engineer at a terminal after `--source` and the
-declined IDs narrow them, and exits 2 when any do. A candidate with no
-description that passes the schema checks counts as awaiting. No flag or
-environment variable supplies an answer in place of a terminal.
+how many candidates await the engineer at a terminal after `--source`, `--ids-file`,
+and the declined IDs narrow them, and exits 2 when any do. A candidate with no
+description that passes the schema checks counts as awaiting. No environment
+variable supplies an answer in place of a terminal.
 
 ### Fixtures and judge input
 
