@@ -3282,7 +3282,7 @@ class TestSkillReviewGateAnchorRejection:
     """Anchor rejection at verdict level, wiring-only: proves the closure-copy
     claim (a forged or untrusted anchor cannot release the gate) reaches the
     real hook, not just the primitive. Every anchor-rejection shape is
-    already pinned directly against `_lib_gate_diff_base` in test_lib.py's
+    already pinned directly against `_lib_gate_diff_base` in test_lib_gate_diff_base.py's
     TestGateDiffBaseUntrustedAnchor, TestGateDiffBaseAnchorNamespaceShadow,
     and TestGateDiffBaseTopologyFallback, and
     test_shared_closure_function_is_identical_across_stowed_and_plugin_lib
@@ -3294,7 +3294,7 @@ class TestSkillReviewGateAnchorRejection:
         """Wiring-only: an untrusted anchor (an unpushed local branch's
         MERGE_HEAD tip, neither an ancestor of origin/<default> nor of HEAD)
         denies the real hook. The anchor-rejection matrix itself lives in
-        test_lib.py, not this class."""
+        test_lib_gate_diff_base.py, not this class."""
         repo = _build_unpushed_local_branch_merge_with_untouched_gated_skill(tmp_path)
 
         base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
@@ -3448,7 +3448,7 @@ class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
 
     def test_unmerged_gated_path_still_lists_under_name_only_against_a_tree(self, tmp_path):
         """Unit layer, modeled on
-        test_lib.py::test_git_diff_cached_against_unresolved_conflict_git_primitive_fact:
+        test_lib_gate_diff_base.py::test_git_diff_cached_against_unresolved_conflict_git_primitive_fact:
         gated_paths_at_base's own invocation shape (`--name-only`, a tree
         argument, a pathspec) still reports an unmerged path, so a
         conflicted SKILL.md is not silently dropped from the base-relative
@@ -3694,7 +3694,7 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         list, joined by `, ` -- not merely a bare mention anywhere in the
         message. The set-difference matching semantics that decide which
         paths land in that list (exact line, not substring) are pinned
-        directly against `_lib_conflict_marker_deny_paths` in test_lib.py's
+        directly against `_lib_conflict_marker_deny_paths` in test_lib_skill_management_plugin_lib.py's
         TestConflictMarkerDenyPaths."""
         conflicted_path = "skills/x/SKILL.md"
         repo, _ = _build_merge_conflicting_in_two_gated_skills(
@@ -3719,7 +3719,7 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         the conflicted one's full text, submitted through the real
         `git diff -G` / `git grep -L` calls in require-skill-review.sh.
         The pure set-difference semantics are unit-pinned separately in
-        test_lib.py's TestConflictMarkerDenyPaths; this test only confirms
+        test_lib_skill_management_plugin_lib.py's TestConflictMarkerDenyPaths; this test only confirms
         the real git output reaches `_lib_conflict_marker_deny_paths`
         unchanged."""
         conflicted_path = "skills/x/SKILL.md"

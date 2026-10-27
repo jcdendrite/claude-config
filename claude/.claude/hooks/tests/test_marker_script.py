@@ -1267,7 +1267,7 @@ class TestMarkerScriptStagedDiffStateClassification:
     through marker.sh's write and status arms, for both code-review and
     skill-review. _lib_staged_diff_hash's own two-outcome contract (digest
     on success, empty stdout on failure) is covered directly against its
-    own return value by test_lib.py's TestStagedDiffHash.
+    own return value by test_lib_gate_diff_base_fallbacks.py's TestStagedDiffHash.
     test_write_code_review_creates_marker in TestMarkerScriptHappyPath
     already confirms the write arm wires a successful hash through to a
     written marker. No separate wiring check for other content-yielding
