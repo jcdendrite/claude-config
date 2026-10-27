@@ -8264,7 +8264,7 @@ _PLAN_REVIEW_OUTPUT_HEADING = "## Output format"
 _ROUTING_ROLES_HEADING = "## Reviewer roles"
 
 # Each skip pin runs from its first word to its sentence's closing period, so an arm added in that span breaks the match.
-# Text ahead of a pin's first word is covered only by the deferred position residual, not by the pin.
+# A pin does not detect text inserted ahead of its first word.
 _CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE = (
     "are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`, "
     "and name the surface in the output."
@@ -8372,6 +8372,11 @@ _DECLARATION_WIRING_CLAUSES = (
     ),
     (
         _PLAN_REVIEW_SKILL_PATH,
+        _STEP4_HEADING,
+        "Then state the answer as a `declared:` value by the declaration rule `ROUTING.md` § \"Reviewer roles\" states.",
+    ),
+    (
+        _PLAN_REVIEW_SKILL_PATH,
         _PLAN_REVIEW_OUTPUT_HEADING,
         "Step 4's `declared:` value, and which plan sections/phases were reviewed",
     ),
@@ -8439,9 +8444,6 @@ def test_declaration_wiring_present_in_review_skills(skill_path: Path, heading: 
 
     The tuple includes ROUTING.md's Ledger cross-check literal-text clause to count it exactly once in the Reviewer roles section.
     A wording-only edit can otherwise remove or duplicate a clause while every other test stays green.
-    Each ciso-reviewer skip pin starts at its non-optional clause and every skip pin ends at its closing period.
-    An arm added between a skip pin's first word and its closing period therefore fails its case.
-    Text ahead of a pin's first word is covered only by the deferred position residual.
     """
     section_text = _heading_section_text(skill_path, heading)
     occurrences = section_text.count(clause)
