@@ -185,8 +185,7 @@ class TestSpawnCountsByAgentType:
 
     def test_nested_spawn_is_attributed_within_its_own_session_when_session_timestamps_interleave(self):
         """Each session resolves a sidechain spawn against its own main-thread timeline. Session A's
-        spawn at t3 stays under feat-a although session B's main thread enters feat-b at t1, and a
-        timeline merged across sessions would count it under feat-b."""
+        spawn at t3 stays under feat-a although session B's main thread enters feat-b at t1."""
         sessions = [
             (Path("a.jsonl"), [
                 _asst("claude-opus-4-7", branch="feat-a", ts=_attr_ts(0)),
@@ -405,8 +404,7 @@ class TestCostCounts:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """Two sessions each hold a main-thread review-orchestrator dispatch and a subagents/
-        reviewer spawn of the same tracked type. Rows and totals add across sessions, so a count
-        that kept only the last session's contribution fails."""
+        reviewer spawn of the same tracked type. Rows and totals add across sessions."""
         self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator", "staff-sdet"])
         for session_id in ("sess-one", "sess-two"):
             _write_jsonl(fake_projects / f"{session_id}.jsonl", [
@@ -485,8 +483,7 @@ class TestCostCounts:
     ):
         """A main-thread review-orchestrator dispatch on feat-a opens a round and a spawn there. The main
         thread then switches to feat-b, and a reviewer the orchestrator spawns after the switch counts
-        under feat-b, so the round and its nested reviewer split across branches. Attributing the
-        nested spawn by its dispatching record's tag would count it under feat-a instead."""
+        under feat-b, so the round and its nested reviewer split across branches."""
         self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator", "staff-sdet"])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst(

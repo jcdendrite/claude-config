@@ -337,12 +337,11 @@ def compute_review_round_costs(
     resolved_roots: Sequence[Path] | None = None,
 ) -> dict:
     """Single pass over session_iter, main-thread only. session_iter must not
-    carry merged subagent-file records. Subagent turns are priced through the
-    dispatch, so a review skill run inside a dispatched subagent is already
-    priced as that dispatch's own cost, and counting it as its own round would
-    double-count its dollars. That includes a review-orchestrator's own `Skill`
-    call: the dispatch itself opens the round, so that call never opens a
-    second one.
+    carry merged subagent-file records. A review skill run inside a dispatched
+    subagent is already priced as that dispatch's own cost, and counting it as
+    its own round would double-count its dollars. That includes a
+    review-orchestrator's own `Skill` call: the dispatch itself opens the
+    round, so that call never opens a second one.
 
     Computes every review-skill round window, its main-thread plus
     recursively-priced subagent dollars, and each touched branch's total
