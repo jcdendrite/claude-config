@@ -397,10 +397,6 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
-# Fallback subagent_type for a spawn tool_use whose input carries no
-# subagent_type field -- shared between cmd_subagent_mix and
-# _spawn_counts_by_agent_type as the raw string meaning "input missing this
-# field."
 _UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",

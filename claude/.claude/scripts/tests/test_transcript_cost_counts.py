@@ -160,8 +160,7 @@ class TestSpawnCountsByAgentType:
         ],
     )
     def test_malformed_spawn_input_counts_as_unknown_and_does_not_abort_the_count(self, malformed_input):
-        """A nested record is subagent-authored, so its tool_use input may not be a dict or may carry
-        a non-string subagent_type. It counts as unknown and the well-formed spawn beside it still counts."""
+        """A malformed spawn counts as unknown; the well-formed spawn beside it still counts."""
         malformed_block = {"type": "tool_use", "id": "bad", "name": "Agent", "input": malformed_input}
         records = [
             _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[malformed_block]),
