@@ -8,6 +8,7 @@ import re
 import subprocess
 
 import pytest
+from helpers import REPO_ROOT
 
 from ._lib_sh_helpers import _LIB_SH, _run_lib_call
 from .test_config_lib import _locale_that_widens_ascii_ranges
@@ -145,17 +146,16 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
     behavior. This one exists because the failure it catches is a NEW hook
     added later that builds a marker path and forgets to validate — a file
     that has no traversal test yet by definition, so no behavioral test can
-    cover it. Eight hooks currently qualify; the guard was applied to all of
-    them as a class rather than to the one where the defect first surfaced.
+    cover it. The guard is applied to every qualifying hook as a class rather
+    than to the one where the defect first surfaced.
     """
     hooks_dir = _LIB_SH.parent
-    repo_root = hooks_dir.parents[3]
-    hook_files = [
-        path
-        for path in sorted(hooks_dir.glob("*.sh")) + sorted(repo_root.glob("plugins/*/hooks/*.sh"))
-        if path.name != "_lib.sh"
+    main_hook_files = [path for path in sorted(hooks_dir.glob("*.sh")) if path.name != "_lib.sh"]
+    plugin_hook_files = [
+        path for path in sorted(REPO_ROOT.glob("plugins/*/hooks/*.sh")) if path.name != "_lib.sh"
     ]
-    assert hook_files, "no hook scripts found — the glob is wrong, not the repo"
+    assert main_hook_files, "no hook scripts found — the glob is wrong, not the repo"
+    assert plugin_hook_files, "no plugin hook scripts found — the glob is wrong, not the repo"
 
     # Matches "<anything>/$SESSION_ID" and "<anything>/${SESSION_ID}", which is
     # the shape that turns an unvalidated id into a path outside the intended
@@ -166,13 +166,13 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
 
     unguarded = []
     matched_any = []
-    for hook in hook_files:
+    for hook in main_hook_files + plugin_hook_files:
         text = hook.read_text()
         if not builds_path_re.search(text):
             continue
         matched_any.append(hook.name)
         if not any(guard in text for guard in guards):
-            unguarded.append(hook.name)
+            unguarded.append(hook.relative_to(REPO_ROOT).as_posix())
 
     assert matched_any, (
         "no hook matched the path-building pattern — the regex has drifted from "
@@ -181,5 +181,7 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
     assert not unguarded, (
         "these hooks build a filesystem path from session_id without validating "
         f"it first: {unguarded}. Call _lib_valid_session_id_component, or route "
-        "the marker read through _lib_active_bypass_marker_live."
+        "the marker read through _lib_active_bypass_marker_live. A plugin hook "
+        "cannot source the stowed _lib.sh: copy the guard into its own "
+        "hooks/_lib.sh under the same name."
     )
