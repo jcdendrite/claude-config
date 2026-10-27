@@ -154,8 +154,8 @@ more focused task than writing it — use that asymmetry deliberately.
      and the value found; each claim you could not verify, naming the source
      you looked for; and each other site the search found.
 8. After your last fix, re-read the hunks you changed (`git diff -- <paths>`,
-   or `Read` for a file you created) before returning, because a hook checks
-   for this re-read; fix what it shows, then re-read again.
+   or `Read` for a file you created) before returning. Fix what it shows, then
+   re-read again. A hook checks for this re-read.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|

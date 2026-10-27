@@ -171,10 +171,8 @@ def is_comment_line(path, line):
     )
     if is_hash_family and stripped.startswith("#") and not stripped.startswith("#!"):
         return True
-    if extension == ".py":
-        for delimiter in _PYTHON_DOCSTRING_DELIMITERS:
-            if stripped.startswith(delimiter) and stripped[len(delimiter):].strip():
-                return True
+    if extension == ".py" and stripped.startswith(_PYTHON_DOCSTRING_DELIMITERS):
+        return True
     if extension in _SLASH_EXTENSIONS and stripped.startswith(("//", "/*")):
         return True
     return extension == ".sql" and stripped.startswith("--")
@@ -426,9 +424,12 @@ def load_git_record_builder():
     spec = importlib.util.spec_from_file_location("parse_git_command", PARSE_GIT_COMMAND_PATH)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load the git command parser at {PARSE_GIT_COMMAND_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.build_records, module.FIELD_SEP
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.build_records, module.FIELD_SEP
+    except Exception as error:
+        raise ImportError(f"cannot load the git command parser at {PARSE_GIT_COMMAND_PATH}") from error
 
 
 def runs_git_diff(command, build_records, field_separator):
@@ -437,6 +438,9 @@ def runs_git_diff(command, build_records, field_separator):
     The shared parser splits segments on shell operators but not on newlines,
     so backslash-newline continuations are joined and each remaining line is
     parsed on its own.
+
+    A shell comment or an unquoted `echo` containing `git diff` earns credit, because the parser's tokenizer
+    does not treat `#` as a comment start and the first `git` token of a segment counts.
     """
     if not isinstance(command, str):
         return False
@@ -856,14 +860,14 @@ def run(payload, agent_id, marker_dir, log_path, stdout):
 
 def main(argv=None, stdin=None, stdout=None):
     argv = sys.argv[1:] if argv is None else argv
-    stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     if len(argv) != 3 or not _AGENT_ID_PATTERN.fullmatch(argv[0]):
         return 1
     agent_id, marker_dir, log_path = argv
     event_for_log = "-"
     try:
-        payload = json.load(stdin)
+        # The binary stream lets json.load detect UTF-8 itself, whatever the process locale decodes text stdin as.
+        payload = json.load(getattr(sys.stdin, "buffer", sys.stdin) if stdin is None else stdin)
         if not isinstance(payload, dict):
             return 0
         event = payload.get("hook_event_name")

@@ -26,12 +26,20 @@ So the hook registers on PreToolUse matcher `SubagentHandback` and on SubagentSt
 
 ## `turn-gate`, no `onFailure`
 
-The `gate` class requires `"onFailure": "block"`, which is right where the guarded call is the risk. Here the guarded call is the writer's only way to deliver its report, and a PreToolUse matcher names a tool, so no registration field narrows it to one agent type. In the probe, a PreToolUse `SubagentHandback` hook with no `onFailure` that could not start, or that exited 1, let the handback through, and the same held for a SubagentStop group in `acceptEdits` mode. A missing script under `onFailure: "block"` blocked every handback of every subagent type and lost the report. The hook therefore takes the `turn-gate` class, whose contract is sending an agent back instead of letting its run end.
+The hook takes the `turn-gate` class, whose contract is sending an agent back instead of letting its run end.
+
+- The `gate` class requires `"onFailure": "block"`, which is right where the guarded call is the risk.
+- Here the guarded call is the writer's only way to deliver its report, and a PreToolUse matcher names a tool, so no registration field narrows it to one agent type.
+- In the probe, a PreToolUse `SubagentHandback` hook with no `onFailure` that could not start, or that exited 1, let the handback through.
+- In the probe, the same held for a SubagentStop group in `acceptEdits` mode.
+- In the probe, a missing script under `onFailure: "block"` blocked every handback of every subagent type and lost the report.
+
+The registrations and the script therefore behave as follows.
 
 - Neither registration carries `onFailure`, and the hook never exits 2.
 - Both registrations set `"timeout": 20` seconds, above the in-script worst case of 14 seconds (two capped calls, each 5 seconds plus a 2-second kill grace), so the in-script cap fires and logs first.
 - The hook omits `set -e`, because an aborting command's own status could be 2, which blocks on both events.
-- Every handled failure allows and logs. The only blocking output is the once-per-cycle send-back, emitted after its marker is claimed.
+- Every handled failure allows. The only blocking output is the once-per-cycle send-back, emitted after its marker is claimed.
 - The threat-model tier framework covers `gate` hooks only (see `docs/hooks.md` § "Threat-model tiers"), so the hook takes no tier row. It is a workflow check for a cooperative writer, not a security boundary.
 - The `claude-hook-review` skill and `test_hook_alignment.py`'s `turn-gate` docstring both widen from Stop to the end of an agent's run, and name both output shapes.
 
@@ -39,9 +47,11 @@ There is no off switch. A user disables the hook by removing its two `settings.j
 
 ## Send it back once
 
-A marker directory `<config-dir>/.code-writer-self-review.d/<agent-id>`, claimed with `mkdir` before the deny or block is emitted, bounds the send-back at once per cycle. Both arms share it. A failed envelope write removes the marker. The shell discards the evaluator's stdout on any nonzero exit status, so a nonzero exit after the claim leaves an orphaned marker. After the envelope flush, the incomplete first return passes unsent-back. The orphaned marker makes a later return of the same agent id pass flagged.
+A marker directory `<config-dir>/.code-writer-self-review.d/<agent-id>`, claimed with `mkdir` before the deny or block is emitted, bounds the send-back at once per cycle. Both arms share it. A failed envelope write removes the marker, so that agent id's next return is sent back.
 
-- In auto mode the second return passes with a `SELF-REVIEW INCOMPLETE (hook-verified)` prefix the hook writes into the report through `updatedInput`.
+- An evaluator exit after the envelope flush, such as a cap kill, discards the envelope and leaves the marker. The incomplete return passes without a send-back, and the same agent id's next return passes too.
+- A writer that never returns after a send-back leaves its marker, and nothing sweeps marker directories. That marker suppresses the send-back if the same agent id is resumed.
+- In auto mode a second return that is still incomplete passes with a `SELF-REVIEW INCOMPLETE (hook-verified)` prefix the hook writes into the report through `updatedInput`.
 - In other modes a hook cannot rewrite the report. The one send-back tells the writer to start its report with `SELF-REVIEW INCOMPLETE: <items>` if it stops without finishing, and the log records `passed-labeled` or `passed-unlabeled`.
 - A send-back count read from the transcript was set aside, because a transcript that lagged behind a deny would re-deny the only exit. The marker has no freshness dependency.
 
@@ -65,7 +75,11 @@ A path counts as changed when it is the resolved path of a successful Edit or Wr
 
 ## The comment check reads the writer's own edits
 
-Added text for the comment check comes from the writer's own successful calls on changed paths: each line of an Edit's `new_string` that is not a line of its `old_string`, and every line of a Write's `content`. That needs no diff parser, untracked-file read or encoding handling. The detector knows comment markers per file family and treats neither a dereference nor a bare closing delimiter as a comment.
+Added text for the comment check comes from the writer's own successful calls on changed paths: each line of an Edit's `new_string` that is not a line of its `old_string`, and every line of a Write's `content`. That needs no diff parser, untracked-file read or encoding handling. The detector knows comment markers per file family and does not count a dereference such as `*ptr = x` or a lone `*/`. For `.py` it counts every added line that starts with `"""` or `'''`, including a line that only closes a string, such as `""")`. That over-counts on purpose, for three reasons.
+
+- `code-writer.md`'s domain table maps docstrings to `comment-discipline-reviewer`.
+- `code-writer.md` § "Self-review pass — mandatory before returning" step 5 says "When in doubt, read."
+- A false positive costs the writer a little extra work, and a miss costs a full re-review cycle.
 
 ## The ledger lives in the return
 
@@ -73,7 +87,7 @@ The Return format's Self-review bullet asks for one ledger line per reviewer fil
 
 ## The transcript over a recorder
 
-The writer's own transcript already holds every earlier Read, Edit, Write and Bash call in order, plus the text each edit added, so no per-call process is needed. A PostToolUse recorder would add a process to every tool call in every session, a state directory, and ordering races within a parallel batch. A call counts only when a paired `tool_result` exists and is not an error, so a Read issued in the same batch as the handback, whose result may not have landed, does not count.
+The writer's own transcript already holds every earlier Read, Edit, Write and Bash call in order, plus the text each edit added, so no per-call process is needed. A PostToolUse recorder would add a process to every tool call in every session, a state directory, and ordering races within a parallel batch. A call counts only when a paired `tool_result` exists and is not an error, so a Read issued in the same batch as the handback, whose result may not have landed, does not count. Reviewer-Read credit is a path-suffix match (`reviewer_name_for_read_path`) on a path the writer chooses, so a successful Read of any path ending in `/agents/<name>.md`, or in `/skills/ai-instruction-and-memory-files/SKILL.md` for that skill, credits that reviewer.
 
 ## Log verdicts
 
@@ -91,27 +105,39 @@ This section is the single home for the log vocabulary. The hook appends to `<co
 | `allowed-continuation` | SubagentStop arm with `stop_hook_active` true, no marker, items missing. The hook never blocks a continuation. | Yes: an incomplete return is not sent back. | Treat the diff as not self-reviewed. |
 | `allowed-no-repo-path` | The writer made edits, none of which sits in a repository or still exists. | No | None. |
 | `allowed-no-transcript` | The writer's transcript file was not found. | Yes | Check that the payload still carries `agent_transcript_path` (SubagentStop) or `transcript_path` (PreToolUse) after a Claude Code upgrade. |
-| `allowed-unparsed-transcript` | Any of: the transcript has content but no line decoded into a record carrying a `message.content` list; at least one `tool_result` block decoded and none carries the id of a decoded tool call (including when no call decoded); or a tool call decoded, no `tool_result` block decoded at all, and a `user` record follows the first call. | Yes | The transcript record shape changed. Compare it with the fixture under `claude/.claude/hooks/tests/fixtures/code-writer-self-review/`. |
-| `allowed-claim-failed` | The marker directory could not be created or claimed. | Yes | Check that `<config-dir>` is writable. |
+| `allowed-unparsed-transcript` | The transcript did not decode as expected. See the conditions below the table. | Yes | The transcript record shape changed. Compare it with the fixture under `claude/.claude/hooks/tests/fixtures/code-writer-self-review/`. |
+| `allowed-claim-failed` | The marker directory could not be created or claimed. | Yes | Check that `<config-dir>` is writable and `<config-dir>/.code-writer-self-review.d` is a writable directory. |
 | `allowed-claim-raced` | Another invocation claimed the same cycle first. Nothing was printed. | Yes: this report passes unflagged. | None. Two `SubagentHandback` calls in one batch produce it. |
 | `allowed-jq-failed` | `jq` is missing, failed or was cap-killed. | Yes | Install `jq` on the harness PATH. |
 | `allowed-invalid-agent-id` | `agent_id` is empty or holds a character outside letters, digits, `_` and `-`. | Yes | Report a payload-shape change. |
 | `allowed-evaluator-exit=N` | The evaluator ended with status N, and anything it printed was discarded. | Yes | Read N as below. |
-| `allowed-evaluator-error=<class>` | The evaluator raised an exception of that class and exited 1. | Yes | Look up the class. An `OSError` or `ImportError` points at a file the evaluator could not read or load. |
+| `allowed-evaluator-error=<class>` | The evaluator raised an exception of that class and exited 1. | Yes | Find where the evaluator raises that class. |
+
+`allowed-unparsed-transcript` is logged when any of these holds:
+
+- The transcript has content but no line decoded into a record carrying a `message.content` list.
+- At least one `tool_result` block decoded and none carries the id of a decoded tool call (including when no call decoded).
+- A tool call decoded, no `tool_result` block decoded at all, and a `user` record follows the first call.
+
+These notes apply to the log as a whole.
 
 - The log gets one line per `code-writer` hook invocation that reaches a verdict, except an evaluator error, which logs the pair below. A normal auto-mode run logs `clean` from the PreToolUse arm, then `not-owned` from the SubagentStop arm.
 - An evaluator error logs `allowed-evaluator-error=<class>` from the evaluator, then `allowed-evaluator-exit=1` from the hook script.
-- `allowed-evaluator-exit=1` with no preceding `allowed-evaluator-error=` line means the evaluator failed before its handler ran, such as an import failure or syntax the `python3` cannot parse.
+- `allowed-evaluator-exit=1` with no preceding `allowed-evaluator-error=` line means the evaluator failed before its handler ran. The hook discards the evaluator's stderr, so run the evaluator by hand to see the error.
 - `allowed-evaluator-exit=2` means the evaluator file is missing or unlinked. A real-directory hooks layout needs `./install.sh`.
 - `allowed-evaluator-exit=127` means `python3` is not on the harness PATH.
 - A cap-kill status is one `_lib_capped_for`'s header lists under "Exit statuses", which also says which of them a child's own signal death can produce.
-- The silent cases, where no line is written: a missing `_lib.sh`, a bash below the floor, a failed config-dir lookup (a relative `CLAUDE_CONFIG_DIR`), invocation by bare name, a payload from another agent type or tool, and a log append that fails.
+- The silent cases, where no line is written, fall in three closed classes.
+  - Exits before the config directory resolves: a missing `_lib.sh`, a bash below the floor, a failed config-dir lookup (a relative `CLAUDE_CONFIG_DIR`), and invocation by bare name.
+  - Payloads the hook does not own: another agent type or tool, and a `hook_event_name` that is neither `PreToolUse` nor `SubagentStop`.
+  - A log append that fails.
 - A harness kill at the 20-second timeout is also silent when no `timeout` or `gtimeout` is on PATH, because the in-script cap then does not run.
-- The log is append-only and not rotated. It is advisory and not tamper-evident, because the writer's Bash tool can reach the config directory. Marker directories are not swept.
+- The log is append-only and not rotated. It is advisory and not tamper-evident, because the writer's Bash tool can reach the config directory.
 
 ## Known degradations and unverified paths
 
 - The probe ran on Claude Code 2.1.310. Versions 2.1.295 through 2.1.309 are unprobed and fail open.
 - A background dispatch outside auto mode, a nested dispatch at spawn depth 2, and a SendMessage continuation are unverified. The outcome log (`<config-dir>/.code-writer-self-review.log`) is the instrument for each.
 - A dispatch whose report is very long in auto mode is an open observation. A missing send-back or prefix there belongs here once seen.
-- The hook header's Known gaps in `send-back-skipped-self-review.sh` are the home for the code-level gaps.
+- An agent defined elsewhere that is also named `code-writer` inherits the send-back, with one extra round trip in both modes. The send-back reason cites `code-writer.md` and its ledger format, which that agent may lack.
+- A finding that the code misses a case gets one of three outcomes: a fix in code; a `test_known_gap_*` case in `test_send_back_skipped_self_review.py` when a reader could mistake the behavior for a bug; or no action when the hook header's security-boundary line or this record already implies it. It never becomes a new prose line.

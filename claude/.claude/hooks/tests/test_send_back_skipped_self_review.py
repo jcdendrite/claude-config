@@ -121,7 +121,15 @@ def test_path_floor_reviewers_table(path, expected_reviewers):
         ("a.py", "# note", True),
         ("a.py", '"""Module docstring."""', True),
         ("a.py", "'''text", True),
-        ("a.py", '"""', False),
+        # A line that starts with a delimiter counts even when it only closes a string or continues with code.
+        ("a.py", '"""', True),
+        ("a.py", '    """', True),
+        ("a.py", '""")', True),
+        ("a.py", "''')", True),
+        ("a.py", '""".. note:: text', True),
+        ("a.py", 'text = """opener', False),
+        ("a.sh", '"""', False),
+        ("a.yml", "'''", False),
         ("a.py", "x = 1  # trailing", False),
         ("a.yml", "# note", True),
         ("Makefile", "# note", True),
@@ -234,6 +242,15 @@ def test_runs_git_diff_command_shapes(command, expected):
     assert (
         evaluator.runs_git_diff(command, _parse_git_command.build_records, _parse_git_command.FIELD_SEP)
         is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "command", ["# check git diff later", "echo git diff"], ids=["shell-comment", "unquoted-echo"]
+)
+def test_known_gap_records_that_git_diff_in_a_shell_comment_or_unquoted_echo_earns_reread_credit(command):
+    assert (
+        evaluator.runs_git_diff(command, _parse_git_command.build_records, _parse_git_command.FIELD_SEP) is True
     )
 
 
@@ -725,6 +742,18 @@ def test_cited_heading_exists_in_code_writer():
     assert normalize_heading(evaluator.SELF_REVIEW_HEADING) in headings
 
 
+HOOK_CITATION_RE = re.compile(r'^# - `(?P<doc_path>[^`]+\.md)` § "(?P<heading>[^"]+)"$', re.MULTILINE)
+
+
+def test_cited_headings_exist_in_design_record():
+    citations = [match.groupdict() for match in HOOK_CITATION_RE.finditer(HOOK_PATH.read_text())]
+    assert citations, "no heading citations parsed from the hook header"
+    for citation in citations:
+        headings = heading_texts((REPO_ROOT / citation["doc_path"]).read_text())
+
+        assert normalize_heading(citation["heading"]) in headings
+
+
 # ==========================================================================
 # Tier 3 — evaluator main() against tmp_path workspaces
 # ==========================================================================
@@ -774,7 +803,7 @@ def _write_call(path, content="y\n", outcome=SUCCESS):
 def _parse_log_line(line):
     parts = line.split()
     fields = dict(part.split("=", 1) for part in parts[3:] if "=" in part)
-    return parts[2], fields
+    return parts[1], parts[2], fields
 
 
 def _assess(calls, report):
@@ -853,7 +882,7 @@ class Workspace:
         )
         lines_after = self.log_path.read_text().splitlines() if self.log_path.is_file() else []
         new_lines = lines_after[len(lines_before):]
-        verdict, fields = _parse_log_line(new_lines[-1]) if new_lines else (None, {})
+        _event, verdict, fields = _parse_log_line(new_lines[-1]) if new_lines else (None, None, {})
         output = stdout.getvalue()
         return Result(
             status, output, json.loads(output) if output else None, verdict, fields,
@@ -1270,6 +1299,15 @@ def test_read_only_marker_directory_logs_allowed_claim_failed_and_prints_nothing
     assert (result.verdict, result.stdout, result.marker_exists) == ("allowed-claim-failed", "", False)
 
 
+def test_regular_file_in_place_of_the_marker_directory_logs_allowed_claim_failed_and_prints_nothing(workspace):
+    workspace.marker_dir.write_text("not a directory")
+    _script, calls = workspace.sh_script_calls(reviewer_reads=())
+
+    result = workspace.evaluate("PreToolUse", calls, "done")
+
+    assert (result.status, result.verdict, result.stdout) == (0, "allowed-claim-failed", "")
+
+
 def test_log_path_that_is_a_directory_still_emits_the_send_back(workspace):
     workspace.log_path.mkdir()
     _script, calls = workspace.sh_script_calls(reviewer_reads=())
@@ -1299,6 +1337,62 @@ def test_allow_envelope_preserves_every_other_tool_input_field(workspace):
     assert (updated["summary"], updated["count"]) == ("kept", 3)
     assert updated["message"].startswith("SELF-REVIEW INCOMPLETE (hook-verified): ")
     assert updated["message"].endswith("\n\nreport body")
+
+
+def test_non_ascii_message_survives_the_flagged_rewrite_when_process_stdin_decodes_as_ascii(workspace, monkeypatch):
+    non_ascii_report = "report with an accented letter é"
+    _script, calls = workspace.sh_script_calls(reviewer_reads=())
+    workspace.evaluate("PreToolUse", calls, non_ascii_report)
+    payload = workspace.payload("PreToolUse", non_ascii_report)
+    utf8_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    # What an interpreter in a non-UTF-8 stdin mode builds over the pipe; reading it as text corrupts the report.
+    monkeypatch.setattr(
+        "sys.stdin", io.TextIOWrapper(io.BytesIO(utf8_bytes), encoding="ascii", errors="surrogateescape")
+    )
+    stdout = io.StringIO()
+
+    status = evaluator.main([AGENT_ID, str(workspace.marker_dir), str(workspace.log_path)], stdout=stdout)
+
+    updated_message = json.loads(stdout.getvalue())["hookSpecificOutput"]["updatedInput"]["message"]
+    assert status == 0
+    assert updated_message.endswith("\n\n" + non_ascii_report)
+
+
+def test_non_utf8_stdin_bytes_exit_one_with_no_output_and_log_the_decode_error(workspace):
+    stdout = io.StringIO()
+
+    status = evaluator.main(
+        [AGENT_ID, str(workspace.marker_dir), str(workspace.log_path)],
+        stdin=io.BytesIO(b'{"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "message": "\xff\xfe"}'),
+        stdout=stdout,
+    )
+
+    _event, logged_verdict, _fields = _parse_log_line(workspace.log_path.read_text().splitlines()[-1])
+    assert (status, stdout.getvalue()) == (1, "")
+    assert logged_verdict == "allowed-evaluator-error=UnicodeDecodeError"
+
+
+def test_undecodable_stdin_logs_a_dash_in_the_event_field(workspace):
+    evaluator.main(
+        [AGENT_ID, str(workspace.marker_dir), str(workspace.log_path)],
+        stdin=io.BytesIO(b'{"hook_event_name": "PreToolUse", "message": "\xff\xfe"}'),
+        stdout=io.StringIO(),
+    )
+
+    (logged_line,) = workspace.log_path.read_text().splitlines()
+    logged_event, logged_verdict, _fields = _parse_log_line(logged_line)
+    assert (logged_event, logged_verdict) == ("-", "allowed-evaluator-error=UnicodeDecodeError")
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "SubagentStop"])
+def test_evaluator_logs_the_payload_event_name_in_the_event_field(workspace, event):
+    _script, calls = workspace.sh_script_calls()
+
+    result = workspace.evaluate(event, calls, LEDGER_PLATFORM)
+
+    (logged_line,) = result.new_log_lines
+    logged_event, logged_verdict, _fields = _parse_log_line(logged_line)
+    assert (logged_event, logged_verdict) == (event, "clean")
 
 
 @pytest.mark.parametrize("message", [None, 7, ["x"]], ids=["null", "number", "list"])
@@ -1338,6 +1432,87 @@ def test_missing_items_are_ordered_by_name_deduplicated_and_count_unrecognized_n
         (evaluator.KIND_REREAD, None, False, False),
     ]
     assert result.fields["unrecognized"] == "1"
+
+
+def _two_missing_items_and_three_unrecognized_names(workspace):
+    calls = [_edit_call(workspace.make_file("scripts/a.sh"))]
+    report = (
+        "**Self-review:**\n- `staff-platform-engineer`: a\n"
+        "- `bogus-name`: b\n- `other-bogus-name`: c\n- `third-bogus-name`: d\n"
+    )
+    assessment = _assess(calls, report)
+    assert _item_fields(assessment) == [
+        (evaluator.KIND_REVIEWER, "staff-platform-engineer", True, False),
+        (evaluator.KIND_REREAD, None, False, False),
+    ]
+    assert assessment.unrecognized == 3
+    other_counts = [
+        assessment.calls, assessment.edits, assessment.changed, assessment.dropped,
+        assessment.reads, assessment.ledger_lines, len(assessment.items),
+    ]
+    assert 3 not in other_counts
+    return calls, report
+
+
+TWO_MISSING_ITEMS_SUMMARY = "no Read of staff-platform-engineer; no diff re-read after the last edit"
+
+
+@pytest.mark.parametrize(
+    ("item", "expected_label"),
+    [
+        (
+            evaluator.MissingItem(evaluator.KIND_REREAD, None, False, False, []),
+            "no diff re-read after the last edit",
+        ),
+        (
+            evaluator.MissingItem(evaluator.KIND_ANY_REVIEWER, None, True, True, []),
+            "no ledger line backed by a reviewer Read",
+        ),
+        (
+            evaluator.MissingItem(evaluator.KIND_REVIEWER, "staff-sdet", True, False, []),
+            "no Read of staff-sdet",
+        ),
+        (
+            evaluator.MissingItem(evaluator.KIND_REVIEWER, "staff-sdet", False, True, []),
+            "no ledger line for staff-sdet",
+        ),
+        (
+            evaluator.MissingItem(evaluator.KIND_REVIEWER, "staff-sdet", True, True, []),
+            "no Read of staff-sdet and no ledger line for staff-sdet",
+        ),
+    ],
+    ids=["reread", "any-reviewer", "read-only", "ledger-only", "read-and-ledger"],
+)
+def test_item_label_table(item, expected_label):
+    assert evaluator.item_label(item) == expected_label
+
+
+def test_flagged_prefix_names_the_missing_items_and_the_send_back_reason_counts_unrecognized_names(workspace):
+    calls, report = _two_missing_items_and_three_unrecognized_names(workspace)
+
+    first = workspace.evaluate("PreToolUse", calls, report)
+    second = workspace.evaluate("PreToolUse", calls, report)
+
+    reason = first.envelope["hookSpecificOutput"]["permissionDecisionReason"]
+    updated_message = second.envelope["hookSpecificOutput"]["updatedInput"]["message"]
+    assert updated_message.startswith(
+        f"SELF-REVIEW INCOMPLETE (hook-verified): {TWO_MISSING_ITEMS_SUMMARY}. Treat this diff as not self-reviewed.\n\n"
+    )
+    assert "Ledger names not recognized: 3." in reason
+    assert first.fields["unrecognized"] == "3"
+
+
+def test_stop_send_back_reason_carries_the_missing_items_in_the_label_and_counts_unrecognized_names(workspace):
+    calls, report = _two_missing_items_and_three_unrecognized_names(workspace)
+
+    result = workspace.evaluate("SubagentStop", calls, report)
+
+    assert (
+        f"start your report with the line `SELF-REVIEW INCOMPLETE: {TWO_MISSING_ITEMS_SUMMARY}`"
+        in result.envelope["reason"]
+    )
+    assert "Ledger names not recognized: 3." in result.envelope["reason"]
+    assert result.fields["unrecognized"] == "3"
 
 
 def test_ledger_only_item_asks_for_the_ledger_line_and_no_read(workspace):
@@ -1439,15 +1614,23 @@ def test_stop_with_stop_hook_active_and_no_marker_never_blocks(workspace):
     assert (result.verdict, result.stdout, result.marker_exists) == ("allowed-continuation", "", False)
 
 
-def test_stop_after_any_handback_call_is_not_owned_and_keeps_the_marker(workspace):
+@pytest.mark.parametrize("handback_outcome", [FAILED, SUCCESS], ids=["denied", "delivered"])
+def test_stop_after_any_handback_call_is_not_owned_and_keeps_the_marker(workspace, handback_outcome):
     _script, calls = workspace.sh_script_calls(reviewer_reads=())
     (workspace.marker_dir / AGENT_ID).mkdir(parents=True)
+    payload = workspace.payload("SubagentStop", "done")
+    if handback_outcome == SUCCESS:
+        # After a delivered handback the harness sends no last_assistant_message.
+        del payload["last_assistant_message"]
 
     result = workspace.evaluate(
-        "SubagentStop", [*calls, _call("SubagentHandback", {"message": "r"}, FAILED)], "done"
+        "SubagentStop", [*calls, _call("SubagentHandback", {"message": "r"}, handback_outcome)], "done", payload=payload
     )
+    (workspace.marker_dir / AGENT_ID).rmdir()
+    control = workspace.evaluate("SubagentStop", calls, "done", payload=payload)
 
     assert (result.verdict, result.stdout, result.marker_exists) == ("not-owned", "", True)
+    assert control.verdict == "sent-back"
 
 
 def test_stop_after_only_a_pending_handback_is_not_owned_and_keeps_the_marker(workspace):
@@ -1532,7 +1715,40 @@ def test_other_events_and_tools_exit_zero_with_no_output_or_log(workspace):
     assert (result.status, result.stdout, result.new_log_lines) == (0, "", [])
 
 
-def test_evaluator_error_logs_the_exception_class_and_exits_one(workspace, monkeypatch):
+def _payload_with_event(workspace, event, payload_shape="SubagentStop"):
+    payload = workspace.payload(payload_shape, "done")
+    if event is None:
+        del payload["hook_event_name"]
+    else:
+        payload["hook_event_name"] = event
+    return payload
+
+
+PAYLOAD_SHAPES = pytest.mark.parametrize(
+    "payload_shape", ["SubagentStop", "PreToolUse"], ids=["subagent-stop-shaped", "pre-tool-use-shaped"]
+)
+
+
+@PAYLOAD_SHAPES
+@pytest.mark.parametrize("event", ["Stop", "PostToolUse", None], ids=["stop", "post-tool-use", "absent"])
+def test_unrecognized_event_exits_zero_with_no_output_log_or_marker(workspace, event, payload_shape):
+    _script, calls = workspace.sh_script_calls(reviewer_reads=())
+
+    unrecognized = workspace.evaluate(
+        payload_shape, calls, "done", payload=_payload_with_event(workspace, event, payload_shape)
+    )
+    control = workspace.evaluate(
+        payload_shape, None, "done", payload=_payload_with_event(workspace, payload_shape, payload_shape)
+    )
+
+    assert (unrecognized.status, unrecognized.stdout, unrecognized.new_log_lines, unrecognized.marker_exists) == (
+        0, "", [], False,
+    )
+    assert control.verdict == "sent-back"
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "SubagentStop"])
+def test_evaluator_error_logs_the_exception_class_and_payload_event_and_exits_one(workspace, monkeypatch, event):
     script = workspace.make_file("scripts/a.sh")
 
     def raise_oserror():
@@ -1540,10 +1756,58 @@ def test_evaluator_error_logs_the_exception_class_and_exits_one(workspace, monke
 
     monkeypatch.setattr(evaluator, "load_git_record_builder", raise_oserror)
 
-    result = workspace.evaluate("PreToolUse", [_edit_call(script)], "done")
+    result = workspace.evaluate(event, [_edit_call(script)], "done")
+
+    (logged_line,) = result.new_log_lines
+    logged_event, logged_verdict, _fields = _parse_log_line(logged_line)
+    assert (result.status, result.stdout) == (1, "")
+    assert (logged_event, logged_verdict) == (event, "allowed-evaluator-error=OSError")
+
+
+@pytest.mark.parametrize(
+    ("parser_source", "parser_filename"),
+    [
+        (None, "parse-git-command.py"),
+        ("def broken(:\n", "parse-git-command.py"),
+        ("FIELD_SEP = '|'\n", "parse-git-command.py"),
+        ("def build_records(command):\n    return []\n", "parse-git-command.py"),
+        ("FIELD_SEP = '|'\ndef build_records(command):\n    return []\n", "parse-git-command.txt"),
+    ],
+    ids=["missing-file", "syntax-error", "no-build-records", "no-field-sep", "suffix-without-a-loader"],
+)
+def test_git_parser_load_failure_logs_import_error_whatever_the_cause(
+    workspace, monkeypatch, tmp_path, parser_source, parser_filename
+):
+    parser_path = tmp_path / "placeholder-parser" / parser_filename
+    if parser_source is not None:
+        parser_path.parent.mkdir()
+        parser_path.write_text(parser_source)
+    monkeypatch.setattr(evaluator, "PARSE_GIT_COMMAND_PATH", str(parser_path))
+
+    result = workspace.evaluate("PreToolUse", [_edit_call(workspace.make_file("scripts/a.sh"))], "done")
 
     assert (result.status, result.stdout) == (1, "")
-    assert result.verdict == "allowed-evaluator-error=OSError"
+    assert result.verdict == "allowed-evaluator-error=ImportError"
+
+
+def test_git_parser_load_failure_logs_import_error_when_the_parser_file_is_unreadable(workspace, monkeypatch, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses file permissions")
+    parser_path = tmp_path / "placeholder-parser" / "parse-git-command.py"
+    parser_path.parent.mkdir()
+    parser_path.write_text("FIELD_SEP = '|'\ndef build_records(command):\n    return []\n")
+    parser_path.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            parser_path.read_text()
+        monkeypatch.setattr(evaluator, "PARSE_GIT_COMMAND_PATH", str(parser_path))
+
+        result = workspace.evaluate("PreToolUse", [_edit_call(workspace.make_file("scripts/a.sh"))], "done")
+    finally:
+        parser_path.chmod(0o600)
+
+    assert (result.status, result.stdout) == (1, "")
+    assert result.verdict == "allowed-evaluator-error=ImportError"
 
 
 def test_failed_envelope_write_removes_the_marker_and_logs_the_error_class(workspace):
@@ -1673,18 +1937,21 @@ def test_several_thousand_records_with_hundreds_of_edited_paths_finish_within_ha
 # ==========================================================================
 
 
-def _run_hook_raw(payload, config_dir, *, hook=HOOK_PATH, path=None, cwd=None):
-    """Direct exec; returns (returncode, stdout, stderr)."""
+def _run_hook_raw(payload, config_dir, *, hook=HOOK_PATH, path=None, cwd=None, extra_environment=None):
+    """Direct exec; returns (returncode, stdout, stderr). A bytes payload is piped as given."""
     environment = dict(os.environ)
     environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
     if path is not None:
         environment["PATH"] = path
-    stdin_text = payload if isinstance(payload, str) else json.dumps(payload)
+    environment.update(extra_environment or {})
+    if isinstance(payload, bytes):
+        stdin_bytes = payload
+    else:
+        stdin_bytes = (payload if isinstance(payload, str) else json.dumps(payload)).encode("utf-8")
     completed = subprocess.run(
-        [str(hook)], input=stdin_text, capture_output=True, text=True, env=environment, timeout=60, check=False,
-        cwd=cwd,
+        [str(hook)], input=stdin_bytes, capture_output=True, env=environment, timeout=60, check=False, cwd=cwd,
     )
-    return completed.returncode, completed.stdout, completed.stderr
+    return completed.returncode, completed.stdout.decode("utf-8"), completed.stderr.decode("utf-8", errors="replace")
 
 
 def _hook_log_lines(workspace):
@@ -1692,7 +1959,8 @@ def _hook_log_lines(workspace):
 
 
 def _hook_verdict(workspace):
-    return _hook_log_lines(workspace)[-1].split()[2]
+    _event, verdict, _fields = _parse_log_line(_hook_log_lines(workspace)[-1])
+    return verdict
 
 
 def _run_hook(workspace, payload, **options):
@@ -1766,6 +2034,25 @@ def test_hook_hostile_report_text_round_trips_through_the_pretooluse_arm(workspa
 
     updated_message = json.loads(second_output)["hookSpecificOutput"]["updatedInput"]["message"]
     assert updated_message.endswith("\n\n" + hostile)
+
+
+def test_hook_second_return_keeps_non_ascii_and_nested_tool_input_when_the_child_stdin_decodes_as_ascii(workspace):
+    non_ascii_report = "report with an accented letter \u00e9 and a dash \u2014"
+    other_fields = {"nested": {"inner": ["a", 1, None]}, "label": "na\u00efve \u00fcnic\u00f6de"}
+    workspace.write_transcript(_sh_and_test_edit_calls(workspace, complete=False))
+    raw_payload = json.dumps(
+        workspace.payload("PreToolUse", non_ascii_report, tool_input_extra=other_fields), ensure_ascii=False
+    ).encode("utf-8")
+    run_options = {"extra_environment": {"PYTHONIOENCODING": "ascii"}}
+
+    first_code, first_stdout, _first_stderr = _run_hook_raw(raw_payload, workspace.config_dir, **run_options)
+    second_code, second_stdout, _second_stderr = _run_hook_raw(raw_payload, workspace.config_dir, **run_options)
+
+    assert (first_code, second_code) == (0, 0)
+    assert json.loads(first_stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    updated_input = json.loads(second_stdout)["hookSpecificOutput"]["updatedInput"]
+    assert updated_input["message"].endswith("\n\n" + non_ascii_report)
+    assert {name: value for name, value in updated_input.items() if name != "message"} == other_fields
 
 
 def _sends_back_control(workspace):
@@ -1848,7 +2135,7 @@ def test_hook_unreadable_transcript_logs_the_evaluator_error_then_exit_one(works
     finally:
         workspace.agent_transcript.chmod(0o600)
 
-    logged_verdicts = [line.split()[2] for line in _hook_log_lines(workspace)]
+    logged_verdicts = [_parse_log_line(line)[1] for line in _hook_log_lines(workspace)]
     assert logged_verdicts == ["allowed-evaluator-error=PermissionError", "allowed-evaluator-exit=1"]
 
 
@@ -1870,6 +2157,41 @@ def test_hook_ignores_other_subagent_types_without_logging(workspace):
 
     assert stdout == ""
     assert _hook_log_lines(workspace) == []
+
+
+@PAYLOAD_SHAPES
+@pytest.mark.parametrize("event", ["Stop", "PostToolUse", None], ids=["stop", "post-tool-use", "absent"])
+def test_hook_ignores_unrecognized_events_without_logging(workspace, event, payload_shape):
+    workspace.write_transcript(_sh_and_test_edit_calls(workspace, complete=False))
+
+    _assert_allowed_without_new_marker(workspace, _payload_with_event(workspace, event, payload_shape))
+
+    assert _hook_log_lines(workspace) == []
+    control_envelope = json.loads(_run_hook(workspace, _payload_with_event(workspace, payload_shape, payload_shape)))
+    if payload_shape == "PreToolUse":
+        assert control_envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
+    else:
+        assert control_envelope["decision"] == "block"
+
+
+def test_hook_logs_a_dash_for_an_unrecognized_event_name_on_a_line_the_shell_writes(workspace):
+    hostile_event = "forged-event extra-field"
+    payload = dict(_payload_with_event(workspace, hostile_event), agent_id="../escape")
+
+    _assert_allowed_without_new_marker(workspace, payload)
+
+    (logged_line,) = _hook_log_lines(workspace)
+    assert _parse_log_line(logged_line) == ("-", "allowed-invalid-agent-id", {"agent": "-"})
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "SubagentStop"])
+def test_hook_logs_the_payload_event_name_on_a_line_the_shell_writes(workspace, event):
+    payload = dict(workspace.payload(event, "done"), agent_id="../escape")
+
+    _assert_allowed_without_new_marker(workspace, payload)
+
+    (logged_line,) = _hook_log_lines(workspace)
+    assert _parse_log_line(logged_line) == (event, "allowed-invalid-agent-id", {"agent": "-"})
 
 
 def test_hook_allow_branch_lib_sh_missing_beside_the_hook(workspace, tmp_path_factory):
