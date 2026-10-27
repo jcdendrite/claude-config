@@ -8,7 +8,7 @@ Ask: "Yes, start." — the engineer's answer to "Do you want me to start PR 2 no
 
 Why now: PR 1 (#1350, squash `9aba41d7`) retargeted `test_transcript_analysis.py` and deleted 39 shim bindings. PR 2 is the second half of that plan and must be cut from a base containing PR 1. After it, the shim re-exports only what `build_parser` and `main` read, which unblocks the `cli.py` phase.
 
-Intended outcome: the 12 files import the package modules they exercise and keep `_mod.` only for `main` and `build_parser` (or the documented `author_outcome as ao` exception); the shim loses the 45 test-only bindings that Ruff F401 `--ignore-noqa` reports at this base; collected node IDs and test outcomes are unchanged; and a new pin test fails if any shim-loading test file reads anything else through its shim copy.
+Intended outcome: the 12 files import the package modules they exercise and keep `_mod.` only for `main` and `build_parser` (or the documented `author_outcome as ao` exception); the shim loses the 45 test-only bindings that Ruff F401 `--ignore-noqa` reports at this base; collected node IDs and test outcomes are unchanged; and a new pin test fails if any shim-loading test file reads anything else through its shim copy. One further test, in `test_author_outcome.py`, asserts the `author-outcome` subcommand dispatches to `cmd_author_outcome`.
 
 Inputs at base `9aba41d7`, recounted this session (the parent plan's PR 2 totals are stale):
 - 973 non-`build_parser`/`main` reads in the 12 files, against the parent plan's 965. `test_transcript_cost.py` has 396 (plan 389) and `test_transcript_pr_cost_export.py` has 63 (plan 62).
@@ -19,7 +19,7 @@ Carried from the parent plan and PR 1's review: the Out-of-scope DEFER bullet on
 
 ## Approach
 
-PR 2 finishes the parent plan's design at base `9aba41d7`, in two commits. Commit 1 retargets every `_mod.<name>` read in the 12 files, other than `build_parser` and `main`, to the owning module's own binding, and a forward replay proves it a pure rename. Commit 2 deletes the shim's 45 test-only bindings, fixes the prose they leave false, adds seven files to `TEST_FILES`, and adds a pin test that limits every shim copy to `build_parser` and `main`. No production code changes, CLI help and parser dumps stay byte-identical, and collected test IDs and outcomes stay the same except for one new ID, the pin.
+PR 2 finishes the parent plan's design at base `9aba41d7`, in two commits. Commit 1 retargets every `_mod.<name>` read in the 12 files, other than `build_parser` and `main`, to the owning module's own binding, and a forward replay proves it a pure rename. Commit 2 deletes the shim's 45 test-only bindings, fixes the prose they leave false, adds seven files to `TEST_FILES`, and adds a pin test that limits every shim copy to `build_parser` and `main`. No production code changes, CLI help and parser dumps stay byte-identical, and collected test IDs and outcomes stay the same except for two new IDs, the pin and the `author-outcome` wiring test.
 
 PR 2 reuses PR 1's replay checker after re-running PR 1's controls against it, and adds five controls of its own. It adopts all three deferred recipe refinements: pin control (f), the wrap-tolerant doc Grep in Verification 8, and checker control (p).
 
@@ -46,7 +46,8 @@ PR 2 reuses PR 1's replay checker after re-running PR 1's controls against it, a
   - In the `transcript_analysis.scope` block, delete the four noqa'd names. Its three bare-read names stay.
   - In `main()`'s comment (:1044), change `(_resolve_cost_roots)` to `(scope._resolve_cost_roots)`. After the deletion the shim no longer binds the bare name (row 6).
   - The shim then holds no `noqa` (row 19).
-- **The 12 test files.** D2 edits none of them. The checker's `--prose-only` mode reports `prose: 0` for each at this base, so no docstring or comment in them spells a retargeted read. Verification 3 and 8 keep that check as a regression guard, and a non-zero count stops the run.
+- **`test_author_outcome.py`.** Add `test_author_outcome_dispatches_to_cmd_author_outcome` to `TestBuildParserWiring`, asserting `_mod.build_parser().parse_args(["author-outcome"]).func is ao.cmd_author_outcome`. It carries no docstring, because its name shows what it checks. No test asserted that `author-outcome` dispatches to `cmd_author_outcome`: the three wiring tests check defaults, flag exclusion and flag parsing, and the retargeted reads call the command directly. The engineer selected "Add pin in commit 2 (Recommended)" on the review question that proposed this test.
+- **The other 11 test files.** D2 edits none of them. The checker's `--prose-only` mode reports `prose: 0` for each at this base, so no docstring or comment in them spells a retargeted read. Verification 3 and 8 keep that check as a regression guard, and a non-zero count stops the run.
 - **`test_transcript_package_module_prefixes.py`.**
   - Append seven files to `TEST_FILES`, in this order: `test_transcript_cost.py`, `test_transcript_review_rounds.py`, `test_transcript_cache_rebuild_ttl_rules.py`, `test_transcript_ledger_common.py`, `test_transcript_pr_cost_gh.py`, `test_transcript_pr_cost_export.py`, and `test_transcript_cache_rebuild.py`. `TEST_FILES` goes from 52 entries to 59. `test_author_outcome.py` stays off, because its `ao` alias fails the unaliased-import check (row 9).
   - Extract the per-call test inside `_calls_spec_from_file_location` as `_is_spec_from_file_location_call(node)`. That helper and the pin both use it.
@@ -214,7 +215,7 @@ PR 2 reuses PR 1's replay checker after re-running PR 1's controls against it, a
   - Verification it runs: `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
   - Return the per-file replaced counts, the import statements added, and the codemod's path.
 - **D2, the deletions, prose, guard, and pin (commit 2).**
-  - Files: the shim; `test_transcript_package_module_prefixes.py`; `test_transcript_analysis_cost_import_direction.py`; `test_transcript_cli_bootstrap.py`; and `docs/transcript-analysis-architecture.md`.
+  - Files: the shim; `test_author_outcome.py` (the wiring test only); `test_transcript_package_module_prefixes.py`; `test_transcript_analysis_cost_import_direction.py`; `test_transcript_cli_bootstrap.py`; and `docs/transcript-analysis-architecture.md`.
   - The parent passes in Verification 6's deletion set.
   - Make exactly the edits in Approach "Commit 2" and "The pin", anchored on content, and leave every other line unchanged.
   - Write no docstring or comment beyond the ones Approach prescribes. Each of those states only a non-obvious fact, never what the code or test name already shows.
@@ -235,7 +236,7 @@ PR 2 reuses PR 1's replay checker after re-running PR 1's controls against it, a
 - **Create:** `.claude/plans/shim-reader-retarget-pr2.md`, this plan. The PR creates no other file, and none under `claude/.claude/`.
 
 **Parent sequence.** Commit this plan alone, as its own commit, before Verification 0, so `git status --short` prints nothing there. Then run Verification 0 through 10 in order. K runs alongside step 2 only on step 0's fallback. Reruns key on the files an edit touches, not on commit boundaries:
-- An edit to any of the 12 test files after R2 reruns Verification 3 and 4.
+- An edit to any of the 12 test files after R2 reruns Verification 3 and 4. D2's wiring test in `test_author_outcome.py` is exempt, because Verification 3 and 4 run before D2 and the test is a commit 2 addition.
 - An edit to any D2-owned file after Verification 8 reruns the checks of Verification 8 that read that file, plus Verification 9 when the edit touches the pin.
 - Only an edit to the shim or a test body reruns Verification 8's selected suite. A docstring, comment, or doc edit reruns its own checks and ruff.
 
@@ -265,7 +266,7 @@ Never use `git clean`, `git checkout .`, `git reset --hard`, or `git stash`.
 **PR body carries:**
 - `Refs GH-1116`.
 - Each Verification result with its recounted figures: each file's `replaced`, period_cost's alias counts, the 45 deleted bindings, the prose edits, `TEST_FILES` going from 52 entries to 59, the testcase totals from `test-ids`, and the selected-suite result, naming any failure reproduced at the merge-base.
-- Commit 1 is a pure rename that the forward replay proves. Commit 2 holds the deletions, the prose, the guard additions, and the pin.
+- Commit 1 is a pure rename that the forward replay proves. Commit 2 holds the deletions, the prose, the guard additions, the pin, and the `author-outcome` wiring test.
 - The `args.func` statement: "Before this change, test_transcript_review_rounds.py's `args.func` assertion compared against the shim's own `cmd_review_round_cost` binding, the one its `set_defaults` reads, so it could not catch the shim binding the wrong handler under that name. It now compares against `review_rounds.cmd_review_round_cost`." (row 13)
 - The rollback statement: "A plain `git revert` of PR 2's squash commit restores its 45 bindings and its 12 files' reads together. PR 1's revert applies cleanly only while PR 2 is unmerged, because PR 2 deletes bindings that PR 1's restored reads need, such as `_cost_report` and `os`. Revert last-in-first-out. This is an inference; no revert was run." (row 21)
 - The three deferred recipe refinements were adopted, each with the control or check that proves it.
@@ -344,7 +345,7 @@ Run each git command and each capture as its own literal call.
      - Probe: the same Grep on `<scratch>/before-transcript-analysis-architecture.md` also matches :57-58 and :789-791.
    - `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/` is clean.
    - Run `<mf> capture --script <shim> --account <scratch>/account --all-help --out <attempt>/after`. Then `<mf> compare-captures <scratch>/before-a <attempt>/after` must be clean (row 6).
-   - Do a junit run into `<attempt>/c2`. `<mf> test-ids` from `<scratch>/before` to `<attempt>/c2`, with one `--expect-new test_shim_copy_reads_only_build_parser_and_main`, must be clean.
+   - Do a junit run into `<attempt>/c2`. `<mf> test-ids` from `<scratch>/before` to `<attempt>/c2`, with two `--expect-new` flags, `test_shim_copy_reads_only_build_parser_and_main` and `TestBuildParserWiring::test_author_outcome_dispatches_to_cmd_author_outcome`, must be clean. The first ID is module-level and the second is class-qualified, because `_testcase_id` keys on the dotted classname.
    - Run the selected suite (G2) as two passes:
      - `<w1> scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -m "not timing"`, then `<w1> scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -m timing -n0`.
      - Run each as a background Bash call, and start the second only after the first finishes. Expect a run of over an hour (G4). Edit nothing until both finish.
@@ -368,6 +369,7 @@ Run each git command and each capture as its own literal call.
    - (d) In `test_author_outcome.py`'s `_spec = …` loader line, change the spec name `"transcript_analysis"` to `"transcript_analysis_pin_probe"`. The file falls into the second set only, and the cross-check fails, naming it.
    - (e) On `test_transcript_cache_rebuild.py`'s one allowed-read line (row 4), rename `_mod` to `_pin_probe`. The per-file allowed-read assertion fails, naming that file.
    - (f) In `test_transcript_ledger_common.py`'s `_SCRIPT = …` line, change `"transcript-analysis.py"` to `"transcript-analysis-pin-probe.py"`. The file falls into the first set only, and the cross-check fails, naming it.
+   - (g) Wiring-test control, same sha256 procedure on the shim. At the `p_author_outcome.set_defaults(func=cmd_author_outcome)` line, change `cmd_author_outcome` to `cmd_cost`. Run `scripts/venv-run.sh pytest -n0 <tests>/test_author_outcome.py::TestBuildParserWiring`. Only `test_author_outcome_dispatches_to_cmd_author_outcome` fails.
 10. **Commit 2 and hand-off.**
     - Run `/code-review`. Then stage each file D2 changed with its own `git add <path>` call, and commit.
     - `scripts/venv-run.sh pytest -n0 claude/.claude/tests/test_pytest_collection_config.py::TestNoBareSameDirectorySiblingImports claude/.claude/hooks/tests/test_ticket_reference_discipline.py` must pass.
@@ -384,7 +386,7 @@ Run each git command and each capture as its own literal call.
 - **A checker control for the bare `@pytest.fixture` form.** No PR 2 file uses that form (row 15).
 - **Shim-alias names retired before PR 2 that still appear in prose outside its files**, such as those in `docs/transcript-analysis.md` (row 23). PR 2 neither caused them nor touches those files. The PR body lists them as a follow-up, from a fresh grep.
 - **Committing the replay checker.** PR 2 is its last use, because the `cli.py` phase's own retarget has injective new names that `nodes --rename` can prove.
-- **Splitting files over 1,000 lines.** The shim, `test_transcript_cost.py`, `test_transcript_period_cost.py`, `test_transcript_review_rounds.py`, and `test_author_outcome.py` were over the limit before PR 2, which grows none of them by more than its import lines.
+- **Splitting files over 1,000 lines.** The shim, `test_transcript_cost.py`, `test_transcript_period_cost.py`, `test_transcript_review_rounds.py`, and `test_author_outcome.py` were over the limit before PR 2, which grows none of them by more than its import lines, except `test_author_outcome.py`, which also gains the wiring test.
 - **Any production-code, CLI, help-text, or output change.**
 - **Preserved records that name `_mod.` read shapes or carry stale counts**: committed plans, the parent plan included; `docs/reports/`; `docs/case-studies/`; and CHANGELOG.md.
 - **The governing plan's revert rehearsal.** The engineer waived it for both PRs (row 12).
