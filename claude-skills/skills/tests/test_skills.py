@@ -8286,7 +8286,6 @@ _ROUTING_CISO_SKIP_CLAUSE = (
 # (file, section heading, clause). Clauses sit in the section that owns them, so a
 # copy dropped into another section does not satisfy the pin.
 _DECLARATION_WIRING_CLAUSES = (
-    # code-review/SKILL.md Step 1
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_STEP_1_HEADING,
@@ -8314,7 +8313,7 @@ _DECLARATION_WIRING_CLAUSES = (
         _CODE_REVIEW_STEP_1_HEADING,
         "Defensive paths against an actor or input the declared tier excludes",
     ),
-    # code-review/SKILL.md Ripple effect triage (skip gating clauses, then the declaration block and its pass-through)
+    # Skip clauses come first, then the declaration block clauses.
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE),
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE),
     (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_CISO_SKIP_CLAUSE),
@@ -8353,7 +8352,6 @@ _DECLARATION_WIRING_CLAUSES = (
         "or readers beyond them through a public repository's commits or PRs or a released artifact. "
         "Otherwise the surface is `production`",
     ),
-    # code-review/SKILL.md criterion 3
     (
         _CODE_REVIEW_SKILL_PATH,
         _CODE_REVIEW_DISPOSITION_HEADING,
@@ -8364,7 +8362,6 @@ _DECLARATION_WIRING_CLAUSES = (
         _CODE_REVIEW_DISPOSITION_HEADING,
         "Under `declared: undeclared`, the rationale rests on such a route or on Step 1's implementation-fitness answer",
     ),
-    # plan-review/SKILL.md Step 4 and Output format
     (
         _PLAN_REVIEW_SKILL_PATH,
         _STEP4_HEADING,
@@ -8380,7 +8377,6 @@ _DECLARATION_WIRING_CLAUSES = (
         _PLAN_REVIEW_OUTPUT_HEADING,
         "Step 4's `declared:` value, and which plan sections/phases were reviewed",
     ),
-    # plan-review/ROUTING.md skip gating clauses, declaration rule and spawn step
     (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_REVIEWER_SKIP_CLAUSE),
     (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_CISO_SKIP_CLAUSE),
     (
