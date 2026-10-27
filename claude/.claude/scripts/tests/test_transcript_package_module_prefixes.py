@@ -8,7 +8,7 @@ transcript_analysis and loads no shim copy may be missing from TEST_FILES, so
 a newly converted file keeps the coverage above instead of going unchecked
 silently. Committed as a permanent test rather than run once by hand, so a
 later edit that reintroduces a stale reference, or drops a converted file off
-the list, still fails CI. Scope stays those modules, those test files, and the
+the list, still fails CI. Scope is those modules, those test files, and the
 shim-loading test files. No earlier package module carries an equivalent check
 yet.
 """
