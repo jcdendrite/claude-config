@@ -9,8 +9,8 @@ a newly converted file keeps the coverage above instead of going unchecked
 silently. Committed as a permanent test rather than run once by hand, so a
 later edit that reintroduces a stale reference, or drops a converted file off
 the list, still fails CI. Scope stays those modules, those test files, and the
-shim-loading test files; no earlier package module carries an equivalent
-check yet.
+shim-loading test files. No earlier package module carries an equivalent check
+yet.
 """
 from __future__ import annotations
 
@@ -594,8 +594,7 @@ def _shim_copy_uses(tree: ast.Module, copy_names: set[str]) -> tuple[int, list[s
 
 
 def test_shim_copy_reads_only_build_parser_and_main():
-    """Only the two names the cli.py phase retargets may be read through a copy; any other read couples
-    a test to a shim binding, even one production code also reads."""
+    """A read of any other name couples a test to a shim binding, even one production code also reads."""
     loads_by_spec_name: dict[str, ast.Module] = {}
     locates_shim_script: set[str] = set()
     for path in sorted(TESTS_DIR.glob("test_*.py")):

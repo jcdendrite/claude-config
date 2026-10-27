@@ -794,9 +794,10 @@ boundary and across every test file (`fake_projects`, `fake_config_dir_factory`,
 docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir`, plus
 `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
-live in `tests/test_author_outcome.py`: most exercise the package module directly
-(`from transcript_analysis import author_outcome as ao`), with a small `spec_from_file_location`-loaded
-shim copy reserved for the argparse-wiring tests, which read `build_parser`.
+live in `tests/test_author_outcome.py`. Most exercise the package module directly through
+`from transcript_analysis import author_outcome as ao`, the exception to the unaliased
+rule, which is why the file is absent from `TEST_FILES`. A small `spec_from_file_location`-loaded
+shim copy is reserved for the argparse-wiring tests.
 
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
@@ -856,12 +857,17 @@ cases (`TestCostLedgerPublishSafety`, `TestCostLedgerSentinelGate`). `workstream
 tests live in `tests/test_transcript_workstream_cost.py`, alongside `cost.py`'s
 `_compute_workstream_dollars` coverage. `tests/test_transcript_package_module_prefixes.py` pins the
 by-module import discipline of every module in its `PRODUCTION_MODULES` tuple. For every file in
-its `TEST_FILES` tuple, it checks both the `<module>.<name>` and `_mod.<module>.<name>` read
-shapes. It requires at least one such read per file. It holds the file to an unaliased
-whole-module import. It also fails any test file that imports from `transcript_analysis` without
-loading the shim and is missing from `TEST_FILES` — a permanent check rather than a one-time
-migration-time script. It also requires every test file that loads a shim copy to read only
-`build_parser` and `main` through it.
+its `TEST_FILES` tuple, it:
+
+- checks that each `<module>.<name>` read names a binding the module has
+- requires at least one such read
+- requires an unaliased whole-module import
+
+It also fails any test file that imports from `transcript_analysis` without loading the shim and is
+missing from `TEST_FILES`. These checks are permanent, not a one-time migration-time script.
+A separate test, `test_shim_copy_reads_only_build_parser_and_main`, requires every test file that
+loads a shim copy, in `TEST_FILES` or not, to read only `build_parser` and `main` through it, so a
+`_mod.<module>.<name>` read fails there.
 
 The subagent command family splits at command seams rather than one file per module:
 
