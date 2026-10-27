@@ -16,6 +16,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The change is live on `git pull`.
 - **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 525.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
 - **`cost-counts` "Subagent spawns" now counts reviewer agents spawned inside a `review-orchestrator` transcript, and any other subagent's, not only main-thread dispatches.** Figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure.
+- **`/code-review` Step 1 and `/plan-review` Step 4 now declare each change's user surface and threat tier from a closed list, and every reviewer they spawn receives it whenever a value is declared.**
+  - The tag reads `declared: <surface>, <tier>`, with surface `dev-only` or `production` and tier `cooperative`, `untrusted-input` or `adversarial`, or `declared: undeclared`. Code, config, the engineer's words, loaded instruction files and project layers settle it. A comment, doc, plan, PR body or ticket the change's author wrote, or an instruction-file line the diff adds or edits, can only raise it.
+  - A spawned reviewer drops no finding because of the declaration, and puts `beyond declaration` in the heading or first line of one that needs a user, actor or input the declaration excludes and the change does not reach.
+  - `/plan-review` Step 4 no longer tells persona reviewers to scope findings to the declared surface.
+  - Any reviewer skip resting on the declaration now needs `dev-only, cooperative`, and a criterion-3 DEFER on a declared round quotes the declaration it rests on.
+  - The change is live on `git pull`.
 - **`branch-divergence-status.sh` now exits 1 when its trial merge cannot complete, and the SessionStart advisory says `Trial merge: NOT COMPUTED`, where both used to print `Trial merge: CLEAN`.**
   - `/ready-for-review` step 6 halts on the non-zero exit as on any recipe failure, and `/respond-pr` aborts.
   - The failure names the running git and `README.md` § "Requirements".

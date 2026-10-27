@@ -85,7 +85,7 @@ A plan failing any of these is not ready to implement — return it to the autho
 ## Step 4 — Design-fitness gate
 
 Before evaluating gaps, answer three questions in order:
-1. **What user surface and threat model does this serve?** A line or two — production users, internal-only, dev-only, or whatever framing fits. Persona reviewers must scope findings to the declared surface, not default to a worst-case external-attacker model.
+1. **What user surface and threat model does this serve?** Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool first, then state it as a `declared:` value by the declaration rule `ROUTING.md` § "Reviewer roles" states, which also governs the skips that rest on it and what persona reviewers receive.
 2. **Is the design appropriately sized for the user pain it solves on that surface?** Gap-finding on an over-elaborate design elaborates it further (each finding closes a gap by adding more machinery), and the checklist won't surface "this whole design is the wrong shape."
 
 Markers of over-elaboration:
@@ -255,7 +255,7 @@ Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool before any spawn decisi
 
 ## Output format
 
-Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs from ROUTING.md's Item ownership table (e.g., `staff-data-engineer: D1, D4; ciso-reviewer: S1, S3–S5, D4 co-ownership`); if none, write "No specialists spawned — generalist review only."
+Start with which domains were detected, Step 4's `declared:` value, and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs from ROUTING.md's Item ownership table (e.g., `staff-data-engineer: D1, D4; ciso-reviewer: S1, S3–S5, D4 co-ownership`); if none, write "No specialists spawned — generalist review only."
 
 **Every finding a spawned reviewer returns must appear in the rendered output.** Before writing the verdict, cross-check the assembled findings list against what each spawned reviewer actually returned — its findings file when one was written, its inline return otherwise — a finding present there and omitted from the final output is a defect in this step, not a judgment call. A finding folded into another under Reconciliation's dedup rule (ROUTING.md) counts as present only if both reviewers are attributed at the merged entry.
 

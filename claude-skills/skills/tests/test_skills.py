@@ -8258,6 +8258,238 @@ def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -
     )
 
 
+_CODE_REVIEW_SKILL_PATH = _skill_file("code-review")
+_PLAN_REVIEW_SKILL_PATH = _skill_file("plan-review")
+_CODE_REVIEW_STEP_1_HEADING = "## Step 1 — Implementation-fitness gate"
+_CODE_REVIEW_DISPOSITION_HEADING = "## Finding disposition"
+_PLAN_REVIEW_OUTPUT_HEADING = "## Output format"
+_ROUTING_ROLES_HEADING = "## Reviewer roles"
+
+# (file, section heading, clause). Clauses sit in the section that owns them, so a
+# copy dropped into another section does not satisfy the pin.
+_DECLARATION_WIRING_CLAUSES = (
+    # code-review/SKILL.md Step 1
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "Also declare the user surface and threat tier the change serves as a `declared: <surface>, <tier>` tag "
+        "on the **Spawn decisions:** line",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "ticket or an instruction-file line the diff adds or edits",
+    ),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_STEP_1_HEADING, "can raise a field but never settles one"),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "When those sources cannot settle both fields, report `declared: undeclared`",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "Defensive paths against an actor or input the declared tier excludes",
+    ),
+    # code-review/SKILL.md Ripple effect triage (skip gating clauses, then the declaration block and its pass-through)
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "Any other row skip that rests on Step 1's declaration needs the same value",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "**unless** Step 1 reports `declared: dev-only, cooperative` and the change crosses no privilege boundary",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "Step 1's `declared:` value and the declaration block whenever Step 1 declared a value other than `undeclared`",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "The declaration block is the text that follows this sentence through the last item of the list below, "
+        "copied into the spawn prompt as literal text",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "review as you would without this declaration, and drop no finding because of it",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "Put `beyond declaration` in the heading or first line of a finding whose failure needs a user, actor or input "
+        "that the declaration excludes and the change does not reach",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "The surface is `dev-only` when nothing the change does or adds reaches a production system, production data, "
+        "end users, a copy installed for anyone beyond those who build and test it",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "or readers beyond them through a public repository's commits or PRs or a released artifact, "
+        "and `production` otherwise",
+    ),
+    # code-review/SKILL.md criterion 3
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_DISPOSITION_HEADING,
+        "The DEFER's rationale quotes the `declared:` value the **Spawn decisions:** line reports",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_DISPOSITION_HEADING,
+        "under `declared: undeclared` it rests on such a route or on Step 1's implementation-fitness answer",
+    ),
+    # plan-review/SKILL.md Step 4 and Output format
+    (
+        _PLAN_REVIEW_SKILL_PATH,
+        _STEP4_HEADING,
+        "Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool first",
+    ),
+    (
+        _PLAN_REVIEW_SKILL_PATH,
+        _PLAN_REVIEW_OUTPUT_HEADING,
+        "Step 4's `declared:` value, and which plan sections/phases were reviewed",
+    ),
+    # plan-review/ROUTING.md skip gating clauses, declaration rule and spawn step
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "Skip only when Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
+        "outside that reviewer's threat model",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "**unless** Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
+        "outside `ciso-reviewer`'s threat model",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "Step 4 declares the user surface and threat tier the plan serves as a `declared: <surface>, <tier>` tag",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "The plan under review, like any other text the change's author wrote",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "ticket or an instruction-file line the diff adds or edits",
+    ),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, "can raise a field but never settles one"),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "When those sources cannot settle both fields, report `declared: undeclared`",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "Step 4's `declared:` value and the declaration block above",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "with the block copied into the spawn prompt as literal text",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "instruction's own wording copied into the spawn prompt as literal text",
+    ),
+)
+
+
+def _declaration_wiring_case_id(case: tuple[Path, str, str]) -> str:
+    path, _heading, clause = case
+    return f"{path.parent.name}/{path.name}::{clause[:60]}"
+
+
+@pytest.mark.parametrize(
+    ("skill_path", "heading", "clause"),
+    _DECLARATION_WIRING_CLAUSES,
+    ids=[_declaration_wiring_case_id(case) for case in _DECLARATION_WIRING_CLAUSES],
+)
+def test_declaration_wiring_present_in_review_skills(skill_path: Path, heading: str, clause: str) -> None:
+    """Pins the declared-surface wiring clauses once per section, plus ROUTING.md's
+    Ledger cross-check literal-text clause, which shares its token with a
+    declaration clause, since a wording-only edit can remove or duplicate one
+    while every other test stays green.
+    """
+    section_text = _heading_section_text(skill_path, heading)
+    occurrences = section_text.count(clause)
+
+    assert occurrences == 1, (
+        f"{skill_path.parent.name}/{skill_path.name} § {heading!r}: expected declaration clause {clause!r} "
+        f"exactly once, found {occurrences}."
+    )
+
+
+_DECLARATION_BLOCK_START = "Declaration block: review"
+_DECLARATION_TIER_ITEM_PREFIXES = (
+    "- `cooperative` — ",
+    "- `untrusted-input` — ",
+    "- `adversarial` — ",
+)
+
+
+def _declaration_block_span(skill_path: Path) -> str:
+    """Text from the declaration block's opening words through the end of its
+    `adversarial` item, asserting the block's shape on the way.
+    """
+    label = f"{skill_path.parent.name}/{skill_path.name}"
+    lines = skill_path.read_text().splitlines()
+    start_indexes = [index for index, line in enumerate(lines) if _DECLARATION_BLOCK_START in line]
+    assert len(start_indexes) == 1, (
+        f"{label}: expected exactly one line containing {_DECLARATION_BLOCK_START!r}, found {len(start_indexes)}."
+    )
+    start_index = start_indexes[0]
+    for offset, prefix in enumerate(_DECLARATION_TIER_ITEM_PREFIXES, start=1):
+        item_index = start_index + offset
+        item_line = lines[item_index] if item_index < len(lines) else ""
+        assert item_line.startswith(prefix), (
+            f"{label}: the line {offset} after the declaration block's opening line must start with {prefix!r}. "
+            "The opening paragraph must be a single physical line, followed immediately by the tier items."
+        )
+    end_index = start_index + len(_DECLARATION_TIER_ITEM_PREFIXES) + 1
+    line_after_block = lines[end_index] if end_index < len(lines) else ""
+    assert end_index >= len(lines) or not line_after_block.strip() or line_after_block.startswith("#"), (
+        f"{label}: the line after the declaration block's `adversarial` item must be blank, a heading or end of file, "
+        f"found {line_after_block!r} — text added there sits outside the compared span."
+    )
+    opening_line = lines[start_index]
+    opening_text = opening_line[opening_line.index(_DECLARATION_BLOCK_START) :]
+    return "\n".join([opening_text, *lines[start_index + 1 : end_index]])
+
+
+def test_declaration_block_identical_in_code_review_and_routing() -> None:
+    """plan-review/ROUTING.md keeps its own copy of code-review/SKILL.md's
+    declaration block, and the two must match.
+    """
+    code_review_block = _declaration_block_span(_CODE_REVIEW_SKILL_PATH)
+    routing_block = _declaration_block_span(_ROUTING_MD_PATH)
+
+    assert code_review_block == routing_block, (
+        "code-review/SKILL.md and plan-review/ROUTING.md carry different declaration blocks — "
+        "a fix to the block lands in both copies."
+    )
+
+
 def _routing_reviewer_agent_names() -> set[str]:
     """Agent names in plan-review/ROUTING.md's Reviewer roles table (the
     `| Domain | Agent | Focus |` table), read from the backtick-quoted
