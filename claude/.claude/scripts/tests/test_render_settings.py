@@ -29,8 +29,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # The overlay's closed top-level allowlist, excluding the conditionally
 # admissible `permissions` -- see TestBaseOverlayDisjointness, which mirrors
-# TestBaseKeyPlacementDisjointness in test_guard_settings_session_keys.py, and
-# which binds this set to the script's own list.
+# TestBaseKeyPlacementDisjointness in test_guard_settings_session_keys.py.
+# TestBaseOverlayDisjointnessAtRuntime.test_overlay_allowed_keys_match_the_scripts_own_list
+# binds this set to the script's own list.
 OVERLAY_ALLOWED_TOP_LEVEL_KEYS = {"autoMode", "env", "skillListingBudgetFraction"}
 
 # The overlay's exact-name env allowlist, written out independently of
@@ -79,10 +80,9 @@ def _print_mode_json_from_render_settings(print_mode_flag: str) -> list[str]:
 
     The print modes mirror guard-settings-session-keys.sh's --print-guarded-keys
     mode -- drift-check interfaces only, not on the render's hot path. The
-    render keeps its own literals rather than calling the guard hook, so a test
-    comparing a print mode to an independent literal checks the two for drift,
-    not that the rule itself works (the rendering tests exercise that through
-    the real script).
+    render keeps its own literals rather than calling the guard hook.
+    A test comparing a print mode to an independent literal checks drift only.
+    The rendering tests exercise the rule itself through the real script.
     """
     result = subprocess.run(
         [str(_SCRIPT), print_mode_flag],
@@ -792,20 +792,37 @@ _BASE_FAILURE_FIXTURES = {
 }
 
 
+# With no overlay, the leaking merge is base's own JSON, so using this as both
+# base and prior render makes the leaking render identical to the prior one.
+_LEAKING_BASE_EQUAL_TO_ITS_OWN_RENDER = {
+    "otherKey": "base-value",
+    "autoMode": {"environment": ["$defaults", "base-only-entry"]},
+}
+
 # One entry per base-leak shape: (base content, overlay content or None for no
-# overlay file, key list the guard names). The guard refuses before any write,
-# so a prior render must stay untouched.
+# overlay file, key list the guard names, prior render content or None for the
+# class's default prior). The guard refuses before any write, so a prior
+# render must stay untouched. The equal-prior arm fails if the guard runs after
+# the skip-identical exit, which would pass the leaking render as unchanged.
 _BASE_LEAK_REFUSAL_FIXTURES = {
     "auto-mode-no-overlay-file": (
         {"autoMode": {"environment": ["$defaults", "base-only-entry"]}},
         None,
         "autoMode",
+        None,
     ),
-    "env-empty-overlay": ({"env": {"DISABLE_TELEMETRY": "0"}}, {}, "env"),
+    "env-empty-overlay": ({"env": {"DISABLE_TELEMETRY": "0"}}, {}, "env", None),
     "fraction-beside-an-overridden-sibling": (
         {"skillListingBudgetFraction": 0.2, "env": {"DISABLE_TELEMETRY": "0"}},
         {"env": {"DISABLE_TELEMETRY": "1"}},
         "skillListingBudgetFraction",
+        None,
+    ),
+    "prior-render-equals-the-leaking-merge": (
+        _LEAKING_BASE_EQUAL_TO_ITS_OWN_RENDER,
+        None,
+        "autoMode",
+        _LEAKING_BASE_EQUAL_TO_ITS_OWN_RENDER,
     ),
 }
 
@@ -847,18 +864,23 @@ class TestRefusalPreservesPriorRender:
         assert target.read_text() == prior_content
 
     @pytest.mark.parametrize(
-        ("base_content", "overlay_content", "offending"),
+        ("base_content", "overlay_content", "offending", "prior_render"),
         list(_BASE_LEAK_REFUSAL_FIXTURES.values()),
         ids=list(_BASE_LEAK_REFUSAL_FIXTURES),
     )
     def test_each_base_leak_refusal_leaves_the_prior_render_byte_identical(
-        self, tmp_path: Path, base_content: dict, overlay_content: dict | None, offending: str
+        self,
+        tmp_path: Path,
+        base_content: dict,
+        overlay_content: dict | None,
+        offending: str,
+        prior_render: dict | None,
     ) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", base_content)
         target = config_dir / "settings.json"
-        prior_content = json.dumps(self._PRIOR_RENDER)
+        prior_content = json.dumps(self._PRIOR_RENDER if prior_render is None else prior_render)
         target.write_text(prior_content)
         overlay = config_dir / "settings.overlay.json"
         if overlay_content is not None:
@@ -1949,11 +1971,11 @@ class TestBaseOverlayDisjointnessAtRuntime:
     """The script refuses a base that sets an overlay-allowed key the overlay
     does not override, whatever base_file it is given."""
 
-    # A realistic value per overlay-allowed key, used by both the allow-path
-    # and overlay-present-but-not-overriding deny-path tests below. env's
-    # value must fall within ENV_NAME_REGEX's vendor-recognized namespace
-    # (render-settings.sh) to be accepted rather than rejected on that
-    # separate ground.
+    # A realistic base value per overlay-allowed key, used by every test in
+    # this class that needs one. The script never validates base env, so these
+    # are unconstrained. The override env fixture below must use a name on the
+    # script's exact-name allowlist (OVERLAY_ENV_ALLOWED_NAMES_JSON) to be
+    # accepted rather than rejected on that separate ground.
     _OVERLAY_ALLOWED_KEY_VALUES = {
         "autoMode": {"environment": ["$defaults", "base-only-entry"]},
         "env": {"DISABLE_TELEMETRY": "base-env-sentinel-value"},
@@ -1978,6 +2000,14 @@ class TestBaseOverlayDisjointnessAtRuntime:
         for base_value_sentinel in self._BASE_VALUE_SENTINELS:
             assert base_value_sentinel not in result.stderr
         assert not (config_dir / "settings.json").exists()
+
+    def test_base_value_sentinels_are_values_the_fixtures_write_into_base(self) -> None:
+        """A sentinel absent from the base fixtures would make the stderr
+        absence check in _assert_refused_naming_only pass vacuously."""
+        base_fixture_text = json.dumps(self._OVERLAY_ALLOWED_KEY_VALUES)
+
+        for base_value_sentinel in self._BASE_VALUE_SENTINELS:
+            assert base_value_sentinel in base_fixture_text
 
     def test_overlay_allowed_keys_match_the_scripts_own_list(self) -> None:
         """A key added to the script fails here, so the parametrized cases and
@@ -2106,8 +2136,9 @@ class TestBaseOverlayDisjointnessAtRuntime:
         self, tmp_path: Path
     ) -> None:
         """The overridden middle key is absent, and the other two are joined
-        with `, `. Base lists them in reverse-sorted order, so only a sort in
-        the guard yields the expected order."""
+        with `, `. The expected order differs from base's file order, so a
+        guard that lists keys in base's insertion order (`keys_unsorted`)
+        fails."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(
@@ -2128,8 +2159,9 @@ class TestBaseOverlayDisjointnessAtRuntime:
 
     @pytest.mark.parametrize("overlay_key", sorted(OVERLAY_ALLOWED_TOP_LEVEL_KEYS))
     def test_real_base_plus_a_leaked_overlay_key_is_refused(self, tmp_path: Path, overlay_key: str) -> None:
-        """Pins the guard on the shipped base's shape, since auto-merge can land
-        an overlay-owned key in the real file."""
+        """Pins the guard on the shipped base's shape, since a textual git merge
+        of two branches that each add a key can land an overlay-owned key in the
+        real file."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         real_base = json.loads(_SETTINGS_BASE_JSON.read_text())
@@ -2191,6 +2223,30 @@ class TestBaseOverlayDisjointnessAtRuntime:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {overlay_key: None})
+
+        result = _run_script(config_dir=config_dir)
+
+        self._assert_refused_naming_only(result, config_dir, offending=overlay_key)
+
+    def test_zero_valued_base_skill_listing_budget_fraction_is_refused(self, tmp_path: Path) -> None:
+        """The guard decides on whether base sets the key, never on its value.
+        A base 0 is refused like any other value. jq treats 0 as truthy, so
+        the jq-falsy null cases above are what pin a truthiness-based check."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"skillListingBudgetFraction": 0})
+
+        result = _run_script(config_dir=config_dir)
+
+        self._assert_refused_naming_only(result, config_dir, offending="skillListingBudgetFraction")
+
+    @pytest.mark.parametrize("overlay_key", ["autoMode", "env"])
+    def test_empty_base_block_with_no_overlay_file_is_refused(self, tmp_path: Path, overlay_key: str) -> None:
+        """The guard decides on whether base sets the key, never on its value.
+        An empty block is refused like any other value."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {overlay_key: {}})
 
         result = _run_script(config_dir=config_dir)
 

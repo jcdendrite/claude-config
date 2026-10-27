@@ -185,7 +185,12 @@ What a render does with each key:
   `settings.base.json` alone.
 - `autoMode`, `env`, `skillListingBudgetFraction`, and
   `permissions.defaultMode` come from the overlay alone, so deleting one from
-  the overlay clears it on the next render.
+  the overlay clears it on the next render. If `settings.base.json` sets
+  `autoMode`, `env`, or `skillListingBudgetFraction` and the overlay does not
+  set the same key, the render refuses and leaves any previous `settings.json`
+  in place (a profile with none stays without one; for what that costs, see
+  `docs/security-hardening.md` § "Limitations"), so no base change reaches
+  that profile until base drops the key or the overlay sets it.
 - Every other top-level key that neither file defines carries forward from the
   live `settings.json` unchanged, so a Claude Code write such as `/config` or
   `/theme` survives.
