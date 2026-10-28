@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from transcript_analysis import redaction, subagent_mix
 
 from .conftest import (
     _agent_use,
@@ -58,15 +59,15 @@ class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:
 
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
         yield
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def test_every_tracked_agent_stem_matches_the_charset(self):
-        names = _mod.redaction._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
+        names = redaction._repo_tracked_agent_type_names() - redaction._BUILT_IN_AGENT_TYPES
         assert names, "expected at least one repo-tracked agent definition"
         for name in names:
-            assert _mod.subagent_mix._AGENT_TYPE_NAME_RE.fullmatch(name), name
+            assert subagent_mix._AGENT_TYPE_NAME_RE.fullmatch(name), name
 
 
 class TestSpawnCountsByAgentType:
@@ -79,7 +80,7 @@ class TestSpawnCountsByAgentType:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
         ]
-        counts = _mod.subagent_mix._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
+        counts = subagent_mix._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
         assert counts == {"staff-sdet": 2}
 
     def test_nested_spawn_is_attributed_to_the_main_thread_branch_not_its_own_tag(self):
@@ -93,8 +94,8 @@ class TestSpawnCountsByAgentType:
             ),
         ]
         sessions = [(Path("sess.jsonl"), records)]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"ciso-reviewer": 1}
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"ciso-reviewer": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {}
 
     def test_nested_spawn_counts_under_the_main_thread_branch_in_effect_at_its_timestamp(self):
         """Main records enter feat-a at t0 and feat-b at t2. A sidechain spawn at t1 counts
@@ -112,8 +113,8 @@ class TestSpawnCountsByAgentType:
             ),
         ]
         sessions = [(Path("sess.jsonl"), records)]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"staff-sdet": 1}
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {"ciso-reviewer": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"staff-sdet": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {"ciso-reviewer": 1}
 
     def test_nested_spawn_during_the_leading_default_branch_run_counts_toward_the_first_branch_entered(self):
         """A sidechain spawn resolved to the main thread's leading `main` run counts toward feat-x,
@@ -127,8 +128,8 @@ class TestSpawnCountsByAgentType:
             _asst("claude-opus-4-7", branch="feat-x", ts=_attr_ts(2)),
         ]
         sessions = [(Path("sess.jsonl"), records)]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-x"}) == {"staff-sdet": 1}
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"main"}) == {}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-x"}) == {"staff-sdet": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"main"}) == {}
 
     def test_sidechain_only_session_is_not_counted_under_a_branch_filter(self):
         """With no branch-bearing main-thread record there is no main-thread branch to attribute to,
@@ -140,7 +141,7 @@ class TestSpawnCountsByAgentType:
             ),
         ]
         sessions = [(Path("agent-x.jsonl"), records)]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat"}) == {}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat"}) == {}
 
     @pytest.mark.parametrize(
         "malformed_input",
@@ -166,8 +167,8 @@ class TestSpawnCountsByAgentType:
             _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[malformed_block]),
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("ok", "staff-sdet")]),
         ]
-        counts = _mod.subagent_mix._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
-        assert counts == {_mod.subagent_mix._UNKNOWN_SUBAGENT_TYPE: 1, "staff-sdet": 1}
+        counts = subagent_mix._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
+        assert counts == {subagent_mix._UNKNOWN_SUBAGENT_TYPE: 1, "staff-sdet": 1}
 
     def test_branch_filter_counts_only_the_named_branchs_spawn_of_a_shared_agent_type(self):
         """A filter naming one of two branches counts only that branch's spawn of a shared agent type."""
@@ -180,7 +181,7 @@ class TestSpawnCountsByAgentType:
                 _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("b2", "staff-sdet")]),
             ]),
         ]
-        counts = _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"})
+        counts = subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"})
         assert counts == {"staff-sdet": 1}
 
     def test_nested_spawn_is_attributed_within_its_own_session_when_session_timestamps_interleave(self):
@@ -202,8 +203,8 @@ class TestSpawnCountsByAgentType:
                 ),
             ]),
         ]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"staff-sdet": 1}
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {"ciso-reviewer": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"}) == {"staff-sdet": 1}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-b"}) == {"ciso-reviewer": 1}
 
     def test_empty_branch_filter_set_excludes_every_spawn(self):
         """An empty (not None) filter set names no branch, so it counts nothing rather than everything."""
@@ -212,7 +213,7 @@ class TestSpawnCountsByAgentType:
                 _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "staff-sdet")]),
             ]),
         ]
-        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, set()) == {}
+        assert subagent_mix._spawn_counts_by_agent_type(sessions, set()) == {}
 
 
 class TestCostCounts:
@@ -225,9 +226,9 @@ class TestCostCounts:
         TestRepoTrackedAgentTypeNames -- a monkeypatched
         _REPO_AGENT_DEFINITIONS_DIR from one test here must never leak a
         stale cached result into the next."""
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
         yield
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def _isolate_allowlist(self, tmp_path, monkeypatch, tracked: list[str]) -> None:
         agents_dir = tmp_path / "isolated-agents"
@@ -237,18 +238,18 @@ class TestCostCounts:
             (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
         if tracked:
             subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        monkeypatch.setattr(redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def test_this_repo_required(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=False, branches="feat"))
+            subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=False, branches="feat"))
         assert exc_info.value.code == 2
         assert "--this-repo" in capsys.readouterr().err
 
     def test_non_default_projects_refused(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=True, projects="some-glob", branches="feat"))
+            subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=True, projects="some-glob", branches="feat"))
         assert exc_info.value.code == 2
         assert "--projects" in capsys.readouterr().err
 
@@ -258,7 +259,7 @@ class TestCostCounts:
         parse_args(), before main()'s own top-level --config-dir refusal
         check ever runs."""
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
+            subagent_mix.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
         assert exc_info.value.code == 2
         assert "--branches" in capsys.readouterr().err
 
@@ -270,7 +271,7 @@ class TestCostCounts:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -278,7 +279,7 @@ class TestCostCounts:
         assert "| plan-review | 0 |" in out
         assert "| ready-for-review | 0 |" in out
         assert "| **total** | **1** |" in out
-        assert _mod.subagent_mix._COST_COUNTS_ROUNDS_CAPTION in out
+        assert subagent_mix._COST_COUNTS_ROUNDS_CAPTION in out
 
     def test_main_thread_review_orchestrator_dispatch_renders_as_a_code_review_round_with_its_caption(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -291,7 +292,7 @@ class TestCostCounts:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("o1", "review-orchestrator")]),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -324,7 +325,7 @@ class TestCostCounts:
                 content=[_agent_use("o1", "review-orchestrator")],
             ),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -389,7 +390,7 @@ class TestCostCounts:
             agent_type="staff-sdet",
             spawn_depth=2,
         )
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -423,7 +424,7 @@ class TestCostCounts:
                 ],
                 agent_type="review-orchestrator",
             )
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -462,7 +463,7 @@ class TestCostCounts:
             ],
         )
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-a", this_repo_slugs=["-home-user-testrepo"],
         ))
         feat_a_out = capsys.readouterr().out
@@ -470,7 +471,7 @@ class TestCostCounts:
         assert "| **total** | **1** |" in feat_a_out.split("### Subagent spawns")[1]
         assert "ciso-reviewer" not in feat_a_out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-b", this_repo_slugs=["-home-user-testrepo"],
         ))
         feat_b_out = capsys.readouterr().out
@@ -503,7 +504,7 @@ class TestCostCounts:
             agent_type="review-orchestrator",
         )
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-a", this_repo_slugs=["-home-user-testrepo"],
         ))
         feat_a_out = capsys.readouterr().out
@@ -511,7 +512,7 @@ class TestCostCounts:
         assert "| review-orchestrator | 1 |" in feat_a_out
         assert "| staff-sdet |" not in feat_a_out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-b", this_repo_slugs=["-home-user-testrepo"],
         ))
         feat_b_out = capsys.readouterr().out
@@ -535,7 +536,7 @@ class TestCostCounts:
         }
         _write_subagent_dispatch(fake_projects, "sess", "agent-nested", "t1", [flagged_slash_record])
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -558,7 +559,7 @@ class TestCostCounts:
                 ),
             ],
         )
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -584,7 +585,7 @@ class TestCostCounts:
                 ),
             ],
         )
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -611,14 +612,14 @@ class TestCostCounts:
         flagless_record.pop("isSidechain")
         _write_subagent_dispatch(fake_projects, "sess", "agent-flagless", "t1", [flagless_record])
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-sub", this_repo_slugs=["-home-user-testrepo"],
         ))
         own_tag_out = capsys.readouterr().out
         assert "| code-review | 1 |" in own_tag_out
         assert "| review-orchestrator | 1 |" in own_tag_out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         main_thread_branch_out = capsys.readouterr().out
@@ -644,14 +645,14 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),
         ])
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat-x", this_repo_slugs=["-home-user-testrepo"],
         ))
         entered_out = capsys.readouterr().out
         assert "| code-review | 1 |" in entered_out
         assert "| staff-sdet | 1 |" in entered_out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="main", this_repo_slugs=["-home-user-testrepo"],
         ))
         default_out = capsys.readouterr().out
@@ -666,7 +667,7 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "totally-untracked-agent")]),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -689,7 +690,7 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "untracked-agent-b")]),
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a4", "untracked-agent-c")]),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -707,14 +708,14 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
         ])
         monkeypatch.setattr(
-            _mod.subagent_mix, "_partition_spawn_counts_by_disclosure",
+            subagent_mix, "_partition_spawn_counts_by_disclosure",
             lambda raw_counts: [("some-untracked-agent-type", 1)],
         )
         with pytest.raises(
             AssertionError,
             match=r"spawn row 0 is neither the withheld label nor a repo-tracked agent type",
         ) as exc_info:
-            _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            subagent_mix.cmd_cost_counts(_cost_counts_args(
                 this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
             ))
         assert "some-untracked-agent-type" not in str(exc_info.value)
@@ -731,7 +732,7 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use(f"a{i}", name)])
             for i, name in enumerate(tracked)
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -742,7 +743,7 @@ class TestCostCounts:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -760,12 +761,12 @@ class TestCostCounts:
             _asst("claude-opus-4-7", branch="feat", content=[]),
         ])
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="other", this_repo_slugs=["-home-user-testrepo"],
         ))
         assert "| code-review | 1 |" in capsys.readouterr().out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -777,7 +778,7 @@ class TestCostCounts:
             "\n"
             "### Subagent spawns\n"
             "\n"
-            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
+            f"{subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
             "\n"
             "No subagent spawns found in scope.\n"
         ) in out
@@ -793,12 +794,12 @@ class TestCostCounts:
             ),
         ])
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         assert "| code-review | 1 |" in capsys.readouterr().out
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches=",", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -810,7 +811,7 @@ class TestCostCounts:
             "\n"
             "### Subagent spawns\n"
             "\n"
-            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
+            f"{subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
             "\n"
             "No subagent spawns found in scope.\n"
         ) in out
@@ -824,7 +825,7 @@ class TestCostCounts:
                 content=[_skill_use("s1", "code-review"), _agent_use("a1", "staff-sdet")],
             ),
         ])
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="my-secret-branch-name", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
@@ -853,7 +854,7 @@ class TestCostCounts:
         roots_file.write_text(f"{declared_root}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
+from transcript_analysis import corpus, cost, gh_cli, period_cost, pr_cost_ledger, pricing, scope
 
 from .conftest import (
     _TASK_NOTIFICATION_TEXT,
@@ -41,13 +42,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-period_cost = _mod.period_cost
-gh_cli = _mod.gh_cli
-pricing = _mod.pricing
-scope = _mod.scope
-cost_module = _mod.cost
-render_module = _mod.render
 
 # Captured before the hermetic fixture replaces them: subprocess.run for the one test that runs bash, and the clock
 # wrappers for the tests that read the real clocks.
@@ -1414,8 +1408,8 @@ class TestGhKindForStatus:
         [
             pytest.param(gh_cli._GH_CALL_DEGRADED_AUTH, "auth", id="auth"),
             pytest.param(gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH, "host_mismatch", id="host_mismatch"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
             pytest.param(gh_cli._GH_PR_LIST_UNPARSEABLE, "unparseable", id="unparseable"),
         ],
     )
@@ -2553,7 +2547,7 @@ def _render(groups, *, flags=None, window=None):
     )
 
 
-_CAVEAT_LINE = "_" + cost_module._LIST_PRICE_CAVEAT + "_"
+_CAVEAT_LINE = "_" + cost._LIST_PRICE_CAVEAT + "_"
 _SCOPE_NOTE = (
     "_Counts one Claude Code account's spend across every repository its sessions worked in. Other accounts and other"
     " people's work are not included._"
@@ -2937,7 +2931,7 @@ class TestRenderSlackReport:
         assert _render(shuffled) == _render(groups)
 
     def test_the_list_price_caveat_carries_no_character_the_italic_markup_would_break_on(self):
-        assert not set("_*`") & set(cost_module._LIST_PRICE_CAVEAT)
+        assert not set("_*`") & set(cost._LIST_PRICE_CAVEAT)
 
 
 _DOCS_FILE = REPO_ROOT / "docs" / "transcript-analysis.md"
@@ -5938,7 +5932,7 @@ class TestReviewPrSkillDrift:
         )
 
         substituted = acquire_line.replace("<owner>/<repo>#<number>", "acme/widgets#12")
-        (segment,) = _mod.corpus.split_command_segments(substituted)
+        (segment,) = corpus.split_command_segments(substituted)
 
         assert os.path.basename(segment[0]) == period_cost._ACQUIRE_SCRIPT_NAME
         assert period_cost._acquire_identity(segment) == ("acme/widgets", 12)
@@ -5948,7 +5942,7 @@ class TestReviewPrSkillDrift:
             line.strip() for line in self._skill_lines() if line.strip().startswith("~/.claude/scripts/review-pr-finish.sh")
         )
 
-        (segment,) = _mod.corpus.split_command_segments(finish_line)
+        (segment,) = corpus.split_command_segments(finish_line)
 
         assert period_cost._invokes_finish_script(segment) is True
 
