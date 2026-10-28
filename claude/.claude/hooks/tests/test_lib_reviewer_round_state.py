@@ -20,6 +20,7 @@ from helpers import (
     HOOKS_DIR,
     bare_remote_with_default_branch,
     build_conflicted_rebase,
+    enable_round2_pilot,
     init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
     staged_diff_hash_at_base,
@@ -90,6 +91,120 @@ def _state_cap(config_dir: str | None) -> subprocess.CompletedProcess:
         check=False,
         env=env,
     )
+
+
+def _architect_consult_threshold(
+    config_dir_arg: str, state_key_arg: str, env_config_dir: str | None, hooks_dir: Path = HOOKS_DIR
+) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_architect_consult_threshold with the given
+    positional arguments. env_config_dir is the CLAUDE_CONFIG_DIR the nested
+    _lib_reviewer_round_state_cap resolves the pilot key from (unset when
+    None), kept separate from the argument so a case can pass an empty or
+    unresolvable argument while the pilot key stays readable."""
+    env = dict(os.environ)
+    if env_config_dir is None:
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = env_config_dir
+    return subprocess.run(
+        ["bash", "-c", f'. "{hooks_dir / "_lib.sh"}"; _lib_architect_consult_threshold "$1" "$2"',
+         "_", config_dir_arg, state_key_arg],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+class TestLibArchitectConsultThreshold:
+    """Contract for _lib_architect_consult_threshold. Each case asserts a
+    literal integer, never the _lib.sh constants, so a changed interval
+    fails here."""
+
+    STATE_KEY = "repohash.branchhash"
+
+    def _config_dir(self, tmp_path: Path) -> Path:
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        return config_dir
+
+    def _write_latch(self, config_dir: Path) -> Path:
+        latch = config_dir / ".architect-consult-latch.d" / self.STATE_KEY
+        latch.parent.mkdir(parents=True)
+        latch.touch()
+        return latch
+
+    def test_no_latch_prints_the_default_cap(self, tmp_path):
+        config_dir = self._config_dir(tmp_path)
+        result = _architect_consult_threshold(str(config_dir), self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_zero_byte_latch_prints_the_rearm_interval(self, tmp_path):
+        config_dir = self._config_dir(tmp_path)
+        self._write_latch(config_dir)
+        result = _architect_consult_threshold(str(config_dir), self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "3"
+
+    def test_latch_under_pilot_prints_the_rearm_interval(self, tmp_path):
+        config_dir = self._config_dir(tmp_path)
+        enable_round2_pilot(config_dir)
+        self._write_latch(config_dir)
+        result = _architect_consult_threshold(str(config_dir), self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "3"
+
+    def test_no_latch_under_pilot_prints_the_pilot_cap(self, tmp_path):
+        config_dir = self._config_dir(tmp_path)
+        enable_round2_pilot(config_dir)
+        result = _architect_consult_threshold(str(config_dir), self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "1"
+
+    def test_directory_at_the_latch_path_reads_as_no_latch(self, tmp_path):
+        config_dir = self._config_dir(tmp_path)
+        (config_dir / ".architect-consult-latch.d" / self.STATE_KEY).mkdir(parents=True)
+        result = _architect_consult_threshold(str(config_dir), self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_empty_config_dir_argument_prints_the_default_cap(self, tmp_path):
+        """An empty argument does not fall back to CLAUDE_CONFIG_DIR, so the
+        latch under that directory is not read."""
+        config_dir = self._config_dir(tmp_path)
+        self._write_latch(config_dir)
+        result = _architect_consult_threshold("", self.STATE_KEY, str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_relative_unresolvable_config_dir_leaves_the_nested_cap_on_its_default(self):
+        """A relative CLAUDE_CONFIG_DIR cannot resolve, so the pilot lookup
+        inside the cap helper falls through to the default of 2."""
+        result = _architect_consult_threshold("relative/config/dir", self.STATE_KEY, "relative/config/dir")
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_empty_state_key_argument_prints_the_no_latch_value(self, tmp_path):
+        """An empty key, as on detached HEAD, prints the no-latch value even
+        when another key's latch exists in the config dir."""
+        config_dir = self._config_dir(tmp_path)
+        self._write_latch(config_dir)
+        result = _architect_consult_threshold(str(config_dir), "", str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_config_keys_psv_missing_prints_the_default_cap(self, tmp_path):
+        """A missing schema is not read around through the legacy pilot
+        sentinel, so the pilot sentinel present still prints the default."""
+        config_dir = self._config_dir(tmp_path)
+        enable_round2_pilot(config_dir)
+        isolated_hooks_dir = _isolated_hooks_dir_missing_config_keys_psv(tmp_path)
+        result = _architect_consult_threshold(
+            str(config_dir), self.STATE_KEY, str(config_dir), hooks_dir=isolated_hooks_dir
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
 
 
 class TestLibReviewerRoundStateKey:
@@ -254,8 +369,7 @@ class TestLibReviewerRoundStateKeyValueIndependence:
 
 
 class TestLibReviewerRoundStateCap:
-    """Contract for _lib_reviewer_round_state_cap, consumed by both hooks
-    via `$(...)` into an integer comparison. Must always print a valid
+    """Contract for _lib_reviewer_round_state_cap. Must always print a valid
     integer to stdout and never fail silently."""
 
     def test_default_cap_without_pilot_sentinel(self, tmp_path):

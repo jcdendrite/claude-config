@@ -2254,6 +2254,24 @@ def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
     return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
 
 
+def write_architect_consult_latch(config_dir: Path, repo: Path) -> Path:
+    """Create the branch's consult latch, as log-reviewer-round.sh does after a
+    plan-architect consult, bypassing the recorder."""
+    latch = architect_consult_latch_path(config_dir, repo)
+    latch.parent.mkdir(parents=True, exist_ok=True)
+    latch.touch()
+    return latch
+
+
+def enable_round2_pilot(config_dir: Path) -> Path:
+    """Create the round-2 pilot sentinel, which lowers the no-latch round-state
+    cap from 2 to 1."""
+    sentinel = config_dir / ".round-consult-round2-pilot"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    return sentinel
+
+
 def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
     """Seed the round-state file directly with `values` (each already a
     "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
