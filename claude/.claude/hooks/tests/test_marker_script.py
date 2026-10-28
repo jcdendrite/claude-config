@@ -183,8 +183,8 @@ def _arm_verification_cache_optin(repo) -> None:
     tmp_index.unlink()
     commit_env = {
         **os.environ,
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
     }
     commit_args = ["git", "commit-tree", tree_oid, "-m", "add opt-in sentinel"]
     if head_oid:
@@ -2288,7 +2288,7 @@ def _build_conflicted_merge_via_origin_with_resolved_skill_conflict(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / skill_rel_path).write_text("origin-edit\n")
     subprocess.run(["git", "add", skill_rel_path], cwd=push_clone, check=True)
@@ -2331,7 +2331,7 @@ def _build_conflicted_merge_via_origin_with_resolved_skill_conflict_in_linked_wo
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "wt-branch", str(worktree)], cwd=clone, check=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=worktree, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
 
     skill_rel_path = "claude-skills/skills/test-skill/SKILL.md"
@@ -2351,7 +2351,7 @@ def _build_conflicted_merge_via_origin_with_resolved_skill_conflict_in_linked_wo
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / skill_rel_path).write_text("origin-edit\n")
     subprocess.run(["git", "add", skill_rel_path], cwd=push_clone, check=True)
@@ -2588,7 +2588,7 @@ def _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / "f").write_text("origin-edit\n")
     (push_clone / ".claude" / "plans" / "p.md").write_text("upstream edited plan\n")
@@ -3815,7 +3815,7 @@ class TestMarkerScriptStatusCompletionMarkers:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
         (other_repo / "f.txt").write_text("x\n")
         subprocess.run(["git", "add", "f.txt"], cwd=other_repo, check=True)

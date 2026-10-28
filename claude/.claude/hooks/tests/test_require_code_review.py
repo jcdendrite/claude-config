@@ -208,7 +208,7 @@ class TestRequireCodeReview:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         # Same diff hash, filed under the other repo's repo-hash prefix.
@@ -327,7 +327,7 @@ class TestRequireCodeReview:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_noconflict_rebase_edit_stop(repo)
         (repo / "unrelated.txt").write_text("unreviewed content\n")
@@ -1161,7 +1161,7 @@ def _build_forged_anchor_clean_merge(
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "base.txt").write_text("base\n")
     subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
@@ -1441,7 +1441,7 @@ class TestRequireCodeReviewMergeAwareBase:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_conflicted_rebase(repo)
         resolve_conflicted_rebase(repo)
@@ -1658,7 +1658,7 @@ def _build_clean_merge_mode_bit_only_change(tmp_path: Path) -> Path:
 
     push_clone = tmp_path / "push_clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     os.chmod(push_clone / "f", 0o755)
     subprocess.run(["git", "add", "f"], cwd=push_clone, check=True)
@@ -1761,7 +1761,7 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
         subprocess.run(
             ["git", "worktree", "add", "-q", str(worktree), "wt-branch"], cwd=clone, check=True
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=worktree, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
         (worktree / "f").write_text("ours-edit\n")
         subprocess.run(["git", "add", "f"], cwd=worktree, check=True)

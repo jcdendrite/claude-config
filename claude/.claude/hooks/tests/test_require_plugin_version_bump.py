@@ -71,7 +71,7 @@ def bare_remote(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     _git_q(seed, "init", "-q", "-b", "main")
-    _git_q(seed, "config", "user.email", "t@t.com")
+    _git_q(seed, "config", "user.email", "t@example.invalid")
     _git_q(seed, "config", "user.name", "t")
     _commit_plugin(seed, "plugins/demo", "1.0.0", message="init")
     _git_q(seed, "remote", "add", "origin", str(bare))
@@ -89,7 +89,7 @@ def feature_clone(tmp_path, bare_remote):
         check=True,
         capture_output=True,
     )
-    _git_q(repo, "config", "user.email", "t@t.com")
+    _git_q(repo, "config", "user.email", "t@example.invalid")
     _git_q(repo, "config", "user.name", "t")
     _git_q(repo, "remote", "set-head", "origin", "main")
     _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -346,7 +346,7 @@ class TestRequirePluginVersionBump:
         repo = tmp_path / "local-main-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_plugin(repo, "plugins/demo", "1.0.0", message="init")
         _git_q(repo, "checkout", "-q", "-b", "feature")

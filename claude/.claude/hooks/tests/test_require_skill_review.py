@@ -320,7 +320,7 @@ class TestRequireSkillReview:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         # Produce the correct marker value, then relocate it under the other
@@ -2043,7 +2043,7 @@ def _three_commit_stateless_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     for message in ("commit one", "commit two", "commit three"):
         (repo / "f").write_text(message + "\n")
@@ -2596,7 +2596,7 @@ def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "wt-branch", str(worktree)], cwd=clone, check=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=worktree, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
 
     skill_rel_path = "claude-skills/skills/example-skill/SKILL.md"
@@ -2616,7 +2616,7 @@ def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / "f").write_text("origin-edit\n")
     (push_clone / skill_rel_path).write_text("upstream edited skill\n")
@@ -2891,7 +2891,7 @@ class TestSkillReviewGateMergeAwareVerdict:
         subprocess.run(
             ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
         (push_clone / skill_rel).write_text("upstream edited skill\n")
         subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
@@ -3019,7 +3019,7 @@ def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_r
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / "f").write_text("origin-edit\n")
     (push_clone / y_rel).write_text(_BROKEN_SKILL_MD)
@@ -3329,7 +3329,7 @@ def _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path, name="repo"):
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "f").write_text("seed\n")
     subprocess.run(["git", "add", "f"], cwd=repo, check=True)
@@ -3423,7 +3423,7 @@ def _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / skill_rel).write_text("origin-edit\n")
     subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
@@ -3456,7 +3456,7 @@ class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         skill_rel = "claude-skills/skills/conflicted-skill/SKILL.md"
         skill_path = repo / skill_rel
@@ -3583,7 +3583,7 @@ def _build_merge_conflicting_in_two_gated_skills(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     for name, skill_rel in skill_paths.items():
         (push_clone / skill_rel).write_text(render_body(name, "origin line"))
@@ -5614,7 +5614,7 @@ def _init_repo_with_novel_reach_probe_skill(repo_path):
     commit and a novel gated SKILL.md staged."""
     repo_path.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo_path, check=True)
     (repo_path / "file.txt").write_text("first\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo_path, check=True)

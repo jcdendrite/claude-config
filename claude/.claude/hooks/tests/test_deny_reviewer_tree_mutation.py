@@ -39,7 +39,7 @@ def repo_ignoring_agent_reviews(tmp_path):
     repo = tmp_path / "ignoring-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / ".gitignore").write_text("agent-reviews/\n")
     subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
@@ -59,7 +59,7 @@ def repo_not_ignoring_agent_reviews(tmp_path):
     repo = tmp_path / "not-ignoring-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "README.md").write_text("x\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
@@ -228,7 +228,7 @@ class TestAgentReviewsIgnoreVerification:
         foreign = tmp_path / "foreign"
         foreign.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=foreign, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
         (foreign / "README.md").write_text("x\n")
         subprocess.run(["git", "add", "README.md"], cwd=foreign, check=True)
@@ -257,7 +257,7 @@ class TestAgentReviewsIgnoreVerification:
         foreign = tmp_path / "foreign-work-tree"
         foreign.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=foreign, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=foreign, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=foreign, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=foreign, check=True)
         (foreign / ".gitignore").write_text("agent-reviews/\n")
         subprocess.run(["git", "add", ".gitignore"], cwd=foreign, check=True)
@@ -301,7 +301,7 @@ class TestAgentReviewsIgnoreVerification:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         (repo / ".gitignore").write_text("/agent-reviews/\n")
         subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)

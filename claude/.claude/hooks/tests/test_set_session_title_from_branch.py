@@ -68,7 +68,7 @@ def bare_remote(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     _git_q(seed, "init", "-q", "-b", "main")
-    _git_q(seed, "config", "user.email", "t@t.com")
+    _git_q(seed, "config", "user.email", "t@example.invalid")
     _git_q(seed, "config", "user.name", "t")
     (seed / "f").write_text("a\n")
     _git_q(seed, "add", "f")
@@ -86,7 +86,7 @@ def feature_clone(tmp_path, bare_remote):
     subprocess.run(
         ["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True
     )
-    _git_q(repo, "config", "user.email", "t@t.com")
+    _git_q(repo, "config", "user.email", "t@example.invalid")
     _git_q(repo, "config", "user.name", "t")
     _git_q(repo, "remote", "set-head", "origin", "main")
     _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -139,7 +139,7 @@ class TestSetSessionTitleFromBranch:
         repo = tmp_path / "no-origin"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         (repo / "f").write_text("a\n")
         _git_q(repo, "add", "f")
@@ -159,7 +159,7 @@ class TestSetSessionTitleFromBranch:
         the specific known-wrong string, not just "some title"."""
         repo = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "checkout", "-q", "-b", "old-main")
         _git_q(repo, "push", "-q", "origin", "old-main")
@@ -213,7 +213,7 @@ class TestSetSessionTitleFromBranch:
             ["git", "init", "-q", "-b", "main", f"--separate-git-dir={gitdir}", str(workdir)],
             check=True,
         )
-        _git_q(workdir, "config", "user.email", "t@t.com")
+        _git_q(workdir, "config", "user.email", "t@example.invalid")
         _git_q(workdir, "config", "user.name", "t")
         (workdir / "f").write_text("a\n")
         _git_q(workdir, "add", "f")
@@ -243,7 +243,7 @@ class TestSetSessionTitleFromBranch:
         outer = tmp_path / "outer"
         outer.mkdir()
         _git_q(outer, "init", "-q", "-b", "main")
-        _git_q(outer, "config", "user.email", "t@t.com")
+        _git_q(outer, "config", "user.email", "t@example.invalid")
         _git_q(outer, "config", "user.name", "t")
         (outer / "f").write_text("a\n")
         _git_q(outer, "add", "f")
@@ -252,7 +252,7 @@ class TestSetSessionTitleFromBranch:
         sub_src = tmp_path / "subsrc"
         sub_src.mkdir()
         _git_q(sub_src, "init", "-q", "-b", "main")
-        _git_q(sub_src, "config", "user.email", "t@t.com")
+        _git_q(sub_src, "config", "user.email", "t@example.invalid")
         _git_q(sub_src, "config", "user.name", "t")
         (sub_src / "g").write_text("b\n")
         _git_q(sub_src, "add", "g")
@@ -271,7 +271,7 @@ class TestSetSessionTitleFromBranch:
         assert len(long_branch) == 43
         repo = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", long_branch)
@@ -288,7 +288,7 @@ class TestSetSessionTitleFromBranch:
         branch = "a" * length
         repo = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", branch)
@@ -317,7 +317,7 @@ class TestSetSessionTitleFromBranch:
         boundary_branch = "release/v1.2.3+build_x.y-z@tag"
         repo = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", boundary_branch)
@@ -346,7 +346,7 @@ class TestSetSessionTitleFromBranch:
     def test_branch_rejects_accented_name(self, tmp_path, bare_remote, isolated_home, locale):
         repo = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", "café")
@@ -363,7 +363,7 @@ class TestSetSessionTitleFromBranch:
     def test_directory_rejects_invalid_utf8_basename(self, tmp_path, bare_remote, isolated_home):
         repo = Path(os.fsdecode(os.fsencode(str(tmp_path)) + b"/invalid-\xffdir"))
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -378,7 +378,7 @@ class TestSetSessionTitleFromBranch:
         would otherwise pass every other test in this file."""
         repo = tmp_path / "café-repo"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -387,7 +387,7 @@ class TestSetSessionTitleFromBranch:
     def test_directory_rejects_basename_with_space(self, tmp_path, bare_remote, isolated_home):
         repo = tmp_path / "My Repo"
         subprocess.run(["git", "clone", "-q", str(bare_remote), str(repo)], check=True, capture_output=True)
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _git_q(repo, "remote", "set-head", "origin", "main")
         _git_q(repo, "checkout", "-q", "-b", "feature")

@@ -78,7 +78,7 @@ def bare_remote(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     _git_q(seed, "init", "-q", "-b", "main")
-    _git_q(seed, "config", "user.email", "t@t.com")
+    _git_q(seed, "config", "user.email", "t@example.invalid")
     _git_q(seed, "config", "user.name", "t")
     (seed / "f").write_text("a\n")
     _git_q(seed, "add", "f")
@@ -99,7 +99,7 @@ def feature_clone(tmp_path, bare_remote):
         check=True,
         capture_output=True,
     )
-    _git_q(repo, "config", "user.email", "t@t.com")
+    _git_q(repo, "config", "user.email", "t@example.invalid")
     _git_q(repo, "config", "user.name", "t")
     _git_q(repo, "remote", "set-head", "origin", "main")
     _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -123,7 +123,7 @@ def repo_behind_clean(feature_clone, bare_remote, tmp_path):
         check=True,
         capture_output=True,
     )
-    _git_q(push, "config", "user.email", "t@t.com")
+    _git_q(push, "config", "user.email", "t@example.invalid")
     _git_q(push, "config", "user.name", "t")
     (push / "newfile").write_text("clean-addition\n")
     _git_q(push, "add", "newfile")
@@ -147,7 +147,7 @@ def repo_behind_conflict(feature_clone, bare_remote, tmp_path):
         check=True,
         capture_output=True,
     )
-    _git_q(push, "config", "user.email", "t@t.com")
+    _git_q(push, "config", "user.email", "t@example.invalid")
     _git_q(push, "config", "user.name", "t")
     (push / "f").write_text("origin-edit\n")
     _git_q(push, "add", "f")
@@ -162,7 +162,7 @@ def _advance_remote_default_branch(bare: Path, tmp_path: Path, message: str) -> 
     another contributor's push landing on origin after local last fetched."""
     push = tmp_path / "advance-clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push)], check=True, capture_output=True)
-    _git_q(push, "config", "user.email", "t@t.com")
+    _git_q(push, "config", "user.email", "t@example.invalid")
     _git_q(push, "config", "user.name", "t")
     (push / "f").write_text(f"{message}\n")
     _git_q(push, "add", "f")
@@ -234,7 +234,7 @@ class TestCheckBranchDivergence:
         repo = tmp_path / "no-origin"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         (repo / "f").write_text("a\n")
         _git_q(repo, "add", "f")
@@ -343,7 +343,7 @@ class TestCheckBranchDivergence:
             check=True,
             capture_output=True,
         )
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         # `git clone` sets origin/HEAD; delete it to exercise the unresolvable path.
         _git_q(repo, "remote", "set-head", "--delete", "origin")

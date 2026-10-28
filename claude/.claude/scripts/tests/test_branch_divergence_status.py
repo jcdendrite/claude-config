@@ -97,7 +97,7 @@ def _advance_remote_default_branch(bare: Path, tmp_path: Path, message: str) -> 
     another contributor's push landing on origin after local last fetched."""
     bare_clone = tmp_path / "advance-clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(bare_clone)], check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=bare_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=bare_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=bare_clone, check=True)
     _commit(bare_clone, message)
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=bare_clone, check=True)
@@ -257,7 +257,7 @@ def _advance_remote_stack(bare: Path, tmp_path: Path) -> None:
     """Push a commit adding remote.txt to bare's `stack` branch from a second clone."""
     clone = tmp_path / "advance-stack-clone"
     subprocess.run(["git", "clone", "-q", "-b", "stack", str(bare), str(clone)], check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
     (clone / "remote.txt").write_text("remote stack work\n")
     subprocess.run(["git", "add", "remote.txt"], cwd=clone, check=True)
@@ -374,7 +374,7 @@ class TestStackBaseKey:
         subprocess.run(["git", "commit", "-q", "-m", "local conflict.txt"], cwd=local, check=True)
         clone = tmp_path / "conflicting-stack-clone"
         subprocess.run(["git", "clone", "-q", "-b", "stack", str(bare), str(clone)], check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
         (clone / "conflict.txt").write_text("remote content\n")
         subprocess.run(["git", "add", "conflict.txt"], cwd=clone, check=True)
@@ -406,7 +406,7 @@ class TestStackBaseKey:
         local, bare = _make_stacked_repo(tmp_path)
         clone = tmp_path / "rewrite-stack-clone"
         subprocess.run(["git", "clone", "-q", "-b", "stack", str(bare), str(clone)], check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
         subprocess.run(["git", "reset", "-q", "--hard", "HEAD~1"], cwd=clone, check=True)
         (clone / "rewritten.txt").write_text("rewritten stack work\n")

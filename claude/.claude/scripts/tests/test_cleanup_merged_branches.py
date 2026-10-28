@@ -481,7 +481,7 @@ class TestDefaultBranchFastForward:
         subprocess.run(
             ["git", "clone", "-q", str(bare), str(bare_clone)], check=True
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=bare_clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=bare_clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=bare_clone, check=True)
         _commit(bare_clone, "advance remote")
         subprocess.run(["git", "push", "-q", "origin", "main"], cwd=bare_clone, check=True)
@@ -501,7 +501,7 @@ class TestDefaultBranchFastForward:
         # Advance the remote default branch
         bare_clone = tmp_path / "clone"
         subprocess.run(["git", "clone", "-q", str(bare), str(bare_clone)], check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=bare_clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=bare_clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=bare_clone, check=True)
         _commit(bare_clone, "advance remote")
         subprocess.run(["git", "push", "-q", "origin", "main"], cwd=bare_clone, check=True)
@@ -1027,7 +1027,7 @@ def _make_ancestor_merged_branch(repo: Path, remote: Path, branch_name: str, pr_
     _make_feature_branch(repo, branch_name)
     local_tip = _rev_parse(repo, branch_name)
 
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=remote, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=remote, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=remote, check=True)
     tree = subprocess.run(
         ["git", "rev-parse", f"{local_tip}^{{tree}}"],
