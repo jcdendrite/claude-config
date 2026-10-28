@@ -29,6 +29,12 @@ BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 # RULE4_DOTTED_PATHS_JSON.
 OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_FEEDBACK_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
 
+# Overlay-allowed top-level keys: never carried forward, so deleting one
+# from the overlay actually takes effect on the next render.
+# Declared ahead of the direct-invocation modes below for the same reason as
+# RULE4_DOTTED_PATHS_JSON.
+OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
+
 # Direct-invocation modes for tests: each prints one constant as JSON and exits
 # before any render logic runs, mirroring guard-settings-session-keys.sh's own
 # --print-guarded-keys mode.
@@ -42,6 +48,10 @@ if [[ "${1:-}" == "--print-base-owned-keys" ]]; then
 fi
 if [[ "${1:-}" == "--print-env-allowed-names" ]]; then
   printf '%s\n' "$OVERLAY_ENV_ALLOWED_NAMES_JSON"
+  exit 0
+fi
+if [[ "${1:-}" == "--print-overlay-allowed-keys" ]]; then
+  printf '%s\n' "$OVERLAY_ALLOWED_KEYS_JSON"
   exit 0
 fi
 
@@ -59,6 +69,10 @@ fi
 # skillListingBudgetFraction}, plus a conditionally-admissible `permissions`
 # carrying only `defaultMode` -- any other key or shape is rejected outright,
 # not merged. See docs/auto-mode.md for the full contract.
+#
+# Refuses to render when base sets an overlay-allowed key that the overlay does
+# not set. Overlay-allowed keys are overlay-owned, so a base value would reach
+# every account unchanged.
 #
 # Every top-level key base and the overlay don't claim carries forward from
 # the prior settings.json (theme/model/effortLevel and friends), since
@@ -78,9 +92,6 @@ base_file="$config_dir/settings.base.json"
 overlay_file="$config_dir/settings.overlay.json"
 target="$config_dir/settings.json"
 
-# Overlay-allowed top-level keys: never carried forward, so deleting one
-# from the overlay actually takes effect on the next render.
-OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 # defaultMode enum: default and plan are accepted.
 # bypassPermissions and acceptEdits are refused outright.
 # auto is refused until the shipped ask-review-permissions.sh's reason text is
@@ -215,6 +226,15 @@ if [[ -e "$overlay_file" || -L "$overlay_file" ]]; then
 fi
 
 base_json="$(jq -c '.' -- "$base_file")"
+
+# A jq runtime error also lands in this branch, so the guard fails closed.
+# It runs before the skip-identical exit, so a leaking render that equals the
+# prior file is still refused.
+if ! jq -n -e --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] == []' >/dev/null 2>&1; then
+  bad_keys="$(jq -rn --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] | join(", ")' 2>/dev/null)" || bad_keys='<unavailable: jq error>'
+  echo "render-settings.sh: $base_file sets overlay-owned key(s) not overridden by $overlay_file: $bad_keys -- must be overridden by $overlay_file (or removed from $base_file), otherwise they leak unchanged to every account whose overlay doesn't override them -- refusing to render" >&2
+  exit 1
+fi
 
 # $target is written by this script, by Claude Code, and by hand. A missing,
 # empty, unparseable, or non-object prior file therefore means nothing to
