@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+import warnings
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
@@ -1168,6 +1169,263 @@ class TestMineSzz:
         assert "git_call_failures=0" in err
 
 
+class TestPythonDocstringLines:
+    @pytest.mark.parametrize(
+        ("source", "expected_lines"),
+        [
+            pytest.param('"""Module."""\nx = 1\n', {1}, id="module docstring"),
+            pytest.param('class C:\n    """Class."""\n    x = 1\n', {2}, id="class docstring"),
+            pytest.param(
+                'class C:\n    def method(self):\n        """Method."""\n        return 1\n', {3},
+                id="method in a class",
+            ),
+            pytest.param(
+                'def outer():\n    def inner():\n        """Inner."""\n        return 1\n    return inner\n', {3},
+                id="nested function",
+            ),
+            pytest.param('async def f():\n    """Async."""\n    return 1\n', {2}, id="async def"),
+            pytest.param('def f():\n    """Only."""\n', {2}, id="docstring-only body"),
+            pytest.param('def f():\n    x = 1\n    """Not first."""\n', set(), id="string literal after code"),
+            pytest.param(
+                'def f():\n    """One.\n\n    Three.\n    """\n    return 1\n', {2, 3, 4, 5},
+                id="multi-line docstring",
+            ),
+            pytest.param('def f(:\n    """Broken."""\n', set(), id="unparseable source"),
+            pytest.param('class E(Exception): """Boom."""\n', set(), id="docstring after a class header"),
+            pytest.param('def g(): """d"""; return bad\n', set(), id="docstring before a statement"),
+            pytest.param('def g(): """one\n    two"""\n', {2}, id="multi-line docstring after a header"),
+            pytest.param('def g():\n    """one\n    two"""; x = 1\n', {2}, id="multi-line docstring before a statement"),
+            pytest.param('def g():\n    """d"""  # note\n', {2}, id="docstring before a trailing comment"),
+            pytest.param('VERSION = "1.0"\nx = 1\n', set(), id="module string assignment"),
+            pytest.param('def f():\n    ...\n', set(), id="ellipsis stub body"),
+            pytest.param('def f():\n    42\n    return 1\n', set(), id="non-string constant first statement"),
+            pytest.param('def f():\n    """éééééé"""; y\n', set(), id="multibyte docstring before a statement"),
+            pytest.param('def f():\n    """éééééé"""\n    return 1\n', {2}, id="multibyte docstring on its own line"),
+            pytest.param('\ufeff"""d"""\n', set(), id="UTF-8 BOM prefix is rejected by the parser"),
+        ],
+    )
+    def test_returns_exactly_the_lines_that_hold_only_docstring_text(self, source, expected_lines):
+        assert mine_szz._python_docstring_lines(source) == frozenset(expected_lines)
+
+    def test_an_invalid_escape_sequence_in_a_docstring_emits_no_warning(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert mine_szz._python_docstring_lines('def f():\n    """Match \\d+."""\n') == frozenset({2})
+
+    @pytest.mark.parametrize("parse_error", [SyntaxError, ValueError, RecursionError, MemoryError])
+    def test_a_parse_failure_is_counted_and_leaves_the_file_unfiltered(self, monkeypatch, parse_error):
+        sentinel_source = '"""Module."""\n'
+        real_parse = mine_szz.ast.parse
+
+        # ast.parse is process-wide: pytest's own failure reporting calls it before teardown undoes the patch.
+        def failing_parse(source, *args, **kwargs):
+            if source == sentinel_source:
+                raise parse_error("boom")
+            return real_parse(source, *args, **kwargs)
+
+        monkeypatch.setattr(mine_szz.ast, "parse", failing_parse)
+        stats = mine_szz._MineStats()
+
+        assert mine_szz._python_docstring_lines(sentinel_source, stats=stats) == frozenset()
+        assert stats.python_docstring_parse_failures == 1
+
+
+def _mine_szz_summary_counters(stderr: str) -> dict[str, int]:
+    """The `key=value` fields of mine()'s one `mine-szz:` summary line."""
+    (summary_line,) = (line for line in stderr.splitlines() if line.startswith("mine-szz:"))
+    fields = summary_line.removeprefix("mine-szz:").split(", ")
+    return {key: int(value) for key, _, value in (field.partition("=") for field in fields) if value}
+
+
+class TestMineSzzSkipsPythonDocstringLines:
+    def test_a_fix_that_only_rewrites_a_docstring_yields_no_candidate_and_is_counted(self, tmp_path, capsys):
+        source = 'def f():\n    """Return the old value."""\n    return bad_value\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("old", "new"))
+        fix_sha = _commit(repo, "fix wrong docstring")
+        _set_origin_main(repo, fix_sha)
+
+        candidates = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidates == []
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
+
+    def test_a_docstring_line_after_a_removed_signature_line_is_skipped_and_the_signature_is_blamed(
+        self, tmp_path, capsys,
+    ):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", 'def f():\n    """Return the old value."""\n    return 1\n')
+        _commit(repo, "add f")
+        _write(repo, "app.py", 'def f(a):\n    """Return the old value."""\n    return 1\n')
+        signature_sha = _commit(repo, "add a parameter")
+        _write(repo, "app.py", 'def f(a, b):\n    """Return the new value."""\n    return 1\n')
+        fix_sha = _commit(repo, "fix wrong signature")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == signature_sha
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
+
+    def test_a_removed_line_that_shares_its_physical_line_with_code_is_still_mined(self, tmp_path, capsys):
+        source = 'class E(Exception): """Boom."""\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "errors.py", source)
+        introducing_sha = _commit(repo, "add error")
+        _write(repo, "errors.py", source.replace("Exception", "ValueError"))
+        fix_sha = _commit(repo, "fix wrong base class")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
+
+    def test_two_edited_lines_of_a_multi_line_docstring_in_two_hunks_are_each_skipped(self, tmp_path, capsys):
+        source = 'def f():\n    """Return the old value.\n\n    Longer text.\n    """\n    return 1\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("old value", "new value").replace("Longer text.", "Other text."))
+        fix_sha = _commit(repo, "fix wrong docstring")
+        _set_origin_main(repo, fix_sha)
+
+        assert mine_szz.mine(repo, base_ref="origin/main") == []
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 2
+
+    def test_a_fix_that_deletes_a_whole_docstring_yields_no_candidate(self, tmp_path):
+        source = 'def f():\n    """Return the old value.\n\n    Longer text.\n    """\n    return 1\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        _commit(repo, "add f")
+        _write(repo, "app.py", "def f():\n    return 1\n")
+        fix_sha = _commit(repo, "fix stale docstring")
+        _set_origin_main(repo, fix_sha)
+
+        assert mine_szz.mine(repo, base_ref="origin/main") == []
+
+    def test_a_fix_that_rewords_a_docstring_and_inserts_a_line_above_it_yields_no_candidate(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", 'def f():\n    """Return the old value."""\n    return 1\n')
+        _commit(repo, "add f")
+        _write(repo, "app.py", 'def f():\n    import os\n    """Return the new value."""\n    return 1\n')
+        fix_sha = _commit(repo, "fix wrong docstring")
+        _set_origin_main(repo, fix_sha)
+
+        assert mine_szz.mine(repo, base_ref="origin/main") == []
+
+    def test_a_string_literal_that_is_not_a_docstring_is_still_mined(self, tmp_path):
+        source = 'def f():\n    x = 1\n    """not a docstring"""\n    return x\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        introducing_sha = _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("not a docstring", "still not"))
+        fix_sha = _commit(repo, "fix wrong literal")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+
+    def test_a_python_file_that_does_not_parse_is_left_unfiltered(self, tmp_path, capsys):
+        source = 'def f(:\n    """Return the old value."""\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        introducing_sha = _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("old", "new"))
+        fix_sha = _commit(repo, "fix wrong docstring")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["python_docstring_line_skips"] == 0
+        assert counters["python_docstring_parse_failures"] == 1
+
+    def test_a_non_python_file_holding_a_docstring_shaped_line_is_still_mined(self, tmp_path, capsys):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "data.txt", '"""old"""\n')
+        introducing_sha = _commit(repo, "add data")
+        _write(repo, "data.txt", '"""new"""\n')
+        fix_sha = _commit(repo, "fix wrong data")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
+
+    def test_a_failed_git_show_leaves_every_hunk_of_the_file_unfiltered_and_counts_one_failure(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        source = 'def f():\n    """Old f."""\n    return 1\n\n\ndef g():\n    """Old g."""\n    return 2\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        introducing_sha = _commit(repo, "add functions")
+        _write(repo, "app.py", source.replace("Old", "New"))
+        fix_sha = _commit(repo, "fix wrong docstrings")
+        _set_origin_main(repo, fix_sha)
+        real_run_git = mine_szz._run_git
+
+        def run_git_failing_show(args, *, cwd):
+            if args[0] == "show":
+                raise subprocess.TimeoutExpired(cmd="git show", timeout=1.0)
+            return real_run_git(args, cwd=cwd)
+
+        monkeypatch.setattr(mine_szz, "_run_git", run_git_failing_show)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["git_call_failures"] == 1
+        assert counters["python_docstring_line_skips"] == 0
+
+    def test_an_addition_only_hunk_still_blames_the_docstring_line_it_follows(self, tmp_path, capsys):
+        """The def line and the docstring line come from different commits, so
+        dropping the docstring line from the context would leave only the def
+        line's commit."""
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f():\n    return 1\n")
+        def_sha = _commit(repo, "add f")
+        _write(repo, "app.py", 'def f():\n    """Document f."""\n    return 1\n')
+        docstring_sha = _commit(repo, "document f")
+        _write(repo, "app.py", 'def f():\n    """Document f."""\n    check_input()\n    return 1\n')
+        fix_sha = _commit(repo, "fix: add missing validation")
+        _set_origin_main(repo, fix_sha)
+
+        candidates = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert {candidate.head_commit for candidate in candidates} == {def_sha, docstring_sha}
+        assert all(candidate.evidence["low_confidence"] for candidate in candidates)
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
+
+
 class TestParseUnifiedDiff:
     def test_removed_lines_starting_with_dashes_stay_in_their_hunk(self):
         """A removed line whose own text begins `--` (a SQL/Lua comment, a
@@ -1314,6 +1572,20 @@ class TestRank:
 
 
 class TestBlameFixCommit:
+    def test_keeps_a_docstring_line_a_review_round_cited(self, tmp_path):
+        source = 'def f():\n    """Return the old value."""\n    return 1\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        introducing_sha = _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("old", "new"))
+        fix_sha = _commit(repo, "fix wrong docstring")
+
+        introducers, _is_low_confidence = mine_szz.blame_fix_commit(repo, fix_sha, "app.py")
+
+        assert introducers == frozenset({introducing_sha})
+
     def test_reused_directly_by_mine_review_rounds(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "app.py", "x = 1\n")
