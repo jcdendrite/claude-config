@@ -78,7 +78,7 @@ def _advance_remote_default_branch(
     last fetched."""
     push = tmp_path / "advance-clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push, check=True)
     _commit(push, message)
     subprocess.run(["git", "push", "-q", "origin", default_branch], cwd=push, check=True)

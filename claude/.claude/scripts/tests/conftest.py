@@ -670,7 +670,7 @@ def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
     clone = tmp_path / "base-clone"
     for command in (
         ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
-        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.email", "test@example.invalid"],
         ["git", "-C", str(clone), "config", "user.name", "test"],
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=60)
@@ -758,7 +758,7 @@ def _build_repo_with_pr_ref(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("main\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)

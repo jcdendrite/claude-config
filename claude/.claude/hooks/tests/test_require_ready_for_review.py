@@ -72,7 +72,7 @@ def repo_on_feature_branch(tmp_path):
     repo = tmp_path / "rfr-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "f").write_text("a\n")
     subprocess.run(["git", "add", "f"], cwd=repo, check=True)
@@ -1231,7 +1231,7 @@ class TestRequireReadyForReview:
         repo = tmp_path / "rfr-dangling"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "develop"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         (repo / "f").write_text("a\n")
         subprocess.run(["git", "add", "f"], cwd=repo, check=True)
@@ -1342,7 +1342,7 @@ class TestRequireReadyForReview:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         # Correct HEAD sha, filed under the other repo's hash prefix.

@@ -98,7 +98,7 @@ def _push_from_second_clone(tmp_path: Path, fixture: _Fixture) -> str:
     subprocess.run(
         ["git", "clone", "-q", str(fixture.bare), str(second)], env=_clean_env(), check=True, capture_output=True
     )
-    _git(second, "config", "user.email", "t@t.com")
+    _git(second, "config", "user.email", "t@example.invalid")
     _git(second, "config", "user.name", "t")
     (second / "pushed.txt").write_text("pushed\n")
     _git(second, "add", "pushed.txt")

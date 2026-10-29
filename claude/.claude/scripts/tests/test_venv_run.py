@@ -78,7 +78,7 @@ def _make_fixture(tmp_path: Path) -> _Fixture:
     main = base / "main"
     main.mkdir(parents=True)
     _git(main, "init", "-q", "-b", "main")
-    _git(main, "config", "user.email", "t@t.com")
+    _git(main, "config", "user.email", "t@example.invalid")
     _git(main, "config", "user.name", "t")
     hooks_dir = base / "hooks"
     hooks_dir.mkdir()

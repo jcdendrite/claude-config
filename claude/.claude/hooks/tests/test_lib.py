@@ -1644,7 +1644,7 @@ class TestGateDiffBaseSha256ObjectFormat:
             ["git", "init", "-q", "--object-format=sha256", "-b", "main", str(repo)],
             check=True,
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_conflicted_revert(repo)
 
@@ -1893,7 +1893,7 @@ def test_merge_tree_merge_base_flag_changes_computed_tree(tmp_path: Path) -> Non
     repo = tmp_path / "repo"
     repo.mkdir()
     _run_git(repo, "init", "-q", "-b", "main")
-    _run_git(repo, "config", "user.email", "t@t.com")
+    _run_git(repo, "config", "user.email", "t@example.invalid")
     _run_git(repo, "config", "user.name", "t")
     (repo / "a").write_text("1\n")
     (repo / "b").write_text("1\n")

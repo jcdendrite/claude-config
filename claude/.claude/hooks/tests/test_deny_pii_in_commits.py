@@ -688,7 +688,7 @@ class TestDenyPiiInCommits:
         repo = tmp_path / "no-commits-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         _stage(repo, "f.txt", "x\nclean\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo) == "allow"
@@ -704,7 +704,7 @@ class TestDenyPiiInCommits:
         repo = tmp_path / "no-commits-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         _stage(repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo)

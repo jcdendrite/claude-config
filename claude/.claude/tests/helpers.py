@@ -1251,7 +1251,7 @@ def init_git_repo(path: Path, *, branch: str | None = None, env: dict | None = N
     if branch is not None:
         init_args += ["-b", branch]
     subprocess.run(init_args, cwd=path, check=True, env=env)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True, env=env)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=path, check=True, env=env)
     subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True, env=env)
     return path
 
@@ -1397,7 +1397,7 @@ def bare_remote_with_default_branch(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
     subprocess.run(["git", "remote", "set-head", "origin", branch], cwd=clone, check=True)
     return bare, clone
@@ -1417,7 +1417,7 @@ def push_conflicting_edit_to_origin(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / file_name).write_text(content)
     subprocess.run(["git", "add", file_name], cwd=push_clone, check=True)
@@ -1466,7 +1466,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / conflict_file).write_text("origin-edit\n")
     (push_clone / skill_rel_path).parent.mkdir(parents=True, exist_ok=True)

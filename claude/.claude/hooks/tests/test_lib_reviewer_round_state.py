@@ -388,7 +388,7 @@ def _build_forged_anchor_clean_merge(
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "base.txt").write_text("base\n")
     subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
@@ -518,7 +518,7 @@ class TestLibReviewerRoundStateValueMergeAwareBase:
         repo = tmp_path / "rebase-key-disarmed"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_conflicted_rebase(repo)
         result = _state_key(repo)
