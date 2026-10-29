@@ -1204,6 +1204,10 @@ class TestPythonDocstringLines:
             pytest.param('def f():\n    """éééééé"""; y\n', set(), id="multibyte docstring before a statement"),
             pytest.param('def f():\n    """éééééé"""\n    return 1\n', {2}, id="multibyte docstring on its own line"),
             pytest.param('\ufeff"""d"""\n', set(), id="UTF-8 BOM prefix is rejected by the parser"),
+            pytest.param(
+                'x = 1\n\x0c\ndef f():\n    """Doc."""\n    return 1\n', {4},
+                id="form-feed line above a docstring counts as one line",
+            ),
         ],
     )
     def test_returns_exactly_the_lines_that_hold_only_docstring_text(self, source, expected_lines):
@@ -1232,9 +1236,25 @@ class TestPythonDocstringLines:
         assert stats.python_docstring_parse_attempts == 1
         assert stats.python_docstring_parse_failures == 1
 
+    # On CPython 3.12.3, about 10000 operands raise RecursionError and about 6000 unary operators
+    # exhaust the parser stack.
+    @pytest.mark.parametrize(
+        "pathological_source",
+        [
+            pytest.param("x = " + "+".join(["1"] * 20_000) + "\n", id="operator chain overflows the recursion limit"),
+            pytest.param("x = " + "-" * 20_000 + "1\n", id="unary operator chain overflows the parser stack"),
+            pytest.param("x = 1\0\n", id="NUL byte in the blob (ast.parse raises ValueError before 3.12, SyntaxError since)"),
+        ],
+    )
+    def test_a_source_the_interpreter_cannot_parse_is_counted_without_aborting(self, pathological_source):
+        stats = mine_szz._MineStats()
+
+        assert mine_szz._python_docstring_lines(pathological_source, stats=stats) == frozenset()
+        assert stats.python_docstring_parse_attempts == 1
+        assert stats.python_docstring_parse_failures == 1
+
 
 def _mine_szz_summary_counters(stderr: str) -> dict[str, int]:
-    """The `key=value` fields of mine()'s one `mine-szz:` summary line."""
     (summary_line,) = (line for line in stderr.splitlines() if line.startswith("mine-szz:"))
     fields = summary_line.removeprefix("mine-szz:").split(", ")
     return {key: int(value) for key, _, value in (field.partition("=") for field in fields) if value}
@@ -1509,6 +1529,38 @@ class TestMineSzzSkipsPythonDocstringLines:
         assert all(candidate.evidence["low_confidence"] for candidate in candidates)
         assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
 
+    def test_lines_inserted_strictly_inside_a_docstring_still_blame_the_docstring(self, tmp_path, capsys):
+        source = 'def f():\n    """Summary.\n\n    Details.\n    """\n    return 1\n'
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", source)
+        introducing_sha = _commit(repo, "add f")
+        _write(repo, "app.py", source.replace("    Details.\n", "    Details.\n    Raises ValueError.\n"))
+        fix_sha = _commit(repo, "fix: document the error")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        assert candidate.evidence["low_confidence"]
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
+
+    def test_a_python_file_whose_removed_lines_are_all_comments_is_never_parsed(self, tmp_path, capsys):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f():\n    # old note\n\n    return 1\n")
+        _commit(repo, "add f")
+        _write(repo, "app.py", "def f():\n    # new note\n\n    return 1\n")
+        fix_sha = _commit(repo, "fix stale comment")
+        _set_origin_main(repo, fix_sha)
+
+        assert mine_szz.mine(repo, base_ref="origin/main") == []
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["python_docstring_parse_attempts"] == 0
+        assert counters["python_docstring_parse_failures"] == 0
+
     def test_an_unparseable_python_file_touched_only_by_an_addition_only_hunk_is_never_parsed(self, tmp_path, capsys):
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "notes.txt", "unrelated\n")
@@ -1675,7 +1727,7 @@ class TestRank:
 
 
 class TestBlameFixCommit:
-    def test_keeps_a_docstring_line_a_review_round_cited(self, tmp_path):
+    def test_keeps_a_docstring_line_in_a_file_a_review_round_cited(self, tmp_path):
         source = 'def f():\n    """Return the old value."""\n    return 1\n'
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "notes.txt", "unrelated\n")

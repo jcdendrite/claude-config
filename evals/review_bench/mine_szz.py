@@ -111,9 +111,7 @@ def _docstring_lines_without_shared_code(docstring: ast.Expr, source_lines: Sequ
 
 def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> frozenset[int]:
     """1-based line numbers covered by a module, class, or function docstring
-    in `source`. Empty when `source` does not parse, so an unparseable file
-    stays without docstring filtering and is counted in `stats`. Every call
-    counts as an attempt, so failures are a subset of attempts.
+    in `source`; empty when it does not parse.
 
     The parse is uncapped, so a multi-MB generated file costs seconds and
     substantial memory per (fix commit, file)."""
@@ -128,6 +126,7 @@ def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> 
         if stats is not None:
             stats.python_docstring_parse_failures += 1
         return frozenset()
+    # Not splitlines(): it also splits on `\x0c`, which ast and git count as part of its line.
     source_lines = source.split("\n")
     lines: set[int] = set()
     for node in ast.walk(tree):
@@ -146,11 +145,8 @@ def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> 
 def _docstring_lines_at(
     repo_dir: Path, commit: str, path: str, *, stats: _MineStats | None = None,
 ) -> frozenset[int]:
-    """Docstring line numbers of `path` at `commit`; empty for a non-Python
-    path or a failed `git show`, which drops the filter, not the file.
-
-    Known boundary: `_run_git` decodes in text mode, so a lone CR byte in the
-    file shifts these numbers against git's `\\n`-only hunk numbering."""
+    """`_run_git` decodes in text mode, so a lone CR byte in the file shifts
+    these numbers against git's `\\n`-only hunk numbering."""
     if not path.endswith(".py"):
         return frozenset()
     try:
@@ -257,9 +253,6 @@ def _blame_file_diff(
     from a modified/removed-line hunk; low_confidence holds introducing
     SHAs from an addition-only hunk's adjacent context. The sets can
     overlap, and callers prefer `confident`.
-
-    `skip_python_docstring_lines` also drops a removed line that sat inside a
-    Python docstring at `<fix_commit>^`, as it does a comment line.
     """
     parent = f"{fix_commit}^"
     confident: set[str] = set()
@@ -275,12 +268,13 @@ def _blame_file_diff(
                 # A failed blame (already counted) returns no SHAs; pairing
                 # a short list against the removed lines would misattribute.
                 continue
-            # Parse lazily: a file with only addition-only hunks or failed blames never needs it.
-            if skip_python_docstring_lines and docstring_lines is None:
-                docstring_lines = _docstring_lines_at(repo_dir, parent, file_diff.old_path, stats=stats)
             for offset, (content, sha) in enumerate(zip(hunk.removed_lines, shas, strict=True)):
                 if _is_blank_or_comment(content):
                     continue
+                # Parse on the first removed line that reaches the docstring check, so a file
+                # whose removed lines are all blank or comments is never parsed or counted.
+                if skip_python_docstring_lines and docstring_lines is None:
+                    docstring_lines = _docstring_lines_at(repo_dir, parent, file_diff.old_path, stats=stats)
                 if docstring_lines and hunk.old_start + offset in docstring_lines:
                     if stats is not None:
                         stats.python_docstring_line_skips += 1
