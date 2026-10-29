@@ -571,23 +571,37 @@ Run them in this order:
   `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
-  It ignores a removed line that is blank, a comment, or inside a Python
-  docstring. An addition-only hunk applies none of these filters. A
-  docstring the program reads at runtime, such as `__doc__` passed to
-  argparse, is skipped like any other docstring. It prints the count of
-  removed lines skipped as docstring lines on stderr as
-  `python_docstring_line_skips`. A docstring line that also reads as a
-  comment, for example one starting with `*`, `--` or `#`, is skipped as a
-  comment and not counted there. A removed docstring line that shares its
-  physical line with code, for example `class E(Exception): """Boom."""`, is
-  not ignored.
-  `python_docstring_parse_failures` counts each (fix commit, file) occurrence
-  of a `.py` file that could not be parsed, and that file stays unfiltered.
-  A `.py` file is parsed at the first hunk that removes lines from it and
-  blames successfully, so a file touched only by addition-only hunks, or whose
-  removing hunks all fail to blame, is never counted.
-  A `.py` file whose `git show` fails also stays unfiltered, and counts under
-  `git_call_failures` instead.
+  - Skip rules:
+    - It skips a removed line that is blank, a comment, or inside a Python
+      docstring.
+    - It skips a docstring the program reads at runtime, such as `__doc__`
+      passed to argparse, like any other docstring.
+  - Counters, printed on stderr:
+    - `python_docstring_line_skips` counts removed lines skipped as docstring
+      lines.
+    - A docstring line that is blank or reads as a comment, for example one
+      starting with `*`, `--` or `#`, is skipped as such and not counted in
+      `python_docstring_line_skips`.
+    - `python_docstring_parse_attempts` counts `.py` files the miner tried to
+      parse, once per fix commit and file.
+    - `python_docstring_parse_failures` counts `.py` files that could not be
+      parsed, once per fix commit and file, out of
+      `python_docstring_parse_attempts`.
+    - A `.py` file touched only by addition-only hunks is never tried, so it
+      counts in neither counter.
+    - A `.py` file whose removing hunks all fail to blame is never tried, so it
+      counts in neither counter.
+    - A `.py` file whose `git show` fails is never tried, so it counts in
+      neither counter.
+  - The docstring filter does not apply to:
+    - An addition-only hunk, which applies none of the skip rules.
+    - A removed docstring line that shares its physical line with code, for
+      example `class E(Exception): """Boom."""`.
+    - A `.py` file that could not be parsed, which stays without docstring
+      filtering. Blank and comment skipping still applies.
+    - A `.py` file whose `git show` fails, which stays without docstring
+      filtering. It counts under `git_call_failures` instead of
+      `python_docstring_parse_failures`.
 
 `mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
 introducing commit, for example a file renamed after that commit or lines

@@ -80,6 +80,7 @@ class _MineStats:
     markdown_path_skips: int = 0
     path_absent_at_introducing_commit: int = 0
     python_docstring_line_skips: int = 0
+    python_docstring_parse_attempts: int = 0
     python_docstring_parse_failures: int = 0
 
 
@@ -110,11 +111,14 @@ def _docstring_lines_without_shared_code(docstring: ast.Expr, source_lines: Sequ
 
 def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> frozenset[int]:
     """1-based line numbers covered by a module, class, or function docstring
-    in `source`. Empty when `source` does not parse, so an unparseable file is
-    left unfiltered and counted in `stats`.
+    in `source`. Empty when `source` does not parse, so an unparseable file
+    stays without docstring filtering and is counted in `stats`. Every call
+    counts as an attempt, so failures are a subset of attempts.
 
     The parse is uncapped, so a multi-MB generated file costs seconds and
     substantial memory per (fix commit, file)."""
+    if stats is not None:
+        stats.python_docstring_parse_attempts += 1
     try:
         # A docstring with an invalid escape sequence warns at parse time; keep that off stderr.
         with warnings.catch_warnings():
@@ -271,6 +275,7 @@ def _blame_file_diff(
                 # A failed blame (already counted) returns no SHAs; pairing
                 # a short list against the removed lines would misattribute.
                 continue
+            # Parse lazily: a file with only addition-only hunks or failed blames never needs it.
             if skip_python_docstring_lines and docstring_lines is None:
                 docstring_lines = _docstring_lines_at(repo_dir, parent, file_diff.old_path, stats=stats)
             for offset, (content, sha) in enumerate(zip(hunk.removed_lines, shas, strict=True)):
@@ -464,6 +469,7 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
         f"markdown_path_skips={stats.markdown_path_skips}, "
         f"path_absent_at_introducing_commit={stats.path_absent_at_introducing_commit}, "
         f"python_docstring_line_skips={stats.python_docstring_line_skips}, "
+        f"python_docstring_parse_attempts={stats.python_docstring_parse_attempts}, "
         f"python_docstring_parse_failures={stats.python_docstring_parse_failures}",
         file=sys.stderr,
     )

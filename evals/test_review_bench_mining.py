@@ -1199,6 +1199,8 @@ class TestPythonDocstringLines:
             pytest.param('VERSION = "1.0"\nx = 1\n', set(), id="module string assignment"),
             pytest.param('def f():\n    ...\n', set(), id="ellipsis stub body"),
             pytest.param('def f():\n    42\n    return 1\n', set(), id="non-string constant first statement"),
+            pytest.param('def f():\n    call()\n    return 1\n', set(), id="call first statement"),
+            pytest.param('def f():\n    f"{value}"\n    return 1\n', set(), id="f-string first statement"),
             pytest.param('def f():\n    """éééééé"""; y\n', set(), id="multibyte docstring before a statement"),
             pytest.param('def f():\n    """éééééé"""\n    return 1\n', {2}, id="multibyte docstring on its own line"),
             pytest.param('\ufeff"""d"""\n', set(), id="UTF-8 BOM prefix is rejected by the parser"),
@@ -1213,7 +1215,7 @@ class TestPythonDocstringLines:
             assert mine_szz._python_docstring_lines('def f():\n    """Match \\d+."""\n') == frozenset({2})
 
     @pytest.mark.parametrize("parse_error", [SyntaxError, ValueError, RecursionError, MemoryError])
-    def test_a_parse_failure_is_counted_and_leaves_the_file_unfiltered(self, monkeypatch, parse_error):
+    def test_a_parse_failure_is_counted_and_leaves_the_file_without_docstring_filtering(self, monkeypatch, parse_error):
         sentinel_source = '"""Module."""\n'
         real_parse = mine_szz.ast.parse
 
@@ -1227,6 +1229,7 @@ class TestPythonDocstringLines:
         stats = mine_szz._MineStats()
 
         assert mine_szz._python_docstring_lines(sentinel_source, stats=stats) == frozenset()
+        assert stats.python_docstring_parse_attempts == 1
         assert stats.python_docstring_parse_failures == 1
 
 
@@ -1252,7 +1255,10 @@ class TestMineSzzSkipsPythonDocstringLines:
         candidates = mine_szz.mine(repo, base_ref="origin/main")
 
         assert candidates == []
-        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["python_docstring_line_skips"] == 1
+        assert counters["python_docstring_parse_attempts"] == 1
+        assert counters["python_docstring_parse_failures"] == 0
 
     def test_a_docstring_line_after_a_removed_signature_line_is_skipped_and_the_signature_is_blamed(
         self, tmp_path, capsys,
@@ -1271,6 +1277,25 @@ class TestMineSzzSkipsPythonDocstringLines:
         (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
 
         assert candidate.head_commit == signature_sha
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
+
+    def test_a_docstring_line_before_a_removed_code_line_in_one_hunk_is_skipped_and_the_code_line_is_blamed(
+        self, tmp_path, capsys,
+    ):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", 'def f():\n    """Return the old value."""\n    return 1\n')
+        _commit(repo, "add f")
+        _write(repo, "app.py", 'def f():\n    """Return the old value."""\n    return 2\n')
+        code_line_sha = _commit(repo, "change the return value")
+        _write(repo, "app.py", 'def f():\n    """Return the new value."""\n    return 3\n')
+        fix_sha = _commit(repo, "fix wrong return value")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == code_line_sha
         assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
 
     def test_a_removed_line_that_shares_its_physical_line_with_code_is_still_mined(self, tmp_path, capsys):
@@ -1303,7 +1328,7 @@ class TestMineSzzSkipsPythonDocstringLines:
         assert mine_szz.mine(repo, base_ref="origin/main") == []
         assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 2
 
-    def test_a_fix_that_deletes_a_whole_docstring_yields_no_candidate(self, tmp_path):
+    def test_a_fix_that_deletes_a_whole_docstring_yields_no_candidate(self, tmp_path, capsys):
         source = 'def f():\n    """Return the old value.\n\n    Longer text.\n    """\n    return 1\n'
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "notes.txt", "unrelated\n")
@@ -1315,8 +1340,12 @@ class TestMineSzzSkipsPythonDocstringLines:
         _set_origin_main(repo, fix_sha)
 
         assert mine_szz.mine(repo, base_ref="origin/main") == []
+        # Three of the four docstring lines: the blank one is skipped as blank, before the docstring check.
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 3
 
-    def test_a_fix_that_rewords_a_docstring_and_inserts_a_line_above_it_yields_no_candidate(self, tmp_path):
+    def test_a_fix_that_rewords_a_docstring_and_inserts_a_line_above_it_yields_no_candidate(
+        self, tmp_path, capsys,
+    ):
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "notes.txt", "unrelated\n")
         _commit(repo, "seed")
@@ -1327,6 +1356,7 @@ class TestMineSzzSkipsPythonDocstringLines:
         _set_origin_main(repo, fix_sha)
 
         assert mine_szz.mine(repo, base_ref="origin/main") == []
+        assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 1
 
     def test_a_string_literal_that_is_not_a_docstring_is_still_mined(self, tmp_path):
         source = 'def f():\n    x = 1\n    """not a docstring"""\n    return x\n'
@@ -1343,7 +1373,7 @@ class TestMineSzzSkipsPythonDocstringLines:
 
         assert candidate.head_commit == introducing_sha
 
-    def test_a_python_file_that_does_not_parse_is_left_unfiltered(self, tmp_path, capsys):
+    def test_a_python_file_that_does_not_parse_stays_without_docstring_filtering(self, tmp_path, capsys):
         source = 'def f(:\n    """Return the old value."""\n'
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "notes.txt", "unrelated\n")
@@ -1359,7 +1389,35 @@ class TestMineSzzSkipsPythonDocstringLines:
         assert candidate.head_commit == introducing_sha
         counters = _mine_szz_summary_counters(capsys.readouterr().err)
         assert counters["python_docstring_line_skips"] == 0
+        assert counters["python_docstring_parse_attempts"] == 1
         assert counters["python_docstring_parse_failures"] == 1
+
+    def test_two_unparseable_python_files_count_one_parse_failure_each_however_many_hunks_a_file_has(
+        self, tmp_path, capsys,
+    ):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f(:\n    a = 1\n    b = 2\n")
+        first_sha = _commit(repo, "add a and b")
+        _write(repo, "app.py", "def f(:\n    a = 1\n    b = 2\n    c = 3\n")
+        second_sha = _commit(repo, "add c")
+        _write(repo, "lib.py", "def g(:\n    x = 1\n")
+        lib_sha = _commit(repo, "add x")
+        _write(repo, "app.py", "def f(:\n    a = 9\n    b = 2\n    c = 9\n")
+        _write(repo, "lib.py", "def g(:\n    x = 9\n")
+        fix_sha = _commit(repo, "fix wrong values")
+        _set_origin_main(repo, fix_sha)
+
+        candidates = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert {(candidate.evidence["path"], candidate.head_commit) for candidate in candidates} == {
+            ("app.py", first_sha), ("app.py", second_sha), ("lib.py", lib_sha),
+        }
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["python_docstring_line_skips"] == 0
+        assert counters["python_docstring_parse_attempts"] == 2
+        assert counters["python_docstring_parse_failures"] == 2
 
     def test_a_non_python_file_holding_a_docstring_shaped_line_is_still_mined(self, tmp_path, capsys):
         repo = _init_repo(tmp_path / "repo")
@@ -1376,7 +1434,7 @@ class TestMineSzzSkipsPythonDocstringLines:
         assert candidate.head_commit == introducing_sha
         assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
 
-    def test_a_failed_git_show_leaves_every_hunk_of_the_file_unfiltered_and_counts_one_failure(
+    def test_a_failed_git_show_leaves_every_hunk_of_the_file_without_docstring_filtering_and_counts_one_failure(
         self, tmp_path, monkeypatch, capsys,
     ):
         source = 'def f():\n    """Old f."""\n    return 1\n\n\ndef g():\n    """Old g."""\n    return 2\n'
@@ -1403,6 +1461,32 @@ class TestMineSzzSkipsPythonDocstringLines:
         counters = _mine_szz_summary_counters(capsys.readouterr().err)
         assert counters["git_call_failures"] == 1
         assert counters["python_docstring_line_skips"] == 0
+        assert counters["python_docstring_parse_attempts"] == 0
+        assert counters["python_docstring_parse_failures"] == 0
+
+    def test_an_unparseable_python_file_whose_blame_fails_is_never_parsed(self, tmp_path, monkeypatch, capsys):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f(:\n    a = 1\n")
+        _commit(repo, "add a")
+        _write(repo, "app.py", "def f(:\n    a = 9\n")
+        fix_sha = _commit(repo, "fix wrong value")
+        _set_origin_main(repo, fix_sha)
+        real_run_git = mine_szz._run_git
+
+        def run_git_failing_blame(args, *, cwd):
+            if args[0] == "blame":
+                raise subprocess.TimeoutExpired(cmd="git blame", timeout=1.0)
+            return real_run_git(args, cwd=cwd)
+
+        monkeypatch.setattr(mine_szz, "_run_git", run_git_failing_blame)
+
+        assert mine_szz.mine(repo, base_ref="origin/main") == []
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["git_call_failures"] == 1
+        assert counters["python_docstring_parse_attempts"] == 0
+        assert counters["python_docstring_parse_failures"] == 0
 
     def test_an_addition_only_hunk_still_blames_the_docstring_line_it_follows(self, tmp_path, capsys):
         """The def line and the docstring line come from different commits, so
@@ -1424,6 +1508,25 @@ class TestMineSzzSkipsPythonDocstringLines:
         assert {candidate.head_commit for candidate in candidates} == {def_sha, docstring_sha}
         assert all(candidate.evidence["low_confidence"] for candidate in candidates)
         assert _mine_szz_summary_counters(capsys.readouterr().err)["python_docstring_line_skips"] == 0
+
+    def test_an_unparseable_python_file_touched_only_by_an_addition_only_hunk_is_never_parsed(self, tmp_path, capsys):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f(:\n    a = 1\n")
+        introducing_sha = _commit(repo, "add a")
+        _write(repo, "app.py", "def f(:\n    a = 1\n    b = 2\n")
+        fix_sha = _commit(repo, "fix: add missing b")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.head_commit == introducing_sha
+        assert candidate.evidence["low_confidence"]
+        counters = _mine_szz_summary_counters(capsys.readouterr().err)
+        assert counters["python_docstring_line_skips"] == 0
+        assert counters["python_docstring_parse_attempts"] == 0
+        assert counters["python_docstring_parse_failures"] == 0
 
 
 class TestParseUnifiedDiff:
