@@ -6,7 +6,7 @@
 
 ## Decision
 
-One fail-open hook, `turn-gate` class, runs one evaluator (`evaluate-code-writer-self-review.py`) from two registrations. It reads the writer's own transcript and checks, for a return that follows at least one successful Edit or Write in a repository:
+One fail-open hook, `turn-gate` class, runs one evaluator (`evaluate-code-writer-self-review.py`) from two registrations. It reads the writer's own transcript and checks:
 
 - every reviewer file the ledger names was Read in this dispatch;
 - every reviewer the changed paths require has a ledger line and a Read;
@@ -22,7 +22,7 @@ A harness probe on Claude Code 2.1.310 showed that the report leaves the writer 
 - In auto mode the report leaves through the `SubagentHandback` tool call. A PreToolUse deny on that call sends the writer back with the reason, and the writer acts on it. A `SubagentStop` block after a delivered handback fires but changes nothing.
 - In other modes the writer makes no `SubagentHandback` call, and the report is the plain text it stops on. A `SubagentStop` block sends it back.
 
-So the hook registers on PreToolUse matcher `SubagentHandback` and on SubagentStop matcher `code-writer`. The SubagentStop arm owns only a dispatch whose transcript holds no `SubagentHandback` call of any kind, a denied one included. That keys the split on what the writer did, not on a permission-mode name. After a denied handback and a plain-text stop, the harness itself re-prompts the writer, and the report then arrives through the next handback, so the SubagentStop arm must not consume that cycle's marker.
+So the hook registers on PreToolUse matcher `SubagentHandback` and on SubagentStop matcher `code-writer`. The SubagentStop arm owns only a dispatch whose transcript holds no `SubagentHandback` call of any kind, a denied one included. That keys the split on what the writer did, not on a permission-mode name. After a denied handback and a plain-text stop, the harness itself re-prompts the writer, and the report then arrives through the next handback. So the SubagentStop arm must not consume that cycle's marker.
 
 ## `turn-gate`, no `onFailure`
 
@@ -37,13 +37,11 @@ The hook takes the `turn-gate` class, whose contract is sending an agent back in
 The registrations and the script therefore behave as follows.
 
 - Neither registration carries `onFailure`, and the hook never exits 2.
-- Both registrations set `"timeout": 20` seconds, above the in-script worst case of 14 seconds (two capped calls, each 5 seconds plus a 2-second kill grace), so the in-script cap fires and logs first.
+- Both registrations set `"timeout": 20` seconds.
+- The in-script worst case is 14 seconds: two capped calls, each 5 seconds plus a 2-second kill grace. So the in-script cap fires and logs first.
 - The hook omits `set -e`, because an aborting command's own status could be 2, which blocks on both events.
 - Every handled failure allows. The only blocking output is the once-per-cycle send-back, emitted after its marker is claimed.
 - The threat-model tier framework covers `gate` hooks only (see `docs/hooks.md` § "Threat-model tiers"), so the hook takes no tier row. It is a workflow check for a cooperative writer, not a security boundary.
-- The `claude-hook-review` skill and `test_hook_alignment.py`'s `turn-gate` docstring both widen from Stop to the end of an agent's run, and name both output shapes.
-
-There is no off switch. A user disables the hook by removing its two `settings.json` registrations.
 
 ## Send it back once
 
@@ -65,17 +63,17 @@ The PreToolUse arm answers `allow` with `updatedInput` on a spent marker, becaus
 
 ## The floor, the catch-all, and no skip
 
-The path floor holds the rows `code-writer.md` already mandates: test code to `staff-sdet`, shell, CI and IaC to `staff-platform-engineer`, `.md` to `comment-discipline-reviewer` with `ai-instruction-and-memory-files` for `CLAUDE.md`, `AGENTS.md` and rule files, and any changed path whose added text includes a comment line to `comment-discipline-reviewer`. The writer still picks further reviewers. A catch-all requires at least one Read-backed ledger line whenever a path changed, and the domain table gained a last row mapping any other file to `staff-backend-engineer`, so every edited file has a named reviewer.
+The path floor is the evaluator's `path_floor_reviewers`, which follows the domain table in `code-writer.md`. The writer still picks further reviewers. A catch-all requires at least one Read-backed ledger line whenever a path changed, and the domain table gained a last row mapping any other file to `staff-backend-engineer`, so every edited file has a named reviewer.
 
 No size threshold removes the risk of a fix-induced defect, because review-round fixes go to `code-writer` regardless of size and a small diff can carry a defect. A declared skip for small changes was set aside for that reason, so step 5's whitespace-or-typo exemption went too: every added or rewritten prose line now gets the prose-row read, and every dispatch that changes a file re-reads its diff and Reads at least one reviewer file.
 
 ## Repository membership by `.git` walk-up
 
-A path counts as changed when it is the resolved path of a successful Edit or Write, still exists at hook time, and sits in a repository. A path sits in a repository when its own directory or an ancestor holds a `.git` entry, file or directory, so a linked worktree counts by the `.git` file at its root. The walk is cached per directory and the payload `cwd` plays no part, so edits in a linked worktree count however the session was anchored. git itself was set aside as the authority: a toplevel taken from the `cwd` misses edits in a worktree the session is not anchored in, and a `git rev-parse` per distinct directory costs a subprocess each.
+A path counts as changed when it is the resolved path of a successful Edit or Write, still exists at hook time, and sits in a repository. A path sits in a repository when its own directory or an ancestor holds a `.git` entry, file or directory, so a linked worktree counts by the `.git` file at its root. The payload `cwd` plays no part, so edits in a linked worktree count however the session was anchored. git itself was set aside as the authority: a toplevel taken from the `cwd` misses edits in a worktree the session is not anchored in, and a `git rev-parse` per distinct directory costs a subprocess each.
 
 ## The comment check reads the writer's own edits
 
-Added text for the comment check comes from the writer's own successful calls on changed paths: each line of an Edit's `new_string` that is not a line of its `old_string`, and every line of a Write's `content`. That needs no diff parser, untracked-file read or encoding handling. The detector knows comment markers per file family and does not count a dereference such as `*ptr = x` or a lone `*/`. For `.py` it counts every added line that starts with `"""` or `'''`, including a line that only closes a string, such as `""")`. That over-counts on purpose, for three reasons.
+Added text for the comment check comes from the writer's own successful calls on changed paths: each line of an Edit's `new_string` that is not a line of its `old_string`, and every line of a Write's `content`. That needs no diff parser, untracked-file read or encoding handling. For `.py` it counts every added line that starts with `"""` or `'''`, including a line that only closes a string, such as `""")`. That over-counts on purpose, for three reasons.
 
 - `code-writer.md`'s domain table maps docstrings to `comment-discipline-reviewer`.
 - `code-writer.md` § "Self-review pass — mandatory before returning" step 5 says "When in doubt, read."
@@ -104,7 +102,7 @@ This section is the single home for the log vocabulary. The hook appends to `<co
 | `not-owned` | SubagentStop arm, and the transcript holds a `SubagentHandback` call of any outcome. The PreToolUse arm owns that cycle. | No | None. |
 | `allowed-continuation` | SubagentStop arm with `stop_hook_active` true, no marker, items missing. The hook never blocks a continuation. | Yes: an incomplete return is not sent back. | Treat the diff as not self-reviewed. |
 | `allowed-no-repo-path` | The writer made edits, none of which sits in a repository or still exists. | No | None. |
-| `allowed-no-transcript` | The writer's transcript file was not found. | Yes | Check that the payload still carries `agent_transcript_path` (SubagentStop) or `transcript_path` (PreToolUse) after a Claude Code upgrade. |
+| `allowed-no-transcript` | The writer's transcript file was not found. | Yes | Check that the payload still carries `agent_transcript_path` (SubagentStop) or `transcript_path` (PreToolUse) after a Claude Code upgrade, and that the writer's transcript still sits at `subagents/agent-<agent id>.jsonl` beside the session transcript. |
 | `allowed-unparsed-transcript` | The transcript did not decode as expected. See the conditions below the table. | Yes | The transcript record shape changed. Compare it with the fixture under `claude/.claude/hooks/tests/fixtures/code-writer-self-review/`. |
 | `allowed-claim-failed` | The marker directory could not be created or claimed. | Yes | Check that `<config-dir>` is writable and `<config-dir>/.code-writer-self-review.d` is a writable directory. |
 | `allowed-claim-raced` | Another invocation claimed the same cycle first. Nothing was printed. | Yes: this report passes unflagged. | None. Two `SubagentHandback` calls in one batch produce it. |
@@ -129,10 +127,11 @@ These notes apply to the log as a whole.
 - A cap-kill status is one `_lib_capped_for`'s header lists under "Exit statuses", which also says which of them a child's own signal death can produce.
 - The silent cases, where no line is written, fall in three closed classes.
   - Exits before the config directory resolves: a missing `_lib.sh`, a bash below the floor, a failed config-dir lookup (a relative `CLAUDE_CONFIG_DIR`), and invocation by bare name.
-  - Payloads the hook does not own: another agent type or tool, and a `hook_event_name` that is neither `PreToolUse` nor `SubagentStop`.
+  - Payloads the hook does not own. The script exits for another agent type. The evaluator returns for a `hook_event_name` that is neither `PreToolUse` nor `SubagentStop`, or for a PreToolUse call to a tool other than `SubagentHandback`. Both cases are silent only once the `jq` pass and the agent-id check have passed.
   - A log append that fails.
 - A harness kill at the 20-second timeout is also silent when no `timeout` or `gtimeout` is on PATH, because the in-script cap then does not run.
-- The log is append-only and not rotated. It is advisory and not tamper-evident, because the writer's Bash tool can reach the config directory.
+- The log is advisory and not tamper-evident, because the writer's Bash tool can reach the config directory.
+- The `failed=` field lists the R-codes defined in the module docstring of `evaluate-code-writer-self-review.py`. The other count fields come from the evaluator's `Assessment` fields.
 
 ## Known degradations and unverified paths
 
@@ -140,4 +139,7 @@ These notes apply to the log as a whole.
 - A background dispatch outside auto mode, a nested dispatch at spawn depth 2, and a SendMessage continuation are unverified. The outcome log (`<config-dir>/.code-writer-self-review.log`) is the instrument for each.
 - A dispatch whose report is very long in auto mode is an open observation. A missing send-back or prefix there belongs here once seen.
 - An agent defined elsewhere that is also named `code-writer` inherits the send-back, with one extra round trip in both modes. The send-back reason cites `code-writer.md` and its ledger format, which that agent may lack.
-- A finding that the code misses a case gets one of three outcomes: a fix in code; a `test_known_gap_*` case in `test_send_back_skipped_self_review.py` when a reader could mistake the behavior for a bug; or no action when the hook header's security-boundary line or this record already implies it. It never becomes a new prose line.
+- A finding that the code misses a case never becomes a new prose line. It gets one of three outcomes:
+  - A fix in code.
+  - A `test_known_gap_*` case in `test_send_back_skipped_self_review.py`, when a reader could mistake the behavior for a bug.
+  - No action, when the hook header's security-boundary line or this record already implies it.

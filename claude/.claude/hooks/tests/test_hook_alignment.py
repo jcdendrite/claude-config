@@ -1831,23 +1831,29 @@ class TestHookClassHeader:
     def test_hook_class_value_valid(self, hook: Path) -> None:
         """hook-class value must be 'gate', 'informational', 'turn-gate', or 'batch-gate'.
 
-        'gate' fires PreToolUse and may deny a tool call. 'informational'
+        'gate' fires PreToolUse and may deny a tool call. A PreToolUse
+        SubagentHandback hook is 'turn-gate', not 'gate'. 'informational'
         fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
-        'turn-gate' fires where an agent's run ends (Stop, SubagentStop or
-        PreToolUse SubagentHandback) and sends the agent back rather than
-        blocking a tool call from running, with top-level decision "block" on
-        the first two and hookSpecificOutput.permissionDecision on the third
-        — a distinct contract from 'gate', which is why it is a separate
-        value rather than an end-of-run hook being mislabeled 'gate' (Layer 2's
-        PreToolUse-specific behavior checks, e.g.
-        test_emit_deny_defined_before_lib_source, do not apply to it) or
-        'informational' (which would be a false label on a hook that
-        blocks). 'batch-gate' fires on PostToolBatch and may stop the
-        agentic loop before the next model call (exit 2, reason on stderr)
-        — PostToolBatch's own native block, distinct from both 'gate'
+        'turn-gate' fires where an agent's run ends: Stop, SubagentStop or
+        PreToolUse SubagentHandback.
+
+        Its output shape follows the event: top-level decision "block" on
+        Stop and SubagentStop, and hookSpecificOutput.permissionDecision on
+        SubagentHandback, where the send-back is a deny of that call.
+
+        It is a separate value from 'gate' because it sends the agent back
+        instead of guarding a tool call, so Layer 2's PreToolUse-specific
+        behavior checks (e.g. test_emit_deny_defined_before_lib_source) do not
+        apply to it. 'informational' would be a false label on a hook that
+        blocks.
+
+        'batch-gate' fires on PostToolBatch and may stop the agentic loop
+        before the next model call (exit 2, reason on stderr).
+
+        It is PostToolBatch's own native block, distinct from 'gate'
         (PreToolUse deny, JSON envelope) and 'turn-gate' (end-of-run
-        send-back); Layer 2's PreToolUse-specific
-        behavior checks don't apply to it either.
+        send-back). Layer 2's PreToolUse-specific behavior checks don't apply
+        to it either.
         """
         value = _hook_class(hook)
         if value is None:

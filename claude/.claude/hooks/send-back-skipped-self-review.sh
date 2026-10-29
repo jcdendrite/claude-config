@@ -43,7 +43,6 @@ LOG_FILE="$CONFIG_DIR/.code-writer-self-review.log"
 MARKER_DIR="$CONFIG_DIR/.code-writer-self-review.d"
 EVALUATOR="${0%/*}/evaluate-code-writer-self-review.py"
 
-# Best-effort log append: <UTC time> <event> <verdict> agent=<agent_id>
 log_verdict() {
   local event="$1" verdict="$2" agent="$3"
   printf '%s %s %s agent=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$verdict" "$agent" \

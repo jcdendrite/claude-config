@@ -1,15 +1,6 @@
 """Tests for send-back-skipped-self-review.sh and its evaluator,
 evaluate-code-writer-self-review.py.
 
-Four tiers:
-  1. Pure functions, loaded through importlib (the evaluator's filename is not
-     a valid Python identifier), as parametrized tables.
-  2. Contract: the hand-authored transcript fixture, the ledger block in
-     code-writer.md, and the reviewer names in code-writer.md's domain table.
-  3. The evaluator's main() against directories under tmp_path and transcripts
-     built in the fixture's record shapes.
-  4. The hook as a subprocess, run by direct exec through a private raw runner.
-
 Every path, name and message here is a placeholder.
 """
 from __future__ import annotations
@@ -636,7 +627,6 @@ def test_mangled_ledger_example_parses_to_nothing(mangle):
 
 
 def _return_format_self_review_bullet():
-    """First paragraph of the Return format's Self-review bullet, whitespace-normalized."""
     paragraph_lines = []
     for line in CODE_WRITER_PATH.read_text().splitlines():
         is_bullet_start = line.startswith("- **Self-review:**")
@@ -657,7 +647,6 @@ def test_return_format_self_review_bullet_asks_for_the_ledger_content_the_send_b
 
 
 def _return_format_section():
-    """Text of code-writer.md's Return format section, up to the next level-2 heading."""
     section_lines = []
     in_section = False
     for line in CODE_WRITER_PATH.read_text().splitlines():
@@ -678,7 +667,8 @@ def test_domain_table_maps_code_writer_floor_rows_to_the_evaluator_reviewers():
     rows = dict(_domain_table_rows())
 
     assert rows["Test code"] == ["staff-sdet"]
-    assert rows["CI/CD config, IaC, shell scripts, build, tool and environment config"] == ["staff-platform-engineer"]
+    platform_names = next(names for label, names in rows.items() if label.startswith("CI/CD config"))
+    assert platform_names == ["staff-platform-engineer"]
     prose_names = next(names for label, names in rows.items() if label.startswith("Comments, docstrings"))
     assert prose_names == ["comment-discipline-reviewer", "ai-instruction-and-memory-files"]
     last_label, last_names = _domain_table_rows()[-1]
@@ -703,7 +693,6 @@ def _literal_reviewer_read_path(reviewer_name):
 
 
 def _stowed_file_for_tilde_path(tilde_path):
-    """Map a `~/.claude/...` path through the stow layout to the file in this repository."""
     agents_prefix = "~/.claude/agents/"
     skills_prefix = "~/.claude/skills/"
     if tilde_path.startswith(agents_prefix):
@@ -821,8 +810,6 @@ class _BrokenPipeStdout(io.StringIO):
 
 
 class Workspace:
-    """A tmp_path with a fake repository, a config dir and the writer's transcript."""
-
     def __init__(self, tmp_path):
         self.root = tmp_path
         self.repo = tmp_path / "repo"
@@ -1938,7 +1925,7 @@ def test_several_thousand_records_with_hundreds_of_edited_paths_finish_within_ha
 
 
 def _run_hook_raw(payload, config_dir, *, hook=HOOK_PATH, path=None, cwd=None, extra_environment=None):
-    """Direct exec; returns (returncode, stdout, stderr). A bytes payload is piped as given."""
+    """A bytes payload is piped as given."""
     environment = dict(os.environ)
     environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
     if path is not None:
@@ -2001,7 +1988,8 @@ def test_hook_scripted_sequence_sends_back_then_passes_silently_when_complete(wo
 
     second_output = _run_hook(workspace, workspace.payload("PreToolUse", LEDGER_PLATFORM_AND_SDET))
 
-    assert "staff-platform-engineer" in reason and "staff-sdet" in reason
+    assert "~/.claude/agents/staff-platform-engineer.md" in reason
+    assert "~/.claude/agents/staff-sdet.md" in reason
     assert second_output == ""
     assert _hook_verdict(workspace) == "clean"
     assert not (workspace.marker_dir / AGENT_ID).exists()

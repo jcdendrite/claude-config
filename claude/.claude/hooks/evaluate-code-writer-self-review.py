@@ -55,8 +55,7 @@ STILL_UNCERTAIN_LABEL = "**Still uncertain:**"
 # Pinned to the Return format's Self-review bullet in code-writer.md by test_send_back_skipped_self_review.py.
 LEDGER_CONTENT_REQUEST = "<each applied angle, its finding and what you fixed, or clean>"
 
-# Verbs the writer's own tool calls use; Edit and Write are code-writer's only
-# editing tools.
+# code-writer's dedicated editing tools; pinned to its frontmatter by test_send_back_skipped_self_review.py.
 EDIT_TOOLS = ("Edit", "Write")
 
 PARSE_GIT_COMMAND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parse-git-command.py")
@@ -80,19 +79,16 @@ KIND_REREAD = "reread"
 
 
 def reviewer_suffix(reviewer_name):
-    """Path suffix that identifies a reviewer's file."""
     if reviewer_name == SKILL_REVIEWER:
         return f"/skills/{SKILL_REVIEWER}/SKILL.md"
     return f"/agents/{reviewer_name}.md"
 
 
 def reviewer_read_path(reviewer_name):
-    """Tilde path a writer should Read for the reviewer."""
     return "~/.claude" + reviewer_suffix(reviewer_name)
 
 
 def reviewer_name_for_read_path(file_path):
-    """Reviewer a Read of `file_path` credits, or None."""
     for reviewer_name in ACCEPTED_REVIEWERS:
         if file_path.endswith(reviewer_suffix(reviewer_name)):
             return reviewer_name
@@ -121,10 +117,7 @@ def _is_test_code(path_segments, basename, extension):
 
 
 def path_floor_reviewers(path):
-    """Reviewers the path alone requires, as {reviewer: reason}.
-
-    `path` is repository-relative or absolute; every directory segment counts.
-    """
+    """`path` is repository-relative or absolute; every directory segment counts."""
     segments = [segment for segment in path.split("/") if segment]
     if not segments:
         return {}
@@ -162,7 +155,6 @@ _PYTHON_DOCSTRING_DELIMITERS = ('"""', "'''")
 
 
 def is_comment_line(path, line):
-    """True when `line`, written to `path`, starts with a comment marker."""
     basename = os.path.basename(path)
     extension = os.path.splitext(basename)[1].lower()
     stripped = line.lstrip()
@@ -179,7 +171,6 @@ def is_comment_line(path, line):
 
 
 def added_lines(tool_name, tool_input):
-    """Lines a successful Edit or Write call added."""
     if not isinstance(tool_input, dict):
         return []
     if tool_name == "Write":
@@ -229,11 +220,6 @@ def _reviewer_name_for_token(token):
 
 
 def parse_ledger(report):
-    """Parse the Self-review ledger out of a report string.
-
-    Returns the accepted reviewer names (first-seen order, deduplicated), the
-    count of ledger lines, and the count of distinct unrecognized names.
-    """
     accepted_names = []
     unrecognized_names = set()
     line_count = 0
@@ -283,29 +269,16 @@ def _user_record_follows(transcript_lines, line_index):
 
 
 def extract_tool_calls(transcript_lines):
-    """Pair each assistant `tool_use` with its `tool_result`, in first-seen order.
-
-    `tool_use` blocks come only from assistant records and deduplicate by id,
-    so an `api-request-blob` copy never adds or reorders a call. `tool_result`
-    blocks come from any record other than an `api-request-blob` and pair by
-    `tool_use_id`; when two carry one id, the first wins. A call without a
-    paired result is pending, which counts as not done.
-    """
     return scan_transcript(transcript_lines).calls
 
 
 def scan_transcript(transcript_lines):
-    """`extract_tool_calls`, plus whether the result blocks look to be in an unknown shape.
+    """A writer cannot issue a later batch without having received the earlier
+    batch's results, and a result always answers a call, so a transcript that
+    breaks either is in a changed shape, not showing writer behavior.
 
-    `result_shape_unknown` is True when either:
-    - at least one `tool_result` block decoded and none carries the id of a
-      recorded call, which includes a transcript with results but no decoded call; or
-    - a call decoded, no `tool_result` block decoded at all, and a `user` record
-      follows the first call.
-
-    A writer cannot issue a later batch without having received the earlier
-    batch's results, and a result always answers a call, so either pattern
-    signals a changed transcript shape, not writer behavior.
+    The conditions are listed under `allowed-unparsed-transcript` in
+    docs/design-decisions/code-writer-self-review-send-back.md.
     """
     tool_uses = {}
     tool_use_order = []
@@ -323,6 +296,7 @@ def scan_transcript(transcript_lines):
         record_type = record.get("type")
         for block in _content_blocks(record):
             block_type = block.get("type")
+            # Only assistant records add calls, so an `api-request-blob` copy never adds or reorders one.
             if block_type == "tool_use" and record_type == "assistant":
                 tool_use_id = block.get("id")
                 if isinstance(tool_use_id, str) and tool_use_id not in tool_uses:
@@ -356,10 +330,7 @@ def scan_transcript(transcript_lines):
 
 
 def has_message_content_record(transcript_lines):
-    """True when any line decodes into a record whose `message.content` is a list.
-
-    A transcript with no such record is in a shape the extractor does not know.
-    """
+    """A transcript with no such record is in a shape the extractor does not know."""
     for raw_line in transcript_lines:
         try:
             record = json.loads(raw_line)
@@ -372,7 +343,6 @@ def has_message_content_record(transcript_lines):
 
 
 def make_path_resolver():
-    """Return resolve(file_path) -> the `~`-expanded realpath, cached per path string."""
     cache = {}
 
     def resolve(file_path):
@@ -390,11 +360,7 @@ def _call_path(call):
 
 
 def make_repository_root_finder():
-    """Return find(directory) -> nearest ancestor holding a `.git` entry, or None.
-
-    A `.git` file (linked worktree) counts like a `.git` directory. Results are
-    cached per directory.
-    """
+    """A `.git` file (linked worktree) counts like a `.git` directory."""
     cache = {}
 
     def find(directory):
@@ -433,9 +399,7 @@ def load_git_record_builder():
 
 
 def runs_git_diff(command, build_records, field_separator):
-    """True when `command` holds a git invocation whose subcommand is `diff`.
-
-    The shared parser splits segments on shell operators but not on newlines,
+    """The shared parser splits segments on shell operators but not on newlines,
     so backslash-newline continuations are joined and each remaining line is
     parsed on its own.
 
@@ -466,7 +430,6 @@ Assessment = namedtuple(
 
 
 def _is_diff_reread(call, changed_paths, resolve, build_records, field_separator):
-    """True when a successful call re-reads a changed path or runs a git diff."""
     if call.name == "Read":
         file_path = _call_path(call)
         return bool(file_path) and resolve(file_path) in changed_paths
@@ -476,7 +439,6 @@ def _is_diff_reread(call, changed_paths, resolve, build_records, field_separator
 
 
 def assess(calls, report, build_records, field_separator):
-    """Check R1 to R5 for a writer's calls and report text."""
     ledger = parse_ledger(report)
     find_repository_root = make_repository_root_finder()
     resolve = make_path_resolver()
@@ -587,7 +549,6 @@ def assess(calls, report, build_records, field_separator):
 
 
 def item_label(item):
-    """Short plain-text description of a missing item."""
     if item.kind == KIND_REREAD:
         return "no diff re-read after the last edit"
     if item.kind == KIND_ANY_REVIEWER:
@@ -672,7 +633,6 @@ def marker_present(marker_dir, agent_id):
 
 
 def remove_marker(marker_dir, agent_id):
-    """Remove the marker; a marker that is already gone is not an error."""
     with contextlib.suppress(OSError):
         os.rmdir(os.path.join(marker_dir, agent_id))
 
@@ -696,7 +656,6 @@ def log_line(event, verdict, agent_id, assessment=None):
 
 
 def append_log(log_path, line):
-    """Best-effort append; a failed append never changes the output or exit status."""
     try:
         with open(log_path, "a", encoding="utf-8") as log_file:
             log_file.write(line + "\n")
@@ -736,7 +695,6 @@ _AGENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def transcript_path_for(payload, event, agent_id):
-    """Path of the writer's own transcript, or None when it does not exist."""
     if event == "SubagentStop":
         candidate = payload.get("agent_transcript_path")
         return candidate if isinstance(candidate, str) and os.path.isfile(candidate) else None
@@ -775,7 +733,6 @@ def _report_is_labeled(report):
 
 
 def run(payload, agent_id, marker_dir, log_path, stdout):
-    """Evaluate one payload; write the envelope to `stdout` and the outcome to the log."""
     event = payload.get("hook_event_name")
     if event == "PreToolUse":
         if payload.get("tool_name") != "SubagentHandback":

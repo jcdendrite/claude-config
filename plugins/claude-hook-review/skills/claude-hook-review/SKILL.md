@@ -111,7 +111,7 @@ After the helper call, `INPUT`, `TOOL_NAME`, and `COMMAND` are set as globals. H
 State the chosen posture in the script header. Reviewers shouldn't have to re-derive it from the code.
 
 **`# hook-class:` header** — every hook must declare its class on the second line:
-- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
+- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks. A PreToolUse `SubagentHandback` hook is `turn-gate`, not `gate`.
 - `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
 - `# hook-class: turn-gate` — fires where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, and sends the agent back rather than blocking a tool call from running, with an output shape that follows its event (see §9). A distinct contract from `gate`, not an end-of-run hook mislabeled `gate`: `GATE_HOOKS` — which drives every Layer-2 auto-parametrized behavior test in `test_hook_alignment.py` — excludes it entirely, so a turn-gate hook needs hand-written equivalents for cases like jq-absent (see §9's note on the reversed fail posture there).
 
@@ -150,8 +150,14 @@ Flag these on a hook PR:
 - `if`-dispatch in `settings.json` matches the internal regex (no drift between the two).
 - `set -uo pipefail` present for gates with non-trivial parsing; if absent, justified.
 - JSON input parsed with `jq`; fail-closed on parse error.
-- Emitted JSON shape matches the hook's class. `gate`: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set. `turn-gate`: on `Stop` and `SubagentStop`, a top-level `{"decision":"block","reason":...}` pair (not nested under `hookSpecificOutput`); on PreToolUse `SubagentHandback`, `hookSpecificOutput.permissionDecision`, either `deny`, or `allow` with an `updatedInput` that differs from the call's input only by hook-written text prepended to `message`. Flag any other `updatedInput`, whatever the hook, tool or field. The harness routes on those exact literal keys for both shapes, so a typo silently no-ops. `gate` and `turn-gate` are distinct contracts, and `turn-gate`'s shape follows its event; do not test or review one as though it were the other.
-- Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated.
+- Emitted JSON shape matches the hook's class.
+  - `gate`: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set.
+  - `turn-gate` on `Stop` and `SubagentStop`: a top-level `{"decision":"block","reason":...}` pair (not nested under `hookSpecificOutput`).
+  - `turn-gate` on PreToolUse `SubagentHandback`: `hookSpecificOutput.permissionDecision`, either `deny`, or `allow` with an `updatedInput` that differs from the call's input only by hook-written text prepended to `message`.
+  - Flag any other `updatedInput`, whatever the hook, tool or field.
+  - The harness routes on those exact literal keys for both shapes, so a typo silently no-ops.
+  - `gate` and `turn-gate` are distinct contracts, and `turn-gate`'s shape follows its event; do not test or review one as though it were the other.
+- Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated. `SubagentStop` matches on agent type, and PreToolUse `SubagentHandback` matches on tool name.
 - Scope is narrow enough to avoid false positives: matcher + internal filter + repo-url guard exclude operations outside the stated purpose; header documents what the hook deliberately does NOT gate.
 - Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn or a lost report, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
 - No unbounded loops, no network calls, no unbounded file I/O.

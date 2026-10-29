@@ -109,19 +109,19 @@ more focused task than writing it — use that asymmetry deliberately.
 3. Read each reviewer file with the Read tool, by its tilde path — e.g.
    `~/.claude/agents/staff-backend-engineer.md`, or
    `~/.claude/skills/ai-instruction-and-memory-files/SKILL.md` for the one
-   reviewer that is a skill. A Bash `cat` does not count, because a hook checks
-   your Read calls at return.
+   reviewer that is a skill. A Bash `cat` does not count.
 4. **Mine each reviewer file for its review angles only** — the section
    enumerating what it looks for. Check your diff against each angle: where the
    reviewer says "flag X," your job was to not produce X — confirm you did not.
    Ignore the reviewer file's operational sections (how it formats findings,
    where it writes output, its "you do not write code" instruction). Those
    govern a reviewer's job, not yours; applying them here is a mistake.
-5. Every change that edits a file gets at least one reviewer file read; choose
-   the rows your diff touches. A change that adds or alters logic in a domain
-   gets that domain's reviewer read. When in doubt, read. Added or rewritten
-   prose always gets the read for the prose row in the table below, even on one
-   line: in a one-paragraph-per-line file, one line is a whole paragraph.
+5. Choose reviewer files by the rows your diff touches:
+   - A change that edits a file gets at least one reviewer file read.
+   - A change that adds or alters logic in a domain gets that domain's reviewer read.
+   - Added or rewritten prose always gets the read for the prose row, even on one
+     line: in a one-paragraph-per-line file, one line is a whole paragraph.
+   - When in doubt, read.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
    Style, and §Durable text before handoff. Flag each of these separately:
    - A factual claim the diff makes that you have not checked against the code,
@@ -153,9 +153,8 @@ more focused task than writing it — use that asymmetry deliberately.
      unwritten, with the dictated text, the source (`file:line` or command)
      and the value found; each claim you could not verify, naming the source
      you looked for; and each other site the search found.
-8. After your last fix, re-read the hunks you changed (`git diff -- <paths>`,
-   or `Read` for a file you created) before returning. Fix what it shows, then
-   re-read again. A hook checks for this re-read.
+8. After your last fix, re-read the hunks you changed, as in step 1, before
+   returning. Fix what it shows, then re-read again.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|
@@ -163,7 +162,7 @@ more focused task than writing it — use that asymmetry deliberately.
 | Client components, hooks, client state, routing, forms | `staff-frontend-engineer`, `staff-sdet` |
 | Database migrations, pipelines, CDC / ETL | `staff-data-engineer` |
 | Warehouse models, transformations | `staff-analytics-engineer` |
-| CI/CD config, IaC, shell scripts, build, tool and environment config | `staff-platform-engineer` |
+| CI/CD config, IaC, shell scripts, build tooling, environment config | `staff-platform-engineer` |
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
@@ -179,11 +178,11 @@ the `**Self-review:**` ledger.
 - **One line:** what you implemented and which files changed.
 - **Self-review:** one ledger line per reviewer file you Read: the reviewer's
   backticked name, a colon, then each applied angle, its finding and what you
-  fixed, or "clean." A hook sends back a return whose ledger names a reviewer
-  you did not Read, or omits one your changed paths require. For each test you added, say
-  whether it ran red before the code it guards existed, which `test-conventions`
-  exception applies and its substitute verification, or that you did not run
-  it. Example:
+  fixed, or "clean." For each test you added, say whether it ran red before the
+  code it guards existed, which `test-conventions` exception applies and its
+  substitute verification, or that you did not run it. A hook sends back a
+  return whose ledger names a reviewer you did not Read, or omits one your
+  changes require. Example:
 
   <!-- HOOK_TEST_FIXTURE: code-writer-self-review-ledger -->
   ```markdown
