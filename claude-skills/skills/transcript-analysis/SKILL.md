@@ -46,7 +46,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
 | What's this repo's durable week-over-week cost/efficiency history, beyond what live transcripts still retain? | `cost-ledger` |
-| What did each merged PR cost, joined against its size, rework, and review surface, kept durably? | `pr-cost` |
+| What did each merged PR cost, joined against its size, rework, and review surface? | `pr-cost` |
 | What did this account spend per PR and per review in a date range, as a Slack post for its project owner? | `/period-cost-report` |
 | What did each code-review / plan-review / ready-for-review round cost on each branch, subagents included? | `review-round-cost` |
 | Why did one branch's review loop cost what it did and run so many rounds, and which branches are worth auditing? | `/review-loop-cost-audit` |
