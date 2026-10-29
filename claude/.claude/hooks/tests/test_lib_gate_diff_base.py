@@ -31,7 +31,7 @@ from ._lib_sh_helpers import (
     _staged_diff_hash,
 )
 
-# --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash --
+# --- _lib_git_inprogress_state / _lib_gate_diff_base --------------------------
 #
 # Detection precedence, trust anchors, and reference-tree computation for the
 # four in-progress git states (merge/rebase/cherry-pick/revert). See

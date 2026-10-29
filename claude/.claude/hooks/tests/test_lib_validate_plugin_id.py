@@ -16,11 +16,10 @@ from ._lib_sh_helpers import (
 from .test_config_lib import _locale_that_widens_ascii_ranges
 
 # ---------------------------------------------------------------------------
-# _lib_validate_plugin_id / _lib_missing_plugin_ids -- direct unit coverage
-# independent of both callers (bootstrap-project-plugins.sh's tests and
-# reconcile-project-plugins.sh's tests in
-# claude/.claude/scripts/tests/test_reconcile_project_plugins.py), so neither
-# caller can silently diverge from the other on this shared seam.
+# _lib_validate_plugin_id -- direct unit coverage independent of both callers
+# (bootstrap-project-plugins.sh's tests and reconcile-project-plugins.sh's
+# tests in claude/.claude/scripts/tests/test_reconcile_project_plugins.py), so
+# neither caller can silently diverge from the other on this shared seam.
 # ---------------------------------------------------------------------------
 
 # A bounded-cost check runs within this multiple of a control run.
