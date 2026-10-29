@@ -46,6 +46,13 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
 | What's this repo's durable week-over-week cost/efficiency history, beyond what live transcripts still retain? | `cost-ledger` |
+| What did each merged PR cost, joined against its size, rework, and review surface, kept durably? | `pr-cost` (`--record` appends to the local ledger; requires `gh`) |
+| What did this account spend per PR and per review in a date range, as a Slack post for its project owner? | `/period-cost-report` (wraps `period-cost --since <date> --until <date>`) |
+| What did each code-review / plan-review / ready-for-review round cost on each branch, subagents included? | `review-round-cost` |
+| Why did one branch's review loop cost what it did and run so many rounds, and which branches are worth auditing? | `/review-loop-cost-audit` |
+| How many review rounds and subagent spawns did a branch take, as counts for a public PR body? | `cost-counts --this-repo --branches <branch>` |
+| How much does handoff-driven session continuation cost per branch? | `workstream-cost` |
+| Do `code-writer` diffs draw must-fix findings on downstream code-review? | `author-outcome` |
 | Which client or profile does spend belong to? | `cost --by-project --config-dir <dir>` |
 | What fraction of Opus code-read turns are clearly dispatchable vs. read-then-edit loops? | `audit-routing-shape --since 35d` |
 | Pull a random sample of Opus code-read turns for delegation judgment curation | `audit-routing-samples --since 35d --sample 50 --seed 1` |
