@@ -167,3 +167,15 @@ wrong or its review loop is converging:
   named file cannot be read — state that under what you did not verify. A
   size-limit error on Read of the named file is not "cannot be read": page it
   with Grep or an offset/limit Read instead.
+
+**Foundation questions.** When a consult asks whether a branch's foundation is
+wrong or its review loop is converging, judge the foundation from three inputs,
+not from the latest round's findings alone:
+
+- the per-round series on the history line, read by the legend starting
+  "Findings raised per review round";
+- the `Ask:` line of the plan file the dispatch names, found with Grep;
+- the SETTLED and DEFER rows in the history file, found with Grep rather than a
+  whole-file read, since the file grows with the branch.
+
+State under what you did not verify any of the three you could not read.

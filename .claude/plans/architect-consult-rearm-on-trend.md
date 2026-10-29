@@ -108,21 +108,20 @@ Make one consult process serve every code review, `/ready-for-review` passes inc
 
 **Consult inputs (rows 2, 5, 21, 22, 50, 51).**
 
-- *Finding trend.* `review-ledger.sh show` gains a `--trend` flag, accepted only with `--out`.
-  - After a successful write, `show` prints a second stdout line below `changed: <path>`: `trend: <series>`.
-  - The series is space-separated `<round>:<address>/<defer>/<settled>/<carry>` entries in round order. A round with no rows prints `<round>:-`, and a round holding only CLEAN rows prints `<round>:0/0/0/0`.
-  - Rows logged `--decided-by carry` count only under carry, whatever their disposition. A row a later `--ref` retired counts as logged, because the series reports what each round produced, not which decisions stay live.
-- *Bounds.*
-  - Only integer rounds from 1 to 9999 count, the range `append` accepts (row 51).
-  - The series covers at most the last 30 rounds, and opens with `...` when it cuts earlier ones. Thirty rounds span ten consult intervals at the default cadence, enough to show whether findings shrink, and the history file keeps every row.
-  - The work is therefore bounded by the row count plus 30, whatever round a row claims. With no counted round, `show` prints no `trend:` line.
+- *Finding trend.* `review-ledger.sh show` gains a `--trend` flag, accepted only with `--out` (row 5).
+  - After a successful write, `show` prints a second stdout line below `changed: <path>`: `trend: <series>` (row 50).
+  - The series reads as plain text, so it needs no field legend (row 63). It is comma-separated `round <N>: <count>` entries in round order, one for each round that has a row, for example `round 1: clean, round 2: 9, round 7: 11`.
+  - `<count>` is the number of findings raised that round: its ADDRESS, DEFER and SETTLED rows, carries included. A carry is logged when a reviewer raises the same failure again at a site already decided (row 64), so it is a finding raised that round, and counting it is what shows a branch stuck on one settled finding. A row a later `--ref` retired still counts, because it was raised in its round.
+  - A round that raised none prints `clean`. A clean round is usually where a reviewed diff passes, so the round after it usually reviews a different diff: the next commit's, a later fix's, or `/ready-for-review`'s cumulative one. The exception is `/code-review`'s already-reviewed skip, which logs a clean round for the same diff (row 64). This lets a consult tell a new diff's first findings from a relapse (row 63).
+  - A row counts only when its round is an integer from 1 to 9999, the range `append` accepts (row 51). The round is normalized with `floor` before grouping and printing, so a stored `1.0` joins round 1 and prints as `1`; jq 1.7 and later otherwise print a number literal as written. Every printed `<N>` is therefore plain digits. With no counted row, `show` prints no `trend:` line.
+  - There is no window, no gap entry and no elision. Each entry comes from at least one row, so the output grows with the number of rounds that have rows, never with the size of a round number (row 63). An entry takes about 13 bytes, so 60 rounds add about 0.8 KB. The series is the last element of the history line, so any truncation of that line costs only the series' newest entries.
 - *Seam.* `_review_ledger_trend` in `_review-ledger-lib.sh` reads rows on stdin and prints the series. Its jq program sits beside `_REVIEW_LEDGER_JQ_RENDER` (row 21).
   - `show` pipes it the merged, sorted rows it already holds, so the trend, the history file and the branch-plus-session file assembly share one snapshot (row 50).
   - A trend computation that fails omits the `trend:` line and leaves `show`'s file and exit status as they would be without the flag.
   - One that stalls costs the announce hook the whole history line, as a stall in any other step of `show` does, because the hook's cap on `show` drops all of its output (row 22). A nested cap on the trend step was set aside: the step is one jq pass over rows `show` already holds, no likelier to stall than `show`'s existing jq steps.
 - *Delivery.* `announce-branch-review-history.sh` passes `--trend` to the `show` call it already makes, so its capped calls stay at five (row 22).
-  - In the `changed:` arm it takes the `trend:` line's value. It discards that value when it holds anything but digits, `:`, `/`, `-`, `.` and spaces, when stdout holds any further line, or when it exceeds 1024 bytes. Thirty entries of a four-digit round and four three-digit counts take about 630 bytes, so the cap trips only on a malformed series.
-  - A kept series is appended to the `Review-ledger history:` line after a fixed legend that names the field order. A discarded, empty or absent series leaves the line as it reads today.
+  - In the `changed:` arm, the hook takes exactly the text between stdout's first and second newline. When that text starts with `trend: ` and holds at least one character after it, the hook appends the rest to the `Review-ledger history:` line after the legend `Findings raised per review round (a clean round usually ends one commit's review, and the round after it reviews a different diff):`. Otherwise the history line reads as it does today. Taking one line is line selection, not a check on the series: it keeps any later stdout line `show` might add out of the subagent's context.
+  - The hook does not check the value. `show`'s own jq program builds it from integers and fixed words, so a check could only reject output that program cannot produce (row 62).
   - Every `plan-architect` dispatch therefore receives the series, whichever skill or hook prescribed it (row 13).
 - *The plan's `Ask:` line and the SETTLED and DEFER rows.* Every prescribed consult site already passes the plan path, and the round-cap site also passes the ledger digest (row 14). The history file holds every SETTLED and DEFER row. These need an instruction to read them, not new plumbing.
 - *Foundation framing.* `plan-architect.md`'s MODE=consult section gains a **Foundation questions.** paragraph after its Review-ledger history guard. When a consult asks whether a branch's foundation is wrong or its review loop is converging, the agent judges from three inputs, not from the latest round's findings alone:
@@ -130,8 +129,11 @@ Make one consult process serve every code review, `/ready-for-review` passes inc
   - the `Ask:` line of the plan file the dispatch names, found with Grep;
   - the SETTLED and DEFER rows in the history file, found with Grep rather than a whole-file read, since the file grows with the branch.
 
-  Any of the three it could not read goes under what it did not verify. The paragraph refers to the series by the legend's lead phrase and does not restate the field order, which the legend states beside the data.
+  Any of the three it could not read goes under what it did not verify. The paragraph refers to the series by the legend's lead phrase, "Findings raised per review round", and does not restate its format.
 - Rejected:
+  - *A per-disposition split (`<round>:<address>/<defer>/<settled>/<carry>`).* It needs a field legend, and the legend needs caveats, since a DEFER count is not the number of live DEFERs. The live decisions already reach the consult through the history file (row 63).
+  - *A series with an entry for every round between the first and the last.* Filling the gaps makes the output grow with the largest round number, which then needs a window, an elision marker and a byte budget. A round that logs no row, such as one ended by a re-plan verdict, shows as a jump in the printed round numbers, which loses nothing (row 63).
+  - *Validating the series in the hook.* See row 62.
   - *A separate `trend` subcommand.* It adds a sixth capped call to a hook whose timeout drops all of its output (row 22). It takes a second ledger snapshot that an append can split from the history file. It also needs `show`'s file assembly moved into a shared function.
   - *The consult counting rows from the history file itself.* Counting by reading is error-prone over hundreds of rows, and #997's failure was a consult that did not weigh the trend.
   - *Inline jq in the hook.* It would put the ledger's row semantics outside the ledger's own library. Its input matrix could then be tested only through a hook subprocess, which `.claude/rules/shell-script-conventions.md` directs to direct tests instead.
@@ -188,8 +190,8 @@ The PR body names this change as a confound for #1211's before-and-after rounds-
   - The deny text reports the threshold in effect. With a latch it says the states were recorded since the branch's last architect consult, and without one that no architect consult is recorded for this branch. Its noun is singular at a threshold of 1, so the word "states" appears nowhere in that text. It keeps naming "Round-cap architect consult".
 - **M3** — Both hooks drop the `/ready-for-review` active-marker exit and keep the `/plan-review` one. `anchors: row6, row8, row9, row31, row43`.
 - **M4** — `ready-for-review/SKILL.md` loses its Cap paragraph and the clauses that served only the Cap. It gains one Overview paragraph of at most four sentences that routes a gate denial inside a run. A re-plan verdict halts the run with no disposition record, no `cumulative-review` marker and no push. A fix already staged then stays staged until it is committed with the revision's implementation or discarded. The paragraph defers to the round-cap section's route for revising the plan. A step-4 denial retries after the consult. A revision that changes no code ends with a report. The no-push guard after the halt stays prose, as for every other halt. The disposition record and its clean-pass definition stay. `anchors: row16, row17, row32, row34, row35, row36, row37, row38, row40, row42, row52, row53, row57, row59, row60, row61`.
-- **M5** — `review-ledger.sh show --trend`, computed by `_review_ledger_trend` in `_review-ledger-lib.sh`, counting integer rounds 1 to 9999 and printing at most the last 30. `anchors: row2, row5, row21, row22, row50, row51`.
-- **M6** — `announce-branch-review-history.sh` passes `--trend` on its existing `show` call and appends the validated, length-capped series after a legend. `anchors: row5, row13, row22, row50`.
+- **M5** — `review-ledger.sh show --trend`, computed by `_review_ledger_trend` in `_review-ledger-lib.sh`, printing the findings raised in each round that has a row, as `round <N>: <count>` or `round <N>: clean`, counting rounds 1 to 9999. `anchors: row2, row5, row21, row50, row51, row63, row64`.
+- **M6** — `announce-branch-review-history.sh` passes `--trend` on its existing `show` call and appends the series, unchecked, after a one-phrase legend. `anchors: row5, row13, row22, row62, row63`.
 - **M7** — `plan-architect.md` gains the Foundation questions paragraph, which finds the `Ask:` line and the SETTLED and DEFER rows by Grep. `anchors: row2, row5, row14`.
 - **M8** — The new decision file, six supersession notes, the `docs/hooks.md` kill-switch and recovery lines, and a PR-body confound note, with no ledger figure. `anchors: row11, row24, row25, row28, row44, row54, row55, row56, row61`.
 - **M9** — No edit to `code-review/SKILL.md` or `claude/.claude/CLAUDE.md`. The round-cap section's three verdicts, and its stop-and-ask for any other return, serve every firing. No ladder rule or clean-pass reset is added. `anchors: row26, row27, row39, row41, row45, row46, row47`.
@@ -257,6 +259,9 @@ The PR body names this change as a confound for #1211's before-and-after rounds-
 59. A dirty pass's fix commit goes through the staged-diff `/code-review`, and step 1 halts unless the working tree is clean. `[verified: claude-skills/skills/ready-for-review/SKILL.md:34,82]`
 60. The run-exit tail falls within one routing. Inside `/ready-for-review`, a re-plan verdict halts the run with no push, and the session revises the plan, runs `/plan-review`, implements the revision and starts a fresh run, adding no question to the engineer. `[engineer-verified: "Yes, halt and restart (Recommended)"]`, the label selected when asked whether that tail fits "one routing". The question did not cover a fix left staged when the verdict arrives, which is this plan's decision (row 59).
 61. The run's active marker releases the push arm and is removed only by step 9, or by PID-liveness eviction once the session's process ends. `[verified: claude/.claude/hooks/require-ready-for-review.sh:16-23; claude-skills/skills/ready-for-review/SKILL.md:154-161]`
+62. The hook does not check the series. `[engineer-verified: "Oh yeah so the check is completely flawed."]`, said of a check that could only reject output `show`'s own jq program cannot produce. That the redesigned program prints only integers and fixed words is this plan's design (M5).
+63. The series is self-describing findings raised per round, one entry per round that has a row, with a clean round marking where one diff's review ends. It replaces the per-disposition split, the 30-round window and the gap entries. `[engineer-verified: "yes I agree with the shape of your recommednations"]`, said in answer to the session's proposal of a phrase-form count per round, clean rounds as the boundary, no window or gap entries, and no hook check.
+64. A same-failure-mode repeat at a live DEFER decision, or at a live engineer SETTLED logged `--carry-forward`, is logged as a carry. `/code-review`'s already-reviewed skip logs a CLEAN row for a staged diff a clean marker already covers. `[verified: claude-skills/skills/code-review/SKILL.md:27,380]`
 
 ## Critical files
 
@@ -307,23 +312,26 @@ Three `code-writer` dispatches, run in order: 1, then 2, then 3.
 
 - `claude/.claude/scripts/_review-ledger-lib.sh` — `_review_ledger_trend` and its jq program, built on `_REVIEW_LEDGER_JQ_COMMON`.
 - `claude/.claude/scripts/review-ledger.sh` — the `--trend` flag on `show`, parsed in its argument loop and used only after the rows are read. Document it in the top `Usage:` line and in `usage()`. Reword `usage()`'s "A consumer acts on the stdout line" (`:168`) so the `changed:` or `unchanged` line stays authoritative and `trend:` reads as an additional line after `changed:`. `show`'s file assembly and exit matrix stay as they are.
-- `claude/.claude/hooks/announce-branch-review-history.sh` — pass `--trend`, validate the series, and append it after its legend (M6).
-- `claude/.claude/agents/plan-architect.md` — the Foundation questions paragraph (M7).
+- `claude/.claude/hooks/announce-branch-review-history.sh` — pass `--trend` and append the series after its legend, unchecked (M6).
+- `claude/.claude/agents/plan-architect.md` — the Foundation questions paragraph (M7), naming the lead phrase "Findings raised per review round".
 - `claude/.claude/scripts/tests/test_review_ledger_lib.py` — the trend matrix through `_review_ledger_trend`, each case with its expected stdout written out:
-  - each disposition, DEFER carry and SETTLED carry, and empty or absent `decided_by`;
-  - a retired row, a CLEAN-only round and a round with no rows;
-  - rounds 9, 10 and 100, in numeric order;
-  - a non-number round, a round above 9999, and rows with no round;
-  - 31 rounds, which elides the first;
-  - no rows.
+  - rows in input order round 1, round 2, round 1, where round 1 holds two ADDRESS rows, a DEFER, a SETTLED, a DEFER carry and a CLEAN, print one round 1 entry with a count of 5;
+  - a SETTLED carry counts, a retired row counts, and a CLEAN-only round prints `clean`;
+  - rows logged for rounds 1 and 3 print only those two entries;
+  - rows for rounds 100, 9 and 10, in that input order, print in numeric order;
+  - a round stored as `1.0` beside one stored as `1` prints a single `round 1` entry counting both;
+  - beside a valid round, a round of `"2"`, of a string holding a newline and `trend:`, of null, of `true`, of 0, of -1, of 2.5 and of 10000, and a row with no round, are each skipped;
+  - no rows, and rows none of which has a counted round, print nothing;
+  - with a failing jq, `_review_ledger_trend` returns non-zero and prints nothing (the sibling tests' `path_with_failing_tool_shim`).
 - `claude/.claude/hooks/tests/test_review_ledger_script.py`:
-  - `show --out <path> --trend` with rows prints both lines, and the same round in the branch and session files counts both rows. No ledger prints `unchanged` alone.
+  - `show --out <path> --trend` with rows prints both lines. A branch-file row and a session-file row, each with round 1 and a counted disposition, print `trend: round 1: 2`; the existing `seeded_repo` session row has neither, so this case seeds its own. No ledger prints `unchanged` alone.
+  - Rows none of which has a counted round, such as the `seeded_repo` session row alone, print `changed: <path>` with no `trend:` line.
   - `--trend` without `--out`, and `--trend` given twice, exit 2.
   - The session-chokepoint parametrizations at `:244` and `:264` gain no row. `--trend` adds no path before session resolution, and an `--out` row there would exit 2 at the path check and pin nothing. The existing exit-status cases pass unedited.
 - `claude/.claude/hooks/tests/test_announce_branch_review_history.py`:
-  - Real-hook cases compute the expected series from the seeded rows rather than copying hook output, which updates the exact-equality assertions at `:171-176` and `:189`.
-  - A seeded-row variant of `test_plan_architect_guard_names_the_lead_phrase_the_hook_emits`, with a different count in each field, checks the emitted legend and series and that `plan-architect.md` names the legend's lead phrase.
-  - Stub cases for `show`'s stdout. A valid series is appended. A series holding letters, an injection-shaped string, a tab or an ANSI escape, a second `trend:` line, or more than 1024 bytes is discarded. An empty series and an absent `trend:` line each leave today's line with no trailing fragment.
+  - Real-hook cases write their expected series as a literal from the seeded rows, with no helper that recounts them, which updates the exact-equality assertions at `:171-176` and `:189`.
+  - A seeded-row variant of `test_plan_architect_guard_names_the_lead_phrase_the_hook_emits` seeds three ADDRESS rows in round 1, a CLEAN row in round 2 and five DEFER rows in round 7. It checks the emitted legend and the literal series `round 1: 3, round 2: clean, round 7: 5`, and that `plan-architect.md` names the legend's lead phrase.
+  - Stub cases for `show`'s stdout, each with its expected context written out. A `trend:` line's value, one the lib could never emit, is appended verbatim after the legend. A third stdout line is not appended. `trend: ` with an empty value, and an absent `trend:` line, leave today's line with no trailing fragment.
 
 **Dispatch 3 — retire the Cap, and records.** Verify with `select-tests.py`, and run `/skill-review` on the `ready-for-review/SKILL.md` diff.
 
@@ -341,6 +349,7 @@ Three `code-writer` dispatches, run in order: 1, then 2, then 3.
 - Supersession notes only, all under `docs/design-decisions/`: `round3-plan-architect-consult-gate.md`, `round3-consult-verdict-routing.md`, `ready-for-review-fix-loop-convergence.md`, `branch-scoped-review-ledger.md`, `architect-authored-fix-plan-pilot.md`, `review-orchestrator-gate-release-decoupling.md`.
 - `docs/hooks.md`:
   - The `require-architect-consult.sh`, `announce-branch-review-history.sh` and `log-reviewer-round.sh` bullets (lines 161, 196, 303). The first states that the kill switch now disables every consult, `/ready-for-review` runs included.
+  - The `announce-branch-review-history.sh` bullet drops "one fixed" for the history-file line and says that line carries the legend and the series. Its "To diagnose" step 3 adds `--trend` to the `show --out` command and says the series is the second stdout line. Its Known gaps add that the hook passes the series on unchecked and that the series grows with the number of rounds that have rows.
   - § "Gate deadlock recovery" gains a short entry for when every consult leaves the gate denying. From a separate terminal, first repair the cause: restore write permission on `<config-dir>/.reviewer-round-state.d`, or remove whatever object sits at `<repo-hash>.<branch-hash>` inside it with the tool that fits it. Then delete the state file. When that still fails, the human sets `round_consult_gate = false`, which disables every consult; an agent never sets it.
 - `docs/scripts.md` — `--trend` beside the `review-ledger.sh` `show` bullet.
 - `README.md` — lines 81 and 191.
@@ -369,7 +378,7 @@ Three `code-writer` dispatches, run in order: 1, then 2, then 3.
    - **Fan-out.** The existing concurrency test still yields one line per state.
    - **Deny text.** The threshold in effect, the since-last-consult wording with a latch, the singular noun at a threshold of 1, and "Round-cap architect consult".
    - **Trend.** The lib matrix and the script cases under Dispatch 2, each with its expected stdout.
-   - **Announce hook.** The seeded legend and series appear, and the agent body names the legend's lead phrase. Each malformed or oversized series is discarded, and an empty or absent one leaves today's line.
+   - **Announce hook.** The seeded legend and series appear, and the agent body names the legend's lead phrase. Only `show`'s second stdout line is appended, and an empty or absent series leaves today's line.
    - **Run-exit pin.** The re-plan pin binds the halt, no disposition record, no `cumulative-review` marker and no push in one clause. It, the clean/dirty pin and the loop-back pin match the new text, and no pin names the Cap.
 3. This command prints nothing: ``git grep -n -F -e "**Cap.**" -e "Cap's pass accounting" -e "within the cap below" -e "the Cap" -e "loop cap" -e "non-rearming" -e "does not re-arm" -e "Fires once per branch" -e "gone permanently silent" -e "Skips recording entirely once the latch" -e '/ready-for-review` active-bypass' -- claude claude-skills README.md docs/hooks.md docs/scripts.md``. Decision-file bodies under their supersession notes and past `CHANGELOG.md` entries are records and keep their wording.
 4. `/agent-review` on `plan-architect.md` and `/skill-review` on `ready-for-review/SKILL.md` come back clean.

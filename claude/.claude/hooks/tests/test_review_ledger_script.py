@@ -3349,6 +3349,54 @@ class TestReviewLedgerShowOut:
         assert result.stdout == ""
         assert stale.read_text() == self.STALE
 
+    def test_trend_prints_the_series_after_the_changed_line_and_counts_a_branch_row_and_a_session_row(
+        self, isolated_home, seeded_repo
+    ):
+        session_file = _session_ledger_path(isolated_home, seeded_repo)
+        session_row = {"round": 1, "disposition": "ADDRESS", "finding": "session finding", "event_time": "2000-01-01T00:00:00Z"}
+        session_file.write_text(json.dumps(session_row) + "\n")
+
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=seeded_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\ntrend: round 1: 2\n"
+
+    def test_trend_with_no_ledger_prints_unchanged_alone(self, isolated_home, feature_repo):
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unchanged\n"
+
+    def test_trend_with_rows_but_no_counted_round_prints_the_changed_line_alone(self, isolated_home, feature_repo):
+        session_file = _session_ledger_path(isolated_home, feature_repo)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text(json.dumps({"finding": "session finding", "event_time": "2000-01-01T00:00:00Z"}) + "\n")
+
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\n"
+
+    @requires_jq
+    def test_a_failed_trend_computation_omits_the_trend_line_and_keeps_the_written_file_and_exit_status(
+        self, isolated_home, seeded_repo, tmp_path
+    ):
+        """`group_by` appears only in the trend program, so only that jq call fails."""
+        trend_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "*group_by*")
+        target = seeded_repo / self.OUT
+        control = _run(["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home)
+        assert control.returncode == 0, control.stderr
+        rows_without_the_flag = target.read_text()
+
+        result = _run(
+            ["show", "--out", self.OUT, "--trend"], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": trend_failing_path},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\n"
+        assert target.read_text() == rows_without_the_flag
+
     @pytest.mark.parametrize(
         "args",
         [
@@ -3356,6 +3404,8 @@ class TestReviewLedgerShowOut:
             pytest.param(["--out", ""], id="--out with an empty value"),
             pytest.param(["--out", OUT, "--out", OUT], id="--out twice"),
             pytest.param(["--bogus"], id="an unknown flag"),
+            pytest.param(["--trend"], id="--trend without --out"),
+            pytest.param(["--out", OUT, "--trend", "--trend"], id="--trend twice"),
         ],
     )
     def test_a_malformed_argument_list_prints_usage_and_exits_2_without_touching_the_target(
