@@ -2608,7 +2608,7 @@ class TestRenderSlackReport:
     def test_a_maximal_width_table_row_stays_within_the_utf8_byte_bound_the_output_capacity_arithmetic_uses(self, title):
         # The harness cuts output above 30,000 bytes, so the bound is in UTF-8 bytes, not code points.
         # The widest row has a 5-digit review number, the longest status, a $9,999.99 cost, both markers, and a
-        # 32-code-point title at 4 bytes each, which is 164 bytes counting the newline.
+        # title of `_TITLE_CELL_CAP` code points at 4 bytes each.
         # A PR number above 99,999 or a cost above $9,999.99 widens every row in its block by one byte.
         widest_label = len("Rev #99999")
         widest_status = max(len(status) for status in period_cost._SHOWN_PR_STATES)
