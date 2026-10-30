@@ -20,10 +20,9 @@ from ._lib_sh_helpers import (
 # The growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable here
 # without a real git repo. _lib_staged_length_gate calls this same predicate
 # for both its line-count check and its byte-count check, so the boundary
-# matrix below covers the pure-triple cases for both.
-# test_check_claude_md_length.py and test_check_skill_length.py cover the
-# second-dimension cases end-to-end: path pattern, command parsing, message
-# text, fail-closed posture.
+# matrix below covers the (new, old, limit) cases for both.
+# test_check_claude_md_length.py and test_check_skill_length.py cover path
+# pattern, command parsing, message text and fail-closed posture end-to-end.
 
 
 def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
@@ -46,19 +45,15 @@ def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
 
 class TestLengthRatchetExceeded:
     def test_new_at_exactly_limit_not_exceeded(self) -> None:
-        """new == limit is not "over" it."""
         assert not _length_ratchet_exceeded(200, 190, 200)
 
     def test_new_over_limit_and_over_old_exceeded(self) -> None:
-        """Crossing the limit for the first time."""
         assert _length_ratchet_exceeded(201, 190, 200)
 
     def test_new_over_limit_growing_further_while_already_over_exceeded(self) -> None:
-        """Already over the limit and growing further still denies."""
         assert _length_ratchet_exceeded(215, 210, 200)
 
     def test_new_over_limit_but_shrinking_from_old_not_exceeded(self) -> None:
-        """Reducing an already-over-limit file is allowed."""
         assert not _length_ratchet_exceeded(205, 210, 200)
 
     def test_new_over_limit_same_size_as_old_not_exceeded(self) -> None:
@@ -67,7 +62,6 @@ class TestLengthRatchetExceeded:
         assert not _length_ratchet_exceeded(210, 210, 200)
 
     def test_new_under_limit_growing_not_exceeded(self) -> None:
-        """Growing but never crossing the limit."""
         assert not _length_ratchet_exceeded(190, 180, 200)
 
     def test_new_zero_not_exceeded(self) -> None:

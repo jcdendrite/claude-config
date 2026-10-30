@@ -511,8 +511,7 @@ class TestGateDiffBaseTopologyFallback:
         above. state_oid's shape validation rejects the multi-line value
         before any anchor check runs. Without that guard,
         `git merge-base --is-ancestor` still fails to parse a multi-line
-        revision, regardless of which line would individually pass. Line 1's
-        trust is never good enough for the whole value."""
+        revision, regardless of which line would individually pass."""
         repo = tmp_path / "repo"
         init_git_repo_with_commit(repo, branch="main")
         trusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()

@@ -2464,11 +2464,10 @@ def _timeout_binary_present() -> bool:
 
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
     """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
-    line to stdout then blocks past the 5s cap; every other subcommand
-    proxies to the real git. Sleeps 20s, well past the 5s cap, yet bounded so
-    a cap regression fails the test instead of hanging it. Callers must set
-    REAL_GIT in the environment to a real git binary path; the shim execs it
-    for every other subcommand."""
+    line to stdout then blocks past the 5s cap. Sleeps 20s, well past the 5s
+    cap, yet bounded so a cap regression fails the test instead of hanging
+    it. Every other subcommand execs $REAL_GIT, which callers must set to a
+    real git binary path."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
@@ -2488,10 +2487,9 @@ def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
 
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
     """Shim at bin_dir/git: for `diff` specifically, writes `stdout_before_block`
-    to stdout (nothing when empty) then blocks past the 5s cap; every other
-    subcommand proxies to the real git. Callers must set REAL_GIT in the
-    environment to a real git binary path; the shim execs it for every other
-    subcommand. `stdout_before_block` is spliced unescaped into a `printf` format
+    to stdout (nothing when empty) then blocks past the 5s cap. Every other
+    subcommand execs $REAL_GIT, which callers must set to a real git binary
+    path. `stdout_before_block` is spliced unescaped into a `printf` format
     string in the generated shim, so pass plain alphanumeric text."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
