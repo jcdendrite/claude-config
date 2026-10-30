@@ -5,9 +5,11 @@ stdlib `subprocess` only -- no third-party SZZ implementation.
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +79,9 @@ class _MineStats:
     non_fix_subject_commits: int = 0
     markdown_path_skips: int = 0
     path_absent_at_introducing_commit: int = 0
+    python_docstring_line_skips: int = 0
+    python_docstring_parse_attempts: int = 0
+    python_docstring_parse_failures: int = 0
 
 
 def _is_blank_or_comment(line: str) -> bool:
@@ -91,6 +96,65 @@ def _run_git(args: Sequence[str], *, cwd: Path) -> str:
         timeout=_LOCAL_GIT_TIMEOUT_S,
     )
     return result.stdout
+
+
+def _docstring_lines_without_shared_code(docstring: ast.Expr, source_lines: Sequence[str]) -> range:
+    """The docstring's lines, minus a first or last line that also carries
+    code, so an edit to that code is not mistaken for a docstring edit.
+    `col_offset` counts UTF-8 bytes, hence the encoding."""
+    first_line, last_line = docstring.lineno, docstring.end_lineno or docstring.lineno
+    code_precedes = source_lines[first_line - 1].encode()[: docstring.col_offset].strip()
+    trailing_text = source_lines[last_line - 1].encode()[docstring.end_col_offset or 0 :].strip()
+    code_follows = trailing_text and not trailing_text.startswith(b"#")
+    return range(first_line + bool(code_precedes), last_line + 1 - bool(code_follows))
+
+
+def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> frozenset[int]:
+    """1-based line numbers of docstring text in `source`.
+
+    The parse is uncapped, so a multi-MB generated file costs seconds and
+    substantial memory per (fix commit, file)."""
+    if stats is not None:
+        stats.python_docstring_parse_attempts += 1
+    try:
+        # A docstring with an invalid escape sequence warns at parse time; keep that off stderr.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        if stats is not None:
+            stats.python_docstring_parse_failures += 1
+        return frozenset()
+    # Not splitlines(): it also splits on `\x0c`, which ast and git count as part of its line.
+    source_lines = source.split("\n")
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            lines.update(_docstring_lines_without_shared_code(first, source_lines))
+    return frozenset(lines)
+
+
+def _docstring_lines_at(
+    repo_dir: Path, commit: str, path: str, *, stats: _MineStats | None = None,
+) -> frozenset[int]:
+    """`_run_git` decodes in text mode, so a lone CR byte in the file shifts
+    these numbers against git's `\\n`-only hunk numbering."""
+    if not path.endswith(".py"):
+        return frozenset()
+    try:
+        source = _run_git(["show", f"{commit}:{path}"], cwd=repo_dir)
+    except _GIT_CALL_ERRORS:
+        if stats is not None:
+            stats.git_call_failures += 1
+        return frozenset()
+    return _python_docstring_lines(source, stats=stats)
 
 
 @dataclass
@@ -179,7 +243,8 @@ def _addition_only_context_range(hunk: _Hunk) -> tuple[int, int] | None:
 
 
 def _blame_file_diff(
-    repo_dir: Path, fix_commit: str, file_diff: _FileDiff, *, stats: _MineStats | None = None,
+    repo_dir: Path, fix_commit: str, file_diff: _FileDiff, *,
+    skip_python_docstring_lines: bool = False, stats: _MineStats | None = None,
 ) -> tuple[set[str], set[str]]:
     """Blame every eligible hunk in one file's diff at `<fix_commit>^`.
 
@@ -191,6 +256,7 @@ def _blame_file_diff(
     parent = f"{fix_commit}^"
     confident: set[str] = set()
     low_confidence: set[str] = set()
+    docstring_lines: frozenset[int] | None = None
     for hunk in file_diff.hunks:
         if hunk.old_count > 0:
             shas = _blame_range_shas(
@@ -201,9 +267,18 @@ def _blame_file_diff(
                 # A failed blame (already counted) returns no SHAs; pairing
                 # a short list against the removed lines would misattribute.
                 continue
-            for content, sha in zip(hunk.removed_lines, shas, strict=True):
-                if not _is_blank_or_comment(content):
-                    confident.add(sha)
+            for offset, (content, sha) in enumerate(zip(hunk.removed_lines, shas, strict=True)):
+                if _is_blank_or_comment(content):
+                    continue
+                # Parse on the first removed line that reaches the docstring check, so a file
+                # whose removed lines are all blank or comments is never parsed or counted.
+                if skip_python_docstring_lines and docstring_lines is None:
+                    docstring_lines = _docstring_lines_at(repo_dir, parent, file_diff.old_path, stats=stats)
+                if docstring_lines and hunk.old_start + offset in docstring_lines:
+                    if stats is not None:
+                        stats.python_docstring_line_skips += 1
+                    continue
+                confident.add(sha)
         else:
             context_range = _addition_only_context_range(hunk)
             if context_range is None:
@@ -359,7 +434,9 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
             if is_markdown_path(file_diff.old_path):
                 stats.markdown_path_skips += 1
                 continue
-            confident, low_confidence = _blame_file_diff(repo_dir, fix_commit, file_diff, stats=stats)
+            confident, low_confidence = _blame_file_diff(
+                repo_dir, fix_commit, file_diff, skip_python_docstring_lines=True, stats=stats,
+            )
             introducers = confident or low_confidence
             if not introducers:
                 continue
@@ -383,7 +460,10 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
         f"mine-szz: {len(ranked)} candidate(s), git_call_failures={stats.git_call_failures}, "
         f"non_fix_subject_commits={stats.non_fix_subject_commits}, "
         f"markdown_path_skips={stats.markdown_path_skips}, "
-        f"path_absent_at_introducing_commit={stats.path_absent_at_introducing_commit}",
+        f"path_absent_at_introducing_commit={stats.path_absent_at_introducing_commit}, "
+        f"python_docstring_line_skips={stats.python_docstring_line_skips}, "
+        f"python_docstring_parse_attempts={stats.python_docstring_parse_attempts}, "
+        f"python_docstring_parse_failures={stats.python_docstring_parse_failures}",
         file=sys.stderr,
     )
     return ranked

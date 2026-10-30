@@ -571,6 +571,27 @@ Run them in this order:
   `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
+  - Skip rules:
+    - It skips a removed line that is blank, a comment, or inside a Python
+      docstring.
+    - A docstring line that is blank or reads as a comment, for example one
+      starting with `*`, `--` or `#`, is skipped as such, so
+      `python_docstring_line_skips` does not count it.
+    - A docstring the program reads at runtime, such as `__doc__` passed to
+      argparse, is skipped like any other.
+  - The docstring filter does not apply to:
+    - An addition-only hunk, which applies none of the skip rules.
+    - A removed docstring line that shares its physical line with code, for
+      example `class E(Exception): """Boom."""`.
+    - A `.py` file that cannot be parsed.
+  - Counters, printed on stderr: `python_docstring_parse_attempts` and
+    `python_docstring_parse_failures` count `.py` files, once per fix commit
+    and file. A `.py` file is never tried, so it counts in neither counter,
+    when:
+    - it has only addition-only hunks,
+    - its removing hunks all fail to blame,
+    - its removed lines are all blank or comments,
+    - its `git show` fails, which `git_call_failures` counts instead.
 
 `mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
 introducing commit, for example a file renamed after that commit or lines
