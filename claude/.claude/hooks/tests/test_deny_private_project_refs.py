@@ -281,6 +281,8 @@ class TestDenyPrivateProjectRefs:
             "Deprecate MD-5",
             "Support HTTP-2",
             "Disable TLS-1",
+            "Timestamps are UTC-07 in the fixture",
+            "Convert from GMT-05 to local time",
             "Licensed under AGPL-3.0",
             "Licensed under BSD-3-Clause",
             "See PROJ-123 for the placeholder convention",
@@ -289,7 +291,7 @@ class TestDenyPrivateProjectRefs:
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf", "ieee",
             "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
-            "sha", "md", "http", "tls",
+            "sha", "md", "http", "tls", "utc", "gmt",
             "agpl", "bsd",
             "proj_placeholder", "ticket_placeholder",
         ],
@@ -340,6 +342,27 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Timestamps are UTC-123456 in the fixture",
+            "Convert from GMT-99999 to local time",
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_time_zone_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo, message):
+        """UTC and GMT are allowlisted by prefix, the same unbounded-digit
+        tradeoff GPT/AGPL/BSD in OSS_ALLOWLIST already accept — an implausible
+        offset is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
@@ -360,15 +383,20 @@ class TestDenyPrivateProjectRefs:
             "Fix MYAGPL-99 regression",
             "Bump SUPERBSD-1 dep",
             "Bump ACMEIEEE-5 dep",
+            "Land BIGGMT-9 follow-up",
+            "Bump SUPERUTC-3 dep",
         ],
-        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd", "acmeieee"],
+        ids=[
+            "myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd", "acmeieee",
+            "biggmt", "superutc",
+        ],
     )
     def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
         """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
-        but don't *equal* PROJ / TICKET / AGPL / BSD / IEEE in the deny path.
-        Without this test, a refactor that drops the anchor would pass CI
-        silently. The AGPL/BSD/IEEE cases also pair with this file's
-        AGPL/BSD/IEEE allow-path tests, giving each the same allow+deny
+        but don't *equal* PROJ / TICKET / AGPL / BSD / IEEE / UTC / GMT
+        in the deny path. Without this test, a refactor that drops the anchor
+        would pass CI silently. The AGPL/BSD/IEEE/UTC/GMT cases also pair
+        with this file's allow-path tests, giving each the same allow+deny
         symmetry the PROJ/TICKET cases already have."""
         assert (
             run_hook(
@@ -377,6 +405,90 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "deny"
+        )
+
+    def test_est_is_not_allowlisted(self, claude_config_repo):
+        """EST is deliberately left off OSS_ALLOWLIST: EST-05 is not a
+        conventional offset. Adding it to OSS_ALLOWLIST must fail this test."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Schedule runs at EST-05'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Land UTCX-1 follow-up",
+            "Fix GMTX-2 regression",
+        ],
+        ids=["utcx", "gmtx"],
+    )
+    def test_allowlisted_prefix_with_longer_token_still_denied(self, claude_config_repo, message):
+        """The trailing `-` in OSS_ALLOWLIST pins a match to the whole token
+        prefix: a token that merely *starts with* UTC / GMT but
+        continues before the hyphen stays in the deny path. Without this
+        test, a refactor that drops the trailing `-` would pass CI silently."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        ("blocklist_entry", "message"),
+        [
+            ("UTC", "Land UTC-4821 follow-up"),
+            ("GMT", "Land GMT-77 follow-up"),
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_blocklist_entry_matching_allowlisted_prefix_still_denied(
+        self, claude_config_repo, private_projects_file, blocklist_entry, message
+    ):
+        """The blocklist tier runs independently of OSS_ALLOWLIST, so a
+        user-local entry equal to an allowlisted prefix still denies a token
+        using that prefix. It is the only backstop when a private tracker
+        key collides with an allowlisted prefix."""
+        private_projects_file(f"{blocklist_entry}\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"git commit -m '{message}'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "private-projects.md blocklist" in reason
+        assert f"  - {blocklist_entry}" in reason
+
+    @pytest.mark.parametrize(
+        ("blocklist_entry", "message"),
+        [
+            ("UTC-", "Land UTC-4821 follow-up"),
+            ("GMT-", "Land GMT-77 follow-up"),
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_hyphen_terminated_blocklist_entry_does_not_match_allowlisted_token(
+        self, claude_config_repo, private_projects_file, blocklist_entry, message
+    ):
+        """A blocklist entry ending in `-` never matches a token whose prefix
+        is allowlisted, because the whole-word match needs a non-word character
+        after the entry. The docs advise entering the bare word instead, which
+        holds only while this stays true."""
+        private_projects_file(f"{blocklist_entry}\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
         )
 
     def test_multiple_tracker_ids_denied(self, claude_config_repo):
@@ -1159,6 +1271,59 @@ class TestDenyPrivateProjectRefs:
         assert reason_with_branch_typed_via_head_flag is not None
         assert "WIDGET-123" in reason_with_branch_typed_via_head_flag
 
+    def test_optin_marker_does_not_scan_stack_base_key_known_gap(self, private_projects_optin_repo):
+        """Pins an accepted Known gap in the hook header: the hook never reads
+        the `branch.<branch>.gh-merge-base` key, so a `gh pr create` without
+        `--base` that publishes a tracker-named stack base is allowed. Typing
+        the same base with `--base` puts it in the scanned command text and
+        denies, so the allow is caused by the base living only in the key. A
+        change that closes or widens the gap must flip this test."""
+        tracker_named_base = "WIDGET-123-base"
+        current_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=private_projects_optin_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "config", f"branch.{current_branch}.gh-merge-base", tracker_named_base],
+            cwd=private_projects_optin_repo,
+            check=True,
+        )
+        decision_with_base_only_in_key = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("gh pr create --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        reason_with_base_typed_via_base_flag = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh pr create --base {tracker_named_base} --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_base_only_in_key == "allow"
+        assert reason_with_base_typed_via_base_flag is not None
+        assert "WIDGET-123" in reason_with_base_typed_via_base_flag
+
+    def test_optin_marker_scans_tracker_named_base_flag_of_gh_pr_create(self, private_projects_optin_repo):
+        """A stacked PR's `--base <name>` is typed in the command text, so a
+        tracker-named stack base denies like a tracker-ID title, and a plain
+        stack base allows."""
+        tracker_named_base = "WIDGET-123-base"
+        tracker_named_reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh pr create --base {tracker_named_base} --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        plain_base_decision = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("gh pr create --base stack --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert tracker_named_reason is not None
+        assert "WIDGET-123" in tracker_named_reason
+        assert plain_base_decision == "allow"
+
     @pytest.mark.parametrize("command", _OPTIN_MARKER_ARMED_COMMANDS)
     def test_optin_marker_arms_continue_and_gh_write_surfaces(self, private_projects_optin_repo, command):
         """Each `--continue` commit-concluding form and each gh write surface
@@ -1673,7 +1838,7 @@ class TestDenyPrivateProjectRefs:
         conflicted file, never its real content. This is a git primitive
         fact, pinned separately by
         test_git_diff_cached_against_unresolved_conflict_git_primitive_fact
-        in test_lib.py. This hook's scan sees the same marker text, not the
+        in test_lib_gate_diff_base.py. This hook's scan sees the same marker text, not the
         conflicted file's actual content, so it allows here. Git's own "you
         have not concluded your merge" error is what actually stops the
         commit, not this scanner."""

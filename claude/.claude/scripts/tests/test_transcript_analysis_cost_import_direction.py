@@ -5,11 +5,9 @@ Part (a) below guards cost.py's public *function* surface only, not top-level
 constants/classes -- safe, since part (b) independently checks the shim's actual
 imported names regardless of what kind of object each one denotes, so the
 reverse-import boundary itself stays covered either way. This guard pins the
-production import-direction exception only, not the separate whole-module `from
-transcript_analysis import ... cost` bind that test files read as `_mod.cost.<name>`
-to reach cost.py's private helpers for patching -- that channel predates this
-guard, stays open by design, and restricting it would break legitimate existing
-test patterns.
+production import-direction exception only. Test files' own `from
+transcript_analysis import cost` imports reach cost.py's private helpers for
+patching and are left unguarded on purpose.
 """
 from __future__ import annotations
 

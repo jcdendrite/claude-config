@@ -349,6 +349,7 @@ def _new_pr_cost_row(
         "cache_write_1h_tokens": tokens["cache_write_1h"], "output_tokens": tokens["output"],
         "input_tokens": tokens["input"],
         "unpriced_turns": agg["unpriced_turns"], "unpriced_tokens": agg["unpriced_tokens"],
+        "invalid_usage_records": agg["invalid_usage_records"],
         "turn_count": turn_count, "session_count": len(agg["sessions"]),
         "opus_dollars": agg["opus_dollars"], "opus_dollar_share_pct": render._pct_value(agg["opus_dollars"], total_dollars),
         "sum_context_at_turn": agg["sum_context_at_turn"],
@@ -533,7 +534,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         print(
             f"pr-cost: {render._fmt_usd(sum(unbranched_agg['dollars'].values()))} across"
             f" {unbranched_agg['turn_count']} priced turns attributed to no branch at all"
-            " (counted, not skipped, unlike `buckets`)",
+            " (counted, not skipped, unlike `buckets`),"
+            f" {unbranched_agg['invalid_usage_records']:,} further turns excluded for malformed usage",
             file=sys.stderr,
         )
 

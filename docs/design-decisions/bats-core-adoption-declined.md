@@ -10,7 +10,7 @@ The capability bats is proposed to add is sourcing a library and calling one fun
 
 - The shape is `subprocess.run(["bash", "-c", f". {lib}; {call}"])`.
 - 151 lines across 19 `*.py` files under `claude/.claude/hooks/tests/` contain `"bash", "-c"`.
-- `claude/.claude/hooks/tests/test_lib.py` wraps the shape as `_run_lib_call`.
+- `claude/.claude/hooks/tests/_lib_sh_helpers.py` wraps the shape as `_run_lib_call`.
 - `test_lib.py` also wraps the variant that predefines `emit_deny` before sourcing as `_run_harness`.
 
 ## Every shared-library function has a reference
@@ -76,6 +76,6 @@ Two findings are orthogonal to the framework choice and have their own issues.
 - #1042 evaluates decomposing `install.sh` behind a sourcing guard. Its 18 fixture-marker pairs exist because its top level mutates `$HOME`, which bats' `load` could not source safely either.
 - #1041 tracks a shared white-box helper for the four distinct sourced-lib invocation shapes. It is one unit of work with migrating the call sites.
 
-`test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins` in `test_lib.py` guards the roster seam around `_lib_reviewer_persona_agents`. `test_shell_lib_function_liveness.py` is a zero-reference tripwire over the two shared libraries. Each docstring carries its mechanics and scope.
+`test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins` in `test_lib_payload_matchers.py` guards the roster seam around `_lib_reviewer_persona_agents`. `test_shell_lib_function_liveness.py` is a zero-reference tripwire over the two shared libraries. Each docstring carries its mechanics and scope.
 
 Issue #1045 tracks a test-selection gap for the liveness guard.

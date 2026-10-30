@@ -20,7 +20,6 @@ from helpers import (
     build_conflicted_cherry_pick,
     build_conflicted_merge,
     build_conflicted_rebase,
-    build_conflicted_revert,
     build_conflicted_revert_of_unmerged_commit,
     build_noconflict_rebase_edit_stop,
     build_path_without,
@@ -209,7 +208,7 @@ class TestRequireCodeReview:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         # Same diff hash, filed under the other repo's repo-hash prefix.
@@ -328,7 +327,7 @@ class TestRequireCodeReview:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_noconflict_rebase_edit_stop(repo)
         (repo / "unrelated.txt").write_text("unreviewed content\n")
@@ -1162,7 +1161,7 @@ def _build_forged_anchor_clean_merge(
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "base.txt").write_text("base\n")
     subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
@@ -1194,53 +1193,10 @@ def _build_forged_anchor_clean_merge(
     return repo
 
 
-def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
-    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
-    Every other subcommand proxies to the real git (resolved via $REAL_GIT).
-    Local copy of test_lib.py's shim of the same name (DAMP test code, per
-    CLAUDE.md's named exception) -- this file's fallback assertion needs its
-    own stub, not a shared import, per the plan's "per call site" mandate."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--write-tree" ]; then\n'
-        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
-        '    exit 129\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
-    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
-    is rejected. Local copy of test_lib.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    --merge-base=*)\n'
-        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
-        '      exit 129\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
     """For `merge-tree` specifically, writes a partial line to stdout then
     blocks past the 5s cap; every other subcommand proxies to the real git.
-    Local copy of test_lib.py's shim of the same name."""
+    Local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
@@ -1473,58 +1429,6 @@ class TestRequireCodeReviewMergeAwareBase:
         assert "novel-content base could not be computed" in reason
         assert "fell back to the full HEAD-relative diff" in reason
 
-    def test_fallback_write_tree_rejected_behaves_like_today(self, isolated_home, tmp_path):
-        """`--write-tree` outright rejection (git < 2.38) affects every state
-        uniformly, so the merge fixture already used above exercises it: a
-        git that can't compute the novel-content base must fall back to
-        exactly today's plain HEAD-relative recipe, so a marker written
-        under the old recipe still validates."""
-        repo = _build_conflicted_merge_via_origin(tmp_path)
-        write_marker(isolated_home, repo, staged_diff_hash(repo))
-        bin_dir = tmp_path / "bin-fallback-write-tree"
-        _make_git_rejecting_write_tree(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        assert (
-            run_hook(
-                CODE_REVIEW_HOOK,
-                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
-                cwd=repo,
-                extra_env=extra_env,
-            )
-            == "allow"
-        )
-
-    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, isolated_home, tmp_path):
-        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
-        the three states whose merge-tree call passes that flag -- rebase,
-        cherry-pick, revert, not merge -- so this needs its own fixture: a
-        conflicted revert, trusted via the HEAD anchor by construction."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        build_conflicted_revert(repo)
-        write_marker(isolated_home, repo, staged_diff_hash(repo))
-        bin_dir = tmp_path / "bin-fallback-merge-base"
-        _make_git_rejecting_merge_base_flag(bin_dir)
-        extra_env = {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "REAL_GIT": shutil.which("git"),
-        }
-        assert (
-            run_hook(
-                CODE_REVIEW_HOOK,
-                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
-                cwd=repo,
-                extra_env=extra_env,
-            )
-            == "allow"
-        )
-
     def test_mid_rebase_ordinary_case_hash_matches_plain_head_relative_recipe(
         self, isolated_home, tmp_path
     ):
@@ -1537,7 +1441,7 @@ class TestRequireCodeReviewMergeAwareBase:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         build_conflicted_rebase(repo)
         resolve_conflicted_rebase(repo)
@@ -1555,7 +1459,7 @@ class TestRequireCodeReviewMergeAwareBase:
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
     """For `diff` specifically, writes `stdout_before_block` to stdout (nothing
     when empty) then blocks past the 5s cap; every other subcommand proxies to
-    the real git. Extended local copy of test_lib.py's shim of the same name
+    the real git. Extended local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name
     (it takes `stdout_before_block`)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
@@ -1581,7 +1485,7 @@ class TestRequireCodeReviewEmptyDiffCheckCapFaultInjection:
     capped-git-diff call sites guarding against the same hang risk. The
     other two -- _lib_gate_diff_base's merge-tree call and
     _lib_staged_diff_hash's diff call -- are covered at the function level
-    in test_lib.py; this class covers EMPTY_DIFF_CHECK at the full-hook
+    in test_lib_gate_diff_base_fallbacks.py; this class covers EMPTY_DIFF_CHECK at the full-hook
     level."""
 
     @pytest.mark.timing
@@ -1754,7 +1658,7 @@ def _build_clean_merge_mode_bit_only_change(tmp_path: Path) -> Path:
 
     push_clone = tmp_path / "push_clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     os.chmod(push_clone / "f", 0o755)
     subprocess.run(["git", "add", "f"], cwd=push_clone, check=True)
@@ -1857,7 +1761,7 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
         subprocess.run(
             ["git", "worktree", "add", "-q", str(worktree), "wt-branch"], cwd=clone, check=True
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=worktree, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
         (worktree / "f").write_text("ours-edit\n")
         subprocess.run(["git", "add", "f"], cwd=worktree, check=True)

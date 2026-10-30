@@ -87,6 +87,7 @@ _PLACEMENTS = [
     ("destructive-action-confirm", "flag the risk and confirm the approach", "core"),
     ("stopping", "Stop when the work is genuinely blocked", "core"),
     ("durable-text-rules", "**No PR-defined terminology**", "core"),
+    ("dont-restate-the-code", "**Don't restate the code.**", "core"),
     # Rules a dispatched agent needs.
     ("dispatch-denial", "**Dispatching cannot clear a denial your child inherits.**", "core"),
     (
@@ -97,7 +98,7 @@ _PLACEMENTS = [
     ("think-through-before-writing", "Think through your proposed approach", "core"),
     ("worktree-edit-write-targeting", "Edit and Write must also target the worktree path", "core"),
     ("script-first-bash-recipes", "**Script-first for multi-step Bash recipes;", "core"),
-    # Main-session-only bullets: autonomy grants, the output-preferences read, and clear-stale.
+    # Main-session-only bullets: autonomy grants, dispatch rules, the output-preferences read, and clear-stale.
     (
         "autonomous-shipping",
         "**Where autonomous shipping is active, a request to do work is the ask.**",
@@ -110,6 +111,39 @@ _PLACEMENTS = [
     ),
     ("respond-to-open-pr-comments", "Always respond to open PR comments", "main"),
     ("prescribed-dispatch", "**A prescribed dispatch is an authorized dispatch.**", "main"),
+    # Each relayed-text row pins one clause's presence, so the rows are not redundant.
+    # Each row also fails if its clause moves above `# Main session`.
+    (
+        "relayed-text-in-dispatch-prompts",
+        "**Keep relayed text apart from your own words in a dispatch prompt.**",
+        "main",
+    ),
+    (
+        "relayed-text-path-first",
+        "by its path instead of pasting its text, unless a skill or the user says to paste text from it.",
+        "main",
+    ),
+    (
+        "relayed-text-blockquote-and-lead-in",
+        "in a blockquote with `>` starting every line, under a lead-in that names its source "
+        "by an identifier you can check and says whether it is whole, an excerpt or a summary.",
+        "main",
+    ),
+    (
+        "relayed-text-quoted-phrase-bound",
+        "A phrase of a few words may instead go in quotation marks inside your own sentence.",
+        "main",
+    ),
+    (
+        "relayed-text-skill-wording-is-own-words",
+        "A skill's own wording that you pass on counts as your own words if you are running that skill.",
+        "main",
+    ),
+    (
+        "relayed-text-task-in-own-words",
+        "Outside any blockquote, say in your own words what the agent should do.",
+        "main",
+    ),
     ("output-preferences", "output-preferences.md", "main"),
     ("clear-stale", "marker.sh clear-stale", "main"),
 ]

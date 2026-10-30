@@ -17,41 +17,74 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import (
+    GITLINK_AFTER,
+    GITLINK_BEFORE,
+    HOOKS_DIR,
+    cumulative_review_value,
+    isolated_git_diff,
+    isolated_git_env,
+    require_cumulative_review_value,
+    set_gitlink,
+)
 
-from .conftest import _commit, _init_repo, _make_feature_branch, _make_repo_with_remote
+from .conftest import (
+    _STACKED_BRANCH,
+    _commit,
+    _init_repo,
+    _make_feature_branch,
+    _make_repo_with_remote,
+    _make_stacked_repo,
+)
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-diff-against-base.sh"
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
 
-def _gh_shim_source(base_ref: str | None) -> str:
+def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str:
     """Return source for a gh shim answering `gh pr view --json baseRefName
     --jq .baseRefName`.
 
     base_ref=None models `gh pr view` failing (no PR open for this branch,
     or gh not authenticated) -- the shim exits 1 with no stdout, exercising
     pr-diff-against-base.sh's default-branch fallback path.
+
+    state_reply answers the stack-base path's `gh pr view --json
+    state,baseRefName --jq '.state, .baseRefName'` call by printing its raw
+    value verbatim with exit 0, so "" is an exit-0 empty reply.
+    The shim answers only when the argument after `--jq` is exactly
+    `.state, .baseRefName`, so an inverted or altered filter reads as a gh
+    failure.
+    None leaves that call failing with exit 1.
     """
     body = "sys.exit(1)" if base_ref is None else f"print({base_ref!r})"
+    state_body = "sys.exit(1)" if state_reply is None else f"sys.stdout.write({state_reply!r})"
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import sys
         args = sys.argv[1:]
         if args[:2] == ["pr", "view"] and "--json" in args and "baseRefName" in args:
             {body}
+        elif (
+            args[:2] == ["pr", "view"]
+            and "--json" in args
+            and "state,baseRefName" in args
+            and "--jq" in args
+            and args[args.index("--jq") + 1 : args.index("--jq") + 2] == [".state, .baseRefName"]
+        ):
+            {state_body}
         else:
             sys.exit(1)
     """)
 
 
-def _env_with_gh_shim(tmp_path: Path, base_ref: str | None) -> dict:
+def _env_with_gh_shim(tmp_path: Path, base_ref: str | None, state_reply: str | None = None) -> dict:
     """Build an env with a gh shim reporting base_ref prepended to PATH."""
     shim_dir = tmp_path / "gh_shim"
     shim_dir.mkdir()
     gh_shim = shim_dir / "gh"
-    gh_shim.write_text(_gh_shim_source(base_ref))
+    gh_shim.write_text(_gh_shim_source(base_ref, state_reply))
     gh_shim.chmod(0o755)
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(shim_dir), env.get("PATH", "")])
@@ -93,11 +126,11 @@ def _env_with_gh_shim_and_failing_mv(tmp_path: Path, base_ref: str | None, fail_
 
 
 def _git_diff_shim_source(fail_when_args_contain: str) -> str:
-    """Return source for a `git` shim that fails only a `git diff` call
-    whose arguments contain fail_when_args_contain, delegating to the real
-    git otherwise. Merge-base resolution, checkouts, and the fixture's own
-    setup calls all still hit the real git, so only the targeted `git diff`
-    call is forced to fail."""
+    """Return source for a `git` shim that fails only a `git diff` or
+    `git diff-tree` call whose arguments contain fail_when_args_contain,
+    delegating to the real git otherwise. Merge-base resolution, checkouts,
+    and the fixture's own setup calls all still hit the real git, so only
+    the targeted diff call is forced to fail."""
     real_git = shutil.which("git")
     assert real_git is not None
     return textwrap.dedent(f"""\
@@ -105,7 +138,7 @@ def _git_diff_shim_source(fail_when_args_contain: str) -> str:
         import subprocess
         import sys
         args = sys.argv[1:]
-        if args and args[0] == "diff" and any({fail_when_args_contain!r} in a for a in args):
+        if args and args[0] in ("diff", "diff-tree") and any({fail_when_args_contain!r} in a for a in args):
             sys.exit(1)
         sys.exit(subprocess.run([{real_git!r}] + args).returncode)
     """)
@@ -113,7 +146,8 @@ def _git_diff_shim_source(fail_when_args_contain: str) -> str:
 
 def _env_with_gh_shim_and_failing_git_diff(tmp_path: Path, base_ref: str | None, fail_when_args_contain: str) -> dict:
     """_env_with_gh_shim plus a PATH-prepended `git` shim that fails only
-    the `git diff` call whose arguments contain fail_when_args_contain."""
+    the `git diff` or `git diff-tree` call whose arguments contain
+    fail_when_args_contain."""
     env = _env_with_gh_shim(tmp_path, base_ref)
     git_shim_dir = tmp_path / "git_shim"
     git_shim_dir.mkdir()
@@ -223,6 +257,39 @@ def _seed_session(config_dir: Path, session_id: str, pid: int | None = None) -> 
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
+def _make_branch_for_porcelain_config_probe(tmp_path: Path, *, gitmodules_ignore_all: bool) -> Path:
+    """A repo on a pushed-base feature branch whose merge-base diff touches a file under `pkg/`, a file at
+    the root, and a gitlink at `sub`, so config that rewrites a plain `git diff` has something to rewrite.
+
+    `gitmodules_ignore_all` commits a `.gitmodules` entry for `sub` with `ignore = all`.
+    """
+    local, _bare = _make_repo_with_remote(tmp_path)
+    numbered_lines = "".join(f"line {number}\n" for number in range(1, 12))
+    (local / "pkg").mkdir()
+    (local / "pkg" / "numbers.txt").write_text(numbered_lines)
+    if gitmodules_ignore_all:
+        (local / ".gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n')
+    subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+    set_gitlink(local, "sub", GITLINK_BEFORE)
+    subprocess.run(["git", "commit", "-q", "-m", "base: numbered lines and a gitlink"], cwd=local, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/porcelain-config-probe"], cwd=local, check=True)
+    (local / "pkg" / "numbers.txt").write_text(numbered_lines.replace("line 6\n", "line six\n"))
+    (local / "file.txt").write_text("edited at the root\n")
+    subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+    set_gitlink(local, "sub", GITLINK_AFTER)
+    subprocess.run(["git", "commit", "-q", "-m", "edit both files and move the gitlink"], cwd=local, check=True)
+    return local
+
+
+def _isolated_porcelain_diff(directory: Path, isolated_env: dict, *args: str) -> str:
+    """Stdout of a plain `git diff --no-ext-diff *args, origin/main...HEAD` run from `directory` under `isolated_env`."""
+    return subprocess.run(
+        ["git", "diff", "--no-ext-diff", *args, "origin/main...HEAD"],
+        cwd=directory, env=isolated_env, capture_output=True, text=True, check=True,
+    ).stdout
+
+
 class TestNormalPathAgainstMain:
     def test_diverged_feature_branch_diff_mentions_changed_file(self, tmp_path):
         """The simplest regression guard against an EXIT trap whose last
@@ -241,6 +308,298 @@ class TestNormalPathAgainstMain:
         assert result.returncode == 0
         assert "diff --git a/file.txt b/file.txt" in result.stdout
         assert "+work on feat/add-thing" in result.stdout
+
+    def test_merge_base_diff_ignores_color_and_external_diff_config(self, tmp_path):
+        """Repo-local `color.ui=always` and `diff.external` must not reach the cumulative diff:
+        colored output would defeat the cumulative-review normalizer's header rule,
+        and an external diff driver prints text that is not a patch."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/user-diff-config")
+        subprocess.run(["git", "checkout", "-q", "feat/user-diff-config"], cwd=local, check=True)
+        subprocess.run(["git", "config", "color.ui", "always"], cwd=local, check=True)
+        subprocess.run(["git", "config", "diff.external", "false"], cwd=local, check=True)
+
+        env = _env_with_gh_shim(tmp_path, "main")
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("diff --git")
+        assert "\x1b[" not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("repo_config", "diff_opts_env", "run_from_subdirectory"),
+        [
+            pytest.param({"diff.relative": "true"}, None, True, id="diff-relative-from-a-subdirectory"),
+            pytest.param({"diff.submodule": "log"}, None, False, id="diff-submodule-log"),
+            pytest.param({"diff.context": "0"}, None, False, id="diff-context-zero"),
+            pytest.param({"diff.noprefix": "true"}, None, False, id="diff-noprefix"),
+            pytest.param({}, "-u0", False, id="git-diff-opts-zero-context"),
+        ],
+    )
+    def test_merge_base_diff_is_unchanged_by_porcelain_diff_config(
+        self, tmp_path, repo_config, diff_opts_env, run_from_subdirectory
+    ):
+        """The cumulative-review key hashes this text, so user-level diff config that rewrites a
+        plain `git diff` (paths relative to the cwd, a submodule log summary, a narrowed context
+        window) must not reach it."""
+        local = _make_branch_for_porcelain_config_probe(tmp_path, gitmodules_ignore_all=False)
+        run_directory = local / "pkg" if run_from_subdirectory else local
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        unconfigured = _run_script(run_directory, isolated_env)
+        assert unconfigured.returncode == 0, unconfigured.stderr
+        assert "Subproject commit" in unconfigured.stdout, "baseline carries the gitlink the config rewrites"
+        plain_porcelain_diff_before_config = _isolated_porcelain_diff(run_directory, isolated_env)
+
+        for key, value in repo_config.items():
+            subprocess.run(["git", "config", key, value], cwd=local, check=True)
+        if diff_opts_env is not None:
+            merge_base = subprocess.run(
+                ["git", "merge-base", "origin/main", "HEAD"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            plumbing_command = ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD", "--"]
+            plumbing_diff_without_variable = subprocess.run(
+                plumbing_command, cwd=run_directory, env=isolated_env,
+                capture_output=True, text=True, check=True,
+            ).stdout
+            plumbing_diff_with_variable = subprocess.run(
+                plumbing_command, cwd=run_directory, env={**isolated_env, "GIT_DIFF_OPTS": diff_opts_env},
+                capture_output=True, text=True, check=True,
+            ).stdout
+            assert plumbing_diff_with_variable != plumbing_diff_without_variable, (
+                "control: the variable changes plumbing output, so the script's -u3 pin is load-bearing"
+            )
+            isolated_env["GIT_DIFF_OPTS"] = diff_opts_env
+        plain_porcelain_diff_after_config = _isolated_porcelain_diff(run_directory, isolated_env)
+        assert plain_porcelain_diff_after_config != plain_porcelain_diff_before_config, (
+            "control: the config changes a plain git diff"
+        )
+
+        configured = _run_script(run_directory, isolated_env)
+
+        assert configured.returncode == 0, configured.stderr
+        assert configured.stdout == unconfigured.stdout
+        if run_from_subdirectory:
+            assert _run_script(local, isolated_env).stdout == unconfigured.stdout, (
+                "the repo-root run and the subdirectory run print the same text"
+            )
+
+    @pytest.mark.parametrize(
+        ("repo_config", "gitmodules_ignore_all"),
+        [
+            pytest.param({"diff.ignoreSubmodules": "all"}, False, id="diff-ignore-submodules-config"),
+            pytest.param({}, True, id="gitmodules-ignore-all"),
+        ],
+    )
+    def test_merge_base_diff_keeps_a_gitlink_change_under_ignore_submodules_setting(
+        self, tmp_path, repo_config, gitmodules_ignore_all
+    ):
+        """An ignore-all submodule setting must not drop a gitlink change from the hashed diff text,
+        or a PR that only moves a submodule pointer would hash like an empty diff."""
+        local = _make_branch_for_porcelain_config_probe(tmp_path, gitmodules_ignore_all=gitmodules_ignore_all)
+        for key, value in repo_config.items():
+            subprocess.run(["git", "config", key, value], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        porcelain_diff_with_ignore_overridden = _isolated_porcelain_diff(local, isolated_env, "--ignore-submodules=none")
+        assert "Subproject commit" in porcelain_diff_with_ignore_overridden, "control: the gitlink is in the range"
+        plain_porcelain_diff = _isolated_porcelain_diff(local, isolated_env)
+        assert "Subproject commit" not in plain_porcelain_diff, "control: the setting hides the gitlink from a plain git diff"
+        if gitmodules_ignore_all:
+            # Under a .gitmodules `ignore`, plumbing drops the gitlink too, so --ignore-submodules=none must keep it.
+            merge_base = subprocess.run(
+                ["git", "merge-base", "origin/main", "HEAD"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            plumbing_diff_without_override = subprocess.run(
+                ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD", "--"],
+                cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+            ).stdout
+            assert "diff --git a/pkg/numbers.txt b/pkg/numbers.txt" in plumbing_diff_without_override, (
+                "control: the plumbing diff is real and only the gitlink is missing from it"
+            )
+            assert "Subproject commit" not in plumbing_diff_without_override, (
+                "control: the setting hides the gitlink from plumbing too, so --ignore-submodules=none is load-bearing"
+            )
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert f"-Subproject commit {GITLINK_BEFORE}" in result.stdout
+        assert f"+Subproject commit {GITLINK_AFTER}" in result.stdout
+
+    def test_default_config_output_equals_the_porcelain_diff_of_the_merge_base_range(self, tmp_path):
+        """Pins that rename detection is on and that plumbing output is byte-equal to the porcelain's for these eight
+        shapes, in a repo with no textconv driver: a rename with a content edit, a mode change, a binary file,
+        a non-ASCII path, a moved gitlink, a deleted file, a newly added empty file and a file edited to lose its
+        trailing newline."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / "rename-source.txt").write_text("".join(f"stable line {number}\n" for number in range(20)))
+        (local / "run.sh").write_text("#!/bin/sh\n")
+        (local / "image.bin").write_bytes(b"\x00base binary\x01")
+        (local / "caf\u00e9.txt").write_text("base\n")
+        (local / "deleted.txt").write_text("removed on the feature branch\n")
+        (local / "loses-newline.txt").write_text("first line\nlast line\n")
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        set_gitlink(local, "sub", GITLINK_BEFORE)
+        subprocess.run(["git", "commit", "-q", "-m", "base: eight shapes"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/eight-shapes"], cwd=local, check=True)
+        subprocess.run(["git", "mv", "rename-source.txt", "rename-target.txt"], cwd=local, check=True)
+        (local / "rename-target.txt").write_text(
+            "".join("edited line 10\n" if number == 10 else f"stable line {number}\n" for number in range(20))
+        )
+        (local / "image.bin").write_bytes(b"\x00feature binary\x02")
+        (local / "caf\u00e9.txt").write_text("feature\n")
+        (local / "deleted.txt").unlink()
+        (local / "empty.txt").write_text("")
+        (local / "loses-newline.txt").write_text("first line\nlast line")
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        set_gitlink(local, "sub", GITLINK_AFTER)
+        subprocess.run(["git", "update-index", "--chmod=+x", "run.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feature: edit all eight shapes"], cwd=local, check=True)
+
+        env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "rename from rename-source.txt" in result.stdout
+        assert "old mode 100644" in result.stdout
+        assert "Binary files a/image.bin and b/image.bin differ" in result.stdout
+        assert "caf\\303\\251.txt" in result.stdout, "the non-ASCII path prints in git's quoted form"
+        assert f"+Subproject commit {GITLINK_AFTER}" in result.stdout
+        assert "deleted file mode 100644" in result.stdout
+        assert "diff --git a/empty.txt b/empty.txt\nnew file mode 100644" in result.stdout
+        assert "\\ No newline at end of file" in result.stdout
+        assert result.stdout.encode().rstrip(b"\n") == isolated_git_diff(local, "origin/main...HEAD")
+
+    def test_stale_branch_diff_excludes_a_change_made_only_on_the_advanced_base(self, tmp_path):
+        """The diff runs from the merge-base, so a base commit the un-rebased branch lacks must not
+        print as a reversion of that commit."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/stale")
+        (local / "base-only.txt").write_text("added on the base after the branch forked\n")
+        subprocess.run(["git", "add", "base-only.txt"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: advance past the fork point"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/stale"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/file.txt b/file.txt" in result.stdout
+        assert "base-only.txt" not in result.stdout
+
+    def test_a_tracked_file_named_like_a_revision_does_not_break_the_diff(self, tmp_path):
+        """A file named `HEAD` in the cwd must not make `git diff-tree` exit 128 (ambiguous argument):
+        the trailing `--` ends revision parsing, so git skips the revision-versus-filename ambiguity check."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/file-named-head"], cwd=local, check=True)
+        (local / "HEAD").write_text("a file, not a revision\n")
+        subprocess.run(["git", "add", "HEAD"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add a root file named HEAD"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+        isolated_env = isolated_git_env(env, tmp_path / "empty-xdg-config-home")
+        merge_base = subprocess.run(
+            ["git", "merge-base", "origin/main", "HEAD"],
+            cwd=local, env=isolated_env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # LC_ALL=C keeps git's error message in English for the stderr phrase below.
+        diff_tree_without_terminator = subprocess.run(
+            ["git", "diff-tree", "-r", "-p", "-M", merge_base, "HEAD"],
+            cwd=local, env={**isolated_env, "LC_ALL": "C"}, capture_output=True, text=True,
+        )
+        assert diff_tree_without_terminator.returncode == 128, "control: without the terminator git rejects the ambiguous HEAD"
+        assert "ambiguous argument" in diff_tree_without_terminator.stderr
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/HEAD b/HEAD" in result.stdout
+
+    def test_textconv_driver_does_not_convert_the_text(self, tmp_path):
+        """The cumulative diff shows the raw bytes of a path with a `textconv` driver, never the driver's output."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / ".gitattributes").write_text("notes.txt diff=shout\n")
+        (local / "notes.txt").write_text("quiet base\n")
+        subprocess.run(["git", "config", "diff.shout.textconv", "sed s/quiet/CONVERTED/"], cwd=local, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a path with a textconv driver"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/textconv"], cwd=local, check=True)
+        (local / "notes.txt").write_text("quiet feature\n")
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "feature: edit the textconv path"], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        porcelain_diff = _isolated_porcelain_diff(local, isolated_env)
+        assert "CONVERTED" in porcelain_diff, "control: the driver converts a plain git diff"
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert "+quiet feature" in result.stdout
+        assert "CONVERTED" not in result.stdout
+
+    def test_binary_file_with_a_textconv_driver_prints_binary_files_differ_and_keeps_its_index_line(self, tmp_path):
+        """A binary path with a `textconv` driver prints `Binary files ... differ` with its `index` line,
+        never the driver's output."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / ".gitattributes").write_text("blob.bin diff=shout\n")
+        (local / "blob.bin").write_bytes(b"\x00quiet base")
+        subprocess.run(["git", "config", "diff.shout.textconv", "sed s/quiet/CONVERTED/"], cwd=local, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a binary path with a textconv driver"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/binary-textconv"], cwd=local, check=True)
+        (local / "blob.bin").write_bytes(b"\x00quiet feature")
+        subprocess.run(["git", "commit", "-q", "-a", "-m", "feature: edit the binary textconv path"], cwd=local, check=True)
+        isolated_env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+        textconv_porcelain_diff = _isolated_porcelain_diff(local, isolated_env, "--textconv")
+        assert "CONVERTED" in textconv_porcelain_diff, "control: the driver converts a plain git diff --textconv"
+
+        result = _run_script(local, isolated_env)
+
+        assert result.returncode == 0, result.stderr
+        assert "Binary files a/blob.bin and b/blob.bin differ" in result.stdout
+        assert "\nindex " in result.stdout
+        assert "CONVERTED" not in result.stdout
+
+    def test_cumulative_review_value_ignores_a_nul_byte_in_an_edited_line_past_the_binary_sniff_window(self, tmp_path):
+        """Named residual: two cumulative diffs that differ only by a NUL byte in an edited line past git's
+        8000-byte binary-sniff window share one cumulative-review value.
+
+        Git still prints the file as text, and the script's command substitution drops the NUL.
+        The key therefore makes no claim about NUL bytes.
+        """
+        git_binary_sniff_window_bytes = 8000
+        base_lines = [f"line {number:04d}\n" for number in range(3000)]
+        edited_line_index = 2900
+        assert len("".join(base_lines[:edited_line_index]).encode()) > git_binary_sniff_window_bytes
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / "long.txt").write_text("".join(base_lines))
+        subprocess.run(["git", "add", "long.txt"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base: a text file longer than the sniff window"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        env = isolated_git_env(_env_with_gh_shim(tmp_path, "main"), tmp_path / "empty-xdg-config-home")
+
+        def diff_script_and_git_for_edit(branch: str, edited_line: bytes) -> tuple[subprocess.CompletedProcess, bytes]:
+            subprocess.run(["git", "checkout", "-q", "-b", branch, "main"], cwd=local, check=True)
+            edited_lines = [line.encode() for line in base_lines]
+            edited_lines[edited_line_index] = edited_line
+            (local / "long.txt").write_bytes(b"".join(edited_lines))
+            subprocess.run(["git", "commit", "-q", "-a", "-m", f"feature: edit line {edited_line_index}"], cwd=local, check=True)
+            return _run_script(local, env), isolated_git_diff(local, "origin/main...HEAD")
+
+        plain_result, _ = diff_script_and_git_for_edit("feat/plain-edit", b"edited\n")
+        nul_result, nul_git_diff = diff_script_and_git_for_edit("feat/nul-edit", b"edit\x00ed\n")
+
+        assert plain_result.returncode == 0, plain_result.stderr
+        assert nul_result.returncode == 0, nul_result.stderr
+        assert b"edit\x00ed" in nul_git_diff, "control: git prints the NUL-bearing edit as text"
+        assert "Binary files" not in nul_result.stdout
+        assert "\x00" not in nul_result.stdout, "command substitution drops the NUL"
+        assert plain_result.stdout != nul_result.stdout, "control: the post-image blob ids in the index lines differ"
+        plain_value = require_cumulative_review_value(plain_result.stdout.encode().rstrip(b"\n"), tmp_path)
+        nul_value = require_cumulative_review_value(nul_result.stdout.encode().rstrip(b"\n"), tmp_path)
+        assert plain_value == nul_value
 
 
 class TestGhPrViewFailureFallback:
@@ -303,7 +662,7 @@ class TestMergeBaseFailure:
 
 class TestCumulativeDiffFailure:
     def test_diff_against_merge_base_failure_produces_curated_message(self, tmp_path):
-        """A `git diff` failure after merge-base resolution already
+        """A `git diff-tree` failure after merge-base resolution already
         succeeded must produce this script's own curated message and exit
         1, not a bare set -e abort surfacing git's own stderr and exit
         status."""
@@ -314,7 +673,7 @@ class TestCumulativeDiffFailure:
             ["git", "merge-base", "origin/main", "HEAD"], cwd=local,
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", "...HEAD")
+        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", merge_base)
 
         result = _run_script(local, env)
 
@@ -414,15 +773,196 @@ class TestDefaultBranchUnresolvable:
         assert "no default branch resolved" in result.stderr
 
 
-def _lib_hash_diff_text(text: str) -> str:
-    """Shell out to the real _lib_hash_diff_text against `text`."""
-    result = subprocess.run(
-        ["bash", "-c", f'. "{_LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
-        capture_output=True,
-        text=True,
-        check=True,
+class TestStackBaseKeyPath:
+    """With branch.<branch>.gh-merge-base set the script uses its value or
+    stops; with no key it runs the default-branch path (the classes above)."""
+
+    @pytest.mark.parametrize("stack_base", ["stack", "team/stack"])
+    def test_key_set_with_no_pr_diffs_only_the_branches_own_commits(self, tmp_path, stack_base):
+        local, _bare = _make_stacked_repo(tmp_path, stack_base)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base = {stack_base}" in result.stderr
+        assert "defaulting base to" not in result.stderr
+
+    def test_no_key_control_on_the_same_fixture_diffs_the_stack_bases_commits_too(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(
+            ["git", "config", "--unset-all", f"branch.{_STACKED_BRANCH}.gh-merge-base"], cwd=local, check=True
+        )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" in result.stdout
+        assert "defaulting base to main" in result.stderr
+
+    def test_gh_pr_view_failure_on_the_key_path_adds_a_clause_to_the_using_line(self, tmp_path):
+        """A gh failure reads as no open PR, so the `using` line says the open-PR check did not run.
+        The clause rides on that one line, never on a second stderr line."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        using_lines = result.stderr.splitlines()
+        assert len(using_lines) == 1
+        assert using_lines[0] == (
+            f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base"
+            "; gh pr view failed or found no PR, so no open-PR base was checked"
+        )
+
+    @pytest.mark.parametrize(
+        "state_reply",
+        [
+            pytest.param("OPEN\nstack\n", id="open-pr-agreeing-with-the-key"),
+            pytest.param("MERGED\nmain\n", id="merged-pr"),
+            pytest.param("", id="exit-0-empty-reply"),
+        ],
     )
-    return result.stdout.strip()
+    def test_gh_pr_view_exiting_zero_leaves_the_using_line_without_the_clause(self, tmp_path, state_reply):
+        """The clause fires on a non-zero gh exit only, not on a reply the parser reads as no open PR."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, state_reply))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base\n"
+
+    def test_open_pr_agreeing_with_the_key_diffs_only_the_branches_own_commits(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\nstack\n"))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_open_pr_with_another_base_stops_naming_both_bases(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\nmain\n"))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        stop_lines = result.stderr.splitlines()
+        assert len(stop_lines) == 1
+        assert stop_lines[0].startswith("pr-diff-against-base.sh:")
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base" in stop_lines[0]
+        assert "targets main, not stack" in stop_lines[0]
+        assert "gh pr edit --base stack" in stop_lines[0]
+
+    @pytest.mark.parametrize("pr_state", ["MERGED", "CLOSED"])
+    def test_merged_or_closed_pr_with_another_base_is_ignored(self, tmp_path, pr_state):
+        """gh pr view with no argument can return the branch's merged or closed PR, whose base
+        says nothing about the stack base, so only an OPEN PR's base is compared with the key."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, f"{pr_state}\nmain\n"))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        assert "targets" not in result.stderr
+
+    def test_open_pr_base_with_a_shell_metacharacter_is_quoted_in_the_stop_line(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\na&b\n"))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        stop_lines = result.stderr.splitlines()
+        assert len(stop_lines) == 1
+        assert "targets a\\&b, not stack" in stop_lines[0]
+
+    def test_local_branch_named_like_the_remote_tracking_ref_does_not_replace_the_base(self, tmp_path):
+        """A local branch `origin/stack` outranks `origin/stack` in git's short-name lookup, so
+        the script must measure through the fully qualified remote-tracking ref."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "origin/stack", "main"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_diff_is_measured_against_the_remote_tracking_stack_base_not_a_local_branch_of_the_same_name(self, tmp_path):
+        """A local `stack` sitting at the default tip would put base.txt in the diff if the
+        script measured against it, so the base must be refs/remotes/origin/stack."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "-f", "stack", "main"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("key_value", "reason_fragment"),
+        [
+            pytest.param("-stack", "starts with '-'", id="leading-dash"),
+            pytest.param(_STACKED_BRANCH, "this branch itself", id="own-branch-name"),
+            pytest.param("never-fetched", "no merge-base with origin/never-fetched", id="never-fetched"),
+        ],
+    )
+    def test_unusable_key_stops_with_a_prefixed_line_and_no_default_fallback(
+        self, tmp_path, key_value, reason_fragment
+    ):
+        local, _bare = _make_stacked_repo(tmp_path, key_value=key_value)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr.startswith("pr-diff-against-base.sh:")
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base" in result.stderr
+        assert reason_fragment in result.stderr
+        assert "defaulting base to" not in result.stderr
+        assert len(result.stderr.splitlines()) == 1
+
+    def test_never_fetched_stack_base_stop_names_the_script_that_fetches_it(self, tmp_path):
+        """The merge-base stop keeps the `no merge-base with origin/<value>` prefix and names
+        the script that fetches the stack base, so the engineer does not edit a key that was fine."""
+        local, _bare = _make_stacked_repo(tmp_path, key_value="never-fetched")
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 1
+        assert "no merge-base with origin/never-fetched" in result.stderr
+        assert "~/.claude/scripts/branch-divergence-status.sh" in result.stderr
+
+    def test_stack_base_deleted_on_origin_still_diffs_from_the_stale_local_ref(self, tmp_path):
+        """Pins the ordering dependency: this script never fetches, so only
+        branch-divergence-status.sh's earlier fetch catches a deleted stack
+        base."""
+        local, bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "-D", "stack"], cwd=bare, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_staged_mode_never_reads_an_unusable_key(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path, key_value="-stack")
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None), staged=True)
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/staged.txt b/staged.txt" in result.stdout
 
 
 def _lib_cumulative_diff_hash(repo_root: str, pr_diff_script: str, env: dict) -> str:
@@ -590,7 +1130,7 @@ class TestRecordFlag:
 
     def test_recorded_content_hashes_identically_to_lib_cumulative_diff_hash(self, tmp_path):
         """The byte-equality property this comparison exists for: hashing
-        the recorded subject through _lib_hash_diff_text must equal
+        the recorded subject through _lib_cumulative_review_value must equal
         _lib_cumulative_diff_hash's own value for the same tree, so a
         second, independently-drifting hashing recipe can never make the
         write-side and read-side values silently disagree."""
@@ -606,9 +1146,10 @@ class TestRecordFlag:
         # own stripping inside _lib_cumulative_diff_hash -- without it this
         # comparison would fail on the newline boundary alone, not on a
         # real recipe mismatch.
-        recorded_text = subject.read_bytes().rstrip(b"\n").decode()
+        recorded_text = subject.read_bytes().rstrip(b"\n")
 
-        from_subject = _lib_hash_diff_text(recorded_text)
+        subject_exit_status, from_subject = cumulative_review_value(recorded_text, tmp_path)
+        assert subject_exit_status == 0
 
         repo_root = subprocess.run(
             ["git", "-C", str(local), "rev-parse", "--show-toplevel"],

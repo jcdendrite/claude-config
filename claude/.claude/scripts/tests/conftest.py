@@ -23,19 +23,22 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     """Write records as one-JSON-object-per-line, transcript-analysis.py's on-disk shape -- shared
-    here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
+    here (with _asst/_user_msg) so test_transcript_context_composition.py doesn't re-derive its own,
     possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
@@ -379,9 +382,9 @@ def _pythonpath_env_that_forges_a_clean_audit(poison_dir: Path, sentinel: Path) 
     return {"PYTHONPATH": str(poison_dir)}
 
 
-def _review_pr_audit_limit(name: str) -> int:
-    """The display bound `name` (REVIEW_PR_AUDIT_MATCH_LINE_LIMIT or
-    REVIEW_PR_AUDIT_PATH_ECHO_LIMIT) as _review-pr-lib.sh defines it, so a
+def _review_pr_lib_integer(name: str) -> int:
+    """The integer constant `name` (such as REVIEW_PR_AUDIT_MATCH_LINE_LIMIT
+    or REVIEW_PR_STACK_LOOKUP_LIMIT) as _review-pr-lib.sh defines it, so a
     test sizes its input from the production constant."""
     result = subprocess.run(
         ["bash", "-c", f'. "{SCRIPTS_DIR / "_review-pr-lib.sh"}"; printf "%s" "${name}"'],
@@ -495,6 +498,29 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
         timeout=60,  # same bound as the _SUBPROCESS_TIMEOUT_SECONDS the review-pr test modules declare
     ).stdout.rstrip("\n")
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
+@pytest.fixture
+def reviewer_findings_session() -> Iterator[tuple[str, Path]]:
+    """A fresh uuid4 session id and the directory
+    review-pr-reviewer-findings-dir.sh derives for it, removed on teardown.
+
+    The directory sits under the literal /tmp, never tmp_path, because the
+    helper hard-codes that root. The uuid keeps parallel workers sharing the
+    real /tmp apart. Fails with a message naming the precondition when a
+    throwaway directory cannot be created and removed under /tmp (for example
+    under a sandbox)."""
+    try:
+        os.rmdir(tempfile.mkdtemp(dir="/tmp"))
+    except OSError:
+        pytest.fail("this test needs a writable, unsandboxed literal /tmp directory")
+    session_id = str(uuid.uuid4())
+    findings_dir = Path(f"/tmp/review-pr-reviewer-findings-{session_id}")
+    yield session_id, findings_dir
+    if findings_dir.is_symlink() or findings_dir.is_file():
+        findings_dir.unlink()
+    else:
+        shutil.rmtree(findings_dir, ignore_errors=True)
 
 
 def _git_shim_that_fails_on_worktree_subcommand(
@@ -644,7 +670,7 @@ def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
     clone = tmp_path / "base-clone"
     for command in (
         ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
-        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.email", "test@example.invalid"],
         ["git", "-C", str(clone), "config", "user.name", "test"],
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=60)
@@ -732,7 +758,7 @@ def _build_repo_with_pr_ref(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("main\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
@@ -829,6 +855,11 @@ def _user_msg(content, *, branch: str = "main", ts: str | None = None) -> dict:
     if ts:
         rec["timestamp"] = ts
     return rec
+
+
+def _task_notification_msg(*, branch: str = "main", ts: str | None = None) -> dict:
+    """The user record the harness writes when a background task or subagent finishes."""
+    return {**_user_msg(_TASK_NOTIFICATION_TEXT, branch=branch, ts=ts), "origin": {"kind": "task-notification"}}
 
 
 def _bash_use(tool_id: str, command: str) -> dict:
@@ -1590,6 +1621,79 @@ def _make_repo_with_remote(tmp_path: Path, default_branch: str = "main") -> tupl
     # Set origin/HEAD so a caller relying on it can resolve the default branch
     subprocess.run(["git", "remote", "set-head", "origin", default_branch], cwd=local, check=True)
     return local, bare
+
+
+_STACKED_BRANCH = "feat/own"
+
+
+def _commit_new_file(repo: Path, file_name: str) -> None:
+    (repo / file_name).write_text(f"{file_name} content\n")
+    subprocess.run(["git", "add", file_name], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"add {file_name}"], cwd=repo, check=True)
+
+
+def _make_stacked_repo(tmp_path: Path, stack_base: str = "stack", *, key_value: str | None = None) -> tuple[Path, Path]:
+    """Three tiers: the default tip, `stack_base` adding base.txt, and
+    _STACKED_BRANCH (checked out) adding own.txt. Both branches are pushed.
+    The branch's gh-merge-base key is set to stack_base unless key_value
+    overrides it."""
+    local, bare = _make_repo_with_remote(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", stack_base], cwd=local, check=True)
+    _commit_new_file(local, "base.txt")
+    subprocess.run(["git", "push", "-q", "origin", stack_base], cwd=local, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", _STACKED_BRANCH], cwd=local, check=True)
+    _commit_new_file(local, "own.txt")
+    subprocess.run(["git", "push", "-q", "origin", _STACKED_BRANCH], cwd=local, check=True)
+    subprocess.run(
+        ["git", "config", f"branch.{_STACKED_BRANCH}.gh-merge-base", stack_base if key_value is None else key_value],
+        cwd=local, check=True,
+    )
+    return local, bare
+
+
+def _shim_call_logging_command(calls_log: Path) -> str:
+    """The shell line a shim script runs first to append its arguments, one per line then a
+    blank line, to calls_log. _read_logged_calls reads that format back."""
+    append_arguments = "for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done; printf '\\n'"
+    return f"{{ {append_arguments}; }} >> {shlex.quote(str(calls_log))}\n"
+
+
+def _read_logged_calls(calls_log: Path) -> list[list[str]]:
+    """The argument list of each call a shim wrote to calls_log, empty when it never ran."""
+    if not calls_log.exists():
+        return []
+    return [call.splitlines() for call in calls_log.read_text().split("\n\n") if call]
+
+
+def _make_gh_pr_view_shim(
+    shim_dir: Path, *, reply: str = "", exit_status: int = 1, stderr_line: str | None = None
+) -> Path:
+    """Write an executable `gh` into shim_dir that answers only
+    `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`, comparing
+    each argument, never a joined string. That call prints `reply` verbatim and
+    exits `exit_status`, after printing `stderr_line` to stderr when it is given.
+    Any other argv exits 1 with no output. Every call appends its arguments, one
+    per line, then a blank line, to the returned log (a call with an empty
+    argument is not representable). Rebuilding the shim clears the log."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    calls_log = shim_dir / "gh-calls.log"
+    reply_file = shim_dir / "gh-reply.txt"
+    calls_log.unlink(missing_ok=True)
+    reply_file.write_bytes(reply.encode())
+    stderr_command = f"printf '%s\\n' {shlex.quote(stderr_line)} >&2\n  " if stderr_line is not None else ""
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(
+        "#!/bin/sh\n"
+        f"{_shim_call_logging_command(calls_log)}"
+        "if [ \"$#\" -eq 6 ] && [ \"$1\" = pr ] && [ \"$2\" = view ] && [ \"$3\" = --json ] \\\n"
+        "  && [ \"$4\" = state,baseRefName ] && [ \"$5\" = --jq ] && [ \"$6\" = '.state, .baseRefName' ]; then\n"
+        f"  {stderr_command}cat {shlex.quote(str(reply_file))}\n"
+        f"  exit {exit_status}\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    gh_shim.chmod(0o755)
+    return calls_log
 
 
 def _make_feature_branch(repo: Path, branch_name: str, return_to: str = "main") -> None:

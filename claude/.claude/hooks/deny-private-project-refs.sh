@@ -213,6 +213,10 @@
 #   filter drops path headers.
 # - The hook never reads the current branch name, which `git push` and a
 #   `gh pr create` without `--head` publish.
+# - The hook never reads the `branch.<branch>.gh-merge-base` key, which a
+#   `gh pr create` without `--base` publishes as the PR's base when the key is
+#   set. GitHub accepts a PR only against a branch that already exists in the
+#   PR's base repository, so that base name is already visible there.
 # - Surfaces this hook never scans (such as `gh pr comment` and writing files)
 #   are listed in
 #   `docs/private-project-redaction.md` § "Opting in another repository".
@@ -224,6 +228,9 @@
 # - A referenced file that holds the list itself can therefore echo every entry.
 # - A match found only in the quote-stripped copy of the command echoes the
 #   joined form.
+# - A private tracker key equal to any OSS_ALLOWLIST prefix passes the tracker-ID
+#   scan, and the opt-in blocklist is its only backstop; see
+#   `docs/private-project-redaction.md` § "What to put in the file (and what NOT to)".
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -295,7 +302,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate command detection safely."
+  emit_deny "could not source _lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository; the user, not the agent, runs ./install.sh from the claude-config checkout in a separate terminal only if that runbook says so."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -486,7 +493,7 @@ if [[ "$REMOTE_URL" != *claude-config* ]]; then
   STAGED_DIFF_PATHSPEC=':(top)'
 fi
 
-# Allowlist: prefixes that are NEVER private-project tracker IDs.
+# Allowlist: prefixes assumed not to be private-project tracker IDs.
 # Extend by prefix (no digits). Organized by category so it's obvious
 # what belongs here.
 #   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, IEEE, W3C,
@@ -497,15 +504,17 @@ fi
 #                                 a vendor brand, not a technical constant,
 #                                 so it accepts the same unbounded-digit
 #                                 tradeoff as GH/BUG rather than a fixed set)
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF, UTC, GMT
 #   happen to match [A-Z]{2,}-\d+:
+#                                 UTC and GMT accept the same unbounded-digit
+#                                 tradeoff as GH/BUG/GPT above.
 #   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
 #                                 as GH/BUG/GPT above rather than a fixed set.
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|UTC|GMT|AGPL|BSD|PROJ|TICKET)-'
 
 # The gh-pr, gh-issue, and git-commit source-path extractors are
 # _lib_gh_body_source_paths and _lib_git_commit_message_source_paths in

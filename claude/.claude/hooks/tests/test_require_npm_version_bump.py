@@ -88,7 +88,7 @@ def bare_remote(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     _git_q(seed, "init", "-q", "-b", "main")
-    _git_q(seed, "config", "user.email", "t@t.com")
+    _git_q(seed, "config", "user.email", "t@example.invalid")
     _git_q(seed, "config", "user.name", "t")
     _commit_package(seed, "packages/demo", "1.0.0", message="init")
     _git_q(seed, "remote", "add", "origin", str(bare))
@@ -106,7 +106,7 @@ def feature_clone(tmp_path, bare_remote):
         check=True,
         capture_output=True,
     )
-    _git_q(repo, "config", "user.email", "t@t.com")
+    _git_q(repo, "config", "user.email", "t@example.invalid")
     _git_q(repo, "config", "user.name", "t")
     _git_q(repo, "remote", "set-head", "origin", "main")
     _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -183,7 +183,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "private-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, ".", "1.0.0", private=True, message="init")
         _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -238,7 +238,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "monorepo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/foo", "1.0.0", message="init foo")
         _commit_package(repo, "packages/bar", "1.0.0", message="init bar")
@@ -255,7 +255,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "monorepo-partial"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/foo", "1.0.0", message="init foo")
         _commit_package(repo, "packages/bar", "1.0.0", message="init bar")
@@ -280,7 +280,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "new-package-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         (repo / "file.txt").write_text("first\n")
         _git_q(repo, "add", "file.txt")
@@ -331,7 +331,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "multi-digit-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/demo", "1.9.0", message="init")
         _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -348,7 +348,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "multi-digit-repo-reverse"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/demo", "1.10.0", message="init")
         _git_q(repo, "checkout", "-q", "-b", "feature")
@@ -424,7 +424,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "no-merge-base-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/demo", "1.0.0", message="init")
         _write_source_file(repo, "packages/demo/src/index.ts")
@@ -474,7 +474,7 @@ class TestRequireNpmVersionBump:
         repo = tmp_path / "local-main-repo"
         repo.mkdir()
         _git_q(repo, "init", "-q", "-b", "main")
-        _git_q(repo, "config", "user.email", "t@t.com")
+        _git_q(repo, "config", "user.email", "t@example.invalid")
         _git_q(repo, "config", "user.name", "t")
         _commit_package(repo, "packages/demo", "1.0.0", message="init")
         _git_q(repo, "checkout", "-q", "-b", "feature")

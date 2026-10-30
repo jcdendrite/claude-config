@@ -412,10 +412,10 @@ run matrix live in
 this is a pointer, not a restatement.
 
 ```bash
-# Print the seven-run matrix without launching anything:
+# Print the nine-run matrix without launching anything:
 python evals/measure_subagent_model_resolution.py --list
 
-# Run a single matrix cell (1-7):
+# Run a single matrix cell (1-9):
 python evals/measure_subagent_model_resolution.py --run 1
 
 # Run the full matrix in order (stops if run 1's self-check fails):
@@ -429,6 +429,62 @@ live sessions.
 not reproduce interactive Shift+Tab plan mode's escalation to Opus — see
 [`docs/case-studies/plan-mode-model-resolution.md`](../docs/case-studies/plan-mode-model-resolution.md)
 for the measured discrepancy and what a valid re-verification requires.
+
+## Explore recall gate
+
+`measure_explore_recall.py` is a separate, one-off instrument — not a skill
+eval. It measures `Explore`'s Haiku-vs-Sonnet locate recall and precision
+against a stratified, hand-curated fixture (grep-derivable file-path cases
+and semantic `path:symbol` cases), scores each dispatch's structured JSON
+answer against the case's key, and evaluates the three-term adoption gate
+that decides whether `Explore`'s Haiku pin ships. Full design — the answer
+contract, matching rules, arithmetic, and gate — lives in
+[`.claude/plans/haiku-routing-surfaces.md`](../.claude/plans/haiku-routing-surfaces.md) —
+this is a pointer, not a restatement.
+
+The headless parent launches in its own empty temp project dir, which keeps
+the repo's hooks and CLAUDE.md out of it. That also means the dispatched
+`Explore` subagent has nothing to search unless pointed elsewhere, so a
+live run requires `--repo-dir` naming a clean checkout whose `HEAD` starts
+with the fixture's `pinned_commit` (an abbreviated SHA), validated at
+startup.
+
+```bash
+# Build every dispatch command and prompt without launching anything:
+python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json --dry-run
+
+# Run the gate for real (K=5 samples per case per model by default),
+# writing the full report:
+python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+  --repo-dir /path/to/clean/checkout --json /tmp/results.json
+```
+
+`--keep-artifacts DIR` retains each sample's session and subagent
+transcripts for diagnosis instead of discarding them. `DIR` is refused if
+it resolves inside any worktree of this repository (the main checkout or
+any linked worktree), since copied transcripts carry account-local session
+paths that must never be staged or committed.
+
+`--json`'s report carries the same class of account-local content
+(`repo_dir`'s absolute checkout path, plus each sample's answer text) and
+has no equivalent containment check, so point it outside the repository
+the way the example above does — it must never be staged or committed
+either.
+
+`--cumulative-stop-usd` aborts the whole batch once realized spend crosses
+it (default: `DEFAULT_CUMULATIVE_STOP_USD`). It is checked once per sample
+after that sample completes, so the batch can overshoot it by up to
+`(MAX_ARM_MISMATCH_RETRIES + 1) * budget_cap_usd` before the check blocks
+the next sample from starting.
+
+On an UNCALLABLE verdict, `run_recall_gate` runs one extra batch of
+`UNCALLABLE_K_INCREMENT` additional samples per case per model and
+re-evaluates the gate. `--max-k-raises` caps how many times this can
+happen (default: `DEFAULT_MAX_K_RAISES`); pass `0` to disable it. That
+extra batch still counts against `--cumulative-stop-usd`.
+
+Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
+sessions.
 
 ## Review bench
 
@@ -515,6 +571,36 @@ Run them in this order:
   `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
+  - Skip rules:
+    - It skips a removed line that is blank, a comment, or inside a Python
+      docstring.
+    - A docstring line that is blank or reads as a comment, for example one
+      starting with `*`, `--` or `#`, is skipped as such, so
+      `python_docstring_line_skips` does not count it.
+    - A docstring the program reads at runtime, such as `__doc__` passed to
+      argparse, is skipped like any other.
+  - The docstring filter does not apply to:
+    - An addition-only hunk, which applies none of the skip rules.
+    - A removed docstring line that shares its physical line with code, for
+      example `class E(Exception): """Boom."""`.
+    - A `.py` file that cannot be parsed.
+  - Counters, printed on stderr: `python_docstring_parse_attempts` and
+    `python_docstring_parse_failures` count `.py` files, once per fix commit
+    and file. A `.py` file is never tried, so it counts in neither counter,
+    when:
+    - it has only addition-only hunks,
+    - its removing hunks all fail to blame,
+    - its removed lines are all blank or comments,
+    - its `git show` fails, which `git_call_failures` counts instead.
+
+`mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
+introducing commit, for example a file renamed after that commit or lines
+`git blame -C` followed in from another file. `mine-szz` prints that count on
+stderr as `path_absent_at_introducing_commit`. `mine-rounds` counts the
+citations it skips this way in its stderr summary. The drop does not reach an
+entry a `mine-rounds` rerun keeps from the prior shortlist, so `confirm`
+rejects such an entry on every run until it is deleted from
+`review_round_candidates.json`.
 
 `mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
 introducing commit, for example a file renamed after that commit or lines
@@ -541,7 +627,7 @@ then `pr-comment`, then `szz`) and then by the miner's own order, so an early
 the schema, that its path exists at its introducing commit, and, when the
 candidate has a description, the description-provenance check against every
 `.local/` excerpt. It then prompts `[y/N/q]` for each candidate that passes,
-except one that `--source` or the declined IDs described below leave out. The
+except one that `--source`, `--ids-file`, or the declined IDs described below leave out. The
 prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
@@ -580,6 +666,59 @@ several: `review-round`, `pr-comment`, `szz`. Every shortlist still loads and
 every candidate still runs the checks, so the provenance check still sees every
 excerpt.
 
+`--ids-file FILE` restricts the prompts to the candidate IDs a UTF-8 text file
+lists, and prompts for them in the file's order instead of the source order. It
+combines with `--source` as an intersection.
+
+The file holds one ID per line. Blank lines and lines starting with `#` are
+skipped. A `#` after an ID is part of the line, so `c-1  # note` names an
+unknown ID.
+
+An ID is not unknown while a shortlist still holds its candidate, even when the
+checks rejected it, `defects.json` already holds it, or an earlier run declined it.
+`confirm` does not prompt for such an ID. `--include-declined` still re-includes
+a declined one. `confirm` prints how many listed IDs it left out and why.
+
+`confirm` exits 2 before any prompt, and writes and pins nothing, when an ID
+matches no shortlist candidate or when the file is missing, unreadable, not
+UTF-8, or empty of IDs.
+
+`--answers-file FILE --engineer-reviewed-answers` applies answers instead of
+prompting. The engineer's review of the answers file is the approval.
+`--engineer-reviewed-answers` is a self-attestation that the engineer reviewed
+every row. `confirm` cannot verify it, and `--answers-file` exits 2 without it.
+
+The file is a JSON list of `{"id", "answer", "description", "lens"}` objects,
+applied in the file's order. A `y` row's description replaces the candidate's
+own. An `n` row ignores `description` and `lens`, and appends its ID to
+`.local/confirm_declined_ids.json`.
+
+Every check a `y` at the prompt runs also runs for each row.
+
+`confirm` skips a row, and the summary counts each skip by reason, when:
+
+- The checks reject its candidate.
+- `defects.json` already holds its candidate. `defects.json` keeps the committed
+  text, so a `y` row with a different description or lens is skipped. An `n` row
+  prints a note that `confirm` does not remove an approved defect and that the
+  engineer must edit `defects.json` by hand.
+- An earlier run declined its candidate. To clear the decline, remove its ID from
+  `confirm_declined_ids.json` under `--local-dir`, or run
+  `confirm --include-declined` at a terminal.
+- A `y` row's candidate shares its head, fix, and path with a defect from another
+  source. That defect is one that `defects.json` already holds, whether or not a
+  shortlist still holds its candidate, or one that an earlier row of the same
+  file approves. The prompt only shows such a sibling, and the answers path
+  skips the second row.
+
+`confirm` prints each approved row and each newly declined ID, so the engineer
+can compare them with the answers file. A row names its candidate by ID alone, so
+a shortlist that a miner rewrote since the file was reviewed commits that
+rewritten location. The approved line shows it.
+
+`--answers-file` does not combine with `--ids-file`, `--source`, or
+`--include-declined`.
+
 The description policy:
 
 - A description may not hold a character that `is_terminal_unsafe_character`
@@ -587,7 +726,7 @@ The description policy:
   zero-width joiner, or a variation selector. The three tables that function
   reads are the one definition of the set.
 - The set includes LF and TAB. A mined description may keep both. A typed
-  one is a single line and may not hold TAB.
+  one, or an answers-file one, is a single line and may not hold TAB.
 - `ConfirmedDefect` enforces the policy when a record loads, so a
   `defects.json` edited past `confirm` fails to load in every subcommand that
   reads its records.
@@ -614,16 +753,16 @@ After the last prompt, `confirm` pins each accepted candidate's fix
 commit under `refs/review-bench/`, then appends the candidates to
 `defects.json`, each with `file_is_markdown` and the candidate's own path (the
 head path for a `pr-comment`). An interrupt in that pin-and-write phase can
-leave earlier pins in place and writes no defect. `confirm` aborts, exiting 1,
-when `defects.json` differs from what it loaded once the prompts end. It
-prints model-derived text with control characters as backslash escapes.
+leave earlier pins in place and writes no defect. `confirm` aborts
+when `defects.json` differs from what it loaded. It prints model-derived text
+with control characters as backslash escapes.
 
-`confirm` needs a terminal on stdin. Without one it runs every check that
+Without `--answers-file`, `confirm` needs a terminal on stdin. Without one it runs every check that
 needs no typed input, prints the rejections, writes and pins nothing, prints
-how many candidates await the engineer at a terminal after `--source` and the
-declined IDs narrow them, and exits 2 when any do. A candidate with no
-description that passes the schema checks counts as awaiting. No flag or
-environment variable supplies an answer in place of a terminal.
+how many candidates await the engineer at a terminal after `--source`, `--ids-file`,
+and the declined IDs narrow them, and exits 2 when any do. A candidate with no
+description that passes the schema checks counts as awaiting. No environment
+variable supplies an answer in place of a terminal.
 
 ### Fixtures and judge input
 

@@ -1,10 +1,10 @@
-"""Dialect lint over the shipped shell corpus: env-bash shebangs and no `sort -V`.
+"""Dialect lint over the shipped shell corpus: env-bash shebangs, no `sort -V`, no mode-then-`--` chmod.
 
 Scope: every file `scripts/list-shell-files.sh` returns, minus paths with a
 `tests/` segment (test fixtures run only under the CI interpreter and are never
 stowed).
 
-Two rules:
+Three rules:
 
 - Shebang: a line 1 that names bash must be exactly `#!/usr/bin/env bash`.
   `/bin/bash` is 3.2 on macOS, so only an `env` lookup can reach a newer bash
@@ -12,6 +12,23 @@ Two rules:
 - `sort -V` / `--version-sort` is banned on any non-comment line. This is a
   BSD-userland rule, not a bash-version rule: BSD `sort` has no version sort.
   It carries no escape comment.
+- `chmod` takes `--` before the mode operand (`chmod -- 600 file`), never after
+  it. BSD `chmod` stops option parsing at the mode, so `chmod 600 -- file`
+  treats `--` as a file operand and fails on macOS. GNU `chmod` accepts both
+  orders unless `POSIXLY_CORRECT` is set, so default Linux CI does not catch the
+  failure. This rule is the only guard for a chmod that no test runs through a
+  BSD-parsing stub.
+
+Limits of the rules:
+
+- The `sort -V` and chmod scans are per physical line: a backslash-continued
+  command, a quoted flag (`sort "-V"`) and a quoted mode containing a space are
+  not seen.
+- The chmod rule covers `chmod` only, not other commands that take a mode.
+- The chmod rule has no escape comment.
+- Both scans flag a trailing comment or quoted message that spells the bad form.
+- The chmod rule flags a `--` only directly after the mode: `chmod 600 "$file" -- extra`
+  is not flagged.
 
 The predicates are pure functions of (relative path, text) so the control
 table can feed them violating and clean samples without touching the tree.
@@ -45,6 +62,13 @@ _SORT_VERSION_FLAG = re.compile(
     r"|\s-k\S*V\S*(?=[\s)`|;&\"'<>]|$))"
 )
 
+# `chmod`, any option clusters, a mode operand, then a bare `--` token. A mode
+# is a first token not starting with `-`, or a `-` followed by a mode letter
+# (`-w`, `-x`, `-w,g+r`), which BSD chmod reads as the whole mode argument.
+# `chmod -- 600 file` does not match: the token after `chmod` is `--`, so no
+# mode operand precedes it.
+_CHMOD_MODE_THEN_DOUBLE_DASH = re.compile(r"\bchmod(?:\s+-[A-Za-z]+)*\s+(?:[^\s-]\S*|-[rwxXstugo]\S*)\s+--(?=\s|$)")
+
 
 def _is_in_scope(rel_path: str) -> bool:
     return "tests" not in rel_path.split("/")
@@ -75,6 +99,17 @@ def sort_version_violation_lines(rel_path: str, text: str) -> list[int]:
         lineno
         for lineno, line in enumerate(text.splitlines(), start=1)
         if not line.lstrip().startswith("#") and _SORT_VERSION_FLAG.search(line)
+    ]
+
+
+def chmod_mode_then_double_dash_lines(rel_path: str, text: str) -> list[int]:
+    """Return 1-based numbers of non-comment lines that put `--` after chmod's mode operand."""
+    if not _is_in_scope(rel_path):
+        return []
+    return [
+        lineno
+        for lineno, line in enumerate(text.splitlines(), start=1)
+        if not line.lstrip().startswith("#") and _CHMOD_MODE_THEN_DOUBLE_DASH.search(line)
     ]
 
 
@@ -150,6 +185,33 @@ SORT_VERSION_CONTROL_TABLE = [
 ]
 
 
+CHMOD_DOUBLE_DASH_CONTROL_TABLE = [
+    pytest.param("a/x.sh", 'chmod 600 -- "$file"\n', [1], id="octal-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod 0700 -- "$dir" 2>/dev/null\n', [1], id="four-digit-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'if ! chmod 600 -- "$SRC"; then\n', [1], id="chmod-in-a-condition-violates"),
+    pytest.param("a/x.sh", '[ -e "$f" ] && chmod 600 -- "$f"\n', [1], id="chmod-after-and-list-violates"),
+    pytest.param("a/x.sh", 'chmod u+x -- "$file"\n', [1], id="symbolic-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod "$mode" -- "$file"\n', [1], id="variable-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod -R 755 -- "$dir"\n', [1], id="flag-then-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod -R -f 755 -- "$dir"\n', [1], id="two-flags-then-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod -w -- "$f"\n', [1], id="lone-permission-letter-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod -R -x -- "$d"\n', [1], id="flag-then-lone-permission-letter-mode-then-double-dash-violates"),
+    pytest.param("a/x.sh", 'chmod -w,g+r -- "$f"\n', [1], id="negative-symbolic-mode-with-tail-then-double-dash-violates"),
+    pytest.param("a/x.sh", "echo ok\nchmod 600 -- f\n", [2], id="reports-line-number"),
+    pytest.param("a/x.sh", 'chmod -- 600 "$file"\n', [], id="double-dash-before-mode-clean"),
+    pytest.param("a/x.sh", 'chmod -- -w "$f"\n', [], id="double-dash-before-lone-permission-letter-mode-clean"),
+    pytest.param("a/x.sh", 'chmod -R -- -x "$d"\n', [], id="flag-then-double-dash-before-lone-permission-letter-mode-clean"),
+    pytest.param("a/x.sh", 'chmod -- -w,g+r "$f"\n', [], id="double-dash-before-negative-symbolic-mode-with-tail-clean"),
+    pytest.param("a/x.sh", 'chmod -R -- 755 "$dir"\n', [], id="flag-then-double-dash-before-mode-clean"),
+    pytest.param("a/x.sh", 'chmod 600 "$file"\n', [], id="no-double-dash-clean"),
+    pytest.param("a/x.sh", 'chmod 600 "$file" -- extra\n', [], id="double-dash-after-the-file-operand-out-of-scope"),
+    pytest.param("a/x.sh", "# chmod 600 -- file fails on BSD\n", [], id="comment-only-mention-clean"),
+    pytest.param("a/x.sh", 'chown root -- "$file"\n', [], id="other-command-out-of-scope"),
+    pytest.param("a/tests/x.sh", 'chmod 600 -- "$file"\n', [], id="tests-segment-exempt"),
+    pytest.param("a/attests/x.sh", 'chmod 600 -- "$file"\n', [1], id="tests-substring-violates"),
+]
+
+
 @pytest.mark.parametrize(("rel_path", "text", "expected"), SHEBANG_CONTROL_TABLE)
 def test_shebang_predicate_control_table(rel_path: str, text: str, expected: str | None):
     assert shebang_violation(rel_path, text) == expected
@@ -158,6 +220,11 @@ def test_shebang_predicate_control_table(rel_path: str, text: str, expected: str
 @pytest.mark.parametrize(("rel_path", "text", "expected"), SORT_VERSION_CONTROL_TABLE)
 def test_sort_version_predicate_control_table(rel_path: str, text: str, expected: list[int]):
     assert sort_version_violation_lines(rel_path, text) == expected
+
+
+@pytest.mark.parametrize(("rel_path", "text", "expected"), CHMOD_DOUBLE_DASH_CONTROL_TABLE)
+def test_chmod_double_dash_predicate_control_table(rel_path: str, text: str, expected: list[int]):
+    assert chmod_mode_then_double_dash_lines(rel_path, text) == expected
 
 
 def test_discovery_covers_install_script_hooks_and_an_extensionless_script():
@@ -192,4 +259,16 @@ def test_no_sort_version_sort_in_shipped_shell():
     assert not violations, (
         "`sort -V` / `--version-sort` is unavailable in BSD sort (macOS); "
         "compare versions another way:\n" + "\n".join(f"  {path}: lines {lines}" for path, lines in violations.items())
+    )
+
+
+def test_no_chmod_double_dash_after_the_mode_in_shipped_shell():
+    violations = {}
+    for rel_path in _shipped_shell_files():
+        lines = chmod_mode_then_double_dash_lines(rel_path, _read_text(rel_path))
+        if lines:
+            violations[rel_path] = lines
+    assert not violations, (
+        "BSD chmod (macOS) treats a `--` after the mode as a file operand; "
+        "write `chmod -- <mode> <path>` instead:\n" + "\n".join(f"  {path}: lines {lines}" for path, lines in violations.items())
     )

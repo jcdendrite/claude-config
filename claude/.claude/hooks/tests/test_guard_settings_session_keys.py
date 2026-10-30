@@ -56,7 +56,7 @@ def settings_repo(tmp_path):
     repo = tmp_path / "settings-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     subprocess.run(
         ["git", "checkout", "-b", "main"],
@@ -85,10 +85,10 @@ def _init_settings_repo_on_branch(repo, branch: str, settings_content: str):
     branch name and initial settings.json content — shared by the fixtures
     below that exercise `_lib_default_branch_or_guess`'s candidate-probe and
     unresolvable paths through the real hook, not just in isolation
-    (test_lib.py)."""
+    (test_lib_git_refs.py)."""
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", branch], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     settings_dir = repo / "claude" / ".claude"
     settings_dir.mkdir(parents=True)
@@ -115,7 +115,7 @@ def settings_repo_candidate_probe_only(tmp_path):
     """Git repo whose default branch resolves only via the candidate-probe
     fallback: origin/develop exists, but no origin/HEAD symbolic ref does.
     For a test proving that fallback path reaches the real hook, not just
-    the isolated _lib_default_branch_or_guess helper (test_lib.py)."""
+    the isolated _lib_default_branch_or_guess helper (test_lib_git_refs.py)."""
     repo = tmp_path / "settings-repo-develop"
     settings_file = _init_settings_repo_on_branch(
         repo, "develop", '{"model": "sonnet", "effortLevel": "normal"}\n'
@@ -150,7 +150,7 @@ def settings_repo_file_absent_from_default_branch(tmp_path):
     repo = tmp_path / "settings-repo-file-absent"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "README.md").write_text("no settings.json yet\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -206,7 +206,7 @@ def settings_repo_dangling_symref_candidate_probe_file_absent(tmp_path):
     repo = tmp_path / "settings-repo-dangling-symref-candidate-file-absent"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "README.md").write_text("no settings.json yet\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -837,7 +837,7 @@ class TestGuardSettingsSessionKeys:
         empty and MAIN_CONTENT falls back to "", running the guarded-key
         comparison against an empty baseline.
         Proves the fail-safe fallback holds through the actual script, not
-        just _lib_default_branch_or_guess in isolation (test_lib.py).
+        just _lib_default_branch_or_guess in isolation (test_lib_git_refs.py).
         Asserts the deny message carries the literal "the default branch"
         fallback text from ${DEFAULT_BRANCH:-the default branch}."""
         repo, settings_file = settings_repo_unresolvable_default_branch
@@ -1065,7 +1065,7 @@ class TestGuardSettingsSessionKeys:
         session_repo = tmp_path / "session-repo"
         session_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=session_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=session_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=session_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=session_repo, check=True)
         (session_repo / "README.md").write_text("unrelated project\n")
         subprocess.run(["git", "add", "."], cwd=session_repo, check=True)

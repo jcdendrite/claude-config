@@ -1,0 +1,12 @@
+{
+  "angle": "Paragraph readability",
+  "angle_text_sha256": "007526b51ad25f20f23dfcaa5e6f6edc8c29ec08ffca9de03a7ce71671efb380",
+  "must_flag": "The build cache stores artifacts under `.buildcache/`. Each entry is keyed by a content hash of its inputs. Because a stale key can silently serve an artifact built from different inputs, every read must validate the key against the current input hash first. A reader that opens an entry while another process is writing it gets a corrupt artifact. For that reason, a write must hold the directory lock before touching any entry. The eviction sweep runs only when free disk space drops below 10%. Each sweep removes entries older than 30 days.",
+  "must_pass": "The build cache stores artifacts under `.buildcache/`. Each entry is keyed by a content hash of its inputs.\n\nEvery read must validate the key against the current input hash first, because a stale key can silently serve an artifact built from different inputs.\n\nA write must hold the directory lock before touching any entry, because a reader that opens an entry while another process is still writing it would otherwise get a corrupt artifact.\n\nThe eviction sweep runs only when free disk space drops below 10%. Each sweep removes entries older than 30 days.\n\nContent hashing makes key collisions negligible in practice, though not impossible.\n\n- **Dry run** — a mode that validates inputs without writing any cache entry.",
+  "must_pass_carve_outs": {
+    "cause_and_effect": "Every read must validate the key against the current input hash first, because a stale key can silently serve an artifact built from different inputs.",
+    "claim_and_hedge": "Content hashing makes key collisions negligible in practice, though not impossible.",
+    "bold_label_and_definition": "- **Dry run** — a mode that validates inputs without writing any cache entry."
+  },
+  "note": "Measured 2026-10-16 at K=5, using Sonnet dispatched through a general-purpose wrapper with model: sonnet.\n- Old body on must_flag: 2/5 against the bar of <= 1/5, not met.\n- New body on must_flag: 5/5 against the bar of >= 4/5, met.\n- New body on must_pass: 0/5 against the bar of <= 1/5, met.\nSee docs/design-decisions/paragraph-readability-review-angle.md for the re-run procedure and the full outcome."
+}

@@ -20,8 +20,17 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
+from ._review_pr_stack_helpers import (
+    STACK_LOWER_PR_NUMBER,
+    STACK_UPPER_PR_NUMBER,
+    copy_script_with_stubbed_walk,
+    pr_list_calls,
+    pr_list_head_values,
+    pr_list_item,
+    stack_replies,
+)
 from .conftest import (
     _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
@@ -41,7 +50,7 @@ from .conftest import (
     _provenance_fields,
     _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
-    _review_pr_audit_limit,
+    _review_pr_lib_integer,
     _seed_session,
     _shim_match_count,
     _shimmed_env,
@@ -91,6 +100,9 @@ def _diff_text_for(files: list[str]) -> str:
 # Sentinel default for pr_view_base_ref_name: "the base branch the REST payload reports".
 _SAME_AS_REST_BASE_REF = "__SAME_AS_REST_BASE_REF__"
 
+# Passed as a base-name knob to make the shim print JSON null for that field, where None drops the field.
+_JSON_NULL = "__JSON_NULL__"
+
 
 def _gh_shim_source(
     call_log: Path,
@@ -112,6 +124,7 @@ def _gh_shim_source(
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
     pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
+    pr_list_replies: dict | None = None,
 ) -> str:
     """gh shim recording every invocation and returning fixed replies whatever
     fields are requested. A `gh pr view` call carrying
@@ -129,9 +142,12 @@ def _gh_shim_source(
     from `files` to model a truncated or padded listing (`omit_changed_files`
     drops it, `fail_rest` exits 1). `base_ref_name` and `base_default_branch`
     are the REST payload's `base.ref` and `base.repo.default_branch`; a value
-    of None drops that field, independently of `omit_changed_files`.
+    of None drops that field and `_JSON_NULL` makes it JSON null, independently of `omit_changed_files`.
     `pr_view_base_ref_name` is the `baseRefName` the non-`--jq` `gh pr view`
-    reply reports (the REST `base.ref` by default, None drops it). The files
+    reply reports (the REST `base.ref` by default, None drops it, `_JSON_NULL` makes it JSON null).
+    `gh pr list` is answered by the stack-walk double (_review_pr_stack_helpers.py)
+    from `pr_list_replies`, keyed by the exact `--head=` value; a branch with no
+    key answers `[]`, which leaves a stacked base clear. The files
     listing prints one JSON string per line under the `@json` jq filter, as
     real `gh --jq` does for a
     string result: raw UTF-8, with a control character rendered in caret
@@ -168,6 +184,14 @@ def _gh_shim_source(
         OMIT_CHANGED_FILES = {omit_changed_files!r}
         FAIL_REST = {fail_rest!r}
         FILES_FAILURE_EXIT_STATUS = {files_failure_exit_status!r}
+        PR_LIST_REPLIES = json.loads({json.dumps(pr_list_replies or {})!r})
+        JSON_NULL = {_JSON_NULL!r}
+        sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+        from _review_pr_stack_helpers import answer_gh_pr_list
+
+        def null_if_marked(value):
+            return None if value == JSON_NULL else value
+
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
@@ -181,6 +205,8 @@ def _gh_shim_source(
         record = {{"args": args}}
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
+        if args[:2] == ["pr", "list"]:
+            sys.exit(answer_gh_pr_list(args[2:], PR_LIST_REPLIES))
         if args[:2] == ["pr", "view"]:
             if FAIL_PR_VIEW:
                 sys.exit(1)
@@ -199,7 +225,7 @@ def _gh_shim_source(
             if BASE_REF_OID is not None:
                 reply["baseRefOid"] = BASE_REF_OID
             if PR_VIEW_BASE_REF_NAME is not None:
-                reply["baseRefName"] = PR_VIEW_BASE_REF_NAME
+                reply["baseRefName"] = null_if_marked(PR_VIEW_BASE_REF_NAME)
             print(json.dumps(reply))
             sys.exit(0)
         if args[:2] == ["pr", "diff"]:
@@ -215,10 +241,10 @@ def _gh_shim_source(
             payload = {{}} if OMIT_CHANGED_FILES else {{"changed_files": CHANGED_FILES}}
             base_repo = {{}}
             if BASE_DEFAULT_BRANCH is not None:
-                base_repo["default_branch"] = BASE_DEFAULT_BRANCH
+                base_repo["default_branch"] = null_if_marked(BASE_DEFAULT_BRANCH)
             base = {{"repo": base_repo}}
             if BASE_REF_NAME is not None:
-                base["ref"] = BASE_REF_NAME
+                base["ref"] = null_if_marked(BASE_REF_NAME)
             payload["base"] = base
             print(json.dumps(payload))
             sys.exit(0)
@@ -296,10 +322,12 @@ def _run(
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
     pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
+    pr_list_replies: dict | None = None,
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
+    script_path: Path = SCRIPT,
 ) -> tuple[subprocess.CompletedProcess, Path]:
-    """Runs the script. `base_ref_oid` defaults to the commit origin/main
+    """Runs the script. `script_path` names a copy to run in its place. `base_ref_oid` defaults to the commit origin/main
     points at in `cwd`, which origin already holds, so a test that does not care
     about the base still reaches a successful base fetch. None omits baseRefOid
     from the gh reply. `base_ref_name` and `base_default_branch` default to the
@@ -333,6 +361,7 @@ def _run(
                 base_ref_name=base_ref_name,
                 base_default_branch=base_default_branch,
                 pr_view_base_ref_name=pr_view_base_ref_name,
+                pr_list_replies=pr_list_replies,
             ),
         ),
         "HOME": str(home),
@@ -343,11 +372,11 @@ def _run(
     if path_prefix is not None:
         env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
-        ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True,
+        ["bash", str(script_path), *args], cwd=cwd, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     _assert_gh_calls_are_read_only(
-        _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "diff")
+        _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "diff", "list")
     )
     return result, call_log
 
@@ -608,7 +637,31 @@ def _assert_diff_and_provenance_written(home: Path, result: subprocess.Completed
 
 _BASE_REF_OID_JQ_FILTER = ".baseRefOid // empty"
 _BASE_REF_NAME_JQ_FILTER = ".baseRefName // empty"
+_REST_BASE_REF_NAME_JQ_FILTER = ".base.ref // empty"
 _BASE_DEFAULT_BRANCH_JQ_FILTER = ".base.repo.default_branch // empty"
+
+
+def _assert_refused_before_any_listing_or_diff_fetch(
+    result: subprocess.CompletedProcess, home: Path, call_log: Path, *, provenance_pre_seeded: bool = False
+) -> None:
+    """The run printed nothing, reached no file listing and no `gh pr diff`, and wrote no diff file.
+    It wrote no provenance either, unless a test pre-seeded one, which the test checks itself."""
+    calls = _read_calls(call_log)
+    assert result.stdout == ""
+    assert not any(_is_listing_call(call, "/files") for call in calls)
+    assert not any(call[:2] == ["pr", "diff"] for call in calls)
+    active_dir = home / ".claude" / ".review-pr-active.d"
+    assert not (active_dir / f"{SID}.diff").exists()
+    if not provenance_pre_seeded:
+        assert not (active_dir / f"{SID}.provenance").exists()
+
+
+def _assert_refused_before_any_lookup_listing_or_artifact(
+    result: subprocess.CompletedProcess, home: Path, call_log: Path
+) -> None:
+    """As _assert_refused_before_any_listing_or_diff_fetch, and the run made no `gh pr list` call."""
+    _assert_refused_before_any_listing_or_diff_fetch(result, home, call_log)
+    assert not any(call[:2] == ["pr", "list"] for call in _read_calls(call_log))
 
 
 def _install_jq_shim_that_fails_the_read(tmp_path: Path, failing_jq_filter: str) -> Path:
@@ -682,19 +735,13 @@ class TestBaseCommitFetch:
         assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
 
     @pytest.mark.parametrize(
-        ("base_default_branch", "pr_view_base_ref_name", "expect_token"),
-        [("main", "feature/stacked", False), ("feature/stacked", "feature/stacked", True), ("main", None, False)],
-        ids=[
-            "gh-pr-view-base-differs-from-rest-default",
-            "gh-pr-view-base-matches-rest-default",
-            "gh-pr-view-base-absent-while-rest-base-matches-default",
-        ],
+        ("agreed_base_ref_name", "base_default_branch", "expect_token"),
+        [("feature/stacked", "main", False), ("feature/stacked", "feature/stacked", True)],
+        ids=["agreed-base-differs-from-default", "agreed-base-is-the-default"],
     )
-    def test_the_token_follows_the_base_branch_name_from_the_gh_pr_view_reply(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_default_branch, pr_view_base_ref_name, expect_token
+    def test_the_token_follows_the_base_branch_name_both_reads_agree_on(
+        self, isolated_home, repo_with_pr_ref, tmp_path, agreed_base_ref_name, base_default_branch, expect_token
     ):
-        """The REST `base.ref` is "main" in every case, so only the `gh pr view`
-        `baseRefName` can decide the token."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         base_sha = _push_new_base_commit(repo, tmp_path)
@@ -702,8 +749,7 @@ class TestBaseCommitFetch:
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
-            base_ref_name="main", base_default_branch=base_default_branch,
-            pr_view_base_ref_name=pr_view_base_ref_name,
+            base_ref_name=agreed_base_ref_name, base_default_branch=base_default_branch,
         )
 
         assert result.returncode == 0, result.stderr
@@ -711,49 +757,90 @@ class TestBaseCommitFetch:
         assert result.stdout.splitlines()[1:] == expected_lines_after_diff_path
 
     @pytest.mark.parametrize(
-        ("base_ref_name", "base_default_branch"),
-        [(None, "main"), ("main", None), (None, None)],
-        ids=["base-ref-absent", "default-branch-absent", "both-absent"],
+        ("rest_base_ref_name", "pr_view_base_ref_name"),
+        [("main", "feature/stacked"), ("feature/stacked", "main")],
+        ids=["gh-pr-view-reports-a-stacked-base", "rest-reports-a-stacked-base"],
     )
-    def test_an_unreadable_base_branch_name_prints_no_token_and_does_not_abort(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name, base_default_branch
+    def test_a_base_branch_the_two_reads_disagree_on_exits_2_before_any_lookup_or_listing(
+        self, isolated_home, repo_with_pr_ref, tmp_path, rest_base_ref_name, pr_view_base_ref_name
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            base_ref_name=rest_base_ref_name, base_default_branch="main", pr_view_base_ref_name=pr_view_base_ref_name,
+        )
+
+        assert result.returncode == 2
+        assert (
+            f'reads as "{rest_base_ref_name}" from the REST payload but as "{pr_view_base_ref_name}" from gh pr view'
+            in result.stderr
+        )
+        _assert_refused_before_any_lookup_listing_or_artifact(result, isolated_home, call_log)
+
+    def test_base_branch_names_past_the_echo_limit_are_cut_in_the_disagreement_message(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        limit = _review_pr_lib_integer("REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
+        rest_base_ref_name, pr_view_base_ref_name = "r" * (limit + 40), "v" * (limit + 40)
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
 
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
-            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=rest_base_ref_name, base_default_branch="main",
+            pr_view_base_ref_name=pr_view_base_ref_name,
         )
 
-        assert result.returncode == 0, result.stderr
-        assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
-        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
-        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+        assert result.returncode == 2, result.stderr
+        for name in (rest_base_ref_name, pr_view_base_ref_name):
+            assert f'"{name[:limit]}...[truncated]"' in result.stderr
+            assert name[: limit + 1] not in result.stderr
+
+    @pytest.mark.parametrize("absent_value", [None, "", _JSON_NULL], ids=["absent", "empty", "null"])
+    @pytest.mark.parametrize(
+        "unreadable_field", ["pr_view_base_ref_name", "base_ref_name", "base_default_branch"],
+        ids=["gh-pr-view-base-ref-name", "rest-base-ref", "rest-default-branch"],
+    )
+    def test_an_unreadable_base_branch_or_default_branch_exits_2_before_any_lookup_or_listing(
+        self, isolated_home, repo_with_pr_ref, tmp_path, unreadable_field, absent_value
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        readable_names = {"pr_view_base_ref_name": "main", "base_ref_name": "main", "base_default_branch": "main"}
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], **{**readable_names, unreadable_field: absent_value},
+        )
+
+        assert result.returncode == 2
+        assert "so whether the PR is stacked is undecided" in result.stderr
+        _assert_refused_before_any_lookup_listing_or_artifact(result, isolated_home, call_log)
 
     @pytest.mark.parametrize(
-        "failing_jq_filter", [_BASE_REF_NAME_JQ_FILTER, _BASE_DEFAULT_BRANCH_JQ_FILTER],
-        ids=["base-ref-read", "default-branch-read"],
+        "failing_jq_filter",
+        [_BASE_REF_NAME_JQ_FILTER, _REST_BASE_REF_NAME_JQ_FILTER, _BASE_DEFAULT_BRANCH_JQ_FILTER],
+        ids=["gh-pr-view-base-ref-name-read", "rest-base-ref-read", "rest-default-branch-read"],
     )
-    def test_a_failed_base_branch_name_read_prints_no_token_and_does_not_abort(
+    def test_a_failed_base_branch_read_exits_2_before_any_lookup_or_listing(
         self, isolated_home, repo_with_pr_ref, tmp_path, failing_jq_filter
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         base_sha = _push_new_base_commit(repo, tmp_path)
 
-        result, _ = _run(
+        result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
             path_prefix=_install_jq_shim_that_fails_the_read(tmp_path, failing_jq_filter),
         )
 
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.splitlines()[1:] == [base_sha], "the base object name alone follows the diff path"
-        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
-        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+        assert result.returncode == 2
+        assert "so whether the PR is stacked is undecided" in result.stderr
+        _assert_refused_before_any_lookup_listing_or_artifact(result, isolated_home, call_log)
 
     def test_a_default_branch_with_a_slash_in_its_name_prints_the_token(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -1157,7 +1244,7 @@ class TestAuditFindingKeepsEachMatchOnOneLine:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        path_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
+        path_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
         long_name = "d" * (path_limit + 100) + "/CLAUDE.md"
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[long_name],
@@ -1166,26 +1253,137 @@ class TestAuditFindingKeepsEachMatchOnOneLine:
         assert long_name not in result.stderr
         assert f'"{"d" * path_limit}...[truncated]"' in result.stderr
 
-    def test_a_stop_document_that_cannot_be_formatted_prints_a_fixed_line_with_the_match_count(
+    def test_a_stop_document_whose_paths_cannot_be_recorded_aborts_after_the_fixed_match_count_line(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """The unformattable document is never echoed: `[1, 2]` has no `path`
-        field to print, and its own text must not reach stderr."""
+        """`[1, 2]` has no string `path` to record, so the run aborts: the audit matched, but a
+        finding whose paths no later check could confirm must not be reported as one. The
+        document's own text never reaches stderr."""
         _install_audit_script_that_runs(
             isolated_home,
             "import sys\nprint('{\"stop\": true, \"matches\": [1, 2]}')\nsys.exit(1)\n",
         )
         repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        assert not _git_commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
         )
-        assert result.returncode == 0, result.stderr
-        assert "AUDIT_FINDING" in result.stderr
+        assert result.returncode == 2, result.stderr
+        assert not _git_commit_is_present(repo, base_sha), "the abort comes before the base fetch"
+        assert "the passive-execution audit matched paths" in result.stderr
+        assert "could not be recorded" in result.stderr
         assert (
             "the audit reported 2 matched path(s), but its match list could not be formatted for display"
             in result.stderr
         )
+        assert "AUDIT_FINDING" not in result.stderr
         assert "[1, 2]" not in result.stderr
+        assert result.stdout == ""
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not (active_dir / f"{SID}.diff").exists()
+        assert not (active_dir / f"{SID}.provenance").exists()
+        assert not any(call[:2] == ["pr", "diff"] for call in _read_calls(call_log))
+
+
+# The characters Python's str.splitlines() treats as line boundaries that the gh shim passes through unchanged.
+# Built with chr() so no raw separator sits in this source.
+_LINE_SEPARATOR_CODEPOINTS = (0x0A, 0x0D, 0x0B, 0x85, 0x2028, 0x2029)
+
+_ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+_DIFF_ONLY_DISCLOSURE = "Reviewed from the PR diff only — no checkout, no checks run."
+
+
+class TestAuditPathsRecordedInProvenance:
+    @staticmethod
+    def _provenance(home: Path) -> Path:
+        return home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+
+    def test_a_clean_audit_records_an_empty_audit_paths_array_as_the_last_provenance_line(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"])
+        assert result.returncode == 0, result.stderr
+        assert self._provenance(isolated_home).read_text().splitlines()[-1] == "audit_paths=[]"
+
+    def test_a_stop_records_every_matched_path_in_order_and_none_that_did_not_match(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=[".claude/hooks/pre.sh", "docs/CLAUDE.md", ".claude/hooks/dir x/a=b*c$d.sh", "a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        fields = _provenance_fields(self._provenance(isolated_home))
+        assert json.loads(fields["audit_paths"]) == [
+            ".claude/hooks/pre.sh", "docs/CLAUDE.md", ".claude/hooks/dir x/a=b*c$d.sh",
+        ]
+        assert fields["mode"] == "diff-only"
+
+    @pytest.mark.parametrize("separator_codepoint", _LINE_SEPARATOR_CODEPOINTS, ids=hex)
+    def test_a_matched_name_holding_a_line_separator_cannot_forge_another_provenance_field(
+        self, isolated_home, repo_with_pr_ref, tmp_path, separator_codepoint
+    ):
+        """The name tries to start a `mode=checkout` line. The recorded value must stay one
+        printable-ASCII line, so the provenance keeps its six lines and its real mode."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        forging_name = ".claude/hooks/x" + chr(separator_codepoint) + "mode=checkout"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[forging_name],
+        )
+        assert result.returncode == 0, result.stderr
+        provenance = self._provenance(isolated_home)
+        assert len(provenance.read_text().splitlines()) == 6
+        fields = _provenance_fields(provenance)
+        assert fields["mode"] == "diff-only"
+        assert json.loads(fields["audit_paths"]) == [forging_name]
+
+    def test_a_marker_write_after_a_stop_over_more_paths_than_the_list_limit_needs_every_span(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Runs the diff script, then the real marker.sh. The refusal leg drops only the last
+        span, which the refusal must name. The passing leg names all of them. Each span is built
+        here from its name, not through the library."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        match_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        matched_names = [f".claude/hooks/hook{index:02d}.sh" for index in range(match_limit + 1)]
+        result, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=matched_names)
+        assert result.returncode == 0, result.stderr
+        spans = [f"`{name}`" for name in matched_names]
+        body_path = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.body"
+
+        def write_body_naming(named_spans: list[str]) -> None:
+            findings = "".join(f"- blocking: {span}\n" for span in named_spans)
+            body_path.write_text(
+                f"**[Claude Code]** # findings\n\n{findings}\n{_DIFF_ONLY_DISCLOSURE}\n\n{_ATTRIBUTION_TRAILER}\n"
+            )
+
+        def run_marker_write() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "review-pr"],
+                cwd=repo, env={"HOME": str(isolated_home), "PATH": os.environ["PATH"]},
+                capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            )
+
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        write_body_naming(spans[:-1])
+        refusal = run_marker_write()
+        assert refusal.returncode == 2, refusal.stderr
+        assert f"missing span 1: {spans[-1]}" in refusal.stderr
+        assert "missing span 2" not in refusal.stderr
+        assert not marker_dir.exists() or list(marker_dir.iterdir()) == []
+
+        write_body_naming(spans)
+        acceptance = run_marker_write()
+        assert acceptance.returncode == 0, acceptance.stderr
+        assert len(list(marker_dir.iterdir())) == 1
 
 
 class TestAuditThatReturnsNoVerdictIsNotAFinding:
@@ -1450,3 +1648,141 @@ class TestGhFailureNeverBypassesTheScrub:
         assert secret_shaped_text not in result.stderr
         diff_path = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
         assert not diff_path.exists()
+
+
+_STACKED_BASE_BRANCH = "feature/stacked"
+_LOWER_BASE_BRANCH = "feature/lower"
+
+
+class TestStackedBaseGate:
+    """A PR whose base is not the default branch is refused (exit 4) while an ancestor PR has no submitted review."""
+
+    def test_an_unreviewed_ancestor_exits_4_naming_the_lowest_one_and_leaves_a_pre_seeded_provenance_unchanged(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        provenance = write_review_pr_provenance(isolated_home, PR_IDENTITY, pr_sha, 999, mode="acquired", session_id=SID)
+        provenance_before = provenance.read_bytes()
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=False),
+        )
+
+        assert result.returncode == 4, result.stderr
+        assert f"PR {OWNER_REPO}#{STACK_LOWER_PR_NUMBER}, which has no submitted review" in result.stderr
+        # Wording tripwires: the next two lines pin refusal prose, not behavior.
+        assert "clears once a review is submitted on it on GitHub" in result.stderr
+        assert "a draft (pending, unsubmitted) review or one kept local does not count" in result.stderr
+        assert "review-pr-checkout.sh refuses" in result.stderr
+        assert len(pr_list_calls(_read_calls(call_log))) == 2
+        assert provenance.read_bytes() == provenance_before
+        _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log, provenance_pre_seeded=True)
+
+    def test_an_unreviewed_immediate_base_exits_4_naming_it_though_the_ancestor_below_it_is_reviewed(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            pr_list_replies=stack_replies(
+                _STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True, upper_reviewed=False
+            ),
+        )
+
+        assert result.returncode == 4, result.stderr
+        assert f"PR {OWNER_REPO}#{STACK_UPPER_PR_NUMBER}, which has no submitted review" in result.stderr
+        assert len(pr_list_calls(_read_calls(call_log))) == 2
+        _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log, provenance_pre_seeded=False)
+
+    def test_a_pr_into_the_default_branch_makes_no_lookup_whatever_a_reply_keyed_by_the_default_branch_holds(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        bait_replies = {"main": [pr_list_item(99, "main", "elsewhere")]}
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], pr_list_replies=bait_replies,
+        )
+
+        assert result.returncode == 0, result.stderr
+        calls = _read_calls(call_log)
+        assert pr_list_calls(calls) == []
+        assert any(call[:2] == ["pr", "diff"] for call in calls), "control: the run went on to fetch the diff"
+
+    def test_a_stack_whose_ancestors_all_have_reviews_proceeds_looking_up_one_branch_per_level(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            pr_list_replies=stack_replies(_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [_origin_main_sha(repo)], "no default-branch token for a stacked base"
+        calls = _read_calls(call_log)
+        assert [call[call.index("-R") + 1] for call in pr_list_calls(calls)] == [OWNER_REPO] * 2
+        assert pr_list_head_values(calls) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
+
+    def test_a_walk_that_cannot_decide_exits_2_even_when_gh_exits_4(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """gh exits 4 when a command needs authentication, and only the gate itself may produce this script's exit 4."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            pr_list_replies={_STACKED_BASE_BRANCH: {"exit": 4}},
+        )
+
+        assert result.returncode == 2
+        (failure_line,) = result.stderr.splitlines()
+        assert failure_line.startswith("review-pr-diff.sh: ")
+        assert "failed (exit 4)" in failure_line
+        assert len(pr_list_calls(_read_calls(call_log))) == 1
+        _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log)
+
+    def test_a_gh_exit_4_outside_the_walk_exits_2(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            fail_files=True, files_failure_exit_status=4,
+        )
+
+        assert result.returncode == 2
+        assert "gh api --paginate failed (exit 4)" in result.stderr
+        assert len(pr_list_calls(_read_calls(call_log))) == 1, "control: the walk cleared the stack before the listing failed"
+
+    @pytest.mark.parametrize(
+        "walk_stdout", ["surprise", "", "0", "007", "[]", "41x", "41\nrm -rf"],
+        ids=["unrecognized-text", "empty", "zero", "leading-zero-number", "json-array", "number-then-letter", "number-then-line"],
+    )
+    def test_walk_output_that_is_neither_clear_nor_an_ancestor_number_exits_2_writing_no_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path, walk_stdout
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        script_with_stubbed_walk = copy_script_with_stubbed_walk(SCRIPT, tmp_path / "sandbox", walk_stdout)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH, script_path=script_with_stubbed_walk,
+        )
+
+        assert result.returncode == 2
+        assert "printed neither clear nor an ancestor PR number" in result.stderr
+        _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log)

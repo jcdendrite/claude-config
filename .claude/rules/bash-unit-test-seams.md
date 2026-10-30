@@ -15,10 +15,8 @@ Where an extracted pure-bash helper belongs, in preference order:
 Already-seamed libs, as precedent:
 - `claude/.claude/scripts/_worktree-lib.sh`
 - `claude/.claude/scripts/_stow_migration_lib.sh`
-- `claude/.claude/hooks/_lib.sh`, with six lib-level test files:
-  `test_lib.py`, `test_lib_reviewer_round_state.py`,
-  `test_lib_append_line_locked.py`, `test_lib_worktree_collision_guard.py`,
-  `test_marker_lib.py`, `test_config_lib.py`.
+- `claude/.claude/hooks/_lib.sh`, with its lib-level tests in
+  `claude/.claude/hooks/tests/test_*lib*.py`.
 
 **Naming: `_<topic>-lib.sh`.** `_stow_migration_lib.sh` is the older
 spelling and is not being renamed.

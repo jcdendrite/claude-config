@@ -26,10 +26,11 @@ jobs:
     # pytest runs as two passes (see the "Run tests" steps below): a
     # parallel pass under -n auto covering everything not marked `timing`,
     # and a serial (-n0) pass covering only the wall-clock-sensitive `timing`
-    # tests, which would flake under sibling-worker load. Run 34872895683
-    # hit the 15-minute cap mid-shellcheck. Its two pytest passes alone
-    # took 12m45s. 20 minutes leaves room for organic test-suite growth
-    # without forcing another bump on every PR.
+    # tests, which would flake under sibling-worker load. Those two passes
+    # dominate the job. The parallel pass includes the repo-wide lint in
+    # claude/.claude/hooks/tests/test_shellcheck.py, which runs one shellcheck
+    # process over every discovered file, so more xdist workers cannot shorten
+    # it. Re-derive this cap whenever either pass grows.
     timeout-minutes: 20
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
@@ -56,16 +57,11 @@ jobs:
           fi
 
           # Fail open: if BASE is the zero SHA (first push, some force-push
-          # scenarios) or unresolvable locally, run both the test suite and
-          # shellcheck. shell_changed must be set here too — it is otherwise
-          # only computed further down, so this early exit would leave it
-          # absent (not false), and an absent output never equals 'true',
-          # silently skipping the shellcheck step while CI reports green.
+          # scenarios) or unresolvable locally, run the test suite.
           ZERO_SHA="0000000000000000000000000000000000000000"
           if [ "$BASE" = "$ZERO_SHA" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
-            echo "BASE unresolvable ($BASE); running tests and shellcheck."
+            echo "BASE unresolvable ($BASE); running tests."
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "shell_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -97,37 +93,17 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Independent gate for the shellcheck step. Kept separate from
-          # SKIP_REGEX above — a shell edit under plugins/ needs linting but
-          # not the full pytest suite. Must cover every path shape that
-          # scripts/list-shell-files.sh can return, plus .shellcheckrc (editing
-          # it changes findings without touching any .sh file) and the
-          # discovery script itself.
-          SHELL_REGEX='(\.sh$|^claude/\.local/bin/|^plugins/lovable-cloud/scripts/|^\.shellcheckrc$|^scripts/list-shell-files\.sh$)'
-
-          SHELL_MATCHED=$(echo "$CHANGED" | grep -E "$SHELL_REGEX" || true)
-          if [ -n "$SHELL_MATCHED" ]; then
-            echo "Matched (will run shellcheck):"; echo "$SHELL_MATCHED" | sed 's/^/  /'
-            echo "shell_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Matched (will run shellcheck): (none)"
-            echo "shell_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Skip — no test-relevant changes
         if: steps.detect.outputs.changed != 'true'
         run: echo "No test-relevant files changed; skipping pytest and ruff."
 
-      # Gated on either output: shellcheck ships as a pip wheel, so a PR that
-      # touches only SKIP_REGEX-skipped (pytest-irrelevant) paths but also a
-      # shell file still needs the toolchain.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: steps.detect.outputs.changed == 'true' || steps.detect.outputs.shell_changed == 'true'
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.detect.outputs.changed == 'true'
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        if: steps.detect.outputs.changed == 'true' || steps.detect.outputs.shell_changed == 'true'
+        if: steps.detect.outputs.changed == 'true'
         run: pip install -r requirements-dev.txt
 
       # test_relocate_claude_config.py exercises real stow/stow -D (not a
@@ -144,14 +120,55 @@ jobs:
           sudo apt-get install -y stow direnv
           direnv --version
 
+      # The pin is one Ubuntu 24.04 (noble) build version of git and git-man, installed by name from the runner's apt sources, which apt verifies against the signed index.
+      # When Ubuntu supersedes the build, the install fails with a "Version ... was not found" error, and that failure is the signal to bump.
+      # test_ci_git_equals_the_floor fails when the test steps run without this step.
+      # To bump, take the newest noble-updates or noble-security build of git and git-man in the apt-cache policy table a failing run prints, and change the version in one PR. packages.ubuntu.com can list a build the runner's mirror does not carry yet.
+      # The upstream version must keep the floor's major.minor, because test_git_floor.py ties the version to install.sh's GIT_MINIMUM_VERSION.
+      - name: Install the pinned git package
+        id: pin-git
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          CI_GIT_PACKAGE_VERSION: "1:2.43.0-1ubuntu7.4"
+        run: |
+          set -euo pipefail
+          : "${CI_GIT_PACKAGE_VERSION:?}"
+
+          # The earlier plain apt-get update exits 0 after a transient fetch error, so a source's list can stay stale.
+          # --error-on=any fails this step on such an error instead, because a stale list would show up as a false "not found".
+          sudo apt-get update --error-on=any
+
+          echo "The image's git, and the apt sources and candidates for git and git-man:"
+          git --version
+          apt-cache policy git git-man
+
+          if ! sudo apt-get install -y --no-remove --allow-downgrades "git=$CI_GIT_PACKAGE_VERSION" "git-man=$CI_GIT_PACKAGE_VERSION"; then
+            {
+              echo "apt could not install git and git-man $CI_GIT_PACKAGE_VERSION."
+              echo "Read apt's error above and the apt-cache policy table printed earlier; if the error is a 'Version ... was not found' one, bump the pin as the comment above this step says."
+            } >&2
+            exit 1
+          fi
+          sudo apt-mark hold git git-man
+          git --version
+
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'
         run: nproc
 
-      # _locale_that_widens_ascii_ranges (test_config_lib.py) fails CI when no installed UTF-8 locale lets a bracket range accept a non-ASCII letter.
-      - name: Generate a UTF-8 locale
+      # Records the pinned git's version and which awk implementation runs the cumulative-review normalizer's tests.
+      - name: Report runner git and awk versions
         if: steps.detect.outputs.changed == 'true'
-        run: sudo locale-gen en_US.UTF-8
+        run: |
+          git --version
+          readlink -f "$(command -v awk)" || true
+          { awk --version || awk -W version || awk -version; } </dev/null 2>/dev/null | head -n 1 || true
+
+      # _locale_that_widens_ascii_ranges (test_config_lib.py) fails CI when no installed UTF-8 locale lets a bracket range accept a non-ASCII letter.
+      # _locale_that_folds_ascii_capital_i_to_a_non_ascii_letter (test_reconcile_project_plugins.py) fails CI when no installed UTF-8 locale lower-cases `I` to a non-ASCII letter, which tr_TR does.
+      - name: Generate UTF-8 locales
+        if: steps.detect.outputs.changed == 'true'
+        run: sudo locale-gen en_US.UTF-8 tr_TR.UTF-8
 
       - name: Run tests (parallel)
         # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.
@@ -168,17 +185,3 @@ jobs:
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
         run: ruff check claude/.claude/ claude-skills/ plugins/ evals/
-
-      - name: Shellcheck
-        if: steps.detect.outputs.shell_changed == 'true'
-        run: |
-          set -euo pipefail
-          # The runner image may carry its own shellcheck; confirm the pinned
-          # wheel wins PATH resolution rather than silently linting with a
-          # different version.
-          which shellcheck
-          shellcheck --version
-          # No flags: .shellcheckrc supplies them. Exit 3 on an empty file
-          # list is a feature — a broken discovery regex fails loudly instead
-          # of passing vacuously, so this is deliberately not `|| true`.
-          ./scripts/list-shell-files.sh | xargs -0 shellcheck

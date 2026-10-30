@@ -8,11 +8,12 @@
 # Other marketplaces use sha-pinned refs with no comparable semver — out of scope.
 #
 # Run this script from the root of the consumer repo whose plugins you want to
-# update. Project-scope plugin entries are filtered to those installed in the
-# current project root; user-scope entries are shown regardless of cwd. Pass
-# --all-projects to sweep project-scope entries across every repo on the
-# machine instead — updates are applied by cd-ing into each entry's own
-# project root, since the claude CLI has no cwd-override flag.
+# update. Project- and local-scope plugin entries are filtered to those installed
+# in the current project root; user-scope entries are shown regardless of cwd.
+# Pass --all-projects to sweep project- and local-scope entries across every repo
+# on the machine instead. Either way, a project- or local-scope update is applied
+# by cd-ing into the entry's own project root, since the claude CLI has no
+# cwd-override flag.
 #
 # Usage:
 #   update-claude-config-plugins.sh
@@ -24,7 +25,7 @@
 # Exit codes:
 #   0  success (including no-op)
 #   1  prerequisite error (marketplace not configured, CLI unavailable);
-#      also set post-hoc if any --all-projects update fails or is skipped
+#      also set post-hoc if any update fails or is skipped
 #   2  bad arguments
 
 set -euo pipefail
@@ -51,10 +52,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------------------
-# Project root — used to filter project-scope entries to the current repo
+# Project root — used to filter project- and local-scope entries to the current repo
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# Project and local entries both carry a projectPath; user entries do not.
+is_project_bound_scope() {
+  [ "$1" = "project" ] || [ "$1" = "local" ]
+}
 
 # ---------------------------------------------------------------------------
 # Step 1: Verify claude-config marketplace is configured; capture installLocation
@@ -166,7 +172,7 @@ declare -a OUTDATED_PROJECT_PATHS=()
 while IFS=$'\t' read -r entry_name installed_version entry_scope entry_project_path; do
   [ -z "$entry_name" ] && continue
 
-  if [ "$ALL_PROJECTS" -eq 0 ] && [ "$entry_scope" = "project" ] && [ "$entry_project_path" != "$PROJECT_ROOT" ]; then
+  if [ "$ALL_PROJECTS" -eq 0 ] && is_project_bound_scope "$entry_scope" && [ "$entry_project_path" != "$PROJECT_ROOT" ]; then
     continue
   fi
 
@@ -252,8 +258,8 @@ for i in "${!OUTDATED_NAMES[@]}"; do
     fi
   done
 
-  if [ "$entry_scope" = "project" ]; then
-    echo "  ${plugin_name}  ${installed_ver} → ${latest_ver}  (scope: project, path: ${entry_project_path})"
+  if is_project_bound_scope "$entry_scope"; then
+    echo "  ${plugin_name}  ${installed_ver} → ${latest_ver}  (scope: ${entry_scope}, path: ${entry_project_path})"
   else
     echo "  ${plugin_name}  ${installed_ver} → ${latest_ver}  (scope: ${entry_scope})"
   fi
@@ -290,8 +296,8 @@ for i in "${!OUTDATED_NAMES[@]}"; do
   installed_ver="${OUTDATED_INSTALLED_VERSIONS[$i]}"
   latest_ver="${OUTDATED_LATEST_VERSIONS[$i]}"
 
-  if [ "$entry_scope" = "project" ]; then
-    scope_label="project, path: ${entry_project_path}"
+  if is_project_bound_scope "$entry_scope"; then
+    scope_label="${entry_scope}, path: ${entry_project_path}"
   else
     scope_label="$entry_scope"
   fi
@@ -310,19 +316,23 @@ for i in "${!OUTDATED_NAMES[@]}"; do
   fi
 
   if [ "$DO_UPDATE" -eq 1 ]; then
-    if [ "$ALL_PROJECTS" -eq 1 ] && [ "$entry_scope" = "project" ]; then
+    if is_project_bound_scope "$entry_scope"; then
       if [ ! -d "$entry_project_path" ]; then
         echo "WARNING: project path no longer exists, skipping ${plugin_name}: ${entry_project_path}" >&2
         FAILED_COUNT=$(( FAILED_COUNT + 1 ))
         continue
       fi
-      if ! (cd "$entry_project_path" && claude plugin update "${plugin_name}@claude-config" --scope project); then
+      if ! (cd "$entry_project_path" && claude plugin update "${plugin_name}@claude-config" --scope "$entry_scope"); then
         echo "WARNING: update failed for ${plugin_name} in ${entry_project_path}" >&2
         FAILED_COUNT=$(( FAILED_COUNT + 1 ))
         continue
       fi
     else
-      claude plugin update "${plugin_name}@claude-config" --scope "$entry_scope"
+      if ! claude plugin update "${plugin_name}@claude-config" --scope "$entry_scope"; then
+        echo "WARNING: update failed for ${plugin_name}" >&2
+        FAILED_COUNT=$(( FAILED_COUNT + 1 ))
+        continue
+      fi
     fi
     UPDATED_COUNT=$(( UPDATED_COUNT + 1 ))
   fi

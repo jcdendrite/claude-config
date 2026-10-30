@@ -15,10 +15,48 @@ from pathlib import Path
 
 import pytest
 from helpers import SKILLS_DIR
+from transcript_analysis import (
+    audit_routing,
+    buckets,
+    cache_efficiency,
+    cache_rebuild,
+    commit_gate,
+    context_composition,
+    context_distribution,
+    corpus,
+    cost,
+    cost_ledger,
+    duration,
+    edit_format,
+    fail_seq,
+    instrument_authoring,
+    judgment_pair,
+    plan_boundary,
+    pr_link,
+    pricing,
+    read_scope,
+    rearm_backtest,
+    redaction,
+    render,
+    review_trace,
+    reviewer_yield,
+    scope,
+    sessions,
+    skill_invocation,
+    skill_pair,
+    spend_over_threshold,
+    struggle,
+    subagent_mix,
+    subagents,
+    user_input,
+)
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
+from ._cache_efficiency_helpers import _cache_efficiency_args
 from ._cache_rebuild_helpers import _cache_rebuild_args
+from ._commit_gate_helpers import _gate_args
 from ._handoff_nudge_helpers import _rearm_backtest_args, _spend_over_threshold_args
+from ._session_signal_helpers import _SONNET, _branch_args, _ui_user, _user_input_args
 from ._skill_helpers import (
     _TS_FIXED,
     _judgment_pair_args,
@@ -29,19 +67,16 @@ from ._skill_helpers import (
 )
 from ._subagent_helpers import _subagents_args
 from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
     _agent_use,
     _asst,
     _attr_ts,
     _audit_routing_args,
-    _bash_use,
-    _compact_boundary_rec,
     _context_distribution_args,
     _cost_args,
     _cost_ledger_args,
     _cost_trend_args,
     _extract_grand_total,
-    _hook_deny,
-    _hook_deny_current,
     _opus,
     _priced,
     _read_use,
@@ -50,7 +85,7 @@ from .conftest import (
     _skill_use,
     _skill_use_rec,
     _table_cols,
-    _thinking_block,
+    _task_notification_msg,
     _tool_result,
     _two_declared_roots,
     _user_msg,
@@ -58,7 +93,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
     _write_subagent_jsonl,
-    _write_use,
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -133,7 +167,7 @@ class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
     distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
     test_projects_dir_honors_claude_config_dir covers above. Every test here
-    registers _mod.scope.PROJECTS_DIR with monkeypatch before calling main()
+    registers scope.PROJECTS_DIR with monkeypatch before calling main()
     (even when just re-setting it to its current value) so main()'s direct
     `scope.PROJECTS_DIR = ...` reassignment — which bypasses monkeypatch — is
     still restored to its pre-test value at teardown, protecting the rest of
@@ -149,7 +183,7 @@ class TestConfigDirFlag:
         session-iteration path captured PROJECTS_DIR into a local before
         main()'s post-parse reassignment, silently reporting zero sessions
         (the exact regression class this feature exists to close)."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         proj = config_dir / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -158,7 +192,7 @@ class TestConfigDirFlag:
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
         _mod.main()
 
-        assert config_dir / "projects" == _mod.scope.PROJECTS_DIR
+        assert config_dir / "projects" == scope.PROJECTS_DIR
         out = capsys.readouterr().out
         assert "feat-config-dir" in out, (
             f"the seeded session's branch never surfaced in `buckets` output: {out!r}"
@@ -171,23 +205,23 @@ class TestConfigDirFlag:
         main() performs after parsing, e.g. an unguarded `Path(None)`."""
         fixture_projects_dir = tmp_path / "projects"
         fixture_projects_dir.mkdir()
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", fixture_projects_dir)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", fixture_projects_dir)
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
         _mod.main()
 
-        assert fixture_projects_dir == _mod.scope.PROJECTS_DIR
+        assert fixture_projects_dir == scope.PROJECTS_DIR
 
     def test_this_repo_loud_error_on_zero_matches(self, monkeypatch, tmp_path, capsys):
         """--config-dir + --this-repo, resolved against a config dir with no
         matching project directories, errors loudly instead of silently
         reporting an empty scope -- closes the original reported symptom
         (declaring no sessions exist for a container that has them)."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", _mod.scope.PROJECTS_DIR)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", scope.PROJECTS_DIR)
         config_dir = tmp_path / "other-account"
         (config_dir / "projects").mkdir(parents=True)  # exists, but empty
 
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -208,7 +242,7 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
+    @pytest.mark.parametrize("subcommand", scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
@@ -243,7 +277,7 @@ class TestConfigDirFlag:
             _mod.main()
 
         assert exc_info.value.code == 2
-        assert other_account / "projects" != _mod.scope.PROJECTS_DIR  # refusal happens before reassignment
+        assert other_account / "projects" != scope.PROJECTS_DIR  # refusal happens before reassignment
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
@@ -265,6 +299,31 @@ class TestConfigDirFlag:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
+
+
+class TestConfigDirRouting:
+    def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
+        assert "context-composition" in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+
+    def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        active_config_dir = tmp_path / "active-account"
+        (active_config_dir / "projects").mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(active_config_dir))
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["transcript-analysis.py", "--config-dir", str(other_account), "context-composition"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+
+        assert exc_info.value.code == 2
+        assert other_account / "projects" != scope.PROJECTS_DIR
+        err = capsys.readouterr().err
+        assert "--config-dir" in err
+        assert "context-composition" in err
 
 
 # ---------------------------------------------------------------------------
@@ -354,88 +413,88 @@ class TestTableColsHelper:
 
 class TestHelpers:
     def test_fam_opus(self):
-        assert _mod._fam("claude-opus-4-7") == "opus"
+        assert render._fam("claude-opus-4-7") == "opus"
 
     def test_fam_sonnet(self):
-        assert _mod._fam("claude-sonnet-4-6") == "sonnet"
+        assert render._fam("claude-sonnet-4-6") == "sonnet"
 
     def test_fam_haiku(self):
-        assert _mod._fam("claude-haiku-4-5") == "haiku"
+        assert render._fam("claude-haiku-4-5") == "haiku"
 
     def test_fam_unknown_model(self):
-        assert _mod._fam("gpt-4") == "other"
+        assert render._fam("gpt-4") == "other"
 
     def test_content_text_plain_string(self):
-        assert _mod._content_text("hello world") == "hello world"
+        assert render._content_text("hello world") == "hello world"
 
     def test_content_text_list_joins_text_blocks(self):
         content = [{"type": "text", "text": "hello"}, {"type": "tool_use", "name": "Bash"}, {"type": "text", "text": "world"}]
-        assert _mod._content_text(content) == "hello world"
+        assert render._content_text(content) == "hello world"
 
     def test_content_text_none_returns_empty(self):
-        assert _mod._content_text(None) == ""
+        assert render._content_text(None) == ""
 
     def test_parse_ts_valid_iso_z(self):
-        ts = _mod._parse_ts("2024-06-01T12:00:00.000Z")
+        ts = corpus._parse_ts("2024-06-01T12:00:00.000Z")
         assert ts is not None and ts > 0
 
     def test_parse_ts_none_input(self):
-        assert _mod._parse_ts(None) is None
+        assert corpus._parse_ts(None) is None
 
     def test_parse_ts_invalid_string(self):
-        assert _mod._parse_ts("not-a-date") is None
+        assert corpus._parse_ts("not-a-date") is None
 
     def test_iso_date_valid_returns_string(self):
-        assert _mod._iso_date("2026-05-19") == "2026-05-19"
+        assert scope._iso_date("2026-05-19") == "2026-05-19"
 
     def test_iso_date_invalid_month_raises_type_error(self):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod._iso_date("2026-13-01")
+            scope._iso_date("2026-13-01")
 
     def test_iso_date_garbage_raises_type_error(self):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod._iso_date("garbage")
+            scope._iso_date("garbage")
 
     def test_strip_task_notifications_multiline_envelope_removed(self):
         text = "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
-        assert _mod._strip_task_notifications(text) == " "
+        assert render._strip_task_notifications(text) == " "
 
     def test_strip_task_notifications_two_envelopes_both_removed(self):
         text = "<task-notification>first</task-notification> and <task-notification>second</task-notification>"
-        assert _mod._strip_task_notifications(text) == "  and  "
+        assert render._strip_task_notifications(text) == "  and  "
 
     def test_strip_task_notifications_adjacent_envelopes_both_removed(self):
         text = "<task-notification>a</task-notification><task-notification>b</task-notification>"
-        assert _mod._strip_task_notifications(text) == "  "
+        assert render._strip_task_notifications(text) == "  "
 
     def test_strip_task_notifications_envelope_free_string_unchanged(self):
         text = "just a plain user prompt with no envelope"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_does_not_weld_words_across_envelope_boundary(self):
         """Single-space substitution keeps 'try' and 'again' separated across a stripped envelope boundary."""
         text = "...try <task-notification>still failing</task-notification>again..."
-        result = _mod._strip_task_notifications(text)
+        result = render._strip_task_notifications(text)
         assert "try again" not in result
         assert result == "...try  again..."
 
     def test_strip_task_notifications_unterminated_opener_left_in_place(self):
         text = "<task-notification><summary>no closing tag here"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_unterminated_opener_preserves_trailing_turn_content(self):
         text = "<task-notification><summary>no closing tag here" + "\nuser: please retry the deploy"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_orphan_closer_with_no_opener_left_in_place(self):
         text = "no opener here</task-notification>"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_orphan_closer_adjacent_to_real_envelope(self):
         """A match requires the opener literal first, so the stray closer with no preceding
         opener is inert. Only the well-formed envelope after it is stripped to a single space."""
         text = "stray</task-notification> then <task-notification><summary>real</summary></task-notification> after"
-        assert _mod._strip_task_notifications(text) == "stray</task-notification> then   after"
+        assert render._strip_task_notifications(text) == "stray</task-notification> then   after"
 
     def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
         """A `<summary>` field quotes a full envelope inline. The non-greedy match stops at the
@@ -446,7 +505,7 @@ class TestHelpers:
             "<task-notification><summary>inner</summary></task-notification>"
             "</summary></task-notification>"
         )
-        assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+        assert render._strip_task_notifications(text) == " </summary></task-notification>"
 
     def test_strip_task_notifications_preserves_non_ascii_text_around_envelope(self):
         text = (
@@ -454,18 +513,18 @@ class TestHelpers:
             "<task-notification><summary>結果: café</summary></task-notification>"
             " after— 北京 😀"
         )
-        result = _mod._strip_task_notifications(text)
+        result = render._strip_task_notifications(text)
         assert result == "café 🎉 —before   after— 北京 😀"
 
     def test_strip_task_notifications_empty_string_unchanged(self):
-        assert _mod._strip_task_notifications("") == ""
+        assert render._strip_task_notifications("") == ""
 
     def test_strip_task_notifications_case_sensitive_uppercase_unchanged(self):
         """Case-sensitive match is deliberate: an uppercase-tagged string is left in
         place rather than trading a hypothetical miss for a real over-strip of
         user-typed text."""
         text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
-        assert _mod._strip_task_notifications(text) == text
+        assert render._strip_task_notifications(text) == text
 
 
 class TestParseSinceNdArg:
@@ -474,14 +533,14 @@ class TestParseSinceNdArg:
 
     @pytest.mark.timing
     def test_valid_nd_value_returns_timestamp_and_raw_string(self):
-        since_ts, since_raw = _mod._parse_since_nd_arg(
+        since_ts, since_raw = scope._parse_since_nd_arg(
             argparse.Namespace(since="1d"), "cost"
         )
         assert since_raw == "1d"
         assert since_ts == pytest.approx(time.time() - 86400, abs=1)
 
     def test_absent_since_returns_none_for_both(self):
-        since_ts, since_raw = _mod._parse_since_nd_arg(
+        since_ts, since_raw = scope._parse_since_nd_arg(
             argparse.Namespace(since=None), "cost"
         )
         assert since_ts is None
@@ -489,7 +548,7 @@ class TestParseSinceNdArg:
 
     def test_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
+            scope._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
         assert exc_info.value.code == 1
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
@@ -500,14 +559,14 @@ class TestParseAbsoluteWindowArgs:
     identical six-line conversion."""
 
     def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
         )
-        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
-        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+        assert since_ts == corpus._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == corpus._parse_ts("2026-05-03T00:00:00Z") + 86400
 
     def test_absent_since_and_until_returns_none_for_both(self):
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since=None, until=None), "review-trace",
         )
         assert since_ts is None
@@ -517,409 +576,25 @@ class TestParseAbsoluteWindowArgs:
         """cmd_subagent_mix's own dest names (since_date/until_date) resolve
         through the same helper as the default since/until attrs -- the
         parameterized call cmd_subagent_mix's own call site uses."""
-        since_ts, until_ts = _mod._parse_absolute_window_args(
+        since_ts, until_ts = scope._parse_absolute_window_args(
             argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
             since_attr="since_date", until_attr="until_date",
         )
-        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
-        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
+        assert since_ts == corpus._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == corpus._parse_ts("2026-07-02T00:00:00Z") + 86400
 
 
 # ---------------------------------------------------------------------------
-# fail-seq regexes
+# _project_family (redaction.py)
 # ---------------------------------------------------------------------------
-
-
-class TestFailSeqRegexes:
-    def test_failed_re_extracts_count(self):
-        assert _mod.FAILED_RE.findall("5 failed, 20 passed") == ["5"]
-
-    def test_failed_re_finds_all_matches_for_caller_max(self):
-        matches = [int(m) for m in _mod.FAILED_RE.findall("3 failed\n105 failed\n2 failed")]
-        assert max(matches) == 105
-
-    def test_test_runner_re_matches_npm_run_test(self):
-        assert _mod.TEST_RUNNER_RE.search("npm run test")
-
-    def test_test_runner_re_matches_npm_run_verify(self):
-        assert _mod.TEST_RUNNER_RE.search("npm run verify")
-
-    def test_test_runner_re_matches_npm_run_lint(self):
-        assert _mod.TEST_RUNNER_RE.search("npm run lint")
-
-    def test_test_runner_re_matches_pytest(self):
-        assert _mod.TEST_RUNNER_RE.search("pytest claude/.claude/")
-
-    def test_test_runner_re_matches_vitest(self):
-        assert _mod.TEST_RUNNER_RE.search("npx vitest --run")
-
-    def test_test_runner_re_matches_ruff_check(self):
-        assert _mod.TEST_RUNNER_RE.search("ruff check .")
-
-    def test_test_runner_re_matches_deno_test(self):
-        assert _mod.TEST_RUNNER_RE.search("deno test")
-
-    def test_test_runner_re_does_not_match_git_commands(self):
-        assert not _mod.TEST_RUNNER_RE.search("git status")
-
-    def test_test_runner_re_does_not_match_ls(self):
-        assert not _mod.TEST_RUNNER_RE.search("ls -la")
-
-    def test_test_runner_re_does_not_match_echo(self):
-        assert not _mod.TEST_RUNNER_RE.search("echo hello")
-
-
-# ---------------------------------------------------------------------------
-# _longest_fail_streak
-# ---------------------------------------------------------------------------
-
-
-class TestLongestFailStreak:
-    def test_empty_list(self):
-        assert _mod._longest_fail_streak([]) == 0
-
-    def test_all_passing(self):
-        assert _mod._longest_fail_streak([False, False, False]) == 0
-
-    def test_all_failing(self):
-        assert _mod._longest_fail_streak([True, True, True]) == 3
-
-    def test_single_spike_then_green(self):
-        assert _mod._longest_fail_streak([False, True, False, False]) == 1
-
-    def test_longest_streak_not_first(self):
-        assert _mod._longest_fail_streak([False, True, True, False, True]) == 2
-
-    def test_streak_at_end(self):
-        assert _mod._longest_fail_streak([False, False, True, True, True]) == 3
-
-    def test_oscillation_no_run_longer_than_one(self):
-        assert _mod._longest_fail_streak([True, False, True, False, True]) == 1
-
-
-# ---------------------------------------------------------------------------
-# buckets
-# ---------------------------------------------------------------------------
-
-
-class TestBuckets:
-    def test_counts_non_sidechain_assistant_turns(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat-a"),
-            _asst("claude-sonnet-4-6", branch="feat-a"),
-            _asst("claude-sonnet-4-6", branch="feat-a", sidechain=True),  # excluded
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        assert "feat-a" in out
-        # 1 opus + 1 sonnet = 2 non-sidechain turns
-        assert " 2 " in out
-
-    def test_branch_filter_excludes_other_branches(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-a"),
-            _asst("claude-sonnet-4-6", branch="feat-b"),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat-a"})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        assert "feat-a" in out
-        assert "feat-b" not in out
-
-    def test_no_data_prints_message(self, fake_projects, capsys):
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_proj_column_counts_distinct_project_dirs_not_sessions(self, tmp_path, monkeypatch, capsys):
-        """Proj tracks a set of project dirs per branch, not a session counter: the
-        same project contributing two session files on one branch reports Proj==1,
-        Sess==2 — the case that discriminates set semantics from a counter."""
-        projects = tmp_path / "projects"
-        proj_a = projects / "-home-u-repo-a"
-        proj_a.mkdir(parents=True)
-        _write_jsonl(proj_a / "sess1.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_a / "sess2.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "1"
-        assert cols["Sess"] == "2"
-
-    def test_proj_column_counts_two_project_dirs_sharing_a_branch(self, tmp_path, monkeypatch, capsys):
-        projects = tmp_path / "projects"
-        proj_a = projects / "-home-u-repo-a"
-        proj_b = projects / "-home-u-repo-b"
-        proj_a.mkdir(parents=True)
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_a / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_b / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "2"
-        assert cols["Sess"] == "2"
-
-    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
-        """A repo's main checkout and its own linked worktree are one repo, not two --
-        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
-        projects = tmp_path / "projects"
-        proj_main = projects / "-home-u-repo-a"
-        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
-        proj_main.mkdir(parents=True)
-        proj_worktree.mkdir(parents=True)
-        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "1"
-        assert cols["Sess"] == "2"
-
-    def test_proj_column_collapses_three_worktree_dirs_into_one_main_repo(self, tmp_path, monkeypatch, capsys):
-        """Cardinality beyond a single worktree pair: a main checkout plus two
-        differently-suffixed worktree dirs off the same repo all collapse to
-        Proj == 1."""
-        projects = tmp_path / "projects"
-        proj_main = projects / "-home-u-repo-a"
-        proj_worktree_x = projects / "-home-u-repo-a--claude-worktrees-feat-x"
-        proj_worktree_y = projects / "-home-u-repo-a--claude-worktrees-feat-y"
-        proj_main.mkdir(parents=True)
-        proj_worktree_x.mkdir(parents=True)
-        proj_worktree_y.mkdir(parents=True)
-        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_worktree_x / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_worktree_y / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "1"
-        assert cols["Sess"] == "3"
-
-    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
-        """Regression guard: routing the raw slug through _derive_proj_label first
-        would discard the home/user prefix. That would falsely merge these two
-        distinct repos into one family and undercount Proj."""
-        projects = tmp_path / "projects"
-        proj_alice = projects / "-home-alice-repo"
-        proj_bob = projects / "-home-bob-repo"
-        proj_alice.mkdir(parents=True)
-        proj_bob.mkdir(parents=True)
-        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "2"
-        assert cols["Sess"] == "2"
-
-    def test_proj_column_collapses_worktree_while_counting_same_basename_sibling_separately(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """The collapse fix and the over-collapse guard rail both hold in the same
-        counting pass: a worktree checkout collapses into its own main repo, while
-        a same-repo-name checkout under a different home directory stays a
-        distinct family."""
-        projects = tmp_path / "projects"
-        proj_main = projects / "-home-u-repo-a"
-        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
-        proj_sibling = projects / "-home-v-repo-a"
-        proj_main.mkdir(parents=True)
-        proj_worktree.mkdir(parents=True)
-        proj_sibling.mkdir(parents=True)
-        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        _write_jsonl(proj_sibling / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_buckets(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
-        assert cols["Proj"] == "2"
-        assert cols["Sess"] == "3"
 
 
 class TestProjectFamily:
     def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
-        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+        assert redaction._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
 
     def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
-        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
-
-
-# ---------------------------------------------------------------------------
-# fail-seq end-to-end (core parsing logic, via shared helper)
-# ---------------------------------------------------------------------------
-
-
-def _collect_runs(target_branch: str) -> list[tuple[str, int]]:
-    """Extract (model_family, failed_count) pairs for target_branch using the module's core logic."""
-    runs: list[tuple[str, int]] = []
-    for _jsonl, records in _mod.iter_sessions(_mod.scope.PROJECTS_DIR):
-        pending: dict[str, str] = {}
-        current_branch: str = ""
-        for rec in records:
-            branch = rec.get("gitBranch") or ""
-            if branch != current_branch:
-                pending.clear()
-                current_branch = branch
-            if branch != target_branch or bool(rec.get("isSidechain")):
-                continue
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-            if rtype == "assistant":
-                fam = _mod._fam(msg.get("model", ""))
-                for block in (msg.get("content") or []):
-                    if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
-                        cmd = (block.get("input") or {}).get("command", "")
-                        if _mod.TEST_RUNNER_RE.search(cmd):
-                            pending[block["id"]] = fam
-            elif rtype in ("user", "human"):
-                content = msg.get("content") or []
-                for block in (content if isinstance(content, list) else []):
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        tid = block.get("tool_use_id", "")
-                        if tid in pending:
-                            fam = pending.pop(tid)
-                            text = _mod._content_text(block.get("content", ""))
-                            counts = [int(m) for m in _mod.FAILED_RE.findall(text)]
-                            runs.append((fam, max(counts) if counts else 0))
-    return runs
-
-
-class TestFailSeqEndToEnd:
-    def test_extracts_fail_and_pass_counts(self, fake_projects):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t2", "pytest")]),
-            _user_msg([_tool_result("t2", "all passed")], branch="feat"),
-        ])
-        assert _collect_runs("feat") == [("sonnet", 3), ("sonnet", 0)]
-
-    def test_sidechain_bash_calls_not_tracked(self, fake_projects):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", sidechain=True, content=[_bash_use("ts", "pytest")]),
-            _user_msg([_tool_result("ts", "7 failed")], branch="feat"),
-        ])
-        assert _collect_runs("feat") == []
-
-    def test_non_test_bash_not_tracked(self, fake_projects):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "git status")]),
-            _user_msg([_tool_result("t1", "M file.txt")], branch="feat"),
-        ])
-        assert _collect_runs("feat") == []
-
-    def test_pending_cleared_on_branch_change(self, fake_projects):
-        """tool_use from branch-a is not matched to tool_result after branch switches."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-a", content=[_bash_use("t1", "pytest")]),
-            _asst("claude-sonnet-4-6", branch="feat-b"),  # branch switches → pending cleared
-            _user_msg([_tool_result("t1", "5 failed")], branch="feat-b"),
-        ])
-        # t1 was from feat-a; after branch switch pending clears → not attributed to feat-a
-        assert _collect_runs("feat-a") == []
-
-    def test_max_count_used_when_multiple_failed_in_output(self, fake_projects):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_bash_use("t1", "npm run test")]),
-            _user_msg([_tool_result("t1", "2 failed\n105 failed\n1 failed")], branch="feat"),
-        ])
-        runs = _collect_runs("feat")
-        assert runs == [("opus", 105)]
-
-
-# ---------------------------------------------------------------------------
-# duration gap splitting
-# ---------------------------------------------------------------------------
-
-
-class TestDurationGapSplit:
-    def test_large_gap_counted_as_idle(self):
-        now = time.time()
-        tss = sorted([now, now + 60, now + 120, now + 8000, now + 8060])
-        gap_secs = 1800
-        idle_gaps = [tss[i + 1] - tss[i] for i in range(len(tss) - 1) if tss[i + 1] - tss[i] > gap_secs]
-        assert len(idle_gaps) == 1
-        assert idle_gaps[0] == pytest.approx(8000 - 120, abs=1)
-
-    def test_no_gaps_means_fully_active(self):
-        now = time.time()
-        tss = [now, now + 60, now + 120]
-        idle_gaps = [tss[i + 1] - tss[i] for i in range(len(tss) - 1) if tss[i + 1] - tss[i] > 1800]
-        assert idle_gaps == []
-
-    def test_active_time_is_span_minus_idle(self):
-        now = time.time()
-        tss = sorted([now, now + 300, now + 10000, now + 10300])
-        gap_secs = 1800
-        span = tss[-1] - tss[0]
-        idle_gaps = [tss[i + 1] - tss[i] for i in range(len(tss) - 1) if tss[i + 1] - tss[i] > gap_secs]
-        idle = sum(idle_gaps)
-        active = span - idle
-        # gap between tss[1] and tss[2] = 9700s; active = 300 + 300 = 600s
-        assert active == pytest.approx(600, abs=2)
-
-    def test_cmd_duration_prints_bursts_header_and_single_burst_count(self, fake_projects, capsys):
-        """cmd_duration labels its activity-burst column "Bursts" and counts
-        one burst for timestamps with no idle gap between them."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_duration(args)
-        out = capsys.readouterr().out
-        assert "Sessions" not in out
-        cols = _table_cols(out, header_contains="Bursts", row_contains="feat")
-        assert cols["Bursts"] == "1"
-
-    def test_cmd_duration_counts_two_bursts_across_files_around_an_idle_gap(self, fake_projects, capsys):
-        """One idle gap longer than --gap-minutes yields Bursts == 2 with
-        Idle/Active split at that gap. The first file spans both bursts and two
-        further files continue the second burst, so three files yield two
-        bursts and a files-counted-as-bursts regression fails. File names sort
-        in the reverse of timestamp order, so cmd_duration reads the later
-        records first and a dropped per-branch timestamp sort fails."""
-        _write_jsonl(fake_projects / "sess-z.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:05:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:08:00.000Z"),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
-        _mod.cmd_duration(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Bursts", row_contains="feat")
-        assert cols["Bursts"] == "2"
-        # 10:00 -> 12:08 is 128 min wide; the 10:05 -> 12:00 gap is 115 min idle.
-        assert cols["Span(min)"] == "128"
-        assert cols["Idle(min)"] == "115"
-        assert cols["Active(min)"] == "13"
+        assert redaction._project_family("-home-u-repo-a") == "-home-u-repo-a"
 
 
 # ---------------------------------------------------------------------------
@@ -936,15 +611,15 @@ class TestRootScopedDisplayLabel:
     @pytest.mark.parametrize("kind", ["branch", "agent-type"])
     def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        label = redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
         assert label == "account-1/feat-x"
         assert redact_map == {}
 
     @pytest.mark.parametrize("kind", ["branch", "agent-type"])
     def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
-        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        label = redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
         assert redact_map == {(1, "feat-x"): label}
 
     def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
@@ -953,9 +628,9 @@ class TestRootScopedDisplayLabel:
         multi-root corpus can't isolate the counter position from the data
         it's built from."""
         redact_map: dict[tuple[int, str], str] = {}
-        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
-        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
-        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        first = redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
         assert first == "account-1/branch-1"
         assert second == "account-1/branch-2"
 
@@ -964,8 +639,8 @@ class TestRootScopedDisplayLabel:
         string must fail here, substituting for extracting the format
         string into a third shared helper."""
         redact_map: dict[tuple[int, str], str] = {}
-        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
-        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        disclosed = redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
         assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
 
     def test_disclosed_label_strips_control_characters(self):
@@ -974,7 +649,7 @@ class TestRootScopedDisplayLabel:
         _format_cost_ledger_row's own control-character test) must not reach
         the disclosed label raw."""
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label(
+        label = redaction._root_scoped_display_label(
             "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
         )
         assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
@@ -986,7 +661,7 @@ class TestRootScopedDisplayLabel:
         separator, so this pins that a "/"-bearing value composes without
         truncation or reinterpretation."""
         redact_map: dict[tuple[int, str], str] = {}
-        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        label = redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
         assert label == "account-1/feature/foo"
         assert label.split("/", 1) == ["account-1", "feature/foo"]
 
@@ -1001,9 +676,9 @@ class TestRepoTrackedAgentTypeNames:
         every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
         from one test can never leak a stale cached result into the next,
         including the real-directory regression test below."""
-        _mod._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
         yield
-        _mod._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
         agents_dir = tmp_path / "agents"
@@ -1018,24 +693,24 @@ class TestRepoTrackedAgentTypeNames:
         return agents_dir
 
     def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        monkeypatch.setattr(redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
 
     def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+        assert "my-agent" in redaction._repo_tracked_agent_type_names()
 
     def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "tracked-agent" in names
         assert "scratch-agent" not in names
 
     def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "code-writer" in names
         assert "Code-Writer" not in names
 
@@ -1043,7 +718,7 @@ class TestRepoTrackedAgentTypeNames:
         agents_dir = tmp_path / "not-a-repo"
         agents_dir.mkdir()
         self._patch_dir(monkeypatch, agents_dir)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
     def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
@@ -1055,7 +730,7 @@ class TestRepoTrackedAgentTypeNames:
         else:
             agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+        assert redaction._repo_tracked_agent_type_names().issuperset(redaction._BUILT_IN_AGENT_TYPES)
 
     def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
         """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
@@ -1070,7 +745,7 @@ class TestRepoTrackedAgentTypeNames:
         def boom(cmd, *a, **k):
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", boom)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
         agents_dir = tmp_path / "agents"
@@ -1080,7 +755,7 @@ class TestRepoTrackedAgentTypeNames:
         def boom(cmd, *a, **k):
             raise subprocess.TimeoutExpired(cmd, 10)
         monkeypatch.setattr(subprocess, "run", boom)
-        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+        assert redaction._repo_tracked_agent_type_names() == redaction._BUILT_IN_AGENT_TYPES
 
     def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
         """_repo_tracked_agent_type_names matches top-level entries only
@@ -1093,7 +768,7 @@ class TestRepoTrackedAgentTypeNames:
         (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
         subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
         self._patch_dir(monkeypatch, agents_dir)
-        names = _mod._repo_tracked_agent_type_names()
+        names = redaction._repo_tracked_agent_type_names()
         assert "top-level-agent" in names
         assert "nested-agent" not in names
 
@@ -1102,7 +777,7 @@ class TestRepoTrackedAgentTypeNames:
         escapes unusual path names, corrupting the stem."""
         agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
         self._patch_dir(monkeypatch, agents_dir)
-        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+        assert "café-agent" in redaction._repo_tracked_agent_type_names()
 
     def test_real_agents_directory_allowlists_code_writer(self):
         """The ticket's own motivating scenario, against the real,
@@ -1110,718 +785,12 @@ class TestRepoTrackedAgentTypeNames:
         (next(dir.glob('*.md')).stem) would make both this test's intent
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
-        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in redaction._repo_tracked_agent_type_names()
 
 
 # ---------------------------------------------------------------------------
-# pr-link (stubbed gh)
+# _sanitize_table_cell (render.py)
 # ---------------------------------------------------------------------------
-
-
-class TestPrLink:
-    def test_stubbed_gh_produces_row_with_pr_number(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-pr"),
-        ])
-
-        def fake_run(cmd, *_, **__):
-            class R:
-                stdout = ""
-                returncode = 0
-
-            r = R()
-            if "list" in cmd:
-                r.stdout = json.dumps([{"number": 77}])
-            elif "issues" in " ".join(cmd):
-                r.stdout = "alice\nbob\n"
-            elif "pulls" in " ".join(cmd):
-                r.stdout = "alice\n"
-            return r
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        args = type("A", (), {
-            "repo": "owner/repo", "branches": "feat-pr", "author": "alice",
-            "projects": "*", "this_repo": False,
-        })()
-        _mod.cmd_pr_link(args)
-        out = capsys.readouterr().out
-        assert "77" in out
-        assert "feat-pr" in out
-
-    def test_branch_with_no_pr_shows_none(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="no-pr-branch"),
-        ])
-
-        def fake_run(cmd, *_, **__):
-            class R:
-                stdout = "[]"
-                returncode = 0
-
-            return R()
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        args = type("A", (), {
-            "repo": "owner/repo", "branches": "no-pr-branch", "author": "",
-            "projects": "*", "this_repo": False,
-        })()
-        _mod.cmd_pr_link(args)
-        out = capsys.readouterr().out
-        assert "none" in out
-
-    @staticmethod
-    def _recording_run(origin_url: str, gh_stdout_by_verb: dict[str, str] | None = None):
-        """subprocess.run double answering `git remote get-url origin` with
-        origin_url and every gh call from gh_stdout_by_verb (keyed on
-        "list" / "issues" / "pulls"); returns (fake_run, recorded_gh_argvs)."""
-        recorded: list[list[str]] = []
-        stdout_by_verb = gh_stdout_by_verb or {"list": json.dumps([{"number": 5}]), "issues": "", "pulls": ""}
-
-        def fake_run(cmd, *_, **__):
-            if cmd[:3] == ["git", "remote", "get-url"]:
-                return subprocess.CompletedProcess(cmd, 0, origin_url + "\n", "")
-            recorded.append(list(cmd))
-            joined = " ".join(cmd)
-            verb = "list" if "list" in cmd else "issues" if "issues" in joined else "pulls"
-            return subprocess.CompletedProcess(cmd, 0, stdout_by_verb[verb], "")
-
-        return fake_run, recorded
-
-    @staticmethod
-    def _pr_link_args(**overrides):
-        fields = {"repo": None, "branches": "feat-y", "author": "", "projects": "*", "this_repo": False}
-        fields.update(overrides)
-        return type("A", (), fields)()
-
-    def test_omitted_repo_derives_host_qualified_slug_from_origin(self, fake_projects, monkeypatch):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-        fake_run, recorded = self._recording_run("git@ghe.example.com:Acme/Widget.git")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args())
-
-        pr_list_argv = next(argv for argv in recorded if "list" in argv)
-        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "ghe.example.com/acme/widget"
-        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
-        assert api_argvs
-        for argv in api_argvs:
-            assert argv[argv.index("--hostname") + 1] == "ghe.example.com"
-            assert any(part.startswith("repos/acme/widget/") for part in argv)
-
-    def test_omitted_repo_derives_host_qualified_slug_from_github_com_origin(self, fake_projects, monkeypatch):
-        """github.com origin, not just a GHE host: _gh_host_qualified_repo
-        host-qualifies unconditionally (see TestGhHostQualifiedRepo), so
-        --repo carries "github.com/" the same way a GHE origin's host does."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-        fake_run, recorded = self._recording_run("git@github.com:Acme/Widget.git")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args())
-
-        pr_list_argv = next(argv for argv in recorded if "list" in argv)
-        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "github.com/acme/widget"
-        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
-        assert api_argvs
-        for argv in api_argvs:
-            assert argv[argv.index("--hostname") + 1] == "github.com"
-            assert any(part.startswith("repos/acme/widget/") for part in argv)
-
-    def test_supplied_repo_wins_over_origin(self, fake_projects, monkeypatch):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-        fake_run, recorded = self._recording_run("git@ghe.example.com:Acme/Widget.git")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="other/thing"))
-
-        pr_list_argv = next(argv for argv in recorded if "list" in argv)
-        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "other/thing"
-        assert all("--hostname" not in argv for argv in recorded)
-        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
-        assert api_argvs
-        for argv in api_argvs:
-            assert any(
-                part.startswith("repos/other/thing/issues/") or part.startswith("repos/other/thing/pulls/")
-                for part in argv
-            )
-            assert "--hostname" not in argv
-
-    def test_no_usable_origin_names_repo_flag_as_escape_hatch(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            raise subprocess.CalledProcessError(128, cmd)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_pr_link(self._pr_link_args())
-        assert exc_info.value.code == 1
-        err = capsys.readouterr().err
-        assert err.startswith("pr-link:")
-        assert "--repo" in err
-
-    def test_unrecognizable_origin_names_repo_flag_as_escape_hatch(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-        fake_run, _recorded = self._recording_run("not a remote")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_pr_link(self._pr_link_args())
-        assert exc_info.value.code == 1
-        err = capsys.readouterr().err
-        assert err.startswith("pr-link:")
-        assert "--repo" in err
-
-    @pytest.mark.parametrize("stderr,expected_kind", [
-        ("gh: Not logged into any GitHub hosts. Run gh auth login", "auth"),
-        ("none of the git remotes configured for this repository correspond to the GH_HOST environment variable",
-         "host_mismatch"),
-        ("API rate limit exceeded for user", "rate_limit"),
-        ("GraphQL: Could not resolve to a Repository with the name 'no/such-repo'.", "network or unrecognized"),
-    ])
-    def test_gh_failure_prints_classified_diagnostic_without_raw_stderr(
-        self, fake_projects, monkeypatch, capsys, stderr, expected_kind,
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            raise subprocess.CalledProcessError(1, cmd, output="", stderr=stderr)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="no/such-repo"))
-        captured = capsys.readouterr()
-        assert "gh-err" in captured.out
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert diagnostic_lines == [f"pr-link: gh pr list failed for branch feat-y ({expected_kind})"]
-        assert "no/such-repo" not in captured.err
-
-    def test_gh_pr_list_unparseable_stdout_prints_unparseable_gh_output_diagnostic(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        """gh pr list succeeding (check=True passes) but emitting non-JSON
-        stdout -- the json.JSONDecodeError path, distinct from the
-        CalledProcessError-shaped failures above."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            return subprocess.CompletedProcess(cmd, 0, "not json", "")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        assert "gh-err" in captured.out
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-y (unparseable gh output)"]
-
-    def test_missing_gh_binary_prints_gh_not_found_diagnostic(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(*_, **__):
-            raise FileNotFoundError("gh")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        assert "gh-err" in captured.out
-        assert "gh not found" in captured.err
-
-    def test_gh_pr_list_timeout_prints_timeout_diagnostic(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        assert "gh-err" in captured.out
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-y (timeout)"]
-
-    def test_first_branch_gh_failure_does_not_abort_remaining_branches(self, fake_projects, monkeypatch, capsys):
-        """The per-branch loop degrades and continues: a gh pr list failure on
-        the first branch must not prevent the second branch's own row."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-fail"),
-            _asst("claude-sonnet-4-6", branch="feat-ok"),
-        ])
-
-        def fake_run(cmd, *_, **__):
-            if "feat-fail" in cmd:
-                raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
-            if "list" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 9}]), "")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo", branches="feat-fail,feat-ok"))
-        captured = capsys.readouterr()
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-fail (rate_limit)"]
-        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-ok")
-        assert cols["PR"] == "9"
-
-    def test_comment_count_failure_prints_diagnostic_and_keeps_minus_one_cells(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            if "list" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
-            raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
-        assert cols["PR"] == "5"
-        assert cols["IssueCmt"] == "-1"
-        assert cols["ReviewCmt"] == "-1"
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert len(diagnostic_lines) == 1
-        assert "gh api comments" in diagnostic_lines[0]
-
-    def test_pulls_comment_count_failure_after_issues_success_keeps_minus_one_cells(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        """The issues call succeeding while only the pulls call fails still
-        degrades both counters to -1 -- the try block's own shared except
-        clause, not per-call recovery."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            if "list" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
-            if "issues" in " ".join(cmd):
-                return subprocess.CompletedProcess(cmd, 0, "alice\n", "")
-            raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
-        assert cols["PR"] == "5"
-        assert cols["IssueCmt"] == "-1"
-        assert cols["ReviewCmt"] == "-1"
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert len(diagnostic_lines) == 1
-        assert "gh api comments" in diagnostic_lines[0]
-
-    def test_comment_count_os_error_prints_diagnostic_and_keeps_minus_one_cells(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        """A bare OSError at the comments call site (e.g. the gh binary
-        vanishing mid-run) degrades to -1 the same as CalledProcessError or
-        TimeoutExpired, rather than propagating uncaught."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            if "list" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
-            raise OSError("gh binary vanished mid-call")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
-        assert cols["PR"] == "5"
-        assert cols["IssueCmt"] == "-1"
-        assert cols["ReviewCmt"] == "-1"
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert len(diagnostic_lines) == 1
-        assert "gh api comments" in diagnostic_lines[0]
-
-    def test_comment_count_timeout_prints_diagnostic_and_keeps_minus_one_cells(
-        self, fake_projects, monkeypatch, capsys,
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-
-        def fake_run(cmd, *_, **__):
-            if "list" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
-            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
-        captured = capsys.readouterr()
-        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
-        assert cols["PR"] == "5"
-        assert cols["IssueCmt"] == "-1"
-        assert cols["ReviewCmt"] == "-1"
-        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
-        assert diagnostic_lines == ["pr-link: gh api comments failed for branch feat-y (timeout)"]
-
-    @staticmethod
-    def _kwarg_recording_run(pr_list_stdout: str, issues_stdout: str, pulls_stdout: str):
-        """subprocess.run spy recording each call's kwargs, keyed on gh verb
-        ("list" / "issues" / "pulls"), so a test can assert timeout= was
-        passed at every call site."""
-        recorded: dict[str, dict] = {}
-
-        def fake_run(cmd, *_, **kwargs):
-            joined = " ".join(cmd)
-            verb = "list" if "list" in cmd else "issues" if "issues" in joined else "pulls"
-            recorded[verb] = kwargs
-            stdout = {"list": pr_list_stdout, "issues": issues_stdout, "pulls": pulls_stdout}[verb]
-            return subprocess.CompletedProcess(cmd, 0, stdout, "")
-
-        return fake_run, recorded
-
-    def test_every_gh_call_passes_configured_timeout(self, fake_projects, monkeypatch):
-        """Guards the timeout= kwarg on all three subprocess.run call sites
-        (gh pr list, gh api issues comments, gh api pulls comments)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
-        fake_run, recorded = self._kwarg_recording_run(
-            pr_list_stdout=json.dumps([{"number": 5}]), issues_stdout="alice\n", pulls_stdout="alice\n",
-        )
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo", author="alice"))
-
-        assert set(recorded) == {"list", "issues", "pulls"}
-        for kwargs in recorded.values():
-            assert kwargs["timeout"] == _mod._GH_CALL_TIMEOUT_S
-
-
-# ---------------------------------------------------------------------------
-# commit-gate
-# ---------------------------------------------------------------------------
-
-
-def _gate_args(skill: str, *, by_permission_mode: bool = False, projects: str = "*", this_repo: bool = False,
-               exclude_projects: str | None = None, branches: str | None = None):
-    """Build a minimal argparse.Namespace for cmd_commit_gate."""
-    return type("A", (), {
-        "skill": skill,
-        "by_permission_mode": by_permission_mode,
-        "projects": projects,
-        "this_repo": this_repo,
-        "exclude_projects": exclude_projects,
-        "branches": branches,
-    })()
-
-
-class TestCommitGate:
-    def test_empty_jsonl_prints_no_data(self, fake_projects, capsys):
-        """Empty project dir → 'No data found.' and implicit exit 0."""
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_single_session_no_commits_one_skill_invocation(self, fake_projects, capsys):
-        """One skill call, no commits: 1 session, 0 commits, 1 invocation, rate > 0."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_skill_use("s1", "code-review")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        # 1 session, 0 commits, 1 skill invocation; rate = 1000/1 = 1000.0
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["sessions"] == "1"
-        assert int(cols["commits"]) == 0
-        assert int(cols["skill-inv"]) == 1
-
-    def test_commit_after_skill_is_gated(self, fake_projects, capsys):
-        """Skill invocation before commit in same session → commits-with-prior-skill = 1."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_skill_use("s1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_bash_use("b1", "git commit -m 'x'")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "1"
-        assert cols["w-skill"] == "1"
-        assert cols["wo-skill"] == "0"
-        assert cols["no-verify"] == "0"
-
-    def test_commit_before_skill_is_ungated(self, fake_projects, capsys):
-        """Commit before any skill invocation → commits-without-prior-skill = 1."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_bash_use("b1", "git commit -m 'x'")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_skill_use("s1", "code-review")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "1"
-        assert cols["w-skill"] == "0"
-        assert cols["wo-skill"] == "1"
-
-    def test_two_commits_one_skill_between_consumes_only_first(self, fake_projects, capsys):
-        """Skill between two commits: first commit is gated, second is not (skill consumed)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_bash_use("b1", "git commit -m 'first'")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_skill_use("s1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:02:00.000Z",
-                  content=[_bash_use("b2", "git commit -m 'second'")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "2"
-        assert cols["w-skill"] == "1"  # second commit, after skill
-        assert cols["wo-skill"] == "1"  # first commit, no prior skill
-
-    def test_no_verify_counted_in_commits_and_no_verify_but_not_gated(self, fake_projects, capsys):
-        """git commit --no-verify after /code-review: counted in commits + no-verify, NOT in w-skill."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_skill_use("s1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_bash_use("b1", "git commit --no-verify -m 'bypass'")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "1"
-        assert cols["w-skill"] == "0"  # bypass is NOT credited as gated
-        assert cols["wo-skill"] == "1"
-        assert cols["no-verify"] == "1"
-
-    def test_amend_counted_as_commit(self, fake_projects, capsys):
-        """git commit --amend is counted in the commits total."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_bash_use("b1", "git commit --amend --no-edit")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "1"
-
-    def test_git_commit_tree_not_counted(self, fake_projects, capsys):
-        """git commit-tree must NOT match the commit regex (trailing word boundary)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_bash_use("b1", "git commit-tree HEAD^{tree} -m 'msg'")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["commits"] == "0"  # commit-tree must not be counted
-
-    def test_sidechain_skill_not_counted(self, fake_projects, capsys):
-        """A /code-review call inside a sidechain record must not credit the main thread."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  sidechain=True, content=[_skill_use("s1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_bash_use("b1", "git commit -m 'main'")]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["skill-inv"] == "0"  # sidechain skill not counted
-        assert cols["w-skill"] == "0"    # sidechain skill must not gate the commit
-        assert cols["wo-skill"] == "1"
-
-    def test_skill_name_exact_match_plugin_prefix_not_matched(self, fake_projects, capsys):
-        """'skill-management:skill-review' does NOT match commit-gate skill-review (byte-equal)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[_skill_use("s1", "skill-management:skill-review")]),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z",
-                  content=[_bash_use("b1", "git commit -m 'x'")]),
-        ])
-        args = _gate_args("skill-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["skill-inv"] == "0"  # plugin-prefixed name must not match
-        assert cols["w-skill"] == "0"
-
-    def test_same_record_skill_before_commit_is_gated(self, fake_projects, capsys):
-        """Within one assistant record, Skill block at lower index than Bash → commit is gated."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[
-                      _skill_use("s1", "code-review"),
-                      _bash_use("b1", "git commit -m 'x'"),
-                  ]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["w-skill"] == "1"
-        assert cols["wo-skill"] == "0"
-
-    def test_same_record_commit_before_skill_is_ungated(self, fake_projects, capsys):
-        """Within one assistant record, Bash block at lower index than Skill → commit is ungated."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z",
-                  content=[
-                      _bash_use("b1", "git commit -m 'x'"),
-                      _skill_use("s1", "code-review"),
-                  ]),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert cols["w-skill"] == "0"
-        assert cols["wo-skill"] == "1"
-
-    def test_by_permission_mode_splits_auto_and_default(self, fake_projects, capsys):
-        """Two sessions, one with permissionMode 'auto', one without → two rows per bin."""
-        proj2 = fake_projects.parent / "-home-user-repo2"
-        proj2.mkdir(parents=True)
-        # Session with permissionMode='auto'
-        auto_rec = _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z")
-        auto_rec["permissionMode"] = "auto"
-        _write_jsonl(fake_projects / "auto.jsonl", [auto_rec])
-        # Session without permissionMode (→ 'default')
-        _write_jsonl(proj2 / "default.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T11:00:00.000Z"),
-        ])
-        args = _gate_args("code-review", by_permission_mode=True)
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        # Verify both mode values appear; use column-value membership (not positional
-        # split-index) so a future column insertion doesn't silently read the wrong field.
-        assert any("auto" in ln.split() for ln in data_lines), "expected an 'auto' mode row"
-        assert any("default" in ln.split() for ln in data_lines), "expected a 'default' mode row"
-
-    def test_by_permission_mode_sparse_picks_first_carrying_record(self, fake_projects, capsys):
-        """permissionMode on a mid-session record (not the first) is still discovered."""
-        rec1 = _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z")
-        rec2 = _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:01:00.000Z")
-        rec2["permissionMode"] = "bypassPermissions"
-        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
-        args = _gate_args("code-review", by_permission_mode=True)
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        # The second record carries the mode; our "first carrying record" rule picks it.
-        assert "bypassPermissions" in data_lines[0]
-
-    def test_by_permission_mode_extracted_from_user_record(self, fake_projects, capsys):
-        """permissionMode on a user record (the real-world shape) is picked up.
-
-        Surfaced by the trend audit: empirically, transcripts carry permissionMode
-        on user records (initial session-meta record), not on assistant records.
-        Filtering extraction to assistant records misses every real session.
-        """
-        user_rec = _user_msg("hi", branch="main")
-        user_rec["timestamp"] = "2026-05-19T10:00:00.000Z"
-        user_rec["permissionMode"] = "auto"
-        asst_rec = _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:01.000Z")
-        _write_jsonl(fake_projects / "sess.jsonl", [user_rec, asst_rec])
-        args = _gate_args("code-review", by_permission_mode=True)
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-        assert "auto" in data_lines[0]
-
-    def test_iso_week_boundary_assigns_correct_bin(self, fake_projects, capsys):
-        """Sessions just before and just after a Monday 00:00 UTC get different ISO-week bins."""
-        proj2 = fake_projects.parent / "-home-user-repo3"
-        proj2.mkdir(parents=True)
-        # 2026-05-17 (Sunday) 23:59:59 UTC → W20
-        # 2026-05-18 (Monday) 00:00:01 UTC → W21
-        _write_jsonl(fake_projects / "sunday.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-17T23:59:59.000Z"),
-        ])
-        _write_jsonl(proj2 / "monday.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-18T00:00:01.000Z"),
-        ])
-        args = _gate_args("code-review")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        bins = [ln.split()[0] for ln in out.splitlines() if "2026-W" in ln]
-        assert "2026-W20" in bins
-        assert "2026-W21" in bins
-
-    def test_projects_glob_filters_by_project_dir(self, fake_projects, capsys):
-        """--projects glob restricts which project dirs are walked."""
-        other_proj = fake_projects.parent / "-home-user-otherrepo"
-        other_proj.mkdir(parents=True)
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _write_jsonl(other_proj / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
-        ])
-        # Only match fake_projects dir
-        args = _gate_args("code-review", projects="-home-user-testrepo")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert int(cols["sessions"]) == 1  # only 1 session
-
-    def test_exclude_projects_omits_matching_dir(self, fake_projects, capsys):
-        """--exclude-projects glob removes matching dirs even if --projects would include them."""
-        eval_proj = fake_projects.parent / "-tmp-claude-eval-run1"
-        eval_proj.mkdir(parents=True)
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _write_jsonl(eval_proj / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
-        ])
-        args = _gate_args("code-review", exclude_projects="-tmp-claude-eval-*")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="sessions", row_contains="2026-W")
-        assert int(cols["sessions"]) == 1  # only the non-excluded session
-
-    def test_branches_filter_skips_sessions_with_no_matching_branch(self, fake_projects, capsys):
-        """--branches filter: sessions whose main-thread records are all on other branches are skipped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-a", ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-sonnet-4-6", branch="feat-b", ts="2026-05-19T10:01:00.000Z"),
-        ])
-        args = _gate_args("code-review", branches="feat-a")
-        _mod.cmd_commit_gate(args)
-        out = capsys.readouterr().out
-        # feat-a is present → session counted
-        data_lines = [ln for ln in out.splitlines() if "2026-W" in ln]
-        assert len(data_lines) == 1
-
-        # Session with ONLY feat-b branch is excluded
-        proj2 = fake_projects.parent / "-home-user-repo4"
-        proj2.mkdir(parents=True)
-        _write_jsonl(proj2 / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat-b", ts="2026-05-19T10:00:00.000Z"),
-        ])
-        args2 = _gate_args("code-review", branches="feat-a")
-        _mod.cmd_commit_gate(args2)
-        out2 = capsys.readouterr().out
-        # Still only 1 session (feat-b-only session excluded)
-        cols2 = _table_cols(out2, header_contains="sessions", row_contains="2026-W")
-        assert int(cols2["sessions"]) == 1
 
 
 class TestSanitizeTableCell:
@@ -1836,62 +805,16 @@ class TestSanitizeTableCell:
         """Only the ESC control byte itself is stripped, not surrounding
         printable characters — e.g. an ANSI escape sequence's bracket/digit
         payload is left in place, just no longer interpretable as an escape."""
-        assert _mod._sanitize_table_cell("git\x1b[31mcommit") == "git[31mcommit"
+        assert render._sanitize_table_cell("git\x1b[31mcommit") == "git[31mcommit"
 
     def test_strips_null_and_del_bytes(self):
-        assert _mod._sanitize_table_cell("a\x00b\x7fc") == "abc"
+        assert render._sanitize_table_cell("a\x00b\x7fc") == "abc"
 
     def test_plain_label_unchanged(self):
-        assert _mod._sanitize_table_cell("git commit") == "git commit"
+        assert render._sanitize_table_cell("git commit") == "git commit"
 
     def test_empty_string_unchanged(self):
-        assert _mod._sanitize_table_cell("") == ""
-
-
-_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER = "## Peak absolute-token crossing thresholds"
-
-
-def _extract_context_distribution_row(out: str, pct: int) -> dict[str, str]:
-    """Read one context-distribution percentage-table threshold row
-    ('Threshold Sessions SessShare $ DollarShare') by its leading 'NN%'
-    token, rather than _table_cols' row_contains, since every row's leading
-    token is a candidate substring of another row's trailing percentage
-    columns. Scoped to the output before the absolute-token table's own
-    header, so an absolute threshold's leading token (a plain digit, never a
-    percentage) can't be misread as a percentage row by coincidence."""
-    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[0]
-    target = f"{pct}%"
-    for line in section.splitlines():
-        tokens = line.split()
-        if tokens and tokens[0] == target:
-            return {
-                "sessions": tokens[1],
-                "sess_share": tokens[2],
-                "dollars": tokens[3],
-                "dollar_share": tokens[4],
-            }
-    raise AssertionError(f"threshold row for {pct}% not found in output:\n{out}")
-
-
-def _extract_context_distribution_abs_row(out: str, threshold: int) -> dict[str, str]:
-    """Read one context-distribution absolute-token-table threshold row by
-    its leading comma-formatted token (e.g. '80,000'). Scoped to the output
-    at/after the absolute table's own header, the section-boundary
-    counterpart of _extract_context_distribution_row above."""
-    if _CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER not in out:
-        raise AssertionError(f"absolute-token table header not found in output:\n{out}")
-    section = out.split(_CONTEXT_DISTRIBUTION_ABS_TABLE_HEADER, 1)[1]
-    target = f"{threshold:,}"
-    for line in section.splitlines():
-        tokens = line.split()
-        if tokens and tokens[0] == target:
-            return {
-                "sessions": tokens[1],
-                "sess_share": tokens[2],
-                "dollars": tokens[3],
-                "dollar_share": tokens[4],
-            }
-    raise AssertionError(f"absolute threshold row for {threshold:,} not found in output:\n{out}")
+        assert render._sanitize_table_cell("") == ""
 
 
 class TestScanRootTranscripts:
@@ -1909,14 +832,14 @@ class TestScanRootTranscripts:
         os.chmod(root, 0o000)
         try:
             with pytest.raises(PermissionError):
-                _mod._scan_root_transcripts(root, "*")
+                scope._scan_root_transcripts(root, "*")
         finally:
             os.chmod(root, 0o755)
 
     def test_readable_root_with_no_matches_returns_zero_zero(self, tmp_path):
         root = tmp_path / "empty"
         root.mkdir()
-        assert _mod._scan_root_transcripts(root, "*") == (0, 0)
+        assert scope._scan_root_transcripts(root, "*") == (0, 0)
 
     def test_skipped_counts_unreadable_file_separately_from_scanned(self, tmp_path):
         proj = tmp_path / "-home-user-repo"
@@ -1927,7 +850,7 @@ class TestScanRootTranscripts:
         locked.write_text("{}\n")
         os.chmod(locked, 0o000)
         try:
-            scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+            scanned, skipped = scope._scan_root_transcripts(tmp_path, "*")
         finally:
             os.chmod(locked, 0o644)
         assert (scanned, skipped) == (2, 1)
@@ -1941,7 +864,7 @@ class TestScanRootTranscripts:
         (real_proj / "sess.jsonl").write_text("{}\n")
         alias = tmp_path / "-home-user-repo-alias"
         alias.symlink_to(real_proj)
-        scanned, _skipped = _mod._scan_root_transcripts(
+        scanned, _skipped = scope._scan_root_transcripts(
             tmp_path, "*", slugs=["-home-user-repo", "-home-user-repo-alias"]
         )
         assert scanned == 1
@@ -1956,7 +879,7 @@ class TestScanRootTranscripts:
         (real_proj / "sess.jsonl").write_text("{}\n")
         alias = tmp_path / "-home-user-repo-alias"
         alias.symlink_to(real_proj)
-        scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        scanned, _skipped = scope._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
 
     def test_glob_mode_rejects_a_parent_traversing_projects_value(self, tmp_path):
@@ -1969,7 +892,7 @@ class TestScanRootTranscripts:
         sibling = tmp_path / "acct-b"
         sibling.mkdir()
         (sibling / "secret.jsonl").write_text("{}\n")
-        scanned, skipped = _mod._scan_root_transcripts(root, "../acct-b")
+        scanned, skipped = scope._scan_root_transcripts(root, "../acct-b")
         assert (scanned, skipped) == (0, 0)
 
     def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
@@ -1982,7 +905,7 @@ class TestScanRootTranscripts:
         (proj_open / "sess.jsonl").write_text("{}\n")
         loop_link = tmp_path / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        scanned, skipped = scope._scan_root_transcripts(tmp_path, "*")
         assert (scanned, skipped) == (1, 0)
 
     @pytest.mark.parametrize("mode", ["glob", "slugs"])
@@ -2000,7 +923,7 @@ class TestScanRootTranscripts:
         (outside / "sess.jsonl").write_text("{}\n")
         (root / "-repo-relocated").symlink_to(outside)
         slugs = ["-repo-relocated"] if mode == "slugs" else None
-        assert _mod._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
+        assert scope._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
 
     def test_symlink_loop_transcript_is_counted_as_skipped_not_raised(self, tmp_path):
         """A looped .jsonl symlink fails open() with OSError, so it is
@@ -2011,7 +934,7 @@ class TestScanRootTranscripts:
         (proj / "sess.jsonl").write_text("{}\n")
         loop_link = proj / "loop.jsonl"
         loop_link.symlink_to(loop_link)
-        assert _mod._scan_root_transcripts(tmp_path, "*") == (2, 1)
+        assert scope._scan_root_transcripts(tmp_path, "*") == (2, 1)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
@@ -2030,7 +953,7 @@ class TestScanRootTranscripts:
         proj_through_sealed.symlink_to(target)
         os.chmod(sealed_ancestor, 0o000)
         try:
-            scanned, skipped = _mod._scan_root_transcripts(root, "*")
+            scanned, skipped = scope._scan_root_transcripts(root, "*")
         finally:
             os.chmod(sealed_ancestor, 0o755)
         assert (scanned, skipped) == (1, 0)
@@ -2045,7 +968,7 @@ class TestPriceTurnArity:
         audit-routing-shape and audit-routing-samples classify Opus turn
         shape only and never call _price_turn."""
         usage = _priced("claude-sonnet-5", input=100)["message"]["usage"]
-        result = _mod._price_turn("claude-sonnet-5", usage)
+        result = pricing._price_turn("claude-sonnet-5", usage)
         assert len(result) == 3
         dollars, context_at_turn, unpriced_tokens = result
         assert isinstance(dollars, dict)
@@ -2064,7 +987,7 @@ class TestPriceTurnArity:
             "cache_creation_input_tokens": 15,
             "cache_creation": {"ephemeral_1h_input_tokens": 10, "ephemeral_5m_input_tokens": 5},
         }
-        _dollars, context_at_turn, _unpriced_tokens = _mod._price_turn("claude-sonnet-5", usage)
+        _dollars, context_at_turn, _unpriced_tokens = pricing._price_turn("claude-sonnet-5", usage)
         assert context_at_turn == 100 + 50 + 10 + 5
 
 
@@ -2076,13 +999,13 @@ class TestPriceTurnSpeedGeoMultipliers:
 
     def test_speed_fast_multiplies_dollars_by_two(self):
         usage = _priced("claude-sonnet-5", input=1_000_000, speed="fast")["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2)
 
     def test_inference_geo_us_multiplies_dollars_by_1_1(self):
         usage = _priced("claude-sonnet-5", input=1_000_000, inference_geo="us")["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 1.1)
 
@@ -2092,7 +1015,7 @@ class TestPriceTurnSpeedGeoMultipliers:
         usage = _priced(
             "claude-sonnet-5", input=1_000_000, speed="fast", inference_geo="us",
         )["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 2.0 * 2.2)
 
@@ -2105,7 +1028,7 @@ class TestPriceTurnSpeedGeoMultipliers:
         usage = _priced(
             "claude-sonnet-4-6", input=1_000_000, speed="fast", inference_geo="us",
         )["message"]["usage"]
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
@@ -2134,7 +1057,7 @@ class TestPricingVariant:
     @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
     def test_label_for_each_speed_and_geo_combination_and_near_miss(self, extra_usage_fields, expected_label):
         usage = {**_priced("claude-sonnet-5", input=1_000)["message"]["usage"], **extra_usage_fields}
-        assert _mod.pricing._pricing_variant(usage) == expected_label
+        assert pricing._pricing_variant(usage) == expected_label
 
     @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
     def test_price_turn_dollars_follow_the_label_implied_multiplier_under_the_listed_usage_perturbations(
@@ -2146,9 +1069,9 @@ class TestPricingVariant:
         refactor does not."""
         label_multiplier = {
             "standard": 1,
-            "fast": _mod.pricing._FAST_MODE_RATE_MULTIPLIER,
-            "us_geo": _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
-            "fast_us_geo": _mod.pricing._FAST_MODE_RATE_MULTIPLIER * _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+            "fast": pricing._FAST_MODE_RATE_MULTIPLIER,
+            "us_geo": pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+            "fast_us_geo": pricing._FAST_MODE_RATE_MULTIPLIER * pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
         }
         realistic_usage = {
             **_priced(
@@ -2158,7 +1081,7 @@ class TestPricingVariant:
             "service_tier": "standard",
             "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
         }
-        standard_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", realistic_usage)
+        standard_dollars, _context, _unpriced = pricing._price_turn("claude-sonnet-5", realistic_usage)
         perturbations = [
             {},
             {"service_tier": "priority"},
@@ -2172,9 +1095,9 @@ class TestPricingVariant:
 
         for perturbation in perturbations:
             usage = {**realistic_usage, **perturbation, **extra_usage_fields}
-            assert _mod.pricing._pricing_variant(usage) == expected_label, perturbation
-            actual_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", usage)
-            for token_class in _mod.pricing._TOKEN_CLASSES:
+            assert pricing._pricing_variant(usage) == expected_label, perturbation
+            actual_dollars, _context, _unpriced = pricing._price_turn("claude-sonnet-5", usage)
+            for token_class in pricing._TOKEN_CLASSES:
                 assert actual_dollars[token_class] == pytest.approx(
                     standard_dollars[token_class] * label_multiplier[expected_label], rel=1e-9,
                 ), (perturbation, token_class)
@@ -2188,26 +1111,26 @@ class TestReportableUnpricedModelIds:
     banner that consumes it."""
 
     def test_empty_dict_reports_nothing(self):
-        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+        assert pricing._reportable_unpriced_model_ids({}) == []
 
     def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
-        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+        assert pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
 
     def test_synthetic_at_zero_tokens_is_not_reportable(self):
         """A corpus with no synthetic records at all still seeds this key at
         0 in some callers -- a $0 entry is not spend excluded from anything."""
-        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+        assert pricing._reportable_unpriced_model_ids({pricing._SYNTHETIC_MODEL_ID: 0}) == []
 
     def test_synthetic_at_nonzero_tokens_is_reportable(self):
         """Forward-looking guard, not a case observed in a real corpus (see
         the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
         filter, which would silently drop this branch, is rejected."""
-        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
-            _mod.pricing._SYNTHETIC_MODEL_ID
+        assert pricing._reportable_unpriced_model_ids({pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            pricing._SYNTHETIC_MODEL_ID
         ]
 
     def test_multiple_unpriced_ids_all_reported(self):
-        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        result = pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
         assert sorted(result) == ["claude-example-10", "claude-example-9"]
 
 
@@ -2217,23 +1140,23 @@ class TestFormatDriftDetected:
     fixtures also exercise through the full report."""
 
     def test_false_when_neither_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
-        assert _mod.pricing._format_drift_detected() is False
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
+        assert pricing._format_drift_detected() is False
 
     def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
-        assert _mod.pricing._format_drift_detected() is True
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
+        assert pricing._format_drift_detected() is True
 
     def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
-        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
-        assert _mod.pricing._format_drift_detected() is True
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", True)
+        assert pricing._format_drift_detected() is True
 
 
 class TestDedupTurnsByRequestId:
-    """Direct tests for _dedup_turns_by_request_id, the shared turn iterator
+    """Direct tests for pricing.dedup_turns_by_request_id, the shared turn iterator
     cmd_audit_routing, _cost_report, _context_distribution_report,
     _cost_trend_report, and cmd_subagents all apply to their own per-session
     records before their per-record loops -- Claude Code writes one JSONL
@@ -2245,7 +1168,7 @@ class TestDedupTurnsByRequestId:
     def test_single_record_request_is_a_no_op(self):
         """A lone assistant record (no run to merge) is returned unchanged."""
         rec = _priced("claude-sonnet-5", input=100, request_id="req-1")
-        assert _mod._dedup_turns_by_request_id([rec]) == [rec]
+        assert pricing.dedup_turns_by_request_id([rec]) == [rec]
 
     def test_multi_record_run_merges_content_in_order_and_keeps_last_usage(self):
         """Three records sharing one requestId collapse into one turn whose
@@ -2264,7 +1187,7 @@ class TestDedupTurnsByRequestId:
         recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id(recs)
+        result = pricing.dedup_turns_by_request_id(recs)
         assert len(result) == 1
         assert result[0]["message"]["content"] == [block_a, block_b, block_c]
         assert result[0]["message"]["usage"] == {"input_tokens": 100, "output_tokens": 50}
@@ -2284,7 +1207,7 @@ class TestDedupTurnsByRequestId:
         recs[0]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[1]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         recs[2]["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3111}
-        result = _mod._dedup_turns_by_request_id(recs)
+        result = pricing.dedup_turns_by_request_id(recs)
         assert result[0]["message"]["usage"]["output_tokens"] == 3111
 
     def test_non_identical_input_usage_within_run_emits_stderr_warning(self, monkeypatch, capsys):
@@ -2296,12 +1219,12 @@ class TestDedupTurnsByRequestId:
         _usage_drift_warned is reset here since the canary is rate-limited to
         one warning per process (see _warn_if_run_usage_drift) and other
         tests in this module-scoped process may have already tripped it."""
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 999, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([rec1, rec2])
+        pricing.dedup_turns_by_request_id([rec1, rec2])
         assert "WARNING" in capsys.readouterr().err
 
     def test_ascending_output_tokens_within_run_emits_no_warning(self, monkeypatch, capsys):
@@ -2309,12 +1232,12 @@ class TestDedupTurnsByRequestId:
         input_tokens and the cache_* classes stay identical -- never fires
         the drift canary; an ascending output_tokens is the documented norm,
         not drift."""
-        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
         rec1 = _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1")
         rec1["message"]["usage"] = {"input_tokens": 100, "output_tokens": 3}
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([rec1, rec2])
+        pricing.dedup_turns_by_request_id([rec1, rec2])
         assert "WARNING" not in capsys.readouterr().err
 
     def test_missing_request_id_records_each_count_separately(self):
@@ -2324,7 +1247,7 @@ class TestDedupTurnsByRequestId:
         rec2 = _priced("claude-sonnet-5", input=200)
         assert "requestId" not in rec1
         assert "requestId" not in rec2
-        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+        assert pricing.dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
     def test_null_and_empty_request_id_records_each_count_separately(self):
         """A null requestId and an empty-string requestId are both treated as
@@ -2334,7 +1257,7 @@ class TestDedupTurnsByRequestId:
         rec1["requestId"] = None
         rec2 = _priced("claude-sonnet-5", input=200)
         rec2["requestId"] = ""
-        assert _mod._dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
+        assert pricing.dedup_turns_by_request_id([rec1, rec2]) == [rec1, rec2]
 
     def test_non_contiguous_run_with_matching_usage_merges_across_user_record(self):
         """A same-requestId assistant run interleaved with a user tool_result
@@ -2352,7 +1275,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert len(result) == 2
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
@@ -2381,7 +1304,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = dict(usage)
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert len(result) == 2
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
@@ -2399,7 +1322,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "continue")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
     def test_three_record_non_contiguous_run_merges(self):
@@ -2414,7 +1337,7 @@ class TestDedupTurnsByRequestId:
         user2 = _user_msg([_tool_result("t2", "tool result 2")])
         rec3 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
         rec3["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        result = pricing.dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
         assert len(result) == 3
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"}, {"type": "text", "text": "c"},
@@ -2446,7 +1369,7 @@ class TestDedupTurnsByRequestId:
             "input_tokens": 100, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 999, "output_tokens": 50,
         }
-        result = _mod._dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
+        result = pricing.dedup_turns_by_request_id([rec1, user1, rec2, user2, rec3])
         assert result == [rec1, user1, rec2, user2, rec3]
 
     def test_interleaved_different_request_id_group_leaves_other_run_record_untouched(self):
@@ -2463,7 +1386,7 @@ class TestDedupTurnsByRequestId:
         rec_b["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
         rec_c = _asst("claude-sonnet-5", content=[{"type": "text", "text": "c"}], request_id="req-1")
         rec_c["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        result = _mod._dedup_turns_by_request_id([rec_a, rec_b, rec_c])
+        result = pricing.dedup_turns_by_request_id([rec_a, rec_b, rec_c])
         assert len(result) == 2
         assert result[0]["requestId"] == "req-1"
         assert result[0]["message"]["content"] == [
@@ -2487,7 +1410,7 @@ class TestDedupTurnsByRequestId:
         rec_a2["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         rec_b2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b2"}], request_id="req-2")
         rec_b2["message"]["usage"] = {"input_tokens": 200, "output_tokens": 20}
-        result = _mod._dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
+        result = pricing.dedup_turns_by_request_id([rec_a1, rec_b1, rec_a2, rec_b2])
         assert len(result) == 2
         assert result[0]["requestId"] == "req-1"
         assert result[0]["message"]["content"] == [
@@ -2517,13 +1440,13 @@ class TestDedupTurnsByRequestId:
         module-scoped run may have already tripped either kind (mirrors
         test_non_identical_input_usage_within_run_emits_stderr_warning's
         reset of _usage_drift_warned)."""
-        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
 
         merge_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         merge_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         merge_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         merge_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
+        pricing.dedup_turns_by_request_id([merge_a, _user_msg([_tool_result("t1", "tool result")]), merge_b])
         merge_stderr = capsys.readouterr().err
         assert "NOTICE" in merge_stderr
         assert "merged" in merge_stderr
@@ -2535,7 +1458,7 @@ class TestDedupTurnsByRequestId:
         reject_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         reject_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
         reject_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 999}
-        _mod._dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
+        pricing.dedup_turns_by_request_id([reject_a, _user_msg([_tool_result("t2", "tool result")]), reject_b])
         reject_stderr = capsys.readouterr().err
         assert "NOTICE" in reject_stderr
         assert "rejected" in reject_stderr
@@ -2547,20 +1470,20 @@ class TestDedupTurnsByRequestId:
         decision kind) after the first must not print a second NOTICE --
         pinning the rate-limit half of 'independently rate-limited', not
         just the cross-kind independence the prior test covers."""
-        monkeypatch.setattr(_mod.pricing, "_non_contiguous_merge_notices_logged", set())
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
 
         first_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "a"}], request_id="req-1")
         first_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         first_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         first_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
+        pricing.dedup_turns_by_request_id([first_a, _user_msg([_tool_result("t1", "tool result")]), first_b])
         capsys.readouterr()  # drain the first NOTICE
 
         second_a = _asst("claude-sonnet-5", content=[{"type": "text", "text": "x"}], request_id="req-2")
         second_a["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
         second_b = _asst("claude-sonnet-5", content=[{"type": "text", "text": "y"}], request_id="req-2")
         second_b["message"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
-        _mod._dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
+        pricing.dedup_turns_by_request_id([second_a, _user_msg([_tool_result("t2", "tool result")]), second_b])
         assert capsys.readouterr().err == ""
 
     def test_non_contiguous_run_with_missing_usage_does_not_merge(self):
@@ -2573,7 +1496,7 @@ class TestDedupTurnsByRequestId:
         user = _user_msg([_tool_result("t1", "tool result")])
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}], request_id="req-1")
         del rec2["message"]["usage"]
-        result = _mod._dedup_turns_by_request_id([rec1, user, rec2])
+        result = pricing.dedup_turns_by_request_id([rec1, user, rec2])
         assert result == [rec1, user, rec2]
 
     def test_request_id_does_not_merge_across_session_files(self, fake_projects, capsys):
@@ -2588,7 +1511,7 @@ class TestDedupTurnsByRequestId:
         _write_jsonl(fake_projects / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, request_id="shared-req"),  # $2.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(4.00)
 
@@ -2605,7 +1528,7 @@ class TestDedupTurnsByRequestId:
         _write_jsonl(fake_projects / "sess.jsonl", [
             first, _user_msg([_tool_result("t1", "tool result")]), second,
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(2.00)
 
@@ -2621,792 +1544,11 @@ class TestDedupTurnsByRequestId:
                           request_id="req-1", sidechain=False)
         side_rec = _asst("claude-sonnet-5", content=[{"type": "text", "text": "b"}],
                           request_id="req-1", sidechain=True)
-        result = _mod._dedup_turns_by_request_id([main_rec, side_rec])
+        result = pricing.dedup_turns_by_request_id([main_rec, side_rec])
         assert len(result) == 1
         assert result[0]["message"]["content"] == [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
         ]
-
-
-# ---------------------------------------------------------------------------
-# context-distribution
-# ---------------------------------------------------------------------------
-
-
-class TestContextDistribution:
-    def test_threshold_crossing_and_dollar_share_hand_computed(self, fake_projects, capsys):
-        """Three sessions with distinct peak context-at-turn percentages of
-        claude-sonnet-5's 1M default window (65%, 45%, 10%) cross a different
-        subset of the 30/40/50/60% thresholds — crossing-count and
-        dollar-share are verified against hand-computed expected values at
-        every threshold, not just one."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _priced("claude-sonnet-5", input=650_000),  # peak 65%, $1.30
-        ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
-            _priced("claude-sonnet-5", input=450_000),  # peak 45%, $0.90
-        ])
-        _write_jsonl(fake_projects / "sess-c.jsonl", [
-            _priced("claude-sonnet-5", input=100_000),  # peak 10%, $0.20
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-
-        assert "Sessions in scope: 3" in out
-        assert "Total priced dollars: 2.40" in out
-
-        # 30%/40%: sessions A and B cross (65% and 45% both >= threshold);
-        # dollars = 1.30 + 0.90 = 2.20; share = 2.20 / 2.40 = 91.7%.
-        for pct in (30, 40):
-            row = _extract_context_distribution_row(out, pct)
-            assert row["sessions"] == "2"
-            assert row["dollars"] == "2.20"
-            assert row["dollar_share"] == "91.7%"
-
-        # 50%/60%: only session A crosses (65% >= threshold, 45% does not);
-        # dollars = 1.30; share = 1.30 / 2.40 = 54.2%.
-        for pct in (50, 60):
-            row = _extract_context_distribution_row(out, pct)
-            assert row["sessions"] == "1"
-            assert row["dollars"] == "1.30"
-            assert row["dollar_share"] == "54.2%"
-
-    def test_peak_exactly_at_threshold_counts_as_crossing(self, fake_projects, capsys):
-        """A session whose peak lands exactly on a candidate threshold (not
-        strictly above it) still counts as crossing — the comparison is
-        >=, mirroring the nudge hook's own 'fires at exactly threshold'
-        test for its single threshold. Regression guard for a future
-        float-rounding change silently flipping >= to >."""
-        _write_jsonl(fake_projects / "sess-exact.jsonl", [
-            _priced("claude-sonnet-5", input=400_000),  # peak exactly 40% of 1M
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row_40 = _extract_context_distribution_row(out, 40)
-        assert row_40["sessions"] == "1"
-
-    def test_sidechain_turns_excluded_from_peak_context_tracking(self, fake_projects, capsys):
-        """A session's peak is computed from main-thread turns only — a deep
-        sidechain (subagent) turn must not count toward the session's own
-        handoff-relevant peak, since subagent context isn't shared with the
-        parent and doesn't accumulate toward a /handoff decision."""
-        session_id = "sess-side"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _priced("claude-sonnet-5", input=100_000),  # main: peak 10%
-        ])
-        subagent_rec = _priced("claude-sonnet-5", input=900_000)  # sidechain: would-be peak 90%
-        subagent_rec["isSidechain"] = True
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
-
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        # Session's own peak stays 10% (main-thread only) — crosses no threshold.
-        row_30 = _extract_context_distribution_row(out, 30)
-        assert row_30["sessions"] == "0"
-        # But dollars still sum main + sidechain: $0.20 (main, 100k input) +
-        # $1.80 (sidechain, 900k input) = $2.00 — a bug that coupled the
-        # sidechain exclusion to the dollar total too (instead of only the
-        # peak) would silently drop the sidechain's $1.80 here.
-        assert "Total priced dollars: 2.00" in out
-
-    def test_multi_record_request_id_group_priced_exactly_once(self, fake_projects, capsys):
-        """Three assistant records sharing one requestId (one JSONL record per
-        content block, as Claude Code writes for a single API call) carry a
-        byte-identical usage dict — context-distribution prices the group's
-        usage once, not once per record."""
-        usage = {"input_tokens": 1_000_000, "output_tokens": 0, "cache_read_input_tokens": 0}
-        recs = [
-            _asst("claude-sonnet-5", content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
-            _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
-                  request_id="req-1"),
-            _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1"),
-        ]
-        for rec in recs:
-            rec["message"]["usage"] = dict(usage)
-        _write_jsonl(fake_projects / "sess.jsonl", recs)
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
-        # not $6.00 for pricing the group's usage three times over.
-        assert "Total priced dollars: 2.00" in out
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root in
-        scope, mirroring cost's own refusal exactly."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_context_distribution(
-                _context_distribution_args(no_redact=True, extra_config_dirs=[str(acct_b)])
-            )
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected — it
-        prints the DO NOT PUBLISH banner but does not exit, the allow-path
-        counterpart to the multi-root refusal above."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
-        _mod._context_distribution_report(_context_distribution_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        assert "Sessions in scope: 1" in out
-
-    def test_no_sessions_in_scope_prints_zero_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no priced or main-thread turns anywhere) prints a
-        zero-sessions summary and 0.0% shares rather than raising
-        ZeroDivisionError — in both the percentage table and its absolute-token
-        sibling, since both share the same _pct_of-guarded arithmetic."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        assert "Sessions in scope: 0" in out
-        row_30 = _extract_context_distribution_row(out, 30)
-        assert row_30["sessions"] == "0"
-        assert row_30["dollar_share"] == "0.0%"
-        row_abs = _extract_context_distribution_abs_row(out, 80_000)
-        assert row_abs["sessions"] == "0"
-        assert row_abs["dollar_share"] == "0.0%"
-
-    def test_unpriced_model_still_contributes_to_absolute_bucket(self, fake_projects, capsys):
-        """A model ID absent from _MODEL_BASE_INPUT_RATES prices at $0, but its
-        turns still feed the absolute-token peak — that path computes from
-        context_at_turn + output_tokens directly, and its value doesn't depend
-        on _context_window_for_model's result, unlike the percentage path."""
-        _write_jsonl(fake_projects / "sess-unpriced.jsonl", [
-            _priced("claude-opus-4-7", input=250_000),  # unpriced model; crosses the 250,000 bucket
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row = _extract_context_distribution_abs_row(out, 250_000)
-        assert row["sessions"] == "1"
-        assert row["dollars"] == "0.00"
-
-    def test_mixed_window_session_argmax_differs_between_pct_and_abs_peak(self, fake_projects, capsys):
-        """A session with one turn on a 200k-window model (high percentage,
-        lower absolute tokens) and one turn on a 1M-window model (lower
-        percentage, higher absolute tokens) — the percentage table's peak and
-        the absolute table's peak come from different turns, pinning that
-        peak_abs_tokens is its own tracked maximum, not peak_pct * window."""
-        _write_jsonl(fake_projects / "sess-mixed.jsonl", [
-            _priced("claude-sonnet-4-5", input=190_000),  # 200k model: 95% of window, abs 190,000
-            _priced("claude-sonnet-5", input=300_000),  # 1M model: 30% of window, abs 300,000
-        ])
-        _mod._context_distribution_report(_context_distribution_args())
-        out = capsys.readouterr().out
-        row_60 = _extract_context_distribution_row(out, 60)
-        assert row_60["sessions"] == "1"  # peak_pct 95%, from the 200k turn
-        row_250k = _extract_context_distribution_abs_row(out, 250_000)
-        assert row_250k["sessions"] == "1"  # peak_abs_tokens 300,000, from the 1M turn
-        row_400k = _extract_context_distribution_abs_row(out, 400_000)
-        assert row_400k["sessions"] == "0"  # peak_abs_tokens is 300,000, not higher
-
-    def test_absolute_peak_accumulator_flat_and_nested_cache_creation_agree(self):
-        """One turn's cache_creation expressed via the hook's flat
-        cache_creation_input_tokens field and an equal-total turn expressed via
-        the nested ephemeral_1h/ephemeral_5m split feed the new absolute-peak
-        accumulator (_session_peak_context) to the identical total — pinning
-        the _cache_write_split equivalence the accumulator leans on, rather
-        than only citing it."""
-        flat_usage = _priced(
-            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000, flat_cache_creation=30_000
-        )["message"]["usage"]
-        nested_usage = _priced(
-            "claude-sonnet-5", input=100_000, cache_read=50_000, output=5_000,
-            ephemeral_1h=10_000, ephemeral_5m=20_000,
-        )["message"]["usage"]
-
-        _dollars_flat, context_flat, _unpriced_flat = _mod._price_turn("claude-sonnet-5", flat_usage)
-        _dollars_nested, context_nested, _unpriced_nested = _mod._price_turn("claude-sonnet-5", nested_usage)
-
-        _peak_pct_flat, peak_abs_flat = _mod._session_peak_context([(context_flat, 5_000, 1_000_000)])
-        _peak_pct_nested, peak_abs_nested = _mod._session_peak_context([(context_nested, 5_000, 1_000_000)])
-
-        expected = 100_000 + 50_000 + 30_000 + 5_000
-        assert peak_abs_flat == peak_abs_nested == expected
-
-    def test_session_peak_context_tracks_independent_maxima(self):
-        """_session_peak_context's two maxima are independent — the turn with
-        the highest percentage of its own window need not be the turn with the
-        highest absolute token count."""
-        turns = [
-            (190_000, 0, 200_000),  # pct 95%, abs 190,000
-            (300_000, 0, 1_000_000),  # pct 30%, abs 300,000
-        ]
-        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
-        assert peak_pct == pytest.approx(0.95)
-        assert peak_abs_tokens == 300_000
-
-    def test_session_peak_context_abs_includes_output_tokens(self):
-        """peak_abs_tokens is context_at_turn + output_tokens — the hook's own
-        four-field ESTIMATE sum — not context_at_turn alone; peak_pct is
-        unaffected by output_tokens, matching context_at_turn's own definition."""
-        turns = [(100_000, 50_000, 1_000_000)]
-        peak_pct, peak_abs_tokens = _mod._session_peak_context(turns)
-        assert peak_pct == pytest.approx(0.1)
-        assert peak_abs_tokens == 150_000
-
-    def test_session_peak_context_no_main_thread_turns_returns_zero(self):
-        """No main-thread turns (e.g. a session with only sidechain activity)
-        yields (0.0, 0) rather than raising."""
-        assert _mod._session_peak_context([]) == (0.0, 0)
-
-    def test_context_distribution_rows_session_share_hand_computed(self):
-        """_context_distribution_rows' session-share arithmetic, exercised
-        directly on a synthetic multi-session fixture with a known expected
-        fraction — a handoff-nudge cap chosen off this report's session-share
-        column is only as trustworthy as this arithmetic."""
-        peaks = [0.9, 0.5, 0.3, 0.1, 0.05]
-        dollars = [1.0, 1.0, 1.0, 1.0, 1.0]
-        rows = _mod._context_distribution_rows([0.4], peaks, dollars)
-        # 2 of 5 sessions (0.9, 0.5) cross 0.4 -> 40.0% session-share.
-        assert rows[0]["sessions"] == 2
-        assert rows[0]["session_share"] == "40.0%"
-        assert rows[0]["dollars"] == pytest.approx(2.0)
-        assert rows[0]["dollar_share"] == "40.0%"
-
-
-# ---------------------------------------------------------------------------
-# edit-format
-# ---------------------------------------------------------------------------
-
-
-def _edit_format_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _edit_tool_use(tool_id: str, *, file_path: str = "/foo.py", old_string: str = "", new_string: str = "") -> dict:
-    return {
-        "type": "tool_use", "id": tool_id, "name": "Edit",
-        "input": {"file_path": file_path, "old_string": old_string, "new_string": new_string},
-    }
-
-
-def _write_tool_use(tool_id: str, *, file_path: str = "/foo.py", content: str = "") -> dict:
-    return {
-        "type": "tool_use", "id": tool_id, "name": "Write",
-        "input": {"file_path": file_path, "content": content},
-    }
-
-
-def _multi_edit_tool_use(tool_id: str, *, file_path: str = "/foo.py") -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "MultiEdit", "input": {"file_path": file_path}}
-
-
-def _error_result(tool_id: str, text: str) -> dict:
-    """A user-record is_error tool_result — reuses _hook_deny_current's exact
-    record shape, generalized here beyond governance-hook denial text since
-    the shape itself (not the wording) is what edit-format's own error
-    classification depends on."""
-    return _hook_deny_current(text, tool_id=tool_id)
-
-
-def _extract_call_census_count(out: str, tool: str) -> int | None:
-    """Read one edit-family tool's top-of-report call count (unindented,
-    unlike every detail-table row below it, which lets this anchor on `^`
-    without also matching that tool's own indented failure rows)."""
-    match = re.search(rf"^{re.escape(tool)}\s+([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_known_failure_count(out: str, tool: str, label: str) -> int | None:
-    # count= is right-aligned to a fixed width, so its value is padded with
-    # leading spaces, not glued to the "=".
-    match = re.search(rf"^\s*{re.escape(tool)}\s+{re.escape(label)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_governance_count(out: str, label: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(label)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_cause_count(out: str, cause: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(cause)}\s+count=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-def _extract_unclassified_count(out: str) -> int:
-    match = re.search(r"unclassified \(edit-family errors matching neither list above\): ([\d,]+)", out)
-    assert match is not None, "unclassified summary line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_unpaired_count(out: str) -> int:
-    match = re.search(r"unpaired \(is_error tool_result with no matching tool_use in this session\): ([\d,]+)", out)
-    assert match is not None, "unpaired summary line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_account_edit_calls(out: str, account_label: str) -> int | None:
-    match = re.search(rf"^\s*{re.escape(account_label)}\s+calls=\s*([\d,]+)", out, re.MULTILINE)
-    return int(match.group(1).replace(",", "")) if match else None
-
-
-class TestEditFormat:
-    def test_call_census_counts_each_tool_separately_and_multi_edit_stays_zero(self, fake_projects, capsys):
-        """Edit/Write calls tally under their own tool name; MultiEdit is
-        tracked (not hardcoded away) even though this fixture emits none."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_write_tool_use("w1", content="hello")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "Edit") == 2
-        assert _extract_call_census_count(out, "Write") == 1
-        assert _extract_call_census_count(out, "MultiEdit") == 0
-
-    def test_recognized_edit_tool_set_includes_multi_edit(self):
-        """A future rename or MultiEdit's reintroduction must be counted
-        against its own denominator, not silently zeroed — pinned by
-        asserting the recognized-tool constant directly."""
-        assert frozenset({"Edit", "Write", "MultiEdit"}) == _mod.EDIT_FAMILY_TOOLS
-
-    def test_multi_edit_reappearing_is_tracked_not_silently_zeroed(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_multi_edit_tool_use("m1")], out=10),
-            _error_result("m1", "has not been read yet"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "MultiEdit") == 1
-        assert _extract_known_failure_count(out, "MultiEdit", "unread") == 1
-        assert "rate=100.0% of MultiEdit" in out
-
-    def test_write_failure_rate_uses_write_denominator_not_edit(self, fake_projects, capsys):
-        """A Write-side 'file has not been read yet' failure is rated
-        against Write's own call count, not Edit's — the per-tool pairing
-        this subcommand exists to get right."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_write_tool_use("w1", content="x")], out=10),
-            _error_result("w1", "Error: file has not been read yet."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Write", "unread") == 1
-        assert "rate=100.0% of Write" in out
-        assert "rate=50.0% of Write" not in out
-
-    def test_non_edit_tool_error_with_matching_text_not_counted(self, fake_projects, capsys):
-        """A Bash error that happens to contain the literal 'String to
-        replace not found' text must not be misattributed to Edit — mirrors
-        test_current_format_denial_text_without_is_error_ignored's discipline
-        against substring-only matching, now that this session's own
-        transcript activity can genuinely contain that string in prose."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_bash_use("b1", "grep -r 'String to replace not found' .")], out=10),
-            _error_result("b1", "String to replace not found in grep output"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Edit", "not_found") is None
-
-    def test_unpaired_error_with_no_matching_tool_use_counted_explicitly(self, fake_projects, capsys):
-        """An is_error tool_result whose tool_use_id has no tool_use anywhere
-        in this session (e.g. a subagent boundary separating a call from its
-        own result) increments the unpaired counter instead of being
-        silently skipped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _error_result("orphan-1", "String to replace not found"),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_unpaired_count(out) == 1
-        assert _extract_known_failure_count(out, "Edit", "not_found") is None
-
-    def test_noop_pattern_matches_real_error_text(self, fake_projects, capsys):
-        """The no-op classifier matches the real message Edit emits
-        ('old_string and new_string are exactly the same'), not a mismatched
-        pattern — a no-op silently falling into unclassified is the exact
-        miscount this pins against."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="same", new_string="same")], out=10),
-            _error_result("e1", "InputValidationError: old_string and new_string are exactly the same."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_known_failure_count(out, "Edit", "noop") == 1
-        assert _extract_unclassified_count(out) == 0
-
-    def test_mechanical_total_excludes_noop_but_all_errors_total_includes_it(self, fake_projects, capsys):
-        """The 57-vs-63-style distinction: str_replace-mechanical (not_found +
-        unread + multi_match) excludes no-ops, while the all-non-governance
-        total includes them — asserted as two separate counts, not
-        collapsed into one."""
-        records: list[dict] = []
-        for i, message in enumerate([
-            "String to replace not found",
-            "String to replace not found",
-            "has not been read yet",
-            "but replace_all is false",
-        ]):
-            tid = f"e{i}"
-            records.append(_opus([_edit_tool_use(tid, old_string=f"x{i}", new_string=f"y{i}")], out=10))
-            records.append(_error_result(tid, message))
-        records.append(_opus([_edit_tool_use("e-noop", old_string="same", new_string="same")], out=10))
-        records.append(_error_result("e-noop", "old_string and new_string are exactly the same"))
-        _write_jsonl(fake_projects / "sess.jsonl", records)
-
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert "str_replace-mechanical (Edit not_found+unread+multi_match, no-ops excluded): 4 /" in out
-        assert "all non-governance Edit errors (no-ops included): 5 /" in out
-
-    def test_notfound_cause_not_misled_by_indentation_alone(self, fake_projects, capsys):
-        """The corrected classifier judges by diffing against the actual
-        retry, not by detecting indentation in isolation — an indented retry
-        whose content genuinely differs lands in content_differs, not
-        whitespace_only, pinning the exact defect the discarded regex
-        classifier had (it fired on indentation presence alone, at a 12x
-        over-attribution rate against the real corpus)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use(
-                "e2", file_path="/foo.py",
-                old_string="    def foo():\n        return 1",
-                new_string="    def foo():\n        return 2",
-            )], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "content_differs") == 1
-        assert _extract_cause_count(out, "whitespace_only") is None
-
-    def test_notfound_cause_genuine_whitespace_only_retry(self, fake_projects, capsys):
-        """The positive counterpart to the indentation-alone test above: a
-        retry whose old_string differs from the failed one ONLY in
-        whitespace lands in whitespace_only."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "whitespace_only") == 1
-
-    def test_notfound_cause_redacted_credential_bucket(self, fake_projects, capsys):
-        """A not_found failure whose old_string carries this repo's own
-        [REDACTED-CREDENTIAL] placeholder is attributed to the redaction
-        hook, not to content drift or abandonment."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use(
-                "e1", file_path="/foo.py",
-                old_string="token = '[REDACTED-CREDENTIAL]'", new_string="token = ''",
-            )], out=10),
-            _error_result("e1", "String to replace not found in file."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_cause_count(out, "redacted_credential") == 1
-
-    @pytest.mark.parametrize("message,expected_label", [
-        ("Blocked by plan-review gate: run /plan-review first.", "plan-review"),
-        ("Denied: deny-reviewer-tree-mutation.sh reviewer-tree-mutation detected.", "reviewer-tree"),
-        ("Blocked by worktree-enforcement: writes must land in a worktree.", "worktree"),
-        ("Error: path cannot be safely resolved.", "path-spelling"),
-        ("This action was denied by your permission settings.", "permissions"),
-        ("Error: writes must stay isolated in the worktree assigned to this session.", "worktree-isolation"),
-    ])
-    def test_governance_pattern_lands_in_named_bucket(self, fake_projects, capsys, message, expected_label):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", message),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_governance_count(out, expected_label) == 1
-
-    def test_unrecognized_denial_lands_in_unclassified_not_dropped(self, fake_projects, capsys):
-        """A denial matching none of the six governance patterns and none of
-        the four known failure patterns still surfaces in a reported count —
-        never silently dropped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", "Some unrelated tool failure with no known shape."),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_unclassified_count(out) == 1
-
-    def test_old_string_and_write_char_sums_and_percentages(self, fake_projects, capsys):
-        """old_string/new_string/Write char sums and the derived overhead
-        percentages, hand-computed against a small deterministic fixture."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="12345", new_string="1234567890")], out=100),
-            _opus([_write_tool_use("w1", content="abcdefghij")], out=50),
-        ])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert "old_string chars: 5" in out
-        assert "new_string chars: 10" in out
-        assert "write content chars: 10" in out
-        assert "old_string share of Edit payload: 33.3%" in out  # 5 / (5 + 10)
-        assert "total assistant output tokens (all sessions): 150" in out
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root
-        in scope, mirroring cost's and context-distribution's own refusal."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_edit_format(_edit_format_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected —
-        this report's content never varies with redact, since it carries no
-        project name or session ID, but the banner still prints for CLI
-        parity with cost/context-distribution."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        assert _extract_call_census_count(out, "Edit") == 1
-
-    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
-        """Per-account figures are emitted through the same account-N
-        labeling convention _build_redact_map documents — never the raw
-        config-dir path or account-identifying directory name."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_edit_tool_use("e3", old_string="e", new_string="f")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert "acct-alice-clientwork" not in out
-        assert "acct-bob-clientwork" not in out
-        assert "repo-a" not in out
-        assert "repo-b" not in out
-        assert str(root_a) not in out
-        assert str(root_b) not in out
-        assert _extract_account_edit_calls(out, "account-1") == 1
-        assert _extract_account_edit_calls(out, "account-2") == 2
-
-    def test_per_account_breakdown_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, capsys):
-        """account-N is assigned by resolved-path sort (_redaction_ordinals),
-        not by roots= list order -- "acct-b" sorts before "acct-empty", so
-        root_b is account-1 despite being passed second. The sibling test
-        above can't catch a regression to scan-order indexing because its
-        two root names already sort in scan order."""
-        root_empty = _write_cost_root(tmp_path, "acct-empty", "-home-user-repo-e", "sess-e", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _opus([_edit_tool_use("e3", old_string="e", new_string="f")], out=10),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_empty, root_b])
-        out = capsys.readouterr().out
-        assert _extract_account_edit_calls(out, "account-1") == 2  # root_b, resolved-path-sorted first
-        assert _extract_account_edit_calls(out, "account-2") == 1  # root_empty
-
-    def test_per_account_zero_calls_prints_no_edit_family_line(self, tmp_path, capsys):
-        """An account contributing zero Edit/Write/MultiEdit calls prints the
-        'no edit-family calls' line for its row rather than a ZeroDivisionError
-        or a silently-omitted row — the per-account counterpart to
-        test_zero_edit_family_calls_prints_zeroes_without_division_error,
-        which only covers the case where every account is empty."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _user_msg("hi"),
-        ])
-        _mod._edit_format_report(_edit_format_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert _extract_account_edit_calls(out, "account-1") == 1
-        assert "account-2  no edit-family calls" in out
-
-    def test_zero_edit_family_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no Edit/Write/MultiEdit calls anywhere) prints a
-        zero census and 0.0%/n-a shares rather than raising ZeroDivisionError."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._edit_format_report(_edit_format_args())
-        out = capsys.readouterr().out
-        assert _extract_call_census_count(out, "Edit") == 0
-        assert "mean old_string chars/edit: n/a" in out
-        assert "old_string share of Edit payload: 0.0%" in out
-
-    def test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly(self, tmp_path, capsys):
-        """Defense-in-depth: _edit_format_report must refuse the multi-root +
-        --no-redact combination itself rather than trusting that
-        _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_cost_report_itself_even_when_called_directly
-        — the in-function guard's own docstring claims this module's tests
-        exercise it directly; prior to this test, none did. Refusal happens
-        before any output is printed."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._edit_format_report(_edit_format_args(no_redact=True), roots=[root_a, root_b])
-        assert exc_info.value.code == 2
-        assert capsys.readouterr().out == ""
-
-
-class TestScanEditFormatSession:
-    """Direct unit tests for _scan_edit_format_session's returned stats dict
-    — the pure scan/classify/attribute layer this diff exposes, asserted on
-    directly rather than only through _edit_format_report's printed report
-    (TestEditFormat above), which additionally must survive the print
-    layer's own formatting to catch a classifier regression. Both layers are
-    warranted; this one is cheaper and more precise for the
-    classification/pairing/cause-attribution invariants specifically,
-    mirroring TestScanRootTranscripts' direct-dict/tuple assertion shape."""
-
-    def test_call_and_known_failure_counts(self):
-        records = [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _error_result("e2", "String to replace not found in file."),
-            _opus([_write_tool_use("w1", content="x")], out=10),
-            _error_result("w1", "Error: file has not been read yet."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["calls"] == {"Edit": 2, "Write": 1}
-        assert stats["known_failures"][("Edit", "not_found")] == 1
-        assert stats["known_failures"][("Write", "unread")] == 1
-
-    def test_unpaired_and_unclassified_and_governance_counted_directly(self):
-        records = [
-            _error_result("orphan-1", "String to replace not found"),
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result("e1", "Some unrelated tool failure with no known shape."),
-            _opus([_edit_tool_use("e2", old_string="c", new_string="d")], out=10),
-            _error_result("e2", "Blocked by plan-review gate: run /plan-review first."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["unpaired"] == 1
-        assert stats["unclassified"] == 1
-        assert stats["governance"]["plan-review"] == 1
-
-    def test_notfound_cause_attribution_direct(self):
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["whitespace_only"] == 1
-
-    def test_notfound_cause_abandoned_no_retry(self):
-        """A not_found failure with no later Edit call on the SAME
-        file_path (a later call on a different file doesn't count) — the
-        model gave up rather than retrying — lands in abandoned_no_retry,
-        not content_differs or any other bucket."""
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x=1", new_string="x=2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/bar.py", old_string="y=1", new_string="y=2")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["abandoned_no_retry"] == 1
-
-    def test_notfound_cause_identical_retry(self):
-        """A not_found failure whose next same-file Edit retries the exact
-        same old_string (byte-identical, not just whitespace-equivalent)
-        lands in identical_retry, not whitespace_only or content_differs."""
-        records = [
-            _opus([_edit_tool_use("e1", file_path="/foo.py", old_string="x = 1", new_string="x = 2")], out=10),
-            _error_result("e1", "String to replace not found in file."),
-            _opus([_edit_tool_use("e2", file_path="/foo.py", old_string="x = 1", new_string="x = 3")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["cause"]["identical_retry"] == 1
-
-    def test_multi_edit_notfound_counted_as_owner_not_tracked_not_a_crash(self):
-        """A not_found failure whose owner is MultiEdit (not Edit) has no
-        old_string in edit_order to pair against — must be counted, not
-        raise, since edit_order only ever tracks Edit's own calls."""
-        records = [
-            _opus([_multi_edit_tool_use("m1")], out=10),
-            _error_result("m1", "String to replace not found in file."),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["known_failures"][("MultiEdit", "not_found")] == 1
-        assert stats["cause"]["owner_not_tracked"] == 1
-
-    def test_known_failure_pattern_takes_precedence_over_governance(self):
-        """A tool_result whose text matches both a known-failure pattern and
-        a governance pattern classifies as the known failure — pinning the
-        early-continue ordering at the site that decides it, so a future
-        pattern addition that should instead take governance precedence
-        fails a test rather than silently misclassifying."""
-        records = [
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
-            _error_result(
-                "e1",
-                "Error: file has not been read yet, denied by your permission settings.",
-            ),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["known_failures"][("Edit", "unread")] == 1
-        assert stats["governance"]["permissions"] == 0
-
-    @pytest.mark.parametrize("length,expected_bucket", [
-        (0, "0-99"), (99, "0-99"),
-        (100, "100-299"), (299, "100-299"),
-        (300, "300-699"), (699, "300-699"),
-        (700, "700-1499"), (1499, "700-1499"),
-        (1500, "1500+"), (5000, "1500+"),
-    ])
-    def test_old_string_size_bucket_boundaries(self, length, expected_bucket):
-        assert _mod._old_string_size_bucket(length) == expected_bucket
-
-    def test_old_string_size_histogram_direct(self):
-        records = [
-            _opus([_edit_tool_use("e1", old_string="x" * 50, new_string="y")], out=10),
-            _opus([_edit_tool_use("e2", old_string="x" * 200, new_string="y")], out=10),
-            _opus([_edit_tool_use("e3", old_string="x" * 50, new_string="y")], out=10),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["old_string_size_hist"]["0-99"] == 2
-        assert stats["old_string_size_hist"]["100-299"] == 1
-
-    def test_multi_record_request_id_group_sums_output_tokens_once(self):
-        """A requestId group's output_tokens is taken once from the merged
-        turn's last record, not summed once per raw content-block record —
-        without dedup, stats["output_tokens"] would inflate by however many
-        blocks the response split into."""
-        records = [
-            _opus([_thinking_block()], out=3, request_id="req-1"),
-            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=3, request_id="req-1"),
-            _opus([], out=3111, request_id="req-1"),
-        ]
-        stats = _mod._scan_edit_format_session(records)
-        assert stats["output_tokens"] == 3111
-        assert stats["calls"] == {"Edit": 1}
 
 
 def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
@@ -3416,6 +1558,14 @@ def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, l
     if limit is not None:
         tool_input["limit"] = limit
     return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
+
+
+def _text_marker_assistant(marker: str, *, sidechain: bool = True) -> dict:
+    return _asst("claude-opus-4-7", sidechain=sidechain, content=[{"type": "text", "text": marker}])
+
+
+def _text_markers(records: list[dict]) -> list[str]:
+    return [rec["message"]["content"][0]["text"] for rec in records]
 
 
 class TestCorpusSubagentDirAndUtf8ErrorHandling:
@@ -3432,12 +1582,61 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
         try:
-            result = _mod._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
+            result = corpus._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
         finally:
             os.chmod(session_dir, 0o755)
 
         expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
         assert result == expected
+
+    def test_read_session_file_merges_direct_subagents_but_not_workflow_nested_ones(self, fake_projects):
+        """The reader merges only direct `subagents/*.jsonl` children, not `subagents/workflows/wf_*/` ones."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-direct", [_text_marker_assistant("direct-subagent-record")])
+        nested_dir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR / "workflows" / "wf_x"
+        nested_dir.mkdir(parents=True)
+        _write_jsonl(nested_dir / "agent-nested.jsonl", [_text_marker_assistant("workflow-nested-record")])
+
+        records = corpus.read_session_file(fake_projects / "sess.jsonl", include_subagents=True)
+
+        markers = _text_markers(records)
+        assert sorted(markers) == ["direct-subagent-record", "main-record"]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_drops_subagent_files_when_main_transcript_unreadable(self, fake_projects):
+        """An unreadable main transcript drops the whole session, including its readable direct subagent files."""
+
+        main_jsonl = fake_projects / "sess.jsonl"
+        _write_jsonl(main_jsonl, [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-direct", [_text_marker_assistant("direct-subagent-record")])
+        os.chmod(main_jsonl, 0o000)
+        try:
+            records_while_unreadable = corpus.read_session_file(main_jsonl, include_subagents=True)
+        finally:
+            os.chmod(main_jsonl, 0o644)
+        records_once_readable = corpus.read_session_file(main_jsonl, include_subagents=True)
+
+        assert records_while_unreadable == []
+        markers = _text_markers(records_once_readable)
+        assert sorted(markers) == ["direct-subagent-record", "main-record"]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_skips_only_the_unreadable_subagent_file(self, fake_projects):
+        """An unreadable subagent file drops only itself, keeping readable subagent files on either side."""
+        main_jsonl = fake_projects / "sess.jsonl"
+        _write_jsonl(main_jsonl, [_text_marker_assistant("main-record", sidechain=False)])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-readable", [_text_marker_assistant("readable-subagent-record")])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-sealed", [_text_marker_assistant("sealed-subagent-record")])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-z-later", [_text_marker_assistant("later-subagent-record")])
+        sealed_jsonl = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR / "agent-sealed.jsonl"
+        os.chmod(sealed_jsonl, 0o000)
+        try:
+            records = corpus.read_session_file(main_jsonl, include_subagents=True)
+        finally:
+            os.chmod(sealed_jsonl, 0o644)
+
+        markers = _text_markers(records)
+        assert sorted(markers) == ["later-subagent-record", "main-record", "readable-subagent-record"]
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_index_subagent_dispatches_returns_empty_index_for_unreadable_subagents_dir(self, fake_projects):
@@ -3456,7 +1655,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
         try:
-            index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+            index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
         finally:
             os.chmod(session_dir, 0o755)
 
@@ -3471,11 +1670,11 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         non-UTF-8 bytes as
         test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes."""
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
 
-        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
 
         assert index == {}
         assert meta_read_errors == 1
@@ -3488,7 +1687,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         mixed_jsonl.write_bytes(
             b'{"type": "user", "n": 1}\n\xff\xfe\x00\x01\n{"type": "user", "n": 2}\n'
         )
-        assert _mod.corpus._parse_jsonl_records(mixed_jsonl) == [
+        assert corpus._parse_jsonl_records(mixed_jsonl) == [
             {"type": "user", "n": 1}, {"type": "user", "n": 2},
         ]
 
@@ -3498,10 +1697,10 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         a failed read."""
         bad_jsonl = tmp_path / "bad.jsonl"
         bad_jsonl.write_bytes(b"\xff\xfe\x00\x01")
-        assert _mod.corpus._parse_jsonl_records(bad_jsonl) == []
+        assert corpus._parse_jsonl_records(bad_jsonl) == []
 
     def test_parse_jsonl_records_returns_none_when_the_file_cannot_be_opened(self, tmp_path):
-        assert _mod.corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
+        assert corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
 
     def test_parse_jsonl_records_keeps_valid_multibyte_utf8_lines_on_both_sides_of_a_corrupt_line(self, tmp_path):
         """A transcript written as raw UTF-8 (not ASCII-escaped, unlike
@@ -3516,7 +1715,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             + json.dumps({"type": "user", "n": 2, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
             + b"\n"
         )
-        assert _mod.corpus._parse_jsonl_records(multibyte_jsonl) == [
+        assert corpus._parse_jsonl_records(multibyte_jsonl) == [
             {"type": "user", "n": 1, "text": multibyte_text},
             {"type": "user", "n": 2, "text": multibyte_text},
         ]
@@ -3533,7 +1732,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             + b'{"type": "user", "n": 2, "text": "caf\xc3"}\n'
             + b'{"type": "user", "n": 3}\n'
         )
-        assert _mod.corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
+        assert corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
             {"type": "user", "n": 1}, {"type": "user", "n": 3},
         ]
 
@@ -3541,736 +1740,20 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         """A meta.json written as raw UTF-8 with non-ASCII text next to a
         valid toolUseId is indexed, not counted under meta_read_errors."""
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
         (subdir / "agent-1.meta.json").write_bytes(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
 
-        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        index, meta_read_errors = corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
 
         assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
         assert meta_read_errors == 0
 
 
 # ---------------------------------------------------------------------------
-# instrument-authoring
-# ---------------------------------------------------------------------------
-
-
-def _instrument_authoring_args(
-    *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects, "this_repo": this_repo, "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _extract_instrument_authoring_call(out: str, shape_label: str, scope: str) -> tuple[int, int]:
-    """Read one census line's (count, chars) -- e.g. "Bash (heredoc/-c/-e)   main      count=...  chars=~..."."""
-    match = re.search(
-        rf"^\s*{re.escape(shape_label)}\s+{re.escape(scope)}\s+count=\s*([\d,]+)\s+chars=~\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{shape_label}/{scope} census line not found in output"
-    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
-
-
-def _extract_instrument_authoring_bucket_count(out: str, scope: str, label: str) -> int:
-    match = re.search(
-        rf"^\s*{re.escape(scope)}\s+{re.escape(label)}\s+count=\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{scope}/{label} bucket line not found in output"
-    return int(match.group(1).replace(",", ""))
-
-
-def _extract_instrument_authoring_cohort(out: str, cohort_label: str) -> tuple[int, int]:
-    """Read one cohort line's (session_n, payload_chars)."""
-    match = re.search(
-        rf"^\s*{re.escape(cohort_label)}\s+sessions=\s*([\d,]+).*?chars=~\s*([\d,]+)",
-        out, re.MULTILINE,
-    )
-    assert match is not None, f"{cohort_label} cohort line not found in output"
-    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
-
-
-class TestInstrumentAuthoring:
-    def test_subagent_authoring_shapes_attributed_to_subagent_cohort_not_main(self, fake_projects, capsys):
-        """The same authoring shapes on a subagent (isSidechain: true) record
-        attribute to the subagent scope, not main -- exercised through a real
-        merged main+subagent transcript pair, pinning include_subagents=True."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_bash_use("m1", "git log --oneline -5")]),
-        ])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _bash_use("s1", "python3 -c 'print(1)'"),
-            ]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        main_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "main")
-        subagent_count, _ = _extract_instrument_authoring_call(out, "Bash (heredoc/-c/-e)", "subagent")
-        assert main_count == 0
-        assert subagent_count == 1
-
-    def test_cohort_lines_printed_for_a_zero_dispatch_and_a_dispatched_session(self, fake_projects, capsys):
-        """Report-level smoke test: a zero-dispatch and a dispatched session
-        each land in their own printed cohort line -- the arithmetic itself
-        is TestScanInstrumentAuthoringSession's
-        test_cohort_arithmetic_sums_across_multiple_sessions' job."""
-        _write_jsonl(fake_projects / "sess-zero.jsonl", [
-            _opus([_bash_use("b1", "python3 -c 'print(1)'")]),
-        ])
-        _write_jsonl(fake_projects / "sess-dispatched.jsonl", [
-            _opus([_bash_use("b2", "python3 -c 'print(1)'")]),
-            _opus([_agent_use("a1", "general-purpose")]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        zero_sessions, _zero_chars = _extract_instrument_authoring_cohort(out, "zero_dispatch")
-        dispatched_sessions, _dispatched_chars = _extract_instrument_authoring_cohort(out, "dispatched")
-        assert zero_sessions == 1
-        assert dispatched_sessions == 1
-
-    def test_size_histogram_bucket_wired_through_report(self, fake_projects, capsys):
-        """The per-scan size bucket reaches the printed histogram section,
-        not just _scan_instrument_authoring_session's own returned dict."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", "python3 -c 'print(1)'")])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert _extract_instrument_authoring_bucket_count(out, "main", "0-99") == 1
-
-    def test_no_authored_payload_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-SENTINEL-PAYLOAD-MUST-NOT-LEAK"
-        command = f"python3 -c 'print(\"{sentinel}\")'"
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_no_heredoc_body_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-HEREDOC-SENTINEL-MUST-NOT-LEAK"
-        command = f"cat <<EOF > /tmp/instrument.py\n{sentinel}\nEOF\n"
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_bash_use("b1", command)])])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_no_write_content_text_appears_anywhere_in_printed_report(self, fake_projects, capsys):
-        sentinel = "DISTINCTIVE-WRITE-SENTINEL-MUST-NOT-LEAK"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_write_use("w1", sentinel, path="/tmp/scratch/instrument.py")]),
-        ])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert sentinel not in out
-
-    def test_zero_calls_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """An empty scope (no authoring calls anywhere) prints a zero census
-        and 0.0% cohort shares rather than raising ZeroDivisionError."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._instrument_authoring_report(_instrument_authoring_args())
-        out = capsys.readouterr().out
-        assert "zero_dispatch  sessions=     1 (100.0% of sessions)" in out
-        assert "dispatched     sessions=     0 (0.0% of sessions)" in out
-        assert "(0.0% of authored mass)" in out
-
-
-class TestScanInstrumentAuthoringSession:
-    """Direct unit tests for _scan_instrument_authoring_session's returned
-    stats dict, mirroring TestScanEditFormatSession's role: classification
-    invariants asserted directly on the dict, cheaper and more precise than
-    TestInstrumentAuthoring's report-level assertions."""
-
-    def test_heredoc_bash_call_counted_with_body_only_payload(self):
-        command = "cat <<EOF > /tmp/instrument.py\nprint('hi')\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("print('hi')")
-
-    def test_inline_python_one_liner_lands_in_smallest_bucket(self):
-        records = [_opus([_bash_use("b1", "python3 -c 'print(1)'")])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["size_hist"][("main", "0-99")] == 1
-
-    def test_write_scratchpad_paths_counted_repo_path_not_counted(self):
-        """Both /tmp/... and /private/tmp/... scratchpad forms count; an
-        ordinary repo file path does not."""
-        records = [
-            _opus([_write_use("w1", "x" * 40, path="/tmp/scratch/instrument.py")]),
-            _opus([_write_use("w2", "y" * 40, path="/private/tmp/scratch/instrument.py")]),
-            _opus([_write_use("w3", "z" * 40, path="/repo/src/module.py")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("write", "main")] == 2
-        assert stats["payload_chars"][("write", "main")] == 80
-
-    def test_write_scratchpad_path_component_outside_tmp_root_counted(self):
-        """A 'scratchpad' path segment counts even when the path isn't
-        rooted under /tmp or /private/tmp; a segment that only contains
-        'scratchpad' as a substring of a different directory name does not."""
-        records = [
-            _opus([_write_use("w1", "x" * 40, path="/repo/scratchpad/notes.py")]),
-            _opus([_write_use("w2", "y" * 40, path="/repo/scratchpad_utils.py")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("write", "main")] == 1
-        assert stats["payload_chars"][("write", "main")] == 40
-
-    def test_spawn_count_from_both_agent_and_task_tool_names(self):
-        records = [
-            _opus([_agent_use("a1", "general-purpose", tool_name="Agent")]),
-            _opus([_agent_use("a2", "code-writer", tool_name="Task")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["spawn_dispatch_n"] == 2
-
-    def test_subagent_spawn_dispatch_excluded_and_authoring_call_scoped_to_subagent(self):
-        """A subagent's own Agent/Task tool_use (isSidechain: true) must not
-        increment this session's main-thread spawn_dispatch_n -- only
-        main-thread dispatches decide the cohort split -- and a Bash
-        authoring call in the same sidechain record attributes to the
-        subagent scope, pinned directly on the scan dict rather than only
-        through the heavier report-level fixture test."""
-        subagent_records = [
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _agent_use("a1", "general-purpose", tool_name="Agent"),
-                _bash_use("b1", "python3 -c 'print(1)'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(subagent_records)
-        assert stats["spawn_dispatch_n"] == 0
-        assert stats["call_n"][("bash", "subagent")] == 1
-        assert stats["call_n"][("bash", "main")] == 0
-
-        main_records = [_opus([_agent_use("a2", "general-purpose", tool_name="Task")])]
-        main_stats = _mod._scan_instrument_authoring_session(main_records)
-        assert main_stats["spawn_dispatch_n"] == 1
-
-    def test_main_payload_chars_excludes_subagent_scope_authoring(self):
-        """main_payload_chars feeds cohort_totals[...]['payload_chars']
-        directly -- the reported "authored mass" figure -- so it must sum
-        only main-thread authoring calls, never subagent ones."""
-        records = [
-            _opus([_bash_use("b1", "python3 -c 'main-payload'")]),
-            _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-                _bash_use("b2", "python3 -c 'subagent-payload-much-longer'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["main_payload_chars"] == len("main-payload")
-
-    def test_ordinary_bash_call_not_classified_as_authoring(self):
-        records = [
-            _opus([_bash_use("b1", "git log --oneline -10")]),
-            _opus([_bash_use("b2", "pytest claude/.claude/scripts/tests/")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_adversarial_dash_c_false_positives_not_counted(self):
-        """-c bound to a non-interpreter argv[0] (curl, tar, ssh) never
-        counts, mirroring TestEditFormat's
-        test_non_edit_tool_error_with_matching_text_not_counted's discipline
-        against substring-only matching."""
-        records = [
-            _opus([_bash_use("b1", "curl -c cookies.txt https://example.com")]),
-            _opus([_bash_use("b2", "tar -cf out.tar .")]),
-            _opus([_bash_use("b3", "ssh -c aes256-ctr host 'ls'")]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    @pytest.mark.parametrize("command,inline_program", [
-        ("python3 -c 'print(1)'", "print(1)"),
-        ("python -c 'print(1)'", "print(1)"),
-        ("sh -c 'echo hi'", "echo hi"),
-        ("bash -c 'echo hi'", "echo hi"),
-        ("node -e 'console.log(1)'", "console.log(1)"),
-        ("perl -e 'print 1'", "print 1"),
-        ("ruby -e 'puts 1'", "puts 1"),
-    ])
-    def test_each_recognized_interpreter_matches_its_own_flag(self, command, inline_program):
-        """Every entry in _INSTRUMENT_AUTHORING_INLINE_INTERPRETER_FLAGS gets
-        a genuine positive match on its own flag, not just python3/node."""
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len(inline_program)
-
-    @pytest.mark.parametrize("command", [
-        "bash -e deploy.sh",  # errexit, not inline-eval
-        "python3 -m pytest",  # module flag, not -c
-    ])
-    def test_recognized_interpreter_with_wrong_flag_not_counted(self, command):
-        """A recognized interpreter bound to a flag other than its own
-        inline-eval flag (bash -e, python3 -m) never counts."""
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_heredoc_dash_variant_with_quoted_delimiter_strips_leading_tabs(self):
-        command = "cat <<-'EOF'\n\thello\n\tEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("hello")
-
-    def test_heredoc_non_eof_delimiter_recognized(self):
-        command = "cat <<PAYLOAD\nbody text\nPAYLOAD\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("body text")
-
-    def test_heredoc_body_containing_delimiter_word_as_data_does_not_truncate(self):
-        command = "cat <<EOF\nfirst line\nEOF is mentioned here, not a real terminator\nlast line\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        expected_body = "first line\nEOF is mentioned here, not a real terminator\nlast line"
-        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
-
-    def test_two_heredocs_chained_with_and_sum_payloads(self):
-        command = "cat <<A > /tmp/a.txt && cat <<B > /tmp/b.txt\nfirst\nA\nsecond\nB\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("first") + len("second")
-
-    def test_quoted_herestring_not_misparsed_as_heredoc(self):
-        """A bash here-string (`<<<`) with a quoted right-hand side is not
-        mistaken for a heredoc opener."""
-        command = 'cat <<< "$var"\necho after\n'
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_unquoted_herestring_not_misparsed_as_heredoc(self):
-        """Regression test: `cat <<<EOF` (an unquoted here-string, not a
-        heredoc) must not match the heredoc-opener regex starting one
-        character into the `<<<` operator -- doing so would consume every
-        following line as a fake heredoc body since no line ever equals the
-        delimiter "EOF"."""
-        command = "cat <<<EOF\necho after\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert sum(stats["call_n"].values()) == 0
-        assert stats["payload_chars"][("bash", "main")] == 0
-
-    def test_heredoc_body_containing_inline_program_shape_not_double_counted(self):
-        """A heredoc body containing a line shaped like an inline-program
-        invocation (e.g. example code written as data) is not counted a
-        second time as its own separate authoring invocation -- the body's
-        own char count already includes it once."""
-        inline_example_line = "python3 -c 'foo'"
-        command = f"cat <<EOF > /tmp/instrument.py\nprint('hi')\n{inline_example_line}\nEOF\n"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        expected_body = f"print('hi')\n{inline_example_line}"
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len(expected_body)
-
-    def test_double_quoted_inline_program_argument_strips_quotes(self):
-        """_extract_shell_arg_at's double-quoted branch (vs. the single-
-        quoted/bare forms every other inline-program test here uses) also
-        strips the surrounding quotes from the payload it measures."""
-        command = 'python3 -c "print(1)"'
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
-
-    def test_versioned_python_interpreter_recognized(self):
-        """Regression test: `python3.11 -c '...'` must classify as authoring
-        -- a bare `\\bpython3\\b` word boundary fails between "3" and "."
-        (both word-adjacent-to-non-word), which previously blocked the match
-        entirely."""
-        command = "python3.11 -c 'print(1)'"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 1
-        assert stats["payload_chars"][("bash", "main")] == len("print(1)")
-
-    def test_unparsed_bash_and_write_input_counted_in_own_cohort_not_dropped(self):
-        records = [
-            _opus([{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"__unparsedToolInput": "x"}}]),
-            _opus([{"type": "tool_use", "id": "w1", "name": "Write", "input": {"__unparsedToolInput": "y"}}]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["unparsed_n"]["main"] == 2
-        assert sum(stats["call_n"].values()) == 0
-
-    def test_parallel_tool_use_blocks_in_one_turn_both_counted(self):
-        records = [
-            _opus([
-                _bash_use("b1", "python3 -c 'print(1)'"),
-                _bash_use("b2", "node -e 'console.log(2)'"),
-            ]),
-        ]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["call_n"][("bash", "main")] == 2
-
-    def test_bucket_boundary_at_largest_finite_bucket_edge(self):
-        """A payload of exactly 9999 chars (the largest finite bucket's own
-        upper edge) lands in "2000-9999", not the 10000+ overflow -- pins the
-        exclusive-upper-bound convention against an off-by-one."""
-        payload = "x" * 9999
-        command = f"python3 -c '{payload}'"
-        records = [_opus([_bash_use("b1", command)])]
-        stats = _mod._scan_instrument_authoring_session(records)
-        assert stats["size_hist"][("main", "2000-9999")] == 1
-        assert stats["size_hist"][("main", "10000+")] == 0
-
-    @pytest.mark.parametrize("chars,expected_bucket", [
-        (0, "0-99"), (99, "0-99"),
-        (100, "100-499"), (499, "100-499"),
-        (500, "500-1999"), (1999, "500-1999"),
-        (2000, "2000-9999"), (9999, "2000-9999"),
-        (10000, "10000+"), (50000, "10000+"),
-    ])
-    def test_instrument_authoring_size_bucket_boundaries(self, chars, expected_bucket):
-        assert _mod._instrument_authoring_size_bucket(chars) == expected_bucket
-
-    def test_cohort_arithmetic_sums_across_multiple_sessions(self):
-        """The load-bearing computation: two zero-dispatch sessions carrying
-        large payloads plus two dispatched sessions carrying small ones must
-        produce the two cohort totals the go/no-go rule reads."""
-        def _session_stats(*, spawn_dispatch_n, main_payload_chars):
-            stats = _mod._new_instrument_authoring_stats()
-            stats["spawn_dispatch_n"] = spawn_dispatch_n
-            stats["main_payload_chars"] = main_payload_chars
-            return stats
-
-        sessions = [
-            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
-            _session_stats(spawn_dispatch_n=0, main_payload_chars=500),
-            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
-            _session_stats(spawn_dispatch_n=1, main_payload_chars=10),
-        ]
-        _stats, cohort_totals = _mod._aggregate_instrument_authoring_sessions(sessions)
-        assert cohort_totals["zero_dispatch"]["session_n"] == 2
-        assert cohort_totals["dispatched"]["session_n"] == 2
-        assert cohort_totals["zero_dispatch"]["payload_chars"] == 1000
-        assert cohort_totals["dispatched"]["payload_chars"] == 20
-
-
-# ---------------------------------------------------------------------------
 # cache-efficiency
 # ---------------------------------------------------------------------------
-
-
-def _cache_efficiency_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-class TestCachePrefixTotal:
-    """Direct unit tests for _cache_prefix_total's usage-dict traversal --
-    the read-collapse classifier's prior-turn denominator."""
-
-    def test_excludes_input_tokens(self):
-        """input_tokens must not contribute to the prefix total -- only
-        cache_read_input_tokens and both cache_creation tiers count, per the
-        function's own documented differentiator from _context_at_turn. A
-        prior turn carrying only input_tokens (no cache fields at all) must
-        report a prefix total of zero, not the input_tokens value."""
-        usage = _priced("claude-sonnet-5", input=50_000, cache_read=0)["message"]["usage"]
-        assert _mod._cache_prefix_total(usage) == 0
-
-    def test_sums_read_and_both_cache_write_tiers(self):
-        usage = _priced("claude-sonnet-5", cache_read=1000, ephemeral_1h=200, ephemeral_5m=300)["message"]["usage"]
-        assert _mod._cache_prefix_total(usage) == 1500
-
-
-class TestCacheEfficiencyClassifier:
-    """Direct unit tests for the read-collapse classifier
-    (docs/case-studies/cold-cache-attribution.md), scored at
-    T=_COLD_READ_COLLAPSE_MARGIN=0.50 -- the margin the case study measured
-    as the maximum Youden's J across every threshold tested there."""
-
-    def test_margin_boundary_exactly_at_t_is_not_cold(self):
-        """collapse == T (not strictly greater than T) stays warm: prior
-        prefix 100, this turn's read 50 -> exactly 0.50 collapse."""
-        assert _mod._is_cold_read_collapse(100, 50) is False
-
-    def test_margin_boundary_just_past_t_is_cold(self):
-        """One token further past the same prior prefix flips the
-        classification: prior prefix 100, read 49 -> 0.51 collapse."""
-        assert _mod._is_cold_read_collapse(100, 49) is True
-
-    def test_zero_prior_prefix_is_never_cold(self):
-        """No prefix to collapse from -- covers both a prior turn whose own
-        prefix total was genuinely zero and (via _scan_cache_efficiency_group
-        below) a session's first turn, which has no prior turn at all."""
-        assert _mod._is_cold_read_collapse(0, 0) is False
-
-
-class TestCacheEfficiencyGroupScan:
-    """Direct unit tests for _scan_cache_efficiency_group's classification
-    over one source-file group -- the layer TestCacheEfficiencyClassifier's
-    pure-function tests can't reach, since the first-turn carve-out depends
-    on the per-session prior-turn chain, not the margin comparison alone."""
-
-    def test_first_turn_of_session_with_zero_read_is_not_cold(self):
-        """A session's first assistant turn has no predecessor, so a
-        first-turn read==0 (e.g. a genuinely fresh context) must not be
-        misread as a cold re-write -- the first-turn carve-out."""
-        records = [_priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["turns"] == 1
-        assert stats["main"]["cold_events"] == 0
-
-    def test_non_first_turn_with_zero_read_after_nonzero_prior_is_cold(self):
-        """The non-first-turn counterpart to the carve-out above: a turn
-        following a real prior prefix, whose own read collapses to zero,
-        must classify cold."""
-        records = [
-            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 1
-        assert stats["main"]["cold_tokens"] == 500
-
-    def test_compact_boundary_resets_the_chain(self):
-        """A compact_boundary record resets the prior-turn chain -- the turn
-        immediately after compaction is treated as a first turn (not cold),
-        since the pre-compaction prefix it would otherwise be compared
-        against no longer exists."""
-        records = [
-            _priced("claude-sonnet-5", cache_read=100_000, request_id="r1"),
-            _compact_boundary_rec(),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_input_heavy_prior_turn_not_treated_as_cache_prefix(self):
-        """A prior turn with a large input_tokens value but zero cache
-        fields contributes nothing to the prior-prefix chain (per
-        _cache_prefix_total's documented exclusion) -- the next turn's own
-        cache_read must not be misclassified as a collapse against that
-        input-heavy, uncached prefix. A buggy _cache_prefix_total that
-        folded input_tokens back in would see a 50,000-token prior prefix
-        and flag turn 2 as cold; this expects no such collapse."""
-        records = [
-            _priced("claude-sonnet-5", input=50_000, cache_read=0, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2"),
-        ]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_return_value_counts_sidechain_assistant_records_read(self):
-        """The int return value counts isSidechain assistant records seen in
-        this group, independent of stats['sidechain']['turns'] -- feeds the
-        drift canary via _cache_efficiency_report's total_sidechain_turns
-        accumulation."""
-        side_rec = _priced("claude-sonnet-5", cache_read=100)
-        side_rec["isSidechain"] = True
-        records = [_priced("claude-sonnet-5", cache_read=50), side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        sidechain_turns_read = _mod._scan_cache_efficiency_group(records, stats)
-        assert sidechain_turns_read == 1
-
-    def test_second_session_first_turn_does_not_inherit_first_sessions_chain(self):
-        """The carve-out is keyed by sessionId, not by turn position within
-        the group: a second session's first turn must not inherit a first
-        session's already-built prior-prefix chain, even though both turns
-        appear in the same source-file group."""
-        session_a_turn = _priced("claude-sonnet-5", cache_read=10_000, request_id="r1")
-        session_a_turn["sessionId"] = "session-a"
-        session_b_first_turn = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100, request_id="r2")
-        session_b_first_turn["sessionId"] = "session-b"
-        records = [session_a_turn, session_b_first_turn]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["cold_events"] == 0
-
-    def test_sidechain_turn_buckets_separately_from_main(self):
-        """isSidechain routes a turn into its own thread bucket, mirroring
-        cost's and subagents' own main/sidechain split."""
-        side_rec = _priced("claude-sonnet-5", cache_read=200)
-        side_rec["isSidechain"] = True
-        records = [_priced("claude-sonnet-5", cache_read=100), side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["main"]["turns"] == 1
-        assert stats["main"]["read_tokens"] == 100
-        assert stats["sidechain"]["turns"] == 1
-        assert stats["sidechain"]["read_tokens"] == 200
-
-    def test_sidechain_first_turn_does_not_inherit_mains_prior_prefix(self):
-        """The prior-prefix chain is keyed by (sessionId, thread), not
-        sessionId alone: a sidechain record sharing the main record's
-        sessionId (the real-world shape -- a subagent file's records carry
-        the parent session's sessionId) must not inherit the main thread's
-        prior prefix. Values are chosen so cross-thread contamination would
-        flip the verdict: main's prefix (10,000) vastly exceeds the
-        sidechain's own read (0), so a shared chain would misclassify the
-        sidechain's first turn as a cold collapse."""
-        main_rec = _priced("claude-sonnet-5", cache_read=10_000)
-        main_rec["sessionId"] = "session-a"
-        side_rec = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=100)
-        side_rec["isSidechain"] = True
-        side_rec["sessionId"] = "session-a"
-        records = [main_rec, side_rec]
-        stats = _mod._new_cache_efficiency_stats()
-        _mod._scan_cache_efficiency_group(records, stats)
-        assert stats["sidechain"]["cold_events"] == 0
-
-
-class TestCacheEfficiency:
-    def test_turn_and_token_totals_and_cold_share_hand_computed(self, fake_projects, capsys):
-        """End-to-end report totals against a small hand-computed fixture:
-        turn 1 (no predecessor) is never cold; turn 2 is a warm append
-        (read stays at turn 1's full prefix); turn 3's read collapses to
-        zero against turn 2's 1,200-token prefix -- cold, contributing its
-        own 500 write-5m tokens as cold tokens."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", cache_read=1000, request_id="r1"),
-            _priced("claude-sonnet-5", cache_read=1000, ephemeral_5m=200, request_id="r2"),
-            _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r3"),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "3"
-        assert cols["Read"] == "2,000"
-        assert cols["Write5m"] == "700"
-        assert cols["ColdTok"] == "500"
-        assert cols["ColdEvts"] == "1"
-
-    def test_multi_record_turn_split_across_jsonl_lines_not_misread_cold(self, fake_projects, capsys):
-        """Claude Code writes one JSONL record per assistant content block
-        (thinking/text/tool_use), all sharing one requestId and identical
-        cache_read/cache_creation usage (_dedup_turns_by_request_id's own
-        documented invariant). Without deduping each source-file group
-        before classification, the second record of that same turn would
-        read as a second turn whose read 'collapsed' against the first
-        record's own (identical) usage -- a false cold event on a turn that
-        never actually ended. Guards _cache_efficiency_report's per-group
-        _dedup_turns_by_request_id call."""
-        rec1 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
-        rec2 = _priced("claude-sonnet-5", cache_read=100, ephemeral_5m=10_000, request_id="req-1")
-        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "1"
-        assert cols["ColdEvts"] == "0"
-
-    def test_no_assistant_turns_prints_zeroes_without_division_error(self, fake_projects, capsys):
-        """A session with no assistant turns at all (e.g. only a user
-        message) prints a clean zero-state row rather than raising
-        ZeroDivisionError -- mirrors edit-format's own zero-state coverage."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._cache_efficiency_report(_cache_efficiency_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "0"
-        assert cols["Cold/Wr"] == "0.0%"
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root
-        in scope, mirroring cost's/edit-format's/read-scope's own refusal."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cache_efficiency(_cache_efficiency_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
-        """--no-redact with no --config-dir (single root) is unaffected —
-        this report's content never varies with redact, since it carries no
-        project name or session ID, but the banner still prints for CLI
-        parity with cost/edit-format/read-scope."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Turns"] == "1"
-
-    def test_no_redact_refused_by_report_itself_even_when_called_directly(self, tmp_path, capsys):
-        """Defense-in-depth: _cache_efficiency_report must refuse the
-        multi-root + --no-redact combination itself rather than trusting
-        that _resolve_cost_roots already validated it, mirroring
-        test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
-        Refusal happens before any output is printed."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _priced("claude-sonnet-5", cache_read=200),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cache_efficiency_report(_cache_efficiency_args(no_redact=True), roots=[root_a, root_b])
-        assert exc_info.value.code == 2
-        assert capsys.readouterr().out == ""
-
-    def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
-        """Per-account figures are emitted through account-N labels — never
-        the raw config-dir path or account-identifying directory name — the
-        same discipline edit-format's own per-account breakdown carries."""
-        root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _priced("claude-sonnet-5", cache_read=100),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _priced("claude-sonnet-5", cache_read=200),
-            _priced("claude-sonnet-5", cache_read=300),
-        ])
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        assert "acct-alice-clientwork" not in out
-        assert "acct-bob-clientwork" not in out
-        assert str(root_a) not in out
-        assert str(root_b) not in out
-        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
-        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
-        assert account_1["Turns"] == "1"
-        assert account_2["Turns"] == "2"
-
-    def test_per_account_breakdown_attributes_cold_events_to_the_correct_account(self, tmp_path, capsys):
-        """A cold event originating in one account's session must land in
-        that account's own per_account[ordinal] bucket, not leak into the
-        other account's bucket or only the aggregate. A bug in the
-        redact_ordinals/root_position lookup could pass a turn-counts-only
-        check while still misattributing cold figures across accounts."""
-        root_a_turn = _priced("claude-sonnet-5", cache_read=100)
-        root_a_turn["sessionId"] = "sess-a"
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [root_a_turn])
-
-        root_b_turn_1 = _priced("claude-sonnet-5", cache_read=1000, request_id="r1")
-        root_b_turn_1["sessionId"] = "sess-b"
-        root_b_turn_2 = _priced("claude-sonnet-5", cache_read=0, ephemeral_5m=500, request_id="r2")
-        root_b_turn_2["sessionId"] = "sess-b"
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [root_b_turn_1, root_b_turn_2])
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[root_a, root_b])
-        out = capsys.readouterr().out
-        account_1 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=2)
-        account_2 = _table_cols(out, header_contains="Thread", row_contains="main", occurrence=3)
-        assert account_1["ColdEvts"] == "0"
-        assert account_1["ColdTok"] == "0"
-        assert account_2["ColdEvts"] == "1"
-        assert account_2["ColdTok"] == "500"
 
 
 class TestCacheEfficiencyArgparseWiring:
@@ -4284,12 +1767,12 @@ class TestCacheEfficiencyArgparseWiring:
         args = parser.parse_args(["cache-efficiency"])
         assert args.extra_config_dirs is None
         assert args.no_redact is False
-        assert args.func == _mod.cmd_cache_efficiency
+        assert args.func == cache_efficiency.cmd_cache_efficiency
 
     def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
         parser = _mod.build_parser()
         args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
-        assert args.func is _mod.cmd_cache_efficiency
+        assert args.func is cache_efficiency.cmd_cache_efficiency
         assert args.extra_config_dirs == ["X"]
         assert args.no_redact is True
 
@@ -4320,1118 +1803,15 @@ class TestCacheRebuildCrossInstrumentReconciliation:
             rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         rebuild_out = capsys.readouterr().out
         rebuild_row = _table_cols(rebuild_out, header_contains="Ratio", row_contains="subagent")
 
-        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
+        cache_efficiency._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
         efficiency_out = capsys.readouterr().out
         efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
 
         assert rebuild_row["W5m"] == efficiency_row["Write5m"]
-
-
-# ---------------------------------------------------------------------------
-# turn-shape / turn-shape-samples
-# ---------------------------------------------------------------------------
-
-
-def _turn_shape_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-    })()
-
-
-def _turn_shape_samples_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    sample: int = 100,
-    seed: int | None = 42,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "sample": sample,
-        "seed": seed,
-    })()
-
-
-def _turn_shape_holdout_samples_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    sample: int = 30,
-    seed: int = 0,
-    offset: int = 0,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "sample": sample,
-        "seed": seed,
-        "offset": offset,
-    })()
-
-
-class TestBashCommandIsMutatingGit:
-    """Direct unit tests for _bash_command_is_mutating_git — the delegation-rule
-    streak's mutating-git exclusion classifier."""
-
-    @pytest.mark.parametrize("subcommand", sorted(_mod._TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS))
-    def test_every_enumerated_mutating_subcommand_classifies_as_mutating(self, subcommand):
-        assert _mod._bash_command_is_mutating_git(f"git {subcommand} extra-arg") is True
-
-    @pytest.mark.parametrize(("command", "expected"), [
-        ("git status", False),
-        ("git log", False),
-        ("ls -la", False),
-        # Existing normalization (sudo-strip, env-prefix-strip, flag-value-drop)
-        # must keep classifying these as mutating once the segment-split refactor lands.
-        ("sudo git commit -m x", True),
-        ("FOO=bar git commit -m x", True),
-        ("git -C /some/path commit -m x", True),
-    ])
-    def test_read_only_and_normalization_edge_cases(self, command, expected):
-        assert _mod._bash_command_is_mutating_git(command) is expected
-
-    def test_mutating_git_after_shell_and_operator_still_classifies_as_mutating(self):
-        """"cd worktree && git commit -m wip" — the mutating git call isn't at
-        shlex.split's index 0/1 of the whole command, so a first-segment-only
-        check would miss it."""
-        assert _mod._bash_command_is_mutating_git("cd worktree && git commit -m wip") is True
-
-    def test_read_only_git_before_shell_and_operator_does_not_classify_as_mutating(self):
-        assert _mod._bash_command_is_mutating_git("git status && echo done") is False
-
-    def test_mutating_git_only_in_later_chained_segment_still_classifies_as_mutating(self):
-        """A segment where only a later chained command is mutating still trips
-        the classifier — every segment is checked, not just the first."""
-        assert _mod._bash_command_is_mutating_git("echo hi && git commit -m x") is True
-
-    def test_env_prefix_on_a_later_chained_segment_still_classifies_as_mutating(self):
-        """"cd dir && FOO=bar git commit" — the env-prefix strip must apply
-        per segment, not only once at the start of the whole command, or a
-        chained segment's own env-var assignment hides its mutating git call."""
-        assert _mod._bash_command_is_mutating_git("cd dir && FOO=bar git commit -m x") is True
-
-
-class TestTurnShapeBuckets:
-    """Boundary tests for the call-count and streak-length bucket ladders."""
-
-    @pytest.mark.parametrize(("call_count", "expected_bucket"), [
-        (3, "2-3"), (4, "4-7"), (7, "4-7"), (8, "8+"),
-    ])
-    def test_call_count_bucket_boundaries(self, call_count, expected_bucket):
-        assert _mod._turn_shape_call_count_bucket(call_count) == expected_bucket
-
-    @pytest.mark.parametrize(("streak_len", "expected_bucket"), [
-        (2, "2"), (3, "3-5"), (5, "3-5"), (6, "6-10"), (10, "6-10"), (11, "11+"),
-    ])
-    def test_streak_bucket_boundaries(self, streak_len, expected_bucket):
-        assert _mod._turn_shape_streak_bucket(streak_len) == expected_bucket
-
-
-class TestTurnShapeSessionTurns:
-    """Direct unit tests for _turn_shape_session_turns — the per-turn population
-    builder shared by cmd_turn_shape and cmd_turn_shape_samples."""
-
-    def test_same_request_id_records_merge_into_one_turn_with_summed_call_count(self):
-        """Three tool_use blocks split across three same-requestId records merge into
-        one turn with call_count=3 — the fixture uses separate records sharing one
-        requestId, not three blocks in a single record, so the dedup merge path is
-        actually exercised."""
-        records = [
-            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
-                     content=[_bash_use("b1", "ls")]),
-            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
-                     content=[_bash_use("b2", "pwd")]),
-            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
-                     content=[_bash_use("b3", "whoami")]),
-        ]
-        turns = _mod._turn_shape_session_turns(records, None, "sess")
-        assert len(turns) == 1
-        assert turns[0]["call_count"] == 3
-
-    def test_dollar_field_matches_price_turn_for_the_turns_own_usage(self):
-        """A turn's own "dollars" field equals _price_turn's own price for that
-        turn's exact usage."""
-        rec = _priced("claude-sonnet-5", input=1000, output=500, cache_read=200,
-                        content=[_bash_use("b1", "ls")])
-        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec["message"]["usage"])
-        turns = _mod._turn_shape_session_turns([rec], None, "sess")
-        assert turns[0]["dollars"] == sum(expected_dollars_by_class.values())
-
-    def test_zero_tool_call_turn_has_call_count_zero(self):
-        """A turn with no tool_use blocks (a text-only reply) has call_count 0, which
-        _turn_shape_call_count_bucket maps to bucket "0", not "1"."""
-        rec = _priced("claude-sonnet-5", input=10, output=5,
-                        content=[{"type": "text", "text": "just a reply"}])
-        turns = _mod._turn_shape_session_turns([rec], None, "sess")
-        assert turns[0]["call_count"] == 0
-        assert _mod._turn_shape_call_count_bucket(turns[0]["call_count"]) == "0"
-
-    def test_sidechain_turns_excluded_entirely(self):
-        """A session made entirely of isSidechain turns yields no entries at all,
-        regardless of how many tool_use blocks it carries or how they'd otherwise
-        bucket."""
-        rec = _asst("claude-sonnet-5", sidechain=True, content=[_bash_use("b1", "git status")],
-                     request_id="req-1")
-        rec["message"]["usage"] = {
-            "input_tokens": 10, "output_tokens": 5,
-            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-        }
-        turns = _mod._turn_shape_session_turns([rec], None, "sess")
-        assert turns == []
-
-    def test_null_git_branch_normalizes_the_same_as_empty_string(self):
-        """A record whose gitBranch is JSON null must normalize to the same "branch"
-        value as one whose gitBranch is "" — regression test for the
-        rec.get("gitBranch", "") vs rec.get("gitBranch") or "" divergence, which
-        only shows up when the key is present with an explicit null."""
-        rec1 = _priced("claude-sonnet-5", input=10, output=5, branch="",
-                         content=[_bash_use("b1", "ls")], request_id="r1")
-        rec2 = _priced("claude-sonnet-5", input=10, output=5, branch="",
-                         content=[_bash_use("b2", "pwd")], request_id="r2")
-        rec2["gitBranch"] = None
-        turns = _mod._turn_shape_session_turns([rec1, rec2], None, "sess")
-        assert turns[0]["branch"] == turns[1]["branch"] == ""
-        streaks = _mod._turn_shape_streaks(turns, require_bash=False)
-        assert [len(s) for s in streaks] == [2]
-
-    def test_since_ts_excludes_turns_before_cutoff_and_turns_with_no_timestamp(self):
-        """since_ts drops a turn timestamped before the cutoff and a turn with no
-        "timestamp" key at all (_parse_ts returns None for a missing timestamp,
-        which must not compare as in-scope)."""
-        before_cutoff = _priced("claude-sonnet-5", ts="2026-01-01T00:00:00.000Z", input=10, output=5,
-                                  content=[_bash_use("b1", "ls")], request_id="r1")
-        after_cutoff = _priced("claude-sonnet-5", ts="2026-06-01T00:00:00.000Z", input=10, output=5,
-                                 content=[_bash_use("b2", "pwd")], request_id="r2")
-        no_timestamp = _priced("claude-sonnet-5", ts="", input=10, output=5,
-                                 content=[_bash_use("b3", "whoami")], request_id="r3")
-        cutoff = _mod._parse_ts("2026-03-01T00:00:00.000Z")
-        turns = _mod._turn_shape_session_turns([before_cutoff, after_cutoff, no_timestamp], cutoff, "sess")
-        assert [t["command"] for t in turns] == ["pwd"]
-
-
-class TestTurnShapeStreaks:
-    """Direct unit tests for _turn_shape_streaks — the batching- and
-    delegation-rule streak builder."""
-
-    def test_gitbranch_change_ends_the_current_streak(self):
-        """Two single-call turns on branch A followed by two on branch B produce two
-        separate length-2 streaks, not one length-4 streak."""
-        records = [
-            _priced("claude-sonnet-5", input=10, output=5, branch="main",
-                     content=[_bash_use("b1", "git status")], request_id="r1"),
-            _priced("claude-sonnet-5", input=10, output=5, branch="main",
-                     content=[_bash_use("b2", "git status")], request_id="r2"),
-            _priced("claude-sonnet-5", input=10, output=5, branch="feature",
-                     content=[_bash_use("b3", "git status")], request_id="r3"),
-            _priced("claude-sonnet-5", input=10, output=5, branch="feature",
-                     content=[_bash_use("b4", "git status")], request_id="r4"),
-        ]
-        turns = _mod._turn_shape_session_turns(records, None, "sess")
-        streaks = _mod._turn_shape_streaks(turns, require_bash=False)
-        assert [len(s) for s in streaks] == [2, 2]
-
-    def test_mutating_git_breaks_delegation_streak_but_not_batching_streak(self):
-        """git commit is in the mutating-git set, so it does not extend the
-        delegation streak, but still extends the batching streak; git status
-        extends both."""
-        records = [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git status")], request_id="r1"),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b2", "git commit -m msg")], request_id="r2"),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b3", "git status")], request_id="r3"),
-        ]
-        turns = _mod._turn_shape_session_turns(records, None, "sess")
-        batching_streaks = _mod._turn_shape_streaks(turns, require_bash=False)
-        delegation_streaks = _mod._turn_shape_streaks(turns, require_bash=True)
-        # Batching streak: all three turns qualify regardless of Bash subcommand.
-        assert [len(s) for s in batching_streaks] == [3]
-        # Delegation streak: git commit breaks it into two length-1 streaks.
-        assert [len(s) for s in delegation_streaks] == [1, 1]
-
-
-class TestCmdTurnShape:
-    """Thin integration checks that cmd_turn_shape wires the pure functions above
-    into its printed tables and unpriced-turn caveat correctly — branch and
-    boundary coverage lives in TestTurnShapeSessionTurns/TestTurnShapeStreaks/
-    TestTurnShapeBuckets above, not here."""
-
-    def test_prints_call_count_and_streak_tables_from_the_same_corpus(self, fake_projects, capsys):
-        """A 3-call turn lands in the "2-3" call-count bucket with its priced dollar
-        total, and the same corpus's two single-call turns form one length-2
-        batching streak — confirms cmd_turn_shape's table rendering reads the same
-        population/aggregation the pure functions above compute. r3 is a mutating
-        git command so the batching and delegation streak tables diverge
-        numerically (batching counts both single-call turns; delegation excludes
-        r3 and sees only r4) — a fixture where both tables end up identical would
-        pass even if cmd_turn_shape swapped which population feeds which table."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5, request_id="req-1",
-                     content=[_bash_use("b1", "ls"), _bash_use("b2", "pwd")]),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b3", "git commit -m x")], request_id="r3"),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b4", "git log")], request_id="r4"),
-        ])
-        expected_dollars_by_class, _, _ = _mod._price_turn(
-            "claude-sonnet-5",
-            {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
-             "cache_creation_input_tokens": 0},
-        )
-        expected_turn_dollars = sum(expected_dollars_by_class.values())
-        _mod.cmd_turn_shape(_turn_shape_args())
-        out = capsys.readouterr().out
-        call_cols = _table_cols(
-            out, header_contains="Bucket", row_contains="2-3", row_startswith=True, occurrence=1,
-        )
-        assert call_cols["Turns"] == "1"
-        assert call_cols["$"] == _mod._fmt_usd(expected_turn_dollars)
-        batching_cols = _table_cols(
-            out, header_contains="Bucket", row_contains="2", row_startswith=True, occurrence=2,
-        )
-        assert batching_cols["Streaks"] == "1"
-        assert batching_cols["$"] == _mod._fmt_usd(expected_turn_dollars * 2)
-        # Delegation table (occurrence=3): r3's mutating git commit excludes it,
-        # so only r4 qualifies — a length-1 streak, not length-2. "1 " (with a
-        # trailing space) disambiguates the "1" bucket row from "11+", which
-        # also starts with the character "1".
-        delegation_len1_cols = _table_cols(
-            out, header_contains="Bucket", row_contains="1 ", row_startswith=True, occurrence=3,
-        )
-        assert delegation_len1_cols["Streaks"] == "1"
-        assert delegation_len1_cols["$"] == _mod._fmt_usd(expected_turn_dollars)
-        delegation_len2_cols = _table_cols(
-            out, header_contains="Bucket", row_contains="2", row_startswith=True, occurrence=3,
-        )
-        assert delegation_len2_cols["Streaks"] == "0"
-
-    def test_prints_unpriced_turn_caveat_beneath_the_tables(self, fake_projects, capsys):
-        """A turn priced under an unrecognized model contributes $0.00 silently to
-        every bucket unless surfaced via the "(N unpriced turns / M tokens
-        excluded from priced spend)" caveat every sibling dollar-weighted
-        subcommand prints — claude-opus-4-7 is deliberately unpriced (see _opus's
-        own docstring)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-opus-4-7", input=100, output=400, cache_read=0,
-                     content=[_bash_use("b1", "ls")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape(_turn_shape_args())
-        out = capsys.readouterr().out
-        assert "1 unpriced turns / 500 tokens excluded from priced spend" in out
-
-
-class TestTurnShapeSamples:
-    def test_banner_present_and_no_file_written(self, fake_projects, tmp_path, capsys):
-        """--samples output is stamped with the DO NOT PUBLISH banner and never
-        writes a file, verified by a before/after directory-tree diff."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git status")], request_id="r1"),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b2", "git log")], request_id="r2"),
-        ])
-        before = set(tmp_path.rglob("*"))
-        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
-        out = capsys.readouterr().out
-        after = set(tmp_path.rglob("*"))
-        assert out.startswith(_mod._DO_NOT_PUBLISH_BANNER)
-        assert before == after
-
-    def test_no_exception_on_empty_flagged_population(self, fake_projects, capsys):
-        """A corpus with no streak of length >= 2 emits only the banner, with no
-        candidates and no exception."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5, content=[
-                {"type": "tool_use", "id": "e1", "name": "Edit", "input": {}},
-                {"type": "tool_use", "id": "e2", "name": "Edit", "input": {}},
-            ], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
-        out = capsys.readouterr().out
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-
-    def test_candidate_body_renders_rule_length_dollars_session_and_turn_detail(self, fake_projects, capsys):
-        """The rendered candidate body — the exact text a calibration rater reads —
-        carries the rule name, streak length, dollar total, session id, and one
-        "N. tool_name: command" line per turn, for a hand-computed 2-turn streak.
-        Both turns invoke mutating git, so only a "batching" candidate forms (the
-        delegation streak excludes mutating git entirely), keeping the assertion
-        unambiguous."""
-        rec1 = _priced("claude-sonnet-5", input=10, output=5,
-                         content=[_bash_use("b1", "git commit -m a")], request_id="r1")
-        rec2 = _priced("claude-sonnet-5", input=10, output=5,
-                         content=[_bash_use("b2", "git commit -m b")], request_id="r2")
-        _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
-        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])
-        expected_total = _mod._fmt_usd(sum(expected_dollars_by_class.values()) * 2)
-        _mod.cmd_turn_shape_samples(_turn_shape_samples_args())
-        out = capsys.readouterr().out
-        assert f"--- batching streak, length=2, {expected_total}, session=sess ---" in out
-        assert "1. Bash: git commit -m a" in out
-        assert "2. Bash: git commit -m b" in out
-        assert "delegation streak" not in out
-
-
-class TestTurnShapeHoldoutSamples:
-    """Unit tests for cmd_turn_shape_holdout_samples — the unflagged (length-1
-    streak) complement of TestTurnShapeSamples above."""
-
-    def test_banner_present_and_no_file_written(self, fake_projects, tmp_path, capsys):
-        """--samples output is stamped with the DO NOT PUBLISH banner and never
-        writes a file, verified by a before/after directory-tree diff."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-        ])
-        before = set(tmp_path.rglob("*"))
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
-        out = capsys.readouterr().out
-        after = set(tmp_path.rglob("*"))
-        assert out.startswith(_mod._DO_NOT_PUBLISH_BANNER)
-        assert before == after
-
-    def test_no_exception_on_empty_holdout_population(self, fake_projects, capsys):
-        """A corpus with no streak of length == 1 (only a length-2 call turn) emits
-        only the banner, with no candidates and no exception."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5, content=[
-                {"type": "tool_use", "id": "e1", "name": "Edit", "input": {}},
-                {"type": "tool_use", "id": "e2", "name": "Edit", "input": {}},
-            ], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
-        out = capsys.readouterr().out
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-
-    def test_candidate_body_renders_rule_length_dollars_session_and_turn_detail(self, fake_projects, capsys):
-        """The rendered candidate body carries the rule name, streak length,
-        dollar total, session id, and one "N. tool_name: command" line, for a
-        hand-computed length-1 streak. The turn invokes mutating git, so only a
-        "batching" candidate forms (mutating git never qualifies for the
-        delegation streak), keeping the assertion unambiguous."""
-        rec = _priced("claude-sonnet-5", input=10, output=5,
-                        content=[_bash_use("b1", "git commit -m a")], request_id="r1")
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        expected_dollars_by_class, _, _ = _mod._price_turn("claude-sonnet-5", rec["message"]["usage"])
-        expected_total = _mod._fmt_usd(sum(expected_dollars_by_class.values()))
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
-        out = capsys.readouterr().out
-        assert f"--- batching streak, length=1, {expected_total}, session=sess ---" in out
-        assert "1. Bash: git commit -m a" in out
-        assert "delegation streak" not in out
-
-    def test_length_2_streak_excluded_from_holdout_population(self, fake_projects, capsys):
-        """A length-2 streak is the exact complement of the holdout population
-        (length == 1, not a range) — it must not appear here even though it
-        would appear in turn-shape-samples's flagged population."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b2", "git commit -m b")], request_id="r2"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
-        out = capsys.readouterr().out
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-
-    def test_offset_pages_the_shuffled_population_without_overlap(self, fake_projects, capsys):
-        """Same seed, offset=0/sample=1 and offset=1/sample=1 yield two distinct
-        sessions, and offset=0/sample=2 yields both — --offset pages a
-        deterministic shuffle rather than re-shuffling per invocation."""
-        _write_jsonl(fake_projects / "s1.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-        ])
-        _write_jsonl(fake_projects / "s2.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=1))
-        first_page = capsys.readouterr().out
-        assert first_page.count("--- batching streak") == 1
-        assert ("session=s1" in first_page) != ("session=s2" in first_page)
-
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=1, sample=1))
-        second_page = capsys.readouterr().out
-        assert second_page.count("--- batching streak") == 1
-        assert ("session=s1" in second_page) != ("session=s2" in second_page)
-        assert ("session=s1" in first_page) != ("session=s1" in second_page)
-
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=2))
-        both_page = capsys.readouterr().out
-        assert both_page.count("--- batching streak") == 2
-        assert "session=s1" in both_page
-        assert "session=s2" in both_page
-
-    def test_offset_past_end_of_nonempty_population_emits_banner_and_diagnostic(self, fake_projects, capsys):
-        """offset=5 against 2 candidates emits the banner and a stderr diagnostic
-        distinguishing "paged past the end" from a genuinely empty population,
-        with no exception."""
-        _write_jsonl(fake_projects / "s1.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-        ])
-        _write_jsonl(fake_projects / "s2.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=5, sample=30))
-        out, err = capsys.readouterr()
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-        assert "--offset=5 is past the end of the 2 unflagged candidates" in err
-
-    def test_offset_equals_total_candidates_triggers_past_end_diagnostic(self, fake_projects, capsys):
-        """offset == total_candidates exactly (not just past it) must still
-        trigger the past-end diagnostic — the boundary the `>=` check exists
-        to get right, since a rater paging with a fixed --sample stride lands
-        here naturally on the page after the last full one."""
-        _write_jsonl(fake_projects / "s1.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-        ])
-        _write_jsonl(fake_projects / "s2.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m b")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=2, sample=30))
-        out, err = capsys.readouterr()
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-        assert "--offset=2 is past the end of the 2 unflagged candidates" in err
-
-    def test_offset_partial_final_page_returns_exactly_the_remainder(self, fake_projects, capsys):
-        """3 candidates, offset=2/sample=2 returns exactly 1 candidate — the
-        boundary case the offset-pagination logic exists to get right."""
-        for i in range(3):
-            _write_jsonl(fake_projects / f"s{i}.jsonl", [
-                _priced("claude-sonnet-5", input=10, output=5,
-                         content=[_bash_use("b1", f"git commit -m {i}")], request_id="r1"),
-            ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=2, sample=2))
-        out = capsys.readouterr().out
-        assert out.count("--- batching streak") == 1
-
-    def test_negative_offset_exits_2_with_stderr_message(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=-1))
-        assert exc_info.value.code == 2
-        assert "--offset must not be negative" in capsys.readouterr().err
-
-    def test_negative_sample_exits_2_with_stderr_message(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(sample=-1))
-        assert exc_info.value.code == 2
-        assert "--sample must not be negative" in capsys.readouterr().err
-
-    def test_sample_zero_returns_no_candidates_without_past_end_diagnostic(self, fake_projects, capsys):
-        """--sample 0 against a non-empty, non-past-end offset must not trip the
-        "offset past the end" diagnostic — that message means the offset itself
-        exceeds the population, not that the caller asked for a zero-length page."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git commit -m a")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args(offset=0, sample=0))
-        out, err = capsys.readouterr()
-        assert out.strip() == _mod._DO_NOT_PUBLISH_BANNER
-        assert "is past the end" not in err
-        assert "(offset=0, window=0 of 1 unflagged candidates)" in err
-
-    def test_isolated_non_mutating_bash_turn_renders_as_both_batching_and_delegation(
-        self, fake_projects, capsys
-    ):
-        """A single isolated, non-mutating-git Bash turn qualifies as a length-1
-        streak under both require_bash=False and require_bash=True, so it
-        renders as two candidates — one "batching", one "delegation" — for the
-        same session/turn. A rater who sees this pair must recognize it as one
-        repeated run, not two independent violations toward the sizing tally."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=10, output=5,
-                     content=[_bash_use("b1", "git log")], request_id="r1"),
-        ])
-        _mod.cmd_turn_shape_holdout_samples(_turn_shape_holdout_samples_args())
-        out = capsys.readouterr().out
-        assert "--- batching streak, length=1" in out
-        assert "--- delegation streak, length=1" in out
-        assert out.count("session=sess") == 2
-
-
-# ---------------------------------------------------------------------------
-# cmd_struggle — new STRUGGLE_PHRASES entries
-# ---------------------------------------------------------------------------
-
-
-class TestCmdStruggle:
-    def test_hallucinat_phrase_registers_as_struggle(self, fake_projects, capsys):
-        """"I think you hallucinated about this" should register; "stale cache" should not."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            # Assistant turn so branch has a model family to attribute to.
-            _asst("claude-sonnet-4-6", branch="feat"),
-            # Human turn containing the new phrase — should register as struggle.
-            _user_msg(
-                [{"type": "text", "text": "I think you hallucinated about this"}],
-                branch="feat",
-            ),
-            # Control: "stale" is excluded from STRUGGLE_PHRASES (legitimate technical term).
-            _user_msg(
-                [{"type": "text", "text": "the stale cache needs clearing"}],
-                branch="feat",
-            ),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
-        _mod.cmd_struggle(args)
-        out = capsys.readouterr().out
-
-        # The output table should include "feat" with at least one struggle signal.
-        assert "feat" in out, "branch not found in output"
-        # Parse the data row for "feat": columns are Branch Opus Sonnet Haiku Other Unknown
-        cols = _table_cols(out, header_contains="Opus", row_contains="feat")
-        total_signals = sum(int(cols[k]) for k in ["Opus", "Sonnet", "Haiku", "Other", "Unknown"])
-        assert total_signals == 1, (
-            f"expected exactly 1 struggle signal (from 'hallucinated', not from 'stale cache'); got cols={cols}"
-        )
-
-    def test_stale_control_phrase_does_not_inflate_count(self, fake_projects, capsys):
-        """Bare "stale" must not match — excluded from STRUGGLE_PHRASES due to false-positive risk."""
-        # Confirm "stale" alone is absent from STRUGGLE_PHRASES.
-        assert not any(p == "stale" for p in _mod.STRUGGLE_PHRASES), (
-            "bare 'stale' was added to STRUGGLE_PHRASES; it is intentionally excluded — "
-            "remove it to avoid false positives on technical uses like 'stale cache'"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                [{"type": "text", "text": "the stale cache needs clearing"}],
-                branch="feat",
-            ),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
-        _mod.cmd_struggle(args)
-        out = capsys.readouterr().out
-        # "stale cache" alone should produce no struggle signals — branch absent from output.
-        assert "feat" not in out, (
-            f"'stale cache' should not register as a struggle signal; branch appeared in output: {out!r}"
-        )
-
-    def test_task_notification_envelope_produces_no_struggle_signal(self, fake_projects, capsys):
-        """A forwarded <task-notification> record whose <summary> contains a struggle
-        phrase is the subagent's own prose, not human input — it must not register."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                "<task-notification><status>completed</status>"
-                "<summary>Background task still failing, incorrect output</summary>"
-                "</task-notification>",
-                branch="feat",
-            ),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
-        _mod.cmd_struggle(args)
-        out = capsys.readouterr().out
-        assert "feat" not in out, (
-            f"a task-notification's forwarded <summary> should not register as a struggle signal; got {out!r}"
-        )
-
-    def test_task_notification_mixed_turn_struggle_phrase_outside_envelope_still_counts(self, fake_projects, capsys):
-        """A struggle phrase sitting outside the envelope in the same turn still counts,
-        even though the envelope in that same turn is excluded from matching."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                "that's incorrect. also: "
-                "<task-notification><summary>still failing</summary></task-notification>",
-                branch="feat",
-            ),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
-        _mod.cmd_struggle(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Opus", row_contains="feat")
-        total_signals = sum(int(cols[k]) for k in ["Opus", "Sonnet", "Haiku", "Other", "Unknown"])
-        assert total_signals == 1, (
-            f"expected exactly 1 struggle signal (from 'incorrect' outside the envelope); got cols={cols}"
-        )
-
-    @pytest.mark.parametrize(
-        "phrase,text",
-        [
-            ("are you saying", "Are you saying this is correct?"),
-            ("you should be able to", "You should be able to run it directly."),
-            ("that doesn't exist", "that doesn't exist in the repo"),
-            ("that doesn't match", "that doesn't match what I see"),
-            ("not what i wanted", "that's not what i wanted at all"),
-            ("not what i asked", "that's not what i asked you to do"),
-            ("hallucinat", "I think you hallucinated that function"),
-        ],
-    )
-    def test_new_phrases_register_as_struggle(self, phrase, text, fake_projects, capsys):
-        """Each newly-added STRUGGLE_PHRASES entry must register when present in a user turn."""
-        assert any(phrase in p for p in _mod.STRUGGLE_PHRASES), (
-            f"phrase {phrase!r} not found in STRUGGLE_PHRASES — was it removed or mistyped?"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg([{"type": "text", "text": text}], branch="feat"),
-        ])
-        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
-        _mod.cmd_struggle(args)
-        out = capsys.readouterr().out
-        assert "feat" in out, (
-            f"phrase {phrase!r} (text={text!r}) should register as a struggle signal; branch absent from output: {out!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# user-input
-# ---------------------------------------------------------------------------
-
-
-def _ui_user(content, *, branch: str = "main", ts: str | None = None,
-             session_id: str | None = None, **extra_fields) -> dict:
-    """Fresh-prompt-shaped user record for user-input tests, with optional
-    timestamp/sessionId/extra top-level fields the shared _user_msg helper
-    doesn't parametrize."""
-    rec: dict = {"type": "user", "gitBranch": branch, "message": {"content": content}}
-    if ts:
-        rec["timestamp"] = ts
-    if session_id:
-        rec["sessionId"] = session_id
-    rec.update(extra_fields)
-    return rec
-
-
-def _user_input_args(
-    *,
-    projects: str = "*",
-    branches: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
-    corrections_only: bool = False,
-    truncate_chars: int = 500,
-    out: str | None = None,
-    redact: bool = False,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "branches": branches,
-        "since": since,
-        "until": until,
-        "corrections_only": corrections_only,
-        "truncate_chars": truncate_chars,
-        "out": out,
-        "redact": redact,
-    })()
-
-
-class TestCmdUserInput:
-    def test_classification_initial_followup_explicit_correction(self, fake_projects, capsys):
-        """First prompt -> INITIAL; a non-matching later prompt -> FOLLOWUP; a
-        STRUGGLE_PHRASES match later in the session -> EXPLICIT_CORRECTION with
-        the matched phrase noted."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("plain initial prompt", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _ui_user("the stale cache needs clearing", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _ui_user("I think you hallucinated about this", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "**[? · INITIAL · sonnet]**\n~~~text\nplain initial prompt\n~~~" in out
-        assert "**[? · FOLLOWUP · sonnet]**\n~~~text\nthe stale cache needs clearing\n~~~" in out
-        assert (
-            '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "hallucinat")\n'
-            "~~~text\nI think you hallucinated about this\n~~~"
-        ) in out
-
-    def test_task_notification_not_explicit_correction_but_text_displayed_verbatim(self, fake_projects, capsys):
-        """A forwarded <task-notification> whose <summary> contains a struggle phrase is
-        not classified EXPLICIT_CORRECTION, since it's subagent prose rather than human
-        input. The ~~~text block still renders the full unstripped envelope. Display and
-        scoring are separate copies of the same string."""
-        envelope = (
-            "<task-notification><status>completed</status>"
-            "<summary>Background command still failing, incorrect output</summary>"
-            "</task-notification>"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("plain initial prompt", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _ui_user(envelope, branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "EXPLICIT_CORRECTION" not in out
-        assert f"~~~text\n{envelope}\n~~~" in out
-
-    def test_task_notification_followup_leaves_fresh_prompt_and_followup_counts_unchanged(self, fake_projects, capsys):
-        """A task-notification record still counts as one fresh prompt and one followup,
-        same as any other non-matching FOLLOWUP. The phrase-matching exclusion affects
-        only EXPLICIT_CORRECTION classification, not the fresh-prompt/followup tally."""
-        envelope = (
-            "<task-notification><status>completed</status>"
-            "<summary>Background command still failing, incorrect output</summary>"
-            "</task-notification>"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("plain initial prompt", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _ui_user(envelope, branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "- Fresh prompts: 2" in out
-        assert "- Followups (quiet redirects): 1" in out
-
-    def test_task_notification_mixed_turn_still_explicit_correction_on_outside_phrase(self, fake_projects, capsys):
-        """A struggle phrase outside the envelope in the same turn still classifies
-        EXPLICIT_CORRECTION, even though the envelope portion of that turn is excluded."""
-        text = (
-            "that's incorrect. also: <task-notification>"
-            "<summary>still failing</summary></task-notification>"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("plain initial prompt", branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _ui_user(text, branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "incorrect")' in out
-
-    def test_corrections_only_excludes_initial(self, fake_projects, capsys):
-        """--corrections-only drops INITIAL prompts but keeps FOLLOWUP/EXPLICIT_CORRECTION."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("plain initial prompt", branch="feat"),
-            _ui_user("the stale cache needs clearing", branch="feat"),
-            _ui_user("I think you hallucinated about this", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args(corrections_only=True))
-        out = capsys.readouterr().out
-        assert "plain initial prompt" not in out
-        assert "the stale cache needs clearing" in out
-        assert "I think you hallucinated about this" in out
-
-    def test_since_until_date_bounds(self, fake_projects, capsys):
-        """A prompt outside the --since/--until window is excluded; one inside the window is kept."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("old prompt outside window", ts="2020-01-01T00:00:00.000Z"),
-            _ui_user("new prompt inside window", ts="2026-05-20T00:00:00.000Z"),
-        ])
-        _mod.cmd_user_input(_user_input_args(since="2026-05-01", until="2026-05-31"))
-        out = capsys.readouterr().out
-        assert "old prompt outside window" not in out
-        assert "new prompt inside window" in out
-
-    def test_redact_remaps_project_label_not_prompt_text(self, fake_projects, capsys):
-        """--redact remaps the project label to private-project-N but leaves prompt text verbatim
-        — the flag anonymizes labels and session IDs only, never message content."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("keep this project name private", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args(redact=True))
-        out = capsys.readouterr().out
-        assert "private-project-1" in out
-        assert "testrepo" not in out
-        assert "keep this project name private" in out
-
-    def test_redact_remaps_session_id(self, fake_projects, capsys):
-        """--redact remaps the raw session ID to an opaque session-N label via the file's
-        existing _assign_session_redact_label/_redact_session_id helpers — the same
-        primitive audit-routing and cost already use. Without --redact, the raw
-        session ID's first 8 chars are shown unmapped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("hello", branch="feat", session_id="real-session-uuid-1234"),
-        ])
-        _mod.cmd_user_input(_user_input_args(redact=True))
-        out_redacted = capsys.readouterr().out
-        assert "Session `session-1`" in out_redacted
-        assert "real-session" not in out_redacted
-
-        _mod.cmd_user_input(_user_input_args(redact=False))
-        out_unredacted = capsys.readouterr().out
-        assert "Session `real-ses`" in out_unredacted
-
-    def test_truncate_chars_including_zero_disables_truncation(self, fake_projects, capsys):
-        """--truncate-chars truncates long prompt text with an annotation; 0 disables truncation entirely."""
-        long_text = "x" * 600
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user(long_text, branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args(truncate_chars=100))
-        out_truncated = capsys.readouterr().out
-        assert "x" * 100 in out_truncated
-        assert "(truncated, 600 chars total)" in out_truncated
-        assert long_text not in out_truncated
-
-        _mod.cmd_user_input(_user_input_args(truncate_chars=0))
-        out_full = capsys.readouterr().out
-        assert long_text in out_full
-        assert "truncated" not in out_full
-
-    def test_unrecognized_shape_counted_and_reported_on_stderr(self, fake_projects, capsys):
-        """A user record with list-of-blocks content matching no known discriminator
-        increments the shape-audit counter printed to stderr, independent of
-        whether it counts as a fresh prompt."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user([{"type": "text", "text": "odd shape"}], branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        captured = capsys.readouterr()
-        assert "- Fresh prompts: 0" in captured.out
-        assert "Shape audit: 1 unrecognized user records skipped" in captured.err
-
-    @pytest.mark.parametrize(
-        "extra_fields",
-        [
-            {"isMeta": True},
-            {"isSidechain": True},
-            {"toolUseResult": {"stdout": "x"}, "sourceToolUseID": "t1", "sourceToolAssistantUUID": "u1"},
-        ],
-        ids=["isMeta", "isSidechain", "tool_result_keys"],
-    )
-    def test_exclusion_guards_exclude_from_fresh_prompt_count(self, extra_fields, fake_projects, capsys):
-        """isMeta=True, isSidechain=True, and toolUseResult/sourceToolUseID/sourceToolAssistantUUID
-        records are excluded from total_fresh_prompts."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("genuine prompt", branch="feat"),
-            _ui_user("excluded record", branch="feat", **extra_fields),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "- Fresh prompts: 1" in out
-        assert "excluded record" not in out
-
-    def test_empty_string_plain_content_included_no_strip_guard(self):
-        """Pin actual behavior: the plain-string content path has no .strip() guard,
-        so an empty string is NOT excluded — unlike the list-of-blocks path, which
-        requires non-empty stripped text via a promptId-gated _content_text().strip() check."""
-        rec = _ui_user("")
-        assert _mod._is_fresh_user_prompt_for_narrative(rec) is True
-
-    def test_attribute_model_unknown_when_no_matching_assistant(self):
-        """No assistant record follows the prompt -> model_fam is 'unknown'."""
-        records = [_ui_user("solo prompt", session_id="s1")]
-        assert _mod._attribute_model_to_prompt(records, 0, "s1") == "unknown"
-
-    def test_attribute_model_ignores_cross_session_interleaved_assistant(self):
-        """An assistant record from a different sessionId interleaved between the
-        prompt and its own session's reply is not used for attribution."""
-        records = [
-            _ui_user("prompt in s1", session_id="s1"),
-            _asst("claude-opus-4-7", branch="main"),
-            _asst("claude-sonnet-4-6", branch="main"),
-        ]
-        records[1]["sessionId"] = "s2"  # interleaved reply from a different session — must be skipped
-        records[2]["sessionId"] = "s1"  # the real reply for this prompt's session
-        assert _mod._attribute_model_to_prompt(records, 0, "s1") == "sonnet"
-
-    def test_attribute_model_two_consecutive_prompts_share_the_same_reply(self):
-        """Pin actual behavior: two fresh prompts with no assistant reply between them
-        both attribute to the single assistant record that follows both — the forward
-        scan has no boundary check against an intervening user prompt."""
-        records = [
-            _ui_user("first prompt, no reply yet", session_id="s1"),
-            _ui_user("second prompt, still no reply", session_id="s1"),
-            _asst("claude-opus-4-7", branch="main"),
-        ]
-        records[2]["sessionId"] = "s1"
-        assert _mod._attribute_model_to_prompt(records, 0, "s1") == "opus"
-        assert _mod._attribute_model_to_prompt(records, 1, "s1") == "opus"
-
-    def test_classify_prompt_direct(self):
-        """Direct unit coverage of the pure classification function, independent of
-        cmd_user_input's I/O and markdown rendering."""
-        assert _mod._classify_prompt("anything at all", True) == ("INITIAL", "")
-        assert _mod._classify_prompt("this is a normal follow-up", False) == ("FOLLOWUP", "")
-        classification, matched_phrase = _mod._classify_prompt(
-            "I think you hallucinated that function", False
-        )
-        assert classification == "EXPLICIT_CORRECTION"
-        assert matched_phrase == "hallucinat"
-
-    def test_truncate_prompt_text_direct(self):
-        """Direct unit coverage of the pure truncation function: under-limit and
-        exact-limit text pass through unchanged, over-limit text is truncated with
-        an annotation, and limit=0 disables truncation regardless of length."""
-        assert _mod._truncate_prompt_text("short", 100) == "short"
-        exact = "x" * 50
-        assert _mod._truncate_prompt_text(exact, 50) == exact
-        over = "x" * 60
-        truncated = _mod._truncate_prompt_text(over, 50)
-        assert truncated == "x" * 50 + "… (truncated, 60 chars total)"
-        assert _mod._truncate_prompt_text("x" * 10_000, 0) == "x" * 10_000
-
-    def test_session_sort_order_and_missing_first_ts_placement(self, fake_projects, capsys):
-        """Sessions sort ascending by first-prompt timestamp; a session whose first
-        prompt has no parseable timestamp sorts first under the `first_ts or 0.0`
-        key, ahead of every dated session — pinning current behavior, not
-        asserting it's the only correct choice."""
-        _write_jsonl(fake_projects / "sess_a.jsonl", [
-            _ui_user("prompt in session a", branch="branch-a", ts="2026-06-01T00:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "sess_b.jsonl", [
-            _ui_user("prompt in session b", branch="branch-b", ts="2026-01-01T00:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "sess_c.jsonl", [
-            _ui_user("prompt in session c", branch="branch-c"),  # no timestamp -> first_ts is None
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        pos_a = out.index("branch-a")
-        pos_b = out.index("branch-b")
-        pos_c = out.index("branch-c")
-        assert pos_c < pos_b < pos_a, f"expected order c, b, a; got positions a={pos_a} b={pos_b} c={pos_c}"
-
-    def test_first_prompt_with_struggle_phrase_still_initial(self, fake_projects, capsys):
-        """The first prompt in a session classifies INITIAL even when it contains
-        a STRUGGLE_PHRASES match — is_first_in_session takes precedence, and
-        matched_phrase stays empty (no '(matched: ...)' suffix)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("I think you hallucinated about this", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "INITIAL" in out
-        assert "EXPLICIT_CORRECTION" not in out
-        assert "matched:" not in out
-
-    def test_branches_filter_excludes_nonmatching_branch(self, fake_projects, capsys):
-        """--branches restricts output to the named branch(es); a non-matching
-        branch's prompts are excluded entirely."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("prompt on feat branch", branch="feat"),
-            _ui_user("prompt on main branch", branch="main"),
-        ])
-        _mod.cmd_user_input(_user_input_args(branches="feat"))
-        out = capsys.readouterr().out
-        assert "prompt on feat branch" in out
-        assert "prompt on main branch" not in out
-
-    def test_redact_claude_config_self_exception(self, fake_projects, capsys):
-        """--redact's claude-config self-exception passes that label through
-        unredacted while remapping the other project to private-project-N."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("hello from the other project", branch="feat"),
-        ])
-        proj_cc = fake_projects.parent / "-home-user-claude-config"
-        proj_cc.mkdir(parents=True)
-        _write_jsonl(proj_cc / "sess.jsonl", [
-            _ui_user("hello from claude-config", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args(redact=True))
-        out = capsys.readouterr().out
-        assert "### claude-config ·" in out
-        assert "### private-project-1 ·" in out
-
-    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
-        """A repo's main checkout and its own linked worktree are one repo, not two --
-        the Scope line's project count must collapse the worktree-suffixed slug back
-        to the main slug before counting. Same as cmd_buckets's Proj column."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("prompt in main checkout", branch="feat"),
-        ])
-        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
-        proj_worktree.mkdir(parents=True)
-        _write_jsonl(proj_worktree / "sess.jsonl", [
-            _ui_user("prompt in linked worktree", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
-
-    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
-        """Regression guard: routing the raw slug through _derive_proj_label first
-        would discard the home/user prefix. That would falsely merge these two
-        distinct repos into one family and undercount the Scope line's project
-        count. Same invariant as TestBuckets's Proj-column sibling guard for
-        cmd_buckets — see that test for the mirrored intent, not identical setup
-        mechanics."""
-        proj_alice = fake_projects.parent / "-home-alice-repo"
-        proj_bob = fake_projects.parent / "-home-bob-repo"
-        proj_alice.mkdir(parents=True)
-        proj_bob.mkdir(parents=True)
-        _write_jsonl(proj_alice / "sess.jsonl", [
-            _ui_user("prompt from alice's repo", branch="feat"),
-        ])
-        _write_jsonl(proj_bob / "sess.jsonl", [
-            _ui_user("prompt from bob's repo", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
-
-    def test_scope_project_count_collapses_worktree_while_counting_same_basename_sibling_separately(
-        self, fake_projects, capsys
-    ):
-        """The collapse fix and the over-collapse guard rail both hold in the same
-        counting pass: a worktree checkout collapses into its own main repo, while
-        a same-repo-name checkout under a different home directory stays a
-        distinct family. Same invariant as TestBuckets's combined sibling test."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("prompt in main checkout", branch="feat"),
-        ])
-        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
-        proj_worktree.mkdir(parents=True)
-        _write_jsonl(proj_worktree / "sess.jsonl", [
-            _ui_user("prompt in linked worktree", branch="feat"),
-        ])
-        proj_sibling = fake_projects.parent / "-home-otheruser-testrepo"
-        proj_sibling.mkdir(parents=True)
-        _write_jsonl(proj_sibling / "sess.jsonl", [
-            _ui_user("prompt from a same-named repo under a different home dir", branch="feat"),
-        ])
-        _mod.cmd_user_input(_user_input_args())
-        out = capsys.readouterr().out
-        assert "Scope: 2 projects, 3 sessions, 3 fresh prompts" in out
-
-    def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
-        """A write failure to --out's target (parent directory missing) exits 1
-        with the user-input-specific stderr message; nothing is printed to stdout."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("prompt", branch="feat"),
-        ])
-        bad_out_path = tmp_path / "missing-dir" / "output.txt"
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_user_input(_user_input_args(out=str(bad_out_path)))
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert f"user-input: failed to write {bad_out_path}: " in captured.err
-        assert captured.out == ""
-
-    def test_out_write_success_writes_file_and_confirms_on_stdout(self, fake_projects, capsys, tmp_path):
-        """A successful --out write produces a file whose contents match what stdout
-        would otherwise have shown, and prints the confirmation line to stdout."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _ui_user("prompt written to file", branch="feat"),
-        ])
-        out_path = tmp_path / "output.md"
-        _mod.cmd_user_input(_user_input_args(out=str(out_path)))
-        captured = capsys.readouterr()
-        assert f"Wrote output to {out_path}" in captured.out
-        file_content = out_path.read_text(encoding="utf-8")
-        assert "prompt written to file" in file_content
-        assert "# User Input — Conversation Narrative" in file_content
 
 
 # ---------------------------------------------------------------------------
@@ -5452,7 +1832,7 @@ class TestRepoScopedProjectSlugsGuard:
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", boom)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("buckets")
+            scope._repo_scoped_project_slugs("buckets")
         assert "buckets:" in capsys.readouterr().err
 
     def test_fails_closed_when_worktree_list_returns_no_worktrees(self, monkeypatch, capsys):
@@ -5460,23 +1840,23 @@ class TestRepoScopedProjectSlugsGuard:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("buckets")
+            scope._repo_scoped_project_slugs("buckets")
         assert "buckets:" in capsys.readouterr().err
 
     def test_fails_closed_when_cwd_outside_all_worktrees(self, monkeypatch, capsys):
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/somewhere/else")
+        monkeypatch.setattr(os, "getcwd", lambda: "/somewhere/else")
 
         def fake_run(cmd, *a, **k):
             return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "duration:" in capsys.readouterr().err
 
     def test_cwd_inside_worktree_subdirectory_resolves_successfully(self, monkeypatch):
         """Containment (not slug equality) lets --this-repo run from a subdirectory
         of the worktree root."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested/dir")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested/dir")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -5485,21 +1865,21 @@ class TestRepoScopedProjectSlugsGuard:
             return subprocess.CompletedProcess(cmd, 0, "/repo\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        slugs = _mod._repo_scoped_project_slugs("duration")
-        assert slugs == [_mod.scope._path_to_project_slug("/repo")]
+        slugs = scope._repo_scoped_project_slugs("duration")
+        assert slugs == [scope._path_to_project_slug("/repo")]
 
     def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
         """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
         must exit 1 — the case bare str.startswith containment would wrongly
         accept."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo-fork/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo-fork/nested")
 
         def fake_run(cmd, *a, **k):
             return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert capsys.readouterr().out == ""
 
     def test_fails_closed_when_cwd_repo_root_diverges_from_worktree_list(self, monkeypatch, capsys):
@@ -5509,7 +1889,7 @@ class TestRepoScopedProjectSlugsGuard:
         toplevel reporting from the worktree-list enumeration. Every other test
         in this class returns the same path from both git calls, so this is the
         only test that would catch a typo bug in the identity check itself."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -5519,13 +1899,13 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "repo root is not among the resolved worktrees" in capsys.readouterr().err
 
     def test_fails_closed_when_rev_parse_toplevel_command_fails(self, monkeypatch, capsys):
         """The identity-check subprocess call erroring must fail closed, not
         fall back to a machine-wide scope, even though worktree list succeeded."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/nested")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -5535,7 +1915,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._repo_scoped_project_slugs("duration")
+            scope._repo_scoped_project_slugs("duration")
         assert "duration:" in capsys.readouterr().err
 
 
@@ -5551,7 +1931,7 @@ class TestResolveProjectScope:
         entirely) must raise, not silently fall through to '*' scope."""
         args = type("A", (), {"projects": "*"})()  # no this_repo attribute at all
         with pytest.raises(AttributeError):
-            _mod._resolve_project_scope(args, "buckets")
+            scope._resolve_project_scope(args, "buckets")
 
     def test_called_twice_from_one_args_yields_same_session_list_both_times(self, tmp_path, monkeypatch):
         """cmd_audit_routing's redact pass and main pass both call the scope helper
@@ -5560,9 +1940,9 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -5572,8 +1952,8 @@ class TestResolveProjectScope:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         args = argparse.Namespace(this_repo=True, projects="*")
-        iter1, label1 = _mod._resolve_project_scope(args, "audit-routing")
-        iter2, label2 = _mod._resolve_project_scope(args, "audit-routing")
+        iter1, label1 = scope._resolve_project_scope(args, "audit-routing")
+        iter2, label2 = scope._resolve_project_scope(args, "audit-routing")
         sessions1 = list(iter1)
         sessions2 = list(iter2)
         assert len(sessions1) == 1
@@ -5587,9 +1967,9 @@ class TestResolveProjectScope:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -5598,14 +1978,14 @@ class TestResolveProjectScope:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
         out_repo = capsys.readouterr().out
         assert (
             "BUCKETS SOURCES (this repo (1 project dirs); "
             "1 root (no ~/.claude/transcript-config-dirs declared))"
         ) in out_repo
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
         out_glob = capsys.readouterr().out
         assert "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))" in out_glob
 
@@ -5649,7 +2029,7 @@ class TestBuildParser:
         both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
         # One subcommand per registration path: the shim's helper call, the hand-rolled group
         # in skill_invocation.py, and a module-registered subparser.
-        assert {"buckets", "skill-invocation", "skill-pair"} <= set(both_flags)
+        assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
         not_refused = []
         for name in both_flags:
             try:
@@ -5694,7 +2074,7 @@ class TestIterSessionsOrdering:
         wt_dir.mkdir(parents=True)
         _write_jsonl(main_dir / "a.jsonl", [_asst("claude-sonnet-4-6", branch="main")])
         _write_jsonl(wt_dir / "m.jsonl", [_asst("claude-sonnet-4-6", branch="b")])
-        yielded = [jsonl for jsonl, _records in _mod.iter_sessions(projects, "*")]
+        yielded = [jsonl for jsonl, _records in corpus.iter_sessions(projects, "*")]
         # The flat full-path sort places the worktree dir's file first ('-' 0x2D <
         # '/' 0x2F at the byte after the shared prefix); a dir-grouped traversal
         # would place the main dir first. Pin the flat order explicitly.
@@ -5709,10 +2089,10 @@ class TestPathToProjectSlug:
     """The slug transform and its known, accepted lossiness."""
 
     def test_main_repo_path(self):
-        assert _mod.scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
+        assert scope._path_to_project_slug("/home/<user>/repo") == "-home-<user>-repo"
 
     def test_worktree_path(self):
-        assert (_mod.scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
+        assert (scope._path_to_project_slug("/home/<user>/repo/.claude/worktrees/b")
                 == "-home-<user>-repo--claude-worktrees-b")
 
     def test_known_slug_collision_is_accepted(self):
@@ -5720,7 +2100,7 @@ class TestPathToProjectSlug:
         This is Claude Code's own dir-naming scheme, not ours to change; the repo
         scoping accepts this residual (see _repo_scoped_project_slugs). Pinned so a
         later refactor cannot silently assume injectivity."""
-        assert _mod.scope._path_to_project_slug("/home/<user>/a/b") == _mod.scope._path_to_project_slug("/home/<user>/a.b")
+        assert scope._path_to_project_slug("/home/<user>/a/b") == scope._path_to_project_slug("/home/<user>/a.b")
 
 
 # ---------------------------------------------------------------------------
@@ -5738,7 +2118,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=False))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=False))
         assert len(results) == 1
         _path, records = results[0]
         # Only the main record; sidechain record must not appear.
@@ -5754,7 +2134,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 2
@@ -5768,7 +2148,7 @@ class TestIterSessionsSubagentMerge:
             _asst("claude-opus-4-7", branch="main"),
         ])
         # No subagents/ dir for this session.
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 1
@@ -5785,7 +2165,7 @@ class TestIterSessionsSubagentMerge:
         _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
             _asst("claude-haiku-4-5", branch="main", sidechain=True),
         ])
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         assert len(records) == 3, "expected main + 2 subagent records"
@@ -5801,14 +2181,14 @@ class TestIterSessionsSubagentMerge:
             _asst("claude-opus-4-7", branch="main"),
         ])
         # Write a subagent file with one valid record and one corrupt line.
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-corrupt.jsonl").write_text(
             '{"type":"assistant","isSidechain":true,"gitBranch":"main",'
             '"message":{"model":"claude-sonnet-4-6","content":[],"usage":{}}}\n'
             'THIS IS NOT JSON\n'
         )
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         sidechain = [r for r in records if r.get("isSidechain")]
@@ -5830,7 +2210,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         captured = capsys.readouterr()
         assert "WARNING" in captured.err
         assert "isSidechain" in captured.err
@@ -5842,7 +2222,7 @@ class TestFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-4-6", branch="main"),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_old_inlined_format(self, fake_projects, capsys):
@@ -5853,7 +2233,7 @@ class TestFormatDriftCanary:
             ]),
             _asst("claude-sonnet-4-6", branch="main", sidechain=True),
         ])
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
@@ -5864,7 +2244,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_skill_pair(_skill_pair_args())
+        skill_pair.cmd_skill_pair(_skill_pair_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_subagent_records_without_issidechain_field_treated_as_main_thread(
@@ -5882,12 +2262,12 @@ class TestFormatDriftCanary:
             ]),
         ])
         # Subagent file record WITHOUT isSidechain field.
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         rec = _asst("claude-sonnet-4-6", branch="main", sidechain=True)
         del rec["isSidechain"]  # simulate format drift
         (subdir / "agent-drifted.jsonl").write_text(json.dumps(rec) + "\n")
-        _mod.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         captured = capsys.readouterr()
         sidechain_lines = [ln for ln in captured.out.splitlines() if "sidechain" in ln]
         # Without isSidechain=True, the subagent record is not a sidechain turn.
@@ -5906,7 +2286,7 @@ class TestFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_on_healthy_corpus(self, fake_projects, capsys):
@@ -5915,7 +2295,7 @@ class TestFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", cache_read=100),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
@@ -5936,7 +2316,7 @@ class TestFormatDriftCanary:
         side_rec = _priced("claude-sonnet-5", cache_read=100)
         side_rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
@@ -5956,7 +2336,7 @@ class TestFormatDriftCanary:
         _write_subagent_jsonl(fake_projects, session_id, "a1", [
             _asst("claude-opus-4-7", branch="main", sidechain=True),
         ])
-        _mod.cmd_cache_efficiency(_cache_efficiency_args())
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
 
 
@@ -5981,7 +2361,7 @@ class TestSubagentFormatContract:
             fake_projects, session_id, agent_id,
             [_asst("claude-sonnet-4-6", sidechain=True)]
         )
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         assert subdir.is_dir(), f"Expected subagent dir at {subdir}"
         files = list(subdir.glob("*.jsonl"))
         assert len(files) == 1
@@ -5997,7 +2377,7 @@ class TestSubagentFormatContract:
             fake_projects, session_id, "agent-contract",
             [_asst("claude-sonnet-4-6", branch="feat", sidechain=True)]
         )
-        results = list(_mod.iter_sessions(fake_projects.parent, include_subagents=True))
+        results = list(corpus.iter_sessions(fake_projects.parent, include_subagents=True))
         assert len(results) == 1
         _path, records = results[0]
         sidechain_records = [r for r in records if r.get("isSidechain")]
@@ -6028,11 +2408,11 @@ class TestSubagentFormatContract:
 class TestIsFreshUserPrompt:
     def test_plain_text_user_record_returns_true(self):
         rec = _user_msg("Please fix that", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is True
+        assert render._is_fresh_user_prompt(rec) is True
 
     def test_tool_result_bearing_record_returns_false(self):
         rec = _user_msg([_tool_result("t1", "some result")], branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_ismeta_true_returns_false(self):
         rec = {
@@ -6041,7 +2421,7 @@ class TestIsFreshUserPrompt:
             "message": {"content": "injected meta"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_issidechain_true_returns_false(self):
         rec = {
@@ -6050,7 +2430,7 @@ class TestIsFreshUserPrompt:
             "message": {"content": "sidechain msg"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_iscompactsummary_true_returns_false(self):
         rec = {
@@ -6059,633 +2439,96 @@ class TestIsFreshUserPrompt:
             "message": {"content": "summary"},
             "gitBranch": "main",
         }
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_empty_text_content_returns_false(self):
         rec = _user_msg("", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
 
     def test_assistant_record_returns_false(self):
         rec = _asst("claude-sonnet-4-6", branch="main")
-        assert _mod._is_fresh_user_prompt(rec) is False
+        assert render._is_fresh_user_prompt(rec) is False
+
+    def test_task_notification_only_record_returns_false(self):
+        """GH-1312: a harness-delivered task notification is not the human speaking."""
+        rec = _task_notification_msg()
+        assert render._is_fresh_user_prompt(rec) is False
+
+    def test_human_text_beside_a_task_notification_returns_true(self):
+        rec = _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step")
+        assert render._is_fresh_user_prompt(rec) is True
+
+    def test_unterminated_task_notification_returns_true(self):
+        """An envelope with no closing tag is left in place by the strip, so the record stays fresh."""
+        rec = _user_msg("<task-notification>\n<summary>no closing tag here")
+        assert render._is_fresh_user_prompt(rec) is True
+
+    def test_self_quoting_task_notification_returns_true(self):
+        """Known limitation: the strip stops at the first closer, so the outer envelope's tail survives as text.
+
+        A check keyed on the record's `origin` would flip this on purpose.
+        """
+        rec = _user_msg(
+            "<task-notification><summary>Sample record: "
+            "<task-notification><summary>inner</summary></task-notification>"
+            "</summary></task-notification>"
+        )
+        assert render._is_fresh_user_prompt(rec) is True
 
 
 # ---------------------------------------------------------------------------
-# friction-count
+# _is_task_notification (render.py)
 # ---------------------------------------------------------------------------
 
 
-def _friction_count_args(
-    transcript: str, *, json_output: bool = False, checkpoint: str | None = None
-) -> object:
-    return type("A", (), {"transcript": transcript, "json": json_output, "checkpoint": checkpoint})()
-
-
-class TestFrictionCount:
-    def test_legacy_denial_shape_counted(self, fake_projects, capsys):
-        """A legacy attachment/hook_blocking_error record counts as one denial."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [_hook_deny("require-code-review")])
-        _mod.cmd_friction_count(_friction_count_args(str(path)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_current_format_denial_shape_counted(self, fake_projects, capsys):
-        """A current-format is_error tool_result with the denial signature counts as one denial."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [_hook_deny_current("Commit blocked by code-review gate.")])
-        _mod.cmd_friction_count(_friction_count_args(str(path)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_denial_deduped_across_shapes_by_tool_use_id(self, fake_projects, capsys):
-        """A denial recorded as both an attachment and its is_error twin (same
-        tool_use_id) collapses to one denial event — mirrors cmd_review_trace's dedup."""
-        path = fake_projects / "sess.jsonl"
-        attach = _hook_deny("worktree")  # toolUseID == "toolu_worktree"
-        twin = _hook_deny_current(
-            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
-            tool_id="toolu_worktree",
-        )
-        _write_jsonl(path, [attach, twin])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["denials"] == 1
-
-    def test_distinct_denials_each_counted(self, fake_projects, capsys):
-        """Two current-format denials with distinct tool_use_ids count as two denials."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["denials"] == 2
-
-    def test_counts_all_branches_regardless_of_gitBranch(self, fake_projects, capsys):
-        """friction-count is flat per-file — struggle signals on two different branches
-        in the same transcript both count; this is intentional (no branch filter)."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat-a"),
-            _user_msg([{"type": "text", "text": "hold on, that's wrong"}], branch="feat-a"),
-            _asst("claude-sonnet-4-6", branch="feat-b"),
-            _user_msg([{"type": "text", "text": "try again please"}], branch="feat-b"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["struggle_turns"] == 2
-
-    def test_failed_test_pairing_counts_only_failing_runs(self, fake_projects, capsys):
-        """A failing run (N failed > 0) counts; a passing run does not."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t2", "pytest")]),
-            _user_msg([_tool_result("t2", "all passed")], branch="feat"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["failed_test_runs"] == 1
-
-    def test_struggle_phrase_match_counted(self, fake_projects, capsys):
-        """A user turn containing a STRUGGLE_PHRASES entry counts as one struggle turn."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg([{"type": "text", "text": "no not that, try again"}], branch="feat"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["struggle_turns"] == 1
-
-    def test_task_notification_only_transcript_zero_struggle_turns(self, fake_projects, capsys):
-        """A transcript containing only a forwarded <task-notification> record whose
-        <summary> has a struggle phrase counts zero struggle turns."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                "<task-notification><summary>still failing, try again</summary></task-notification>",
-                branch="feat",
+class TestIsTaskNotification:
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_task_notification_msg(), id="string-envelope"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\n\n  {_TASK_NOTIFICATION_TEXT}"),
+                id="two-envelopes-with-whitespace-between",
             ),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["struggle_turns"] == 0
-
-    def test_task_notification_mixed_turn_still_counts_outside_phrase(self, fake_projects, capsys):
-        """A struggle phrase outside the envelope in the same turn still counts one
-        struggle turn, even though the envelope portion is excluded from matching."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                "no not that, try again. also: "
-                "<task-notification><summary>still failing</summary></task-notification>",
-                branch="feat",
+            pytest.param(
+                _user_msg([{"type": "text", "text": _TASK_NOTIFICATION_TEXT}]),
+                id="envelope-in-list-text-block",
             ),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["struggle_turns"] == 1
+        ],
+    )
+    def test_envelope_only_record_returns_true(self, rec):
+        assert render._is_task_notification(rec) is True
 
-    def test_unterminated_envelope_with_embedded_phrase_still_counts(self, fake_projects, capsys):
-        """A struggle phrase inside an envelope missing its closing tag still counts: the
-        unterminated opener is left in place rather than swallowing the rest of the turn."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat"),
-            _user_msg(
-                "<task-notification><summary>still failing, try again",
-                branch="feat",
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            pytest.param(_user_msg("Please fix that"), id="plain-prompt"),
+            pytest.param(
+                _user_msg(f"{_TASK_NOTIFICATION_TEXT}\nplease also rerun the lint step"),
+                id="human-text-beside-envelope",
             ),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["struggle_turns"] == 1
-
-    def test_isSidechain_records_skipped(self, fake_projects, capsys):
-        """isSidechain denial/failed-test/struggle records are excluded from every signal."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat", sidechain=True,
-                  content=[_bash_use("t1", "pytest")]),
-            {
-                **_user_msg([_tool_result("t1", "3 failed")], branch="feat"),
-                "isSidechain": True,
-            },
-            {
-                **_user_msg([{"type": "text", "text": "hold on, try again"}], branch="feat"),
-                "isSidechain": True,
-            },
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals == {"denials": 0, "failed_test_runs": 0, "struggle_turns": 0, "composite": 0}
-
-    def test_empty_transcript_is_zero(self, fake_projects, capsys):
-        """An empty transcript file produces a composite of 0, no crash."""
-        path = fake_projects / "sess.jsonl"
-        path.write_text("")
-        _mod.cmd_friction_count(_friction_count_args(str(path)))
-        out = capsys.readouterr().out.strip()
-        assert out == "0"
-
-    def test_malformed_line_skipped_gracefully(self, fake_projects, capsys):
-        """A malformed JSONL line is silently skipped; valid lines around it still count."""
-        path = fake_projects / "sess.jsonl"
-        good_denial = json.dumps(_hook_deny_current("Commit blocked by code-review gate."))
-        path.write_text(f"{good_denial}\nnot json at all\n{{broken\n")
-        _mod.cmd_friction_count(_friction_count_args(str(path)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_json_breakdown_and_composite_equals_sum(self, fake_projects, capsys):
-        """--json emits all four keys; composite equals the sum of the three signals."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _hook_deny("require-code-review"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "2 failed")], branch="feat"),
-            _user_msg([{"type": "text", "text": "still failing, hold on"}], branch="feat"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert set(signals.keys()) == {"denials", "failed_test_runs", "struggle_turns", "composite"}
-        assert signals["denials"] == 1
-        assert signals["failed_test_runs"] == 1
-        assert signals["struggle_turns"] == 1
-        assert signals["composite"] == 3
-        assert signals["composite"] == (
-            signals["denials"] + signals["failed_test_runs"] + signals["struggle_turns"]
-        )
-
-    def test_toolDenialKind_field_ignored_by_signature_matching_count(self, fake_projects, capsys):
-        """friction-count's denial signal counts purely by is_error + message-text
-        signature match (hook_denial_key), regardless of a record's own
-        toolDenialKind value — hook_denial_key never reads that field. Of the 8
-        records below, 7 carry a signature-matching is_error tool_result (or the
-        legacy attachment shape) and count: the plain attachment denial, the
-        signature-text record with no toolDenialKind, and the five kind-value
-        records (permission-rule, user-rejected, automode-blocked,
-        automode-unavailable, interrupted) whose text also matches the
-        signature. The 8th record — permission-rule kind, ordinary non-signature
-        error text — does not count."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _hook_deny("require-code-review"),
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_nokind"),
-            _hook_deny_current(
-                "Commit blocked by code-review gate.", tool_id="toolu_pr",
-                tool_denial_kind="permission-rule",
+            pytest.param(
+                _user_msg("<task-notification>\n<summary>no closing tag here"),
+                id="unterminated-envelope",
             ),
-            _hook_deny_current(
-                "Commit blocked by code-review gate.", tool_id="toolu_ur",
-                tool_denial_kind="user-rejected",
+            pytest.param(
+                {**_task_notification_msg(), "isSidechain": True},
+                id="sidechain-envelope",
             ),
-            _hook_deny_current(
-                "Commit blocked by code-review gate.", tool_id="toolu_ab",
-                tool_denial_kind="automode-blocked",
+            pytest.param(
+                {**_task_notification_msg(), "isMeta": True},
+                id="meta-envelope",
             ),
-            _hook_deny_current(
-                "Commit blocked by code-review gate.", tool_id="toolu_au",
-                tool_denial_kind="automode-unavailable",
+            pytest.param(
+                _user_msg([_tool_result("t1", _TASK_NOTIFICATION_TEXT)]),
+                id="tool-result-record",
             ),
-            _hook_deny_current(
-                "Commit blocked by code-review gate.", tool_id="toolu_int",
-                tool_denial_kind="interrupted",
-            ),
-            _hook_deny_current(
-                "npm ERR! command failed with exit code 1", tool_id="toolu_pr_nosig",
-                tool_denial_kind="permission-rule",
-            ),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["denials"] == 7
-
-
-# ---------------------------------------------------------------------------
-# friction-count cross-path equality — pins hook_denial_key and the failed-test
-# signal against the two subcommands they must never silently drift from.
-# ---------------------------------------------------------------------------
-
-
-class TestFrictionCountCrossPathEquality:
-    def test_denial_count_matches_review_trace(self, fake_projects, capsys):
-        """friction-count's denial count over one file equals cmd_review_trace's denial
-        count over that same session. No isSidechain denial records in this fixture,
-        so cmd_review_trace's (unfiltered) and friction-count's (isSidechain-filtered)
-        counts are directly comparable. This fixture carries no toolDenialKind field
-        at all, so the equality holds only on the text-signature (denial-only) path —
-        see test_review_trace_friction_line_diverges_from_friction_count_denial_count
-        below for a record whose toolDenialKind makes the two counts diverge."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _hook_deny("require-code-review"),
-            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
-            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
-                  content=[_agent_use("a1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        trace_out = capsys.readouterr().out
-        m = re.search(r"denials=(\d+)", trace_out)
-        assert m is not None, f"no denials= marker found in review-trace output: {trace_out!r}"
-        review_trace_denials = int(m.group(1))
-        assert review_trace_denials == 2
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["denials"] == review_trace_denials
-
-    def test_review_trace_friction_line_diverges_from_friction_count_denial_count(self, fake_projects, capsys):
-        """A record carrying a non-gate toolDenialKind and non-signature-matching
-        text is invisible to friction-count's denial signal (hook_denial_key
-        never matches it) but produces review-trace's own `friction` line, not a
-        `denial` line — the two surfaces intentionally diverge once toolDenialKind
-        data exists, unlike the kind-free fixture in the test above."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _hook_deny_current(
-                "Request interrupted by user for tool use", tool_id="toolu_interrupt",
-                tool_denial_kind="interrupted",
-            ),
-        ])
-        _mod.cmd_review_trace(_review_trace_args())
-        trace_out = capsys.readouterr().out
-        event_lines = [ln for ln in trace_out.splitlines() if ln.startswith("  [")]
-        assert len(event_lines) == 1
-        assert "friction" in event_lines[0]
-        assert "denial" not in event_lines[0]
-        assert "denials=0" in trace_out
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["denials"] == 0
-
-    def test_failed_test_count_matches_fail_seq_failing_subtotal(self, fake_projects, capsys):
-        """friction-count's failed-test count equals cmd_fail_seq's failing-run
-        subtotal (f > 0), not its total matched-run count — cmd_fail_seq records
-        every matched run including passing ones."""
-        path = fake_projects / "sess.jsonl"
-        _write_jsonl(path, [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t2", "pytest")]),
-            _user_msg([_tool_result("t2", "all passed")], branch="feat"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t3", "pytest")]),
-            _user_msg([_tool_result("t3", "1 failed, 19 passed")], branch="feat"),
-        ])
-        fail_seq_args = type("A", (), {"branches": "feat", "projects": "*", "this_repo": False})()
-        _mod.cmd_fail_seq(fail_seq_args)
-        fail_seq_out = capsys.readouterr().out
-        m = re.search(r"Total runs: (\d+)\s+Failing: (\d+)", fail_seq_out)
-        assert m is not None, f"no Total runs/Failing marker found in fail-seq output: {fail_seq_out!r}"
-        total_runs, failing_subtotal = int(m.group(1)), int(m.group(2))
-        assert total_runs == 3
-        assert failing_subtotal == 2
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        signals = json.loads(capsys.readouterr().out)
-        assert signals["failed_test_runs"] == failing_subtotal
-        assert signals["failed_test_runs"] != total_runs
-
-
-# ---------------------------------------------------------------------------
-# friction-count --checkpoint — incremental byte-offset scan.
-# ---------------------------------------------------------------------------
-
-
-class TestFrictionCountCheckpoint:
-    def test_first_call_with_no_checkpoint_scans_from_zero_and_creates_file(self, fake_projects, capsys):
-        """No checkpoint file yet: full scan from offset 0, and a checkpoint
-        file is written afterward recording the offset and per-signal totals."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-        assert not checkpoint.exists()
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-        assert checkpoint.exists()
-        state = json.loads(checkpoint.read_text())
-        assert state["offset"] == path.stat().st_size
-        assert state["totals"] == {"denials": 1, "failed_test_runs": 0, "struggle_turns": 0}
-
-    def test_incremental_call_matches_full_rescan_baseline(self, fake_projects, capsys):
-        """A second checkpointed call after appending new lines re-scans only
-        the appended bytes and returns the cumulative composite — asserted
-        against a full-rescan baseline (no --checkpoint) over the same final
-        file, to catch incremental/full-scan drift."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-            _asst("claude-sonnet-4-6", branch="feat", content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feat"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        first_composite = int(capsys.readouterr().out.strip())
-        assert first_composite == 2  # 1 denial + 1 failed test run
-
-        with path.open("a") as fh:
-            for rec in (
-                _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
-                _user_msg([{"type": "text", "text": "hold on, try again"}], branch="feat"),
-            ):
-                fh.write(json.dumps(rec) + "\n")
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        incremental_composite = int(capsys.readouterr().out.strip())
-        assert incremental_composite == 4  # 2 denials + 1 failed test run + 1 struggle turn
-        # Non-vacuous: the incremental call actually counted the newly appended signals.
-        assert incremental_composite != first_composite
-
-        _mod.cmd_friction_count(_friction_count_args(str(path)))  # no checkpoint: full rescan
-        baseline_composite = int(capsys.readouterr().out.strip())
-        assert incremental_composite == baseline_composite
-
-    def test_malformed_checkpoint_json_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A checkpoint file that isn't valid JSON is treated as absent: full
-        rescan from offset 0, no error raised."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text("not json at all")
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_missing_totals_field_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A checkpoint file missing the 'totals' key is treated as malformed
-        as a whole (not partially trusted): full rescan from offset 0, not a
-        scan starting from the recorded offset with zero totals."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({"offset": 5}))  # no "totals" key
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_negative_offset_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A negative offset is malformed: full rescan from offset 0."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": -1,
-            "totals": {"denials": 0, "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_non_int_offset_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A string offset is malformed: full rescan from offset 0."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": "5",
-            "totals": {"denials": 0, "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_bool_offset_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """Python's bool subclasses int (isinstance(True, int) is True); a
-        checkpoint with offset: true must still be rejected as malformed,
-        not silently treated as offset 1."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": True,
-            "totals": {"denials": 0, "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_negative_totals_value_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A negative per-key totals value is malformed: full rescan from offset 0."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": 5,
-            "totals": {"denials": -1, "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_non_int_totals_value_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A string per-key totals value is malformed: full rescan from offset 0."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": 5,
-            "totals": {"denials": "1", "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_totals_missing_one_of_three_keys_falls_back_to_full_rescan(
-        self, fake_projects, capsys
-    ):
-        """A 'totals' dict present but missing exactly one of the three
-        required keys (struggle_turns here) is malformed as a whole: full
-        rescan from offset 0, not a partial trust of the two present keys."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        checkpoint.write_text(json.dumps({
-            "offset": 5,
-            "totals": {"denials": 1, "failed_test_runs": 2},  # no "struggle_turns"
-        }))
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1"
-
-    def test_checkpoint_offset_beyond_transcript_size_falls_back_to_full_rescan(self, fake_projects, capsys):
-        """A checkpoint whose stored offset exceeds the transcript's current
-        size (e.g. the transcript was truncated/rewritten while the
-        session-keyed checkpoint persisted) must not seek past EOF and
-        freeze forever at the checkpoint's stale totals — it must fail open
-        to a full rescan, exactly like a malformed checkpoint."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-        # A well-formed checkpoint whose offset is larger than the actual
-        # transcript file's current byte size.
-        checkpoint.write_text(json.dumps({
-            "offset": path.stat().st_size + 1000,
-            "totals": {"denials": 7, "failed_test_runs": 0, "struggle_turns": 0},
-        }))
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        out = capsys.readouterr().out.strip()
-        assert out == "1", "a stale offset must trigger a full rescan, not a frozen stale composite"
-
-    def test_checkpoint_offset_never_rereads_consumed_bytes(self, fake_projects, capsys):
-        """Calling friction-count again with no new appended lines must not
-        double-count the already-consumed denial — this is only true if the
-        checkpoint's stored offset actually gates re-reading those bytes."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        assert capsys.readouterr().out.strip() == "1"
-
-        # No new lines appended — a second call over the unchanged file must
-        # return the same cumulative composite, not double it.
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        second_out = capsys.readouterr().out.strip()
-        assert second_out == "1", "re-reading already-consumed bytes would double-count the denial"
-
-    def test_partial_trailing_line_not_consumed_until_terminated(self, fake_projects, capsys):
-        """A transcript with a trailing unterminated line (as if the harness is
-        actively writing it) only advances the checkpoint offset to the last
-        complete line boundary. The partial line's content is picked up whole,
-        exactly once, on the next call once it's terminated — not dropped, not
-        double-read."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        complete_denial = json.dumps(
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a")
-        )
-        partial_denial = json.dumps(
-            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b")
-        )
-        # The second record's bytes have no trailing newline, as if the
-        # transcript writer stopped mid-record.
-        path.write_text(f"{complete_denial}\n{partial_denial[:20]}")
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        first_out = capsys.readouterr().out.strip()
-        assert first_out == "1", "only the complete first line should be counted"
-        state = json.loads(checkpoint.read_text())
-        assert state["offset"] == len(complete_denial) + 1, (
-            "offset must stop at the complete-line boundary, not consume the partial trailing bytes"
-        )
-
-        # Complete and terminate the partial line, simulating the writer
-        # finishing the record on the next turn.
-        with path.open("a") as fh:
-            fh.write(partial_denial[20:] + "\n")
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), checkpoint=str(checkpoint)))
-        second_out = capsys.readouterr().out.strip()
-        assert second_out == "2", "the now-terminated second denial is picked up whole, not double-read"
-
-    def test_checkpoint_and_json_combined_returns_same_four_keys_as_non_checkpoint_json(
-        self, fake_projects, capsys
-    ):
-        """--checkpoint and --json together (a real, reachable CLI combination
-        the hook itself never exercises) must build the same four-key shape
-        as the non-checkpoint --json path — this dict is constructed
-        differently (**running_totals spread) than the non-checkpoint path's
-        _friction_signals return, so a key-naming/ordering regression here
-        would not be caught by any non-checkpoint --json test."""
-        path = fake_projects / "sess.jsonl"
-        checkpoint = fake_projects / "checkpoint.json"
-        _write_jsonl(path, [
-            _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
-        ])
-
-        _mod.cmd_friction_count(
-            _friction_count_args(str(path), checkpoint=str(checkpoint), json_output=True)
-        )
-        checkpoint_signals = json.loads(capsys.readouterr().out)
-
-        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
-        non_checkpoint_signals = json.loads(capsys.readouterr().out)
-
-        assert set(checkpoint_signals.keys()) == set(non_checkpoint_signals.keys())
-        assert set(checkpoint_signals.keys()) == {
-            "denials", "failed_test_runs", "struggle_turns", "composite",
-        }
-        assert checkpoint_signals == non_checkpoint_signals
+            pytest.param(_user_msg("   "), id="blank-text-record"),
+            pytest.param(_asst("claude-sonnet-4-6"), id="assistant-record"),
+        ],
+    )
+    def test_record_that_is_not_envelope_only_main_thread_user_text_returns_false(self, rec):
+        assert render._is_task_notification(rec) is False
 
 
 # ---------------------------------------------------------------------------
@@ -6708,51 +2551,51 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
 # too, but carry zero-match message text and branches the other rows don't, so
 # they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
-    ("buckets", "BUCKETS", _mod.cmd_buckets,
+    ("buckets", "BUCKETS", buckets.cmd_buckets,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("fail-seq", "FAIL SEQ", _mod.cmd_fail_seq,
+    ("fail-seq", "FAIL SEQ", fail_seq.cmd_fail_seq,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": "main"})()),
-    ("struggle", "STRUGGLE", _mod.cmd_struggle,
+    ("struggle", "STRUGGLE", struggle.cmd_struggle,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("duration", "DURATION", _mod.cmd_duration,
+    ("duration", "DURATION", duration.cmd_duration,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None})()),
-    ("subagents", "SUBAGENTS", _mod.cmd_subagents, _subagents_args),
-    ("subagent-mix", "SUBAGENT MIX", _mod.cmd_subagent_mix,
+    ("subagents", "SUBAGENTS", subagents.cmd_subagents, _subagents_args),
+    ("subagent-mix", "SUBAGENT MIX", subagent_mix.cmd_subagent_mix,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "branches": None, "per_session": False})()),
-    ("reviewer-yield", "REVIEWER YIELD", _mod.cmd_reviewer_yield, _reviewer_yield_args),
-    ("skill-pair", "SKILL PAIR", _mod.cmd_skill_pair, _skill_pair_args),
-    ("pr-link", "PR LINK", _mod.cmd_pr_link,
+    ("reviewer-yield", "REVIEWER YIELD", reviewer_yield.cmd_reviewer_yield, _reviewer_yield_args),
+    ("skill-pair", "SKILL PAIR", skill_pair.cmd_skill_pair, _skill_pair_args),
+    ("pr-link", "PR LINK", pr_link.cmd_pr_link,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "branches": "main",
          "repo": "owner/repo", "author": None,
      })()),
-    ("commit-gate", "COMMIT GATE", _mod.cmd_commit_gate, lambda: _gate_args("code-review")),
-    ("audit-routing", "AUDIT ROUTING", _mod.cmd_audit_routing, _audit_routing_args),
-    ("cost", "COST", _mod.cmd_cost, _cost_args),
-    ("context-distribution", "CONTEXT DISTRIBUTION", _mod.cmd_context_distribution, _context_distribution_args),
-    ("context-composition", "CONTEXT COMPOSITION", _mod.cmd_context_composition,
+    ("commit-gate", "COMMIT GATE", commit_gate.cmd_commit_gate, lambda: _gate_args("code-review")),
+    ("audit-routing", "AUDIT ROUTING", audit_routing.cmd_audit_routing, _audit_routing_args),
+    ("cost", "COST", cost.cmd_cost, _cost_args),
+    ("context-distribution", "CONTEXT DISTRIBUTION", context_distribution.cmd_context_distribution, _context_distribution_args),
+    ("context-composition", "CONTEXT COMPOSITION", context_composition.cmd_context_composition,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
      })()),
-    ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
-    ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
-    ("spend-over-threshold", "SPEND OVER THRESHOLD", _mod.cmd_spend_over_threshold, _spend_over_threshold_args),
-    ("rearm-backtest", "REARM BACKTEST", _mod.cmd_rearm_backtest, _rearm_backtest_args),
-    ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
-    ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
-    ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
-    ("edit-format", "EDIT FORMAT", _mod.cmd_edit_format,
+    ("cost-trend", "COST TREND", cost.cmd_cost_trend, _cost_trend_args),
+    ("cache-rebuild", "CACHE REBUILD", cache_rebuild.cmd_cache_rebuild, _cache_rebuild_args),
+    ("spend-over-threshold", "SPEND OVER THRESHOLD", spend_over_threshold.cmd_spend_over_threshold, _spend_over_threshold_args),
+    ("rearm-backtest", "REARM BACKTEST", rearm_backtest.cmd_rearm_backtest, _rearm_backtest_args),
+    ("audit-routing-shape", "AUDIT ROUTING SHAPE", audit_routing.cmd_audit_routing_shape, _audit_routing_shape_args),
+    ("audit-routing-samples", "AUDIT ROUTING SAMPLES", audit_routing.cmd_audit_routing_samples, _audit_routing_samples_args),
+    ("judgment-pair", "JUDGMENT PAIR", judgment_pair.cmd_judgment_pair, _judgment_pair_args),
+    ("edit-format", "EDIT FORMAT", edit_format.cmd_edit_format,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
-    ("read-scope", "READ SCOPE", _mod.cmd_read_scope,
+    ("read-scope", "READ SCOPE", read_scope.cmd_read_scope,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "no_redact": False, "extra_config_dirs": None})()),
-    ("instrument-authoring", "INSTRUMENT AUTHORING", _mod.cmd_instrument_authoring,
+    ("instrument-authoring", "INSTRUMENT AUTHORING", instrument_authoring.cmd_instrument_authoring,
      lambda: type("A", (), {"projects": "*", "this_repo": False, "extra_config_dirs": None})()),
-    ("cost-ledger", "COST LEDGER", _mod.cmd_cost_ledger, _cost_ledger_args),
-    ("plan-boundary", "PLAN BOUNDARY", _mod.cmd_plan_boundary,
+    ("cost-ledger", "COST LEDGER", cost_ledger.cmd_cost_ledger, _cost_ledger_args),
+    ("plan-boundary", "PLAN BOUNDARY", plan_boundary.cmd_plan_boundary,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "since": None, "no_redact": False, "extra_config_dirs": None,
      })()),
-    ("sessions", "SESSIONS", _mod.cmd_sessions,
+    ("sessions", "SESSIONS", sessions.cmd_sessions,
      lambda: type("A", (), {
          "projects": "*", "this_repo": False, "paths": True, "include_subagents": False,
      })()),
@@ -6787,7 +2630,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out, err = capsys.readouterr()
         combined = out + err
         assert "REVIEW TRACE SOURCES (" in combined
@@ -6800,7 +2643,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(_skill_inv_args())
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())
         out, err = capsys.readouterr()
         combined = out + err
         assert "SKILL INVOCATION SOURCES (" in combined
@@ -6814,7 +2657,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
+        review_trace.cmd_review_trace(_review_trace_args(branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "REVIEW TRACE SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -6828,7 +2671,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True, branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "REVIEW TRACE SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -6844,7 +2687,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(branches="no-such-branch"))
         out, err = capsys.readouterr()
         assert "SKILL INVOCATION SOURCES (" in out
         assert self._HEADER_SUFFIX in out
@@ -6860,7 +2703,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(
+        skill_invocation.cmd_skill_invocation(
             _skill_inv_args(branches="no-such-branch", include_subagents=True)
         )
         out = capsys.readouterr().out
@@ -6879,7 +2722,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(
+        review_trace.cmd_review_trace(
             _review_trace_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
         )
         out = capsys.readouterr().out
@@ -6896,7 +2739,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_skill_invocation(
+        skill_invocation.cmd_skill_invocation(
             _skill_inv_args(projects=self._DISTINCTIVE_GLOB, branches="no-such-branch")
         )
         out = capsys.readouterr().out
@@ -6913,7 +2756,7 @@ class TestAllSubcommandsSingleRootHeader:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
         ])
-        _mod.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True, deny_only=True))
         out = capsys.readouterr().out
         assert "No denials found in scope." in out
         assert "No sessions matched in scope." not in out
@@ -6935,8 +2778,8 @@ class TestRootsThreadingSpy:
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         scope_calls: list[list] = []
         header_calls: list[list] = []
-        real_resolve = _mod._resolve_project_scope
-        real_print = _mod._print_resolved_scope
+        real_resolve = scope._resolve_project_scope
+        real_print = scope.print_resolved_scope
 
         def spy_resolve(*a, **k):
             scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
@@ -6947,19 +2790,14 @@ class TestRootsThreadingSpy:
             header_calls.append(list(roots))
             return real_print(*a, **k)
 
-        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
-        # cost/cost-trend's cmd_* now live in cost.py and call scope._resolve_project_scope/
-        # scope.print_resolved_scope by module attribute access rather than the bare shim
-        # names above -- patched here too so the spy intercepts either call shape.
-        monkeypatch.setattr(_mod.scope, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod.scope, "print_resolved_scope", spy_print)
+        monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
         monkeypatch.setattr(subprocess, "run", _fake_gh_pr_list_run)
 
         cmd_func(args_factory())
 
         assert scope_calls, f"{subcommand}: _resolve_project_scope was never called"
-        assert header_calls, f"{subcommand}: _print_resolved_scope was never called"
+        assert header_calls, f"{subcommand}: print_resolved_scope was never called"
         assert scope_calls[-1] == expected_roots, (
             f"{subcommand}: scope resolution did not receive the multi-root list — {scope_calls[-1]!r}"
         )
@@ -6976,8 +2814,8 @@ class TestRootsThreadingSpy:
         ])
         scope_calls: list[list] = []
         header_calls: list[list] = []
-        real_resolve = _mod._resolve_project_scope
-        real_print = _mod._print_resolved_scope
+        real_resolve = scope._resolve_project_scope
+        real_print = scope.print_resolved_scope
 
         def spy_resolve(*a, **k):
             scope_calls.append(list(k["roots"]) if k.get("roots") is not None else None)
@@ -6988,15 +2826,10 @@ class TestRootsThreadingSpy:
             header_calls.append(list(roots))
             return real_print(*a, **k)
 
-        monkeypatch.setattr(_mod, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod, "_print_resolved_scope", spy_print)
-        # cmd_review_trace now lives in review_trace.py and calls scope._resolve_project_scope/
-        # scope.print_resolved_scope by module attribute access rather than the bare shim
-        # names above -- patched here too so the spy intercepts either call shape.
-        monkeypatch.setattr(_mod.scope, "_resolve_project_scope", spy_resolve)
-        monkeypatch.setattr(_mod.scope, "print_resolved_scope", spy_print)
+        monkeypatch.setattr(scope, "_resolve_project_scope", spy_resolve)
+        monkeypatch.setattr(scope, "print_resolved_scope", spy_print)
 
-        _mod.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
 
         assert scope_calls[-1] == expected_roots
         assert header_calls[-1] == expected_roots
@@ -7009,15 +2842,15 @@ class TestRootsThreadingSpy:
         with the full roots list (not iter_sessions' single-Path shape)."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list] = []
-        real_glob_scoped = _mod.scope._iter_glob_scoped_sessions
+        real_glob_scoped = scope._iter_glob_scoped_sessions
 
         def spy_glob_scoped(roots, *a, **k):
             calls.append(list(roots))
             return real_glob_scoped(roots, *a, **k)
 
-        monkeypatch.setattr(_mod.scope, "_iter_glob_scoped_sessions", spy_glob_scoped)
+        monkeypatch.setattr(scope, "_iter_glob_scoped_sessions", spy_glob_scoped)
 
-        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
 
         assert calls, "_iter_glob_scoped_sessions was never called"
         assert calls[-1] == expected_roots
@@ -7027,14 +2860,14 @@ class TestRootsThreadingSpy:
         roots=roots into _iter_scoped_sessions rather than defaulting."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list | None] = []
-        real_scoped = _mod.scope._iter_scoped_sessions
+        real_scoped = scope._iter_scoped_sessions
 
         def spy_scoped(slugs, include_subagents, roots=None):
             calls.append(list(roots) if roots is not None else None)
             return real_scoped(slugs, include_subagents, roots=roots)
 
-        monkeypatch.setattr(_mod.scope, "_iter_scoped_sessions", spy_scoped)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "_iter_scoped_sessions", spy_scoped)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_git_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -7044,7 +2877,7 @@ class TestRootsThreadingSpy:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_git_run)
 
-        _mod.cmd_skill_invocation(_skill_inv_args(projects=None))  # unset -- the repo-scoped default branch
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(projects=None))  # unset -- the repo-scoped default branch
 
         assert calls, "_iter_scoped_sessions was never called"
         assert calls[-1] == expected_roots
@@ -7055,17 +2888,17 @@ class TestRootsThreadingSpy:
         iter_sessions' documented flat-sort-over-full-paths ordering guarantee
         is unaffected by this plan at single root."""
         calls: list[Path] = []
-        real_iter_sessions = _mod.corpus.iter_sessions
+        real_iter_sessions = corpus.iter_sessions
 
         def spy_iter_sessions(projects_dir, *a, **k):
             calls.append(projects_dir)
             return real_iter_sessions(projects_dir, *a, **k)
 
-        monkeypatch.setattr(_mod.corpus, "iter_sessions", spy_iter_sessions)
+        monkeypatch.setattr(corpus, "iter_sessions", spy_iter_sessions)
 
-        _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
+        skill_invocation.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
 
-        assert calls == [_mod.scope.PROJECTS_DIR]
+        assert calls == [scope.PROJECTS_DIR]
 
 
 class TestThisRepoUnionsAcrossRoots:
@@ -7093,7 +2926,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_c_alias = tmp_path / "acct-a-alias"
         root_c_alias.symlink_to(root_a)
 
-        sessions = list(_mod._iter_scoped_sessions(
+        sessions = list(scope._iter_scoped_sessions(
             ["-repo-main"], False, roots=[root_a, root_b, root_c_alias],
         ))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
@@ -7119,7 +2952,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_b_foreign.mkdir(parents=True)
         _write_jsonl(proj_b_foreign / "sess-foreign.jsonl", [_asst("claude-sonnet-4-6", branch="foreign-branch")])
 
-        sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+        sessions = list(scope._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-root-a", "from-root-b"}
         assert "foreign-branch" not in branches_seen
@@ -7136,8 +2969,8 @@ class TestThisRepoUnionsAcrossRoots:
         same slug -- under --this-repo, both are admitted. A future change to
         slug derivation that silently alters this posture, in either
         direction, must fail this test."""
-        this_repo_slug = _mod.scope._path_to_project_slug("/a/b/c")
-        foreign_path_slug = _mod.scope._path_to_project_slug("/a/b.c")
+        this_repo_slug = scope._path_to_project_slug("/a/b/c")
+        foreign_path_slug = scope._path_to_project_slug("/a/b.c")
         assert this_repo_slug == foreign_path_slug == "-a-b-c"  # the collision this test pins
 
         root_a = tmp_path / "acct-a"
@@ -7153,9 +2986,9 @@ class TestThisRepoUnionsAcrossRoots:
 
         args = type("A", (), {"projects": "*", "this_repo": True})()
         args._this_repo_slugs = [this_repo_slug]
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"this-repo-session", "foreign-colliding-session"}
 
@@ -7168,7 +3001,7 @@ class TestThisRepoUnionsAcrossRoots:
         proj_a = root_a / "-repo-main"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="feat-in-root-a")])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", root_a)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", root_a)
 
         root_b = tmp_path / "acct-b-config"
         proj_b = root_b / "projects" / "-repo-main"
@@ -7178,7 +3011,7 @@ class TestThisRepoUnionsAcrossRoots:
         roots_file.write_text(f"{root_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -7188,7 +3021,7 @@ class TestThisRepoUnionsAcrossRoots:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": True, "branches": None})())
         out = capsys.readouterr().out
         assert "feat-in-root-a" in out
         assert "feat-in-root-b" in out
@@ -7201,7 +3034,7 @@ class TestThisRepoUnionsAcrossRoots:
         roots[0]. Calls _resolve_project_scope directly with a hand-built
         multi-element `roots` list (unreachable through the real CLI today,
         since an explicit top-level --config-dir always collapses `roots` to
-        one element — see _resolve_scan_roots) as a robustness pin against a
+        one element — see scope.resolve_scan_roots) as a robustness pin against a
         future precedence change, per the plan's own framing."""
         root_a = tmp_path / "acct-a"
         root_a.mkdir()
@@ -7209,7 +3042,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_b.mkdir()
         args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+            scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert exc_info.value.code == 1
 
     def test_this_repo_allow_case_when_only_a_non_first_root_matches(self, tmp_path):
@@ -7222,7 +3055,7 @@ class TestThisRepoUnionsAcrossRoots:
         root_b = tmp_path / "acct-b"
         (root_b / "-repo-main").mkdir(parents=True)
         args = argparse.Namespace(this_repo=True, projects="*", config_dir=str(root_a), _this_repo_slugs=["-repo-main"])
-        session_iter, scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        session_iter, scope_label = scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert list(session_iter) == []  # no sessions written, but no SystemExit either
         assert scope_label == "this repo (1 project dirs)"
 
@@ -7247,7 +3080,7 @@ class TestIterScopedSessionsUnreadableRoot:
         root_b.mkdir()
         os.chmod(root_b, 0o000)
         try:
-            sessions = list(_mod._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
+            sessions = list(scope._iter_scoped_sessions(["-repo-main"], False, roots=[root_a, root_b]))
         finally:
             os.chmod(root_b, 0o755)  # restore before tmp_path teardown
 
@@ -7287,7 +3120,7 @@ class TestScanGapCounter:
         os.chmod(root_b, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            sessions = list(scope._iter_glob_scoped_sessions(
                 [root_a, root_b], "*", False, scan_gaps=scan_gaps,
             ))
         finally:
@@ -7295,7 +3128,7 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-readable-root"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_ROOT: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_project_dir_records_project_dir_level_gap(self, tmp_path):
@@ -7308,13 +3141,13 @@ class TestScanGapCounter:
         os.chmod(proj_sealed, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj_sealed, 0o755)
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_project_dir_symlink_loop_is_skipped_with_no_gap(self, tmp_path):
         """A self-referencing symlink makes the stat fail with ELOOP (which
@@ -7329,7 +3162,7 @@ class TestScanGapCounter:
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
@@ -7344,7 +3177,7 @@ class TestScanGapCounter:
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        assert list(_mod.scope._iter_glob_scoped_sessions([root], "*", False)) == []
+        assert list(scope._iter_glob_scoped_sessions([root], "*", False)) == []
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
@@ -7366,13 +3199,13 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(sealed_ancestor, 0o755)
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
@@ -7389,7 +3222,7 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         try:
             with pytest.raises(PermissionError) as excinfo:
-                list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+                list(scope._iter_glob_scoped_sessions([root], "*", False))
             assert str(proj_through_sealed) not in str(excinfo.value)
             _assert_scan_error_chain_suppressed(excinfo)
         finally:
@@ -7405,7 +3238,7 @@ class TestScanGapCounter:
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        assert list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
+        assert list(scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
@@ -7426,7 +3259,7 @@ class TestScanGapCounter:
         os.chmod(sealed_ancestor, 0o000)
         try:
             with pytest.raises(PermissionError) as excinfo:
-                list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+                list(scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
             assert str(proj_through_sealed) not in str(excinfo.value)
             _assert_scan_error_chain_suppressed(excinfo)
         finally:
@@ -7443,12 +3276,12 @@ class TestScanGapCounter:
         (proj / "empty.jsonl").write_text("")
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(sealed, 0o644)
 
         assert sessions == []  # neither the unreadable nor the readable-empty file yields
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_SESSION_FILE: 1})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_without_search_permission_records_session_file_gap(self, tmp_path):
@@ -7463,17 +3296,17 @@ class TestScanGapCounter:
         os.chmod(proj, 0o444)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj, 0o755)
 
         assert sessions == []
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_SESSION_FILE: 1})
 
     def test_nonexistent_root_records_no_gap(self, tmp_path):
         missing_root = tmp_path / "never-created"
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [missing_root], "*", False, scan_gaps=scan_gaps,
         ))
         assert sessions == []
@@ -7493,7 +3326,7 @@ class TestScanGapCounter:
         os.chmod(proj_sealed, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_scoped_sessions(
+            sessions = list(scope._iter_scoped_sessions(
                 ["-repo-open", "-repo-sealed"], False, roots=[root], scan_gaps=scan_gaps,
             ))
         finally:
@@ -7501,14 +3334,14 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_resolve_project_scope_single_root_glob_branch_raises_on_scan_gaps(self, tmp_path):
         root = tmp_path / "acct-a" / "projects"
         root.mkdir(parents=True)
         args = argparse.Namespace(this_repo=False, projects="*")
         with pytest.raises(ValueError):
-            _mod.scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
+            scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_project_dir_without_scan_gaps_skips_it_silently(self, tmp_path):
@@ -7524,7 +3357,7 @@ class TestScanGapCounter:
         proj_sealed.mkdir(parents=True)
         os.chmod(proj_sealed, 0o000)
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+            sessions = list(scope._iter_glob_scoped_sessions([root], "*", False))
         finally:
             os.chmod(proj_sealed, 0o755)
 
@@ -7548,14 +3381,14 @@ class TestScanGapCounter:
         os.chmod(root_b, 0o000)
         scan_gaps = Counter()
         try:
-            list(_mod.scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
+            list(scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
         finally:
             os.chmod(proj_c, 0o755)
             os.chmod(sealed, 0o644)
             os.chmod(root_b, 0o755)
 
         assert set(scan_gaps) == {
-            _mod.scope._SCAN_GAP_ROOT, _mod.scope._SCAN_GAP_PROJECT_DIR, _mod.scope._SCAN_GAP_SESSION_FILE,
+            scope._SCAN_GAP_ROOT, scope._SCAN_GAP_PROJECT_DIR, scope._SCAN_GAP_SESSION_FILE,
         }
 
     def test_root_that_is_a_regular_file_records_no_gap(self, tmp_path):
@@ -7569,7 +3402,7 @@ class TestScanGapCounter:
         root_b = tmp_path / "acct-b-not-a-dir"
         root_b.write_text("not a directory")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [root_a, root_b], "*", False, scan_gaps=scan_gaps,
         ))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
@@ -7586,7 +3419,7 @@ class TestScanGapCounter:
         _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-repo-a")])
         (root / ".DS_Store").write_text("")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-repo-a"}
         assert scan_gaps == Counter()
@@ -7605,7 +3438,7 @@ class TestScanGapCounter:
         (proj / "dangling.jsonl").symlink_to(proj / "does-not-exist.jsonl")
         (proj / "loop.jsonl").symlink_to(proj / "loop.jsonl")
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        sessions = list(scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-real"}
         assert scan_gaps == Counter()
@@ -7638,7 +3471,7 @@ class TestScanGapCounter:
         os.chmod(sealed_b, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            sessions = list(scope._iter_glob_scoped_sessions(
                 [root_0, root_1], "*", False, scan_gaps=scan_gaps,
             ))
         finally:
@@ -7651,9 +3484,9 @@ class TestScanGapCounter:
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open"}
         assert scan_gaps == Counter({
-            _mod.scope._SCAN_GAP_ROOT: 1,
-            _mod.scope._SCAN_GAP_PROJECT_DIR: 2,
-            _mod.scope._SCAN_GAP_SESSION_FILE: 2,
+            scope._SCAN_GAP_ROOT: 1,
+            scope._SCAN_GAP_PROJECT_DIR: 2,
+            scope._SCAN_GAP_SESSION_FILE: 2,
         })
 
     def test_project_dir_symlink_alias_across_roots_records_no_gap_and_yields_once(self, tmp_path):
@@ -7668,7 +3501,7 @@ class TestScanGapCounter:
         root_b.mkdir()
         (root_b / "-repo-shared-alias").symlink_to(proj, target_is_directory=True)
         scan_gaps = Counter()
-        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+        sessions = list(scope._iter_glob_scoped_sessions(
             [root_a, root_b], "*", False, scan_gaps=scan_gaps,
         ))
         branches_seen = [rec["gitBranch"] for _jsonl, records in sessions for rec in records]
@@ -7692,7 +3525,7 @@ class TestScanGapCounter:
         os.chmod(root_c, 0o000)
         scan_gaps = Counter()
         try:
-            sessions = list(_mod.scope._iter_scoped_sessions(
+            sessions = list(scope._iter_scoped_sessions(
                 ["-repo-main"], False, roots=[root_a, root_b, root_c], scan_gaps=scan_gaps,
             ))
         finally:
@@ -7701,7 +3534,7 @@ class TestScanGapCounter:
 
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-readable-root"}
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 2})
+        assert scan_gaps == Counter({scope._SCAN_GAP_ROOT: 2})
 
     @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP])
     def test_stat_mode_unless_absent_returns_none_for_absent_entry_errnos(self, absent_errno):
@@ -7711,7 +3544,7 @@ class TestScanGapCounter:
             def stat(self):
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
-        assert _mod.scope._stat_mode_unless_absent(_StatRaises()) is None
+        assert scope._stat_mode_unless_absent(_StatRaises()) is None
 
     @pytest.mark.parametrize("propagated_errno", [errno.EACCES, errno.EIO])
     def test_stat_mode_unless_absent_reraises_every_other_errno(self, propagated_errno):
@@ -7720,7 +3553,7 @@ class TestScanGapCounter:
                 raise OSError(propagated_errno, os.strerror(propagated_errno))
 
         with pytest.raises(OSError) as excinfo:
-            _mod.scope._stat_mode_unless_absent(_StatRaises())
+            scope._stat_mode_unless_absent(_StatRaises())
         assert excinfo.value.errno == propagated_errno
 
     def test_stat_mode_unless_absent_returns_the_mode_of_an_existing_entry(self, tmp_path):
@@ -7729,8 +3562,8 @@ class TestScanGapCounter:
         directory = tmp_path / "project-dir"
         directory.mkdir()
 
-        regular_mode = _mod.scope._stat_mode_unless_absent(regular_file)
-        directory_mode = _mod.scope._stat_mode_unless_absent(directory)
+        regular_mode = scope._stat_mode_unless_absent(regular_file)
+        directory_mode = scope._stat_mode_unless_absent(directory)
 
         assert stat.S_ISREG(regular_mode) and not stat.S_ISDIR(regular_mode)
         assert stat.S_ISDIR(directory_mode) and not stat.S_ISREG(directory_mode)
@@ -7743,7 +3576,7 @@ class TestScanGapCounter:
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
         scan_gaps = Counter()
-        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        yielded = list(scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
         assert yielded == []
         assert scan_gaps == Counter()
 
@@ -7753,9 +3586,9 @@ class TestScanGapCounter:
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES))
 
         scan_gaps = Counter()
-        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        yielded = list(scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
         assert yielded == []
-        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_dedup_without_scan_gaps_raises_eacces_with_the_path_stripped(self):
         sensitive_path = "/private/acct-a/projects/-repo-sealed"
@@ -7765,7 +3598,7 @@ class TestScanGapCounter:
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES), sensitive_path)
 
         with pytest.raises(OSError) as excinfo:
-            list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set()))
+            list(scope._dedup_new_project_dirs([_StatRaises()], set()))
         assert excinfo.value.errno == errno.EACCES
         assert sensitive_path not in str(excinfo.value)
         _assert_scan_error_chain_suppressed(excinfo)
@@ -7776,14 +3609,14 @@ class TestScanGapCounter:
             def stat(self):
                 raise OSError(absent_errno, os.strerror(absent_errno))
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is False
+        assert scope._failed_transcript_read_is_gap(_StatRaises()) is False
 
     def test_failed_transcript_read_is_a_gap_when_stat_fails_with_eacces(self):
         class _StatRaises:
             def stat(self):
                 raise OSError(errno.EACCES, os.strerror(errno.EACCES))
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is True
+        assert scope._failed_transcript_read_is_gap(_StatRaises()) is True
 
     def test_failed_transcript_read_is_a_gap_when_stat_reports_a_regular_file(self):
         """The regular-file arm, pinned with a stat stub so it holds under root."""
@@ -7791,14 +3624,14 @@ class TestScanGapCounter:
             def stat(self):
                 return os.stat_result((stat.S_IFREG | 0o644,) + (0,) * 9)
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
+        assert scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
 
     def test_failed_transcript_read_is_not_a_gap_when_stat_reports_a_directory(self):
         class _StatsAsDirectory:
             def stat(self):
                 return os.stat_result((stat.S_IFDIR | 0o755,) + (0,) * 9)
 
-        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
+        assert scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
 
 
 class TestGlobScopedSessionsSelection:
@@ -7828,14 +3661,14 @@ class TestGlobScopedSessionsSelection:
         _write_jsonl(non_transcript, stray_records)
 
         yielded_paths = {
-            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, projects_glob, False)
+            jsonl for jsonl, _records in scope._iter_glob_scoped_sessions(roots, projects_glob, False)
         }
         every_project_paths = {
-            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, "*", False)
+            jsonl for jsonl, _records in scope._iter_glob_scoped_sessions(roots, "*", False)
         }
 
         expected_paths = {
-            jsonl for root in roots for jsonl, _records in _mod.corpus.iter_sessions(root, projects_glob)
+            jsonl for root in roots for jsonl, _records in corpus.iter_sessions(root, projects_glob)
         }
         assert expected_paths
         assert yielded_paths == expected_paths
@@ -7848,11 +3681,11 @@ class TestGlobScopedSessionsSelection:
 class TestProjectsGlobStepsToParent:
     @pytest.mark.parametrize("projects_glob", ["..", "../x", "x/..", "a/../.."])
     def test_dotdot_path_component_steps_to_parent(self, projects_glob):
-        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is True
+        assert corpus._projects_glob_steps_to_parent(projects_glob) is True
 
     @pytest.mark.parametrize("projects_glob", ["a..b", "..*", "...", ".hidden*", "*"])
     def test_dotdot_inside_a_component_does_not_step_to_parent(self, projects_glob):
-        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is False
+        assert corpus._projects_glob_steps_to_parent(projects_glob) is False
 
 
 class TestSingleLevelProjectsGlob:
@@ -7869,12 +3702,12 @@ class TestSingleLevelProjectsGlob:
 
     @pytest.mark.parametrize("value", ["*", "-home-user-repo*", "feat-?", "[ab]*", ""])
     def test_accepts_single_level_glob_values_unchanged(self, value):
-        assert _mod.scope._single_level_projects_glob(value) == value
+        assert scope._single_level_projects_glob(value) == value
 
     @pytest.mark.parametrize("value", ["a/b", "a/", "/a", "**", "a**", ".", ".."])
     def test_rejects_values_path_glob_would_read_differently(self, value):
         with pytest.raises(argparse.ArgumentTypeError):
-            _mod.scope._single_level_projects_glob(value)
+            scope._single_level_projects_glob(value)
 
     @pytest.mark.parametrize(
         "cli_args",
@@ -7917,7 +3750,7 @@ class TestSingleLevelProjectsGlob:
         root_b.mkdir()
         args = argparse.Namespace(this_repo=False, projects="a/b")
         with pytest.raises(SystemExit) as exc:
-            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+            scope._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
         assert exc.value.code == 2
 
     def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
@@ -7929,7 +3762,7 @@ class TestSingleLevelProjectsGlob:
         nested.mkdir(parents=True)
         _write_jsonl(nested / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-nested")])
         args = argparse.Namespace(this_repo=False, projects="sub/-repo-main")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-nested"}
 
@@ -7943,7 +3776,7 @@ class TestSingleLevelProjectsGlob:
         sibling.mkdir()
         _write_jsonl(sibling / "secret.jsonl", [_asst("claude-sonnet-4-6", branch="from-sibling")])
         args = argparse.Namespace(this_repo=False, projects="../acct-b")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         assert list(session_iter) == []
 
     def test_single_root_scope_reads_a_project_dir_symlinked_outside_the_root(self, tmp_path):
@@ -7959,7 +3792,7 @@ class TestSingleLevelProjectsGlob:
         _write_jsonl(outside / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-relocated")])
         (root / "-repo-relocated").symlink_to(outside)
         args = argparse.Namespace(this_repo=False, projects="*")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-relocated"}
 
@@ -7974,7 +3807,7 @@ class TestSingleLevelProjectsGlob:
         loop_link = proj / "loop.jsonl"
         loop_link.symlink_to(loop_link)
         args = argparse.Namespace(this_repo=False, projects="*")
-        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        session_iter, _scope_label = scope._resolve_project_scope(args, "buckets", roots=[root])
         branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
         assert branches_seen == {"from-healthy"}
 
@@ -7990,13 +3823,13 @@ class TestSingleLevelProjectsGlob:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_config)
 
         sibling_proj = tmp_path / "secret-account" / "projects" / "-home-secret-repo"
         sibling_proj.mkdir(parents=True)
         _write_jsonl(sibling_proj / "secret.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
 
-        _mod.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
+        cost.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
         out = capsys.readouterr().out
         assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
         assert "WARNING: cost: account-1: no transcripts found for this scope" in out
@@ -8012,9 +3845,9 @@ class TestSingleLevelProjectsGlob:
         root_b = tmp_path / "acct-b"
         root_b.mkdir()
         args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
-        monkeypatch.setattr(_mod.scope, "resolve_scan_roots", lambda _args: [root_a, root_b])
+        monkeypatch.setattr(scope, "resolve_scan_roots", lambda _args: [root_a, root_b])
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_skill_invocation(args)
+            skill_invocation.cmd_skill_invocation(args)
         assert exc.value.code == 2
         assert "--projects" in capsys.readouterr().err
 
@@ -8028,7 +3861,7 @@ class TestPoisonedProjectsDirGlobal:
     def test_sessions_found_via_declared_root_despite_nonexistent_projects_dir(
         self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "nonexistent-active-profile" / "projects")
         real_root = tmp_path / "real-account"
         proj = real_root / "projects" / "-home-user-testrepo"
         proj.mkdir(parents=True)
@@ -8037,7 +3870,7 @@ class TestPoisonedProjectsDirGlobal:
         roots_file.write_text(f"{real_root}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": None})())
         out = capsys.readouterr().out
         assert "feat-declared-root" in out
         assert "2 roots" in out
@@ -8048,7 +3881,7 @@ class TestMultiRootFormatOutliers:
     subcommands (judgment-pair writes --out,
     audit-routing-samples is a JSON stream with the header on stderr, cost
     redacts by default) — each reached through the declared-roots file (the
-    default union _resolve_scan_roots builds from declared_transcript_roots()),
+    default union scope.resolve_scan_roots builds from declared_transcript_roots()),
     not cost's own --config-dir extra (already covered by
     TestCostMultiRootRedaction)."""
 
@@ -8057,7 +3890,7 @@ class TestMultiRootFormatOutliers:
         default_proj = default_config / "projects" / "-home-user-repo-a"
         default_proj.mkdir(parents=True)
         _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_config)
 
         declared_config = tmp_path / "declared-account"
         declared_proj = declared_config / "projects" / "-home-user-repo-b"
@@ -8067,7 +3900,7 @@ class TestMultiRootFormatOutliers:
         roots_file.write_text(f"{declared_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         out = capsys.readouterr().out
         assert "account-1/private-project-1" in out
         assert "account-2/private-project-1" in out
@@ -8082,7 +3915,7 @@ class TestMultiRootFormatOutliers:
             proj.mkdir(parents=True)
             _write_jsonl(proj / f"sess-{idx}.jsonl", [_opus([_read_use("r1", "/a.py")], out=100)])
 
-        _mod.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         out, err = capsys.readouterr()
         assert "2 roots" in err  # header routed to stderr, matching audit-routing-samples' convention
         # The per-root progress line is gated on len(roots) > 1, so above one
@@ -8106,7 +3939,7 @@ class TestMultiRootFormatOutliers:
             ])
         out_file = roots[0].parent / "out.txt"
 
-        _mod.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
         content = out_file.read_text()
         lines = content.splitlines()
         assert lines[0] == "JUDGMENT PAIR SOURCES (*; 2 roots)"
@@ -8116,19 +3949,19 @@ class TestMultiRootFormatOutliers:
 
 
 class TestResolveScanRoots:
-    """_resolve_scan_roots as a directly callable, unit-testable function --
+    """scope.resolve_scan_roots as a directly callable, unit-testable function --
     the explicit top-level --config-dir precedence over a populated
     declared-roots file, and getattr-based tolerance of a hand-built `args`
     Namespace that predates the config_dir attribute entirely (this file's
     many such fixtures)."""
 
     def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+        assert scope.resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_no_config_dir_with_declared_roots_unions_both(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -8136,7 +3969,7 @@ class TestResolveScanRoots:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [
+        assert scope.resolve_scan_roots(args) == [
             tmp_path / "active" / "projects", declared / "projects",
         ]
 
@@ -8146,7 +3979,7 @@ class TestResolveScanRoots:
         """The flagship precedence rule: an explicit --config-dir wins outright,
         returning that one directory's projects/ subdirectory alone — the
         declared-roots file's entries are not unioned in on top of it."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -8155,15 +3988,15 @@ class TestResolveScanRoots:
 
         override_dir = tmp_path / "explicit-override"
         args = argparse.Namespace(config_dir=str(override_dir))
-        assert _mod._resolve_scan_roots(args) == [override_dir / "projects"]
+        assert scope.resolve_scan_roots(args) == [override_dir / "projects"]
 
     def test_config_dir_attribute_absent_from_parsed_does_not_raise(self, monkeypatch, tmp_path):
         """A hand-built test `args` Namespace that predates the top-level
         --config-dir flag (this file's many such fixtures) must not raise
         AttributeError -- its absence means "not passed," the real default."""
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = type("A", (), {})()  # no config_dir attribute at all
-        assert _mod._resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
+        assert scope.resolve_scan_roots(args) == [tmp_path / "active" / "projects"]
 
     def test_declared_root_matching_active_profile_is_deduped_not_double_listed(
         self, monkeypatch, tmp_path
@@ -8173,13 +4006,13 @@ class TestResolveScanRoots:
         active profile is deduped, not double-listed."""
         active_config = tmp_path / "active-account"
         (active_config / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", active_config / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", active_config / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{active_config}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         args = argparse.Namespace(config_dir=None)
-        assert _mod._resolve_scan_roots(args) == [active_config / "projects"]
+        assert scope.resolve_scan_roots(args) == [active_config / "projects"]
 
 
 class TestRedactionOrdinalStability:
@@ -8194,8 +4027,8 @@ class TestRedactionOrdinalStability:
         root_b = tmp_path / "acct-b"
         root_b.mkdir()
 
-        ordinals_a_first = _mod._redaction_ordinals([root_a, root_b])
-        ordinals_b_first = _mod._redaction_ordinals([root_b, root_a])
+        ordinals_a_first = scope._redaction_ordinals([root_a, root_b])
+        ordinals_b_first = scope._redaction_ordinals([root_b, root_a])
 
         assert ordinals_a_first == ordinals_b_first
         assert ordinals_a_first[root_a.resolve()] == ordinals_b_first[root_a.resolve()]
@@ -8212,10 +4045,10 @@ class TestRedactionOrdinalStability:
         root_zulu = _write_cost_root(tmp_path, "acct-zulu", "-home-user-repo-zulu", "sess-zulu",
                                       [_priced("claude-sonnet-5", input=1_000_000)])
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_alpha, root_zulu])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_alpha, root_zulu])
         out_alpha_active = capsys.readouterr().out
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_zulu, root_alpha])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_zulu, root_alpha])
         out_zulu_active = capsys.readouterr().out
 
         # root_alpha resolves alphabetically first, so it holds account-1 in both
@@ -8240,7 +4073,7 @@ class TestCorpusFingerprintRootRemovalLimits:
         # Root 2's only label ("shared-label") is a strict subset of root 1's
         # own label set, so dropping root 2 does not change the label SET —
         # the fingerprint is identical even though the account count changed.
-        assert _mod._corpus_fingerprint(two_root_map) == _mod._corpus_fingerprint(one_root_map)
+        assert redaction._corpus_fingerprint(two_root_map) == redaction._corpus_fingerprint(one_root_map)
 
 
 class TestResolvedScopeHeaderDirectUnit:
@@ -8250,7 +4083,7 @@ class TestResolvedScopeHeaderDirectUnit:
     root-count branch."""
 
     def test_one_root_states_no_declared_roots_file(self, tmp_path):
-        header = _mod._resolved_scope_header("buckets", "*", [tmp_path / "acct-a" / "projects"])
+        header = scope._resolved_scope_header("buckets", "*", [tmp_path / "acct-a" / "projects"])
         assert header == (
             "BUCKETS SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))"
         )
@@ -8261,7 +4094,7 @@ class TestResolvedScopeHeaderDirectUnit:
             tmp_path / "acct-b" / "projects",
             tmp_path / "acct-c" / "projects",
         ]
-        header = _mod._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
+        header = scope._resolved_scope_header("cost", "this repo (2 project dirs)", roots)
         assert header == "COST SOURCES (this repo (2 project dirs); 3 roots)"
 
 
@@ -8273,7 +4106,7 @@ class TestRootCountDescDirectUnit:
 
     def test_one_root_absent_roots_file_states_no_declared_roots_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (no ~/.claude/transcript-config-dirs declared)"
         )
 
@@ -8284,7 +4117,7 @@ class TestRootCountDescDirectUnit:
         roots_file = tmp_path / "roots"
         roots_file.write_text("# just a comment\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        desc = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
+        desc = scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         assert "no ~/.claude/transcript-config-dirs declared" not in desc
         assert "~/.claude/transcript-config-dirs" in desc
 
@@ -8299,7 +4132,7 @@ class TestRootCountDescDirectUnit:
         roots_file_as_dir = tmp_path / "roots-is-a-directory"
         roots_file_as_dir.mkdir()
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file_as_dir))
-        assert _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
+        assert scope._root_count_desc([tmp_path / "acct-a" / "projects"]) == (
             "1 root (~/.claude/transcript-config-dirs present but unreadable)"
         )
 
@@ -8308,8 +4141,8 @@ class TestRootCountDescDirectUnit:
         file, so the >1-root branch must not name the file at all."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
         roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
-        assert _mod.scope._root_count_desc(roots) == "2 roots"
-        assert "transcript-config-dirs" not in _mod.scope._root_count_desc(roots)
+        assert scope._root_count_desc(roots) == "2 roots"
+        assert "transcript-config-dirs" not in scope._root_count_desc(roots)
 
     def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
         """Contract test, a tripwire not a full guarantee: derives
@@ -8320,7 +4153,7 @@ class TestRootCountDescDirectUnit:
         verbatim positive pin on its own scope-confirmation sentence (see
         each skill's dedicated tests) is the real contract."""
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "does-not-exist"))
-        literal = _mod.scope._root_count_desc([tmp_path / "acct-a" / "projects"])
+        literal = scope._root_count_desc([tmp_path / "acct-a" / "projects"])
         for skill_name in ("transcript-analysis", "transcript-narrative"):
             skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
             assert literal in skill_text, f"{skill_name}/SKILL.md does not quote _root_count_desc()'s literal"
@@ -8380,10 +4213,10 @@ class TestBuildRedactMapDirectUnit:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_b / "sess-b.jsonl", [_asst("claude-sonnet-4-6", branch="from-b")])
 
-        ordinals = _mod._redaction_ordinals([root_a, root_b])
+        ordinals = scope._redaction_ordinals([root_a, root_b])
         ordinal_a, ordinal_b = ordinals[root_a.resolve()], ordinals[root_b.resolve()]
 
-        redact_map = _mod._build_redact_map([root_a, root_b])
+        redact_map = redaction._build_redact_map([root_a, root_b])
 
         assert redact_map == {
             (ordinal_a, "testrepo"): f"account-{ordinal_a}/private-project-1",
@@ -8408,7 +4241,7 @@ class TestBuildRedactMapDirectUnit:
         priced.mkdir(parents=True)
         _write_jsonl(priced / "sess-priced.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
 
-        redact_map = _mod._build_redact_map([root])
+        redact_map = redaction._build_redact_map([root])
         assert redact_map["zzz-priced"] == "private-project-2"
 
     def test_two_subagent_only_projects_get_distinct_sorted_labels(self, tmp_path):
@@ -8426,7 +4259,7 @@ class TestBuildRedactMapDirectUnit:
         _write_jsonl(proj_b / "sess-b.jsonl", [])
         _write_subagent_jsonl(proj_b, "sess-b", "agent-1", [_user_msg("hi")])
 
-        redact_map = _mod._build_redact_map([root])
+        redact_map = redaction._build_redact_map([root])
         assert redact_map == {
             "aaa-phantom": "private-project-1",
             "zzz-phantom": "private-project-2",
@@ -8447,36 +4280,36 @@ class TestCacheMissReason:
                 "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 12345},
             }
         }
-        assert _mod._cache_miss_reason(message) == "model_changed"
+        assert pricing._cache_miss_reason(message) == "model_changed"
 
     def test_returns_none_when_diagnostics_absent(self):
-        assert _mod._cache_miss_reason({}) is None
+        assert pricing._cache_miss_reason({}) is None
 
     def test_returns_none_when_diagnostics_not_a_dict(self):
-        assert _mod._cache_miss_reason({"diagnostics": "oops"}) is None
+        assert pricing._cache_miss_reason({"diagnostics": "oops"}) is None
 
     def test_returns_none_when_cache_miss_reason_absent(self):
-        assert _mod._cache_miss_reason({"diagnostics": {}}) is None
+        assert pricing._cache_miss_reason({"diagnostics": {}}) is None
 
     def test_returns_none_when_cache_miss_reason_not_a_dict(self):
-        assert _mod._cache_miss_reason({"diagnostics": {"cache_miss_reason": 42}}) is None
+        assert pricing._cache_miss_reason({"diagnostics": {"cache_miss_reason": 42}}) is None
 
     def test_returns_none_when_cache_miss_reason_type_not_a_string(self):
         message = {"diagnostics": {"cache_miss_reason": {"type": 42}}}
-        assert _mod._cache_miss_reason(message) is None
+        assert pricing._cache_miss_reason(message) is None
 
     def test_previous_message_not_found_reason_has_no_cache_missed_input_tokens_field(self):
         """The previous_message_not_found variant carries no
         cache_missed_input_tokens field at all -- the parser must not assume
         its presence."""
         message = {"diagnostics": {"cache_miss_reason": {"type": "previous_message_not_found"}}}
-        assert _mod._cache_miss_reason(message) == "previous_message_not_found"
+        assert pricing._cache_miss_reason(message) == "previous_message_not_found"
 
     def test_unavailable_reason_has_no_cache_missed_input_tokens_field(self):
         """The unavailable variant also carries no cache_missed_input_tokens
         field -- the parser must not assume its presence."""
         message = {"diagnostics": {"cache_miss_reason": {"type": "unavailable"}}}
-        assert _mod._cache_miss_reason(message) == "unavailable"
+        assert pricing._cache_miss_reason(message) == "unavailable"
 
     def test_merged_run_takes_cache_miss_reason_from_first_record(self):
         """_merge_assistant_run takes every non-content, non-usage field from
@@ -8488,23 +4321,14 @@ class TestCacheMissReason:
         }
         rec_b = _priced("claude-opus-5", output=20, request_id="req-1")
         rec_b["message"]["diagnostics"] = {"cache_miss_reason": {"type": "something_else"}}
-        merged = _mod._dedup_turns_by_request_id([rec_a, rec_b])
+        merged = pricing.dedup_turns_by_request_id([rec_a, rec_b])
         assert len(merged) == 1
-        assert _mod._cache_miss_reason(merged[0]["message"]) == "model_changed"
+        assert pricing._cache_miss_reason(merged[0]["message"]) == "model_changed"
 
 
 # ---------------------------------------------------------------------------
 # per-record --branches consumers: pre-branch and subagent attribution
 # ---------------------------------------------------------------------------
-
-_SONNET = "claude-sonnet-4-6"
-
-
-def _branch_args(**fields) -> object:
-    """Args object for a per-record --branches consumer; `fields` overrides the defaults."""
-    base = {"projects": "*", "this_repo": False, "branches": None}
-    base.update(fields)
-    return type("A", (), base)()
 
 
 class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
@@ -8524,7 +4348,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="main", ts="2026-06-01T11:00:00.000Z"),
             _asst(_SONNET, branch="feature-x", ts="2026-06-02T11:00:00.000Z"),
         ])
-        _mod.cmd_buckets(_branch_args())
+        buckets.cmd_buckets(_branch_args())
         out = capsys.readouterr().out
         feature_cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
         main_cols = _table_cols(out, header_contains="Branch", row_contains="main", max_labels=8)
@@ -8540,7 +4364,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="main", ts=_attr_ts(1)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        _mod.cmd_buckets(_branch_args(branches="feature-x"))
+        buckets.cmd_buckets(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)["Total"] == "2"
 
@@ -8550,7 +4374,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(10)),
         ])
-        _mod.cmd_duration(_branch_args(branches="feature-x"))
+        duration.cmd_duration(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
         assert cols["Span(min)"] == "10"  # 12:00 to 12:10, not 12:05 to 12:10
@@ -8562,7 +4386,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _user_msg([{"type": "text", "text": "this is the wrong approach"}], branch="main", ts=_attr_ts(2)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        _mod.cmd_struggle(_branch_args(branches="feature-x"))
+        struggle.cmd_struggle(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
         assert cols["Opus"] == "1"
@@ -8572,7 +4396,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("a prompt recorded with no branch", branch="", ts=_attr_ts(1)),
             _asst(_SONNET, branch="", ts=_attr_ts(2)),
         ])
-        _mod.cmd_user_input(_user_input_args())
+        user_input.cmd_user_input(_user_input_args())
         out = capsys.readouterr().out
         assert "a prompt recorded with no branch" in out
         assert "None" not in out
@@ -8587,7 +4411,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("prompt after entering the branch", branch="feature-x", ts=_attr_ts(5)),
             _asst(_SONNET, branch="feature-x", ts=_attr_ts(6)),
         ])
-        _mod.cmd_user_input(_user_input_args(branches="feature-x"))
+        user_input.cmd_user_input(_user_input_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert re.search(r"INITIAL · \w+\]\*\*\n~~~text\nprefix planning prompt\n~~~", out)
         assert re.search(r"FOLLOWUP · \w+\]\*\*\n~~~text\nprompt after entering the branch\n~~~", out)
@@ -8599,7 +4423,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _user_reply("Acknowledged.", branch="main"),
             _review_asst("Work on the branch.", _attr_ts(5), branch="feature-x"),
         ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert "Skill: code-review  branch=feature-x" in out
 
@@ -8616,10 +4440,10 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _ui_user("prompt on branch y", branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
 
-        _mod.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
+        user_input.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
         main_out = capsys.readouterr().out
         assert "later prompt on the default branch" in main_out
-        _mod.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
+        user_input.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
         feature_y_out = capsys.readouterr().out
         assert "prompt on branch y" in feature_y_out
         assert "later prompt on the default branch" not in feature_y_out
@@ -8639,11 +4463,11 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             _asst(_SONNET, branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
 
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
         main_out = capsys.readouterr().out
         assert "Skill: code-review  branch=main" in main_out
         assert "Review recorded on the default branch later." in main_out
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
         assert "Review recorded on the default branch later." not in capsys.readouterr().out
 
     def test_pr_link_counts_the_prefix_turn_toward_the_branch_model_split(self, fake_projects, monkeypatch, capsys):
@@ -8660,84 +4484,10 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
             return Completed()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        _mod.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
+        pr_link.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
         assert (cols["Opus"], cols["Sonnet"]) == ("1", "1")
-
-
-class TestFailSeqAttribution:
-    @staticmethod
-    def _run_fail_seq(capsys) -> str:
-        _mod.cmd_fail_seq(_branch_args(branches="feature-x"))
-        return capsys.readouterr().out
-
-    def test_prefix_test_run_with_its_result_in_the_prefix_counts_under_the_branch_entered(
-        self, fake_projects, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst(_SONNET, branch="main", ts=_attr_ts(1), content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="main", ts=_attr_ts(2)),
-            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
-        ])
-        out = self._run_fail_seq(capsys)
-        assert "### feature-x" in out
-        assert "Sequence: 3" in out
-
-    def test_test_run_spanning_the_branch_switch_is_dropped_by_the_literal_tag_reset(
-        self, fake_projects, capsys
-    ):
-        """The pending-pair reset marks a physical checkout change, so it reads the
-        record's own tag: the tool_use on the last `main` record is not paired with a
-        tool_result on the first feature-x record."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst(_SONNET, branch="main", ts=_attr_ts(1), content=[_bash_use("t1", "pytest")]),
-            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feature-x", ts=_attr_ts(5)),
-        ])
-        out = self._run_fail_seq(capsys)
-        assert "No test runs found for the specified branches." in out
-
-
-class TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration:
-    """A sidechain record sitting inline in a main transcript file takes the branch its
-    main thread was on, so neither a foreign tag nor a worktree-agent-* tag becomes a row."""
-
-    def test_buckets_folds_inline_sidechain_records_into_the_dispatching_branch_date_range(
-        self, fake_projects, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
-            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:05:00.000Z"),
-            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts="2026-06-05T10:00:00.000Z"),
-            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts="2026-06-06T10:00:00.000Z"),
-        ])
-        _mod.cmd_buckets(_branch_args())
-        out = capsys.readouterr().out
-        assert "foreign-branch" not in out
-        assert "worktree-agent" not in out
-        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
-        assert cols["Total"] == "2"  # sidechain records never count as turns
-        assert cols["Sess"] == "1"
-        assert "2026-06-02..2026-06-06" in out
-
-    def test_duration_folds_inline_sidechain_records_into_the_dispatching_branch_span(
-        self, fake_projects, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst(_SONNET, branch="feature-x", ts=_attr_ts(0)),
-            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
-            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(20)),
-            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(22)),
-            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(25)),
-            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(27)),
-        ])
-        _mod.cmd_duration(_branch_args())
-        out = capsys.readouterr().out
-        assert "foreign-branch" not in out
-        assert "worktree-agent" not in out
-        cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
-        assert cols["Span(min)"] == "27"  # 12:00 to 12:27, not 12:00 to 12:05
-        assert cols["Active(min)"] == "27"
 
 
 class TestSubagentRecordsFollowTheDispatchingBranch:
@@ -8746,7 +4496,7 @@ class TestSubagentRecordsFollowTheDispatchingBranch:
 
     @staticmethod
     def _run_skill_invocation(capsys, **kw) -> str:
-        _mod.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
         return capsys.readouterr().out
 
     def test_prefix_late_and_isolated_sidechain_invocations_count_under_the_branch_entered(
@@ -8799,7 +4549,7 @@ class TestSubagentRecordsFollowTheDispatchingBranch:
                 _asst(_SONNET, branch=follower_tag, sidechain=True, ts=_attr_ts(8),
                       content=[_skill_use("f1", "plan-review")]),
             ])
-        _mod.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
+        skill_pair.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
         assert (cols["Lead"], cols["Main"], cols["Side"]) == ("2", "0", "2")

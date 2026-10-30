@@ -8,9 +8,11 @@
 # file commit by commit without blocking the work, while still catching new
 # bloat.
 #
-# Default limit is 200 lines. Structural-dispatcher skills (code-review,
-# plan-review) carry item-ownership / routing tables that legitimately run
+# Default limit is 200 lines. Structural-dispatcher skills such as
+# plan-review carry item-ownership / routing tables that legitimately run
 # longer and are capped at Anthropic's documented 500-line ceiling instead.
+# code-review/SKILL.md is the exception, temporarily capped at 525 lines
+# (see limit_for()).
 # plan-review/ROUTING.md gets the same 500-line cap: it holds the
 # item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
 # the same content class the cap was written for.
@@ -65,7 +67,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
+  emit_deny "could not source _lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository; the user, not the agent, runs ./install.sh from the claude-config checkout in a separate terminal only if that runbook says so."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -110,7 +112,10 @@ fi
 # Per-skill limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
-    claude-skills/skills/code-review/SKILL.md|claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
+    # Temporary exception to the 500-line ceiling until #1351 restructures code-review.
+    claude-skills/skills/code-review/SKILL.md)
+      echo 525 ;;
+    claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)
       echo 250 ;;

@@ -159,7 +159,7 @@ _POSITIONAL_CARRY_FORWARD = {
 
 # Literal reads that sit beside an attributed read in the same function.
 _RAW_READ_BESIDE_ATTRIBUTION = {
-    "transcript-analysis.py:cmd_fail_seq": (
+    "transcript_analysis/fail_seq.py:cmd_fail_seq": (
         2, "a whole-session prefilter and the pending-pair reset mark a physical checkout change; "
            "only the filter and the runs key take the attributed branch",
     ),
@@ -171,10 +171,10 @@ _RAW_READ_BESIDE_ATTRIBUTION = {
 
 # Literal reads whose question is the checkout a record was written in, not the branch it counts toward.
 _RAW_BY_DESIGN = {
-    "transcript-analysis.py:cmd_commit_gate": (1, "a whole-session filter on any main-thread assistant record's tag"),
+    "transcript_analysis/commit_gate.py:cmd_commit_gate": (1, "a whole-session filter on any main-thread assistant record's tag"),
     "transcript_analysis/handoff_nudge.py:_session_matches_rearm_scope":
         (1, "a whole-session filter on the main-thread assistant records' tags"),
-    "transcript-analysis.py:_turn_shape_session_turns":
+    "transcript_analysis/turn_shape.py:_turn_shape_session_turns":
         (1, "a streak breaks where the checkout physically changed"),
 }
 

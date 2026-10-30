@@ -612,10 +612,10 @@ _lib_repo_root() {
 # directory from any linked worktree (git-worktree(1), "Details").
 # review-pr-checkout.sh, review-pr-finish.sh, and
 # _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
-# git before 2.31 echoes the unknown --path-format flag as an output line and
-# exits 0, so the result is accepted only when it is a single absolute path.
-# Exit 1, empty stdout: not inside a git repository, git is absent, the call
-# timed out, or git is older than 2.31.
+# The result is accepted only when it is a single-line absolute path, which
+# also rejects a failed call's empty output.
+# Exit 1, empty stdout: not inside a git repository, git is absent, or the call
+# timed out.
 _lib_main_repo_root() {
   local common_git_dir root
   common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -670,7 +670,9 @@ _lib_review_pr_marker_repo_hash() {
 # the supplied prefixes holds EXPECTED_VALUE as a whole line.
 #
 # Completion markers are content-addressed: the stored value is a hash of
-# exactly the state that was reviewed. That content is the authorization, so
+# exactly the state that was reviewed, except `cumulative-review`, whose value
+# is a normalized key (docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md).
+# That content is the authorization, so
 # the read asks "has this state been reviewed?" rather than "did this filename
 # review it?" — the filename keys only namespace concurrent writers apart.
 #
@@ -983,6 +985,17 @@ _lib_review_pr_select_session_worktrees() {
   done <<< "$porcelain"
 }
 
+# _lib_review_pr_reviewer_findings_dir SESSION_ID
+# Prints /tmp/review-pr-reviewer-findings-<session-id> and returns 0, or
+# returns 1 with no output when SESSION_ID is not a valid path component.
+# The root is a literal /tmp, never $TMPDIR, because the /tmp allow in
+# deny-reviewer-tree-mutation.sh matches the literal /tmp/ prefix as written,
+# so a $TMPDIR root elsewhere falls outside it.
+_lib_review_pr_reviewer_findings_dir() {
+  _lib_valid_session_id_component "$1" || return 1
+  printf '/tmp/review-pr-reviewer-findings-%s\n' "$1"
+}
+
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
 # untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
 # byte-identical to HEAD is historical (its PR shipped) and is excluded.
@@ -1179,12 +1192,10 @@ _lib_active_plan_hash() {
 _LIB_PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
 
 # _lib_hash_diff_text TEXT
-# Hashes TEXT via the shared sha256 recipe every cumulative-review value must
-# use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
-# `write cumulative-review` arm, which hashes a recorded subject through this
-# same function rather than a second, possibly-drifting copy of the recipe.
+# Hashes TEXT with sha256. _lib_cumulative_review_value below hashes the
+# normalized cumulative-review text through it.
 # review-ledger.sh's site hash (_review_ledger_site_hash in
-# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# scripts/_review-ledger-lib.sh) is a consumer: it hashes a line range of
 # a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
@@ -1203,17 +1214,62 @@ _lib_hash_diff_text() {
   printf '%s' "$digest"
 }
 
+# _lib_normalize_cumulative_review_text TEXT
+# Prints TEXT with each hunk header reduced to its two line counts
+# (`@@ -,b +,d @@`) and each `index` line that a `--- ` line follows stripped of its blob ids
+# (`index .. 100644`, or `index ..` when the line carries no mode).
+# Every other line passes through unchanged.
+# See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md.
+# Avoids interval expressions so BSD awk and mawk accept it.
+# Runs uncapped for the same reason as _lib_hash_diff_text (in-memory pipe that cannot hang), so `status` latency grows with diff size.
+_lib_normalize_cumulative_review_text() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    held_index_line != "" {
+      if (substr($0, 1, 4) == "--- ") sub(/^index [0-9a-f]+[.][.][0-9a-f]+/, "index ..", held_index_line)
+      print held_index_line
+      held_index_line = ""
+    }
+    /^index [0-9a-f]+[.][.][0-9a-f]+( [0-7]+)?$/ { held_index_line = $0; next }
+    match($0, /^@@ -[0-9]+(,[0-9]+)? [+][0-9]+(,[0-9]+)? @@/) &&
+        (RLENGTH == length($0) || substr($0, RLENGTH + 1, 1) == " ") {
+      split($0, header_fields, " ")
+      old_count = header_fields[2]; sub(/^-[0-9]+/, "", old_count)
+      new_count = header_fields[3]; sub(/^[+][0-9]+/, "", new_count)
+      print "@@ -" old_count " +" new_count " @@"
+      next
+    }
+    { print }
+    END { if (held_index_line != "") print held_index_line }
+  '
+}
+
+# _lib_cumulative_review_value TEXT
+# Prints the cumulative-review marker value: the sha256 of TEXT's normalized form.
+# marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash both call it.
+# Exit 0, non-empty stdout: the digest.
+# Exit 1, empty stdout: TEXT is empty, or awk or sha256sum failed.
+# The key is not content equality:
+# docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md lists what else shares a value.
+# It must not back a hook-enforced marker without a threat-model tier review.
+_lib_cumulative_review_value() {
+  local normalized_text
+  normalized_text=$(_lib_normalize_cumulative_review_text "$1") || return 1
+  [ -n "$normalized_text" ] || return 1
+  _lib_hash_diff_text "$normalized_text"
+}
+
 # _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
 # Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
 # the completion-marker value for the `cumulative-review` kind. Only `status`
 # calls this helper; `write cumulative-review` hashes a recorded subject via
-# _lib_hash_diff_text instead (design-decisions.md §50).
+# _lib_cumulative_review_value instead (design-decisions.md §50).
 #
 # Two-outcome contract, matching _lib_active_plan_hash:
-#   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
-#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
-#     killed by the cap. Callers MUST fail closed -- status degrades to
-#     reporting the marker absent rather than erroring the whole report.
+#   - exit 0, non-empty stdout: the _lib_cumulative_review_value of the diff.
+#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, was
+#     killed by the cap, or its value could not be computed. Callers MUST fail
+#     closed -- status degrades to reporting the marker absent rather than
+#     erroring the whole report.
 _lib_cumulative_diff_hash() {
   local repo_root="$1" pr_diff_script="$2"
   local diff_output
@@ -1222,7 +1278,7 @@ _lib_cumulative_diff_hash() {
   # `gh pr view`.
   diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
   [ -n "$diff_output" ] || return 1
-  _lib_hash_diff_text "$diff_output"
+  _lib_cumulative_review_value "$diff_output"
 }
 
 # _lib_head_tree_hash CAP_MODE REPO_ROOT
@@ -1301,6 +1357,47 @@ _lib_default_branch_from_origin_head() {
   printf '%s' "$default_branch"
 }
 
+# _lib_trial_merge_verdict UPSTREAM_REF
+# Print `Trial merge: CLEAN` or `Trial merge: CONFLICT in: <paths>` for merging
+# UPSTREAM_REF into HEAD, one line, paths sorted and joined by `, `.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the verdict line above.
+#   - exit 1, empty stdout: `git merge-tree` could not complete. One stderr line
+#     names its exit status, the running git and README.md's git floor.
+# A merge-tree exit of 1 counts as a conflict only with a tree OID on line 1,
+# because a bad ref also exits 1.
+_lib_trial_merge_verdict() {
+  local upstream_ref="$1"
+  local merge_output merge_status first_line conflict_paths git_version
+  # --no-messages: the messages section prints paths unquoted, so a newline in a path could forge a stage line there.
+  if merge_output=$(git merge-tree --write-tree --no-messages "$upstream_ref" HEAD 2>/dev/null); then
+    merge_status=0
+  else
+    merge_status=$?
+  fi
+  if [ "$merge_status" -eq 0 ]; then
+    printf 'Trial merge: CLEAN\n'
+    return 0
+  fi
+  first_line="${merge_output%%$'\n'*}"
+  if [ "$merge_status" -eq 1 ] && [[ "$first_line" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    # Stage lines read `<mode> <oid> <stage><TAB><path>`; the path may hold spaces.
+    conflict_paths=$(printf '%s\n' "$merge_output" \
+      | awk -F'\t' '$1 ~ /^[0-7]+ [0-9a-f]+ [1-3]$/ { print $2 }' \
+      | sort -u \
+      | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
+    if [ -n "$conflict_paths" ]; then
+      printf 'Trial merge: CONFLICT in: %s\n' "$conflict_paths"
+    else
+      printf 'Trial merge: CONFLICT\n'
+    fi
+    return 0
+  fi
+  git_version=$(git --version 2>/dev/null) || git_version="git version unreadable"
+  printf '%s\n' "_lib_trial_merge_verdict: git merge-tree exited $merge_status (running $git_version); an unsupported git is one cause, see README.md § \"Requirements\"" >&2
+  return 1
+}
+
 # _lib_default_branch_or_guess REPO_ROOT
 # Resolve REPO_ROOT's default branch: first via
 # _lib_default_branch_from_origin_head, then, on its failure, by falling
@@ -1332,6 +1429,176 @@ _lib_default_branch_or_guess() {
     fi
   done
   return 1
+}
+
+# _lib_print_unusable_stack_base STDERR_PREFIX BRANCH VALUE REASON
+# Prints the one stderr line every stack-base stop uses, and is the one home of
+# its fix text. The line names the script, the key, its value and REASON,
+# gives the fix, and says the engineer runs it, not the agent.
+# BRANCH and VALUE are %q-quoted so a hostile or empty value cannot break the
+# single line or read as blank.
+# Returns 0 always; the caller owns the exit status.
+_lib_print_unusable_stack_base() {
+  local stderr_prefix="$1" branch="$2" value="$3" reason="$4"
+  local key quoted_value
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  printf -v quoted_value '%q' "$value"
+  printf '%s: %s is %s, which cannot be used as the stack base: %s. The engineer runs the fix, not the agent: correct the value with "git config --replace-all %s <stack-base>"; if the stack base merged, rebase this branch onto the branch it merged into with "git rebase --onto origin/<merged-into> <old stack-base commit>", then run "git config --unset-all %s".\n' \
+    "$stderr_prefix" "$key" "$quoted_value" "$reason" "$key" "$key" >&2
+}
+
+# _lib_stack_base_git STDERR_PREFIX CALL_LABEL REPO_ROOT GIT_ARGS...
+# Runs `git -C REPO_ROOT GIT_ARGS...` capped, discarding git's stderr and passing
+# its stdout through. Returns git's status when it is 0 or 1. Any other status (a
+# cap kill included) prints the one read-failure line every stack-base git call
+# shares, naming CALL_LABEL and the status, and returns 2. CALL_LABEL must not hold
+# the key's value.
+_lib_stack_base_git() {
+  local stderr_prefix="$1" call_label="$2" repo_root="$3"
+  shift 3
+  local git_status=0
+  _lib_capped git -C "$repo_root" "$@" 2>/dev/null || git_status=$?
+  case "$git_status" in
+    0 | 1) return "$git_status" ;;
+  esac
+  printf '%s: %s failed (status %s), so the stack-base key was not checked; retry the command, and if it fails again, run that git call by hand to see its error\n' \
+    "$stderr_prefix" "$call_label" "$git_status" >&2
+  return 2
+}
+
+# _lib_configured_stack_base STDERR_PREFIX REPO_ROOT
+# Reads and validates the stack base the engineer set for REPO_ROOT's current branch with
+# `git config branch.<branch>.gh-merge-base <stack-base>`.
+# gh also reads that key when its PR-create command gets no --base.
+# The read is `git config --get` (every config scope) and never touches the network.
+#
+# Exit status:
+# - 0: stdout is "<branch> <stack-base>" on one line, and the split is unambiguous because a branch name holds no space.
+# - 1, empty stdout: no key is set, or HEAD is detached. The caller runs its no-key path.
+# - 2, empty stdout: the key is set but unusable, or git could not be read.
+#   One stderr line prefixed with STDERR_PREFIX has already been written.
+#   - An unusable value gets _lib_print_unusable_stack_base's line.
+#   - A read failure is any `symbolic-ref`, `config` or `check-ref-format` status other than 0 and 1, a cap kill included.
+#     It gets _lib_stack_base_git's line, which names the failed git call and its status and carries no key value or key fix.
+#     It can stop a branch that has no key set.
+#
+# A value is unusable when it:
+# - is empty
+# - starts with `-` or `origin/`
+# - fails `git check-ref-format "refs/heads/<value>"`
+# - holds a character outside [A-Za-z0-9._/-]
+# - is `HEAD`
+# - names the branch itself
+# The `-`, character-set, `origin/` and `HEAD` tests are _lib_stack_base_name_shape's statuses 1 to 4.
+# Any other nonzero status from that check is also unusable, so a status added there fails closed here.
+#
+# Callers capture with `rc=0; out=$(...) || rc=$?`, which suspends `set -e` inside the function, so every status is tested explicitly.
+# A caller treats every status other than 0 and 1 as a stop.
+_lib_configured_stack_base() {
+  local stderr_prefix="$1" repo_root="$2"
+  local head_ref head_status=0 branch key value config_status=0 ref_format_status=0 name_shape_status=0
+  head_ref=$(_lib_stack_base_git "$stderr_prefix" "git symbolic-ref HEAD" "$repo_root" symbolic-ref -q HEAD) || head_status=$?
+  case "$head_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  case "$head_ref" in
+    refs/heads/?*) branch="${head_ref#refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  value=$(_lib_stack_base_git "$stderr_prefix" "git config $key" "$repo_root" config --get "branch.$branch.gh-merge-base") || config_status=$?
+  case "$config_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  if [ -z "$value" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is empty"
+    return 2
+  fi
+  _lib_stack_base_name_shape "$value" || name_shape_status=$?
+  if [ "$name_shape_status" -eq 1 ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with '-'"
+    return 2
+  fi
+  _lib_stack_base_git "$stderr_prefix" "git check-ref-format on the value of $key" "$repo_root" check-ref-format "refs/heads/$value" >/dev/null || ref_format_status=$?
+  case "$ref_format_status" in
+    0) ;;
+    1)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is not a valid branch name"
+      return 2
+      ;;
+    *) return 2 ;;
+  esac
+  case "$name_shape_status" in
+    0) ;;
+    2)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'"
+      return 2
+      ;;
+    3)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with 'origin/'; give the branch name without that prefix"
+      return 2
+      ;;
+    4)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is HEAD, not a branch name"
+      return 2
+      ;;
+    *)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value failed a name check this reader has no message for (status $name_shape_status)"
+      return 2
+      ;;
+  esac
+  if [ "$value" = "$branch" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is this branch itself"
+    return 2
+  fi
+  printf '%s %s\n' "$branch" "$value"
+}
+
+# _lib_stack_base_name_shape NAME
+# Classifies a branch name the caller will pass to git or print in a command the engineer copies. Prints nothing.
+# Exit 0: NAME starts with a character other than `-`, holds only [A-Za-z0-9._/-], does not start with `origin/` and is not `HEAD`.
+# Exit 1: NAME starts with `-`, which git would read as an option.
+# Exit 2: NAME holds a character outside that set.
+# Exit 3: NAME starts with `origin/`, which reads as a remote-tracking ref instead of a branch.
+# Exit 4: NAME is `HEAD`, which a fetch destination would resolve through the `origin/HEAD` symref.
+# The set is narrower than `git check-ref-format`, which accepts shell metacharacters, quotes and bidi controls.
+# The tests run in status order, so the first failing one wins. An empty NAME exits 0, so the caller owns the empty check.
+# The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
+# A caller under `set -e` captures the status with `|| status=$?` or calls it in a conditional context, since statuses 1 to 4 are answers and a bare call aborts the script.
+_lib_stack_base_name_shape() {
+  local name="$1"
+  case "$name" in
+    -*) return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 2 ;;
+    origin/*) return 3 ;;
+    HEAD) return 4 ;;
+  esac
+  return 0
+}
+
+# _lib_open_pr_base REPLY
+# Parses REPLY, the output of `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`.
+# Exit 0 and the base branch on stdout, only for a two-line reply whose first line is
+# `OPEN` and whose second line is non-empty. Exit 1 with empty stdout for every other reply:
+# empty, one line, three or more lines, MERGED, CLOSED, or an empty base.
+_lib_open_pr_base() {
+  local reply="$1"
+  local state base
+  case "$reply" in
+    *$'\n'*) ;;
+    *) return 1 ;;
+  esac
+  state="${reply%%$'\n'*}"
+  base="${reply#*$'\n'}"
+  case "$base" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$state" = "OPEN" ] && [ -n "$base" ] || return 1
+  printf '%s' "$base"
 }
 
 # _lib_git_inprogress_state REPO_ROOT [GITDIR]
@@ -1414,7 +1681,7 @@ _lib_git_inprogress_state() {
 #   - exit 0, stdout = a tree OID: an in-progress state was detected, its
 #     OID reached a trusted anchor, and the reference tree was computed.
 #   - exit 1, stdout empty: no in-progress state, or one whose OID reached
-#     no anchor, or a topology/git-version this design computes no base
+#     no anchor, or a topology this design computes no base
 #     for. This is the correct answer, not a degraded one.
 #   - exit 2, stdout empty: undetermined -- a capped git call inside
 #     detection or tree computation timed out, was killed, or its binary
@@ -2289,7 +2556,7 @@ _lib_fragment_concludes_commit() {
 # produce a false match. The one residual is a future gh flag with no value
 # placeholder at a gated scope (root/`pr`/`issue`). Present-day instances --
 # `-h`/`--help` (registered broadly) and `--version` (root only) -- are
-# harmless since they exit before any network call; test_lib.py's
+# harmless since they exit before any network call; test_lib_tool_argv.py's
 # traversal-scope guard fails if a non-terminating one is ever added.
 _lib_tool_argv_from_subcmd() {
   local fragment="$1" tool="$2"
@@ -2958,6 +3225,37 @@ _lib_hook_claude_pid() {
   printf '%s\n' "$resolved_claude_pid"
 }
 
+# _lib_registered_live_sid CONFIG_DIR PID
+# Prints the session_id that CONFIG_DIR/sessions/PID registers for a live,
+# start-time-validated process and returns 0. Prints nothing and returns 1
+# otherwise.
+# PID must be all digits, because this function builds `sessions/<pid>` from it.
+# Return 1 is an ordinary outcome, so a caller under `set -e` calls this in a
+# conditional context.
+# Return 1 covers no entry, a short entry, a dead pid, a stale start time, and
+# a `ps` that fails or times out.
+# An entry with no recorded start time at all fails the start-time check.
+# A recorded start time that doesn't match the live process's current start
+# time means the entry cannot be tied to that process, so the entry is
+# untrusted.
+# PID reuse since the entry was written is the expected cause.
+# `lstart`'s one-second resolution leaves a residual false-positive window: a
+# reused PID whose new process starts within the same wall-clock second as the
+# stale entry's process still compares equal.
+_lib_registered_live_sid() {
+  local config_dir="$1" pid="$2"
+  local sid="" recorded_start current_start
+  [ -r "$config_dir/sessions/$pid" ] || return 1
+  {
+    IFS= read -r sid
+    IFS= read -r recorded_start
+  } < "$config_dir/sessions/$pid" 2>/dev/null
+  [ -n "$sid" ] && [ -n "$recorded_start" ] || return 1
+  current_start=$(TZ=UTC LC_ALL=C _lib_capped ps -o lstart= -p "$pid" 2>/dev/null)
+  [ "$current_start" = "$recorded_start" ] || return 1
+  printf '%s' "$sid"
+}
+
 # _lib_resolve_claude_pid
 # Prints "<session_id> <pid>" for the live Claude Code main-process PID that
 # is an ancestor of the calling process, and returns 0. Returns 2 with no
@@ -2971,33 +3269,15 @@ _lib_hook_claude_pid() {
 # capture-session-id.sh at $CONFIG_DIR/sessions/<pid>. Direct hook invocation
 # resolves in one step ($PPID = Claude Code PID); a Bash-tool script
 # invocation resolves in two steps ($PPID = Bash tool shell, grandparent =
-# Claude Code PID). The loop handles any depth. A recorded start time that
-# doesn't match the live process's current start time — including an entry
-# with no recorded start time at all — means the PID was reused since the
-# entry was written, so it is untrusted and treated as if the file were
-# absent. `lstart`'s one-second resolution leaves a residual false-positive
-# window: a reused PID whose new process starts within the same wall-clock
-# second as the stale entry's process still compares equal.
+# Claude Code PID). The loop handles any depth. Each ancestor's entry is
+# validated by _lib_registered_live_sid, whose header states the start-time
+# and PID-reuse rules.
 _lib_resolve_claude_pid() {
-  local config_dir pid
+  local config_dir pid sid
   config_dir=$(_lib_config_dir) || return 2
   pid=$PPID
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ]; do
-    local sid recorded_start current_start
-    sid=""
-    if [ -r "$config_dir/sessions/$pid" ]; then
-      {
-        IFS= read -r sid
-        IFS= read -r recorded_start
-      } < "$config_dir/sessions/$pid" 2>/dev/null
-      if [ -n "$sid" ] && [ -n "$recorded_start" ]; then
-        current_start=$(TZ=UTC LC_ALL=C _lib_capped ps -o lstart= -p "$pid" 2>/dev/null)
-        [ "$current_start" = "$recorded_start" ] || sid=""
-      else
-        sid=""
-      fi
-    fi
-    if [ -n "$sid" ]; then
+    if sid=$(_lib_registered_live_sid "$config_dir" "$pid"); then
       printf '%s %s' "$sid" "$pid"
       return 0
     fi
@@ -3080,7 +3360,8 @@ _lib_worktree_lock_pid() {
 # Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet.
 # Every _lib_worktree_collision_guard call site runs this immediately
 # before calling the guard.
-# A pre-existing foreign *live* lock always denies, never allows.
+# A pre-existing lock held by another live process denies, except for the
+# cases in `_lib_worktree_collision_guard`'s known-gaps list.
 # A pre-existing foreign *dead* lock may now be reclaimed and allowed via
 # the guard's own eviction path (_lib_worktree_reclaim_dead_lock), which
 # this pre-check cannot see, since the lock file itself was never absent.
@@ -3098,7 +3379,9 @@ _lib_worktree_lock_absent() {
 
 # _lib_worktree_acquire_lock WORKTREE_ROOT WT_GIT_DIR MY_PID MY_SESSION_ID
 # Attempts the O_EXCL lock-file create in WT_GIT_DIR and, on success,
-# re-reads porcelain to confirm the write landed as MY_PID/MY_SESSION_ID.
+# re-reads porcelain to confirm the write landed as the caller's own lock.
+# That check compares the lock's session_id with MY_SESSION_ID when the lock
+# carries one, and its PID with MY_PID only when it carries none.
 # Prints nothing. Returns 0 when acquired and verified, 1 when the write
 # itself failed (contended -- caller diagnoses the current holder), 2 when
 # the write succeeded but the post-write reread could not confirm it
@@ -3155,6 +3438,33 @@ _lib_worktree_reclaim_dead_lock() {
   return 1
 }
 
+# _lib_worktree_lock_is_mine LOCKED_PID LOCKED_SESSION_ID MY_PID MY_SESSION_ID
+# Returns 0 when a parsed worktree lock belongs to the caller and 1 otherwise.
+# Prints nothing.
+# Return 1 is an ordinary outcome, so a caller under `set -e` calls this in a
+# conditional context.
+# LOCKED_PID must come from _lib_worktree_lock_pid's output, and an empty PID
+# argument is never the caller's, as defense in depth for direct callers.
+# A lock recording the caller's own PID is its own, because `/clear` starts a
+# new session_id in the same process.
+# A lock from another PID is the caller's own only when it records the
+# caller's session_id, which `claude --continue`/`--resume` keeps across a PID
+# change.
+# Such a lock stops being the caller's only when `_lib_config_dir` fails or
+# while `_lib_registered_live_sid` confirms its PID as a live registered
+# process, whatever session that process runs.
+# An old-format lock with no session_id matches by PID alone.
+_lib_worktree_lock_is_mine() {
+  local locked_pid="$1" locked_session_id="$2" my_pid="$3" my_session_id="$4"
+  local config_dir
+  [[ -n "$locked_pid" && -n "$my_pid" ]] || return 1
+  [[ "$locked_pid" == "$my_pid" ]] && return 0
+  [[ -n "$locked_session_id" && "$locked_session_id" == "$my_session_id" ]] || return 1
+  config_dir=$(_lib_config_dir) || return 1
+  _lib_registered_live_sid "$config_dir" "$locked_pid" >/dev/null && return 1
+  return 0
+}
+
 # _lib_worktree_collision_guard TARGET_PATH REPO_GIT_COMMON_DIR
 # Enforces that at most one live session holds write access to a given
 # linked worktree at a time. TARGET_PATH is any path inside the worktree to
@@ -3167,13 +3477,11 @@ _lib_worktree_reclaim_dead_lock() {
 # string's exact shape is documented at _lib_worktree_lock_pid's header, the
 # format's source of truth — not restated here.
 #
-# Self-recognition ("is this my own lock?") compares session_id, which
-# `claude --continue`/`--resume` keeps stable across the CLI process's PID
-# change, falling back to PID comparison only for an old-format lock that
-# carries no session_id (predates this fix, or was truncated mid-write).
+# Self-recognition ("is this my own lock?") is decided by
+# `_lib_worktree_lock_is_mine`, which states the rule.
 #
-# Read-only fast path: an already-self-held lock (from an earlier write this
-# session) returns 0 with no write attempt.
+# Read-only fast path: a lock `_lib_worktree_lock_is_mine` recognizes returns 0
+# with no write attempt.
 #
 # Otherwise acquires via an O_EXCL create (bash `noclobber`) against the
 # worktree's own `<git-dir>/locked` file, not `git worktree lock` -- git's
@@ -3181,8 +3489,9 @@ _lib_worktree_reclaim_dead_lock() {
 # .claude/plans/atomic-worktree-lock-acquisition.md). The write targets
 # git's own lock-file path and format, so `git worktree list --porcelain`/
 # `unlock`/`remove` all still read and act on it correctly. A successful
-# write is re-read via porcelain to confirm our own pid before returning 0,
-# fail-closed on mismatch. A failed write (contended) re-reads porcelain to
+# write is re-read via porcelain to confirm it landed as this caller's own
+# lock, using the exact check in `_lib_worktree_acquire_lock`, whose header
+# states the rule. A failed write (contended) re-reads porcelain to
 # diagnose the holder: a live holder denies; a dead holder gets one
 # claim-gated reclaim attempt (_lib_worktree_reclaim_dead_lock) before
 # falling back to today's manual-unlock deny. This function still never
@@ -3211,8 +3520,8 @@ _lib_worktree_reclaim_dead_lock() {
 #   mislead a user into running `git worktree unlock` and stripping their
 #   own freshly-written lock.
 # - A write killed mid-write (the 5s `_lib_capped` timeout) can leave a
-#   truncated `locked` file, misdiagnosed as a foreign manual lock instead
-#   of our own timed-out write.
+#   truncated `locked` file that `_lib_worktree_lock_pid` cannot parse,
+#   misdiagnosed as a foreign manual lock instead of our own timed-out write.
 # - O_EXCL/`noclobber` exclusivity is not guaranteed atomic on older
 #   NFS-mounted git-dirs, which would silently defeat this function's core
 #   guarantee -- out of scope for this threat model.
@@ -3230,12 +3539,78 @@ _lib_worktree_reclaim_dead_lock() {
 # - Its fixed component is 6 ordinary-path calls (3 rev-parse + self-check
 #   porcelain + write + confirm-porcelain) plus a reclaim delta of exactly
 #   +4 -- about 1.67x, not triple.
+# - A resumed session whose lock names its exited old PID takes the session_id
+#   match on every call, because nothing re-stamps the lock. An allowed call
+#   adds at most one extra capped `ps` in the steady state. It adds two when
+#   the old process exits between the guard's first read and its reread after
+#   a failed write. It adds none when that PID has no complete registry entry.
+#   A deny where that PID is a live registered process adds two, one per
+#   `_lib_worktree_lock_is_mine` call. The resolver walk stays excluded, as in
+#   the two bullets above.
 # - On a machine with neither `timeout` nor `gtimeout` on PATH,
 #   `_lib_capped_for`'s fallback runs every call uncapped (pre-existing
 #   gap).
 # - Narrows but does not eliminate the residual race described in
 #   docs/design-decisions.md §36 (a manual unlock racing this
 #   subprocess's own read-then-unlink).
+# - A resumed session is denied while the lock's old PID is a live Claude Code
+#   process, whatever session that process runs.
+#   - Shapes that cause it include:
+#     - The old process was cleared and still runs.
+#     - The old process still runs the same conversation.
+#     - The old process exited and an unrelated Claude Code process now holds
+#       its PID. This shape needs no `/clear` and no write by that process.
+#   - The deny clears once the old PID is gone from the process table. An exited
+#     but unreaped process is not gone from it.
+#   - `git worktree unlock <path>` also clears the deny. That unlock is safe
+#     only once no live process is working in the worktree.
+#   - The deny message "already in use by a live Claude Code session" is
+#     accurate for the first two shapes. It is inexact for the third, where it
+#     names a process that never held the worktree.
+# - A process whose PID equals the lock's PID is the lock's holder whatever
+#   session it runs. A new Claude Code process that reuses the PID of an
+#   exited holder can therefore write into the worktree, and can overwrite the
+#   uncommitted work of a resumed session already working there. The lock
+#   records no process start time, and `sessions/<pid>` is rewritten at every
+#   SessionStart. No single read of either tells a process that locked before
+#   `/clear` from an earlier process that held the same PID. Closing this
+#   takes a lock format that carries the holder's start time, a `sessions/*`
+#   scan (which would also deny a cleared process that holds the lock), or an
+#   elapsed-time comparison of the process against the lock file's age, whose
+#   availability in BSD `ps` is unverified.
+# - Two live Claude Code processes in different PID namespaces that share one
+#   worktree directory and hold the same PID each treat the other's lock as
+#   their own. The guard assumes one PID namespace per worktree.
+# - A lock from another PID that carries the caller's session_id is treated as
+#   the caller's when the registry read for the lock's PID cannot confirm a
+#   live process.
+#   - The read fails to confirm in every return-1 case
+#     `_lib_registered_live_sid`'s header lists, among them:
+#     - `ps` fails or times out.
+#     - `sessions/<pid>` is read between its own truncate and write.
+#     - The entry's recorded start time differs from the current
+#       `ps -o lstart=` output.
+#   - If that process is in fact live, the resumed session and the live holder
+#     can both write.
+#   - A holder whose recorded start time differs is denied on its own calls
+#     ("could not resolve this session's own process identity"). Its next
+#     SessionStart or SubagentStart rewrites its entry, which ends the denial.
+#     After the rewrite it passes by PID.
+# - A resumed session's worktree can be reclaimed while the resumed session
+#   works in it. A session_id match never re-stamps the lock, so the lock
+#   keeps naming the exited old PID. A third session's call then finds that
+#   PID dead and reclaims the lock.
+# - Two resumes of one conversation started after the old PID exited both pass
+#   the session_id match on every call.
+# - A resumed session that runs `/clear` carries a new session_id and the
+#   resume's own PID, which match the lock by neither. A dead old PID is then
+#   reclaimed.
+# - A resumed session that runs `/clear` while the lock's old PID is live but
+#   was not a registered Claude Code process is denied. The deny message is
+#   "already in use by a live Claude Code session". `git worktree unlock
+#   <path>` clears that deny once no live process is working in the worktree.
+# - The guard assumes one config dir per worktree, because the session_id
+#   match reads the registry under the caller's own `sessions/`.
 _lib_worktree_collision_guard() {
   local target_path="$1" repo_git_common_dir="$2"
   local worktree_root
@@ -3275,12 +3650,8 @@ _lib_worktree_collision_guard() {
   # compound list, which `-e` does not abort on.
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  if [ "$state" -eq 0 ]; then
-    if [ -n "$locked_session_id" ]; then
-      [ "$locked_session_id" = "$my_session_id" ] && return 0
-    elif [ "$locked_pid" = "$my_pid" ]; then
-      return 0
-    fi
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+    return 0
   fi
 
   local wt_git_dir
@@ -3308,18 +3679,9 @@ _lib_worktree_collision_guard() {
   }
   lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
   read -r locked_pid locked_session_id <<< "$lock_output"
-  # A concurrent self-race (e.g. two parallel subagents both writing into
-  # this worktree with no `isolation: worktree` between them, per this
-  # repo's own Agent Briefing) can land here after losing the lock attempt
-  # above to an earlier call from this SAME live pid — not a different
-  # session. Treat that identically to the first read's self-lock check
-  # rather than misreporting the caller's own pid as a foreign collision.
-  if [ "$state" -eq 0 ]; then
-    if [ -n "$locked_session_id" ]; then
-      [ "$locked_session_id" = "$my_session_id" ] && return 0
-    elif [ "$locked_pid" = "$my_pid" ]; then
-      return 0
-    fi
+  # Whichever lock the reread finds is judged by `_lib_worktree_lock_is_mine`, as at the first read.
+  if [ "$state" -eq 0 ] && _lib_worktree_lock_is_mine "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+    return 0
   fi
   case "$state" in
     1)
@@ -3345,6 +3707,212 @@ _lib_worktree_collision_guard() {
 
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
+
+# Longest plugin id, in bytes, that _lib_validate_plugin_id accepts. Far above any real `<name>@<marketplace>`; it bounds the validator's cost, since bash's `##*@` removal is super-linear in the marketplace half.
+_LIB_PLUGIN_ID_MAX_LENGTH=256
+
+# _lib_validate_plugin_id PLUGIN_ID
+# Validates PLUGIN_ID against the "<name>@<marketplace>" shape a plugin
+# install/enable argv sink accepts, before it ever reaches a command line.
+# Both halves must start with an alphanumeric character -- `[A-Za-z0-9._-]+`
+# alone would admit a leading `-`, `.`, or `_`, which would defeat the
+# anti-flag-injection purpose of validating at all. Rejects the reserved
+# pseudo-marketplace `npm`, which the CLI treats as an install form.
+# Rejects an id longer than _LIB_PLUGIN_ID_MAX_LENGTH bytes before any pattern
+# match or `##*@` expansion runs.
+# Returns 0 for a valid id, 1 otherwise. Prints nothing.
+# The body is a subshell that sets LC_ALL=C, so the length counts bytes and the
+# bracket ranges match only ASCII (see _lib_passes_path_char_allowlist for why
+# it avoids `local LC_ALL=C`).
+# Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so the two callers cannot diverge.
+_lib_validate_plugin_id() (
+  LC_ALL=C
+  plugin_id="$1"
+  [ "${#plugin_id}" -le "$_LIB_PLUGIN_ID_MAX_LENGTH" ] || exit 1
+  [[ "$plugin_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || exit 1
+  [ "${plugin_id##*@}" = "npm" ] && exit 1
+  exit 0
+)
+
+# _lib_file_exceeds_size_cap FILE
+# Returns 0 when FILE's byte size is known and exceeds
+# _LIB_SIZE_THRESHOLD_BYTES, 1 otherwise (including when the size cannot be
+# determined). Prints nothing.
+_lib_file_exceeds_size_cap() {
+  local file_path="$1" file_size
+  file_size=$(stat -c%s -- "$file_path" 2>/dev/null) \
+    || file_size=$(stat -f%z -- "$file_path" 2>/dev/null) \
+    || file_size=$(wc -c < "$file_path" 2>/dev/null | tr -d '[:space:]') \
+    || file_size=""
+  [ -n "$file_size" ] && [ "$file_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null
+}
+
+# Most true-valued `enabledPlugins` ids _lib_missing_plugin_ids processes. Far above any real repo; it bounds the per-id `grep` forks and the validation work that follows.
+_LIB_ENABLED_PLUGIN_IDS_MAX=100
+
+# _lib_read_guarded_settings SETTINGS_FILE
+# Prints SETTINGS_FILE's content after refusing a symlink, a non-regular file, and a file over _LIB_SIZE_THRESHOLD_BYTES.
+# An absent SETTINGS_FILE prints nothing and returns 0.
+# The read is capped in bytes and in time, so a path swapped to a FIFO or a device after the checks cannot hang or exhaust the caller.
+# Returns 1 and prints nothing when a guard refuses, the capped read fails, or the content holds a NUL byte.
+# A NUL byte is refused because command substitution would drop it silently, leaving content that differs from the file and that a strict JSON parser rejects.
+# The body is a subshell that sets LC_ALL=C, so the length check counts bytes.
+# A caller that hashes or reuses the settings bytes uses this output instead of re-reading the path.
+_lib_read_guarded_settings() (
+  LC_ALL=C
+  set -o pipefail
+  settings_file="$1"
+  [ ! -L "$settings_file" ] || exit 1
+  if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
+    exit 1
+  fi
+  [ -f "$settings_file" ] || exit 0
+  ! _lib_file_exceeds_size_cap "$settings_file" || exit 1
+  # tr maps each NUL to \001, which raw JSON cannot contain, so a NUL survives the substitution as a refusable byte.
+  content=$(_lib_capped head -c "$((_LIB_SIZE_THRESHOLD_BYTES + 1))" -- "$settings_file" 2>/dev/null | tr '\0' '\001') || exit 1
+  [ "${#content}" -le "$_LIB_SIZE_THRESHOLD_BYTES" ] || exit 1
+  [[ "$content" != *$'\001'* ]] || exit 1
+  printf '%s' "$content"
+)
+
+# _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in
+# SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object and
+# not opted out in the `settings.local.json` beside SETTINGS_FILE.
+# Reads SETTINGS_FILE through _lib_read_guarded_settings and delegates to
+# _lib_missing_plugin_ids_for_content, whose header defines the output, the
+# exit statuses, and the local-file shape policy.
+# Returns 1 as well when _lib_read_guarded_settings refuses SETTINGS_FILE.
+# A caller that also needs the settings bytes (to hash them) calls those two
+# functions itself, so both uses see the same bytes.
+_lib_missing_plugin_ids() {
+  local settings_content
+  settings_content=$(_lib_read_guarded_settings "$1") || return 1
+  _lib_missing_plugin_ids_for_content "$settings_content" "$1" "$2"
+}
+
+# _lib_missing_plugin_ids_for_content SETTINGS_CONTENT SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in SETTINGS_CONTENT that is absent from REGISTRY_FILE and not locally opted out.
+# SETTINGS_CONTENT is SETTINGS_FILE's content as _lib_read_guarded_settings
+# printed it. SETTINGS_FILE is used only to locate the sibling
+# `settings.local.json`.
+# Presence is name-keyed only -- an id counts as installed regardless of
+# which `projectPath` its registry entry(ies) carry.
+#
+# An id whose `enabledPlugins` value in that sibling `settings.local.json` is
+# exactly `false` is a per-repo local opt-out and is never reported. Any other
+# value for the id and an id absent from the local file leave the id eligible.
+# The local file is read only once an id is known to be missing from
+# REGISTRY_FILE, so a repo whose enabled ids are all installed never touches it.
+#
+# Local-file shape policy:
+# - Absent file, empty or whitespace-only file, top-level JSON `null`, an
+#   object with no `enabledPlugins`, and `enabledPlugins: null` mean no
+#   opt-outs.
+# - A symlink, a non-regular file, a file over _LIB_SIZE_THRESHOLD_BYTES, a
+#   file that is not valid JSON or that jq cannot open, and any valid JSON
+#   that is not an object (or
+#   `null`) at the top level, or whose `enabledPlugins` is neither absent,
+#   `null`, nor an object, are unreadable. Unreadable returns exit 3, because
+#   the file may hold an opt-out this function cannot see and reporting the id
+#   would override the user's explicit choice.
+#
+# REGISTRY_FILE gets no symlink-and-size guard. It is per-account CLI-managed
+# state written only by `claude plugin install`, not repo-controlled input.
+# A caller passing a REGISTRY_FILE derived from something less trusted than the
+# fixed per-account registry path must add its own guard.
+#
+# Every printed id is a raw `enabledPlugins` key, not validated against
+# _lib_validate_plugin_id's `<name>@<marketplace>` shape. A key that contains
+# a control character (a newline included) is dropped, so each printed line is
+# exactly one key. Every caller must revalidate an id against that function
+# before using it in a CLI argv or any other sink.
+#
+# Exit 0: success. Stdout holds each missing id, one per line (empty when
+# none -- including when SETTINGS_CONTENT is empty, is not valid JSON, or has
+# no true-valued enabledPlugins). A missing REGISTRY_FILE is treated as an
+# empty registry, matching install.sh's registry-read step ("proceeding as if
+# none are installed"), so every enabled id is reported missing.
+# Exit 1: SETTINGS_CONTENT holds more than one top-level JSON value, or holds
+# more than _LIB_ENABLED_PLUGIN_IDS_MAX non-empty true-valued `enabledPlugins`
+# ids. Stdout is empty. Both callers treat this identically to a missing
+# settings file (nothing to install), but it is a status distinguishable from
+# exit 0 so a caller or test can tell "skipped" apart from "genuinely nothing
+# missing".
+# Exit 2: REGISTRY_FILE exists but is unparseable JSON, holds more than one
+# top-level value, or is not an object whose `version` is the number 2 and
+# whose `plugins` is an object -- fail closed, distinct from a missing
+# REGISTRY_FILE (exit 0, empty registry). Stdout is empty.
+# Exit 3: at least one id is missing from the registry and the sibling
+# `settings.local.json` is unreadable per the shape policy above, so an
+# opt-out in it cannot be ruled out. Stdout is empty. Callers fail closed.
+# Precedence: exit 1 for multiple top-level values, then exit 2, then exit 1 for the id count, then exit 3.
+# Caveats:
+# - The enabled-ids filter needs jq 1.6 or later for `halt_error`; on jq 1.5 it fails to compile, which reads as no ids.
+# - jq also accepts the literals `nan` and `Infinity`, which a strict JSON parser rejects, so such content can yield ids Claude Code would not read.
+_lib_missing_plugin_ids_for_content() {
+  local settings_content="$1" settings_file="$2" registry_file="$3"
+
+  # jq exit 7 is this filter's own signal for a second top-level value; every other jq failure leaves no ids.
+  local enabled_ids="" enabled_ids_status=0
+  enabled_ids=$(_lib_jq -r -s '
+    if length > 1 then ("multiple top-level JSON values" | halt_error(7))
+    else (.[0] // {}) | (.enabledPlugins // {}) | to_entries[]
+      | select(.value == true) | .key | select(test("\\p{Cc}") | not)
+    end' <<<"$settings_content" 2>/dev/null) || enabled_ids_status=$?
+  [ "$enabled_ids_status" -ne 7 ] || return 1
+  [ "$enabled_ids_status" -eq 0 ] || enabled_ids=""
+  [ -z "$enabled_ids" ] && return 0
+
+  local registry_ids=""
+  if [ -f "$registry_file" ]; then
+    registry_ids=$(_lib_jq -r -s '
+      if length == 1 and (.[0] | type == "object" and .version == 2 and (.plugins | type) == "object")
+      then .[0].plugins | keys[]
+      else error("registry is not a version-2 object with an object of plugins")
+      end' -- "$registry_file" 2>/dev/null) || return 2
+  fi
+
+  # Here-strings, not `printf | grep -q`: under pipefail a grep that exits
+  # early on a match SIGPIPEs the printf and turns a hit into a pipeline failure.
+  local id uninstalled_ids="" enabled_id_count=0
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    enabled_id_count=$((enabled_id_count + 1))
+    [ "$enabled_id_count" -gt "$_LIB_ENABLED_PLUGIN_IDS_MAX" ] && return 1
+    if ! grep -qFx -- "$id" <<<"$registry_ids"; then
+      uninstalled_ids+="$id"$'\n'
+    fi
+  done <<< "$enabled_ids"
+  [ -z "$uninstalled_ids" ] && return 0
+
+  local local_settings_file
+  local_settings_file="$(dirname -- "$settings_file")/settings.local.json"
+  local locally_disabled_ids=""
+  if [ -e "$local_settings_file" ] || [ -L "$local_settings_file" ]; then
+    if [ -L "$local_settings_file" ] || [ ! -f "$local_settings_file" ] \
+      || _lib_file_exceeds_size_cap "$local_settings_file"; then
+      return 3
+    fi
+    # `// {}` is avoided: it would also swallow an `enabledPlugins` of `false`.
+    locally_disabled_ids=$(_lib_jq -r '
+      if type == "null" then empty
+      elif type != "object" then error("settings.local.json is not an object")
+      else .enabledPlugins
+        | if type == "null" then empty
+          elif type != "object" then error("enabledPlugins is not an object")
+          else to_entries[] | select(.value == false) | .key
+          end
+      end' -- "$local_settings_file" 2>/dev/null) || return 3
+  fi
+
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! grep -qFx -- "$id" <<<"$locally_disabled_ids"; then
+      printf '%s\n' "$id"
+    fi
+  done <<< "$uninstalled_ids"
+}
 
 # _lib_config_lines FILE
 # Prints each non-blank, non-comment line of a per-user config file
@@ -3962,8 +4530,7 @@ _lib_review_only_agents() {
 # crash.
 # An unset or empty array expanded via "${arr[@]}" under `set -u` flattens to
 # zero ITEMs on the supported bash floor, so the call site does not abort.
-# Shared by the three membership scans below, each over its own derived
-# array.
+# Shared by the membership scans below, each over its own array.
 _lib_list_contains() {
   local value="$1"
   shift
@@ -3984,17 +4551,38 @@ _lib_is_review_only_agent() {
   _lib_list_contains "$agent_type" "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
+# Plan-writer agents: identities that may edit plan files and nothing else.
+# Sourced by deny-plan-writer-off-plan-writes.sh. Closed enumeration, same
+# discipline as _LIB_REVIEW_ONLY_AGENTS above.
+_LIB_PLAN_WRITER_AGENTS=(
+  plan-architect
+)
+_lib_plan_writer_agents() {
+  printf '%s\n' "${_LIB_PLAN_WRITER_AGENTS[@]}"
+}
+
+# _lib_is_plan_writer_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_PLAN_WRITER_AGENTS. Empty input (agent_type absent from the
+# PreToolUse payload, e.g. the main session) never matches.
+_lib_is_plan_writer_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  _lib_list_contains "$agent_type" "${_LIB_PLAN_WRITER_AGENTS[@]}"
+}
+
 # Agent identities that may never release a review gate — every review-only
-# persona above, plus the code-writer implementer. Sourced by
-# enforce-marker-script-shape.sh to deny `marker.sh write` and
+# persona above, every plan-writer agent, plus the code-writer implementer.
+# Sourced by enforce-marker-script-shape.sh to deny `marker.sh write` and
 # `marker.sh activate` from these callers.
 #
 # The boundary rests on two different grounds, and conflating them misleads
 # whoever adds the next entry:
-#   - Every file-backed identity here (code-writer, the staff-* reviewers,
-#     ciso-reviewer, skill-fidelity-reviewer, and — as of the Explore.md
-#     same-named override — Explore) declares no `Skill` tool in its
-#     agents/*.md frontmatter, so it cannot invoke a review skill at all.
+#   - Every file-backed identity here (code-writer, plan-architect, the
+#     staff-* reviewers, ciso-reviewer, skill-fidelity-reviewer, and — as of
+#     the Explore.md same-named override — Explore) declares no `Skill` tool
+#     in its agents/*.md frontmatter, so it cannot invoke a review skill at
+#     all.
 #     test_agent_roster.py asserts that mechanically, so granting `Skill` to
 #     one of them fails a test rather than silently widening what a subagent
 #     can release.
@@ -4007,15 +4595,17 @@ _lib_is_review_only_agent() {
 # Either way a marker write from one of these identities is unearned rather
 # than merely unusual, which is what the deny turns on.
 #
-# Derived from _LIB_REVIEW_ONLY_AGENTS rather than re-enumerated, so a persona
-# added there is covered here automatically. `general-purpose` and `claude`
-# carry the full tool set and can genuinely run a review skill, so they are
-# deliberately absent — that is the documented delegation escape hatch.
+# Derived from _LIB_REVIEW_ONLY_AGENTS and _LIB_PLAN_WRITER_AGENTS rather than
+# re-enumerated, so an identity added to either is covered here automatically.
+# `general-purpose` and `claude` carry the full tool set and can genuinely run
+# a review skill, so they are deliberately absent — that is the documented
+# delegation escape hatch.
 # `review-orchestrator` is deliberately absent too, because it runs
 # /code-review itself and writes that skill's marker
 # (docs/design-decisions/review-orchestrator-gate-release-decoupling.md).
 _LIB_NO_GATE_RELEASE_AGENTS=(
   "${_LIB_REVIEW_ONLY_AGENTS[@]}"
+  "${_LIB_PLAN_WRITER_AGENTS[@]}"
   code-writer
 )
 _lib_no_gate_release_agents() {
@@ -4578,8 +5168,8 @@ _lib_resume_context_tmpdir_root() {
 # caught by `[ -O ]` evaluating false, since forging EUID ownership needs
 # privilege an attacker doesn't have. The different-owner pre-creation case
 # this closes can't be reproduced in single-uid CI -- see
-# TestLibResumeContextIndexDir's docstring in test_lib.py for the full
-# POSIX argument, recorded there rather than as an executable test.
+# TestLibResumeContextIndexDir's docstring in test_lib_resume_context.py for
+# the full POSIX argument, recorded there rather than as an executable test.
 # Also returns 1 if the tmpdir root is other- or group-writable without the
 # sticky bit -- see the guard below for why.
 _lib_resume_context_index_dir() {
@@ -4610,7 +5200,7 @@ _lib_resume_context_index_dir() {
   # local user racing our directory entry, now that the guard above has
   # confirmed $tmpdir_root is not other- or group-writable without the
   # sticky bit.
-  chmod 700 -- "$dir" 2>/dev/null
+  chmod -- 700 "$dir" 2>/dev/null
   printf '%s\n' "$dir"
 }
 
@@ -4626,6 +5216,248 @@ _lib_resume_context_index_dir() {
 _lib_print_recovery_hint() {
   local dest="$1"
   printf 'reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+}
+
+# _lib_linked_worktree_root DIR
+# Prints the root of the linked worktree containing DIR. Three outcomes:
+#   - exit 0, root printed: DIR is in a linked worktree and the root passes
+#     _lib_passes_path_char_allowlist.
+#   - exit 0, empty stdout: git answered "not linked" -- the git dir equals the
+#     common dir, or `rev-parse --git-dir` exited 128 (not a repository).
+#   - exit 1, empty stdout: unknown -- an empty DIR (no git runs), any other git
+#     status (a fired cap, a missing git, a later call failing), a git dir or
+#     common dir that is not a single-line absolute path, or a linked root that
+#     fails the allowlist.
+# 128 is also git's status for other fatal errors, so each of these reads as
+# "not linked": a dubious-ownership refusal, a DIR that no longer exists, and a
+# linked worktree whose gitdir entry was pruned. A caller then loads a file that
+# names no worktree into such a session.
+# Callers capture it as `if root=$(...); then ...; else ...; fi`, which is safe
+# under `set -euo pipefail`.
+_lib_linked_worktree_root() {
+  local dir="${1-}" git_dir_status=0 absolute_git_dir common_git_dir root
+  [ -n "$dir" ] || return 1
+  _lib_capped git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || git_dir_status=$?
+  case "$git_dir_status" in
+    0) ;;
+    128) return 0 ;;
+    *) return 1 ;;
+  esac
+  absolute_git_dir=$(_lib_capped git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  common_git_dir=$(_lib_capped git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case "$absolute_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$common_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$absolute_git_dir$common_git_dir" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$absolute_git_dir" != "$common_git_dir" ] || return 0
+  root=$(_lib_capped git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  _lib_passes_path_char_allowlist "$root" || return 1
+  printf '%s' "$root"
+}
+
+# _lib_continuity_file_resume_cwd FILE
+# Prints what FILE's own `resume-context` commands say about --cwd. An own
+# command is a line holding a `resume-context` or `*/resume-context` word and a
+# word naming FILE's basename anywhere (handoff §7 and brief §7.5 are the last
+# numbered sections). On an own line, a `--cwd TOKEN` must be followed directly
+# by that basename, or the line's token is unusable. Three answers:
+#   - nothing: absent -- FILE holds no `--cwd` text anywhere, so it names no
+#     worktree. This is the only answer that rests on a whole-file search.
+#   - a path: usable -- FILE holds `--cwd` text and the scanned tail has own
+#     commands whose --cwd all name that one absolute path, with backticks and
+#     one trailing `/` stripped and the allowlist satisfied.
+#   - $_LIB_RESUME_CWD_UNUSABLE: anything else -- an own --cwd that cannot be
+#     used (`--cwd=/x`, a missing, quoted, relative, `~`, non-allowlisted or
+#     space-split token), two own --cwd tokens that disagree, FILE holds
+#     `--cwd` text but the tail has no own command carrying one, or FILE cannot
+#     be read or searched.
+# An own command without --cwd does not override an own command with one. A
+# line ending in a backslash joins the next non-empty line, so a blank line does not end
+# the command as it would in a shell; a trailing CR is ignored.
+# Only lines containing `resume-context` within the last
+# _LIB_RESUME_CWD_TAIL_BYTES of FILE are tokenized, so tokenizing is bounded.
+# The whole-file `--cwd` search is linear in the file's size.
+# Always exits 0. The body is a subshell so `set -f` (no globbing of the words
+# read from FILE) does not leak into the caller.
+_LIB_RESUME_CWD_UNUSABLE="unknown"
+_LIB_RESUME_CWD_TAIL_BYTES=8192
+_LIB_RESUME_CWD_LINE_TOKEN=""
+_LIB_RESUME_CWD_NORMALIZED=""
+_lib_continuity_file_resume_cwd() (
+  set +e
+  set -f
+  IFS=$' \t\n'
+  local file="${1-}" own_basename tail_text raw_line line carried="" backslash=$'\\' cwd_search_status=0
+  local file_token="" file_is_unusable=0
+  [ -f "$file" ] || { printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0; }
+  grep -q -F -e --cwd -- "$file" 2>/dev/null || cwd_search_status=$?
+  case "$cwd_search_status" in
+    0) ;;
+    1) exit 0 ;;
+    *) printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0 ;;
+  esac
+  own_basename="${file##*/}"
+  # Byte semantics, so ${#tail_text} counts bytes against _LIB_RESUME_CWD_TAIL_BYTES.
+  LC_ALL=C
+  # One byte beyond the window shows the file is longer; the `x` sentinel keeps trailing newlines.
+  # The group's `2>/dev/null` silences bash's "ignored null byte in input" warning for a NUL-bearing file.
+  { tail_text=$(tail -c "$((_LIB_RESUME_CWD_TAIL_BYTES + 1))" < "$file" 2>/dev/null && printf x); } 2>/dev/null || { printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"; exit 0; }
+  tail_text="${tail_text%x}"
+  if [ "${#tail_text}" -gt "$_LIB_RESUME_CWD_TAIL_BYTES" ]; then
+    # The first line of the window may be cut mid-line, so it is dropped.
+    case "$tail_text" in
+      *$'\n'*) tail_text="${tail_text#*$'\n'}" ;;
+      *) tail_text="" ;;
+    esac
+  fi
+  # Splitting in memory avoids the per-byte reads of a `read` loop; the trailing
+  # empty argument flushes a final backslash continuation.
+  IFS=$'\n'
+  # shellcheck disable=SC2086 # splitting on newlines is intended; globbing is off via set -f.
+  set -- $tail_text ""
+  IFS=$' \t\n'
+  for raw_line; do
+    line="$carried${raw_line%$'\r'}"
+    carried=""
+    case "$line" in
+      *\\) carried="${line%"$backslash"} "; continue ;;
+      *resume-context*) ;;
+      *) continue ;;
+    esac
+    _lib_resume_cwd_scan_line "$line" "$own_basename" || continue
+    case "$_LIB_RESUME_CWD_LINE_TOKEN" in
+      "") ;;
+      "$_LIB_RESUME_CWD_UNUSABLE") file_is_unusable=1 ;;
+      *)
+        if [ -z "$file_token" ]; then
+          file_token="$_LIB_RESUME_CWD_LINE_TOKEN"
+        elif [ "$file_token" != "$_LIB_RESUME_CWD_LINE_TOKEN" ]; then
+          file_is_unusable=1
+        fi
+        ;;
+    esac
+  done
+  if [ "$file_is_unusable" -eq 1 ] || [ -z "$file_token" ]; then
+    printf '%s' "$_LIB_RESUME_CWD_UNUSABLE"
+  else
+    printf '%s' "$file_token"
+  fi
+)
+
+# _lib_resume_cwd_scan_line LINE OWN_BASENAME
+# Exit 0 when LINE is an own command of OWN_BASENAME's file (see
+# _lib_continuity_file_resume_cwd), exit 1 otherwise. On exit 0 sets
+# _LIB_RESUME_CWD_LINE_TOKEN to "" (no --cwd on the line), to the one usable
+# token, or to $_LIB_RESUME_CWD_UNUSABLE. An accepted --cwd token must be
+# followed directly by OWN_BASENAME, else the line is unusable. Relies on the
+# caller's `set -f` and IFS.
+_lib_resume_cwd_scan_line() {
+  local line="$1" own_basename="$2" word trimmed backtick='`' previous_was_cwd_flag=0 word_is_own_file
+  local expects_own_file=0
+  local is_resume_command=0 names_own_file=0 line_token="" line_is_unusable=0
+  # shellcheck disable=SC2086 # word splitting is the tokenizer here; globbing is off via the caller's set -f.
+  for word in $line; do
+    word="${word//$backtick/}"
+    trimmed="$word"
+    while :; do
+      case "$trimmed" in
+        '('* | '"'* | "'"*) trimmed="${trimmed#?}" ;;
+        *'.' | *',' | *';' | *':' | *')' | *'"' | *"'") trimmed="${trimmed%?}" ;;
+        *) break ;;
+      esac
+    done
+    case "$trimmed" in
+      resume-context | */resume-context) is_resume_command=1 ;;
+    esac
+    word_is_own_file=0
+    case "$trimmed" in
+      "$own_basename" | */"$own_basename") word_is_own_file=1; names_own_file=1 ;;
+    esac
+    if [ "$expects_own_file" -eq 1 ]; then
+      expects_own_file=0
+      [ "$word_is_own_file" -eq 1 ] || line_is_unusable=1
+    fi
+    if [ "$previous_was_cwd_flag" -eq 1 ]; then
+      previous_was_cwd_flag=0
+      if [ "$word_is_own_file" -eq 0 ] && _lib_normalize_resume_cwd_token "$word"; then
+        expects_own_file=1
+        if [ -z "$line_token" ]; then
+          line_token="$_LIB_RESUME_CWD_NORMALIZED"
+        elif [ "$line_token" != "$_LIB_RESUME_CWD_NORMALIZED" ]; then
+          line_is_unusable=1
+        fi
+      else
+        line_is_unusable=1
+      fi
+      continue
+    fi
+    case "$word" in
+      --cwd) previous_was_cwd_flag=1 ;;
+      --cwd=*) line_is_unusable=1 ;;
+    esac
+  done
+  [ "$previous_was_cwd_flag" -eq 0 ] && [ "$expects_own_file" -eq 0 ] || line_is_unusable=1
+  [ "$is_resume_command" -eq 1 ] && [ "$names_own_file" -eq 1 ] || return 1
+  if [ "$line_is_unusable" -eq 1 ]; then
+    _LIB_RESUME_CWD_LINE_TOKEN="$_LIB_RESUME_CWD_UNUSABLE"
+  else
+    _LIB_RESUME_CWD_LINE_TOKEN="$line_token"
+  fi
+}
+
+# _lib_normalize_resume_cwd_token TOKEN
+# Sets _LIB_RESUME_CWD_NORMALIZED to TOKEN minus one trailing `/` and exits 0
+# when it is an absolute path passing _lib_passes_path_char_allowlist; exits 1
+# otherwise. Sets a global instead of printing so no command substitution forks.
+_lib_normalize_resume_cwd_token() {
+  local token="${1%/}"
+  _LIB_RESUME_CWD_NORMALIZED=""
+  case "$token" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  _lib_passes_path_char_allowlist "$token" || return 1
+  _LIB_RESUME_CWD_NORMALIZED="$token"
+}
+
+# _lib_resume_context_verdict STATE ROOT FILE_TARGET
+# Prints `load` when a continuity file belongs to this session's worktree and
+# `shell` when it must be resumed through the shell `resume-context` instead.
+# STATE is `linked`, `not-linked` or `unknown` (the three outcomes of
+# _lib_linked_worktree_root). ROOT is the linked root, FILE_TARGET the file's
+# own --cwd (_lib_continuity_file_resume_cwd, including its
+# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root), both already
+# canonicalized.
+#   - linked: load only when FILE_TARGET equals ROOT.
+#   - not-linked: load only when FILE_TARGET is empty.
+#   - unknown, or any other STATE: shell.
+# Always exits 0.
+_lib_resume_context_verdict() {
+  local state="${1-}" root="${2-}" file_target="${3-}"
+  case "$state" in
+    linked)
+      if [ -n "$root" ] && [ "$file_target" = "$root" ]; then
+        printf 'load\n'
+      else
+        printf 'shell\n'
+      fi
+      ;;
+    not-linked)
+      if [ -z "$file_target" ]; then
+        printf 'load\n'
+      else
+        printf 'shell\n'
+      fi
+      ;;
+    *) printf 'shell\n' ;;
+  esac
 }
 
 # _lib_sanitize_for_terminal VALUE

@@ -6,8 +6,8 @@ Three concerns:
   - Bidirectional coverage of the shim itself: an integer duration scales
     correctly, a rejected $1 passes through unscaled and records nothing,
     and the started/completed logs discriminate a kill from a completion.
-  - A source-scanning tripwire for the five test_lib.py tests that must
-    never receive this shim (TestProtectedProbeOrderTestsAreUnscaled).
+  - A source-scanning tripwire for the five tests in test_lib.py and test_lib_capped_for.py
+    that must never receive this shim (TestProtectedProbeOrderTestsAreUnscaled).
   - A committed negative control for the discriminator itself
     (TestCapMarkersDetectNonFiringCap).
 """
@@ -35,8 +35,8 @@ from helpers import (
 
 # Imported as a module, not by name: binding these test_*-named functions
 # directly at this module's scope would make pytest collect them a second
-# time under this file's own node-ID, alongside test_lib.py's.
-from . import test_lib
+# time under this file's own node-ID, alongside test_lib.py's and test_lib_capped_for.py's.
+from . import test_lib, test_lib_capped_for
 from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, DIFF_CALL_PREDICATE, GHP_TOKEN, _stage
 
 
@@ -287,10 +287,10 @@ class TestProtectedProbeOrderTestsAreUnscaled:
 
     _PROTECTED_FUNCTIONS = (
         test_lib.test_timeout_absent_fallback_valid_payload_returns_ok,
-        test_lib.test_lib_capped_for_enforces_cap_when_timeout_present,
-        test_lib.test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent,
-        test_lib.test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present,
-        test_lib.test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present,
+        test_lib_capped_for.test_lib_capped_for_enforces_cap_when_timeout_present,
+        test_lib_capped_for.test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent,
+        test_lib_capped_for.test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present,
+        test_lib_capped_for.test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present,
     )
 
     @pytest.mark.parametrize("fn", _PROTECTED_FUNCTIONS, ids=lambda fn: fn.__name__)

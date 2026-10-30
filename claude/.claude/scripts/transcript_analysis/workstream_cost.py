@@ -17,12 +17,14 @@ from transcript_analysis import cost, gh_cli, render, scope
 
 
 def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
-    """Prints workstream-cost's "Sessions per branch" mean/median line and
-    "Startup-burn dollars" share line, computed from
-    _compute_workstream_dollars's own per-branch result."""
+    """Prints workstream-cost's "Sessions per branch" mean/median line,
+    "Startup-burn dollars" share line, and -- only when nonzero, mirroring
+    the unpriced-turns caveat other cost commands print -- a malformed-usage
+    caveat, all computed from _compute_workstream_dollars's own per-branch result."""
     session_counts = [w["session_count"] for w in workstream.values()]
     total_dollars = sum(w["total_dollars"] for w in workstream.values())
     total_startup_burn = sum(w["startup_burn_dollars"] for w in workstream.values())
+    total_invalid_usage_records = sum(w["invalid_usage_records"] for w in workstream.values())
 
     print(
         f"Sessions per branch -- mean: {statistics.mean(session_counts):.2f},"
@@ -32,6 +34,8 @@ def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
         f"Startup-burn dollars: {render._fmt_usd(total_startup_burn)} of {render._fmt_usd(total_dollars)} total branch dollars"
         f" ({render._pct_of(total_startup_burn, total_dollars)})"
     )
+    if total_invalid_usage_records:
+        print(f"  ({total_invalid_usage_records:,} usage-bearing turns excluded for malformed usage, across every branch)")
 
 
 def cmd_workstream_cost(args: argparse.Namespace) -> None:

@@ -205,7 +205,7 @@ class TestGlobalFlags:
         assert parse("git commit -C HEAD") == [rec("GIT", "commit", "", "NONE", "START", "0")]
 
     def test_dash_c_inline_config_consumes_value(self):
-        assert parse("git -c user.email=t@t.com log") == [rec("GIT", "log", "", "NONE", "START", "0")]
+        assert parse("git -c user.email=t@example.invalid log") == [rec("GIT", "log", "", "NONE", "START", "0")]
 
     def test_dash_dash_git_dir_consumes_value(self):
         assert parse("git --git-dir /tmp/.git log") == [rec("GIT", "log", "", "NONE", "START", "0")]

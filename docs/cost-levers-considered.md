@@ -330,6 +330,18 @@ main-conversation bucket's TTL directly in `settings.json` — is unaffected.
 | `CLAUDE.md` guidance telling the agent to `/clear` at a phase boundary and `/compact` before idling (that plan's Phase 4) | Rejected, written then dropped | `/clear` and `/compact` are harness built-in CLI commands with no tool binding, so `CLAUDE.md`'s only reader cannot execute either. The `/clear` half also re-proposed blanket reset-at-a-boundary advice already rejected as mispriced above (`handoff-boundary-decision-rule.md`); the `/compact` half contradicted that plan's own `[engineer-verified]` compaction stance. Full rationale in that plan's Phase 4 entry. |
 | The idle-gap cache rebuild | Named, not solved | Two events, ~910K tokens at cache-write rates, ~$9 of PR #609 as recorded by the source plan. The prompt-cache TTL cannot exceed 1 hour by any exposed setting, so an idle gap past it forces a full cache-write rebuild. The rejected Phase 4 guidance was the only thing aimed at it; nothing replaced it, and nothing agent-side can, because only the operator decides when a session sits idle. |
 
+**2026-10-18 follow-up:** the `/compact` row above is narrowed, not reversed.
+The handoff nudge now recommends `/compact` under the criteria in
+[`handoff-nudge.md`](handoff-nudge.md) "Compaction as an alternative to
+/handoff", and otherwise recommends `/handoff`. That narrows the compaction
+stance the row cites, which `.claude/plans/token-cost-reduction.md` records as
+"Compaction is not an acceptable mechanism in this workflow", to a conditional
+one. `CLAUDE.md` guidance telling the agent to
+`/compact` stays rejected for the reason the row gives: the agent has no tool
+binding for either command, so only the nudge's text to the user can act on it.
+The cost of a `/compact` against a handoff plus a resume is unmeasured, so
+neither nudge message claims one is cheaper.
+
 ## From `handoff-nudge-cap-recalibration.md` — "Re-ground the handoff-nudge absolute cap against cost-per-work, not nudge frequency" (2026-08-22)
 
 | Lever | Verdict | Measured reason |
@@ -696,3 +708,66 @@ Reopening incremental credit would need:
 - Line headroom in `code-review/SKILL.md`. See `docs/design-decisions/ready-for-review-fix-loop-convergence.md` § "The `code-review/SKILL.md` line cap".
 
 No code, skill, hook, or test change ships from this investigation.
+
+**2026-10-23 follow-up:** the narrowed-pass row's question of where findings sit relative to a fix is re-read with exact line overlap in the `fix-delta-churn-measure.md` section below, which states whether that reading points the same way. The narrowed-pass row's verdict stands.
+
+## From `fix-delta-churn-measure.md` — "Measure whether cumulative-pass findings land on lines the previous fix wrote"
+
+The question is whether findings on `ready-for-review`'s cumulative re-passes after a fix land on lines that fix wrote more often than the fix's share of the branch's added prose lines predicts, and so whether steering fixes away from adding prose would cut review churn.
+
+The evidence is a one-off scan of locally retained `agent-reviews/` findings files and each branch's git history. Its method was committed before it ran. It is not kept as a script. Two consecutive cumulative passes bracket a fix, and the later pass's cited line is inside the fix when `git blame` attributes the line to a commit between them. A reading's baseline is the fix's share of the branch's added prose lines. Prose means documentation, comments, and docstrings, skill and agent bodies included. Uncertain findings are those the scan could not place, those it could not classify as prose or code, and inside findings that may re-raise a line an earlier pass cited. Each reading was computed twice. The first time, every uncertain finding took the value that works against inside findings exceeding their baseline. The second time, every uncertain finding took the value that works for it. The engineer decided from these readings and the directional biases listed under the limits below. The Reason cell quotes the label the engineer selected from labels fixed before the run. This section names no account, branch, or time window.
+
+Because the scan is ad hoc rather than a scope-refusing subcommand, this section follows `docs/private-project-redaction.md` § "Publishing a tooling measurement". It names no figure from the scan and no share-like descriptor, and records which way each reading pointed.
+
+The `review-loop-cost-levers.md` section above placed findings by token match for its narrowed-pass row. Counting inside against outside findings as placed, without reassigning uncertain ones, points the same way as that row. That count is not an exact re-read, because it leaves `comment-discipline-reviewer` out. This section does not re-decide that row.
+
+Limits of the scan:
+
+- The sample is non-random. Findings files survive only in worktrees not yet removed. Files were read only where their findings carry `## R<n> [<severity>] <angle>` headings, the form the reviewer agents emit. A pass counted as cumulative only when it left a disposition record.
+- Findings on lines the branch did not add count against the fix, while the baseline covers added lines alone. That leans the comparison toward not pursuing.
+- A tie leans the comparison toward not pursuing, because findings landing inside at exactly the baseline do not exceed it.
+- A finding counts as inside when a cited line is inside, while the baseline is the chance for a single line. That leans the comparison toward pursuing.
+- Commits between two passes can include work beyond the fix, which counts as inside.
+- Counting uncertain findings both ways bounds placement uncertainty at the finding and pass level, not at the branch level, and not sampling error.
+- `comment-discipline-reviewer` sits outside the comparison, because its findings inside a fix are a first read of that text.
+- `skill-fidelity-reviewer`'s findings are excluded from the comparison, because the scan could not place them.
+- A citation with no path took the path of the finding's previous citation. That resolves the wrong file when a reviewer names the file in prose and then gives a bare line number.
+
+In the table below, an outside finding sits on a line the fix did not write. A ripple finding is an outside finding on a line the fix reached without editing it. An omission is an outside finding on a pre-existing issue a reviewer noticed on a line that predates the fix.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Steering review fixes away from fix-written churn, by a `code-writer` rule to prefer deleting or rewording prose over adding it, or by a change to one reviewer's suggested-fix wording | Deferred for more data (measured) | - At the finding level, the direction turned on how uncertain findings were counted.<br>- At the pass level, the direction turned on how uncertain findings were counted.<br>- At the branch level, the direction turned on how uncertain findings were counted.<br>- Inside counts findings on lines a commit between the passes wrote.<br>- Outside mixes variance, ripple findings, and omissions anchored on older lines.<br>- The engineer selected "More data: the staged-round measurement", so that measurement is the next step. |
+
+Reopening would need:
+
+- A record of which finding's suggested fix wrote each line, since one `code-writer` addresses all the findings a pass sends it.
+- A staged-round measurement that reads fix-written lines from `code-writer` edit calls, since repeated staged rounds on one commit are never committed apart.
+- A per-pass record of the commit each cumulative pass reviewed.
+- Citations that carry repo-relative paths.
+
+No code, skill, hook, or test change ships from this investigation.
+
+**2026-10-24 follow-up:** the suggested-fix-wording form of the lever above is adopted by judgment, not by measurement; the rule lives in `code-review/SKILL.md` § "Output format". The `code-writer` form stays deferred.
+
+## From `haiku-routing-surfaces.md` — "Haiku routing surfaces: measure Haiku's locate recall, then pin and route the locate lane"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Pin `Explore` to `model: haiku`, paired with the routing fix that would send `general-purpose`'s locate-shaped dispatches to it instead | Declined on measurement, 2026-10-15 (gate `FAIL`) | Stratified recall-and-precision gate (`evals/measure_explore_recall.py`, K=5 samples per case per model, 130 scored samples, $47.81): Stratum A (grep-derivable search) tied at 0.995 Haiku vs. 1.000 Sonnet, within the gate's 5-point recall term. Stratum B (semantic search) trailed by ~4 points, 0.917 vs. 0.953, also within that term. Precision failed: 0.931 Haiku (46 false positives / 670 returned items) against the 0.98 floor, versus Sonnet's 0.986 (9 / 653). 21 of Haiku's 46 false positives, and the gate's only per-case recall cliff (one case fell 20 points), trace to a single semantic-search sample whose every returned path dropped its leading directory segment. Sonnet had no equivalent failure in the same 25 samples. |
+| Route locate-shaped dispatches to `Explore` instead of `general-purpose` (the routing half of the same change) | Named, not solved — stands regardless of the pin's own verdict | A dispatch-shape scan of this repository's `general-purpose`/`fork`/`Explore` sidecars over the 60 days to 2026-10-15 found 24 of the 25 locate-shaped dispatches went to `general-purpose` or `fork`, only 1 to `Explore`, even though `subagent-delegation/SKILL.md`'s own rule already assigns locate search to `Explore`. Two other shipped instructions steer dispatchers away from it regardless of any pin. The global `CLAUDE.md`'s Model & Effort Routing rule tells every dispatcher to pass `model: sonnet` on every dispatch, including pinned ones. The same section's `general-purpose` dispatch rule names it as the routine discovery-and-research target. |
+
+**What held, so a future reader doesn't re-measure it.** Grep-shaped search is a recall tie between the two models. Semantic search trails by a measured ~4 points, inside the gate's own 5-point tolerance. The term that failed the gate is precision and per-sample robustness, not recall.
+
+**Cost bound that sized the lever.** A `subagent-mix` scan of this repository's sessions over the 60 days to 2026-10-15 (`TRANSCRIPT_CONFIG_DIRS_FILE=/dev/null python3 claude/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --since 60d --reprice-as claude-haiku-4-5-20251001`) put the `general-purpose`/`fork` lane at 103 runs, $138.88 actual, with `Explore` itself at 0 priced runs in that table. The same dispatch-shape scan put the LOCATE bucket at roughly 15% of that lane's token volume, bounding the saving a Haiku pin could unlock at roughly $21 actual, or $10 saved per 60 days at Haiku rates. That bound is small enough that the lever was pursued as a knowledge investment (whether the locate-and-report task shape can run on Haiku at all), not a cost play. These transcript-derived figures — the `subagent-mix` lane totals above and the 24-of-25 locate-shaped dispatch-shape classification above — are published under the owner's authorization of 2026-10-16 (UTC), given for this exact command and these exact figures. That authorization was required because `subagent-mix` carries no built-in scope refusal and the dispatch-shape count is a manual sidecar classification rather than a command's own output.
+
+**Instrument note.** The first full K=5 run ($63.52) was a calibration, not the scored result: (1) the `symbol` field was undefined; (2) top-level code had no alias canonicalization (`main` vs. `top-level-main`); (3) a 90-second per-dispatch timeout killed the heavier Stratum B samples mid-search. All three were fixed and the gate re-run in full; only the corrected run ($47.81, above) is scored. Total study spend across every run, scored and not: ~$146 — a K=1 smoke run at $32.75 that scored nothing because the parent lacked an `--add-dir` grant, ~$1.50 of single-sample diagnosis, the $63.52 calibration, and the $47.81 corrected run.
+
+**Re-run recipe**, against a separate clean checkout at the fixture's pinned commit — the checkout holding the scorer differs from that commit, so pointing the scorer at itself would turn its own files into false positives:
+
+```bash
+evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+  --repo-dir <clean-checkout-at-pinned-commit> --timeout-s 300
+```
+
+The fixture's own `pinned_commit` field names the exact commit to check out; the checkout must be clean (`git status --porcelain` empty) at that commit before any run.

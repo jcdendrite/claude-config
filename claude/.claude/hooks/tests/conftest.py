@@ -22,6 +22,7 @@ from helpers import (
     git_toplevel,
     init_git_repo_with_commit,
     install_shell_exec_guard,
+    live_process,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -31,6 +32,8 @@ from helpers import (
 # enough that a broken (uncapped) call site never returns before the
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
+
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
 
 
 @functools.cache
@@ -47,7 +50,9 @@ def _real_timeout_is_gnu_coreutils() -> bool:
     return "GNU coreutils" in result.stdout + result.stderr
 
 
-def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+def _seed_session(
+    home: Path, session_id: str, pid: int | None = None, *, start_time: str | None = None
+) -> None:
     """Write $HOME/.claude/sessions/<pid> in the two-line format
     capture-session-id.sh writes: the session id, then that pid's
     `TZ=UTC LC_ALL=C ps -o lstart=` start time. The start time is captured
@@ -59,17 +64,22 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     pid defaults to this test process's own pid: marker.sh resolves its
     session id by walking process ancestors, and when it runs as a
     subprocess of pytest, that walk reaches the pytest process itself.
+
+    start_time=None captures the live start time. A string is written
+    verbatim with no `ps` call, so an entry can name a dead pid (which `ps`
+    cannot report on) or carry a chosen start time.
     """
     target_pid = os.getpid() if pid is None else pid
     sessions_dir = home / ".claude" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    start_time = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(target_pid)],
-        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.rstrip("\n")
+    if start_time is None:
+        start_time = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(target_pid)],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.rstrip("\n")
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
@@ -134,17 +144,10 @@ def _review_ledger_path(home: Path, repo: Path, session_id: str) -> Path:
 def live_pid():
     """Yield the pid of a real process this fixture owns for the test's
     duration, terminated on teardown. A safe stand-in for "some other live
-    session" in a foreign-live-lock test — unlike os.getppid(), it doesn't
-    depend on this test process's own ancestry staying stable for the
-    assertion window, which a detached or reparented test-runner process
-    supervision setup can't guarantee (see _dead_pid's analogous
-    genuine-process-over-guessed-number rationale)."""
-    proc = subprocess.Popen(["sleep", "3600"])
-    try:
-        yield proc.pid
-    finally:
-        proc.terminate()
-        proc.wait()
+    session" in a foreign-live-lock test; see helpers.live_process for why it
+    spawns a real process instead of borrowing os.getppid()."""
+    with live_process() as pid:
+        yield pid
 
 
 def _worktree_lock_reason(worktree: Path) -> str | None:

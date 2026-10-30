@@ -210,6 +210,12 @@ def _main_thread_edited_between(earlier: _RoundEntry, later: _RoundEntry, key: s
     """Whether the main thread wrote to the path `key` between the two
     rounds' windows, which is evidence the cited code is new rather than
     missed.
+    The edit scan starts at the earlier round's window end, the next human
+    prompt or the next round-open, so an edit before that boundary is not
+    counted, such as a fix made after a backgrounded reviewer's notification
+    arrives.
+    False on such a round is a known false negative, not evidence the code was
+    missed.
     Always False when the rounds come from different transcripts, since
     cross-session timing isn't comparable.
     Each write target is normalized with its own record's `cwd` first,

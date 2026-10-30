@@ -53,8 +53,8 @@ section for the hook, the opt-in mechanism, and why. A worktree created
 per the `branch-management` skill (or an agent with `isolation:
 worktree`) satisfies it.
 
-`claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on
-`git pull` — no re-install needed.
+`claude/` is stowed into `$HOME`. Edits to existing files under `claude/.claude/**`, and new files nested under a directory `~/.claude` already links into this checkout, go live on `git pull`.
+A new top-level entry needs `./install.sh`; see `README.md` § "Updating after git pull".
 
 **Footgun: never recommend `>>` writes through stow-symlinked files pointing
 at a git-tracked target.**

@@ -309,6 +309,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
     ("require-review-orchestrator-routing.sh", "review-orchestrator routing"),
+    ("deny-plan-writer-off-plan-writes.sh", "plan-writer-scope"),
 )
 
 
@@ -423,7 +424,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         agents_md = repo / "AGENTS.md"
         agents_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
@@ -445,7 +446,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         skill_dir = repo / "claude-skills" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         skill_md = skill_dir / "SKILL.md"
         skill_path = "claude-skills/skills/my-skill/SKILL.md"
@@ -520,7 +521,7 @@ class TestDenialHookLabelEnumerationRealHooks:
 # DENY_GATE_LABEL conformance test — converts a forgotten or unenumerated
 # declaration from a silent fall-through-to-unmatched into a CI failure.
 # Reads DENY_GATE_LABEL and every deny-message literal straight off each of
-# the 26 gate hooks' own source, rather than trusting _DENIAL_HOOK_LABELS or
+# every gate hook's own source, rather than trusting _DENIAL_HOOK_LABELS or
 # _DENIAL_CAUSE_MARKERS to have kept up on their own.
 # ---------------------------------------------------------------------------
 
@@ -609,7 +610,7 @@ def _marker_kinds_present(text: str) -> list[str]:
 
 
 class TestDenyGateLabelConformance:
-    """Five clauses (a)-(e), driven against every one of the 26 gate hooks
+    """Five clauses (a)-(e), driven against every gate hook
     named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b), (d), and (e) each get
     their own permanent negative-case test below, built by
     deliberately breaking a scratch copy of a real hook — a one-time
@@ -659,7 +660,7 @@ class TestDenyGateLabelConformance:
         )
 
     def test_deny_literal_extraction_is_non_empty_for_every_gate_hook(self):
-        """Vacuity self-check mirroring test_lib.py's builds_path_re
+        """Vacuity self-check mirroring test_lib_session_identity.py's builds_path_re
         precedent: a hook yielding zero literals means the extraction regex
         has drifted from that hook's call shape, not that the hook has no
         deny literals — and clause (d) would be silently vacuous for it."""
@@ -759,11 +760,11 @@ class TestDenyGateLabelConformance:
 # ---------------------------------------------------------------------------
 
 
-# Bootstrap source-failure wording, one row per gate hook (all 26) — the same
+# Bootstrap source-failure wording, for a fixed subset of gate hooks — the same
 # "could not source _lib.sh" idiom TestDenialHookLabelEnumeration's fixture
-# rows above already carry for 24 of them, plus the two hooks whose labels
-# (architect-consult, invisible-commit-content) aren't yet _DENIAL_HOOK_LABELS
-# members.
+# rows above already carry for the hooks whose labels are _DENIAL_HOOK_LABELS
+# members, plus the hooks whose labels (for example architect-consult,
+# invisible-commit-content) aren't yet members.
 _LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not source _lib.sh."),
     ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not source _lib.sh."),
@@ -809,7 +810,7 @@ _LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
      "Blocked by invisible-commit-content gate: could not source _lib.sh."),
 )
 
-# Tool-input parse-failure wording, one row per gate hook (all 26) — each
+# Tool-input parse-failure wording, for a fixed subset of gate hooks — each
 # hook's own _lib_parse_tool_input_or_deny argument.
 _INPUT_PARSE_FIXTURES: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "Blocked: could not parse tool-input JSON for gh-pr-merge gate."),
@@ -1047,8 +1048,8 @@ _BEHAVIORAL_FIXTURES: tuple[tuple[str, str], ...] = (
 # replacing — the frozen fixtures above copied from an earlier rewrite. Both
 # eras must classify identically. lib-source needs no separate fixture set
 # here: TestDenialHookLabelEnumerationRealHooks's
-# test_bootstrap_lib_sh_failure_produces_enumerated_label already drives all
-# 26 gate hooks' real, on-disk bootstrap wording through a subprocess and
+# test_bootstrap_lib_sh_failure_produces_enumerated_label already drives every
+# gate hook's real, on-disk bootstrap wording through a subprocess and
 # asserts lib-source, which is stronger proof of current wording than a
 # hand-transcribed string. Only _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES
 # below is itself subprocess-verified (via run_hook_reason); the

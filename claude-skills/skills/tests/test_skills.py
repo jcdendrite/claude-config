@@ -1121,7 +1121,7 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         together, so an edit that keeps placement but re-imposes an exact
         string (or vice versa) fails here rather than passing silently."""
         body = self._body()
-        assert "between the per-finding H2s and" in body
+        assert "after the per-finding H2s" in body
         assert (
             "the exact wording is not required: nothing downstream parses "
             "it mechanically" in body
@@ -1364,6 +1364,30 @@ class TestPrDescriptionTwoModeDispatch:
     def test_pr_description_has_no_stop_on_missing_pr_precondition(self):
         """pr-description must not retain a precondition that halts when no PR exists."""
         assert "no PR to sync" not in _skill_file("pr-description").read_text()
+
+    def test_pr_description_takes_its_base_from_the_divergence_line(self):
+        """pr-description takes the base from the divergence script's printed
+        `Default branch:` or `Base branch:` line, never from the open PR's
+        `baseRefName`.
+
+        Only the `Base branch:` name has passed the script's name-shape check
+        (see the branch-divergence-status.sh header). The `Default branch:` name
+        comes from origin/HEAD and is not shape-checked.
+        """
+        body = " ".join(_skill_file("pr-description").read_text().split())
+        assert (
+            "`<base>` is `origin/<name>`. `<name>` is the branch on the "
+            "`Default branch:` or `Base branch:` "
+            "line that `~/.claude/scripts/branch-divergence-status.sh` printed "
+            "for this branch's current state. Take it from no other source: "
+            "not a caller-passed name, not a fallback. Run the script first. "
+            "A run earlier in this session on this branch may be reused if no "
+            "stack key, retarget or sync has happened since. If the script exits "
+            "non-zero or prints neither line, report its stderr and stop. "
+            "Run none of the commands below:"
+        ) in body
+        assert "open PR's base" not in body
+        assert "baseRefName" not in body
 
 
 class TestPrDescriptionExternalStateCheck:
@@ -1886,24 +1910,6 @@ class TestRespondPrEditBoundary:
             "The sweep's edits stay inside the PR's changed files, which `gh pr diff --name-only` lists."
             in _skill_file("respond-pr").read_text()
         )
-
-
-class TestReadyForReviewBodyFileGuard:
-    """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
-
-    The guard protects an unrecoverable state: once a PR exists carrying an
-    empty body, step 5 takes its sync path, which checks a body against branch
-    state rather than authoring one from nothing. A bare `-s` test passes a
-    file holding only a newline -- the shape a truncated write leaves behind --
-    so the check must strip whitespace before testing for content.
-
-    Reverting to `-s` is a silent regression: it reads as equivalent and passes
-    every other test in this suite.
-    """
-
-    def test_body_file_check_strips_whitespace_before_testing_content(self):
-        """step 8's guard must strip whitespace rather than rely on a byte-size test."""
-        assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
 
 
 class TestContinuityFileBucketCrosscheck:
@@ -4655,13 +4661,14 @@ _SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
 _SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
 
 # The anchor regions the staged-diff scope-boundary redesign introduced,
-# plus the comment/prose row's deferral clause nested inside the first one.
+# plus the clauses nested inside the first one.
 # Asserted as an exact set, not just "each found anchor is non-trivial" — a
 # corpus scan alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_SCOPE_ANCHORS = {
     ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
     ("code-review", "SCOPE_EXEMPT_ROW"),
     ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("code-review", "SCOPE_RULE:code-review-disclosure-not-suppressed"),
     ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
 }
@@ -4807,6 +4814,11 @@ def test_scope_rule_anchors_present() -> None:
         ),
         (
             "code-review",
+            "SCOPE_RULE:code-review-disclosure-not-suppressed",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
+        (
+            "code-review",
             "SCOPE_RULE:code-review-comment-row-deferred",
             "SCOPE_RULE:code-review-staged-diff-only",
         ),
@@ -4846,6 +4858,14 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
     ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
         "A defect outside the boundary that the change causes, activates, or "
         "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    # The defer-invariant bar's reach into earlier commits of the PR in a
+    # staged round depends in part on this sentence.
+    ("code-review", "SCOPE_RULE:code-review-disclosure-not-suppressed"): (
+        "This narrows only speculative, undirected search for unrelated "
+        "defects — it never suppresses disclosure of a defect a spawn "
+        "already noticed during the full-file read required elsewhere in "
+        "this skill."
     ),
     ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"): (
         "whenever this boundary applies, that row does not spawn, whatever "
@@ -4901,10 +4921,9 @@ def test_pinned_scope_clause_matches_live_text(skill_name: str, marker_name: str
 
 class TestNormalizedAnchorText:
     """Direct coverage for _normalized_anchor_text's comparison machinery,
-    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. Both
-    live pinned regions currently sit on one unwrapped line, so neither the
-    mismatch nor the reflow path is exercised by the corpus-wide pin test
-    above.
+    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. The
+    `_PINNED_SCOPE_CLAUSES` regions currently sit on one unwrapped line, so
+    the reflow path is not exercised by the corpus-wide pin test above.
     """
 
     _MARKER = "SCOPE_RULE:example"
@@ -5280,6 +5299,91 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     assert "page onward with `offset` until one doesn't" in reviewer_body
 
 
+# Step 1's stack-base bullet runs the key command only when both operands hold
+# the character set _lib_configured_stack_base accepts and neither starts with
+# `-`, because the agent composes the quoted command before the helper can
+# validate anything. It then halts unless the recipe confirms the base.
+_PINNED_STEP1_STACK_BASE_CHARSET_CLAUSE = (
+    "Run the command only when both `<branch>` and `<stack-base>` hold just "
+    "A-Z, a-z, 0-9, `.`, `_`, `/` and `-`, and neither starts with `-`. "
+    "Otherwise, ask the engineer."
+)
+_PINNED_STEP1_STACK_BASE_HALT_CLAUSE = (
+    "Halt unless the next bullet's recipe prints `Base branch: <stack-base>`."
+)
+# The provenance clause keeps the key set only from the engineer's own words.
+_PINNED_STEP1_STACK_BASE_TRIGGER_CLAUSE = (
+    "When the engineer has said this branch is stacked on another branch, run "
+    "`git config 'branch.<branch>.gh-merge-base' '<stack-base>'` before the next bullet."
+)
+_PINNED_STEP1_STACK_BASE_PROVENANCE_CLAUSE = (
+    "Only `<stack-base>` comes from the engineer's words, with no `origin/` prefix "
+    "and never inferred."
+)
+
+
+def test_ready_for_review_names_the_stack_base_key_and_the_base_branch_line() -> None:
+    """Step 1 sets the `gh-merge-base` key from the engineer's words, and step
+    8 passes `--base` from the `Base branch:` line that
+    branch-divergence-status.sh prints for a stack base. Step 1 also runs the
+    key command only when both operands hold the helper's character set and
+    neither starts with `-`, and halts unless the recipe prints
+    `Base branch: <stack-base>`. It also pins the provenance clause: the key
+    is set only when the engineer has said the branch is stacked, and only
+    `<stack-base>` comes from their words, with no `origin/` prefix and never
+    inferred. The script-source assertion is a
+    wiring-presence tripwire tying the skill's literal to the script's;
+    test_branch_divergence_status.py runs the script and asserts the printed
+    line."""
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    step1_start, step1_end = _section_between(lines, _READY_FOR_REVIEW_STEP1_HEADING, skill_md_path)
+    step1_text = "".join(lines[step1_start:step1_end])
+    step8_start, step8_end = _section_between(
+        lines, "## 8. Create PR if missing (skip if PR already exists)", skill_md_path
+    )
+    step8_text = "".join(lines[step8_start:step8_end])
+
+    assert "gh-merge-base" in step1_text, f"{skill_md_path}: step 1 no longer names the gh-merge-base key"
+    step1_collapsed = " ".join(step1_text.split())
+    assert " ".join(_PINNED_STEP1_STACK_BASE_TRIGGER_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer sets the key only when the engineer has said the branch is stacked"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_PROVENANCE_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer takes only `<stack-base>` from the engineer's words, "
+        "with no `origin/` prefix and never inferred"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_CHARSET_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer applies the character set and the leading-`-` reject to both "
+        "`<branch>` and `<stack-base>` before running the key command"
+    )
+    assert " ".join(_PINNED_STEP1_STACK_BASE_HALT_CLAUSE.split()) in step1_collapsed, (
+        f"{skill_md_path}: step 1 no longer halts unless the recipe prints `Base branch: <stack-base>`"
+    )
+    assert '--base "<name>"' in step8_text, f"{skill_md_path}: step 8 no longer passes --base \"<name>\" for a stack base"
+    assert "Base branch:" in step8_text, f"{skill_md_path}: step 8 no longer keys --base on the Base branch: line"
+    divergence_script_source = (SCRIPTS_DIR / "branch-divergence-status.sh").read_text()
+    assert 'echo "Base branch: $BASE_BRANCH"' in divergence_script_source
+
+
+def test_ready_for_review_step2_takes_the_fallback_git_diff_base_from_the_recipe_line() -> None:
+    """Step 2's pre-existing-failure check runs `git diff origin/<base>` with a base
+    taken from the `Default branch:` or `Base branch:` line step 1's recipe printed,
+    never from the `baseRefName` that `gh pr view` returned. Only the
+    `Base branch:` name has passed the script's name-shape check (see the
+    branch-divergence-status.sh header). The `Default branch:` name comes from
+    origin/HEAD and is not shape-checked. The rebase sentence after it names the
+    `<base>` step 1's recipe measured."""
+    step2_text = " ".join(
+        _raw_heading_section_text(_skill_file("ready-for-review"), "## 2. Verification (halt on fail)").split()
+    )
+    assert (
+        "`<base>` is the branch on the `Default branch:` or `Base branch:` line step 1's recipe printed. "
+        "Rebase once `origin/<base>` is green."
+    ) in step2_text
+    assert "baseRefName" not in step2_text
+
+
 def test_claude_hook_review_section10_handoff_rules_present() -> None:
     """Section 10 hands the reviewers a hook path plus its diff, never a branch
     or range name, and says so when the diff is unavailable."""
@@ -5653,6 +5757,354 @@ class TestPlanItStep7PushConsent:
         )
 
 
+# Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
+# cannot match to this session, or from running on its own.
+_PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
+    "run_only_when_asked": (
+        "Run only when the engineer asked to resume in this session. Never run the "
+        "skill on your own, including right after writing a handoff or brief."
+    ),
+    "no_argument_rerun_guard": (
+        "If this conversation already loaded a file through this skill, run the "
+        "script again only with an explicit argument. With no argument, tell the "
+        "engineer and stop."
+    ),
+    "refuse_and_tell_on_unsafe_arguments": (
+        "If `$ARGUMENTS` starts with `-` or contains any character outside "
+        "`[A-Za-z0-9._/@+-]`, do not run the script; tell the engineer the accepted "
+        "forms: a slug, a file name, or an absolute path."
+    ),
+    "never_read_pending_path": (
+        "Never `Read` a path under `<config-dir>/handoffs/` or `<config-dir>/briefs/`, "
+        "because that `Read` consumes the file before any check runs."
+    ),
+    "session_target_comparison": (
+        "First compare `SESSION_TARGET:` with the worktree this session is anchored in: "
+        "the working directory the environment context shows, or the `EnterWorktree` "
+        "target. The script keys on the Bash `$PWD`, so an earlier `cd` into another "
+        "worktree yields a verdict for that worktree. When `SESSION_TARGET:` is `none`, "
+        "they match only if the anchored directory is not inside a linked worktree of any "
+        "repository. If they differ, say so and stop before any `Read`, without acting on "
+        "the file. Give the recovery text below."
+    ),
+    "file_target_none_check_then_stop": (
+        "Then check the target. When the script printed `FILE_TARGET: none` and the "
+        "file's §4 header (§3 in a brief) names a directory other than this session's, "
+        "say so and stop without acting on the file. Give the recovery text below."
+    ),
+    "consumed_file_recovery_text": (
+        "Recovery text: the file is already consumed, so tell the engineer to `cd` to "
+        "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
+        "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
+        "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
+        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
+        "header (§3 in a brief) names if you read the file and it is an absolute path made "
+        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
+        "say the directory is unknown and must come from the session that wrote the file; "
+        "name none."
+    ),
+    "unreadable_file_target_relay": (
+        "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
+        "directory from the file, so the printed command has none. The engineer "
+        "should check the resume command in the file itself, outside this session because "
+        "a `Read` here consumes it, and run that command in place of the printed one."
+    ),
+    "slash_form_only_for_matching_candidates": (
+        "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
+        "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
+        "when either is `unknown`. Any other candidate needs the shell command on its "
+        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+    ),
+    "unreadable_or_absent_candidate_target_caveat": (
+        "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
+        "that line appears, and, for each candidate with `target none` or `target unknown`, "
+        "the caveat for that `FILE_TARGET:` value beside its shell command."
+    ),
+    "read_only_after_session_target_matches": (
+        "Otherwise `Read` the `LOAD:` path in full. Tell the engineer which `SOURCE:` "
+        "file was consumed and its `AGE:`."
+    ),
+    "skipped_unprintable_relay": (
+        "Relay `SKIPPED_UNPRINTABLE:` whenever it appears, with or without candidates. "
+        "It means n pending files under `<config-dir>/handoffs/` or `<config-dir>/briefs/` "
+        "have names with a character outside `[A-Za-z0-9._/@+-]`, so the script does not "
+        "print them. The engineer can resume one with the shell `resume-context` and its "
+        "full path; do not list or name them yourself."
+    ),
+    "no_enter_worktree_no_section_seven": (
+        "Do not call `EnterWorktree`, and do not run the file's §7/§7.5 command. The "
+        "script already matched the file to this session."
+    ),
+    "absent_file_target_relay": (
+        "When `FILE_TARGET: none` appears, add that the file names no worktree, so the "
+        "command must be run from the directory the file was written in."
+    ),
+    "unknown_session_target_relay": (
+        "When `SESSION_TARGET: unknown` appears, add that this session's worktree "
+        "could not be determined (a path with a space or a failed git call), not that "
+        "the file names another worktree."
+    ),
+    "shell_command_relay_and_stop": (
+        "Relay the line verbatim as a command for a new terminal, not as a slash "
+        "command. The file is still pending. Stop."
+    ),
+}
+
+
+class TestResumeContextSkill:
+    """Pin the resume-context body's guards, so a reword that drops one fails here
+    instead of drifting silently. The tests check wording and the clause's right edge,
+    not behavior. On failure, re-read the guarantee and update the
+    constant only if the new wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_RESUME_CONTEXT_CLAUSES))
+    def test_pinned_clause_matches_live_text(self, clause_key: str) -> None:
+        body = _skill_file("resume-context").read_text()
+        pinned_text = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            body,
+            context=f"resume-context/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
+        )
+
+    def test_session_target_comparison_precedes_the_read(self) -> None:
+        """The comparison must come before the `Read` clause, or a mismatched file is consumed first."""
+        body = " ".join(_skill_file("resume-context").read_text().split())
+        comparison = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["session_target_comparison"].split())
+        read = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["read_only_after_session_target_matches"].split())
+        assert 0 <= body.find(comparison) < body.find(read), (
+            "resume-context/SKILL.md: the SESSION_TARGET comparison clause no longer starts before the `Read` clause."
+        )
+
+
+# Step 5 holds these literals.
+_PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
+    "sed -n '1,/^## Approach$/p'",
+    "e3b0c442",
+    "the two digests differ",
+    "on every return",
+    "(pending: plan-architect)",
+    "absolute path as the prompt's second line",
+)
+
+_PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
+    "never call `Edit`, even when the prompt names a plan file"
+)
+
+_PLAN_ARCHITECT_PLAN_SECTIONS_HEADING = "## MODE=plan-sections"
+
+_PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE = (
+    "When your edits land, your return carries no `## ` heading lines"
+)
+_PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE = (
+    "Line 2 of the prompt is the plan file's absolute path."
+)
+
+_PLAN_IT_STEP5_HEADING = "## Step 5 — Architecture design"
+
+# Step 5's Context-hash command, as written in the skill: the one backticked
+# `sed ... | sha256sum` span, with the plan path left as a placeholder.
+_PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
+    r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
+)
+
+# The title and Context a plan holds before its first dispatch.
+_PLAN_TITLE_AND_CONTEXT_TEXT = "# Title\n\n## Context\n\nAsk: x\n\n"
+
+# A plan after `plan-shape.py prepare`, spelled out as test data. plan-shape's own tests pin the scaffold's bytes.
+_SCAFFOLDED_PLAN_TEXT = (
+    _PLAN_TITLE_AND_CONTEXT_TEXT
+    + "## Approach\n\n(pending: plan-architect)\n\n## Critical files\n\n## Verification\n\n## Out of scope\n"
+)
+
+# plan-it Step 5 paragraphs and bullets the session follows itself; plan-shape.py's tests cover what the script computes.
+_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES: dict[str, str] = {
+    "prepare_gates_the_first_dispatch": (
+        "Dispatch only when the command exits 0 and prints `PREPARE: ready`. Otherwise give "
+        "the engineer every `REASON` line, or the command's error if it printed none, through "
+        "`AskUserQuestion`, and make no edit or dispatch."
+    ),
+    "plan_mode_path_refusal_exits_by_leaving_plan_mode": (
+        "In plan mode, a `plan-path` line for the harness-provided plan path means the script's "
+        "path rule refuses that path. The run ends there, and the way forward to give the "
+        "engineer is leaving plan mode and running `/plan-it` again, which starts the plan over "
+        "under Step 1."
+    ),
+    "script_runs_before_every_hash_and_dispatch": (
+        "**Before every dispatch.** Make your last edit above `## Approach` first, then run "
+        "`plan-shape.py`, then take the Context hash below, then dispatch. The run is `prepare` "
+        "before this run's first dispatch and `check` before every later one. A later dispatch "
+        "goes ahead only when that `check` exits 0 and prints a `STAGE` line, and any other "
+        "output is handled as a failed `check` below."
+    ),
+    "check_runs_after_hash_and_splice_and_completes_dispatch_only_on_pass": (
+        "**Check.** After every dispatch, once the Context hash and any splice with its own hash "
+        "are done, run `python3 ~/.claude/scripts/plan-shape.py check '<plan path>'`, passing the "
+        "path the same way. With or without a splice, the dispatch is complete only when the "
+        "command exits 0 and prints `CHECK: pass`."
+    ),
+    "failed_check_redispatches_only_with_stage": (
+        "A failed `check` that exits 0 and prints a `STAGE` line re-dispatches. It prints one "
+        "only when every `REASON` code is `placeholder`, `headings` or `empty-section`. Any "
+        "other output goes to the engineer through `AskUserQuestion`, with every `REASON` line "
+        "or the command's error if it printed none, and no further dispatch or edit of the plan "
+        "file follows."
+    ),
+    "engineer_stop_resumes_by_rerunning_the_stopped_mode": (
+        "Every `plan-shape.py` stop sent to the engineer, from `prepare` or from `check`, "
+        "except the `plan-path` stop for the harness-provided plan path above, ends the run "
+        "until the engineer says the plan file is fixed. Then re-run the mode that stopped and act on its new output."
+    ),
+    "stage_line_decides_first_authoring": (
+        "Treat a dispatch as first authoring when the `prepare` or `check` run just before it "
+        "printed `STAGE: first-authoring`, and as a revision otherwise, including when that run "
+        "printed no `STAGE` line. When a dispatch ends without a normal return, judge its stage "
+        "by the run before it, not by the `check` after it."
+    ),
+    "effort_section_added_only_after_a_passed_check": (
+        "Effort sections are optional. Add one only after a dispatch has returned and passed "
+        "`check`, above `## Approach`. It describes review surface (file count, domain spread, "
+        "risk concentration), never hours or days."
+    ),
+    "failed_check_with_stage_line_redispatches_bullet": (
+        "A failed `check` that prints a `STAGE` line, as above."
+    ),
+    # Both bullets in one clause: the right-bound helper accepts a following line only when it starts with `-` or `#`,
+    # and the indented second bullet does not.
+    "no_return_redispatch_bullets": (
+        "At first authoring, re-dispatch when `check` then fails with a `STAGE` line. - On a "
+        "revision, re-dispatch when `check` then passes or fails with a `STAGE` line, because a "
+        "revision that died partway can pass it."
+    ),
+    "code_fence_never_shares_a_line_with_a_list_marker": (
+        "Start each code fence on a line of its own, never on the same line as a list marker "
+        "such as `-` or `1.`, because `plan-shape.py` does not model list items."
+    ),
+}
+
+_EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
+
+
+class TestPlanItStep5ContextCheckAndGrammarLiterals:
+    """Wiring-presence tripwires for plan-it/SKILL.md Step 5 and plan-architect.md,
+    which are LLM-consumed prose, plus an execution test of Step 5's hash command."""
+
+    @staticmethod
+    def _step5_context_hash_command() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its Context-hash command "
+            "in the pinned `sed ... | sha256sum` shape."
+        )
+        return match.group(1)
+
+    @classmethod
+    def _run_hash_command_result(cls, plan_path: Path) -> subprocess.CompletedProcess:
+        command = cls._step5_context_hash_command()
+        # The skill quotes the path as "<plan path>"; bind it through the environment.
+        runnable_command = command.replace('"<plan path>"', '"$PLAN_PATH"')
+        return subprocess.run(
+            ["bash", "-c", runnable_command],
+            env={**os.environ, "PLAN_PATH": str(plan_path)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @classmethod
+    def _run_hash_command(cls, plan_path: Path) -> str:
+        return cls._run_hash_command_result(plan_path).stdout.strip()
+
+    def test_step5_literals_match_live_text(self) -> None:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        missing = [
+            literal
+            for literal in _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS
+            if literal not in step5_text
+        ]
+        assert not missing, (
+            f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
+        )
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES))
+    def test_pinned_step5_script_clause_matches_live_text(self, clause_key: str) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        pinned_text = " ".join(_PINNED_PLAN_IT_STEP5_SCRIPT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=(
+                f"plan-it/SKILL.md: Step 5's {clause_key!r} clause no longer "
+                "matches its pinned clause."
+            ),
+        )
+
+    def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
+        consult_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING
+        )
+        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in consult_section, (
+            "plan-architect.md's MODE=consult charter no longer carries its "
+            "never-call-Edit sentence."
+        )
+
+    def test_plan_sections_charter_return_carries_no_headings_when_edits_land(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer says the return "
+            "carries no `## ` heading lines once edits land, which Step 5's splice "
+            "relies on to avoid overwriting landed edits."
+        )
+
+    def test_plan_sections_charter_names_line_2_as_the_plan_path(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer names prompt "
+            "line 2 as the plan file's path, the contract plan-it/SKILL.md Step 5 "
+            "dispatches against."
+        )
+
+    def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = _SCAFFOLDED_PLAN_TEXT
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        edited_plan_text = scaffolded_plan_text.replace("(pending: plan-architect)", "Approach text.")
+        assert edited_plan_text != scaffolded_plan_text
+        plan_path.write_text(edited_plan_text)
+
+        assert digest_before
+        assert not digest_before.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        assert self._run_hash_command(plan_path) == digest_before
+
+    def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        scaffolded_plan_text = _SCAFFOLDED_PLAN_TEXT
+        plan_path.write_text(scaffolded_plan_text)
+        digest_before = self._run_hash_command(plan_path)
+
+        plan_path.write_text(scaffolded_plan_text.replace("Ask: x", "Ask: widened"))
+
+        assert self._run_hash_command(plan_path) != digest_before
+
+    def test_hash_command_yields_the_empty_input_digest_for_a_missing_path(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run_hash_command_result(tmp_path / "missing-plan.md")
+        assert result.stdout.strip().startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        # Step 5's stop rule treats any extra output as a stop, so sed's complaint
+        # must reach stderr while the pipeline still exits 0 on sha256sum's status.
+        assert result.returncode == 0
+        assert result.stderr.strip()
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1
@@ -5751,6 +6203,67 @@ class TestReadyForReviewContextBudgetDefers:
         assert all(earlier < later for earlier, later in zip(indices, indices[1:], strict=False)), (
             "ready-for-review/SKILL.md: step-1 context-budget clauses no longer appear in "
             f"_PINNED_CONTEXT_BUDGET_CLAUSES's own order (found at indices {indices})."
+        )
+
+
+_READY_FOR_REVIEW_STEP8_HEADING = "## 8. Create PR if missing (skip if PR already exists)"
+
+# ready-for-review clauses the session follows itself; pr-create-preflight.py's tests cover what the script computes.
+_PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES: dict[str, tuple[str, str]] = {
+    "step1_runs_ticket_mode_and_reads_its_output": (
+        _READY_FOR_REVIEW_STEP1_HEADING,
+        "Current branch is not the default branch (`main` / `master` / `develop`). Also run "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py ticket` here for step 5 to consume, and again "
+        "before step 5 if its value is no longer in context. When it exits 0 and prints a `TICKET_ID` line, "
+        "that line's value is the `<TICKET-ID>`, and `none` means there is none. Otherwise halt with every "
+        "`REASON` line, or the command's error if it printed none. When that error says the script file does "
+        "not exist, also tell the engineer to re-run `./install.sh` in their claude-config checkout from a "
+        "separate terminal, which links it.",
+    ),
+    "step8_runs_create_mode_then_chains_it_ahead_of_pr_creation": (
+        _READY_FOR_REVIEW_STEP8_HEADING,
+        "The body is step 5's file; this step composes none of its own. Run "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py create '<path>'`, writing step 5's reported path "
+        "as one single-quoted literal word. It derives the title from the branch and checks the path and the "
+        "file it names. Unless it exits 0 and prints a `TITLE` line, halt with every `REASON` line, or the "
+        "command's error if it printed none, and open no PR. Otherwise open the PR with "
+        "`python3 ~/.claude/scripts/pr-create-preflight.py create '<path>' && gh pr create --title \"<title>\" "
+        "--body-file <path>`, as one Bash call. When step 6 printed `Base branch: <name>`, add "
+        "`--base \"<name>\"` to the `gh pr create` half. Write the `TITLE` line's value, the `--base` name "
+        "when one is added, and the same path as **literal text** — not a `$VAR` or a command substitution "
+        "holding any of them. `gh pr create --body-file` is scanned by a redaction "
+        "gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it "
+        "fails closed and refuses the call. Every attempt runs that whole call, never its `gh` half alone, "
+        "including a retry after a denial, a failure or a rewrite of the body file. A stop it prints halts "
+        "as above.",
+    ),
+}
+
+
+class TestReadyForReviewPreflightScriptClauses:
+    """Pin the ready-for-review clauses that run pr-create-preflight.py and read its output.
+
+    The step-8 pin keeps the preflight command chained ahead of `gh pr create`, so a failed body
+    check never reaches the PR-creation command. It also keeps the instruction to re-run the whole
+    call on every attempt. Dropping either reopens the empty-body hole.
+
+    The step-8 pin also keeps the `--base "<name>"` attachment to the `gh pr create` half, keyed on
+    step 6's `Base branch:` line, so the base appears in the command text the redaction hook scans.
+    The step-8 pin also keeps the `TITLE` value, the `--base` name and the path as literal command
+    text, not a variable or command substitution.
+
+    The step-1 `ticket` pin keeps `<TICKET-ID>` read from the script's `TICKET_ID` line, with a halt
+    on its `REASON` lines.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES))
+    def test_pinned_preflight_clause_matches_live_text(self, clause_key: str) -> None:
+        heading, clause = _PINNED_READY_FOR_REVIEW_PREFLIGHT_CLAUSES[clause_key]
+        raw_section = _raw_heading_section_text(_skill_file("ready-for-review"), heading)
+        _assert_pinned_clause_right_bounded(
+            " ".join(clause.split()),
+            raw_section,
+            context=f"ready-for-review/SKILL.md: the {clause_key!r} clause no longer matches its pinned clause.",
         )
 
 
@@ -6113,7 +6626,9 @@ class TestCodeReviewContradictionRouteRegionPin:
 _CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
 
 # The whole defer-invariant region: the enforcement-invariant class definition,
-# its never-DEFER-eligible ruling, and the ADDRESS-or-blocking-stop disposition.
+# its never-DEFER-eligible ruling, the ADDRESS-or-blocking-stop disposition,
+# the scope of the bar (an invariant break a round notices anywhere in the PR),
+# and its precedence over checklist item 14's informational-only route.
 # The contradiction-route region's *keep current text* carve-out takes its scope
 # from this class, so it is pinned whole by exact equality, like that region.
 _PINNED_DEFER_INVARIANT_CLAUSE = (
@@ -6127,15 +6642,47 @@ _PINNED_DEFER_INVARIANT_CLAUSE = (
     "`--enforcement-invariant` and without `--carry-forward`: it is "
     "asked again on every re-raise, never carried, and never DEFERred. "
     "Approval of a diff or PR does not function as informed consent "
-    "for an invariant-break buried in the body."
+    "for an invariant-break buried in the body. The bar applies to an "
+    "invariant break a round notices anywhere in the PR, not only inside "
+    "the diff that round enumerates (the staged diff in a staged round, "
+    "the PR against its base in the cumulative pass). Checklist item 14's "
+    "informational-only route does not apply to such a break."
+)
+
+
+_CODE_REVIEW_FINDING_DISPOSITION_HEADING = "## Finding disposition"
+_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-new-primitive-route"
+_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE = (
+    "For a finding the enforcement-invariant rule below covers, Endorsed with "
+    "no plan file and Rejected each end in that rule's blocking stop-and-ask, "
+    "since neither fixes the hole."
 )
 
 
 class TestCodeReviewDeferInvariantRegionPin:
-    """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
-    the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
-    or dropping the blocking stop-and-ask disposition fails a test instead of
-    drifting silently.
+    """Pin the text that keeps an enforcement-invariant break from being
+    deferred or silently accepted, so drifting from it fails a test.
+
+    Whole-region equality against _PINNED_DEFER_INVARIANT_CLAUSE guards:
+    - the never-DEFER-eligible ruling;
+    - the enforcement-invariant class definition;
+    - the ADDRESS-or-blocking-stop-and-ask disposition;
+    - the bar covering an invariant break noticed anywhere in the PR, not only
+      the diff a round enumerates;
+    - the sentence keeping checklist item 14's informational-only route from
+      absorbing such a break.
+
+    Two narrower checks guard the rest:
+    - The Finding disposition section must contain the walk clause that adds an
+      orchestrator-noticed invariant break to the disposition walk. This pins
+      the clause's presence in that section, not the walk sentence's structure.
+    - The new-primitive-route region must contain
+      _ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE, which ends the
+      Endorsed-with-no-plan-file and Rejected returns of an enforcement-invariant
+      finding's heavier-mechanism consult in the blocking stop-and-ask.
+
+    On failure, update the pinned text only if the new wording preserves what
+    every sentence of the current pinned text guarantees.
     """
 
     def test_defer_invariant_region_matches_live_text(self) -> None:
@@ -6149,6 +6696,37 @@ class TestCodeReviewDeferInvariantRegionPin:
             f"matches its pinned text.\n"
             f"  live:   {live_text!r}\n"
             f"  pinned: {pinned_text!r}"
+        )
+
+    def test_disposition_walk_covers_orchestrator_noticed_invariant_break(self) -> None:
+        """The Finding disposition section carries the clause that routes an
+        orchestrator-noticed invariant break into the disposition walk."""
+        skill_md_path = _skill_file("code-review")
+        walk_clause = (
+            "plus any break the orchestrator's own pass noticed that the "
+            "enforcement-invariant rule below covers"
+        )
+        section_text = _heading_section_text(
+            skill_md_path, _CODE_REVIEW_FINDING_DISPOSITION_HEADING
+        )
+        assert " ".join(walk_clause.split()) in section_text, (
+            f"{skill_md_path}: the {_CODE_REVIEW_FINDING_DISPOSITION_HEADING} "
+            f"section must still contain {walk_clause!r}"
+        )
+
+    def test_enforcement_invariant_finding_ends_unfixing_consult_returns_in_human_stop(
+        self,
+    ) -> None:
+        """An enforcement-invariant finding's Endorsed-with-no-plan-file and
+        Rejected consult returns still end in the human stop."""
+        skill_md_path = _skill_file("code-review")
+        heavier_mechanism_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
+        )
+        stop_sentence = " ".join(_ENFORCEMENT_INVARIANT_CONSULT_STOP_SENTENCE.split())
+        assert stop_sentence in heavier_mechanism_text, (
+            f"{skill_md_path}: the {_CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR} region "
+            f"must still contain {stop_sentence!r}"
         )
 
 
@@ -6286,7 +6864,7 @@ class TestCodeReviewFixPlanPilotRegionPin:
             "must be the re-plan verdict (`Foundation is wrong`)"
         )
         heavier_mechanism_text = _normalized_anchor_text(
-            skill_md_path, "DISPOSITION_RULE:code-review-new-primitive-route"
+            skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR
         )
         assert heavier_mechanism_text.startswith(
             _CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING
@@ -6330,6 +6908,18 @@ class TestCodeReviewFixPlanPilotRegionPin:
         assert key_match.group(1) in config_schema(), (
             f"{key_match.group(1)!r} is not a key in config-keys.psv"
         )
+
+
+def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
+    """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
+    the exclusion list, a digest or history file would pass as a reviewer's findings file."""
+    round_cap_text = _normalized_anchor_text(
+        _skill_file("code-review"), "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+    )
+    assert (
+        "never a `review-ledger-`, `review-history-`, `code-review-dispositions-` or `pr-body-` file"
+        in round_cap_text
+    )
 
 
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
@@ -6681,6 +7271,281 @@ class TestReviewLedgerPublishAndInjectionControls:
         assert read_paths and read_paths == written_paths, (
             f"digest read at {sorted(read_paths)} but `render --out` writes {sorted(written_paths)}"
         )
+
+
+_READY_FOR_REVIEW_STEP6_HEADING = "## 6. Final hygiene recheck (halt on fail)"
+
+# Step 6's behind-base bullet: no sync on a clean trial merge, a conflict returns
+# the gate to step 1, and a recipe failure is re-run once in place, then reported.
+_PINNED_STEP6_BEHIND_BASE_CLAUSE = (
+    "Branch has no merge conflict with the base branch. Re-run the divergence "
+    "detection recipe (`git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). Behind with `Trial merge: CLEAN` passes: report the "
+    "behind-count in the Completion summary. Do not sync here: a sync changes "
+    "the tree, so step 2 would re-run. Behind with `Trial merge: CONFLICT` "
+    "halts this step: return to step 1, whose in-sync precondition runs the "
+    "sync. A recipe failure (non-zero exit) halts this step: re-run the recipe "
+    "here once rather than restarting the gate, whose step 1 would sync; if it "
+    "fails again, report its stderr cause to the engineer and stop."
+)
+
+# Step 1's in-sync precondition: the bullet step 6 hands a conflict back to.
+# The pin also holds the sentence requiring step 7's completion marker to record
+# the post-resync HEAD SHA that the push-gate hook checks. No other test pins
+# that sentence, so trimming it needs a deliberate update here.
+_PINNED_STEP1_IN_SYNC_BULLET = (
+    "**Branch is in sync with `origin/<base>`.** Run the canonical detection "
+    "recipe (see `git-feature-branch-sync/SKILL.md` § \"Detecting "
+    "divergence\"). If behind > 0, invoke `/git-feature-branch-sync`, then "
+    "re-run step 2 against the synced tree; step 7's completion marker must "
+    "record the post-resync HEAD SHA so it matches what the push-gate hook "
+    "checks."
+)
+
+
+class TestReadyForReviewStep6BehindBaseRule:
+    """Pin step 6's behind-base bullet as one whole clause, deliberately, and
+    check that no other step-6 text says "sync". That second check is a
+    lexical tripwire on the skill's own vocabulary (the "sync" stem, which
+    also matches the sync skill's name), not proof that no step-6 text moves
+    the branch. Fails when
+    step 6 syncs on a clean trial merge, stops returning a conflict to step 1,
+    or stops halting on a recipe failure. Step 1's in-sync precondition, which
+    runs the sync on that hand-off, is pinned separately, so both ends of the
+    step 6 to step 1 hand-off are checked.
+
+    A sync at step 6 changes the tree and forces step 2 to re-run; see
+    docs/design-decisions/ready-for-review-base-drift.md.
+    """
+
+    def test_step6_behind_base_bullet_is_the_only_sync_rule(self) -> None:
+        skill_md_path = _skill_file("ready-for-review")
+        pinned_text = " ".join(_PINNED_STEP6_BEHIND_BASE_CLAUSE.split())
+
+        # The negative check depends on the positive match, so both live here.
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 6's behind-base bullet has drifted from its pinned clause "
+                "(no sync on a clean trial merge, a conflict returns to step 1, a recipe failure is re-run "
+                "once in place then reported)"
+            ),
+        )
+
+        section_text = _heading_section_text(skill_md_path, _READY_FOR_REVIEW_STEP6_HEADING)
+        remainder = section_text.replace(pinned_text, "", 1)
+        # Over-matches benign words like "synchronously" and "in sync" (reword step 6 if it trips).
+        # Does not match unnamed branch-moving wording such as merge, rebase, or "Resync".
+        stray_sync = re.search(r"\bsync", remainder, re.IGNORECASE)
+        assert stray_sync is None, (
+            "ready-for-review/SKILL.md: step 6 says "
+            f"{stray_sync.group(0)!r} outside its behind-base bullet: "
+            f"{remainder[max(stray_sync.start() - 30, 0) : stray_sync.end() + 30]!r}"
+        )
+
+    def test_step1_in_sync_bullet_is_the_sync_the_step6_conflict_handoff_reaches(self) -> None:
+        pinned_text = " ".join(_PINNED_STEP1_IN_SYNC_BULLET.split())
+
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            _raw_heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING),
+            context=(
+                "ready-for-review/SKILL.md: step 1's in-sync precondition has drifted from its pinned clause "
+                "(the pin also holds the rule that step 7's completion marker records the post-resync HEAD SHA)"
+            ),
+        )
+
+
+# respond-pr step 3's failed-recipe sentence: re-run once, then abort with the
+# PR number, the already-re-run fact, the recipe's stderr and the next action,
+# and never route to /git-feature-branch-sync, whose detection runs the same
+# script. Mirrors ready-for-review step 6's pinned recipe-failure clause.
+_PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE = (
+    "When the recipe exits non-zero, re-run it once. If it fails again, abort "
+    "the skill. The abort message names the PR number (captured in step 1), "
+    "says the recipe was already re-run once, gives the recipe's stderr, and "
+    "ends with the engineer's next action (fix the cause the stderr names, "
+    "then re-invoke `/respond-pr`). Do not route to "
+    "`/git-feature-branch-sync`, because its detection runs the same script."
+)
+
+# respond-pr step 3's CONFLICT bullet: its bold label, then abort naming the PR
+# number, route to /git-feature-branch-sync, and apply no FIXED changes onto a
+# stale tree, then the next bullet's `- **Trial merge is CLEAN.**` marker and
+# label. The leading label binds the clauses to CONFLICT and the trailing label
+# bounds the pin, so a clause appended inside the bullet fails it.
+_PINNED_RESPOND_PR_STEP3_CONFLICT_BULLET = (
+    "- **Trial merge reports CONFLICT.** Abort the skill — print a message naming "
+    "the PR number (captured in step 1) and route the user to "
+    "`/git-feature-branch-sync`. Do not apply `FIXED` changes onto a stale tree; "
+    "replies acknowledging fixes would refer to a commit the reviewer cannot "
+    "cleanly resolve. - **Trial merge is CLEAN.**"
+)
+
+# respond-pr step 3's CLEAN bullet: its bold label, then proceed even when behind,
+# since only an actual conflict blocks, then the next bullet's
+# `- **Recipe exits non-zero.**` marker and label as the right bound.
+_PINNED_RESPOND_PR_STEP3_CLEAN_BULLET = (
+    "- **Trial merge is CLEAN.** Proceed even when behind > 0. Small drift is "
+    "normal during review, and the precheck only blocks on actual conflicts. "
+    "- **Recipe exits non-zero.**"
+)
+
+
+# respond-pr step 3's lead sentence: the ordering rule that puts the recipe ahead
+# of any FIXED change or reply. The rest of the sentence (the pointer and the
+# base-line clause) is not pinned.
+_PINNED_RESPOND_PR_STEP3_ORDERING_CLAUSE = (
+    "Before applying any `FIXED` change or posting any reply, run the canonical detection recipe"
+)
+
+
+def _respond_pr_step3_text() -> str:
+    """Raw text of respond-pr's step 3 list item, from its `3.` marker to the
+    line before step 4's `4.` marker. Both markers are asserted found, so a
+    renumbered step fails instead of extracting empty text."""
+    lines = _skill_file("respond-pr").read_text().splitlines(keepends=True)
+    start_idx = next((i for i, line in enumerate(lines) if line.startswith("3. **Divergence precheck.**")), None)
+    assert start_idx is not None, "respond-pr/SKILL.md: step 3 (`3. **Divergence precheck.**`) not found"
+    end_idx = next((i for i in range(start_idx + 1, len(lines)) if lines[i].startswith("4. ")), None)
+    assert end_idx is not None, "respond-pr/SKILL.md: step 4 marker not found after step 3"
+    return "".join(lines[start_idx:end_idx])
+
+
+class TestRespondPrStep3FailedRecipeSentence:
+    """Pin respond-pr step 3's failed-recipe sentence, its CONFLICT bullet and
+    its CLEAN bullet. A non-zero recipe exit parses as neither CONFLICT nor
+    CLEAN, so without the failed-recipe arm the skill would proceed with no
+    divergence check. Deleting the do-not-route clause, the PR number, the
+    already-re-run fact, the stderr or the next action fails the failed-recipe
+    pin, as does appending a contradicting clause. That pin passes
+    `_assert_pinned_clause_right_bounded` only because its bullet is the last
+    in step 3. An indented sibling added directly after that bullet fails with
+    an "unbounded trailing content" message. A sibling or paragraph added after a blank line,
+    or a line starting `-` or `#` at column 0, passes."""
+
+    def test_step3_runs_the_recipe_before_any_fixed_change_or_reply(self) -> None:
+        """Deleting the lead sentence's ordering clause leaves the three outcome
+        bullets passing their pins while nothing runs the recipe first."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert _PINNED_RESPOND_PR_STEP3_ORDERING_CLAUSE in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3 no longer says to run the canonical detection recipe "
+            "before applying any `FIXED` change or posting any reply"
+        )
+
+    def test_step3_reruns_a_failed_recipe_once_then_aborts_without_routing_to_sync(self) -> None:
+        _assert_pinned_clause_right_bounded(
+            " ".join(_PINNED_RESPOND_PR_STEP3_FAILED_RECIPE_SENTENCE.split()),
+            _respond_pr_step3_text(),
+            context=(
+                "respond-pr/SKILL.md: step 3's failed-recipe sentence has drifted from its pinned clause "
+                "(re-run once, abort naming the PR number with the recipe's stderr, no routing to "
+                "/git-feature-branch-sync)"
+            ),
+        )
+
+    def test_step3_aborts_on_a_trial_merge_conflict_and_routes_to_sync_without_applying_fixes(self) -> None:
+        """Matched as a whitespace-collapsed substring that starts at the
+        CONFLICT label and ends at the next bullet's CLEAN label:
+        `_assert_pinned_clause_right_bounded` finds no structural boundary after
+        a nested bullet, so the next bullet's label is the right bound. Swapping
+        the label, deleting the abort, the PR number, the route to
+        `/git-feature-branch-sync` or the no-`FIXED`-onto-a-stale-tree clause,
+        or appending a clause inside the bullet fails it."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert " ".join(_PINNED_RESPOND_PR_STEP3_CONFLICT_BULLET.split()) in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3's CONFLICT bullet has drifted from its pinned text "
+            "(CONFLICT label, abort naming the PR number, route to /git-feature-branch-sync, "
+            "no FIXED changes onto a stale tree, then the CLEAN label)"
+        )
+
+    def test_step3_proceeds_on_a_clean_trial_merge_even_when_behind(self) -> None:
+        """Matched as a whitespace-collapsed substring that starts at the CLEAN
+        label and ends at the next bullet's recipe-failure label, for the same
+        reason as the CONFLICT pin. Swapping the label, deleting the proceed
+        clause, or appending a clause inside the bullet fails it."""
+        step3_collapsed = " ".join(_respond_pr_step3_text().split())
+
+        assert " ".join(_PINNED_RESPOND_PR_STEP3_CLEAN_BULLET.split()) in step3_collapsed, (
+            "respond-pr/SKILL.md: step 3's CLEAN bullet has drifted from its pinned text "
+            "(CLEAN label, proceed even when behind, then the recipe-failure label)"
+        )
+
+
+# git-feature-branch-sync keeps its recipe examples on the default branch's
+# literal names, so the preamble names the base the recipe reports as what they
+# stand for. The detection section tells an agent that arrives from the
+# SessionStart advisory, which never reads the stack-base key, to sync to the
+# branch the recipe names, and to stop on a failed recipe. It also says why: the
+# hook never reads the stack-base key, so its advisory counts against the default
+# branch. The callers sentence and its worktree-bash-guard pointer stay adjacent,
+# and the advisory instruction opens its own paragraph after them. All four clauses
+# (placeholder, callers pointer, advisory redirect, advisory reason) are
+# whitespace-collapsed substrings: the detection block's paragraph continues past
+# its last pinned word.
+_PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE = (
+    "use `main` / `origin/main` as the placeholder for the base the recipe reports"
+)
+_PINNED_SYNC_CALLERS_POINTER_CLAUSE = (
+    "at the `/ready-for-review` pre-push gate and the `/respond-pr` precheck. "
+    "See `docs/worktree-bash-guard.md` for why the two skill-driven callers go "
+    "through a dedicated script instead of restating the recipe inline."
+)
+_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE = (
+    "After the SessionStart advisory, run the recipe and sync to the branch "
+    "its `Default branch:` or `Base branch:` line names, not the advisory's. "
+    "If the recipe exits non-zero, report its stderr and stop. "
+    "Sync nothing against the advisory's branch."
+)
+_PINNED_SYNC_ADVISORY_REASON_CLAUSE = (
+    "The hook never reads `git config branch.<branch>.gh-merge-base`, so on a "
+    "stacked branch its advisory counts against the default branch."
+)
+_REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE = "Same detection primitive everywhere"
+
+
+def test_git_feature_branch_sync_sends_a_stacked_branch_to_the_recipes_base() -> None:
+    """The sync skill's `main` / `origin/main` examples stand for the base the
+    recipe reports, and after the SessionStart advisory (default-branch only) the
+    agent runs the recipe and syncs to the branch its `Default branch:` or
+    `Base branch:` line names, stopping when the recipe exits non-zero. Deleting
+    the placeholder clause or the advisory-redirect clause lets an agent primed
+    by the advisory run a literal `git rebase origin/main` on a stacked branch.
+    Deleting the advisory-reason clause drops the sentence that the hook never
+    reads the stack-base key and so counts against the default branch, which is
+    why the redirect is needed. The callers-pointer assert guards the callers
+    sentence staying adjacent to its `docs/worktree-bash-guard.md` pointer. The
+    paragraph assert guards the post-advisory instruction staying in its own
+    paragraph."""
+    skill_md_path = _skill_file("git-feature-branch-sync")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    detecting_start, detecting_end = _section_between(lines, "## Detecting divergence", skill_md_path)
+    preamble_collapsed = " ".join("".join(lines[:detecting_start]).split())
+    detecting_collapsed = " ".join("".join(lines[detecting_start:detecting_end]).split())
+
+    assert _PINNED_SYNC_PREAMBLE_PLACEHOLDER_CLAUSE in preamble_collapsed, (
+        f"{skill_md_path}: the preamble no longer says `main` / `origin/main` stand for the base the recipe reports"
+    )
+    assert " ".join(_PINNED_SYNC_CALLERS_POINTER_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer keeps the callers sentence and its "
+        "`docs/worktree-bash-guard.md` pointer adjacent"
+    )
+    assert "\n\nAfter the SessionStart advisory" in "".join(lines[detecting_start:detecting_end]), (
+        f"{skill_md_path}: '## Detecting divergence' no longer puts the post-advisory instruction in its own paragraph"
+    )
+    assert " ".join(_PINNED_SYNC_ADVISORY_REDIRECT_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer tells the agent to sync to the branch the recipe "
+        "names rather than the advisory's, or no longer stops on a failed recipe"
+    )
+    assert " ".join(_PINNED_SYNC_ADVISORY_REASON_CLAUSE.split()) in detecting_collapsed, (
+        f"{skill_md_path}: '## Detecting divergence' no longer says the hook never reads the stack-base key"
+    )
+    assert _REMOVED_SYNC_UNIFORM_PRIMITIVE_SENTENCE not in skill_md_path.read_text(), (
+        f"{skill_md_path}: the sentence calling the hook and the recipe one uniform detection primitive is back"
+    )
 
 
 _READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
@@ -7298,7 +8163,8 @@ class TestStowedScriptPathContract:
 #
 # Four tests:
 # 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
-#    verbatim on the two surviving contract tokens.
+#    verbatim on the surviving contract tokens (path template, background-spawn
+#    rule, whole-file read-back).
 # 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
 #    may receive a findings_path.
 # 3. Script-invocation presence check across the three dispatchers.
@@ -7315,14 +8181,18 @@ _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 # used ("not `run_in_background`"), not the bare `run_in_background` token —
 # a future edit permitting background spawn would still contain the bare
 # substring and pass while re-introducing the same-turn read-back race the
-# rule exists to prevent. ready-for-review/SKILL.md is deliberately excluded
-# here: it spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-
-# <suffix>.md`, not the `<agent-name>` placeholder) and says "synchronously"
-# rather than carrying the `not run_in_background` phrase, so its contract
-# statement is not a verbatim match for these two tokens.
+# rule exists to prevent. The read-back token guards removal of the
+# whole-file-read sentence, not a scope qualifier appended to it later.
+# ready-for-review/SKILL.md is deliberately excluded here, because its contract
+# statement is not a verbatim match for these tokens.
+# It spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-<suffix>.md`,
+# not the `<agent-name>` placeholder).
+# It says "synchronously" rather than carrying the `not run_in_background` phrase.
+# Its read-back sentence carries no scope qualifier.
 _FINDINGS_PATH_RECIPE_TOKENS = (
     "agent-reviews/<agent-name>-<suffix>.md",
     "not `run_in_background`",
+    "`Read` the whole findings file, whatever its finding count",
 )
 
 
@@ -7354,7 +8224,7 @@ def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() ->
         )
 
 
-_LEDGER_INLINE_OBLIGATION_TOKEN = "copied into the spawn prompt as literal text"
+_LEDGER_INLINE_OBLIGATION_TOKEN = "**Ledger cross-check** instruction's own wording copied into the spawn prompt as literal text"
 
 
 def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -> None:
@@ -7366,16 +8236,14 @@ def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -
     Sampled dispatches carried a pointer instead of the inlined instruction,
     so the obligation to inline it is pinned at the spawn step rather than
     left to a one-time skill-review pass to keep catching a reversion.
-    Scoped to the text preceding the "## Ledger cross-check" heading rather
-    than a file-wide substring search: the token is a future-proofing bound,
-    not a condition that holds today (the token currently appears nowhere
-    inside that section) — if a later edit to the section's own wording ever
-    introduces the token or a shorter substring of it there, an unscoped
-    search would stop catching a reverted spawn-step paragraph.
+    The token is the Ledger cross-check clause's own wording, so the
+    declaration block's copy-as-literal-text sentence cannot satisfy it.
+    The search is scoped to the text preceding the "## Ledger cross-check"
+    heading, so wording inside that section cannot satisfy it either.
     """
     routing_text = _ROUTING_MD_PATH.read_text()
     ledger_heading = "## Ledger cross-check"
-    heading_index = routing_text.index(ledger_heading)
+    heading_index = routing_text.index(f"\n{ledger_heading}")
     spawn_step_text = routing_text[:heading_index]
 
     assert _LEDGER_INLINE_OBLIGATION_TOKEN in spawn_step_text, (
@@ -7385,6 +8253,248 @@ def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -
         "the Ledger cross-check section is not sufficient, since the "
         "spawned reviewer's prompt must carry the instruction's literal "
         "wording."
+    )
+
+
+_CODE_REVIEW_SKILL_PATH = _skill_file("code-review")
+_PLAN_REVIEW_SKILL_PATH = _skill_file("plan-review")
+_CODE_REVIEW_STEP_1_HEADING = "## Step 1 — Implementation-fitness gate"
+_PLAN_REVIEW_OUTPUT_HEADING = "## Output format"
+_ROUTING_ROLES_HEADING = "## Reviewer roles"
+
+# Each skip pin runs from its first word to its sentence's closing period, so an arm added in that span breaks the match.
+# A pin does not detect text inserted ahead of its first word.
+_CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE = (
+    "are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`, "
+    "and name the surface in the output."
+)
+_CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE = "Any other row skip that rests on Step 1's declaration needs the same value."
+_CODE_REVIEW_CISO_SKIP_CLAUSE = (
+    "high-stakes-boundary case is non-optional, **unless** Step 1 reports `declared: dev-only, cooperative` "
+    "and the change crosses no privilege boundary."
+)
+_ROUTING_REVIEWER_SKIP_CLAUSE = (
+    "Skip only when Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change "
+    "outside that reviewer's threat model — and name the skip rationale in the output, not silently."
+)
+_ROUTING_CISO_SKIP_CLAUSE = (
+    "high-stakes-boundary case is non-optional, **unless** Step 4 reports `declared: dev-only, cooperative` "
+    "and that declaration puts the change outside `ciso-reviewer`'s threat model."
+)
+
+# (file, section heading, clause). Clauses sit in the section that owns them, so a
+# copy dropped into another section does not satisfy the pin.
+_DECLARATION_WIRING_CLAUSES = (
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "Also declare the user surface and threat tier the change serves as a `declared: <surface>, <tier>` tag "
+        "on the **Spawn decisions:** line",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "ticket or an instruction-file line added or edited anywhere since the merge base",
+    ),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_STEP_1_HEADING, "can raise a field but never settles one"),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "A plan for a branch other than the one under review is no source",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "When those sources cannot settle both fields, report `declared: undeclared`",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_STEP_1_HEADING,
+        "Defensive paths against an actor or input the declared tier excludes",
+    ),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_HIGH_STAKES_SKIP_CLAUSE),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_OTHER_ROW_SKIP_CLAUSE),
+    (_CODE_REVIEW_SKILL_PATH, _CODE_REVIEW_RIPPLE_HEADING, _CODE_REVIEW_CISO_SKIP_CLAUSE),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "When Step 1 declared a value other than `undeclared`, also pass that `declared:` value "
+        "and the declaration block",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "The declaration block is the text that follows this sentence through the last item of the list below, "
+        "copied into the spawn prompt as literal text",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "review as you would without this declaration, and drop no finding because of it",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "Put `beyond declaration` in the heading or first line of a finding whose failure needs a user, actor or input "
+        "that the declaration excludes and the change does not reach",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "The surface is `dev-only` when nothing the change does or adds reaches a production system, production data, "
+        "end users, a copy installed for anyone beyond those who build and test it",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_RIPPLE_HEADING,
+        "or readers beyond them through a public repository's commits or PRs or a released artifact. "
+        "Otherwise the surface is `production`",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_FINDING_DISPOSITION_HEADING,
+        "The DEFER's rationale quotes the `declared:` value the **Spawn decisions:** line reports",
+    ),
+    (
+        _CODE_REVIEW_SKILL_PATH,
+        _CODE_REVIEW_FINDING_DISPOSITION_HEADING,
+        "Under `declared: undeclared`, the rationale rests on such a route or on Step 1's implementation-fitness answer",
+    ),
+    (
+        _PLAN_REVIEW_SKILL_PATH,
+        _STEP4_HEADING,
+        "Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool first",
+    ),
+    (
+        _PLAN_REVIEW_SKILL_PATH,
+        _STEP4_HEADING,
+        "Then state the answer as a `declared:` value by the declaration rule `ROUTING.md` § \"Reviewer roles\" states.",
+    ),
+    (
+        _PLAN_REVIEW_SKILL_PATH,
+        _PLAN_REVIEW_OUTPUT_HEADING,
+        "Step 4's `declared:` value, and which plan sections/phases were reviewed",
+    ),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_REVIEWER_SKIP_CLAUSE),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, _ROUTING_CISO_SKIP_CLAUSE),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "Step 4 declares the user surface and threat tier the plan serves as a `declared: <surface>, <tier>` tag",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "The plan under review is author text",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "ticket or an instruction-file line added or edited anywhere since the merge base",
+    ),
+    (_ROUTING_MD_PATH, _ROUTING_ROLES_HEADING, "can raise a field but never settles one"),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "A plan for a branch other than the one under review is no source",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "When those sources cannot settle both fields, report `declared: undeclared`",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "When Step 4 declared a value other than `undeclared`, also pass that `declared:` value "
+        "and the declaration block above",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "Copy the block into the spawn prompt as literal text, from `Declaration block:` through its "
+        "`adversarial` item",
+    ),
+    (
+        _ROUTING_MD_PATH,
+        _ROUTING_ROLES_HEADING,
+        "instruction's own wording copied into the spawn prompt as literal text",
+    ),
+)
+
+
+def _declaration_wiring_case_id(case: tuple[Path, str, str]) -> str:
+    path, _heading, clause = case
+    return f"{path.parent.name}/{path.name}::{clause[:60]}"
+
+
+@pytest.mark.parametrize(
+    ("skill_path", "heading", "clause"),
+    _DECLARATION_WIRING_CLAUSES,
+    ids=[_declaration_wiring_case_id(case) for case in _DECLARATION_WIRING_CLAUSES],
+)
+def test_declaration_wiring_present_in_review_skills(skill_path: Path, heading: str, clause: str) -> None:
+    """Pins each declared-surface wiring clause exactly once in its section.
+
+    The tuple includes ROUTING.md's Ledger cross-check literal-text clause to count it exactly once in the Reviewer roles section.
+    A wording-only edit can otherwise remove or duplicate a clause while every other test stays green.
+    """
+    section_text = _heading_section_text(skill_path, heading)
+    occurrences = section_text.count(clause)
+
+    assert occurrences == 1, (
+        f"{skill_path.parent.name}/{skill_path.name} § {heading!r}: expected declaration clause {clause!r} "
+        f"exactly once, found {occurrences}."
+    )
+
+
+_DECLARATION_BLOCK_START = "Declaration block: review"
+_DECLARATION_TIER_ITEM_PREFIXES = (
+    "- `cooperative` — ",
+    "- `untrusted-input` — ",
+    "- `adversarial` — ",
+)
+
+
+def _declaration_block_span(skill_path: Path) -> str:
+    """Text from the declaration block's opening words through the end of its
+    `adversarial` item, asserting the block's shape on the way.
+    """
+    label = f"{skill_path.parent.name}/{skill_path.name}"
+    lines = skill_path.read_text().splitlines()
+    start_indexes = [index for index, line in enumerate(lines) if _DECLARATION_BLOCK_START in line]
+    assert len(start_indexes) == 1, (
+        f"{label}: expected exactly one line containing {_DECLARATION_BLOCK_START!r}, found {len(start_indexes)}."
+    )
+    start_index = start_indexes[0]
+    for offset, prefix in enumerate(_DECLARATION_TIER_ITEM_PREFIXES, start=1):
+        item_index = start_index + offset
+        item_line = lines[item_index] if item_index < len(lines) else ""
+        assert item_line.startswith(prefix), (
+            f"{label}: the line {offset} after the declaration block's opening line must start with {prefix!r}. "
+            "The opening paragraph must be a single physical line, followed immediately by the tier items."
+        )
+    end_index = start_index + len(_DECLARATION_TIER_ITEM_PREFIXES) + 1
+    line_after_block = lines[end_index] if end_index < len(lines) else ""
+    assert end_index >= len(lines) or not line_after_block.strip() or line_after_block.startswith("#"), (
+        f"{label}: the line after the declaration block's `adversarial` item must be blank, a heading or end of file, "
+        f"found {line_after_block!r} — text added there sits outside the compared span."
+    )
+    opening_line = lines[start_index]
+    opening_text = opening_line[opening_line.index(_DECLARATION_BLOCK_START) :]
+    return "\n".join([opening_text, *lines[start_index + 1 : end_index]])
+
+
+def test_declaration_block_identical_in_code_review_and_routing() -> None:
+    """plan-review/ROUTING.md keeps its own copy of code-review/SKILL.md's
+    declaration block, and the two must match.
+    """
+    code_review_block = _declaration_block_span(_CODE_REVIEW_SKILL_PATH)
+    routing_block = _declaration_block_span(_ROUTING_MD_PATH)
+
+    assert code_review_block == routing_block, (
+        "code-review/SKILL.md and plan-review/ROUTING.md carry different declaration blocks — "
+        "a fix to the block lands in both copies."
     )
 
 
@@ -7882,28 +8992,70 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
 
 
 @pytest.mark.parametrize(
-    "phrase, heading",
+    "phrase, heading, consequence",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
             None,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
             _REVIEW_PR_STEP_7_HEADING,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="verify-before-apply-correction",
+        ),
+        pytest.param(
+            "replace the leading `agent-reviews` with the directory it prints, so each "
+            "file is `<printed directory>/<agent-name>-<suffix>.md`",
+            None,
+            "the guard against a reviewer spawned from the main tree being given a "
+            "relative `findings_path`, having its findings-file `Write` denied by the "
+            "worktree gate, and losing its findings (REFERENCES.md § 'Why spawned "
+            "reviewers write findings to a temporary directory').",
+            id="reviewer-findings-dir",
+        ),
+        pytest.param(
+            "reports a write whose file you cannot `Read`, or reports a path that "
+            "names a different file, has not reviewed: re-dispatch it once with no "
+            "`findings_path`",
+            None,
+            "the only fail-closed rule for a reviewer with no retrievable findings: "
+            "if any one of its two triggers (an unreadable file, a mismatched reported "
+            "path) or its re-dispatch action is lost, a reviewer whose findings cannot "
+            "be read is counted as having reviewed, so its findings are silently "
+            "absent from the review.",
+            id="reviewer-findings-fallback",
+        ),
+        pytest.param(
+            "`Read` only the path you handed that reviewer",
+            None,
+            "the guard against a steered reviewer's pointer line moving the session's "
+            "`Read` to a file of the reviewer's choosing.",
+            id="reviewer-findings-handed-path",
+        ),
+        pytest.param(
+            "before any reviewer spawns, run the script below",
+            None,
+            "the instruction that obtains the findings directory: without it the "
+            "session has no printed directory to put in place of `agent-reviews`, so "
+            "reviewers keep the relative `findings_path` the worktree gate denies "
+            "from the main tree.",
+            id="reviewer-findings-dir-creation",
         ),
     ],
 )
 def test_review_pr_skill_carries_retained_control(
-    phrase: str, heading: str | None
+    phrase: str, heading: str | None, consequence: str
 ) -> None:
     """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
-    standing override and the verify-before-apply rule. The override sits above
-    the first `##` heading, so it is checked file-wide; the verify rule is
-    checked in step 7's consult section. Claims presence only, not that the
-    agent obeys it."""
+    standing override, the reviewer-findings-directory creation and rewrite,
+    the re-dispatch rule, the handed-path `Read` rule, and the
+    verify-before-apply rule. The override and the four findings-directory
+    rules sit above the file's `##` headings, so they are checked file-wide;
+    the verify rule is checked in step 7's consult section. Claims presence
+    only, not that the agent obeys it."""
     skill_path = _skill_file("review-pr")
     if heading is None:
         searched_text = " ".join(skill_path.read_text().split())
@@ -7912,6 +9064,56 @@ def test_review_pr_skill_carries_retained_control(
         searched_text = _heading_section_text(skill_path, heading)
         searched_where = f"review-pr/SKILL.md's {heading!r} section"
     assert phrase in searched_text, (
-        f"{searched_where} no longer carries {phrase!r}, a control that "
-        "review-pr keeps itself rather than deferring to Agent Core."
+        f"{searched_where} no longer carries {phrase!r}, {consequence}"
+    )
+
+
+def test_review_pr_skill_mentions_findings_path_only_in_the_preamble() -> None:
+    """The literal `findings_path` token must appear somewhere above the first
+    `## ` heading of review-pr/SKILL.md, where the standing override sits. It
+    must appear on no line under a `## ` heading, because a step-level
+    instruction there could contradict the override's reviewer findings
+    directory. The rest of the preamble is unchecked. Only the literal token is
+    scanned, so a paraphrase without it passes."""
+    skill_lines = _skill_file("review-pr").read_text().splitlines()
+    first_section_index = next(
+        (index for index, line in enumerate(skill_lines) if line.startswith("## ")),
+        len(skill_lines),
+    )
+    preamble_lines = skill_lines[:first_section_index]
+    section_lines = skill_lines[first_section_index:]
+    assert any("findings_path" in line for line in preamble_lines), (
+        "review-pr/SKILL.md's preamble ahead of the first `## ` heading no longer "
+        "mentions `findings_path`. Either the standing override that hands "
+        "reviewers a findings file path is gone from the preamble, or a `## ` "
+        "heading now sits above it so it falls under a section."
+    )
+    stray_lines = [line for line in section_lines if "findings_path" in line]
+    assert not stray_lines, (
+        "review-pr/SKILL.md mentions `findings_path` under a `##` section: "
+        f"{stray_lines!r}. A step-level `findings_path` instruction can "
+        "contradict the override's reviewer findings directory."
+    )
+
+
+@pytest.mark.parametrize(
+    "dispatcher_name, dispatcher_path",
+    [
+        pytest.param("code-review/SKILL.md", _skill_file("code-review"), id="code-review"),
+        pytest.param("plan-review/ROUTING.md", _ROUTING_MD_PATH, id="plan-review"),
+    ],
+)
+def test_review_dispatchers_still_hand_reviewers_a_relative_agent_reviews_findings_path(
+    dispatcher_name: str, dispatcher_path: Path
+) -> None:
+    """review-pr/SKILL.md's standing override rewrites the leading
+    `agent-reviews` of the `findings_path` each dispatcher hands a reviewer. A
+    dispatcher reword away from `findings_path: agent-reviews/` would make that
+    rewrite a silent no-op, leaving a main-tree session's reviewers with a path
+    the worktree gate denies."""
+    dispatcher_text = " ".join(dispatcher_path.read_text().split())
+    assert "findings_path: agent-reviews/" in dispatcher_text, (
+        f"{dispatcher_name} no longer hands reviewers `findings_path: agent-reviews/`, "
+        "so review-pr/SKILL.md's override that replaces the leading `agent-reviews` "
+        "no longer applies to it."
     )

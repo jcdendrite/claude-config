@@ -320,7 +320,7 @@ class TestRequireSkillReview:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         # Produce the correct marker value, then relocate it under the other
@@ -1434,7 +1434,7 @@ class TestRequireSkillReview:
             f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
-    # Mirrors test_lib.py's four test_lib_capped_for_* functions, split the
+    # Mirrors test_lib_capped_for.py's four test_lib_capped_for_* functions, split the
     # same way: each case gets its own skip guard, since pytest.skip()
     # aborts the whole function and would otherwise let a PATH missing
     # timeout(1) also skip the neither-present uncapped-fallback case below.
@@ -2043,7 +2043,7 @@ def _three_commit_stateless_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     for message in ("commit one", "commit two", "commit three"):
         (repo / "f").write_text(message + "\n")
@@ -2596,7 +2596,7 @@ def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "wt-branch", str(worktree)], cwd=clone, check=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=worktree, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
 
     skill_rel_path = "claude-skills/skills/example-skill/SKILL.md"
@@ -2616,7 +2616,7 @@ def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / "f").write_text("origin-edit\n")
     (push_clone / skill_rel_path).write_text("upstream edited skill\n")
@@ -2891,7 +2891,7 @@ class TestSkillReviewGateMergeAwareVerdict:
         subprocess.run(
             ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
         )
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
         (push_clone / skill_rel).write_text("upstream edited skill\n")
         subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
@@ -3019,7 +3019,7 @@ def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_r
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / "f").write_text("origin-edit\n")
     (push_clone / y_rel).write_text(_BROKEN_SKILL_MD)
@@ -3282,7 +3282,7 @@ class TestSkillReviewGateAnchorRejection:
     """Anchor rejection at verdict level, wiring-only: proves the closure-copy
     claim (a forged or untrusted anchor cannot release the gate) reaches the
     real hook, not just the primitive. Every anchor-rejection shape is
-    already pinned directly against `_lib_gate_diff_base` in test_lib.py's
+    already pinned directly against `_lib_gate_diff_base` in test_lib_gate_diff_base.py's
     TestGateDiffBaseUntrustedAnchor, TestGateDiffBaseAnchorNamespaceShadow,
     and TestGateDiffBaseTopologyFallback, and
     test_shared_closure_function_is_identical_across_stowed_and_plugin_lib
@@ -3294,7 +3294,7 @@ class TestSkillReviewGateAnchorRejection:
         """Wiring-only: an untrusted anchor (an unpushed local branch's
         MERGE_HEAD tip, neither an ancestor of origin/<default> nor of HEAD)
         denies the real hook. The anchor-rejection matrix itself lives in
-        test_lib.py, not this class."""
+        test_lib_gate_diff_base.py, not this class."""
         repo = _build_unpushed_local_branch_merge_with_untouched_gated_skill(tmp_path)
 
         base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
@@ -3329,7 +3329,7 @@ def _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path, name="repo"):
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "f").write_text("seed\n")
     subprocess.run(["git", "add", "f"], cwd=repo, check=True)
@@ -3423,7 +3423,7 @@ def _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path):
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / skill_rel).write_text("origin-edit\n")
     subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
@@ -3448,7 +3448,7 @@ class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
 
     def test_unmerged_gated_path_still_lists_under_name_only_against_a_tree(self, tmp_path):
         """Unit layer, modeled on
-        test_lib.py::test_git_diff_cached_against_unresolved_conflict_git_primitive_fact:
+        test_lib_gate_diff_base.py::test_git_diff_cached_against_unresolved_conflict_git_primitive_fact:
         gated_paths_at_base's own invocation shape (`--name-only`, a tree
         argument, a pathspec) still reports an unmerged path, so a
         conflicted SKILL.md is not silently dropped from the base-relative
@@ -3456,7 +3456,7 @@ class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         skill_rel = "claude-skills/skills/conflicted-skill/SKILL.md"
         skill_path = repo / skill_rel
@@ -3583,7 +3583,7 @@ def _build_merge_conflicting_in_two_gated_skills(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     for name, skill_rel in skill_paths.items():
         (push_clone / skill_rel).write_text(render_body(name, "origin line"))
@@ -3694,7 +3694,7 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         list, joined by `, ` -- not merely a bare mention anywhere in the
         message. The set-difference matching semantics that decide which
         paths land in that list (exact line, not substring) are pinned
-        directly against `_lib_conflict_marker_deny_paths` in test_lib.py's
+        directly against `_lib_conflict_marker_deny_paths` in test_lib_skill_management_plugin_lib.py's
         TestConflictMarkerDenyPaths."""
         conflicted_path = "skills/x/SKILL.md"
         repo, _ = _build_merge_conflicting_in_two_gated_skills(
@@ -3719,7 +3719,7 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         the conflicted one's full text, submitted through the real
         `git diff -G` / `git grep -L` calls in require-skill-review.sh.
         The pure set-difference semantics are unit-pinned separately in
-        test_lib.py's TestConflictMarkerDenyPaths; this test only confirms
+        test_lib_skill_management_plugin_lib.py's TestConflictMarkerDenyPaths; this test only confirms
         the real git output reaches `_lib_conflict_marker_deny_paths`
         unchanged."""
         conflicted_path = "skills/x/SKILL.md"
@@ -5614,7 +5614,7 @@ def _init_repo_with_novel_reach_probe_skill(repo_path):
     commit and a novel gated SKILL.md staged."""
     repo_path.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo_path, check=True)
     (repo_path / "file.txt").write_text("first\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo_path, check=True)

@@ -87,6 +87,7 @@ class TestSchema:
             "test_selection_tracking": "false",
             "architect_fix_plan_pilot": "false",
             "review_orchestrator_routing": "false",
+            "plugin_bootstrap": "true",
         }
 
     @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)

@@ -12,13 +12,14 @@ from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import corpus, pricing, render, review_rounds, scope
+from transcript_analysis import corpus, pricing, render, review_rounds, scope, subagent_mix
 
 from .conftest import (
     _agent_use,
     _priced,
     _skill_block,
     _slash_user,
+    _task_notification_msg,
     _tool_result,
     _user_msg,
     _write_jsonl,
@@ -82,7 +83,7 @@ def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     (acct_a / "projects").mkdir(parents=True)
     acct_b = tmp_path / "acct-b"
     (acct_b / "projects").mkdir(parents=True)
-    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
     roots_file = tmp_path / "roots"
     roots_file.write_text(f"{acct_b}\n")
@@ -293,6 +294,55 @@ class TestComputeReviewRoundCosts:
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
         assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+
+    @staticmethod
+    def _round_with_a_task_notification_between_two_reviewer_dispatches() -> list[dict]:
+        return [
+            _priced(  # opening turn: $0.20, dispatches reviewer a1
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg(  # launch acknowledgement for the backgrounded a1
+                [_tool_result("a1", "launched")], branch="feat", ts="2026-08-01T10:00:05.000Z",
+            ),
+            _task_notification_msg(branch="feat", ts="2026-08-01T10:01:00.000Z"),  # a1 finished
+            _priced(  # response turn: $0.40, dispatches reviewer a2
+                "claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z",
+                content=[_agent_use("a2", "staff-backend-engineer")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),  # closes the window
+            _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
+        ]
+
+    def test_task_notification_does_not_end_the_window_of_a_backgrounded_round(self):
+        """GH-1312: the window runs past a reviewer's task notification to the next human prompt."""
+        records = self._round_with_a_task_notification_between_two_reviewer_dispatches()
+        assert review_rounds.detect_round_windows(records) == [(0, 4, "code-review")]
+
+    def test_round_prices_the_turns_and_dispatches_after_a_task_notification(self, fake_projects):
+        """GH-1312: the main-thread turn answering a reviewer's notification, and the second-wave
+        reviewer it dispatches, are priced into the round; the turn after the next human prompt is not."""
+        session_id = "sess-1"
+        _write_jsonl(
+            fake_projects / f"{session_id}.jsonl",
+            self._round_with_a_task_notification_between_two_reviewer_dispatches(),
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_priced("claude-sonnet-5", input=250_000, branch="feat", ts="2026-08-01T10:02:30.000Z")],  # $0.50
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["main_dollars"] == pytest.approx(0.20 + 0.40)
+        assert r["agent_dollars"] == pytest.approx(1.00 + 0.50)
+        assert r["agents"] == 2
 
     def test_nested_dispatch_from_inside_a_subagent_is_priced_into_the_round(self, fake_projects):
         """An Agent/Task tool_use inside a subagent's own transcript, whose
@@ -1353,11 +1403,29 @@ class TestOrchestratorRoundCosts:
 
     def test_parent_turns_after_the_orchestrator_returns_are_priced_until_the_next_fresh_prompt(self, fake_projects):
         """The fixture's return is a tool_result record, which is never a
-        fresh prompt. A task-notification return reads as a fresh prompt and
-        ends the window, which this fixture does not cover."""
+        fresh prompt."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
             _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),  # $0.40
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
+        ])
+        _write_orchestrator_subagent_tree(fake_projects, "sess-1")
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert len(data["rounds"]) == 1
+        assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+
+    def test_parent_turns_after_a_task_notification_return_are_priced_until_the_next_fresh_prompt(
+        self, fake_projects,
+    ):
+        """GH-1312: a backgrounded orchestrator returns as a task-notification user record, which is
+        not a fresh prompt, so the parent turn answering it stays inside the window."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            _task_notification_msg(branch="feat", ts="2026-08-01T10:01:00.000Z"),
             _priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),  # $0.40
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
             _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
@@ -1413,7 +1481,7 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         captured = capsys.readouterr()
 
         # The command priced the orchestrator round with its dispatch and its nested reviewer.
@@ -1438,7 +1506,7 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         captured = capsys.readouterr()
 
         # The command priced the orchestrator round with its dispatch and nested reviewer.
@@ -1464,12 +1532,25 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_counts", _recording_compute_review_round_counts)
 
-        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+        spawn_counts_seen_by_command: list[dict] = []
+        real_spawn_counts_by_agent_type = subagent_mix._spawn_counts_by_agent_type
+
+        def _recording_spawn_counts_by_agent_type(*args, **kwargs):
+            spawn_counts = real_spawn_counts_by_agent_type(*args, **kwargs)
+            spawn_counts_seen_by_command.append(spawn_counts)
+            return spawn_counts
+
+        monkeypatch.setattr(subagent_mix, "_spawn_counts_by_agent_type", _recording_spawn_counts_by_agent_type)
+
+        subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         captured = capsys.readouterr()
 
-        assert [round_counts["code-review"] for round_counts in round_counts_seen_by_command] == [1]
+        assert sum(round_counts["code-review"] for round_counts in round_counts_seen_by_command) == 1
+        # The nested staff-sdet spawn lives only in the subagents/ file, so it is counted only
+        # when cost-counts loads subagent transcripts.
+        assert sum(spawn_counts.get("staff-sdet", 0) for spawn_counts in spawn_counts_seen_by_command) == 1
         self._assert_prefix_absent(captured.out, captured.err)
 
 
@@ -1480,7 +1561,7 @@ class TestCmdReviewRoundCost:
     def test_empty_corpus_prints_no_rounds_message(self, fake_projects, capsys):
         """No session files at all -- the empty-state branch prints its own
         message and returns, with no traceback."""
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert out.rstrip("\n").splitlines()[-1] == "No review rounds found in scope."
 
@@ -1491,7 +1572,7 @@ class TestCmdReviewRoundCost:
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _priced("claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z"),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert out.rstrip("\n").splitlines()[-1] == "No review rounds found in scope."
 
@@ -1515,7 +1596,7 @@ class TestCmdReviewRoundCost:
             ),
             _user_msg("u3", branch="feat", ts="2026-08-01T10:05:00.000Z"),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "rounds=3  (code-review=1  plan-review=1  ready-for-review=1)" in out
         assert "Totals: 1 branches, 3 rounds (code-review=1  plan-review=1  ready-for-review=1)" in out
@@ -1542,16 +1623,16 @@ class TestCmdReviewRoundCost:
 
         disclosed_args = _review_round_cost_args(this_repo=True)
         disclosed_args._this_repo_slugs = ["-home-user-repo-a"]
-        _mod.cmd_review_round_cost(disclosed_args)
+        review_rounds.cmd_review_round_cost(disclosed_args)
         disclosed_out = capsys.readouterr().out
         assert "account-1/secret-branch" in disclosed_out
-        assert _mod._DO_NOT_PUBLISH_BANNER in disclosed_out
+        assert scope._DO_NOT_PUBLISH_BANNER in disclosed_out
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         redacted_out = capsys.readouterr().out
         assert "account-1/branch-1" in redacted_out
         assert "secret-branch" not in redacted_out
-        assert _mod._DO_NOT_PUBLISH_BANNER in redacted_out
+        assert scope._DO_NOT_PUBLISH_BANNER in redacted_out
 
     def test_skill_with_zero_invocations_anywhere_reports_no_data_mean(self, fake_projects, capsys):
         """A fixture corpus where two of the three REVIEW_SKILLS have zero
@@ -1565,7 +1646,7 @@ class TestCmdReviewRoundCost:
             ),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "plan-review no data" in out
         assert "ready-for-review no data" in out
@@ -1585,7 +1666,7 @@ class TestCmdReviewRoundCost:
             ),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert secret_path not in out
 
@@ -1606,7 +1687,7 @@ class TestCmdReviewRoundCost:
             ),
             _user_msg("u2", branch="feat", ts="2026-08-01T10:03:00.000Z"),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args(skill="plan-review"))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(skill="plan-review"))
         out = capsys.readouterr().out
         assert "rounds=1  (code-review=0  plan-review=1  ready-for-review=0)" in out
 
@@ -1633,7 +1714,7 @@ class TestCmdReviewRoundCost:
             fake_projects, session_id, "agent-1", "a1",
             [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],
         )
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "round $1.60 of $1.60 branch $ (100.0%)" in out
         assert "Non-round dollars: 0.0% of branch dollars fell outside every round window" in out
@@ -1678,7 +1759,7 @@ class TestCmdReviewRoundCost:
         total_agent_dollars = 0.0  # no _agent_use dispatch in this fixture
         expected_agent_pct = render._pct_of(total_agent_dollars, total_branch_dollars)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "Totals: 2 branches, 2 rounds (code-review=1  plan-review=1  ready-for-review=0)" in out
         assert "Mean rounds per branch: 1.00" in out
@@ -1710,7 +1791,7 @@ class TestCmdReviewRoundCost:
         expected_agent_pct = render._pct_of(agent_dollars, branch_dollars)
         assert expected_agent_pct != "0.0%"
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert f"Subagent-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
 
@@ -1769,7 +1850,7 @@ class TestCmdReviewRoundCost:
         root_b_pct = render._pct_of(root_b_branch_dollars - root_b_round_dollars, root_b_branch_dollars)
         root_b_agent_pct = render._pct_of(0.0, root_b_branch_dollars)  # no _agent_use dispatch in root B's fixture
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
 
         assert "account-1 Totals: 2 branches, 2 rounds (code-review=2  plan-review=0  ready-for-review=0)" in out
@@ -1816,7 +1897,7 @@ class TestCmdReviewRoundCost:
             _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
 
         assert "account-1 Mean $ per round — code-review 0.20  plan-review no data  ready-for-review no data" in out
@@ -1854,7 +1935,7 @@ class TestCmdReviewRoundCost:
             _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(skill="code-review"))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(skill="code-review"))
         out = capsys.readouterr().out
 
         assert "account-1 Totals: 1 branches, 1 rounds (code-review=1  plan-review=0  ready-for-review=0)" in out
@@ -2526,7 +2607,7 @@ class TestPooledPricingTrustLines:
         order, so keep it ordered."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         self._force_both_lines_on_for_any_live_clock(monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
         out = capsys.readouterr().out
 
         _, sep, after_caption = out.partition(review_rounds._POOLED_CAPTION)
@@ -2543,7 +2624,7 @@ class TestPooledPricingTrustLines:
         direct-render test below, which this CLI-boundary refusal never reaches."""
         self._force_both_lines_on_for_any_live_clock(monkeypatch)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
 
         assert exc.value.code == 2
         out = capsys.readouterr().out
@@ -2562,7 +2643,7 @@ class TestPooledPricingTrustLines:
         os.chmod(sealed_jsonl, 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(sealed_jsonl, 0o644)
 
@@ -2694,7 +2775,7 @@ class TestPooledPricingTrustLines:
             return datetime(clock_date.year, clock_date.month, clock_date.day, 12, tzinfo=tz)
 
         monkeypatch.setattr(review_rounds, "datetime", types.SimpleNamespace(now=faked_now))
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
 
         assert now_tz_arguments == [UTC]
@@ -2746,7 +2827,7 @@ class TestPooledPricingTrustLines:
                 content=[_agent_use("spawn-without-a-subagent-file", "staff-sdet")],
             ),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out, err = capsys.readouterr()
 
         assert review_rounds._POOLED_FORMAT_DRIFT_LINE not in out
@@ -2770,7 +2851,7 @@ class TestPooledPricingTrustLines:
                 request_id=drifting_request_id,
             ),
         ])
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out, err = capsys.readouterr()
 
         assert out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < out.index(self._FIRST_SHARE_HEADER)
@@ -2807,7 +2888,7 @@ class TestPooledPricingTrustLines:
                 ),
             ],
         )
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out, err = capsys.readouterr()
 
         assert out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < out.index(self._FIRST_SHARE_HEADER)
@@ -2827,7 +2908,7 @@ class TestPooledOverriddenRootsLine:
         self, tmp_path, monkeypatch, capsys, show_withheld,
     ):
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
         out = capsys.readouterr().out
 
         lead_in = review_rounds._POOLED_SHOW_WITHHELD_BANNER if show_withheld else review_rounds._POOLED_PUBLICATION_POINTER
@@ -2842,7 +2923,7 @@ class TestPooledOverriddenRootsLine:
     ):
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         monkeypatch.setattr(review_rounds, "declared_roots_file_is_overridden", lambda: False)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
         out = capsys.readouterr().out
 
         assert review_rounds._POOLED_CAPTION in out
@@ -2860,7 +2941,7 @@ class TestPooledOverriddenRootsLine:
 
         monkeypatch.setattr(review_rounds, "declared_roots_file_is_overridden", raising_overridden_roots_predicate)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
 
         assert exc.value.code == 2
         assert capsys.readouterr().out == ""
@@ -2941,7 +3022,7 @@ class TestCmdReviewRoundCostPooled:
         monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {"model-long-past": date(2000, 1, 1)})
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         block = capsys.readouterr().out
 
         _, sep, after_caption = block.partition(review_rounds._POOLED_CAPTION)
@@ -2982,7 +3063,7 @@ class TestCmdReviewRoundCostPooled:
         # priced branch spend" -- the figure_re alternative the first
         # corpus above never exercises, since every branch there is priced.
         _pooled_two_root_zero_priced_dollars_fixture(tmp_path / "zero-priced", monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         degenerate_block = capsys.readouterr().out
         _, degenerate_sep, degenerate_after_caption = degenerate_block.partition(review_rounds._POOLED_CAPTION)
         assert degenerate_sep, "_POOLED_CAPTION not found verbatim in the printed block"
@@ -3176,9 +3257,9 @@ class TestCmdReviewRoundCostPooled:
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         plain_out = capsys.readouterr().out
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         show_withheld_out = capsys.readouterr().out
 
         _, sep, after_caption = plain_out.partition(review_rounds._POOLED_CAPTION)
@@ -3196,20 +3277,20 @@ class TestCmdReviewRoundCostPooled:
         and the per-branch Totals: line, have no pooled counterpart in any
         form -- asserted by absence."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "Mean rounds per branch" not in out
         assert "Totals:" not in out
 
     def test_banner_suppressed_under_pooled_but_present_without_it(self, tmp_path, monkeypatch, capsys):
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         pooled_out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in pooled_out
+        assert scope._DO_NOT_PUBLISH_BANNER not in pooled_out
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         unpooled_out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in unpooled_out
+        assert scope._DO_NOT_PUBLISH_BANNER in unpooled_out
 
     def test_publication_pointer_present_and_show_withheld_banner_absent_without_the_flag(
         self, tmp_path, monkeypatch, capsys,
@@ -3220,7 +3301,7 @@ class TestCmdReviewRoundCostPooled:
         when the flag is passed; this is that test's negative case.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out, err = capsys.readouterr()
         assert out.count(review_rounds._POOLED_PUBLICATION_POINTER) == 1
         assert review_rounds._POOLED_SHOW_WITHHELD_BANNER not in out
@@ -3236,11 +3317,11 @@ class TestCmdReviewRoundCostPooled:
 
         disclosed_args = _review_round_cost_args(this_repo=True)
         disclosed_args._this_repo_slugs = ["-home-user-repo-a", "-home-user-repo-b"]
-        _mod.cmd_review_round_cost(disclosed_args)
+        review_rounds.cmd_review_round_cost(disclosed_args)
         disclosed_out = capsys.readouterr().out
         assert "feat-a1-secret-branch" in disclosed_out
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         pooled_out = capsys.readouterr().out
         assert "feat-a1-secret-branch" not in pooled_out
 
@@ -3253,7 +3334,7 @@ class TestCmdReviewRoundCostPooled:
         absence from the header line.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
         assert not re.search(r"\d+\s+roots?\b", out)
@@ -3371,7 +3452,7 @@ class TestCmdReviewRoundCostPooled:
         """
         monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "account-" not in out
 
@@ -3409,7 +3490,7 @@ class TestCmdReviewRoundCostPooled:
 
     def test_refuses_branches_flag(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, branches="feat"))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, branches="feat"))
         assert exc.value.code == 2
         assert "--branches" in capsys.readouterr().err
 
@@ -3420,31 +3501,31 @@ class TestCmdReviewRoundCostPooled:
         On this single-root fixture the root-count refusal also exits 2, so
         the message assertion, not the exit code, pins this check."""
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, projects=projects))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, projects=projects))
         assert exc.value.code == 2
         assert "--projects" in capsys.readouterr().err
 
     def test_refuses_skill_flag(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, skill="code-review"))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, skill="code-review"))
         assert exc.value.code == 2
         assert "--skill" in capsys.readouterr().err
 
     def test_refuses_since_flag(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, since="2026-08-01"))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, since="2026-08-01"))
         assert exc.value.code == 2
         assert "--since/--until" in capsys.readouterr().err
 
     def test_refuses_until_flag(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, until="2026-08-01"))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, until="2026-08-01"))
         assert exc.value.code == 2
         assert "--since/--until" in capsys.readouterr().err
 
     def test_refuses_top_level_config_dir(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, config_dir="/tmp/some-other-account"))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, config_dir="/tmp/some-other-account"))
         assert exc.value.code == 2
         assert "--config-dir" in capsys.readouterr().err
 
@@ -3461,9 +3542,9 @@ class TestCmdReviewRoundCostPooled:
         args = _mod.build_parser().parse_args(
             ["--config-dir", str(tmp_path), "review-round-cost", "--pooled"]
         )
-        assert args.func == _mod.cmd_review_round_cost
+        assert args.func == review_rounds.cmd_review_round_cost
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(args)
+            review_rounds.cmd_review_round_cost(args)
         assert exc.value.code == 2
         assert "--config-dir" in capsys.readouterr().err
 
@@ -3485,7 +3566,7 @@ class TestCmdReviewRoundCostPooled:
         through the hand-rolled Namespace stand-in."""
         args = _mod.build_parser().parse_args(["review-round-cost", "--show-withheld"])
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(args)
+            review_rounds.cmd_review_round_cost(args)
         assert exc.value.code == 2
         err = capsys.readouterr().err
         assert "--show-withheld" in err
@@ -3500,7 +3581,7 @@ class TestCmdReviewRoundCostPooled:
             ["review-round-cost", "--pooled", "--branches", "feat"]
         )
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(args)
+            review_rounds.cmd_review_round_cost(args)
         assert exc.value.code == 2
         assert "--branches" in capsys.readouterr().err
 
@@ -3538,7 +3619,7 @@ class TestCmdReviewRoundCostPooled:
 
     def test_refuses_this_repo_on_single_root_fixture(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
         assert exc.value.code == 2
         assert "--this-repo" in capsys.readouterr().err
 
@@ -3549,7 +3630,7 @@ class TestCmdReviewRoundCostPooled:
         above."""
         _two_declared_roots(tmp_path, monkeypatch)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
         assert exc.value.code == 2
         assert "--this-repo" in capsys.readouterr().err
 
@@ -3560,7 +3641,7 @@ class TestCmdReviewRoundCostPooled:
         ever reaches this check.
         """
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         err = capsys.readouterr().err
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
@@ -3621,7 +3702,7 @@ class TestCmdReviewRoundCostPooled:
         os.chmod(roots[1], 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(roots[1], 0o755)
         assert exc.value.code == 2
@@ -3643,7 +3724,7 @@ class TestCmdReviewRoundCostPooled:
         os.chmod(roots[0], 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(roots[0], 0o755)
         assert exc.value.code == 2
@@ -3678,13 +3759,13 @@ class TestCmdReviewRoundCostPooled:
         (acct_b / "projects").mkdir(parents=True)
         acct_c = tmp_path / "acct-c"
         (acct_c / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{acct_b}\n{acct_c}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))  # raises SystemExit on failure
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))  # raises SystemExit on failure
         out = capsys.readouterr().out
         assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
 
@@ -3708,7 +3789,7 @@ class TestCmdReviewRoundCostPooled:
         os.chmod(sealed_proj, 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(sealed_proj, 0o755)
         assert exc.value.code == 2
@@ -3728,7 +3809,7 @@ class TestCmdReviewRoundCostPooled:
         os.chmod(sealed_jsonl, 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(sealed_jsonl, 0o644)
         assert exc.value.code == 2
@@ -3753,7 +3834,7 @@ class TestCmdReviewRoundCostPooled:
         os.chmod(sealed_target_parent, 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(sealed_target_parent, 0o755)
         assert exc.value.code == 2
@@ -3793,7 +3874,7 @@ class TestCmdReviewRoundCostPooled:
             (roots[1] / "-home-user-repo-b" / f"{link_name}.jsonl").symlink_to(outside_transcript)
 
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
 
         assert exc.value.code == 2
         out, err = capsys.readouterr()
@@ -3812,12 +3893,12 @@ class TestCmdReviewRoundCostPooled:
         with --show-withheld so the compared output carries numeric figures.
         """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         without_alias_out, _ = capsys.readouterr()
         assert _count_numeric_share_lines(without_alias_out) == len(review_rounds._POOLED_STAT_KEYS)
 
         (roots[1] / "-home-user-repo-b-alias").symlink_to(roots[1] / "-home-user-repo-b", target_is_directory=True)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         with_alias_out, with_alias_err = capsys.readouterr()
 
         assert with_alias_out == without_alias_out
@@ -3838,7 +3919,7 @@ class TestCmdReviewRoundCostPooled:
         (session_dir / "subagents").mkdir()
         os.chmod(session_dir, 0o000)
         try:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(session_dir, 0o755)
         out, err = capsys.readouterr()
@@ -3857,14 +3938,14 @@ class TestCmdReviewRoundCostPooled:
         compared output carries numeric figures.
         """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         clean_out, _clean_err = capsys.readouterr()
         assert _count_numeric_share_lines(clean_out) == len(review_rounds._POOLED_STAT_KEYS)
 
         with open(roots[1] / "-home-user-repo-b" / "sess-b1.jsonl", "ab") as fh:
             fh.write(b"\xff\xfe not valid utf-8\n")
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         out, err = capsys.readouterr()
         assert out == clean_out
         assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in err
@@ -3879,7 +3960,7 @@ class TestCmdReviewRoundCostPooled:
         this fixture's degenerate shares would otherwise produce.
         """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         first_out, first_err = capsys.readouterr()
         assert _count_numeric_share_lines(first_out) == len(review_rounds._POOLED_STAT_KEYS)
         assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in first_err
@@ -3890,7 +3971,7 @@ class TestCmdReviewRoundCostPooled:
         (proj_b / "empty.jsonl").write_text("")
         (proj_b / "stray.jsonl").mkdir()
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         second_out, second_err = capsys.readouterr()
         assert second_out == first_out
         assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in second_err
@@ -3913,7 +3994,7 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
@@ -3940,7 +4021,7 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
@@ -3962,7 +4043,7 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(scope, "resolve_scan_roots", _raise)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
@@ -3989,7 +4070,7 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", _raise)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert out == ""
@@ -4009,7 +4090,7 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
         with pytest.raises(RuntimeError, match=marker):
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=False))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=False))
 
     def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
         """Two real `python3` subprocesses, not two in-process calls, since
@@ -4257,7 +4338,7 @@ class TestCmdReviewRoundCostPooled:
             _user_msg("thanks", branch="feat-b-filler", ts="2026-08-01T11:01:00.000Z"),
         ])
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
 
         share_of_sums = round(100 * (0.20 + 0.60) / (0.40 + 1.00), 1)  # 57.1 -- correct
@@ -4463,7 +4544,7 @@ class TestCmdReviewRoundCostPooled:
             _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -4489,7 +4570,7 @@ class TestCmdReviewRoundCostPooled:
         """
         monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "(95% CI not computed — no priced branch spend)" in out
 
@@ -4915,7 +4996,7 @@ class TestCmdReviewRoundCostPooled:
         the message alone, not the printed side effect.
         """
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out = capsys.readouterr().out
         assert out == ""
@@ -4936,7 +5017,7 @@ class TestCmdReviewRoundCostPooled:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert out == ""
@@ -4957,7 +5038,7 @@ class TestCmdReviewRoundCostPooled:
         _pooled_resolved_scope_header doesn't reach.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         err = capsys.readouterr().err
         assert not any(c.isdigit() for c in err)
         assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in err
@@ -4984,7 +5065,7 @@ class TestCmdReviewRoundCostPooled:
         with roots_file.open("a") as f:
             f.write(f"{bare_dir_1}\n{bare_dir_2}\n")
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         err = capsys.readouterr().err
         assert not any(c.isdigit() for c in err)
         assert err.count(review_rounds._DECLARED_ROOT_SKIPPED_NOTICE) == 1
@@ -5177,12 +5258,12 @@ class TestCmdReviewRoundCostPooled:
 
         monkeypatch.setattr(review_rounds, "compute_review_round_costs", wrapped_compute)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         pooled_err = capsys.readouterr().err
         assert "<placeholder-diagnostic>" not in pooled_err
         assert pooled_err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
 
-        _mod.cmd_review_round_cost(_review_round_cost_args())
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
         non_pooled_err = capsys.readouterr().err
         assert "<placeholder-diagnostic>" in non_pooled_err
         assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in non_pooled_err
@@ -5271,7 +5352,7 @@ class TestPooledShowWithheld:
         monkeypatch.setattr(scope, "resolve_scan_roots", _fail_if_called)
 
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(show_withheld=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(show_withheld=True))
         assert exc.value.code == 2
         err = capsys.readouterr().err
         assert "--show-withheld" in err
@@ -5286,7 +5367,7 @@ class TestPooledShowWithheld:
         scope-narrowing refusal."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(
+            review_rounds.cmd_review_round_cost(
                 _review_round_cost_args(pooled=True, show_withheld=True, branches="feat-a")
             )
         assert exc.value.code == 2
@@ -5297,7 +5378,7 @@ class TestPooledShowWithheld:
         2 with nothing on stdout, so the flag never prints a figure for a
         single-account pool."""
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         assert exc.value.code == 2
         out, err = capsys.readouterr()
         assert out == ""
@@ -5313,7 +5394,7 @@ class TestPooledShowWithheld:
         os.chmod(roots[1], 0o000)
         try:
             with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+                review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         finally:
             os.chmod(roots[1], 0o755)
         assert exc.value.code == 2
@@ -5341,7 +5422,7 @@ class TestPooledShowWithheld:
             _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         out, err = capsys.readouterr()
         assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
         assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1

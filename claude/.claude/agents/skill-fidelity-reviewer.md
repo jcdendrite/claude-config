@@ -100,8 +100,8 @@ completed `code-review` pass(es) in scope:
    fresh from disk.
 2. Form your own independent judgment of which rows this diff matches,
    applying the table's own qualifiers exactly as it states them — e.g. a
-   high-stakes row naming a "declared dev-only... no production-reachable
-   surface" carve-out does not count as matched when the diff genuinely
+   high-stakes row whose carve-out needs `declared: dev-only, cooperative`
+   does not count as matched when the diff genuinely
    meets that carve-out. Do not defer to `code-review`'s own "Spawn
    decisions:" text — you weren't given it; judge independently from the
    diff.
@@ -195,18 +195,34 @@ When your invocation prompt includes `findings_path: <path>`:
    - Write is explicitly authorized to create this file despite the general .md-creation default.
    Structure the file as:
    - `# skill-fidelity-reviewer` (H1 title)
-   - One H2 per finding: `## <angle-name>`, then file:line, issue, production
-     failure mode, required property
-   - Final section: `## Recommendations` — severity-sorted bullets using
-     `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
+   - One H2 per finding, most severe first: `## R<n> [<severity>] <angle-name>`,
+     numbering findings from `R1`, with `<severity>` one of `BLOCKER`,
+     `CONCERN`, or `FYI`; then file:line, issue, production failure mode,
+     required property
+   - `R<n>` is local to this file: cite a finding in another file by that
+     file's name and its id
+   - With no findings, a line saying so
+   - No summary section — the parent reads the whole file
+   - `## Answers`, only when the dispatch prompt poses specific questions:
+     one or two lines per question, citing the `R<n>` finding or the
+     evidence (file:line, or the search you ran) it rests on. An answer
+     that needs more support than that is a finding: write it as one and
+     cite it.
+   - Prior decisions the prompt hands you (a ledger digest, disposition
+     records, assumption-ledger rows) that the current text still matches
+     with no new site, and earlier fixes you confirmed landed in full: name
+     them on one line, by id where one exists, without restating them.
+     Anything else about one is a finding that cites its id: a new site it
+     would cover, a contradiction, a reopened row, a missing or partial fix,
+     or a record you cannot parse.
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
+   `<N>` is the number of `R<n>` headings, FYIs included.
    Do not include findings inline when `findings_path` is present (the parent
    reads them from the file) — doing so is a defect.
-   If the dispatch prompt poses specific questions, answer them inside the
-   findings file (e.g. under an `## Answers` heading) — not in the inline
-   return. The inline summary stays one sentence regardless of how many
-   questions the prompt asks.
+   Answer the prompt's questions in the file, not in the inline return.
+   The inline summary stays one sentence regardless of how many questions
+   the prompt asks.
    **If the Write call fails**, do not report success. Instead, state the failure
    explicitly and fall back to the **Inline output** format.
 
@@ -219,7 +235,7 @@ structure exists only here, so it is specified separately rather than folded
 into the shared block. Step 2 already told you to write this the moment you
 reach each undecidable determination — this is the exact shape to write it in:
 
-- File-based output: group dismissals together, between the per-finding H2s and `## Recommendations`, under a heading that identifies them as declined coverage — `## Dismissed as undecidable` is a reasonable choice, but the exact wording is not required: nothing downstream parses it mechanically. What matters is that each dismissal names the skill and the reason, and that the group is identifiable as dismissals rather than scattered through unrelated prose. Not a finding — still required, since this is the parent's visible record that coverage was declined rather than clean.
+- File-based output: group dismissals together, after the per-finding H2s, under a heading that identifies them as declined coverage — `## Dismissed as undecidable` is a reasonable choice, but the exact wording is not required: nothing downstream parses it mechanically. What matters is that each dismissal names the skill and the reason, and that the group is identifiable as dismissals rather than scattered through unrelated prose. Not a finding — still required, since this is the parent's visible record that coverage was declined rather than clean.
 - Pointer line: `Wrote findings to <path>. Found <N> issues, <M> dismissed as undecidable. <One-sentence summary>.` A dismissal is never counted in `<N>`. `/ready-for-review` reads the whole findings file after every dispatch, not just this line — but `<M>` is what a reader scanning only the pointer line sees, so keep it accurate regardless of file-body formatting.
 
 Example:

@@ -7,7 +7,7 @@ name, a truncation caveat, or the execution-surface match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
-`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a `gh api user` call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
+`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a `gh api user` call, a paginated existing-reviews fetch, a paginated inline-review-comments fetch, and, only when the PR's base is not the default branch, up to eight `gh pr list` lookups for the stack walk (see "The stacked-target gate" below) — all inside the one script call, not typed out per-run.
 
 - **The printed document overwrites `gh pr view`'s `files` and `commits`
   keys with different shapes.** `files` is an array of path strings and
@@ -72,12 +72,204 @@ name, a truncation caveat, or the execution-surface match list still holds.
   timeout.** Its eight capped `gh` calls sum to 160 seconds: the two
   `gh pr view` calls, the REST call, and the `gh api user` call at 10 seconds
   each, and the four paginated calls (files, commits, reviews, inline
-  comments) at 30 seconds each. The tool's default timeout is 120000 ms and
-  its documented maximum is 600000 ms, so SKILL.md Step 1 sets
-  `timeout: 600000` for it.
+  comments) at 30 seconds each. A stacked PR adds up to eight `gh pr list`
+  lookups at 10 seconds each, for up to sixteen `gh` calls and 240 seconds.
+  Both figures count `gh` caps only; the walk's up to nine `jq` calls (one per
+  lookup and one for the document) add up to 45 seconds more. The tool's
+  default timeout is 120000 ms and its documented maximum is 600000 ms, so
+  SKILL.md Step 1 sets `timeout: 600000` for it.
   The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` each state a
   "Worst-case wall time" that exceeds the default, so Step 1 sets the same
   timeout for them.
+
+## The stacked-target gate (Step 1 / Step 2)
+
+`review_pr_walk_stack` in `_review-pr-lib.sh` follows the target's base branch
+down through the open same-repository PRs that use each branch as their head.
+`review-pr-acquire.sh` prints the result as `baseStack`. `review-pr-checkout.sh`
+and `review-pr-diff.sh` re-walk it and exit 4 while an ancestor PR has no
+submitted review. The lib's header and tests own the exact contract.
+
+**Lookup.**
+
+- **One lookup per level:** `gh pr list -R <owner>/<repo> --head=<branch>
+  --state open --limit 100 --json number,title,author,headRefName,baseRefName,isCrossRepository,reviews`.
+- **`--head` matches the branch name only.** `gh pr list --help` reads:
+  `-H, --head string       Filter by head branch ("<owner>:<branch>" syntax not supported)`
+  (gh 2.101.0). The same version's `PullRequestList` query binds the value as
+  the GraphQL variable `$headBranch`, read from the binary's embedded query
+  text and not run. The `--head=<branch>` form keeps the name in one argv token.
+- **`--head` matches case-exactly.** Checked live against a public repository:
+  the exact-case head returned the PR and the case-flipped head returned `[]`,
+  so a fork PR whose head differs only in case never reaches the verdict.
+- **A fork PR whose branch has the same name comes back too.** The verdict keeps
+  only `isCrossRepository == false` items. On a popular public repository a full
+  page of fork PRs can occur, so a full page reads as undecided (`truncated`)
+  instead of "no ancestor".
+- **`--head=` with an empty value returns the unfiltered list.** The walk
+  rejects an empty branch name on every iteration, and the verdict rejects an
+  empty `baseRefName`.
+- **The lookup is open-only.** A branch whose PR merged or closed has no open
+  PR, so it ends the walk at a root with no open PR, like a long-lived branch
+  that never had one.
+- **`gh` exits 4 when a command needs authentication.** Every caller maps a walk
+  failure to a literal `exit 2`, so only the gate's own `exit 4` produces 4.
+
+**Review items.**
+
+- **Fields:** each `reviews` item carries `author.login`, `authorAssociation`,
+  `state`, and `submittedAt`, observed under gh 2.101.0.
+- **Page size:** `gh pr list --json reviews` embeds `reviews(first: 100)`, read
+  from the same binary and not run, so the list is a prefix once it holds 100
+  entries.
+- **Re-verify on every `gh` upgrade:** `reviewListFull` mirrors that page size.
+  If `gh` changes the size, a truncated list reads as complete and the
+  `review-list-full` concern never raises.
+- **The gate is unaffected by a truncated list,** since it needs only one
+  submitted review.
+- **Re-capture the fixture on every `gh` upgrade:**
+  `claude/.claude/scripts/tests/fixtures/gh-pr-list-reviews-sample.json` is
+  shaped from gh 2.101.0 output, and a changed `author` or `submittedAt` shape
+  otherwise leaves the suite green against a stale fixture.
+- **The fixture is incomplete:** it holds no `PENDING` review and no
+  deleted-account (null `author`) review. Only the test double models those
+  shapes, so they are unverified against real `gh`.
+
+- **The gate is "any submitted review".** A review in any state except
+  `PENDING`, in any letter case, clears it: `APPROVED`, `CHANGES_REQUESTED`,
+  `COMMENTED`, `DISMISSED`, an empty-body review, a self-review, a bot review,
+  and any other non-empty state.
+- **Why the first 100 suffice for the gate.** GitHub keeps a `PENDING` review
+  visible only to its author, and the gate assumes one user holds at most one
+  per PR (unverified). A page of 100 then always holds a submitted review when
+  one exists. If that assumption is false, the gate can over-refuse, reading a
+  page of `PENDING` drafts as "no review". That costs availability, never gate
+  integrity, because a wrong reading never clears an unreviewed ancestor.
+- **A long review list is cut for display, not for advice.** Each ancestor's
+  `reviews` keeps the first 10 distinct (author, association, state,
+  `byPrAuthor`) entries in the order `gh` returns them, which is unverified and
+  expected to be oldest first, and `reviewsNotShown` counts the rest. The
+  advice flags are computed over every review in the list.
+- **`existingReviews`, `latestReviews`, and `reviewDecision` are not read.**
+  `existingReviews` drops empty-body reviews. Whether `reviewDecision` is empty
+  when a repository requires no reviews is unverified, and so is whether
+  `latestReviews` counts `COMMENTED` or `DISMISSED` reviews.
+
+**Advice rules.** The gate refuses only where no review exists. The document's
+`concerns`, `choices`, and `recommendedChoice` carry a stricter, advisory
+reading, computed by the script.
+
+- **`changesRequested`** is true when some reviewer's latest review among their
+  `APPROVED` and `CHANGES_REQUESTED` reviews requests changes.
+  - Latest means the greatest `submittedAt`. GitHub's GraphQL `DateTime` is
+    documented as an ISO-8601 encoded UTC date string, so string order is time
+    order for the whole-second `YYYY-MM-DDTHH:MM:SSZ` form (unverified for any
+    other form).
+  - A tie goes to `CHANGES_REQUESTED`.
+  - A `DISMISSED` review never supersedes another review. A dismissed change
+    request carries state `DISMISSED` itself and drops out, while an approval
+    that was later dismissed leaves the earlier change request standing.
+  - A review with a null or empty login is never grouped, so it stands alone.
+- **`byPrAuthor`** compares the review author's login with the PR author's.
+  gh gives a bot PR author as `app/<name>` and the same bot's review author as
+  the bare `<name>`, so the PR author's leading `app/` is removed first when
+  `is_bot` is true.
+- **`selfReviewOnly`** is true when every submitted review has `byPrAuthor` true.
+- **`reviewListFull`** is true when the review list holds 100 entries, so the
+  advice may have read only a prefix. It raises the `review-list-full` concern.
+- **The advice detects no bots.** gh's review author carries `{"login": ...}`
+  only, with no bot marker, a bot reviewer's login has no `[bot]` suffix, and
+  its `authorAssociation` reads `CONTRIBUTOR`. Only the REST review list marks
+  bots, and reading it costs one more call per level. The question shows each
+  review's login and association, and the engineer judges them.
+- **The recommendation depends on whether the stack is blocked.**
+  - With an unreviewed ancestor, the script recommends `stop` when the root has
+    no open PR or an ancestor nearer the root than the lowest unreviewed PR has a
+    concern, and `review-lowest` otherwise. `review-lowest` always restarts on
+    the lowest unreviewed PR, whose own question recommends `stop` on that
+    concern. A concern on an ancestor between that PR and the
+    target is shown but does not change the recommendation, because reviewing
+    the lowest PR is still the next step.
+  - With every ancestor reviewed, any concern on any ancestor, or on the root,
+    recommends `stop`, and no concern recommends `proceed`.
+- **Non-ASCII text reaches the engineer as `\uXXXX` escapes by design.** Ancestor
+  titles and logins print as ASCII-only JSON strings, so a CJK or accented title
+  shows as escapes. The PR number stays readable beside it.
+- **In self-authored mode, the operator's own comment review on their own
+  ancestor raises `self-review-only`,** so the script recommends `stop`. The
+  script compares logins only, so a review the operator posted through this
+  skill's self-authored route counts as the author's own. Re-reviewing that PR
+  cannot clear the concern. `proceed` stays offered.
+- **Stale reviews draw no concern.** A review left at an older commit still
+  counts, and so does an ancestor whose only reviews are `DISMISSED`.
+
+**Caps.**
+
+- **100 items per lookup** is GitHub's GraphQL page maximum, and a larger
+  `--limit` makes `gh` paginate, which would break the single-request cap.
+- **Eight lookups.** No vendor limit backs the value. One lookup costs at most
+  15 seconds (the 10 second `gh` cap and one 5 second `jq` cap), so eight cost
+  120 seconds. Each script's usage text states its resulting worst case in its
+  "Worst-case wall time" paragraph: `review-pr-checkout.sh` and
+  `review-pr-diff.sh`.
+- **Outsiders can cause the `truncated` and timeout stops on a public
+  repository.** Fork PRs that reuse a branch name fill the lookup page, and a
+  large reply can run into the `gh` or `jq` cap. Both fail closed.
+- **A fork-PR author chooses the base branch that starts the walk.** These
+  stops are therefore reachable by that author: `ambiguous`, a cycle, the depth
+  cap, and exit 4 for an unreviewed same-repository PR. The refusal comes
+  before the file listing, so on the diff-only path no execution-surface audit
+  ran. A refused fork PR carries no audit result, so the refusal is not
+  evidence about its file list.
+
+**Stack shapes.**
+
+- **Native and manually chained stacks use one path.** GitHub's native stacked
+  PRs (created with `gh stack`, the UI, or the Stacks API) target the branch of
+  the PR below, and a manual chain does the same, so the base-to-head walk
+  covers both without reading the native `stack` object.
+- **Only the default branch ends the walk as a trusted root.** A protected or
+  long-lived branch does not, so protection is not read: REST "List branches"
+  with `protected=true` returns only branches with protections or rulesets, and
+  using it would cost another call per level.
+- **A root with no open PR clears the gate but recommends `stop`.** The
+  `root-without-open-pr` concern names the two routes: have the root branch's
+  owner open a (draft) PR from it, then review that PR, or retarget the PR that
+  targets the root branch if the branch already merged. `baseStack.ancestors`
+  is ordered root-nearest first, so the first ancestor listed is the PR that
+  targets the root branch, and the target itself is that PR when there are no
+  ancestors.
+- **A long-lived branch heading an open promotion PR is an ancestor like any
+  other.** While that PR has no submitted review, every PR into the branch exits
+  4. One submitted review on it clears every PR into the branch for as long as
+  it stays open.
+- **A base branch that heads two or more open same-repository PRs cannot be
+  reviewed through this skill.** A GitFlow release branch, which heads one PR
+  into the default branch and another into the development branch, is the usual
+  case. The verdict is `ambiguous`, so acquire, checkout, and diff all exit 2 and stay
+  refused until all but one of those PRs are closed or merged, or this PR is
+  retargeted onto a different branch.
+
+**What the gate is.** A Step 2 time-of-check and a process guard against a
+missed review, not an adversarial control. A retarget after Step 2 is not
+re-checked. The lib's persistent-cause note ends only the failures that
+re-running cannot clear. A reply the walk could not read carries no note,
+because both PR data and a `jq` cap kill can produce it.
+
+**Token classes.** The `gh pr list` lookup including `reviews` was verified
+under one fine-grained personal access token. That token's minimum permission
+set (Pull requests: read, Metadata: read) was not isolated. Every other token
+class is unverified (classic personal access tokens, GitHub App installation
+tokens, `GITHUB_TOKEN`, OAuth app tokens). A class that cannot read `reviews`
+fails closed and cannot review a stacked PR through this skill. Which shape the
+failure takes for a given class is unverified:
+
+- A `gh` call that exits non-zero ends in a line that names the token as a
+  possible cause.
+- A reply without a readable `reviews` list gets the unreadable-reply exit 2,
+  which carries no token hint.
+- An empty `reviews` list reads as unreviewed, so the scripts exit 4 until a
+  review is submitted that the token can read.
 
 ## Execution-surface file list (Step 2 / `audit-execution-surface.py`)
 
@@ -195,7 +387,9 @@ left implicit:
   same hit is reported on stderr as an `AUDIT_FINDING` line instead, and must
   be carried into the Step 5
   synthesized review as a blocking finding — there is no checkout for a
-  hard stop to protect.
+  hard stop to protect. The exception is a hit whose matched paths cannot be
+  recorded for `marker.sh`'s audit-path check: `review-pr-diff.sh` then prints
+  the match report with no `AUDIT_FINDING` line and aborts with exit 2.
 - **The diff itself may be truncated on an unusually large PR.** `gh pr
   diff`'s server-side truncation behavior on an unusually large PR is not
   confirmed against production. `review-pr-diff.sh` stops (exit 2) when the
@@ -256,10 +450,12 @@ left implicit:
     one-way retarget between the reads cannot skip the stacked delta audit. The
     attacker left in that window is the one the "Known gaps and operator
     choices" section accepts.
-  - `review-pr-diff.sh` reads the base branch name from the same `gh pr view`
-    response as `baseRefOid`, and only the default branch name from the REST
-    payload. No later read that a PR retarget can change feeds the token, so it
-    has no recheck after the file list. The diff file is not bound to the base
+  - `review-pr-diff.sh` reads the base branch name from the REST payload and
+    cross-checks it against `gh pr view`'s `baseRefName` before the stacked
+    gate. It exits 2 when either name is unreadable or the two differ. It
+    prints the token only when the agreed name equals the default branch. No
+    later read that a PR retarget can change feeds the token, so it has no
+    recheck after the file list. The diff file is not bound to the base
     the token describes: `gh pr diff` renders against the base the PR has when
     it runs. That GitHub serves the two fields of one response
     consistently is unverified, and `review-pr-checkout.sh` relies on the same.
@@ -365,17 +561,39 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   The protected-finding rule binds that fix too. A re-check or consult the
   human asks for after step 8 presents only proposes changes, which keeps
   the refusal fix the session's only change of its own.
-- **Residual.** The record is the session's own transcript, and every edit is
-  session-authored, because `plan-architect` holds no write tool. Nothing
-  mechanical detects a finding missing from the body. `marker.sh`'s body check
-  and `review-pr-post.sh`'s hash check prove only that the posted text equals
-  the marked text. The human's approval of the exact body is the backstop,
+- **Residual.** The record is the session's own transcript, and every edit to the body is
+  session-authored. `plan-architect`'s consult charter forbids `Edit`.
+  `enforce-marker-script-shape.sh` denies `plan-architect`'s `Edit` to the body on every install,
+  because the body sits under `.review-pr-active.d/` and the plan-writer registry
+  puts `plan-architect` on that gate's no-gate-release roster.
+  Nothing mechanical detects a finding missing from the body, except that in
+  `diff-only` mode `marker.sh`'s audit-path check confirms only that each
+  `AUDIT_FINDING` path's span is present. `marker.sh`'s
+  body check and `review-pr-post.sh`'s hash check prove only that the posted
+  text equals the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
   any `Edit` made after the last consult, the human's reading of the presented
-  text is the only content review. `marker.sh`'s attribution check and
-  credential scan check the body's shape, not its content, so step 8 presents
+  text is the only content review. `marker.sh`'s attribution check, credential
+  scan, and audit-path check inspect the body's shape and presence, not what a
+  finding says, so step 8 presents
   a fresh `Read` of the file and shows each such `Edit` as its verbatim old and
-  new strings.
+  new strings. The audit-path check has these limits:
+  - A span inside an HTML comment or a code block passes, and so does one
+    assembled from text around two code spans.
+  - A span longer than the refusal's per-span cap prints cut, so it cannot be
+    copied from the refusal.
+  - A recorded name the credential scan would refuse, or a path list too long
+    for jq's 5 s cap, leaves the review unmarked, to be posted by hand.
+  - A review posted by hand skips every check `marker.sh` runs at write time,
+    including the attribution prefix and trailer, the diff-only disclosure, the
+    credential scan, and the audit-path check. It also skips
+    every check in `review-pr-post.sh`, including its body-hash and remote head
+    checks.
+  - A PR author who has any audit-matched path with a credential-shaped
+    component, or who forces jq's cap, can force that route.
+  - The check accepts that route because an exemption would let a name opt
+    itself out of the check.
+  - A session that writes the provenance file itself defeats the check.
 - **`plan-architect`, `comment-discipline-reviewer`, and `skill-fidelity-reviewer`
   get no Bash.** These three hold no Bash, so
   the main session resolves the claims they mark as unchecked.
@@ -385,6 +603,31 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
+
+## Why spawned reviewers write findings to a temporary directory
+
+`/code-review` and `/plan-review` give each reviewer a relative `findings_path` under `agent-reviews/`, which resolves in the tree the session stands in.
+
+A `/review-pr` session may stand in the main tree, and `diff-only` mode has no review worktree. In a repo with worktree discipline on, `require-worktree-for-file-writes.sh` denies that `Write` from the main tree.
+
+`review-pr-reviewer-findings-dir.sh` creates the session's directory and prints its path. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. The session puts that directory in place of `agent-reviews/` in each reviewer's `findings_path`.
+
+The path starts with a literal `/tmp/`. `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` under `/tmp` as written, and `TMPDIR` can point elsewhere.
+
+`/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
+
+The session still reads each findings file in full, whatever its count, so files do not shrink context for reviewers that found something. Files do persist through context compaction.
+
+The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
+
+Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path names a different file than the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+
+If the script fails, the session leaves each dispatcher's relative `findings_path` in place. From the main tree of a repo with worktree discipline on, that `Write` is denied and the reviewer returns inline. From a linked worktree, or in a repo without worktree discipline, the file lands in that tree's ignored `agent-reviews/`. `review-pr-finish.sh` removes it only when that tree is one of this session's review worktrees. Handing reviewers no `findings_path` instead would force every reviewer inline, including where the relative path works. The session's one failure notice says where findings may land, and it does not sweep the leftover files, because `/code-review`'s own round files accumulate in the same directory and no script or skill removes them short of removing the whole tree. A leftover file holds reviewer output about the reviewed PR, and that output can quote the PR's own text. A later `/code-review` round-cap consult in that tree could take a leftover file whose name carries the branch's slug as its previous round's findings (`code-review/SKILL.md` § "Round-cap architect consult"). Guarding that selection belongs to `/code-review`, which serves every caller.
+
+Two other designs fail here:
+
+- A path under `<config-dir>/.review-pr-active.d/` is denied, because `deny-reviewer-tree-mutation.sh` denies a reviewer `Write` there.
+- Exempting an ignored `agent-reviews/` directory in the main-tree write gate fails, because it would relax `require-worktree-for-file-writes.sh`, a gate tiered `irreversible`, on false-positive cost alone, which `docs/hooks.md` § "Threat-model tiers" bars.
 
 ## Known gaps and operator choices
 
@@ -433,6 +676,25 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     empty one, is kept indefinitely.
   - Remove that file by hand, and the next sweep then evicts the session's
     other artifacts.
+- **A session that ends without `review-pr-finish.sh` leaves its reviewer
+  findings directory under `/tmp`.**
+  - The stale-marker sweep never reaches `/tmp`.
+  - To remove directories older than a day, run
+    `find -H /tmp -maxdepth 1 -type d -name 'review-pr-reviewer-findings-*' -mmin +1440 -exec rm -rf -- {} +`.
+  - Run it only when no `/review-pr` session is in flight. `-mmin` reads the
+    directory's own modification time, and rewriting a findings file does not
+    change it.
+  - macOS path handling is unverified.
+- **Prompting permission modes and synchronous reviewer spawns are untested for
+  the findings `Write` and `Read` under `/tmp`.**
+  - Only one background-spawned reviewer under the `auto` permission mode has
+    exercised them.
+  - In a mode that prompts for writes outside the project, each reviewer
+    `Write` and the session's `Read` may prompt.
+  - A declined `Write` sends the reviewer to its inline fallback.
+  - A `Read` the session cannot complete triggers the standing override's
+    re-dispatch.
+  - Both dispatchers spawn reviewers synchronously.
 - **The standing override's no-marker clause is prose only.** Nothing
   mechanical stops a completion-marker write for a skill other than
   `review-pr` while a review-pr session is in flight, because the main-tree

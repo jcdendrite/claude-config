@@ -73,15 +73,21 @@
 #     degrading gracefully.
 #   - The collision guard's liveness check (`kill -0` on a stored PID) can
 #     rarely false-deny if that PID is reused by an unrelated process after
-#     the original session exited — applies only to a foreign
-#     (different-session_id) or old-format lock, since a same-session resume
-#     recognizes its own lock by session_id before this check is ever
-#     reached; bounded and self-clearing once whatever now holds that PID
-#     number exits, not closed outright.
+#     the original session exited. The false deny is bounded and
+#     self-clearing once the process holding that PID number exits, not
+#     closed outright. `_lib_worktree_lock_is_mine` in `_lib.sh` decides which
+#     locks reach that check.
 #   - A `locked` file write killed mid-write (the 5s `_lib_capped` timeout)
-#     can leave a truncated `pid`/`session` field; a truncated session token
-#     fails the session-id character-class regex and is treated as
-#     unparseable, matching the guard's fail-closed default.
+#     can leave a truncated lock. A truncated lock reason that still matches
+#     the regex in `_lib_worktree_lock_pid` (`_lib.sh`) parses and is judged
+#     like any other lock. Any other truncation is unparseable and denied,
+#     matching the guard's fail-closed default.
+#   - A resumed session can be denied a worktree its own earlier process
+#     locked, while that process's PID is a live registered Claude Code
+#     process, whatever session it runs. See `_lib.sh`'s
+#     `_lib_worktree_collision_guard` known-gaps list.
+#   - A process can be allowed into a worktree that another process holds.
+#     See `_lib.sh`'s `_lib_worktree_collision_guard` known-gaps list.
 #   - A dead-PID lock the collision guard detects gets one claim-gated
 #     reclaim attempt (`_lib_worktree_reclaim_dead_lock` in `_lib.sh`) before
 #     falling back to a deny. A claim burnt by an interrupted eviction
@@ -187,7 +193,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate git discipline safely."
+  emit_deny "could not source _lib.sh. For the recovery, see docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repository; the user, not the agent, runs ./install.sh from the claude-config checkout in a separate terminal only if that runbook says so."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

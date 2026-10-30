@@ -69,8 +69,11 @@ class SessionPricingResult:
     total_micro_dollars: the sum of every session's micro_dollars_by_day values.
     total_unpriced_tokens: the sum of every session's unpriced_tokens_by_day values.
     unpriced_models: sorted model IDs of in-window turns whose model has no rate, except "<synthetic>" at zero
-        tokens. An absent, null, or non-string model is "". Before publishing or rendering entries, see the
-        doc section's "What the output can disclose" list.
+        tokens, empty only when the call passed include_unpriced_model_ids=False. An absent, null, or
+        non-string model is "". Before publishing or rendering entries, see the doc section's "What the
+        output can disclose" list.
+    unpriced_model_count: the count of distinct model IDs unpriced_models would hold, computed the same way
+        regardless of include_unpriced_model_ids.
     stale_models: sorted model IDs priced in-window, zero-token turns included, whose re-verify-by date is
         before as_of.
     pricing_fetch_date: the date the rate table was read from the vendor's pricing page.
@@ -89,6 +92,7 @@ class SessionPricingResult:
     total_micro_dollars: int
     total_unpriced_tokens: int
     unpriced_models: tuple[str, ...]
+    unpriced_model_count: int
     stale_models: tuple[str, ...]
     pricing_fetch_date: date
     pricing_reverify_by: date | None
@@ -274,6 +278,7 @@ def price_sessions_by_utc_day(
     start: date,
     end: date,
     as_of: date,
+    include_unpriced_model_ids: bool = True,
 ) -> SessionPricingResult:
     """Price every session's in-window assistant turns by UTC day, plus the facts that span the whole call.
 
@@ -281,6 +286,10 @@ def price_sessions_by_utc_day(
         passing a subagent file or one path twice double-counts.
     start, end: inclusive UTC dates.
     as_of: the date stale_models is judged against.
+    include_unpriced_model_ids: True (the default) populates the result's unpriced_models with the unpriced
+        model-ID strings. Pass False when the caller has nowhere safe to put untrusted transcript text that
+        could carry an account-identifying pre-announcement model name. unpriced_model_count is populated
+        either way.
 
     Raises ValueError or TypeError for a bad argument, and SessionPricingError for the first session that
     cannot be priced. The session_pricing.py section of docs/transcript-analysis-architecture.md is the
@@ -320,11 +329,13 @@ def price_sessions_by_utc_day(
             unpriced_tokens_by_model[model] = unpriced_tokens_by_model.get(model, 0) + tokens
 
     subagent_format_drift_detected = pricing._warn_if_subagent_format_drift(total_spawns, total_sidechain_turns)
+    reportable_unpriced_model_ids = pricing._reportable_unpriced_model_ids(unpriced_tokens_by_model)
     return SessionPricingResult(
         sessions=tuple(spends),
         total_micro_dollars=sum(sum(spend.micro_dollars_by_day.values()) for spend in spends),
         total_unpriced_tokens=sum(sum(spend.unpriced_tokens_by_day.values()) for spend in spends),
-        unpriced_models=tuple(sorted(pricing._reportable_unpriced_model_ids(unpriced_tokens_by_model))),
+        unpriced_models=tuple(sorted(reportable_unpriced_model_ids)) if include_unpriced_model_ids else (),
+        unpriced_model_count=len(reportable_unpriced_model_ids),
         stale_models=tuple(sorted(model for model in priced_models if pricing._rate_expired(model, as_of))),
         pricing_fetch_date=pricing._PRICING_FETCH_DATE,
         pricing_reverify_by=min((pricing._MODEL_RATE_EXPIRES[model] for model in priced_models), default=None),

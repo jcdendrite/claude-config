@@ -22,8 +22,17 @@ from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
+from transcript_analysis import corpus, cost, gh_cli, period_cost, pr_cost_ledger, pricing, scope
 
-from .conftest import _dollars_per_output_token, _priced, _record_ids_in_dollars, _signed_priced_turn, _write_jsonl
+from .conftest import (
+    _TASK_NOTIFICATION_TEXT,
+    _dollars_per_output_token,
+    _priced,
+    _record_ids_in_dollars,
+    _signed_priced_turn,
+    _task_notification_msg,
+    _write_jsonl,
+)
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -33,13 +42,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-period_cost = _mod.period_cost
-gh_cli = _mod.gh_cli
-pricing = _mod.pricing
-scope = _mod.scope
-cost_module = _mod.cost
-render_module = _mod.render
 
 # Captured before the hermetic fixture replaces them: subprocess.run for the one test that runs bash, and the clock
 # wrappers for the tests that read the real clocks.
@@ -166,6 +168,11 @@ def _user_prompt(position: int, text: str = "carry on", **kwargs) -> dict:
     rec = _plain("user", position, **kwargs)
     rec["message"] = {"content": text}
     return rec
+
+
+def _task_notification_record(position: int, **kwargs) -> dict:
+    """The conftest `_task_notification_msg` shape (envelope text plus `origin`), with this file's position-stamped fields."""
+    return {**_user_prompt(position, _TASK_NOTIFICATION_TEXT, **kwargs), "origin": _task_notification_msg()["origin"]}
 
 
 def _slash_invocation(position: int, skill: str = "review-pr", **kwargs) -> dict:
@@ -543,7 +550,11 @@ class TestClockWrappers:
         assert before <= result <= after
 
     def test_the_run_deadline_leaves_room_for_one_in_flight_gh_call_under_the_600_second_ceiling(self):
-        assert period_cost._RUN_DEADLINE_S + gh_cli._GH_CALL_TIMEOUT_S < 600
+        foreground_ceiling_s = 600
+        margin_s = 30
+        longest_gh_call_timeout_s = max(gh_cli._GH_CALL_TIMEOUT_S, gh_cli._GH_PR_LIST_TIMEOUT_S)
+
+        assert period_cost._RUN_DEADLINE_S + longest_gh_call_timeout_s + margin_s <= foreground_ceiling_s
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +797,29 @@ class TestReviewPrWindows:
 
         assert window.close_idx == 3
         assert window.fallback_close_kind is None
+        assert window.end_ts == float("inf")
+
+    def test_a_task_notification_after_the_finish_does_not_close_the_window(self):
+        """GH-1312: the harness's delivery of a finished background task is not the human speaking."""
+        records = [
+            _slash_invocation(1),
+            _acquire_record(2),
+            _finish_record(3),
+            _task_notification_record(4),
+            _user_prompt(5),
+        ]
+
+        (window,) = period_cost._review_pr_windows(records)
+
+        assert window.close_idx == 4
+        assert window.end_ts == _epoch(5)
+
+    def test_a_task_notification_at_session_end_closes_the_finished_window_there(self):
+        records = [_slash_invocation(1), _acquire_record(2), _finish_record(3), _task_notification_record(4)]
+
+        (window,) = period_cost._review_pr_windows(records)
+
+        assert window.close_idx == 4
         assert window.end_ts == float("inf")
 
     def test_a_finished_window_closes_at_a_following_skill_invocation_which_opens_a_second_window(self):
@@ -1374,8 +1408,8 @@ class TestGhKindForStatus:
         [
             pytest.param(gh_cli._GH_CALL_DEGRADED_AUTH, "auth", id="auth"),
             pytest.param(gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH, "host_mismatch", id="host_mismatch"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
             pytest.param(gh_cli._GH_PR_LIST_UNPARSEABLE, "unparseable", id="unparseable"),
         ],
     )
@@ -1449,6 +1483,21 @@ class TestStoredGhLoginWorks:
 class TestFetchPrLists:
     _GITHUB = ("github.com", "acme/widgets")
     _ENTERPRISE = ("ghe.example", "acme/tools")
+
+    def test_the_bulk_list_runs_under_the_bulk_list_timeout(self, monkeypatch):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            recorded_kwargs.append(kwargs)
+            return _completed(cmd, stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        sentinel_timeout_s = 123.0
+        monkeypatch.setattr(gh_cli, "_GH_PR_LIST_TIMEOUT_S", sentinel_timeout_s)
+
+        period_cost._fetch_pr_lists([self._GITHUB], deadline=period_cost._RUN_DEADLINE_S)
+
+        assert [kwargs["timeout"] for kwargs in recorded_kwargs] == [sentinel_timeout_s]
 
     def test_a_github_repository_is_listed_directly_with_no_auth_check(self, monkeypatch):
         call_log = _install_fake(
@@ -2498,7 +2547,7 @@ def _render(groups, *, flags=None, window=None):
     )
 
 
-_CAVEAT_LINE = "_" + cost_module._LIST_PRICE_CAVEAT + "_"
+_CAVEAT_LINE = "_" + cost._LIST_PRICE_CAVEAT + "_"
 _SCOPE_NOTE = (
     "_Counts one Claude Code account's spend across every repository its sessions worked in. Other accounts and other"
     " people's work are not included._"
@@ -2882,7 +2931,7 @@ class TestRenderSlackReport:
         assert _render(shuffled) == _render(groups)
 
     def test_the_list_price_caveat_carries_no_character_the_italic_markup_would_break_on(self):
-        assert not set("_*`") & set(cost_module._LIST_PRICE_CAVEAT)
+        assert not set("_*`") & set(cost._LIST_PRICE_CAVEAT)
 
 
 _DOCS_FILE = REPO_ROOT / "docs" / "transcript-analysis.md"
@@ -2941,6 +2990,7 @@ def _facts(**overrides):
         since_ts=_WINDOW_SINCE_TS,
         earliest_ts=None,
         undated_turns=0,
+        invalid_usage_records=0,
         unpriced_tokens={},
         stale_models=(),
         pricing_integrity=False,
@@ -3126,6 +3176,16 @@ class TestNoticeLines:
         assert "(no model field) (10 tokens)" in line
         assert "(no model field) (20 tokens)" in line
         assert "claude-x (30 tokens)" in line
+
+    def test_excluded_spend_names_the_count_of_turns_with_malformed_usage_token_fields(self):
+        facts = _facts(invalid_usage_records=3)
+
+        (line,) = _lines_for(period_cost._notice_lines(facts), period_cost._NOTICE_EXCLUDED_SPEND)
+
+        assert line == (
+            "usage left out of the figures: 3 usage-bearing turns with malformed usage token fields;"
+            " the figures understate the spend"
+        )
 
     def test_a_synthetic_model_at_zero_tokens_is_not_excluded_spend(self):
         facts = _facts(unpriced_tokens={"<synthetic>": 0})
@@ -3658,6 +3718,16 @@ class TestPeriodStreamTotals:
         assert totals.in_period_priced_dollars == 0
         assert totals.earliest_ts is None
         assert totals.dated_usage_in_period is False
+
+    def test_a_turn_with_a_negative_token_field_is_counted_invalid_and_never_priced(self):
+        rec = _hand_priced(1, 1)
+        rec["message"]["usage"]["output_tokens"] = -1
+
+        totals = _totals([rec])
+
+        assert totals.invalid_usage_records == 1
+        assert totals.in_period_priced_dollars == 0
+        assert dict(totals.unpriced_tokens) == {}
 
     def test_the_earliest_timestamp_is_taken_before_the_period_filter(self):
         records = [_hand_priced(5, 1, day=3), _hand_priced(6, 1, day=15), _hand_priced(7, 1, day=2)]
@@ -4829,6 +4899,26 @@ class TestVariantSelection:
             "usage left out of the figures: 1 usage-bearing turns with no timestamp; the figures understate the spend"
         ]
 
+    def test_malformed_usage_token_fields_alone_gives_the_first_variant_the_excluded_note_and_no_activity(
+        self, projects_dir, monkeypatch
+    ):
+        malformed = _hand_priced(1, 1, day=_FIRST_DAY)
+        malformed["message"]["usage"]["output_tokens"] = -1
+        _write_session(projects_dir, "malformed", [malformed])
+        _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        lines = report.splitlines()
+        assert lines[2] == "No Claude Code usage was found in this period in the sessions this report covers."
+        assert "_Note: some usage could not be priced or dated and is left out, so these figures understate the spend._" in lines
+        (no_activity,) = _lines_for(notices, "NO ACTIVITY")
+        assert "transcripts: 1" in no_activity
+        assert _lines_for(notices, "EXCLUDED SPEND") == [
+            "usage left out of the figures: 1 usage-bearing turns with malformed usage token fields;"
+            " the figures understate the spend"
+        ]
+
     def test_zero_transcripts_and_transcripts_with_nothing_in_range_give_different_no_activity_text(
         self, projects_dir, monkeypatch
     ):
@@ -5842,7 +5932,7 @@ class TestReviewPrSkillDrift:
         )
 
         substituted = acquire_line.replace("<owner>/<repo>#<number>", "acme/widgets#12")
-        (segment,) = _mod.corpus.split_command_segments(substituted)
+        (segment,) = corpus.split_command_segments(substituted)
 
         assert os.path.basename(segment[0]) == period_cost._ACQUIRE_SCRIPT_NAME
         assert period_cost._acquire_identity(segment) == ("acme/widgets", 12)
@@ -5852,7 +5942,7 @@ class TestReviewPrSkillDrift:
             line.strip() for line in self._skill_lines() if line.strip().startswith("~/.claude/scripts/review-pr-finish.sh")
         )
 
-        (segment,) = _mod.corpus.split_command_segments(finish_line)
+        (segment,) = corpus.split_command_segments(finish_line)
 
         assert period_cost._invokes_finish_script(segment) is True
 

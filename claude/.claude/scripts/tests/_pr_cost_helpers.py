@@ -32,7 +32,10 @@ _PRE_MODEL_HEADER_LINE = "\t".join((
     "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
     "distinct_top_level_dirs", "distinct_file_extensions", "tests_changed", "plan_file_added", "risk_surface_flag",
 ))
-_FROZEN_PR_COST_HEADER_LINES: tuple[str, ...] = (_PRE_HOST_HEADER_LINE, _PRE_MODEL_HEADER_LINE)
+_PRE_INVALID_USAGE_HEADER_LINE = _PRE_MODEL_HEADER_LINE + "\tmodel_breakdown"
+_FROZEN_PR_COST_HEADER_LINES: tuple[str, ...] = (
+    _PRE_HOST_HEADER_LINE, _PRE_MODEL_HEADER_LINE, _PRE_INVALID_USAGE_HEADER_LINE,
+)
 
 # Hand-written data rows under each frozen header. Cells are pairwise distinct within a row and from the other row's,
 # except the three bool cells, which can take only two values.
@@ -58,6 +61,18 @@ _PRE_MODEL_ROW_LINE = "\t".join((
     "81", "82", "83", "84", "85",
     "14", "15", "true", "false", "false",
 ))
+_PRE_INVALID_USAGE_ROW_LINE = "\t".join((
+    "gh-enterprise.example.com", "third-org/third-repo", "33", "gh55hi66",
+    "account-3/branch-5", "2026-03-01T00:00:00Z", "2026-08-10", "2026-03-09T00:00:00Z", "high",
+    "2026-03-03T00:00:00Z", "ok",
+    "2.100000", "2.200000", "2.300000", "2.400000", "2.500000",
+    "201", "302", "403", "504", "605",
+    "26", "27", "28", "23",
+    "2.345678", "32.500000", "29000", "3225.000000",
+    "91", "92", "93", "94", "95",
+    "24", "25", "false", "true", "false",
+    '{"claude-sonnet-5":{"standard":{"input":{"tokens":1,"usd_micros":1}}}}',
+))
 
 # Each row line above as the typed row the parser must return, written out by column name and not derived from any tuple.
 _PRE_HOST_ROW_PARSED = {
@@ -74,6 +89,7 @@ _PRE_HOST_ROW_PARSED = {
     "distinct_top_level_dirs": 4, "distinct_file_extensions": 5,
     "tests_changed": False, "plan_file_added": True, "risk_surface_flag": True,
     "model_breakdown": None,
+    "invalid_usage_records": 0,
 }
 _PRE_MODEL_ROW_PARSED = {
     "host": "ghe.example.com", "repo": "other-org/other-repo", "pr_number": 21, "machine": "ef56ab78",
@@ -89,6 +105,24 @@ _PRE_MODEL_ROW_PARSED = {
     "distinct_top_level_dirs": 14, "distinct_file_extensions": 15,
     "tests_changed": True, "plan_file_added": False, "risk_surface_flag": False,
     "model_breakdown": None,
+    "invalid_usage_records": 0,
+}
+_PRE_INVALID_USAGE_ROW_PARSED = {
+    "host": "gh-enterprise.example.com", "repo": "third-org/third-repo", "pr_number": 33, "machine": "gh55hi66",
+    "head_branch": "account-3/branch-5", "merged_at": "2026-03-01T00:00:00Z", "rate_stamp": "2026-08-10",
+    "captured_at": "2026-03-09T00:00:00Z", "join_confidence": "high", "supersedes": "2026-03-03T00:00:00Z",
+    "status": "ok",
+    "cache_read_usd": 2.1, "cache_write_5m_usd": 2.2, "cache_write_1h_usd": 2.3, "output_usd": 2.4, "input_usd": 2.5,
+    "cache_read_tokens": 201, "cache_write_5m_tokens": 302, "cache_write_1h_tokens": 403, "output_tokens": 504,
+    "input_tokens": 605,
+    "unpriced_turns": 26, "unpriced_tokens": 27, "turn_count": 28, "session_count": 23,
+    "opus_dollars": 2.345678, "opus_dollar_share_pct": 32.5, "sum_context_at_turn": 29000,
+    "mean_context_at_turn": 3225.0,
+    "additions": 91, "deletions": 92, "changed_files": 93, "commit_count": 94, "review_comment_count": 95,
+    "distinct_top_level_dirs": 24, "distinct_file_extensions": 25,
+    "tests_changed": False, "plan_file_added": True, "risk_surface_flag": False,
+    "model_breakdown": {"claude-sonnet-5": {"standard": {"input": {"tokens": 1, "usd_micros": 1}}}},
+    "invalid_usage_records": 0,
 }
 
 
@@ -322,6 +356,7 @@ def _sample_pr_cost_row(**overrides) -> dict:
         "distinct_top_level_dirs": 2, "distinct_file_extensions": 3,
         "tests_changed": True, "plan_file_added": True, "risk_surface_flag": False,
         "model_breakdown": None,
+        "invalid_usage_records": 0,
     }
     row.update(overrides)
     assert set(row) == set(pr_cost_ledger._PR_COST_LEDGER_COLUMNS), "sample row must cover every ledger column exactly"
@@ -330,7 +365,7 @@ def _sample_pr_cost_row(**overrides) -> dict:
 
 def _legacy_row_line(**overrides) -> str:
     """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-host
-    header's columns -- no host cell, no model_breakdown cell."""
+    header's columns -- no host cell, no model_breakdown cell, no invalid_usage_records cell."""
     return pr_cost_ledger._format_pr_cost_ledger_row(
         _sample_pr_cost_row(**overrides), columns=_PRE_HOST_HEADER_LINE.split("\t"),
     )
@@ -338,9 +373,17 @@ def _legacy_row_line(**overrides) -> str:
 
 def _pre_model_row_line(**overrides) -> str:
     """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-model
-    header's columns -- no model_breakdown cell."""
+    header's columns -- no model_breakdown cell, no invalid_usage_records cell."""
     return pr_cost_ledger._format_pr_cost_ledger_row(
         _sample_pr_cost_row(**overrides), columns=_PRE_MODEL_HEADER_LINE.split("\t"),
+    )
+
+
+def _pre_invalid_usage_row_line(**overrides) -> str:
+    """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-invalid_usage_records
+    header's columns -- no invalid_usage_records cell."""
+    return pr_cost_ledger._format_pr_cost_ledger_row(
+        _sample_pr_cost_row(**overrides), columns=_PRE_INVALID_USAGE_HEADER_LINE.split("\t"),
     )
 
 

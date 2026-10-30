@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
-# Prints the cumulative PR-vs-default-branch diff /ready-for-review's step 3
-# reviews to stdout: git diff <merge-base of origin/<base-branch> and HEAD>...HEAD.
+# Prints the cumulative PR-vs-base diff /ready-for-review's step 3
+# reviews to stdout: the git diff-tree patch from the merge-base of origin/<base-branch> and HEAD to HEAD.
+# <base-branch> is the first of these that applies:
+# - The stack base in `git config branch.<branch>.gh-merge-base`, when that key is set.
+# - The base of the PR `gh pr view` returns for this branch, merged or closed included.
+# - The default branch.
+# With the key set, the script uses its value or exits 1 with a stderr line naming the cause.
+# Each of these stops exits 1:
+# - The value is unusable.
+# - No merge-base resolves against origin/<value>.
+# - An OPEN PR targets another base.
+# - _lib_configured_stack_base returns a status other than 0 and 1, printing
+#   its own line. A git read failure is one such stop, and it can fire with no key set.
+# On the key path, a `gh pr view` that exits non-zero adds a clause to the
+# `using branch.<b>.gh-merge-base` line saying no open-PR base was checked.
+# The script never fetches.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
@@ -67,7 +81,38 @@ if [ "$STAGED" -eq 1 ]; then
   fi
 else
   DIFF_MARKER_DIR_NAME="cumulative-review-diff-markers"
-  if ! BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
+  # Empty STACK_BRANCH marks the no-key path, whose base order the header states.
+  STACK_BRANCH=""
+  STACK_STATUS=0
+  STACK_BASE_INFO=$(_lib_configured_stack_base "pr-diff-against-base.sh" "$PWD") || STACK_STATUS=$?
+  if [ "$STACK_STATUS" -eq 0 ]; then
+    STACK_BRANCH="${STACK_BASE_INFO%% *}"
+    BASE_REF="${STACK_BASE_INFO#* }"
+    # A merged or closed PR's base is ignored.
+    # Only an OPEN PR can disagree.
+    # A gh failure or a reply that is not two lines reads as no open PR.
+    # Only a gh failure sets GH_PR_VIEW_FAILED, which the `using` line reports.
+    PR_BASE=""
+    GH_PR_VIEW_FAILED=0
+    if PR_REPLY=$(gh pr view --json state,baseRefName --jq '.state, .baseRefName' 2>/dev/null); then
+      PR_BASE=$(_lib_open_pr_base "$PR_REPLY") || PR_BASE=""
+    else
+      GH_PR_VIEW_FAILED=1
+    fi
+    if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "$BASE_REF" ]; then
+      # %q-quoted because a valid branch name can still hold shell metacharacters,
+      # and this text offers a command to copy.
+      printf -v PR_BASE_QUOTED '%q' "$PR_BASE"
+      printf -v BASE_REF_QUOTED '%q' "$BASE_REF"
+      _lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
+        "the open PR for this branch targets $PR_BASE_QUOTED, not $BASE_REF_QUOTED (to retarget the PR to the key's value instead, the engineer can run: gh pr edit --base $BASE_REF_QUOTED)"
+      exit 1
+    fi
+  elif [ "$STACK_STATUS" -ne 1 ]; then
+    # Status 2 is the helper's stop with its line already printed. This
+    # script's own exit 2 means a usage error, so every stop exits 1.
+    exit 1
+  elif ! BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
     # gh exits nonzero for "no PR open yet" and for auth/network failure alike.
     if ! BASE_REF=$(_lib_default_branch_or_guess "$PWD"); then
       printf 'pr-diff-against-base.sh: gh pr view failed and no default branch resolved from origin\n' >&2
@@ -76,19 +121,42 @@ else
     printf 'pr-diff-against-base.sh: gh pr view failed; defaulting base to %s\n' "$BASE_REF" >&2
   fi
 
-  if ! MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD 2>/dev/null); then
-    printf 'pr-diff-against-base.sh: could not resolve merge-base against origin/%s\n' "$BASE_REF" >&2
+  if ! MERGE_BASE=$(git merge-base "refs/remotes/origin/$BASE_REF" HEAD 2>/dev/null); then
+    if [ -n "$STACK_BRANCH" ]; then
+      _lib_print_unusable_stack_base "pr-diff-against-base.sh" "$STACK_BRANCH" "$BASE_REF" \
+        "no merge-base with origin/$BASE_REF (if it was never fetched, run ~/.claude/scripts/branch-divergence-status.sh, which fetches it, before changing the key; otherwise the histories are unrelated)"
+    else
+      printf 'pr-diff-against-base.sh: could not resolve merge-base against origin/%s\n' "$BASE_REF" >&2
+    fi
     exit 1
   fi
+  # After the merge-base resolves, so a merge-base stop prints one line.
+  if [ -n "$STACK_BRANCH" ]; then
+    GH_FAILED_CLAUSE=""
+    if [ "$GH_PR_VIEW_FAILED" -eq 1 ]; then
+      GH_FAILED_CLAUSE="; gh pr view failed or found no PR, so no open-PR base was checked"
+    fi
+    printf 'pr-diff-against-base.sh: using branch.%s.gh-merge-base = %s as the base%s\n' "$STACK_BRANCH" "$BASE_REF" "$GH_FAILED_CLAUSE" >&2
+  fi
 
-  if ! DIFF_TEXT=$(git diff "$MERGE_BASE...HEAD" 2>/dev/null); then
+  # The cumulative arm uses plumbing `git diff-tree`, so porcelain-only diff config
+  # (e.g. diff.relative, diff.submodule, diff.context) does not change the hashed text.
+  # Observed on git 2.56.0, and pinned by the tests in test_pr_diff_against_base.py.
+  # See docs/design-decisions/cumulative-review-marker-keyed-on-normalized-diff.md for the residual inputs.
+  # GIT_DIFF_OPTS=-u3 fixes the context width at git's default of 3 lines: plumbing still reads GIT_DIFF_OPTS,
+  # so only setting the variable itself pins it.
+  # --ignore-submodules=none keeps a .gitmodules `ignore` setting from dropping a gitlink change.
+  # --no-color and --no-ext-diff are defense in depth: plumbing emits neither color nor external-diff output.
+  # The trailing `--` ends revision parsing, so git skips its revision-versus-filename ambiguity check.
+  # Without it, a file named `HEAD` in the cwd makes git exit 128 ("ambiguous argument").
+  if ! DIFF_TEXT=$(GIT_DIFF_OPTS=-u3 git diff-tree -r -p -M --no-color --no-ext-diff --ignore-submodules=none "$MERGE_BASE" HEAD -- 2>/dev/null); then
     printf 'pr-diff-against-base.sh: could not compute the diff against %s\n' "$MERGE_BASE" >&2
     exit 1
   fi
 fi
 
-# Command substitution strips trailing newlines; the printf below restores
-# exactly one, so stdout matches git diff's own output byte for byte.
+# Command substitution strips trailing newlines; the printf below restores exactly one.
+# Stdout matches git's own output apart from trailing newlines and NUL bytes, which command substitution drops.
 printf '%s\n' "$DIFF_TEXT"
 
 # Everything below writes optional artifacts (--record, --diff-file). Both

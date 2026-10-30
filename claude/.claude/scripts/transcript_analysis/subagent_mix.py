@@ -337,21 +337,23 @@ def _spawn_counts_by_agent_type(
     """Raw (undisclosed) subagent_type spawn counts across session_iter,
     for cost-counts.
 
-    Main-thread dispatches only: excludes isSidechain records before ever
-    reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
-    subagent's own gitBranch never reaches this count. branch_filter matches
-    a record's attributed branch (scope._attributed_branch), so a session's
-    leading default-branch dispatches count toward the first branch it enters,
-    as in review_rounds' carry-forward attribution.
+    Counts the dispatches in a session's main transcript and its
+    subagent transcripts, including one made from inside another agent's
+    transcript (an isSidechain record).
+    branch_filter matches the branch scope._attributed_branch attributes, so
+    a session's leading default-branch dispatches count toward the first
+    branch it enters, as in review_rounds' carry-forward attribution.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
     """
     counts: dict[str, int] = defaultdict(int)
+    # Counted per tool_use block with no id dedup. Assumes tool_use ids
+    # are not repeated across a session's transcript files.
     for _jsonl, records in session_iter:
         branch_context = scope._session_branch_context(records)
         for rec in records:
-            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            if rec.get("type") != "assistant":
                 continue
             branch = scope._attributed_branch(rec, branch_context) or ""
             if branch_filter is not None and branch not in branch_filter:
@@ -361,7 +363,10 @@ def _spawn_counts_by_agent_type(
                     continue
                 if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
                     continue
-                stype = (block.get("input") or {}).get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
+                spawn_input = block.get("input")
+                stype = spawn_input.get("subagent_type") if isinstance(spawn_input, dict) else None
+                if not isinstance(stype, str) or not stype:
+                    stype = _UNKNOWN_SUBAGENT_TYPE
                 counts[stype] += 1
     return dict(counts)
 
@@ -388,10 +393,6 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
-# Fallback subagent_type for a spawn tool_use whose input carries no
-# subagent_type field -- shared between cmd_subagent_mix and
-# _spawn_counts_by_agent_type so the two never disagree on which raw string
-# means "input missing this field."
 _UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
@@ -483,8 +484,9 @@ _COST_COUNTS_ROUNDS_CAPTION = (
 )
 
 _COST_COUNTS_SPAWNS_CAPTION = (
-    "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
-    " counted."
+    "Counts recorded spawn calls in each session's main transcript and its subagent transcripts"
+    " (not those nested in workflow directories), including agents dispatched by another agent,"
+    " such as the reviewers a `review-orchestrator` spawns."
 )
 
 
@@ -522,16 +524,17 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
 
     roots = [scope.config_dir() / "projects"]
 
-    session_iter, _scope_label = scope._resolve_project_scope(args, "cost-counts", roots=roots)
-    # Fully materialized (unlike cmd_subagent_mix, which streams one session at a
-    # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
-    # session history, small enough to hold in memory at once.
-    sessions = list(session_iter)
-
-    round_counts = review_rounds.compute_review_round_counts(sessions, branch_filter=branch_filter)
-    spawn_rows = _partition_spawn_counts_by_disclosure(
-        _spawn_counts_by_agent_type(sessions, branch_filter)
+    session_iter, _scope_label = scope._resolve_project_scope(
+        args, "cost-counts", include_subagents=True, roots=roots,
     )
+    round_counts = dict.fromkeys(review_rounds.REVIEW_SKILLS, 0)
+    raw_spawn_counts: dict[str, int] = defaultdict(int)
+    for session in session_iter:
+        for skill, n in review_rounds.compute_review_round_counts([session], branch_filter=branch_filter).items():
+            round_counts[skill] += n
+        for stype, n in _spawn_counts_by_agent_type([session], branch_filter).items():
+            raw_spawn_counts[stype] += n
+    spawn_rows = _partition_spawn_counts_by_disclosure(raw_spawn_counts)
 
     print("### Review rounds\n")
     print(f"{_COST_COUNTS_ROUNDS_CAPTION}\n")
