@@ -7074,11 +7074,6 @@ class TestCodeReviewDispositionChallengeRegionPin:
         )
 
     def test_cited_referents_still_exist(self) -> None:
-        """The referents the region cites by name or position: the diff-artifact
-        and project-layer definitions its dispatch sentence points to, the two
-        DEFER-rule leads that start "the rules above", the contradiction route's
-        notice and keep logging, the Fix route line, the Spawn decisions scope
-        tags, the heavier-mechanism rule, and `/review-pr`'s standing override."""
         skill_md_path = _skill_file("code-review")
         skill_text = " ".join(skill_md_path.read_text().split())
         for skill_phrase in (
