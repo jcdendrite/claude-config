@@ -85,7 +85,9 @@ The Return format's Self-review bullet asks for one ledger line per reviewer fil
 
 ## The transcript over a recorder
 
-The writer's own transcript already holds every earlier Read, Edit, Write and Bash call in order, plus the text each edit added, so no per-call process is needed. A PostToolUse recorder would add a process to every tool call in every session, a state directory, and ordering races within a parallel batch. A call counts only when a paired `tool_result` exists and is not an error, so a Read issued in the same batch as the handback, whose result may not have landed, does not count. Reviewer-Read credit is a path-suffix match (`reviewer_name_for_read_path`) on a path the writer chooses, so a successful Read of any path ending in `/agents/<name>.md`, or in `/skills/ai-instruction-and-memory-files/SKILL.md` for that skill, credits that reviewer.
+The writer's own transcript already holds every earlier Read, Edit, Write and Bash call in order, plus the text each edit added, so no per-call process is needed. A PostToolUse recorder would add a process to every tool call in every session, a state directory, and ordering races within a parallel batch.
+
+A call counts only when a paired `tool_result` exists and is not an error, so a Read issued in the same batch as the handback, whose result may not have landed, does not count.
 
 ## Log verdicts
 
@@ -127,7 +129,7 @@ These notes apply to the log as a whole.
 - A cap-kill status is one `_lib_capped_for`'s header lists under "Exit statuses", which also says which of them a child's own signal death can produce.
 - The silent cases, where no line is written, fall in three closed classes.
   - Exits before the config directory resolves: a missing `_lib.sh`, a bash below the floor, a failed config-dir lookup (a relative `CLAUDE_CONFIG_DIR`), and invocation by bare name.
-  - Payloads the hook does not own. The script exits for another agent type. The evaluator returns for a `hook_event_name` that is neither `PreToolUse` nor `SubagentStop`, or for a PreToolUse call to a tool other than `SubagentHandback`. Both cases are silent only once the `jq` pass and the agent-id check have passed.
+  - Payloads the hook does not own. The script exits for another agent type. The evaluator returns for a `hook_event_name` that is neither `PreToolUse` nor `SubagentStop`, or for a PreToolUse call to a tool other than `SubagentHandback`.
   - A log append that fails.
 - A harness kill at the 20-second timeout is also silent when no `timeout` or `gtimeout` is on PATH, because the in-script cap then does not run.
 - The log is advisory and not tamper-evident, because the writer's Bash tool can reach the config directory.
@@ -139,7 +141,4 @@ These notes apply to the log as a whole.
 - A background dispatch outside auto mode, a nested dispatch at spawn depth 2, and a SendMessage continuation are unverified. The outcome log (`<config-dir>/.code-writer-self-review.log`) is the instrument for each.
 - A dispatch whose report is very long in auto mode is an open observation. A missing send-back or prefix there belongs here once seen.
 - An agent defined elsewhere that is also named `code-writer` inherits the send-back, with one extra round trip in both modes. The send-back reason cites `code-writer.md` and its ledger format, which that agent may lack.
-- A finding that the code misses a case never becomes a new prose line. It gets one of three outcomes:
-  - A fix in code.
-  - A `test_known_gap_*` case in `test_send_back_skipped_self_review.py`, when a reader could mistake the behavior for a bug.
-  - No action, when the hook header's security-boundary line or this record already implies it.
+- Reviewer-Read credit is a path-suffix match on a path the writer chooses, so a successful Read of any path ending in `/agents/<name>.md`, or in `/skills/ai-instruction-and-memory-files/SKILL.md` for that skill, credits that reviewer.

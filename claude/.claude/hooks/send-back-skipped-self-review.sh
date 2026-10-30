@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # hook-class: turn-gate
-# Sends a `code-writer` subagent back once when its return lacks evidence of
-# the self-review code-writer.md mandates: a Read of each reviewer file its
-# ledger names or its changed paths require, a ledger line per reviewer, and a
-# diff re-read after its last edit. The second return of the cycle goes through.
+# Sends a `code-writer` subagent back once when its return lacks evidence of its self-review, with the checks listed in the evaluator's module docstring.
+# The second return of the cycle goes through.
 #
 # Dispatch surfaces:
 # - PreToolUse matcher SubagentHandback.
@@ -27,7 +25,7 @@
 set -uo pipefail
 
 # Prefilter above the _lib.sh bootstrap: another subagent's handback costs one
-# substring match. The exact agent_type check follows the jq pass below.
+# substring match.
 INPUT=$(cat 2>/dev/null)
 case "$INPUT" in
   *'"code-writer"'*) ;;

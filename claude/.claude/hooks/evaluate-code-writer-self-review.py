@@ -255,7 +255,7 @@ TranscriptScan = namedtuple("TranscriptScan", "calls result_shape_unknown")
 
 
 def _user_record_follows(transcript_lines, line_index):
-    """True when a `user` record, the kind that carries tool results, comes after `line_index`."""
+    """`user` records carry tool results."""
     for raw_line in transcript_lines[line_index + 1:]:
         if '"user"' not in raw_line:
             continue
@@ -402,9 +402,6 @@ def runs_git_diff(command, build_records, field_separator):
     """The shared parser splits segments on shell operators but not on newlines,
     so backslash-newline continuations are joined and each remaining line is
     parsed on its own.
-
-    A shell comment or an unquoted `echo` containing `git diff` earns credit, because the parser's tokenizer
-    does not treat `#` as a comment start and the first `git` token of a segment counts.
     """
     if not isinstance(command, str):
         return False

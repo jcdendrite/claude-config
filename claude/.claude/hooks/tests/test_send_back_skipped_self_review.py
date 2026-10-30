@@ -105,6 +105,26 @@ def test_path_floor_reviewers_table(path, expected_reviewers):
 
 
 @pytest.mark.parametrize(
+    "lookalike_path",
+    [
+        "~/.claude/agents/staff-sdet.md.bak",
+        "/x/staff-sdet.md",
+        "~/.claude/skills/staff-sdet/SKILL.md",
+        "~/.claude/agents/ai-instruction-and-memory-files.md",
+        "~/.claude/skills/ai-instruction-and-memory-files/NOTES.md",
+        "~/.claude/agents/staff-placeholder-engineer.md",
+        "~/.claude/my-agents/staff-sdet.md",
+        "~/.claude/my-skills/ai-instruction-and-memory-files/SKILL.md",
+    ],
+    ids=["extra-extension", "no-agents-segment", "agent-name-under-skills", "skill-name-under-agents",
+         "skill-directory-other-file", "name-not-accepted", "agents-directory-with-longer-name",
+         "skills-directory-with-longer-name"],
+)
+def test_reviewer_name_for_read_path_credits_no_lookalike(lookalike_path):
+    assert evaluator.reviewer_name_for_read_path(lookalike_path) is None
+
+
+@pytest.mark.parametrize(
     ("path", "line", "expected"),
     [
         ("a.sh", "  # note", True),
@@ -469,6 +489,16 @@ def test_fixture_plain_text_variant_drops_every_handback():
     lines = _drop_handbacks(_fixture_lines(), _handback_ids_in(_fixture_lines()))
 
     assert _signature(evaluator.extract_tool_calls(lines)) == FIXTURE_NON_HANDBACK_SIGNATURE
+
+
+def test_fixture_and_both_arm_variants_are_in_a_result_shape_the_evaluator_knows():
+    fixture = _fixture_lines()
+    pretooluse_variant = _drop_handbacks(fixture, {"call_08"})
+    plain_text_variant = _drop_handbacks(fixture, _handback_ids_in(fixture))
+
+    assert evaluator.scan_transcript(fixture).result_shape_unknown is False
+    assert evaluator.scan_transcript(pretooluse_variant).result_shape_unknown is False
+    assert evaluator.scan_transcript(plain_text_variant).result_shape_unknown is False
 
 
 def test_fixture_parallel_batch_results_land_out_of_call_order():
@@ -947,6 +977,15 @@ def test_instruction_file_edit_is_clean_when_the_skill_reviewer_file_was_read(wo
     calls = _instruction_file_calls(workspace, skill_read_path=skill_read_path)
 
     result = workspace.evaluate("PreToolUse", calls, LEDGER_INSTRUCTION_FILE)
+
+    assert (result.verdict, result.fields["failed"]) == ("clean", "-")
+
+
+def test_sh_edit_is_clean_when_the_agent_reviewer_file_was_read_by_absolute_path(workspace):
+    _script, calls = workspace.sh_script_calls(reviewer_reads=())
+    calls.insert(0, _call("Read", {"file_path": "/home/placeholder/.claude/agents/staff-platform-engineer.md"}))
+
+    result = workspace.evaluate("PreToolUse", calls, LEDGER_PLATFORM)
 
     assert (result.verdict, result.fields["failed"]) == ("clean", "-")
 
@@ -1925,16 +1964,12 @@ def test_several_thousand_records_with_hundreds_of_edited_paths_finish_within_ha
 
 
 def _run_hook_raw(payload, config_dir, *, hook=HOOK_PATH, path=None, cwd=None, extra_environment=None):
-    """A bytes payload is piped as given."""
     environment = dict(os.environ)
     environment["CLAUDE_CONFIG_DIR"] = str(config_dir)
     if path is not None:
         environment["PATH"] = path
     environment.update(extra_environment or {})
-    if isinstance(payload, bytes):
-        stdin_bytes = payload
-    else:
-        stdin_bytes = (payload if isinstance(payload, str) else json.dumps(payload)).encode("utf-8")
+    stdin_bytes = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
     completed = subprocess.run(
         [str(hook)], input=stdin_bytes, capture_output=True, env=environment, timeout=60, check=False, cwd=cwd,
     )
