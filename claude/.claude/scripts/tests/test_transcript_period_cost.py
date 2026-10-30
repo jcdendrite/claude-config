@@ -2698,6 +2698,36 @@ class TestRenderSlackReport:
         assert blank_indexes == [index - 1 for index in name_indexes] + [total_index - 1]
 
     @pytest.mark.parametrize(
+        "groups,group_name,total_line",
+        [
+            pytest.param(
+                [_group("acme/widgets", _pr_row(1, "x", 1.0))],
+                "*acme/widgets*",
+                "*Total: $1.00*",
+                id="one_displayed_repository_group",
+            ),
+            # Zero repositories here catches a blank-line gate keyed on repository count, not displayed-group count.
+            pytest.param(
+                [_undetermined_group(0.5)],
+                "*Repository not determined*",
+                "*Total: $0.50*",
+                id="only_the_undetermined_group",
+            ),
+        ],
+    )
+    def test_a_report_with_one_displayed_group_has_a_blank_line_before_its_name_and_before_the_total(
+        self, groups, group_name, total_line
+    ):
+        lines = _render(groups).splitlines()
+
+        name_index = lines.index(group_name)
+        total_index = lines.index(total_line)
+        assert lines[name_index - 1] == ""
+        assert lines[total_index - 1] == ""
+        blank_indexes = [index for index, line in enumerate(lines[: total_index + 1]) if line == ""]
+        assert blank_indexes == [name_index - 1, total_index - 1]
+
+    @pytest.mark.parametrize(
         "groups,phrase",
         [
             pytest.param([_group("acme/widgets", _pr_row(1, "x", 1.0))], "1 repository", id="one"),
