@@ -2462,50 +2462,43 @@ def _timeout_binary_present() -> bool:
     return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
 
 
-def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
-    line to stdout then blocks past the 5s cap. Sleeps 20s, well past the 5s
-    cap, yet bounded so a cap regression fails the test instead of hanging
-    it. Every other subcommand execs $REAL_GIT, which callers must set to a
-    real git binary path."""
+def _make_git_blocking_on_arg(
+    bin_dir: Path, arg_pattern: str, stdout_before_block: str = "partialline"
+) -> Path:
+    """Shim at bin_dir/git: when any argument matches the shell `case` pattern
+    arg_pattern, writes `stdout_before_block` to stdout (nothing when empty)
+    then blocks past the 5s cap; every other invocation execs $REAL_GIT, which
+    callers must set to a real git binary path. Sleeps 20s, well past the 5s
+    cap, yet bounded so a cap regression fails the test instead of hanging it.
+    `stdout_before_block` is spliced unescaped into a `printf` format string in
+    the generated shim, so pass plain alphanumeric text."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
         '#!/bin/bash\n'
         'for arg in "$@"; do\n'
-        '  if [ "$arg" = "merge-tree" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      printf "{stdout_before_block}"\n'
+        '      sleep 20\n'
+        '      exit 0\n'
+        '      ;;\n'
+        '  esac\n'
         'done\n'
         'exec "$REAL_GIT" "$@"\n'
     )
     shim.chmod(0o755)
     return shim
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git that blocks on `merge-tree`."""
+    return _make_git_blocking_on_arg(bin_dir, "merge-tree")
 
 
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
-    """Shim at bin_dir/git: for `diff` specifically, writes `stdout_before_block`
-    to stdout (nothing when empty) then blocks past the 5s cap. Every other
-    subcommand execs $REAL_GIT, which callers must set to a real git binary
-    path. `stdout_before_block` is spliced unescaped into a `printf` format
-    string in the generated shim, so pass plain alphanumeric text."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "diff" ]; then\n'
-        f'    printf "{stdout_before_block}"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
+    """Shim at bin_dir/git that blocks on `diff`."""
+    return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 
 def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:

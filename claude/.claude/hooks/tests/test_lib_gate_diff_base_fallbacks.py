@@ -12,6 +12,7 @@ import pytest
 from helpers import (
     _make_blocking_diff_git,
     _make_blocking_merge_tree_git,
+    _make_git_blocking_on_arg,
     _make_git_exiting_with_status,
     _run_git,
     _timeout_binary_present,
@@ -35,53 +36,15 @@ from ._lib_sh_helpers import (
 
 
 def _make_blocking_absolute_git_dir_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git: for `rev-parse --absolute-git-dir` specifically,
-    writes a partial line to stdout then blocks past the 5s cap; every other
-    subcommand proxies to the real git. Same shape as
-    helpers._make_blocking_merge_tree_git, targeting _lib_gate_diff_base's
-    initial `git rev-parse --absolute-git-dir` call instead of its
-    merge-tree call."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "--absolute-git-dir" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
+    """Shim at bin_dir/git that blocks on _lib_gate_diff_base's initial
+    `git rev-parse --absolute-git-dir` call."""
+    return _make_git_blocking_on_arg(bin_dir, "--absolute-git-dir")
 
 
 def _make_blocking_tree_verify_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git: for a `<tree-oid>^{tree}` revision argument
-    specifically, writes a partial line to stdout then blocks past the 5s
-    cap; every other subcommand proxies to the real git. Same shape as
-    helpers._make_blocking_merge_tree_git, targeting _lib_gate_diff_base's
-    final `git rev-parse --verify --quiet "${tree_oid}^{tree}"` validation
-    call instead of its merge-tree call."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        '    *"^{tree}")\n'
-        '      printf "partialline"\n'
-        '      sleep 20\n'
-        '      exit 0\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
+    """Shim at bin_dir/git that blocks on _lib_gate_diff_base's final
+    `git rev-parse --verify --quiet "${tree_oid}^{tree}"` validation call."""
+    return _make_git_blocking_on_arg(bin_dir, '*"^{tree}"')
 
 
 def _make_call_logging_git(bin_dir: Path, log_file: Path) -> Path:
