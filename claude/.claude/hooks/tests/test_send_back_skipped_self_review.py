@@ -196,6 +196,12 @@ def test_added_lines_from_edit_and_write_inputs(tool_name, tool_input, expected_
         ("**Self-review:**\n- **`staff-sdet`**: clean", ["staff-sdet"], 1, 0),
         ("**Self-review:**\n- `staff-sdet`, `ciso-reviewer`: clean", ["staff-sdet", "ciso-reviewer"], 1, 0),
         ("**Self-review:**\n- `staff-sdet` and `ciso-reviewer`: clean", ["staff-sdet", "ciso-reviewer"], 1, 0),
+        (
+            "**Self-review:**\n- `staff-sdet`, `ciso-reviewer`, and `staff-backend-engineer`: clean",
+            ["staff-sdet", "ciso-reviewer", "staff-backend-engineer"],
+            1,
+            0,
+        ),
         ("**Self-review:**\n- `staff-sdet`/`ciso-reviewer`: clean", ["staff-sdet", "ciso-reviewer"], 1, 0),
         ("**Self-review:**\n- `~/.claude/agents/staff-sdet.md`: clean", ["staff-sdet"], 1, 0),
         (
@@ -949,6 +955,33 @@ def test_skipped_reviewer_read_logs_failed_requirements_and_sends_back(workspace
 
     assert result.verdict == "sent-back"
     assert (result.fields["ledger"], result.fields["reads"], result.fields["failed"]) == ("1", "0", "R2,R3,R4")
+
+
+@pytest.mark.parametrize(
+    ("unread_name_was_read", "expected_verdict", "expected_failed"),
+    [(False, "sent-back", "R3"), (True, "clean", "-")],
+    ids=["ledger-name-without-read", "control-with-read"],
+)
+def test_ledger_name_outside_the_path_floor_without_a_read_fails_r3_alone(
+    workspace, unread_name_was_read, expected_verdict, expected_failed
+):
+    source_file = workspace.make_file("src/a.py", "x = 1\n")
+    calls = [_reviewer_read("staff-backend-engineer")]
+    if unread_name_was_read:
+        calls.append(_reviewer_read("ciso-reviewer"))
+    calls.extend([_edit_call(source_file), _git_diff_call()])
+    report = (
+        "**Self-review:**\n"
+        "- `staff-backend-engineer`: clean\n"
+        "- `ciso-reviewer`: clean\n\n"
+        "**Still uncertain:** nothing"
+    )
+
+    result = workspace.evaluate("PreToolUse", calls, report)
+
+    assert (result.verdict, result.fields["failed"]) == (expected_verdict, expected_failed)
+    if not unread_name_was_read:
+        assert _item_fields(_assess(calls, report)) == [(evaluator.KIND_REVIEWER, "ciso-reviewer", True, False)]
 
 
 LEDGER_INSTRUCTION_FILE = (

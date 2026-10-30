@@ -192,7 +192,7 @@ def added_lines(tool_name, tool_input):
 
 _LEDGER_LINE = re.compile(
     r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\*\*)?"
-    r"(?P<tokens>`[^`\n]+`(?:(?:[ \t]*[,/][ \t]*|[ \t]+and[ \t]+)`[^`\n]+`)*)"
+    r"(?P<tokens>`[^`\n]+`(?:(?:[ \t]*[,/][ \t]*|,[ \t]+and[ \t]+|[ \t]+and[ \t]+)`[^`\n]+`)*)"
     r"(?:\*\*)?[ \t]*:"
 )
 _BACKTICKED = re.compile(r"`([^`\n]+)`")

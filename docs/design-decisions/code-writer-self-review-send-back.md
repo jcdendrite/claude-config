@@ -20,7 +20,7 @@ A return that lacks any of these is sent back once per report cycle. The second 
 A harness probe on Claude Code 2.1.310 showed that the report leaves the writer differently by permission mode.
 
 - In auto mode the report leaves through the `SubagentHandback` tool call. A PreToolUse deny on that call sends the writer back with the reason, and the writer acts on it. A `SubagentStop` block after a delivered handback fires but changes nothing.
-- In other modes the writer makes no `SubagentHandback` call, and the report is the plain text it stops on. A `SubagentStop` block sends it back.
+- In `acceptEdits` mode the writer makes no `SubagentHandback` call, and the report is the plain text it stops on. A `SubagentStop` block sends it back.
 
 So the hook registers on PreToolUse matcher `SubagentHandback` and on SubagentStop matcher `code-writer`. The SubagentStop arm owns only a dispatch whose transcript holds no `SubagentHandback` call of any kind, a denied one included. That keys the split on what the writer did, not on a permission-mode name. After a denied handback and a plain-text stop, the harness itself re-prompts the writer, and the report then arrives through the next handback. So the SubagentStop arm must not consume that cycle's marker.
 
@@ -50,7 +50,7 @@ A marker directory `<config-dir>/.code-writer-self-review.d/<agent-id>`, claimed
 - An evaluator exit after the envelope flush, such as a cap kill, discards the envelope and leaves the marker. The incomplete return passes without a send-back, and the same agent id's next return passes too.
 - A writer that never returns after a send-back leaves its marker, and nothing sweeps marker directories. That marker suppresses the send-back if the same agent id is resumed.
 - In auto mode a second return that is still incomplete passes with a `SELF-REVIEW INCOMPLETE (hook-verified)` prefix the hook writes into the report through `updatedInput`.
-- In other modes a hook cannot rewrite the report. The one send-back tells the writer to start its report with `SELF-REVIEW INCOMPLETE: <items>` if it stops without finishing, and the log records `passed-labeled` or `passed-unlabeled`.
+- In `acceptEdits` mode a hook cannot rewrite the report. The one send-back tells the writer to start its report with `SELF-REVIEW INCOMPLETE: <items>` if it stops without finishing, and the log records `passed-labeled` or `passed-unlabeled`.
 - A send-back count read from the transcript was set aside, because a transcript that lagged behind a deny would re-deny the only exit. The marker has no freshness dependency.
 
 ## The `allow` on a spent marker
@@ -63,17 +63,17 @@ The PreToolUse arm answers `allow` with `updatedInput` on a spent marker, becaus
 
 ## The floor, the catch-all, and no skip
 
-The path floor is the evaluator's `path_floor_reviewers`, which follows the domain table in `code-writer.md`. The writer still picks further reviewers. A catch-all requires at least one Read-backed ledger line whenever a path changed, and the domain table gained a last row mapping any other file to `staff-backend-engineer`, so every edited file has a named reviewer.
+The path floor is the evaluator's `path_floor_reviewers`, which follows the domain table in `code-writer.md`. The writer still picks further reviewers. A catch-all requires at least one Read-backed ledger line whenever a path changed, and the domain table's last row maps any other file to `staff-backend-engineer`, so every edited file has a named reviewer.
 
-No size threshold removes the risk of a fix-induced defect, because review-round fixes go to `code-writer` regardless of size and a small diff can carry a defect. A declared skip for small changes was set aside for that reason, so step 5's whitespace-or-typo exemption went too: every added or rewritten prose line now gets the prose-row read, and every dispatch that changes a file re-reads its diff and Reads at least one reviewer file.
+No size threshold removes the risk of a fix-induced defect, because review-round fixes go to `code-writer` regardless of size and a small diff can carry a defect. A declared skip for small changes was set aside for that reason, so step 5 has no whitespace-or-typo exemption: every added or rewritten prose line gets the prose-row read, and every dispatch that changes a file re-reads its diff and Reads at least one reviewer file.
 
 ## Repository membership by `.git` walk-up
 
-A path counts as changed when it is the resolved path of a successful Edit or Write, still exists at hook time, and sits in a repository. A path sits in a repository when its own directory or an ancestor holds a `.git` entry, file or directory, so a linked worktree counts by the `.git` file at its root. The payload `cwd` plays no part, so edits in a linked worktree count however the session was anchored. git itself was set aside as the authority: a toplevel taken from the `cwd` misses edits in a worktree the session is not anchored in, and a `git rev-parse` per distinct directory costs a subprocess each.
+A path sits in a repository when its own directory or an ancestor holds a `.git` entry, file or directory, so a linked worktree counts by the `.git` file at its root. The payload `cwd` plays no part, so edits in a linked worktree count however the session was anchored. git itself was set aside as the authority: a toplevel taken from the `cwd` misses edits in a worktree the session is not anchored in, and a `git rev-parse` per distinct directory costs a subprocess each.
 
 ## The comment check reads the writer's own edits
 
-Added text for the comment check comes from the writer's own successful calls on changed paths: each line of an Edit's `new_string` that is not a line of its `old_string`, and every line of a Write's `content`. That needs no diff parser, untracked-file read or encoding handling. For `.py` it counts every added line that starts with `"""` or `'''`, including a line that only closes a string, such as `""")`. That over-counts on purpose, for three reasons.
+Reading the edits needs no diff parser, untracked-file read or encoding handling. For `.py` the check counts every added line that starts with `"""` or `'''`, including a line that only closes a string, such as `""")`. That over-counts on purpose, for three reasons.
 
 - `code-writer.md`'s domain table maps docstrings to `comment-discipline-reviewer`.
 - `code-writer.md` § "Self-review pass — mandatory before returning" step 5 says "When in doubt, read."
@@ -81,7 +81,7 @@ Added text for the comment check comes from the writer's own successful calls on
 
 ## The ledger lives in the return
 
-The Return format's Self-review bullet asks for one ledger line per reviewer file Read: the reviewer's backticked name, a colon, then each applied angle and its finding. The evaluator parses that grammar, a contract test pins it to a `HOOK_TEST_FIXTURE` example in `code-writer.md`, and the Return format says a dispatch's own return fields add to the format and never replace the ledger. A file ledger was set aside because subagents are barred from the review-ledger state, a file in the worktree shows in `git status`, and the parent reads the return.
+A file ledger was set aside because subagents are barred from the review-ledger state, a file in the worktree shows in `git status`, and the parent reads the return.
 
 ## The transcript over a recorder
 
@@ -95,7 +95,7 @@ This section is the single home for the log vocabulary. The hook appends to `<co
 
 | Verdict | Meaning | Degradation | Operator action |
 |---|---|---|---|
-| `clean` | No item is missing. A leftover marker is removed. | No | None. |
+| `clean` | No item is missing. A leftover marker is removed. | Yes, when `dropped` is above 0: those paths were not checked. | None. |
 | `sent-back` | An item is missing and the marker was claimed, so the deny or block went out. | No | None. One per incomplete cycle is expected. |
 | `passed-flagged` | PreToolUse arm, marker already spent, items still missing. The report went through with the `SELF-REVIEW INCOMPLETE (hook-verified)` prefix. | No | Treat the diff as not self-reviewed. |
 | `passed-labeled` | SubagentStop arm, marker already spent, items still missing. The report starts with the `SELF-REVIEW INCOMPLETE` label the send-back asked for. | No | Treat the diff as not self-reviewed. |
@@ -103,7 +103,7 @@ This section is the single home for the log vocabulary. The hook appends to `<co
 | `passed-unflaggable` | PreToolUse arm, marker already spent, items still missing, and `message` is not a string. The call went through unchanged. | Yes: the prefix could not be written. | Treat the diff as not self-reviewed. |
 | `not-owned` | SubagentStop arm, and the transcript holds a `SubagentHandback` call of any outcome. The PreToolUse arm owns that cycle. | No | None. |
 | `allowed-continuation` | SubagentStop arm with `stop_hook_active` true, no marker, items missing. The hook never blocks a continuation. | Yes: an incomplete return is not sent back. | Treat the diff as not self-reviewed. |
-| `allowed-no-repo-path` | The writer made edits, none of which sits in a repository or still exists. | No | None. |
+| `allowed-no-repo-path` | The writer made edits, none of which sits in a repository or still exists. | Yes: the path-based checks do not run for those paths, but a ledger name with no Read is still sent back. | Project outside git: check that a `.git` entry sits above the edited path. Deleted path: none. |
 | `allowed-no-transcript` | The writer's transcript file was not found. | Yes | Check that the payload still carries `agent_transcript_path` (SubagentStop) or `transcript_path` (PreToolUse) after a Claude Code upgrade, and that the writer's transcript still sits at `subagents/agent-<agent id>.jsonl` beside the session transcript. |
 | `allowed-unparsed-transcript` | The transcript did not decode as expected. See the conditions below the table. | Yes | The transcript record shape changed. Compare it with the fixture under `claude/.claude/hooks/tests/fixtures/code-writer-self-review/`. |
 | `allowed-claim-failed` | The marker directory could not be created or claimed. | Yes | Check that `<config-dir>` is writable and `<config-dir>/.code-writer-self-review.d` is a writable directory. |
@@ -138,6 +138,7 @@ These notes apply to the log as a whole.
 ## Known degradations and unverified paths
 
 - The probe ran on Claude Code 2.1.310. Versions 2.1.295 through 2.1.309 are unprobed and fail open.
+- A permission mode this record does not name was not confirmed by the probe, and follows whichever return path the writer takes.
 - A background dispatch outside auto mode, a nested dispatch at spawn depth 2, and a SendMessage continuation are unverified. The outcome log (`<config-dir>/.code-writer-self-review.log`) is the instrument for each.
 - A dispatch whose report is very long in auto mode is an open observation. A missing send-back or prefix there belongs here once seen.
 - An agent defined elsewhere that is also named `code-writer` inherits the send-back, with one extra round trip in both modes. The send-back reason cites `code-writer.md` and its ledger format, which that agent may lack.
