@@ -17,11 +17,11 @@
 #     tracking has zero marginal value once the gate has gone permanently
 #     silent. The cap is 2 by default, 1 when the round_consult_round2_pilot
 #     config key is enabled.
-#   - A `plan-architect` dispatch whose prompt's first line is not
-#     `MODE=plan-sections` writes a content-free, presence-only latch to
-#     <config-dir>/.architect-consult-latch.d/<key>: the fail-safe direction
-#     treats any non-plan-sections first line, including an absent one, as
-#     a consult.
+#   - A `plan-architect` dispatch whose prompt's first line is neither
+#     `MODE=plan-sections` nor `MODE=challenge` writes a content-free,
+#     presence-only latch to <config-dir>/.architect-consult-latch.d/<key>.
+#     As in plan-architect.md's own mode selection, any other first line, an
+#     absent one included, is a consult.
 #
 # exits 0 on every path -- an informational hook never denies, and every
 # failure here (no jq, no _lib.sh, unresolvable session id/config
@@ -124,10 +124,11 @@ _maybe_write_consult_latch() {
   local prompt first_line
   prompt=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.prompt // empty' 2>/dev/null)
   first_line="${prompt%%$'\n'*}"
-  # Fail-safe direction: any first line other than the literal
-  # MODE=plan-sections -- including an absent one -- is a consult
-  # (plan-architect.md: "A dispatch carrying neither line is a consult").
-  [ "$first_line" = "MODE=plan-sections" ] && return 0
+  # plan-architect.md runs these two first lines as non-consult modes, and
+  # any other first line, an absent one included, as a consult.
+  case "$first_line" in
+    MODE=plan-sections | MODE=challenge) return 0 ;;
+  esac
 
   _resolve_round_context || return 0
 
