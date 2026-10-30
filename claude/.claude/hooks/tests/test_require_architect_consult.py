@@ -441,6 +441,9 @@ class TestRequireArchitectConsult:
         - tells the agent to escalate to the engineer rather than resolve it
           unilaterally
         - never instructs touching the disable sentinel directly
+        - tells an agent that already dispatched the consult to report to the
+          engineer instead of consulting again, and keeps the do-not-disable
+          clause
         - states the threshold as "2 distinct reviewed states" and, with no
           latch, that no architect consult is recorded for this branch
         - mentions "subagent" in the deny message
@@ -456,7 +459,13 @@ class TestRequireArchitectConsult:
         assert "plan-architect MODE=consult" in reason
         assert "Round-cap architect consult" in reason
         assert "report this block to the engineer" in reason
+        assert "rather than resolving it unilaterally" in reason
+        assert "already dispatched that consult" in reason
+        assert "instead of consulting again" in reason
+        assert "do not attempt to disable this gate yourself" in reason
         assert ".round-consult-gate-disabled" not in reason
+        assert "round_consult_gate" not in reason
+        assert "claude-config.toml" not in reason
         assert "2 distinct reviewed states " in reason
         assert "no architect consult is recorded for this branch" in reason
         assert "since the branch's last architect consult" not in reason
@@ -466,7 +475,9 @@ class TestRequireArchitectConsult:
     def test_latch_present_deny_message_reports_the_rearm_window(self, isolated_home, tmp_path, pilot_enabled):
         """With a latch the deny text reports the re-arm window of 3, says the
         states were recorded since the branch's last consult, reads plural
-        with and without the pilot, and still names the routing section."""
+        with and without the pilot, still names the routing section, and
+        carries the stop-after-consulting, escalation-clause, and
+        do-not-disable sentences."""
         repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-deny-message")
         _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
         write_architect_consult_latch(isolated_home / ".claude", repo)
@@ -482,6 +493,13 @@ class TestRequireArchitectConsult:
         assert "since the branch's last architect consult" in reason
         assert "no architect consult is recorded for this branch" not in reason
         assert "Round-cap architect consult" in reason
+        assert "already dispatched that consult" in reason
+        assert "instead of consulting again" in reason
+        assert "rather than resolving it unilaterally" in reason
+        assert "do not attempt to disable this gate yourself" in reason
+        assert ".round-consult-gate-disabled" not in reason
+        assert "round_consult_gate" not in reason
+        assert "claude-config.toml" not in reason
 
     @pytest.mark.parametrize(
         "pilot_enabled,expected_denial_states",

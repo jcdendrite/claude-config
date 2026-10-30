@@ -23,6 +23,7 @@ from helpers import (
     reviewer_round_state_path,
     reviewer_round_state_value,
     run_hook_advisory,
+    run_hook_reason,
     write_architect_consult_latch,
     write_reviewer_round_state,
 )
@@ -30,6 +31,7 @@ from helpers import (
 from .conftest import _dead_pid
 
 LOG_REVIEWER_ROUND_HOOK = HOOKS_DIR / "log-reviewer-round.sh"
+REQUIRE_ARCHITECT_CONSULT_HOOK = HOOKS_DIR / "require-architect-consult.sh"
 PLAN_ARCHITECT_AGENT = CLAUDE_DIR / "agents" / "plan-architect.md"
 
 REVIEWER_PERSONA = "staff-backend-engineer"
@@ -628,6 +630,39 @@ class TestLogReviewerRoundConsultReset:
         assert result.stderr == ""
         assert architect_consult_latch_path(config_dir, repo).exists()
         assert occupant.is_dir()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root deletes from a mode-0555 directory, so the removal never fails")
+    def test_consult_that_cannot_delete_a_regular_state_file_keeps_the_gate_denying(
+        self, isolated_home, tmp_path
+    ):
+        """A consult whose `rm -f --` fails on a regular three-line state file
+        (its directory is not writable) still exits 0 silently and writes the
+        latch, but leaves the window full, so the gate keeps denying a new
+        reviewer state instead of treating the consult as the reset."""
+        repo = tmp_path / "reset-undeletable-regular-file"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        state_file = write_reviewer_round_state(config_dir, repo, ["head-a diff-a", "head-b diff-b", "head-c diff-c"])
+        _stage_change(repo, "first\nnew-reviewed-state\n")
+        state_directory = state_file.parent
+        state_directory.chmod(0o555)
+        try:
+            result = _run_hook_raw(self._consult_payload("s-reset-undeletable-file"), repo, isolated_home)
+        finally:
+            state_directory.chmod(0o755)
+
+        assert result.returncode == 0
+        assert (result.stdout, result.stderr) == ("", "")
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert len(state_file.read_text().splitlines()) == 3
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-gate-after-wedge", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "since the branch's last architect consult" in reason
 
     def test_consult_on_detached_head_deletes_nothing(self, isolated_home, tmp_path):
         repo = tmp_path / "reset-detached"

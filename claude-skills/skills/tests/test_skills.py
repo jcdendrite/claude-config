@@ -6349,43 +6349,40 @@ class TestReadyForReviewFixLoopRule:
         )
 
 
-# Step 3's loop cap: each clause binds a condition to its outcome.
-_PINNED_STEP3_CAP_CLAUSE = (
-    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
-    "records newer than its newest clean one, in suffix-timestamp order, "
-    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
-    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
-    "number two or more, first dispatch `plan-architect` with "
-    "`MODE=consult`, carrying the records' paths and the plan path if one "
-    "exists, to judge whether the loop is converging (*proceed*) or its "
-    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
-    "table row whose finding cell reads `cap` and whose Outcome is the "
-    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
-    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
-    "row, or an orchestrator disagreement with the return, is a blocking "
-    "stop-and-ask to the human."
+# The Overview's last two sentences, pinned as one contiguous clause so a
+# sentence inserted between them fails. First, a gate-denied step-4 spawn
+# reviewed nothing, so the Overview's "Step 4 does not re-run on its own
+# output" does not apply. Second, inside a run, a re-plan verdict from the
+# round-cap consult is an ADDRESS row (in a step-3 pass's disposition record)
+# or a step-4 finding, and the fix loop carries it.
+_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE = (
+    "A step-4 spawn the gate denied reviewed nothing, so step 4 runs again "
+    "after the fix loop. "
+    "A re-plan verdict is an ADDRESS row in the disposition record of the "
+    "step-3 pass under review or whose fix is under review, or a step-4 "
+    "finding, and the fix loop takes it like any other finding."
 )
 
-# Step 3's clean/dirty definition for a disposition record: the Cap counts
-# records newer than the newest clean one, and the closing sentence keeps the
-# record from granting a review skip while disclosing that it can relax the Cap.
+# Step 3's clean/dirty definition for a disposition record: a pass is clean
+# only when every reviewer its *Spawn decisions:* line lists as spawned has
+# returned, and the closing sentence keeps the record from granting a review
+# skip.
 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
-    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
-    '§ "Step — Record review completion" counts it (a `none` row counts as '
-    "resolved), and dirty otherwise. No record grants a review skip and the "
-    "`cumulative-review` marker stays the sole authorization, but the Cap "
-    "counts records, so a record's clean or dirty status can relax the Cap; "
-    "later reviews otherwise read it only as context."
+    "The pass is clean when every reviewer its *Spawn decisions:* line lists "
+    "as spawned has returned and every row is resolved as "
+    '`code-review/SKILL.md` § "Step — Record review completion" counts it (a '
+    "`none` row counts as resolved), and dirty otherwise. No record grants a "
+    "review skip and the `cumulative-review` marker stays the sole "
+    "authorization; later reviews read it only as context."
 )
 
 # Step 3's loop-back sentence: a fix commit takes the standard staged-diff
 # gate, then the Overview's fix-loop rule returns the loop to a full pass of
-# step 3 over the fixed bytes, bounded by the Cap.
+# step 3 over the fixed bytes.
 _PINNED_STEP3_LOOP_BACK_CLAUSE = (
     "Its fix commit goes through the standard staged-diff `/code-review` + "
     "marker gate, and the Overview's fix-loop rule then brings the loop back "
-    "through step 2 to a full pass of this step over the fixed bytes, within "
-    "the cap below."
+    "through step 2 to a full pass of this step over the fixed bytes."
 )
 
 # Step 3 must re-review a fix's own output in full. This phrase is the tail of
@@ -6394,19 +6391,36 @@ _PINNED_STEP3_LOOP_BACK_CLAUSE = (
 _STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
 
 
-class TestReadyForReviewStep3LoopCapPins:
-    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
-    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
-    rule, the cap consult, the statement that a record grants no review skip,
-    or the fix-loop return to a full pass fails a test instead of drifting
-    silently. One test also asserts step 3 carries no sentence forbidding a
+class TestReadyForReviewRunExitAndStep3Pins:
+    """Pin the Overview's step-4 re-run sentence together with its re-plan
+    ADDRESS-finding sentence, and step 3's clean/dirty definition and
+    loop-back sentence, so dropping the step-4 re-run after a denied spawn,
+    the rule that a re-plan verdict enters the fix loop, the condition that
+    every reviewer the *Spawn decisions:* line lists as spawned has returned
+    before a pass is clean, the statement that a record grants no review skip, or the fix-loop
+    return to a full pass fails a test instead of drifting silently. A
+    negative test also asserts that step 3 carries no sentence forbidding a
     re-review of a fix's own output.
     """
+
+    def test_overview_denied_step4_rerun_and_re_plan_address_clause_match_live_text(
+        self,
+    ) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        _assert_pinned_clause_right_bounded(
+            " ".join(_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE.split()),
+            raw_section,
+            context=(
+                "ready-for-review/SKILL.md: Overview's denied-step-4 re-run and "
+                "re-plan ADDRESS-finding sentences no longer match."
+            ),
+        )
 
     @pytest.mark.parametrize(
         ("pinned_clause", "site"),
         [
-            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
             pytest.param(
                 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
                 "step 3's clean/dirty definition",

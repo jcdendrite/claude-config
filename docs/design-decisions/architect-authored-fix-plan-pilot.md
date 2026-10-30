@@ -6,6 +6,8 @@
 
 **Superseded in part by [Dispatch prompts mark relayed text by path, source and blockquote, not by fence](dispatch-prompts-mark-relayed-text-by-source.md) (2026-10-20):** in the "No untrusted-data rule or row delimiter" bullet below, the clause saying findings, diff and plan text reach the consult with no rule marking them as data no longer holds. The Agent Core rule in `claude/.claude/CLAUDE.md` now makes that text data, and the linked record says how a dispatcher marks that text when inlining it. Every other clause here stands.
 
+**Superseded in part by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the Known-gaps latch bullet no longer describes a once-per-branch latch, since a consult now resets the count and the gate re-arms, and the Cap-overlap bullet describes a consult that no longer exists.
+
 By default, `/code-review` has the orchestrating session decide each round's
 dispositions, and consults `plan-architect` only on three narrow triggers:
 a heavier mechanism, a contradiction with an earlier fix, and the round cap.
