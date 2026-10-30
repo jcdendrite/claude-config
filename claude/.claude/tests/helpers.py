@@ -3212,15 +3212,30 @@ def file_mode(path: Path) -> int:
 
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
-# test_transcript_analysis.py's Python-classifier test. Proves the two
+# test_transcript_review_trace.py's Python-classifier test. Proves the two
 # runtimes agree on classification behaviorally, not that their source text
 # matches byte-for-byte -- a byte-equality assertion across the literal sites
-# would still pass with the Python `!=` comparison inverted to `==`. No
-# pytest import here (see module docstring), so each test file wraps these
-# rows in pytest.param(...) at its own @pytest.mark.parametrize call site.
+# would still pass with the Python classifier's membership test inverted. A third
+# consumer, test_skills.py's TestCodeReviewDispositionChallengeRegionPin, reads
+# the rows without parametrizing them. No pytest import here (see module
+# docstring), so each parametrizing test file wraps these rows in
+# pytest.param(...) at its own @pytest.mark.parametrize call site.
 CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
     ("MODE=consult", True, "mode_consult"),
     ("MODE=plan-sections", False, "mode_plan_sections"),
+    ("MODE=challenge", False, "mode_challenge"),
+    (
+        "MODE=challenge\n"
+        "1. Finding: a docstring cites a retired section number.\n"
+        "   Disposition: DEFER (orthogonal scope). Rationale: the file is outside this change.",
+        False,
+        "mode_challenge_with_body",
+    ),
+    ("MODE=challenge ", True, "mode_challenge_trailing_space"),
+    ("MODE=challenge\r\n1. Finding: as above.", True, "mode_challenge_crlf"),
+    ("MODE=chalenge", True, "typo_challenge_value"),
+    ("Some preamble.\nMODE=challenge", True, "mode_challenge_not_first_line"),
+    ("MODE=Challenge", True, "mode_challenge_wrong_case"),
     ("", True, "empty_first_line"),
     ("MODE=plna-sections", True, "typo_mode_value"),
     ("Just look at the plan and tell me if it's sound.", True, "no_mode_line"),

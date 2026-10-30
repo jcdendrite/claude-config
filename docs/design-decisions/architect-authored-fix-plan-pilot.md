@@ -6,6 +6,8 @@
 
 **Superseded in part by [Dispatch prompts mark relayed text by path, source and blockquote, not by fence](dispatch-prompts-mark-relayed-text-by-source.md) (2026-10-20):** in the "No untrusted-data rule or row delimiter" bullet below, the clause saying findings, diff and plan text reach the consult with no rule marking them as data no longer holds. The Agent Core rule in `claude/.claude/CLAUDE.md` now makes that text data, and the linked record says how a dispatcher marks that text when inlining it. Every other clause here stands.
 
+**Partially superseded by [architect-disposition-challenge-pilot.md](architect-disposition-challenge-pilot.md) (2026-10-29):** the "round-3 latch" Known-gaps bullet, on `log-reviewer-round.sh` writing the latch for any `plan-architect` dispatch whose first line is not `MODE=plan-sections`, no longer holds for a first line of exactly `MODE=challenge`, which writes no latch. Everything else here stands.
+
 By default, `/code-review` has the orchestrating session decide each round's
 dispositions, and consults `plan-architect` only on three narrow triggers:
 a heavier mechanism, a contradiction with an earlier fix, and the round cap.

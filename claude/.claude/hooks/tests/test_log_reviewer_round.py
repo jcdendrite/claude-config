@@ -506,7 +506,7 @@ class TestLogReviewerRoundConsultLatch:
         assert architect_consult_latch_path(isolated_home / ".claude", repo).exists()
 
     def test_absent_mode_line_writes_latch(self, isolated_home, tmp_path):
-        """Fail-safe direction: a dispatch carrying neither MODE= line is a
+        """Fail-safe direction: a dispatch carrying no MODE= line is a
         consult (plan-architect.md)."""
         repo = tmp_path / "latch-absent-mode"
         _init_repo(repo)
@@ -574,14 +574,15 @@ class TestLogReviewerRoundConsultLatch:
 
 
 class TestPlanArchitectModeLiteralTripwire:
-    def test_mode_plan_sections_heading_present(self):
+    @pytest.mark.parametrize("mode_heading", ["## MODE=plan-sections", "## MODE=challenge"])
+    def test_non_consult_mode_heading_present(self, mode_heading):
         """A wiring-presence tripwire only -- plan-architect.md is
         LLM-consumed prose with no runtime to assert behavior against.
-        Anchored on the `## MODE=plan-sections` section heading, the more
-        structurally stable of the file's two occurrences of the literal,
-        not the prose sentence describing it."""
+        Covers the two first lines the hook excludes from the consult latch,
+        each anchored on its section heading, the more structurally stable
+        occurrence of the literal, not the prose sentence describing it."""
         body = PLAN_ARCHITECT_AGENT.read_text()
-        assert "## MODE=plan-sections" in body
+        assert mode_heading in body
 
 
 class TestLogReviewerRoundConcurrency:
