@@ -214,8 +214,9 @@ _HEAD_OUTSIDE_PR_BRANCH_LABEL = " (head is outside the PR branch)"
 _HEAD_BRANCH_UNKNOWN_LABEL = " (PR branch membership unknown)"
 _NO_DESCRIPTION_NOTE = "(none -- a y asks for a one-line description)"
 _CONFIRM_HEADER = (
-    "confirm: {count} candidate(s) to review. y promotes a candidate, n declines it (later runs skip it unless "
-    "--include-declined), q or end of input stops and keeps the answers so far, and any other answer asks again. "
+    "confirm: {count} candidate(s) to review. y promotes a candidate. "
+    "n declines it (later runs skip it unless --include-declined). "
+    "q or end of input stops and keeps the answers so far, and any other answer asks again. "
     "Ctrl-C discards every answer in this run, so q is the durable exit. Paste one line at a time: a multi-line "
     "paste can answer a later prompt unseen."
 )
@@ -434,9 +435,8 @@ def _print_candidate_for_approval(
 
 
 def _read_promotion_decision() -> str:
-    """One answer at the `[y/n/q]` prompt. Only `y`, `n` or `q`, in either case
-    and with no other characters, is an answer. Anything else asks again, so a mistyped answer here
-    never counts as a decline. End of input stops."""
+    """One answer at the `[y/n/q]` prompt. Nothing is stripped beyond the line ending, so padded
+    text asks again. Only an explicit `n` is persisted as a decline."""
     while True:
         print("promote this candidate? [y/n/q] ", end="", file=sys.stderr, flush=True)
         line = sys.stdin.readline()

@@ -618,8 +618,7 @@ then `pr-comment`, then `szz`) and then by the miner's own order, so an early
 the schema, that its path exists at its introducing commit, and, when the
 candidate has a description, the description-provenance check against every
 `.local/` excerpt. It then prompts `[y/n/q]` for each candidate that passes, except one that `--source`, `--ids-file`, or the declined
-IDs described below leave out. Only `y`, `n` or `q`, in either case, is an answer, and anything
-else asks again, so a mistyped answer here never counts as a decline. The prompt shows:
+IDs described below leave out. The prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
   subjects;
@@ -727,10 +726,13 @@ The description policy:
   passes verbatim.
 - Words typed or edited in are still checked.
 
-`y` promotes the candidate. `n` skips it, and it stays in `.local/`. Any other
-answer, `yes` included, asks again. `y`, `n` and `q` also work in capitals. `q` or end of input stops the loop
-and writes the candidates accepted so far. Ctrl-C during the prompts writes, pins, and
-records nothing.
+Answers at the `[y/n/q]` prompt (`y`, `n` and `q` work in either case):
+
+- `y` promotes the candidate.
+- `n` skips the candidate, and it stays in `.local/`.
+- `q`, or end of input, stops the loop and writes the candidates accepted so far.
+- Any other answer, `yes` and padded or longer text included, asks again.
+- Ctrl-C during the prompts writes, pins, and records nothing.
 
 When the prompts end, `confirm` appends the IDs it skipped to
 `.local/confirm_declined_ids.json`, a mode-0600 JSON list that the `.local/`
