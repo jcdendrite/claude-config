@@ -4483,32 +4483,36 @@ class TestReadLensChoice:
 _PROMOTION_PROMPT = "promote this candidate? [y/n/q] "
 
 
-class _StderrPublishedOnFlush(io.StringIO):
-    """Holds written text back from `published_text` until `flush()`, as a line-buffered terminal does for
-    a prompt with no trailing newline."""
+class _PublishedBytesSink(io.RawIOBase):
+    """Records the bytes that reach the raw end of a stream. A line-buffered stream holds a newline-free
+    prompt back from here until `flush()`."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._published_length = 0
+        self._published = bytearray()
 
-    def flush(self) -> None:
-        self._published_length = len(self.getvalue())
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        self._published += data
+        return len(data)
 
     @property
     def published_text(self) -> str:
-        return self.getvalue()[: self._published_length]
+        return self._published.decode()
 
 
 class _StdinRecordingPromptsVisibleAtEachRead(_StdinThatFailsOnAReadPastEndOfInput):
     """Records how many promotion prompts `stderr` has published when each `readline()` starts."""
 
-    def __init__(self, lines: list[str], stderr: _StderrPublishedOnFlush) -> None:
+    def __init__(self, lines: list[str], stderr_sink: _PublishedBytesSink) -> None:
         super().__init__(lines)
-        self._stderr = stderr
+        self._stderr_sink = stderr_sink
         self.prompts_visible_at_each_read: list[int] = []
 
     def readline(self) -> str:
-        self.prompts_visible_at_each_read.append(self._stderr.published_text.count(_PROMOTION_PROMPT))
+        self.prompts_visible_at_each_read.append(self._stderr_sink.published_text.count(_PROMOTION_PROMPT))
         return super().readline()
 
 
@@ -4599,9 +4603,10 @@ class TestReadPromotionDecision:
         assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 1
 
     def test_the_prompt_is_flushed_before_each_read(self, monkeypatch) -> None:
-        stderr_recorder = _StderrPublishedOnFlush()
-        stdin_recorder = _StdinRecordingPromptsVisibleAtEachRead(["nope\n", "y\n"], stderr_recorder)
-        monkeypatch.setattr(sys, "stderr", stderr_recorder)
+        stderr_sink = _PublishedBytesSink()
+        stderr_stream = io.TextIOWrapper(io.BufferedWriter(stderr_sink), line_buffering=True)
+        stdin_recorder = _StdinRecordingPromptsVisibleAtEachRead(["nope\n", "y\n"], stderr_sink)
+        monkeypatch.setattr(sys, "stderr", stderr_stream)
         monkeypatch.setattr(sys, "stdin", stdin_recorder)
 
         assert run_review_bench._read_promotion_decision() == "y"
@@ -4781,7 +4786,7 @@ class TestConfirmRemembersDeclinedCandidates:
 
         _run_confirm(local_dir, defects_path)
 
-        assert "skipped c-1 -- empty description" in capsys.readouterr().err
+        assert "skipped c-1 -- empty description (recorded as declined)" in capsys.readouterr().err
         assert _recorded_declined_ids(local_dir) == ["c-1"]
 
     def test_a_failed_write_of_the_declined_file_still_pins_and_writes_the_approvals(
@@ -4936,7 +4941,7 @@ class TestConfirmLensPrompt:
         assert _run_confirm(local_dir, defects_path) == 0
 
         stderr = capsys.readouterr().err
-        assert "skipped c-1 -- no valid lens after 3 entries" in stderr
+        assert "skipped c-1 -- no valid lens after 3 entries (recorded as declined)" in stderr
         assert "1 appended, 1 skipped, 0 rejected" in stderr
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
         assert _recorded_declined_ids(local_dir) == ["c-1"]

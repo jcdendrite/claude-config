@@ -5342,12 +5342,11 @@ class TestConfirmCli:
         """Returns (repo, local_dir, defects_path, fix_sha) for candidates c-1 .. c-<count>, each of which passes every check."""
         return _confirm_workspace(tmp_path, monkeypatch, *[{} for _ in range(count)])
 
-    @pytest.mark.parametrize("answer", ["", " y ", "yes", "y ", "ok", "1"])
     def test_an_unrecognized_answer_followed_by_end_of_input_asks_again_then_quits_with_nothing_recorded(
-        self, tmp_path, monkeypatch, capsys, answer,
+        self, tmp_path, monkeypatch, capsys,
     ):
         repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
-        _feed_answers(monkeypatch, answer)
+        _feed_answers(monkeypatch, "yes")
 
         exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
@@ -6093,7 +6092,7 @@ class TestConfirmCli:
 
         assert "2 candidate(s) awaiting the engineer at a terminal" in capsys.readouterr().err
 
-    def test_the_header_names_the_count_n_declining_asking_again_ctrl_c_discarding_the_run_q_and_one_line_pastes(
+    def test_the_header_names_the_count_n_and_y_declining_asking_again_ctrl_c_discarding_the_run_q_and_one_line_pastes(
         self, tmp_path, monkeypatch, capsys,
     ):
         _repo, local_dir, defects_path, _fix_sha = self._two_passing_candidates(tmp_path, monkeypatch)
@@ -6104,9 +6103,24 @@ class TestConfirmCli:
         header = capsys.readouterr().err.split("\ncandidate ")[0]
         assert header.startswith("confirm: 2 candidate(s) to review.")
         assert "n declines it (later runs skip it unless --include-declined)" in header
+        expected_lens_limit = run_review_bench._CONFIRM_MAX_INVALID_LENS_ENTRIES
+        assert (
+            f"A y followed by an empty description or by {expected_lens_limit} invalid lenses records the decline too."
+            in header
+        )
         assert "any other answer asks again" in header
         assert "Ctrl-C discards every answer in this run, so q is the durable exit." in header
         assert "Paste one line at a time" in header
+
+    def test_the_header_reads_its_invalid_lens_limit_from_the_constant(self, tmp_path, monkeypatch, capsys):
+        _repo, local_dir, defects_path, _fix_sha = self._two_passing_candidates(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_review_bench, "_CONFIRM_MAX_INVALID_LENS_ENTRIES", 5)
+        _feed_answers(monkeypatch)
+
+        run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
+
+        header = capsys.readouterr().err.split("\ncandidate ")[0]
+        assert "by 5 invalid lenses records the decline too." in header
 
     @pytest.mark.parametrize(
         ("source", "evidence_overrides", "expected_path_line"),

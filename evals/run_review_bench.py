@@ -216,6 +216,7 @@ _NO_DESCRIPTION_NOTE = "(none -- a y asks for a one-line description)"
 _CONFIRM_HEADER = (
     "confirm: {count} candidate(s) to review. y promotes a candidate. "
     "n declines it (later runs skip it unless --include-declined). "
+    "A y followed by an empty description or by {lens_limit} invalid lenses records the decline too. "
     "q or end of input stops and keeps the answers so far, and any other answer asks again. "
     "Ctrl-C discards every answer in this run, so q is the durable exit. Paste one line at a time: a multi-line "
     "paste can answer a later prompt unseen."
@@ -436,7 +437,7 @@ def _print_candidate_for_approval(
 
 def _read_promotion_decision() -> str:
     """One answer at the `[y/n/q]` prompt. Nothing is stripped beyond the line ending, so padded
-    text asks again. Only an explicit `n` is persisted as a decline."""
+    text asks again."""
     while True:
         print("promote this candidate? [y/n/q] ", end="", file=sys.stderr, flush=True)
         line = sys.stdin.readline()
@@ -1032,7 +1033,10 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     accepted_ids: set[str] = set()
     declined_ids: set[str] = set()
     skipped = 0
-    print(_CONFIRM_HEADER.format(count=len(to_prompt)), file=sys.stderr)
+    print(
+        _CONFIRM_HEADER.format(count=len(to_prompt), lens_limit=_CONFIRM_MAX_INVALID_LENS_ENTRIES),
+        file=sys.stderr,
+    )
     if args.source:
         print(f"confirm: prompting only for source(s) {_source_names(args.source)}", file=sys.stderr)
     if ids_file_path is not None:
@@ -1076,7 +1080,8 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                     break
                 if not typed_description.strip():
                     print(
-                        f"confirm: skipped {_escape_control_characters(candidate.id)} -- empty description",
+                        f"confirm: skipped {_escape_control_characters(candidate.id)} -- "
+                        "empty description (recorded as declined)",
                         file=sys.stderr,
                     )
                     declined_ids.add(candidate.id)
@@ -1093,7 +1098,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
             if chosen_lens == _LENS_GAVE_UP:
                 print(
                     f"confirm: skipped {_escape_control_characters(candidate.id)} -- "
-                    f"no valid lens after {_CONFIRM_MAX_INVALID_LENS_ENTRIES} entries",
+                    f"no valid lens after {_CONFIRM_MAX_INVALID_LENS_ENTRIES} entries (recorded as declined)",
                     file=sys.stderr,
                 )
                 declined_ids.add(candidate.id)
