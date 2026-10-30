@@ -110,8 +110,7 @@ def _docstring_lines_without_shared_code(docstring: ast.Expr, source_lines: Sequ
 
 
 def _python_docstring_lines(source: str, *, stats: _MineStats | None = None) -> frozenset[int]:
-    """1-based line numbers covered by a module, class, or function docstring
-    in `source`; empty when it does not parse.
+    """1-based line numbers of docstring text in `source`.
 
     The parse is uncapped, so a multi-MB generated file costs seconds and
     substantial memory per (fix commit, file)."""

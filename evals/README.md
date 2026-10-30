@@ -579,6 +579,11 @@ Run them in this order:
       `python_docstring_line_skips` does not count it.
     - A docstring the program reads at runtime, such as `__doc__` passed to
       argparse, is skipped like any other.
+  - The docstring filter does not apply to:
+    - An addition-only hunk, which applies none of the skip rules.
+    - A removed docstring line that shares its physical line with code, for
+      example `class E(Exception): """Boom."""`.
+    - A `.py` file that cannot be parsed.
   - Counters, printed on stderr: `python_docstring_parse_attempts` and
     `python_docstring_parse_failures` count `.py` files, once per fix commit
     and file. A `.py` file is never tried, so it counts in neither counter,
@@ -587,11 +592,6 @@ Run them in this order:
     - its removing hunks all fail to blame,
     - its removed lines are all blank or comments,
     - its `git show` fails, which `git_call_failures` counts instead.
-  - The docstring filter does not apply to:
-    - An addition-only hunk, which applies none of the skip rules.
-    - A removed docstring line that shares its physical line with code, for
-      example `class E(Exception): """Boom."""`.
-    - A `.py` file that cannot be parsed or whose `git show` fails.
 
 `mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
 introducing commit, for example a file renamed after that commit or lines

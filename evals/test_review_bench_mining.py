@@ -1208,6 +1208,11 @@ class TestPythonDocstringLines:
                 'x = 1\n\x0c\ndef f():\n    """Doc."""\n    return 1\n', {4},
                 id="form-feed line above a docstring counts as one line",
             ),
+            pytest.param(
+                '"""Module."""\n\nclass C:\n    """Class."""\n\n    def method(self):\n        """Method."""\n        return 1\n',
+                {1, 4, 7},
+                id="module, class and method docstrings in one file",
+            ),
         ],
     )
     def test_returns_exactly_the_lines_that_hold_only_docstring_text(self, source, expected_lines):
