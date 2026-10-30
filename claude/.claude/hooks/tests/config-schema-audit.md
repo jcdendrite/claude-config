@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 20 keys in `config-keys.psv`, this table traces the
+For every one of the 21 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -165,7 +165,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining fifteen keys
+## Remaining sixteen keys
 
 ### `permission_prompt_tracking`
 
@@ -433,6 +433,20 @@ Column legend:
 - Fail direction: only exit 0 from `_config_enabled` routes. Any other
   exit, including an unresolvable config dir, an unreadable schema or a
   missing row, allows the call, which leaves the round inline.
+
+### `architect_disposition_challenge_pilot`
+
+- Call site: `code-review/SKILL.md`'s `code-review-disposition-challenge`
+  region, which reads the key through `config-get.sh`.
+- Resolution: **config-dir** (per account).
+- Legacy-probe-on-resolution-failure: **false**.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all, so there is no legacy file for
+  `migrate-legacy-config.sh` to import from either location.
+- Fail direction on resolution failure: only an observed exit 0 from
+  `config-get.sh` enables the challenge. Any other outcome, including a call
+  that yields no exit code, leaves it off, which leaves the default
+  disposition procedure unchanged.
 
 ### `plugin_bootstrap`
 

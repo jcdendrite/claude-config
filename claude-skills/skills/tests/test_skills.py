@@ -58,6 +58,7 @@ from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 # path, where these shared test helpers live.
 from helpers import (
     CLAUDE_DIR,
+    CONSULT_CLASSIFICATION_TABLE,
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
@@ -2550,6 +2551,7 @@ _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|en
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
     ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
+    ("code-review", "code-review-disposition-challenge"),
     ("code-review", "code-review-fix-plan-pilot"),
     ("code-review", "code-review-new-primitive-route"),
     ("code-review", "code-review-round-cap-consult-verdict"),
@@ -6910,6 +6912,323 @@ class TestCodeReviewFixPlanPilotRegionPin:
         )
 
 
+_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR = "DISPOSITION_RULE:code-review-disposition-challenge"
+_CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING = "## Review-narrative ledger"
+_CODE_REVIEW_THREE_PLUS_DEFER_LEAD = "If you find yourself tagging 3+ findings DEFER"
+_CODE_REVIEW_PROJECT_LAYER_HEADING = "## Step 0.5 — Load project-specific layer"
+_CODE_REVIEW_DIFF_ARTIFACT_LEAD = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
+_DISPOSITION_CHALLENGE_RECORD_PATH = (
+    REPO_ROOT / "docs" / "design-decisions" / "architect-disposition-challenge-pilot.md"
+)
+_PLAN_ARCHITECT_MODE_SELECTION_HEADING = "## Mode selection"
+
+# The whole disposition-challenge region, pinned by exact equality so any edit to it is a
+# visible change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict
+# bullets after whitespace collapse, not typos.
+_PINNED_DISPOSITION_CHALLENGE_CLAUSE = (
+    "**Once dispositions are tagged, outside a `/review-pr` pass, if any ADDRESS "
+    "or DEFER is the orchestrator's own decision, run "
+    "`~/.claude/scripts/config-get.sh architect_disposition_challenge_pilot`; "
+    "only exit 0 applies this rule.** A `/review-pr` pass is one run under that "
+    "skill's standing override to report findings and change nothing. A row is "
+    "the orchestrator's own unless a valid fix-plan table or the human decided "
+    "it, it is a carry, or it is on the contradiction route; an ADDRESS row the "
+    "heavier-mechanism rule routes to a consult is the orchestrator's own. Mark "
+    "as barred each of those rows whose finding the enforcement-invariant rule "
+    "above or a loaded project layer bars from DEFER, counting a finding as "
+    "barred when unsure. A barred row is not challenged: a barred ADDRESS stays "
+    "ADDRESS, and a barred DEFER becomes ADDRESS or the stop-and-ask the rule "
+    "that bars it prescribes. This rule runs after the contradiction route's "
+    "carries and settled-site stops and any valid fix-plan table, and the round's "
+    "heavier-mechanism consults and any `code-writer` dispatch wait for its "
+    "result. Number the unbarred rows from 1, and with none dispatch nothing. "
+    'Dispatch `plan-architect` once, with an explicit `model: "opus"`, and with a '
+    "prompt whose first line is exactly `MODE=challenge` and nothing else. The "
+    "prompt carries the numbered rows, each with its finding, disposition and "
+    "rationale; this file's path, naming this section as the rules a row must "
+    "meet; this round's findings-file paths; the diff artifact resolved as for "
+    "`comment-discipline-reviewer`; the plan file's path when one exists; and the "
+    "project layer's path when Step 0.5 loaded one. Then, per row of its return, "
+    "taking a verdict line only from the opening run, the consecutive "
+    "verdict-shaped lines from the return's first line (none when that line is "
+    "not one), and voiding the verdict of a row that has a verdict-shaped line "
+    "outside it: "
+    "- **`<n>. uphold`** keeps the row. - **`<n>. flip`.** Re-evaluate the row "
+    "once under the rules above and a loaded project layer's bar from DEFER, "
+    "with the architect's argument in front of you, "
+    "and concede, applying the flip, only when you then reach its result. "
+    "Otherwise the row is a blocking stop-and-ask to the human, relaying the row, "
+    "your reasoning, and the flip line and its argument verbatim. - **A row "
+    "without exactly one such line**, and every row when the dispatch failed or "
+    "its return ends in a `Stance:` line, which only a consult writes, is one "
+    "blocking stop-and-ask for all such rows, relaying the return verbatim. "
+    "Nothing re-dispatches, and a row the human does not decide keeps its "
+    "disposition. Before the human answers a stop here, give the contradiction "
+    "route's notice once. Log a row the human decides at such a stop ADDRESS when "
+    "it is to be fixed, and otherwise as the contradiction route logs a human "
+    "keep. After the last concession and stop, re-state the disposition and the "
+    "`Fix route:` line of each row whose disposition changed, applying the "
+    "heavier-mechanism rule to each one now ADDRESS, and apply the 3+ DEFER "
+    "re-read above to the new count. Start the `--rationale` of each barred and "
+    "each numbered row with `challenge:<outcome>:<scope>`. `<outcome>` is "
+    "`barred` on a barred row; `upheld`; `conceded`; `escalated-architect` or "
+    "`escalated-orchestrator` when the human, at a flip's stop, chose the flip or "
+    "the row's original disposition; `ran-as-consult` on every numbered row when "
+    "the return ends in a `Stance:` line; and otherwise `no-verdict` on a row "
+    "without a verdict. `<scope>` is `narrowed` or `unnarrowed`, as the `Spawn "
+    "decisions:` line's scope tag says."
+)
+
+# The agent's whole `## MODE=challenge` section, heading line included, whitespace-collapsed.
+_PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION = (
+    "## MODE=challenge The prompt carries numbered dispositions another session "
+    "decided, with the paths of the rules each must meet and of the evidence "
+    "behind it. Never call `Edit`, even when the prompt names a plan file. "
+    "Judge only those rows. Whether the branch's foundation is wrong is a "
+    '`MODE=consult` question, so ignore any "Review-ledger history" line in '
+    "your context. Work out each row's disposition yourself before you read its "
+    "rationale. Challenge in both directions: a DEFER the rules do not allow, "
+    "and an ADDRESS that a closed-list DEFER criterion covers. Flip a row only "
+    "for a defect that meets the Review stance's bar for a rejection, under "
+    "`MODE=consult`. Open the return with one line per row, in row order, and "
+    "start no other line the same way: - `<n>. uphold` - `<n>. flip: <the rule "
+    "the row breaks>`. A flip of an ADDRESS also names the closed-list DEFER "
+    "criterion the finding meets. Then give each flip's argument, concrete "
+    "enough for the dispatching session to re-evaluate the row against, and "
+    "name what you did not verify. End with no `Stance:` line, because only a "
+    "consult return ends with one."
+)
+
+_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE = (
+    "If the key is on, this edit needs the key set false and the fixture set re-run: see "
+    'docs/design-decisions/architect-disposition-challenge-pilot.md, in its "Changes after enabling" bullet.'
+)
+
+
+class TestCodeReviewDispositionChallengeRegionPin:
+    """Pin code-review/SKILL.md's disposition-challenge region whole, and the
+    referents it reads from other files, so dropping or weakening any of its
+    rules fails a test instead of drifting silently. The presence tests claim
+    that wiring exists, not that the agent obeys the text.
+    """
+
+    @staticmethod
+    def _region_text() -> str:
+        return _normalized_anchor_text(
+            _skill_file("code-review"), _CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR
+        )
+
+    @classmethod
+    def _region_mode_literal(cls) -> str:
+        mode_match = re.search(r"first line is exactly `(MODE=[^`]+)`", cls._region_text())
+        assert mode_match, "the region no longer states its prompt's first line as exactly `MODE=...`"
+        return mode_match.group(1)
+
+    def test_region_matches_pin(self) -> None:
+        """Change detector: any edit to the region must be mirrored in the pin,
+        as test_pinned_scope_clause_matches_live_text's docstring says of scope clauses."""
+        live_text = self._region_text()
+        pinned_text = " ".join(_PINNED_DISPOSITION_CHALLENGE_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} no longer matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}\n"
+            f"{_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE}"
+        )
+
+    def test_agent_mode_section_matches_pin(self) -> None:
+        """Change detector: any edit to plan-architect.md's challenge section must be
+        mirrored in the pin. The phrase tests below catch a dropped rule, not a reworded one."""
+        live_text = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
+        assert live_text == _PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION, (
+            f"{_PLAN_ARCHITECT_PATH}'s challenge section no longer matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {_PINNED_PLAN_ARCHITECT_CHALLENGE_SECTION!r}\n"
+            f"{_DISPOSITION_CHALLENGE_PIN_RECOVERY_NOTE}"
+        )
+
+    def test_region_follows_three_plus_defer_paragraph_and_precedes_ledger_section(
+        self,
+    ) -> None:
+        """The region's "the rules above" and "the 3+ DEFER re-read above"
+        depend on this position."""
+        skill_md_path = _skill_file("code-review")
+        collapsed_text = " ".join(skill_md_path.read_text().split())
+        ordered_markers = [
+            " ".join(marker.split())
+            for marker in (
+                f"<!-- {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} end -->",
+                _CODE_REVIEW_THREE_PLUS_DEFER_LEAD,
+                f"<!-- {_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} start -->",
+                _CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING,
+            )
+        ]
+        offsets = [collapsed_text.find(marker) for marker in ordered_markers]
+        assert -1 not in offsets, (
+            f"{skill_md_path}: placement needs every marker in {ordered_markers}; offsets found: {offsets}"
+        )
+        assert offsets == sorted(offsets), (
+            f"{skill_md_path}: {_CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR} must sit after the "
+            "defer-invariant region and the 3+ DEFER paragraph, and before the "
+            f"{_CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING} section; offsets found: {offsets}"
+        )
+
+    def test_cited_referents_still_exist(self) -> None:
+        """The referents the region cites by name or position: the diff-artifact
+        and project-layer definitions its dispatch sentence points to, the two
+        DEFER-rule leads that start "the rules above", the contradiction route's
+        notice and keep logging, the Fix route line, the Spawn decisions scope
+        tags, the heavier-mechanism rule, and `/review-pr`'s standing override."""
+        skill_md_path = _skill_file("code-review")
+        skill_text = " ".join(skill_md_path.read_text().split())
+        for skill_phrase in (
+            "mandatory **Fix route:** line",
+            _CODE_REVIEW_DIFF_ARTIFACT_LEAD,
+            _CODE_REVIEW_PROJECT_LAYER_HEADING,
+            _CODE_REVIEW_DEFER_CRITERIA_HEADING,
+            _CODE_REVIEW_INVALID_DEFER_HEADING,
+        ):
+            assert skill_phrase in skill_text, (
+                f"{skill_md_path}: the disposition-challenge region cites {skill_phrase!r}, "
+                "which is no longer in the file"
+            )
+        spawn_decisions_paragraphs = [
+            paragraph
+            for paragraph in skill_md_path.read_text().split("\n\n")
+            if paragraph.startswith("The **Spawn decisions:** line also states")
+        ]
+        assert spawn_decisions_paragraphs, f"{skill_md_path}: the Spawn decisions scope paragraph is gone"
+        for scope_tag in ("(narrowed)", "(unnarrowed"):
+            assert scope_tag in spawn_decisions_paragraphs[0], (
+                f"{skill_md_path}: the Spawn decisions scope paragraph no longer carries {scope_tag!r}, "
+                "which the region's <scope> tag copies"
+            )
+        contradiction_text = _normalized_anchor_text(skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR)
+        for contradiction_phrase in (
+            "A human keep is logged",
+            "Every stop-and-ask in this section whose keep is logged this way first tells the engineer",
+        ):
+            assert contradiction_phrase in contradiction_text, (
+                f"{skill_md_path}: the contradiction-route region must still contain "
+                f"{contradiction_phrase!r}, which the disposition-challenge region reuses by reference"
+            )
+        heavier_mechanism_text = _normalized_anchor_text(skill_md_path, _CODE_REVIEW_NEW_PRIMITIVE_ROUTE_ANCHOR)
+        assert heavier_mechanism_text.startswith(_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING), (
+            f"{skill_md_path}: the heavier-mechanism region must open with "
+            f"{_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING!r}"
+        )
+        review_pr_path = _skill_file("review-pr")
+        review_pr_text = " ".join(review_pr_path.read_text().split())
+        for override_phrase in ("**Standing override.**", "change nothing"):
+            assert override_phrase in review_pr_text, (
+                f"{review_pr_path}: the standing override the disposition-challenge region names "
+                f"must still contain {override_phrase!r}"
+            )
+
+    def test_region_verdict_heads_presence_in_agent_mode_section(self) -> None:
+        """Claims presence only: each verdict head the region reads opens a
+        backticked token in the agent's challenge section."""
+        verdict_heads = re.findall(r"`(<n>\. [a-z]+)`", self._region_text())
+        assert verdict_heads, "the region no longer names any backticked `<n>. <word>` verdict head"
+        mode_section = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
+        for verdict_head in verdict_heads:
+            assert f"`{verdict_head}" in mode_section, (
+                f"plan-architect.md's challenge section no longer opens a backticked token with {verdict_head!r}"
+            )
+
+    def test_region_mode_literal_is_agent_mode_and_non_consult_row(self) -> None:
+        mode_literal = self._region_mode_literal()
+        agent_lines = _PLAN_ARCHITECT_PATH.read_text().splitlines()
+        assert f"## {mode_literal}" in agent_lines, (
+            f"plan-architect.md has no `## {mode_literal}` heading for the region's mode literal"
+        )
+        matching_rows = [row for row in CONSULT_CLASSIFICATION_TABLE if row[0] == mode_literal]
+        assert matching_rows, f"CONSULT_CLASSIFICATION_TABLE has no row whose prompt is exactly {mode_literal!r}"
+        for _prompt, expect_consult, row_id in matching_rows:
+            assert not expect_consult, f"table row {row_id!r} must classify {mode_literal!r} as no consult"
+
+    def test_mode_selection_names_every_mode_presence(self) -> None:
+        """Claims presence only: the agent's mode-selection section names every mode and the exact-first-line rule."""
+        mode_selection = _heading_section_text(_PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_MODE_SELECTION_HEADING)
+        for required_text in (
+            "`MODE=plan-sections`",
+            "`MODE=consult`",
+            f"`{self._region_mode_literal()}`",
+            "Any other first line, an absent one included, is a consult.",
+        ):
+            assert required_text in mode_selection, (
+                f"plan-architect.md's {_PLAN_ARCHITECT_MODE_SELECTION_HEADING!r} section no longer "
+                f"carries {required_text!r}"
+            )
+
+    def test_region_outcome_tokens_presence_in_record(self) -> None:
+        """Claims presence only, in one direction: the record holds no delimited
+        token list to parse, so a region rename the record misses is what fails."""
+        region_text = self._region_text()
+        outcome_span_start = region_text.find("`<outcome>` is")
+        outcome_span_end = region_text.find("`<scope>` is")
+        assert -1 not in (outcome_span_start, outcome_span_end), (
+            "the region no longer defines `<outcome>` and `<scope>`"
+        )
+        outcome_span = region_text[outcome_span_start:outcome_span_end]
+        outcome_tokens = [
+            token for token in re.findall(r"`([^`]+)`", outcome_span) if re.fullmatch(r"[a-z]+(-[a-z]+)*", token)
+        ]
+        assert outcome_tokens, "no outcome tokens parsed from the region"
+        tag_match = re.search(r"`([^`<]+)<outcome>:<scope>`", region_text)
+        assert tag_match, "the region no longer states its `challenge:<outcome>:<scope>` tag"
+        tag_prefix = tag_match.group(1)
+        record_text = _DISPOSITION_CHALLENGE_RECORD_PATH.read_text()
+        for record_token in (*outcome_tokens, tag_prefix):
+            assert f"`{record_token}`" in record_text, (
+                f"{_DISPOSITION_CHALLENGE_RECORD_PATH} no longer carries `{record_token}`, "
+                "which the region's tag uses"
+            )
+
+    @pytest.mark.parametrize(
+        "phrase, invariant",
+        [
+            pytest.param(
+                "Never call `Edit`, even when the prompt names a plan file.",
+                "the mode keeps the charter-only no-Edit rule, including the plan-file case",
+                id="never-calls-edit",
+            ),
+            pytest.param(
+                "start no other line the same way",
+                "no line other than a row's verdict may start like one, so the verdict count is exact",
+                id="one-line-per-row",
+            ),
+            pytest.param(
+                "End with no `Stance:` line",
+                "only a consult return ends in a Stance line, which the region reads as a consult",
+                id="no-stance-line",
+            ),
+        ],
+    )
+    def test_agent_mode_section_carries_phrase(self, phrase: str, invariant: str) -> None:
+        """Wiring-presence tripwire: claims presence only, not that the agent obeys the phrase."""
+        mode_section = _heading_section_text(_PLAN_ARCHITECT_PATH, f"## {self._region_mode_literal()}")
+        assert phrase in mode_section, (
+            f"plan-architect.md's challenge section no longer carries {phrase!r}: {invariant}."
+        )
+
+    def test_region_stance_token_in_consult_stance_line(self) -> None:
+        """Claims presence only: the line the region detects as a consult return is
+        the line the consult section says it ends with."""
+        region_text = self._region_text()
+        bullet_start = region_text.find("**A row without exactly one such line**")
+        bullet_end = region_text.find("Before the human answers a stop here")
+        assert -1 not in (bullet_start, bullet_end), "the region no longer has its no-verdict bullet"
+        stance_tokens = re.findall(r"`([^`]*:)`", region_text[bullet_start:bullet_end])
+        assert stance_tokens, "the no-verdict bullet no longer detects a backticked `...:` line"
+        consult_section = _heading_section_text(_PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING)
+        for stance_token in stance_tokens:
+            for stance_word in ("review", "design"):
+                assert f"`{stance_token} {stance_word}`" in consult_section, (
+                    f"plan-architect.md's consult section no longer carries `{stance_token} {stance_word}`"
+                )
+
+
 def test_round_cap_consult_prompt_excludes_ledger_output_files_from_the_findings_files() -> None:
     """The previous round's findings files are picked by the `agent-reviews/` name filter. Without
     the exclusion list, a digest or history file would pass as a reviewer's findings file."""
@@ -6932,8 +7251,9 @@ def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None
         ):
             call_sites.append((skill_md_path, key_match.group(1)))
     # pr-description and transcript-analysis each carry one call site.
-    # The pilot region adds a third; the floor excludes it so removing the
-    # region leaves this test green.
+    # The two pilot regions add two more; the floor excludes them so removing
+    # either region leaves this test green. Removing or redirecting a pilot region fails
+    # test_disposition_rule_anchors_present and that region's pin test.
     minimum_call_sites = 2
     assert len(call_sites) >= minimum_call_sites, (
         f"found {len(call_sites)} config-get.sh call sites across shipped skills; "
