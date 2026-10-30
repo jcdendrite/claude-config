@@ -10,8 +10,11 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    _make_blocking_diff_git,
+    _make_blocking_merge_tree_git,
     _make_git_exiting_with_status,
     _run_git,
+    _timeout_binary_present,
     bare_remote_with_default_branch,
     build_conflicted_cherry_pick,
     build_conflicted_rebase,
@@ -31,35 +34,11 @@ from ._lib_sh_helpers import (
 )
 
 
-def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
-    line to stdout then blocks past the 5s cap; every other subcommand
-    proxies to the real git. Sleeps 20s, ~4x the 5s cap -- the same bounded
-    overshoot convention test_lib_capped_for_enforces_cap_when_timeout_present
-    uses (5s sleep against a 1s cap) to keep a cap regression from hanging
-    the test."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "merge-tree" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
 def _make_blocking_absolute_git_dir_git(bin_dir: Path) -> Path:
     """Shim at bin_dir/git: for `rev-parse --absolute-git-dir` specifically,
     writes a partial line to stdout then blocks past the 5s cap; every other
     subcommand proxies to the real git. Same shape as
-    _make_blocking_merge_tree_git above, targeting _lib_gate_diff_base's
+    helpers._make_blocking_merge_tree_git, targeting _lib_gate_diff_base's
     initial `git rev-parse --absolute-git-dir` call instead of its
     merge-tree call."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -83,7 +62,7 @@ def _make_blocking_tree_verify_git(bin_dir: Path) -> Path:
     """Shim at bin_dir/git: for a `<tree-oid>^{tree}` revision argument
     specifically, writes a partial line to stdout then blocks past the 5s
     cap; every other subcommand proxies to the real git. Same shape as
-    _make_blocking_merge_tree_git above, targeting _lib_gate_diff_base's
+    helpers._make_blocking_merge_tree_git, targeting _lib_gate_diff_base's
     final `git rev-parse --verify --quiet "${tree_oid}^{tree}"` validation
     call instead of its merge-tree call."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -98,29 +77,6 @@ def _make_blocking_tree_verify_git(bin_dir: Path) -> Path:
         '      exit 0\n'
         '      ;;\n'
         '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _make_blocking_diff_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git: for `diff` specifically, writes a partial line to
-    stdout then blocks past the 5s cap; every other subcommand proxies to the
-    real git. Same shape as _make_blocking_merge_tree_git above, targeting
-    _lib_staged_diff_hash's `git diff --cached` call instead of
-    _lib_gate_diff_base's `merge-tree` call."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "diff" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
         'done\n'
         'exec "$REAL_GIT" "$@"\n'
     )
@@ -218,10 +174,6 @@ class TestGateDiffBaseMergeTreeFailure:
         result = _gate_diff_base(repo)
         assert result.returncode == 0
         _assert_valid_tree_oid(repo, result.stdout)
-
-
-def _timeout_binary_present() -> bool:
-    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
 
 
 class TestGateDiffBaseCapFaultInjection:
@@ -364,7 +316,7 @@ class TestGateDiffBaseSingleCallInvocationCount:
         merge_tree_calls = [c for c in calls if "merge-tree" in c]
         ancestor_calls = [c for c in calls if "merge-base" in c and "--is-ancestor" in c]
         assert len(merge_tree_calls) == 1
-        # No origin is configured in this fixture, so _lib_resolve_default_branch
+        # No origin is configured in this fixture, so _lib_default_branch_or_guess
         # returns empty and the origin leg's is-ancestor call never runs --
         # only the HEAD leg does.
         assert len(ancestor_calls) == 1

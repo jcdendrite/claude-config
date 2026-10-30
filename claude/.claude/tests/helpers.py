@@ -2458,6 +2458,58 @@ def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: 
     return shim
 
 
+def _timeout_binary_present() -> bool:
+    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
+    line to stdout then blocks past the 5s cap; every other subcommand
+    proxies to the real git. Sleeps 20s, well past the 5s cap, yet bounded so
+    a cap regression fails the test instead of hanging it. Callers must set
+    REAL_GIT in the environment to a real git binary path; the shim execs it
+    for every other subcommand."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "merge-tree" ]; then\n'
+        '    printf "partialline"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
+    """Shim at bin_dir/git: for `diff` specifically, writes `stdout_before_block`
+    to stdout (nothing when empty) then blocks past the 5s cap; every other
+    subcommand proxies to the real git. Callers must set REAL_GIT in the
+    environment to a real git binary path; the shim execs it for every other
+    subcommand. `stdout_before_block` is spliced unescaped into a `printf` format
+    string in the generated shim, so pass plain alphanumeric text."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "diff" ]; then\n'
+        f'    printf "{stdout_before_block}"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
 def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:
     """PATH value that puts a `tool` shim in `bin_dir` ahead of `os.environ["PATH"]`. With no
     `arg_pattern` the shim exits 1 on every call. With one, it exits 1 only when an argument matches
