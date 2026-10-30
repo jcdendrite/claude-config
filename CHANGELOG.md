@@ -6,6 +6,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The `/period-cost-report` Slack report now separates its groups with a blank line, sizes each group's table on its own rows, and cuts titles at 32 code points instead of 40.**
+  - A blank line now precedes each repository name and the Total.
+  - Each group's table column widths come from that group's own displayed rows.
+  - A title cell over 32 code points is cut to its first 31 plus "…" (was 40 and 39). A review row's cell starts with "Review: ", so a review title of 24 code points or fewer shows in full and a longer one shows its first 23 plus "…".
+  - Two spaces now precede the `+`/`?` marker slot.
+  - The change is live on `git pull`.
 - **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
   - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
   - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.
