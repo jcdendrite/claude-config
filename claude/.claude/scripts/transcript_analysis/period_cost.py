@@ -68,7 +68,7 @@ _OTHER_ROW_LABEL_UNDETERMINED = "Work not linked to a repository"
 _TITLE_UNAVAILABLE = "(title unavailable)"
 _NO_MODEL_FIELD_LABEL = "(no model field)"
 _REVIEW_TITLE_PREFIX = "Review: "
-_TITLE_CELL_CAP = 40
+_TITLE_CELL_CAP = 32
 _PR_LIST_UNAVAILABLE_SUFFIX = " (PR list unavailable)"
 
 _REVIEW_PR_SKILL_NAME = "review-pr"
@@ -863,7 +863,7 @@ def _flatten_untrusted_text(text: str) -> str:
 
 
 def _sanitize_title(title: str, *, review: bool) -> str:
-    """The title cell text: flattened, backticks replaced, "Review: " prefixed for a review row, capped at 40 code points."""
+    """The title cell text: flattened, backticks replaced, "Review: " prefixed for a review row, capped at 32 code points."""
     cell = _flatten_untrusted_text(title).replace("`", "'")
     if review:
         cell = _REVIEW_TITLE_PREFIX + cell
@@ -1306,7 +1306,7 @@ def _render_group_block(
 
     def table_line(label: str, title: str, status: str, cost_text: str, marker_slot: str = "") -> str:
         line = f"{label:<{label_width}}  {title:<{title_width}}  {status:<{status_width}}  {cost_text:>{cost_width}}"
-        return f"{line} {marker_slot}".rstrip()
+        return f"{line}  {marker_slot}".rstrip()
 
     suffix = _PR_LIST_UNAVAILABLE_SUFFIX if group.unavailable else ""
     lines = [f"*{group.display_name}*{suffix}", "```", table_line("PR", "Title", "Status", "Cost")]
@@ -1319,13 +1319,12 @@ def _render_group_block(
     return lines
 
 
-def _table_widths(displayed: Sequence[tuple[_ReportGroup, Sequence[tuple[_ReportRow, Decimal]]]]) -> tuple[int, int, int, int]:
-    rows = [(row, cents) for _group, shown in displayed for row, cents in shown]
+def _table_widths(shown: Sequence[tuple[_ReportRow, Decimal]]) -> tuple[int, int, int, int]:
     return (
-        max([len("PR"), *(len(_row_label(row)) for row, _cents in rows)]),
-        max([len("Title"), *(len(_row_title_cell(row)) for row, _cents in rows)]),
-        max([len("Status"), *(len(row.status) for row, _cents in rows)]),
-        max([len("Cost"), *(len(_dollar_text(cents)) for _row, cents in rows)]),
+        max([len("PR"), *(len(_row_label(row)) for row, _cents in shown)]),
+        max([len("Title"), *(len(_row_title_cell(row)) for row, _cents in shown)]),
+        max([len("Status"), *(len(row.status) for row, _cents in shown)]),
+        max([len("Cost"), *(len(_dollar_text(cents)) for _row, cents in shown)]),
     )
 
 
@@ -1399,10 +1398,11 @@ def _render_slack_report(groups: Iterable[_ReportGroup], flags: _ReportFlags, wi
         f"One Claude Code account, {_repository_count_phrase(repository_count)}, generated {run_date.isoformat()} (UTC)",
     ]
     if displayed:
-        widths = _table_widths(displayed)
         for group, shown in displayed:
-            lines.extend(_render_group_block(group, shown, widths))
+            lines.append("")
+            lines.extend(_render_group_block(group, shown, _table_widths(shown)))
         total = sum((cents for _group, shown in displayed for _row, cents in shown), Decimal(0))
+        lines.append("")
         lines.append(f"*Total: {_dollar_text(total)}*")
         leading, trailing = _table_notes(displayed, omitted, flags)
         lines.extend(leading)
