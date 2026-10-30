@@ -120,6 +120,10 @@ from transcript_analysis.rearm_backtest import (
     # subcommand's own set_defaults).
     cmd_rearm_backtest,
 )
+from transcript_analysis.review_cost_by_size import (
+    # Read bare by this file's own build_parser (the review-cost-by-size subparser's registration).
+    _add_review_cost_by_size_subparser,
+)
 from transcript_analysis.review_rounds import (
     # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
     REVIEW_SKILLS,
@@ -737,6 +741,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    _add_review_cost_by_size_subparser(sub)
+
     p_author_outcome = sub.add_parser(
         "author-outcome",
         help=(
@@ -976,14 +982,14 @@ def main() -> None:
         # rather than let it silently diverge from whatever scan roots the
         # subcommand actually resolves (this top-level one would validate
         # one account while the subcommand scans another). Most resolve
-        # their own scan roots via their own --config-dir (scope._resolve_cost_roots);
-        # cost-counts and period-cost are the two exceptions, each registering no
-        # --config-dir flag of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        # their own scan roots via their own --config-dir (scope._resolve_cost_roots).
+        # The comment above scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        # names the members that register no --config-dir flag of their own.
         if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
             # hasattr, not a hardcoded subcommand list: True only when the
             # invoked subparser itself registered --config-dir (dest
             # extra_config_dirs), so the hint never recommends a flag that
-            # doesn't exist on cost-counts's or period-cost's own parser.
+            # doesn't exist on the invoked subcommand's own parser.
             if hasattr(parsed, "extra_config_dirs"):
                 own_scope_clause = (
                     "this subcommand resolves its own scan roots via its own --config-dir "

@@ -38,6 +38,7 @@ from transcript_analysis import (
     rearm_backtest,
     redaction,
     render,
+    review_cost_by_size,
     review_trace,
     reviewer_yield,
     scope,
@@ -2047,6 +2048,15 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
+
+    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
+        parser = _mod.build_parser()
+        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
+        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
+        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert with_flag.all_accounts is True
+        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert without_flag.all_accounts is False
 
     def test_pr_link_without_repo_flag_defaults_to_none(self):
         parser = _mod.build_parser()

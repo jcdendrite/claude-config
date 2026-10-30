@@ -18,15 +18,16 @@ circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
 `user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
 `sessions.py`, `context_distribution.py`, `context_composition.py`, `cache_efficiency.py`,
-`edit_format.py`, and `instrument_authoring.py` are the only
+`edit_format.py`, `instrument_authoring.py`, and `review_cost_by_size.py` are the only
 modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 A command-group module may import another by module (attribute access). Among the review modules,
 `reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
 is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
-`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`), and
-`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
+`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
+`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`), and
+`review_cost_by_size.py` (for `compute_review_round_costs`). `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
 `_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
@@ -50,8 +51,8 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
-turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format, and
-instrument-authoring by calling each owning
+turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
+instrument-authoring, and review-cost-by-size by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -280,8 +281,10 @@ and `scope` all by module (attribute access), matching `cost.py`'s convention â€
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
-main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, `detect_round_windows`, `spawn_round_skill`,
-and `round_opened_by_spawn` are the public names here. `spawn_round_skill` maps a spawn block to the
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
+`spawn_round_skill`, and `round_opened_by_spawn` are the public names here. `compute_review_round_costs`
+is read by `review_cost_by_size.py`, which passes it a multi-root iterator with `resolved_roots=None`
+so a branch's rounds merge across roots. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
 miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
@@ -293,6 +296,19 @@ judgment-pair's `--skills` default, and by the shim's `build_parser()`, for revi
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
+
+### `review_cost_by_size.py`
+
+The review-cost-by-size command: `cmd_review_cost_by_size`, its `_add_review_cost_by_size_subparser`
+registration, and every helper used only by it. It prices `code-review` rounds with
+`review_rounds.compute_review_round_costs`, joins each branch to its merged PR by exact `headRefName`,
+and prints aggregates, join diagnostics and per-PR rows. Imports `gh_cli`, `render`, `review_rounds`, and
+`scope` all by module (attribute access). The shim reads `_add_review_cost_by_size_subparser` bare. It
+reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` to keep default-branch and
+no-PR branches from joining. Three functions carry the logic so tests can feed them literals:
+`_scan_code_review_rounds` runs the scan, `_join_rounds_to_prs` applies the join, and
+`_compute_aggregates` computes the figures. The scan passes `resolved_roots=None`, so it never reaches
+`scope._root_index_for_path` and a project directory symlinked outside every root cannot abort it.
 
 ### `author_outcome.py`
 
@@ -380,8 +396,8 @@ through this one binding. `cost_ledger.py` reads the other six names by attribut
 
 ### `gh_cli.py`
 
-gh and git-remote access shared by pr-link, pr-cost, workstream-cost, and period-cost: origin
-host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
+gh and git-remote access shared by pr-link, pr-cost, workstream-cost, period-cost, and review-cost-by-size:
+origin host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module â€” `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
 (`_PR_COST_STATUS_DEGRADED_RATE_LIMIT`/`_PR_COST_STATUS_DEGRADED_NETWORK`), keeping the ledger's own
@@ -391,7 +407,8 @@ status enum a single source of truth rather than a duplicated pair of strings. `
 `workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
-discipline.
+discipline. `review_cost_by_size.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
+`_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_PR_COST_GH_PR_LIST_LIMIT` the same way.
 
 The period-cost command shares four pieces of this module:
 
