@@ -423,7 +423,8 @@ class TestGateDiffBaseUntrustedAnchor:
         assert result.returncode == 1
         assert result.stdout == ""
 
-    @pytest.mark.parametrize("state", ["rebase", "merge", "cherry-pick", "revert"])
+    # No "merge": git refuses to merge unrelated histories whatever the anchor decides.
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
     def test_forged_ref_pointing_at_unreachable_commit_falls_back(
         self, tmp_path: Path, state: str
     ) -> None:
@@ -435,8 +436,13 @@ class TestGateDiffBaseUntrustedAnchor:
         _run_git(repo, "checkout", "-q", "--orphan", "orphan")
         (repo / "orphan.txt").write_text("z\n")
         _run_git(repo, "add", "orphan.txt")
+        _run_git(repo, "commit", "-qm", "orphan root commit")
+        # A parent, so the <oid>^ in the merge-tree commands resolves.
+        (repo / "orphan.txt").write_text("z2\n")
+        _run_git(repo, "add", "orphan.txt")
         _run_git(repo, "commit", "-qm", "orphan commit")
         orphan_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "rev-parse", "--verify", f"{orphan_oid}^")
         _run_git(repo, "checkout", "-q", "main")
         _forge_state_marker(repo / ".git", state, orphan_oid)
         result = _gate_diff_base(repo)

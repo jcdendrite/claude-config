@@ -2500,8 +2500,6 @@ def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
 
 
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
-    """Blocks on any `git diff --cached` call, such as `_lib_staged_diff_hash`'s or
-    `require-code-review.sh`'s empty-diff check."""
     return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 
