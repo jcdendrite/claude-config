@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import io
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import stat
@@ -38,6 +40,7 @@ from test_review_bench_mining import (
     _git,
     _init_repo,
     _pin_refs,
+    _StdinThatFailsOnAReadPastEndOfInput,
     _write,
 )
 
@@ -4477,6 +4480,151 @@ class TestReadLensChoice:
         assert run_review_bench._read_lens_choice("staff-sdet") == run_review_bench._LENS_END_OF_INPUT
 
 
+_PROMOTION_PROMPT = "promote this candidate? [y/n/q] "
+
+
+class _StderrPublishedOnFlush(io.StringIO):
+    """Holds written text back from `published_text` until `flush()`, as a line-buffered terminal does for
+    a prompt with no trailing newline."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._published_length = 0
+
+    def flush(self) -> None:
+        self._published_length = len(self.getvalue())
+
+    @property
+    def published_text(self) -> str:
+        return self.getvalue()[: self._published_length]
+
+
+class _StdinRecordingPromptsVisibleAtEachRead(_StdinThatFailsOnAReadPastEndOfInput):
+    """Records how many promotion prompts `stderr` has published when each `readline()` starts."""
+
+    def __init__(self, lines: list[str], stderr: _StderrPublishedOnFlush) -> None:
+        super().__init__(lines)
+        self._stderr = stderr
+        self.prompts_visible_at_each_read: list[int] = []
+
+    def readline(self) -> str:
+        self.prompts_visible_at_each_read.append(self._stderr.published_text.count(_PROMOTION_PROMPT))
+        return super().readline()
+
+
+class TestFeedAnswers:
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param("y\nextra", id="interior-newline"),
+            pytest.param("y\n", id="trailing-newline"),
+            pytest.param("\n", id="lone-newline"),
+        ],
+    )
+    def test_an_answer_holding_a_newline_is_rejected_naming_the_answer(self, monkeypatch, answer: str) -> None:
+        with pytest.raises(AssertionError, match=re.escape(repr(answer))):
+            _feed_answers(monkeypatch, answer)
+
+
+class TestReadPromotionDecision:
+    @pytest.mark.parametrize("answer", ["y", "n", "q"])
+    def test_a_recognized_answer_is_returned_after_one_prompt(self, monkeypatch, capsys, answer: str) -> None:
+        _feed_answers(monkeypatch, answer, "an unconsumed line")
+
+        assert run_review_bench._read_promotion_decision() == answer
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 1
+        assert sys.stdin.read() == "an unconsumed line\n"
+
+    @pytest.mark.parametrize(("typed_answer", "expected_decision"), [("Y", "y"), ("N", "n"), ("Q", "q")])
+    def test_an_uppercase_answer_counts_as_its_lowercase_decision(
+        self, monkeypatch, capsys, typed_answer: str, expected_decision: str,
+    ) -> None:
+        _feed_answers(monkeypatch, typed_answer, "an unconsumed line")
+
+        assert run_review_bench._read_promotion_decision() == expected_decision
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 1
+        assert sys.stdin.read() == "an unconsumed line\n"
+
+    @pytest.mark.parametrize("valid_answer", ["y", "n", "q"])
+    @pytest.mark.parametrize(
+        "unrecognized_answer",
+        [
+            "", "yes", "nope", "ok", "1",
+            " y", "y ", " y ", " n", "n ", " n ", " q", "q ", " q ",
+        ],
+    )
+    def test_an_unrecognized_answer_asks_again_and_the_next_valid_answer_wins(
+        self, monkeypatch, capsys, unrecognized_answer: str, valid_answer: str,
+    ) -> None:
+        _feed_answers(monkeypatch, unrecognized_answer, valid_answer)
+
+        assert run_review_bench._read_promotion_decision() == valid_answer
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 2
+        assert sys.stdin.read() == ""
+
+    def test_two_consecutive_unrecognized_answers_ask_a_third_time(self, monkeypatch, capsys) -> None:
+        _feed_answers(monkeypatch, "nope", "yes", "n")
+
+        assert run_review_bench._read_promotion_decision() == "n"
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 3
+        assert sys.stdin.read() == ""
+
+    def test_four_consecutive_unrecognized_answers_ask_a_fifth_time(self, monkeypatch, capsys) -> None:
+        unrecognized_answers = ["nope", "yes", "", "ok"]
+        _feed_answers(monkeypatch, *unrecognized_answers, "y")
+
+        assert run_review_bench._read_promotion_decision() == "y"
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == len(unrecognized_answers) + 1
+        assert sys.stdin.read() == ""
+
+    @pytest.mark.parametrize(
+        ("raw_line", "expected_decision"),
+        [
+            pytest.param("y\r\n", "y", id="carriage-return-line-feed-after-y"),
+            pytest.param("n", "n", id="unterminated-final-n"),
+        ],
+    )
+    def test_a_line_ending_other_than_a_bare_line_feed_still_yields_the_answer_after_one_prompt(
+        self, monkeypatch, capsys, raw_line: str, expected_decision: str,
+    ) -> None:
+        monkeypatch.setattr(sys, "stdin", _StdinThatFailsOnAReadPastEndOfInput([raw_line]))
+
+        assert run_review_bench._read_promotion_decision() == expected_decision
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 1
+
+    def test_the_prompt_is_flushed_before_each_read(self, monkeypatch) -> None:
+        stderr_recorder = _StderrPublishedOnFlush()
+        stdin_recorder = _StdinRecordingPromptsVisibleAtEachRead(["nope\n", "y\n"], stderr_recorder)
+        monkeypatch.setattr(sys, "stderr", stderr_recorder)
+        monkeypatch.setattr(sys, "stdin", stdin_recorder)
+
+        assert run_review_bench._read_promotion_decision() == "y"
+
+        assert stdin_recorder.prompts_visible_at_each_read == [1, 2]
+
+    def test_end_of_input_with_no_lines_quits_after_one_prompt(self, monkeypatch, capsys) -> None:
+        _feed_answers(monkeypatch)
+
+        assert run_review_bench._read_promotion_decision() == "q"
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 1
+
+    def test_an_unrecognized_answer_followed_by_end_of_input_quits_without_a_third_read(
+        self, monkeypatch, capsys,
+    ) -> None:
+        _feed_answers(monkeypatch, "nope")
+
+        assert run_review_bench._read_promotion_decision() == "q"
+
+        assert capsys.readouterr().err.count(_PROMOTION_PROMPT) == 2
+
+
 class TestLoadDeclinedIds:
     def test_an_absent_file_gives_an_empty_set(self, tmp_path: Path) -> None:
         assert run_review_bench._load_declined_ids(tmp_path / "absent.json") == set()
@@ -4546,7 +4694,7 @@ class TestConfirmRemembersDeclinedCandidates:
         assert _run_confirm(local_dir, defects_path) == 0
 
         stderr = capsys.readouterr().err
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         assert "confirm: 0 candidate(s) to review." in stderr
         assert "2 candidate(s) skipped as previously declined" in stderr
 
@@ -4560,7 +4708,7 @@ class TestConfirmRemembersDeclinedCandidates:
         assert _run_confirm(local_dir, defects_path, "--include-declined") == 0
 
         stderr = capsys.readouterr().err
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert "previously declined" not in stderr
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
 
@@ -4577,7 +4725,7 @@ class TestConfirmRemembersDeclinedCandidates:
         _run_confirm(local_dir, defects_path)
 
         stderr = capsys.readouterr().err
-        assert stderr.count("[y/N/q]") == 2  # c-2 and c-3 are still offered
+        assert stderr.count("[y/n/q]") == 2  # c-2 and c-3 are still offered
         assert "1 candidate(s) skipped as previously declined" in stderr
         assert _recorded_declined_ids(local_dir) == ["c-1", "c-2", "c-3"]
 
@@ -4599,6 +4747,31 @@ class TestConfirmRemembersDeclinedCandidates:
 
         assert _recorded_declined_ids(local_dir) == ["c-2"]
         assert "lens [" not in capsys.readouterr().err
+
+    def test_an_unrecognized_answer_followed_by_q_stops_without_recording_a_decline(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"description": ""})
+        _feed_answers(monkeypatch, "nn", "q")
+
+        assert _run_confirm(local_dir, defects_path) == 0
+
+        stderr = capsys.readouterr().err
+        assert stderr.count("promote this candidate? [y/n/q]") == 2
+        assert "0 appended, 0 skipped, 0 rejected" in stderr
+        assert not _declined_ids_path(local_dir).exists()
+
+    def test_an_unrecognized_answer_followed_by_n_reads_both_lines_and_records_one_decline(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"description": ""})
+        _feed_answers(monkeypatch, "nn", "n")
+
+        assert _run_confirm(local_dir, defects_path) == 0
+
+        assert sys.stdin.read() == ""
+        assert "0 appended, 1 skipped, 0 rejected" in capsys.readouterr().err
+        assert _recorded_declined_ids(local_dir) == ["c-1"]
 
     def test_a_y_followed_by_an_empty_description_is_recorded_as_declined(
         self, tmp_path: Path, monkeypatch, capsys,
@@ -4639,7 +4812,7 @@ class TestConfirmRemembersDeclinedCandidates:
         stderr = capsys.readouterr().err
         assert str(declined_ids_path) in stderr
         assert "nothing prompted" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         assert declined_ids_path.read_text() == "{not json"
         assert not defects_path.exists()
 
@@ -4777,7 +4950,7 @@ class TestConfirmLensPrompt:
         assert _run_confirm(local_dir, defects_path) == 0
 
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
-        assert capsys.readouterr().err.count("[y/N/q]") == 2  # c-3 was never shown
+        assert capsys.readouterr().err.count("[y/n/q]") == 2  # c-3 was never shown
         assert not _declined_ids_path(local_dir).exists()
 
     def test_ctrl_c_at_the_lens_prompt_persists_and_approves_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -4816,7 +4989,7 @@ class TestConfirmSourceFilter:
         stderr = capsys.readouterr().err
         assert "confirm: 2 candidate(s) to review." in stderr
         assert "prompting only for source(s) review-round, szz" in stderr
-        assert stderr.count("[y/N/q]") == 2
+        assert stderr.count("[y/n/q]") == 2
         assert "candidate c-3" not in stderr
         assert _recorded_declined_ids(local_dir) == ["c-1", "c-2"]
 
@@ -4859,12 +5032,12 @@ class TestConfirmSourceFilter:
         _run_confirm(local_dir, defects_path, "--source", "szz")
         stderr = capsys.readouterr().err
         assert "1 candidate(s) skipped as previously declined" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
 
         _feed_answers(monkeypatch, "n")
         _run_confirm(local_dir, defects_path, "--source", "pr-comment", "--include-declined")
         stderr = capsys.readouterr().err
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert "candidate c-2" in stderr
         assert "candidate c-1" not in stderr
 
@@ -4886,7 +5059,7 @@ class TestConfirmSourceFilter:
         stderr = capsys.readouterr().err
         assert "rejected szz-undescribed -- description shares the word run" in stderr
         assert "rr-excerpt's excerpt" in stderr
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert not defects_path.exists()
 
     def test_an_unknown_source_is_rejected_by_the_parser(self, capsys) -> None:
@@ -4919,7 +5092,7 @@ class TestConfirmIdsFile:
         stderr = capsys.readouterr().err
         assert "confirm: 2 candidate(s) to review." in stderr
         assert f"prompting only for the IDs listed in {ids_file_path}, in that order" in stderr
-        assert stderr.count("[y/N/q]") == 2
+        assert stderr.count("[y/n/q]") == 2
         assert stderr.index("candidate c-3") < stderr.index("candidate c-1")
         assert "candidate c-2" not in stderr
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-3"]
@@ -4972,7 +5145,7 @@ class TestConfirmIdsFile:
         assert "bad-4" not in stderr
         assert "\x1b" not in stderr
         assert "nothing prompted" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         _assert_nothing_written(repo, local_dir, defects_path)
 
     def test_ids_file_combines_with_source_as_an_intersection_and_counts_the_ids_outside_the_source(
@@ -5004,7 +5177,7 @@ class TestConfirmIdsFile:
         assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 0
 
         stderr = capsys.readouterr().err
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert "candidate c-2" not in stderr
         assert "1 candidate(s) skipped as previously declined" in stderr
         assert f"1 of the 2 ID(s) listed in {ids_file_path} not prompted (1 previously declined)" in stderr
@@ -5013,7 +5186,7 @@ class TestConfirmIdsFile:
         assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path), "--include-declined") == 0
 
         stderr = capsys.readouterr().err
-        assert stderr.count("[y/N/q]") == 2
+        assert stderr.count("[y/n/q]") == 2
         assert stderr.index("candidate c-2") < stderr.index("candidate c-1")
         assert "not prompted" not in stderr
 
@@ -5066,7 +5239,7 @@ class TestConfirmIdsFile:
 
         stderr = capsys.readouterr().err
         assert "rejected c-2 -- description shares the word run" in stderr
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert "candidate c-3" in stderr
         assert (
             f"2 of the 3 ID(s) listed in {second_ids_file} not prompted (1 rejected by the checks, 1 already approved)"
@@ -5109,7 +5282,7 @@ class TestConfirmIdsFile:
 
         stderr = capsys.readouterr().err
         assert f"confirm: {ids_file_path} lists no candidate IDs" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         _assert_nothing_written(repo, local_dir, defects_path)
 
     @pytest.mark.parametrize("terminal", [True, False])
@@ -5138,7 +5311,7 @@ class TestConfirmIdsFile:
         assert f"confirm: {ids_file_path} {expected_message}" in stderr
         assert "fix it or drop --ids-file" in stderr
         assert "nothing prompted" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         _assert_nothing_written(repo, local_dir, defects_path)
 
     def test_an_empty_ids_file_argument_is_an_unreadable_file_not_an_absent_flag(
@@ -5149,7 +5322,7 @@ class TestConfirmIdsFile:
 
         assert _run_confirm(local_dir, defects_path, "--ids-file", "") == 2
 
-        assert "[y/N/q]" not in capsys.readouterr().err
+        assert "[y/n/q]" not in capsys.readouterr().err
         _assert_nothing_written(repo, local_dir, defects_path)
 
     def test_without_a_terminal_the_awaiting_line_counts_only_the_listed_candidates_and_names_the_file(
@@ -5207,7 +5380,7 @@ class TestConfirmIdsFile:
 
         stderr = capsys.readouterr().err
         assert "lists 1 ID(s) that match no candidate (c-1  # note)" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         _assert_nothing_written(repo, local_dir, defects_path)
 
     def test_an_id_as_a_miner_emits_it_with_colons_slashes_a_tilde_and_a_space_is_matched_whole(
@@ -5281,7 +5454,7 @@ class TestConfirmIdsFile:
         stderr = capsys.readouterr().err
         assert "rejected szz-undescribed -- description shares the word run" in stderr
         assert "rr-excerpt's excerpt" in stderr
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert not defects_path.exists()
 
     def test_an_excerpt_from_an_unlisted_candidate_still_reaches_the_provenance_check_of_a_described_candidate(
@@ -5437,7 +5610,7 @@ class TestConfirmAnswersFile:
 
         assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
 
-        assert "[y/N/q]" not in capsys.readouterr().err
+        assert "[y/n/q]" not in capsys.readouterr().err
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
         assert not _declined_ids_path(local_dir).exists()
 
@@ -6451,7 +6624,7 @@ class TestConfirmAnswersFile:
 
         assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
 
-        assert "[y/N/q]" not in capsys.readouterr().err
+        assert "[y/n/q]" not in capsys.readouterr().err
         assert sys.stdin.read() == "n\nn\n"
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
 
@@ -6464,7 +6637,7 @@ class TestConfirmAnswersFile:
 
         assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
 
-        assert "[y/N/q]" not in capsys.readouterr().err
+        assert "[y/n/q]" not in capsys.readouterr().err
         assert sys.stdin.read() == f"y\n{_ANSWERS_DESCRIPTION}\n\n"
         _assert_nothing_written(repo, local_dir, defects_path)
 

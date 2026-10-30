@@ -214,9 +214,10 @@ _HEAD_OUTSIDE_PR_BRANCH_LABEL = " (head is outside the PR branch)"
 _HEAD_BRANCH_UNKNOWN_LABEL = " (PR branch membership unknown)"
 _NO_DESCRIPTION_NOTE = "(none -- a y asks for a one-line description)"
 _CONFIRM_HEADER = (
-    "confirm: {count} candidate(s) to review. Answer y to promote one, q or end of input to stop and keep the "
-    "answers so far, and anything else to skip it. Ctrl-C discards every answer in this run, so q is the "
-    "durable exit. Paste one line at a time: a multi-line paste can answer a later prompt unseen."
+    "confirm: {count} candidate(s) to review. y promotes a candidate, n declines it (later runs skip it unless "
+    "--include-declined), q or end of input stops and keeps the answers so far, and any other answer asks again. "
+    "Ctrl-C discards every answer in this run, so q is the durable exit. Paste one line at a time: a multi-line "
+    "paste can answer a later prompt unseen."
 )
 
 _DECISION_PROMOTE = "y"
@@ -433,19 +434,17 @@ def _print_candidate_for_approval(
 
 
 def _read_promotion_decision() -> str:
-    """One answer at the `[y/N/q]` prompt. Only exactly `y` promotes, and only
-    exactly `q` or end of input stops. Anything else, `Y` and `yes` included,
-    skips the candidate."""
-    print("promote this candidate? [y/N/q] ", end="", file=sys.stderr, flush=True)
-    line = sys.stdin.readline()
-    if line == "":
-        return _DECISION_QUIT
-    answer = line.rstrip("\r\n")
-    if answer == _DECISION_PROMOTE:
-        return _DECISION_PROMOTE
-    if answer == _DECISION_QUIT:
-        return _DECISION_QUIT
-    return _DECISION_SKIP
+    """One answer at the `[y/n/q]` prompt. Only `y`, `n` or `q`, in either case
+    and with no other characters, is an answer. Anything else asks again, so a mistyped answer here
+    never counts as a decline. End of input stops."""
+    while True:
+        print("promote this candidate? [y/n/q] ", end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if line == "":
+            return _DECISION_QUIT
+        answer = line.rstrip("\r\n").lower()
+        if answer in (_DECISION_PROMOTE, _DECISION_SKIP, _DECISION_QUIT):
+            return answer
 
 
 def _confirmation_status(
@@ -2103,7 +2102,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_confirm = sub.add_parser(
         "confirm",
         help="Check each .local/ candidate, then promote into the committed defects.json the ones the engineer "
-        "approves at a [y/N/q] prompt, asking for a one-line description of any that has none. Needs a "
+        "approves at a [y/n/q] prompt, asking for a one-line description of any that has none. Needs a "
         "terminal unless --answers-file supplies the answers.",
     )
     p_confirm.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")

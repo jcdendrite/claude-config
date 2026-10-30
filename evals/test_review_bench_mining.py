@@ -4578,12 +4578,35 @@ def _confirm_args(local_dir: Path, defects_path: Path, *extra_flags: str):
     )
 
 
+class _StdinThatFailsOnAReadPastEndOfInput:
+    """Reports end of input once, then fails the test on any further read, so a missing end-of-input
+    check fails instead of looping forever."""
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = iter(lines)
+        self._at_end = False
+
+    def readline(self) -> str:
+        assert not self._at_end, "read past end of input"
+        line = next(self._lines, "")
+        self._at_end = line == ""
+        return line
+
+    def read(self) -> str:
+        """The lines not yet consumed, so a test can assert what a prompt left unread."""
+        return "".join(self._lines)
+
+
 def _feed_answers(monkeypatch, *answers: str, terminal: bool = True) -> None:
-    """Makes `confirm` see `terminal` and read one line per answer from stdin. Once the answers run
-    out, stdin is at end of input. Every `confirm` test goes through this helper, so none reaches the
-    real stdin, which a `pytest -s` run can leave attached to a terminal."""
+    """Makes `confirm` see `terminal` and read one line per answer from stdin. An answer holding a newline is
+    rejected, because production strips line endings and would mask it as a different single-line answer.
+    Once the answers run out, stdin is at end of input, and a read past it fails the test. Every `confirm`
+    test goes through this helper, so none reaches the real stdin, which a `pytest -s` run can leave attached
+    to a terminal."""
+    for answer in answers:
+        assert "\n" not in answer, f"answer holds a newline, so it would be read as more than one line: {answer!r}"
     monkeypatch.setattr(run_review_bench, "_stdin_is_terminal", lambda: terminal)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"{answer}\n" for answer in answers)))
+    monkeypatch.setattr(sys, "stdin", _StdinThatFailsOnAReadPastEndOfInput([f"{answer}\n" for answer in answers]))
 
 
 def _feed_answers_then_interrupt(monkeypatch, *answers: str) -> None:
@@ -4775,7 +4798,7 @@ class TestConfirmCli:
             assert shown in stderr
         assert fix_sha not in stderr  # 12-character SHAs only
         assert stderr.rindex("description:") < stderr.rindex("path:") < stderr.rindex("inclusion fields:")
-        assert stderr.rindex("inclusion fields:") < stderr.rindex("[y/N/q]")
+        assert stderr.rindex("inclusion fields:") < stderr.rindex("[y/n/q]")
 
     def test_a_pr_comment_candidate_is_not_labeled_unchecked_for_the_line_check_it_computed(
         self, tmp_path, monkeypatch, capsys,
@@ -4884,7 +4907,7 @@ class TestConfirmCli:
         stderr = capsys.readouterr().err
         assert exit_code == 0
         assert "rejected c-1 -- added_by_the_fix.py does not exist at its introducing commit" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         assert "0 appended, 0 skipped, 1 rejected" in stderr
         assert not defects_path.exists()
         assert _pin_refs(repo) == []
@@ -4925,7 +4948,7 @@ class TestConfirmCli:
 
         stderr = capsys.readouterr().err
         assert "rejected c-1 -- could not check whether its path exists at its introducing commit" in stderr
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert "candidate c-2" in stderr
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
 
@@ -4998,21 +5021,20 @@ class TestConfirmCli:
 
         stderr = capsys.readouterr().err
         assert exit_code == 0
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert stderr.count("one-line description:") == 1
         assert "description: (none" in stderr
         (confirmed,) = defects.load_confirmed_defects(defects_path)
         assert confirmed.description == "x was left at its stale initial value."
         assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
 
-    @pytest.mark.parametrize("answer", ["", "n", "N", "yes"])
-    def test_a_skipped_undescribed_candidate_never_shows_the_description_prompt(
-        self, tmp_path, monkeypatch, capsys, answer,
+    def test_a_declined_undescribed_candidate_never_shows_the_description_prompt(
+        self, tmp_path, monkeypatch, capsys,
     ):
         _repo, local_dir, defects_path, _fix_sha = _confirm_workspace(
             tmp_path, monkeypatch, {"description": ""},
         )
-        _feed_answers(monkeypatch, answer, "an unconsumed line")
+        _feed_answers(monkeypatch, "n", "an unconsumed line")
 
         run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
@@ -5314,15 +5336,15 @@ class TestConfirmCli:
         assert exit_code == 1
         assert [d.id for d in original_load(defects_path)] == ["swapped-in"]
 
-    # --- the [y/N/q] prompt -------------------------------------------------
+    # --- the [y/n/q] prompt -------------------------------------------------
 
     def _two_passing_candidates(self, tmp_path, monkeypatch, count: int = 2) -> tuple[Path, Path, Path, str]:
         """Returns (repo, local_dir, defects_path, fix_sha) for candidates c-1 .. c-<count>, each of which passes every check."""
         return _confirm_workspace(tmp_path, monkeypatch, *[{} for _ in range(count)])
 
-    @pytest.mark.parametrize("answer", ["", "n", "N", "Y", " y ", "yes", "y ", "ok", "1"])
-    def test_any_answer_but_exactly_y_or_q_skips_the_candidate_and_leaves_it_in_local(
-        self, tmp_path, monkeypatch, answer,
+    @pytest.mark.parametrize("answer", ["", " y ", "yes", "y ", "ok", "1"])
+    def test_an_unrecognized_answer_followed_by_end_of_input_asks_again_then_quits_with_nothing_recorded(
+        self, tmp_path, monkeypatch, capsys, answer,
     ):
         repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
         _feed_answers(monkeypatch, answer)
@@ -5330,9 +5352,23 @@ class TestConfirmCli:
         exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
         assert exit_code == 0
-        assert defects.load_confirmed_defects(defects_path) == []
+        assert capsys.readouterr().err.count("promote this candidate? [y/n/q] ") == 2
         assert not defects_path.exists()
         assert _pin_refs(repo) == []
+        assert not (local_dir / run_review_bench._CONFIRM_DECLINED_IDS_FILENAME).exists()
+        assert [c.id for c in defects.load_candidates(local_dir / "szz_candidates.json")] == ["c-1"]
+
+    def test_an_n_records_the_candidate_as_declined_and_leaves_it_in_local(self, tmp_path, monkeypatch):
+        repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "n")
+
+        exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
+
+        assert exit_code == 0
+        assert not defects_path.exists()
+        assert _pin_refs(repo) == []
+        declined_ids_path = local_dir / run_review_bench._CONFIRM_DECLINED_IDS_FILENAME
+        assert json.loads(declined_ids_path.read_text()) == ["c-1"]
         assert [c.id for c in defects.load_candidates(local_dir / "szz_candidates.json")] == ["c-1"]
 
     def test_y_promotes_and_a_later_n_skips(self, tmp_path, monkeypatch, capsys):
@@ -5357,7 +5393,7 @@ class TestConfirmCli:
         assert exit_code == 0
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
         assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
-        assert capsys.readouterr().err.count("[y/N/q]") == 2
+        assert capsys.readouterr().err.count("[y/n/q]") == 2
         assert sys.stdin.read() == "y\n"  # c-3's answer was never consumed
 
     def test_end_of_input_stops_the_loop_and_writes_the_candidates_accepted_so_far(
@@ -5371,7 +5407,7 @@ class TestConfirmCli:
         assert exit_code == 0
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
         assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
-        assert capsys.readouterr().err.count("[y/N/q]") == 2  # c-2 hit end of input, so c-3 was never shown
+        assert capsys.readouterr().err.count("[y/n/q]") == 2  # c-2 hit end of input, so c-3 was never shown
 
     def test_end_of_input_at_the_first_prompt_writes_and_pins_nothing(self, tmp_path, monkeypatch):
         repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
@@ -5492,7 +5528,7 @@ class TestConfirmCli:
         assert "rejected c-copied" in stderr  # the checks ran
         # src-1 and c-blank have no description yet, so they await beside the two described candidates.
         assert "4 candidate(s) awaiting the engineer at a terminal, 1 rejected" in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         assert not defects_path.exists()
         assert _pin_refs(repo) == []
 
@@ -5644,7 +5680,7 @@ class TestConfirmCli:
         assert "candidate c-1" not in stderr
         assert "candidate c-2" not in stderr
         assert "inclusion fields:" not in stderr
-        assert "[y/N/q]" not in stderr
+        assert "[y/n/q]" not in stderr
         assert "confirm: 0 appended, 0 skipped, 2 rejected" in stderr
         assert not defects_path.exists()
 
@@ -6011,7 +6047,7 @@ class TestConfirmCli:
         stderr = capsys.readouterr().err
         assert "rejected rr-1 -- could not read its commit subjects (" in stderr
         assert expected_detail in stderr
-        assert stderr.count("[y/N/q]") == 1
+        assert stderr.count("[y/n/q]") == 1
         assert self._presented_ids(stderr) == ["sz-1"]
         annotations = self._annotations_by_presented_id(stderr)
         assert annotations["sz-1"] == [("rr-1", "review-round", "rejected by checks")]
@@ -6057,7 +6093,7 @@ class TestConfirmCli:
 
         assert "2 candidate(s) awaiting the engineer at a terminal" in capsys.readouterr().err
 
-    def test_the_header_names_the_candidate_count_ctrl_c_discarding_the_run_q_and_one_line_pastes(
+    def test_the_header_names_the_count_n_declining_asking_again_ctrl_c_discarding_the_run_q_and_one_line_pastes(
         self, tmp_path, monkeypatch, capsys,
     ):
         _repo, local_dir, defects_path, _fix_sha = self._two_passing_candidates(tmp_path, monkeypatch)
@@ -6067,6 +6103,8 @@ class TestConfirmCli:
 
         header = capsys.readouterr().err.split("\ncandidate ")[0]
         assert header.startswith("confirm: 2 candidate(s) to review.")
+        assert "n declines it (later runs skip it unless --include-declined)" in header
+        assert "any other answer asks again" in header
         assert "Ctrl-C discards every answer in this run, so q is the durable exit." in header
         assert "Paste one line at a time" in header
 
