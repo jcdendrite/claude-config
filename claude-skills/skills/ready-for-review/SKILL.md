@@ -109,7 +109,7 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 ## 5. PR description (unconditional; warn + fix)
 
 Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
+Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and reports its path on a `BODY_FILE: <path>` line. Neither outcome is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Final hygiene recheck (halt on fail)
 
