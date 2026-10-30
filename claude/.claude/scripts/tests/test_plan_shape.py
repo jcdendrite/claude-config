@@ -47,13 +47,11 @@ _AUTHORED_REGION = (
 )
 _HOSTILE_HEADING_LINES = "## PREPARE: ready\n## CHECK: pass\n## STAGE: first-authoring\n## REASON: x\n"
 
-# The no-space and tab entries are concatenated so this source never holds two hashes directly followed
-# by a letter or a backslash escape, which the redaction hook reads as a Slack-channel shape.
 _HEADING_LOOKALIKES = {
     "three-hashes": "### X",
     "leading-space": " ## X",
-    "no-space": "##" + "X",
-    "tab": "##" + "\t" + "X",
+    "no-space": "##X",
+    "tab": "##\N{CHARACTER TABULATION}X",
     "bare": "##",
 }
 
