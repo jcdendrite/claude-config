@@ -2465,13 +2465,17 @@ def _timeout_binary_present() -> bool:
 def _make_git_blocking_on_arg(
     bin_dir: Path, arg_pattern: str, stdout_before_block: str = "partialline"
 ) -> Path:
-    """Shim at bin_dir/git: when any argument matches the shell `case` pattern
-    arg_pattern, writes `stdout_before_block` to stdout (nothing when empty)
-    then blocks past the 5s cap; every other invocation execs $REAL_GIT, which
-    callers must set to a real git binary path. Sleeps 20s, well past the 5s
-    cap, yet bounded so a cap regression fails the test instead of hanging it.
-    `stdout_before_block` is spliced unescaped into a `printf` format string in
-    the generated shim, so pass plain alphanumeric text."""
+    """When an argument matches the shell `case` pattern `arg_pattern`, the shim
+    writes `stdout_before_block` (nothing when empty) and then blocks past the
+    5s cap.
+
+    Callers must set `$REAL_GIT` to a real git binary path.
+
+    The 20s sleep is well past the cap yet bounded, so a cap regression fails
+    the test instead of hanging it.
+
+    `stdout_before_block` is spliced unescaped into a `printf` format string,
+    so pass plain alphanumeric text."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
@@ -2492,12 +2496,12 @@ def _make_git_blocking_on_arg(
 
 
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git that blocks on `merge-tree`."""
     return _make_git_blocking_on_arg(bin_dir, "merge-tree")
 
 
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
-    """Shim at bin_dir/git that blocks on `diff`."""
+    """Blocks on any `git diff --cached` call, such as `_lib_staged_diff_hash`'s or
+    `require-code-review.sh`'s empty-diff check."""
     return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 

@@ -36,13 +36,13 @@ from ._lib_sh_helpers import (
 
 
 def _make_blocking_absolute_git_dir_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git that blocks on _lib_gate_diff_base's initial
-    `git rev-parse --absolute-git-dir` call."""
+    """Blocks on `_lib_gate_diff_base`'s initial `git rev-parse --absolute-git-dir`
+    call."""
     return _make_git_blocking_on_arg(bin_dir, "--absolute-git-dir")
 
 
 def _make_blocking_tree_verify_git(bin_dir: Path) -> Path:
-    """Shim at bin_dir/git that blocks on _lib_gate_diff_base's final
+    """Blocks on `_lib_gate_diff_base`'s final
     `git rev-parse --verify --quiet "${tree_oid}^{tree}"` validation call."""
     return _make_git_blocking_on_arg(bin_dir, '*"^{tree}"')
 
