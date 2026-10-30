@@ -1196,7 +1196,7 @@ def _build_forged_anchor_clean_merge(
 def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
     """For `merge-tree` specifically, writes a partial line to stdout then
     blocks past the 5s cap; every other subcommand proxies to the real git.
-    Local copy of test_lib.py's shim of the same name."""
+    Local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
@@ -1459,7 +1459,7 @@ class TestRequireCodeReviewMergeAwareBase:
 def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
     """For `diff` specifically, writes `stdout_before_block` to stdout (nothing
     when empty) then blocks past the 5s cap; every other subcommand proxies to
-    the real git. Extended local copy of test_lib.py's shim of the same name
+    the real git. Extended local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name
     (it takes `stdout_before_block`)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
@@ -1485,7 +1485,7 @@ class TestRequireCodeReviewEmptyDiffCheckCapFaultInjection:
     capped-git-diff call sites guarding against the same hang risk. The
     other two -- _lib_gate_diff_base's merge-tree call and
     _lib_staged_diff_hash's diff call -- are covered at the function level
-    in test_lib.py; this class covers EMPTY_DIFF_CHECK at the full-hook
+    in test_lib_gate_diff_base_fallbacks.py; this class covers EMPTY_DIFF_CHECK at the full-hook
     level."""
 
     @pytest.mark.timing

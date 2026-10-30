@@ -1822,7 +1822,7 @@ class TestDenyPiiInCommits:
         conflicted file, never its real content. This is a git primitive
         fact, pinned separately by
         test_git_diff_cached_against_unresolved_conflict_git_primitive_fact
-        in test_lib.py. This hook's scan sees the same marker text, not the
+        in test_lib_gate_diff_base.py. This hook's scan sees the same marker text, not the
         conflicted file's actual content, so it allows here. Git's own "you
         have not concluded your merge" error is what actually stops the
         commit, not this scanner."""
