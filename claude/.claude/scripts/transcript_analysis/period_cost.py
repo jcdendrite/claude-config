@@ -863,7 +863,7 @@ def _flatten_untrusted_text(text: str) -> str:
 
 
 def _sanitize_title(title: str, *, review: bool) -> str:
-    """The title cell text: flattened, backticks replaced, "Review: " prefixed for a review row, capped at 32 code points."""
+    """The title cell text; `_TITLE_CELL_CAP` counts the "Review: " prefix of a review row."""
     cell = _flatten_untrusted_text(title).replace("`", "'")
     if review:
         cell = _REVIEW_TITLE_PREFIX + cell

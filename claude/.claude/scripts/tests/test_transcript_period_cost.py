@@ -2618,6 +2618,8 @@ class TestRenderSlackReport:
         widest_row_bytes_with_newline = (
             widest_label + 2 + widest_title_bytes + 2 + widest_status + 2 + widest_cost + len("  ") + marker_slot + len("\n")
         )
+        # docs/transcript-analysis.md's Size bullet states the same figure.
+        assert widest_row_bytes_with_newline == 164
         review = _review_row(99999, title, 9999.99, "merged", outside_spend=True, fallback_fed=True)
         pr = _pr_row(99999, title, 9999.99, "closed", outside_spend=True, fallback_fed=True)
 
@@ -2628,6 +2630,21 @@ class TestRenderSlackReport:
         assert len(rows) == 2
         assert "$9,999.99" in rows[0]
         assert max(len(row.encode("utf-8")) for row in rows) + len("\n") <= widest_row_bytes_with_newline
+
+    def test_a_row_omitted_for_rounding_below_a_cent_does_not_widen_its_block(self):
+        shown_row = _pr_row(1, "x", 1.0)
+        # An Other row's label and title are both wider than the shown row's, so either column would widen if it counted.
+        omitted_other_row = _other_row(0.004)
+
+        with_omitted_row = _render([_group("acme/widgets", shown_row, omitted_other_row)]).splitlines()
+        without_omitted_row = _render([_group("acme/widgets", shown_row)]).splitlines()
+
+        header_with = next(line for line in with_omitted_row if line.startswith("PR "))
+        header_without = next(line for line in without_omitted_row if line.startswith("PR "))
+        assert header_with == header_without == "PR  Title  Status   Cost"
+        block_start = with_omitted_row.index("*acme/widgets*")
+        block_end = with_omitted_row.index("_Subtotal: $1.00_")
+        assert with_omitted_row[block_start : block_end + 1] == without_omitted_row[block_start : block_end + 1]
 
     def test_each_block_sizes_its_own_columns_and_every_cost_ends_where_its_cost_header_ends(self):
         groups = [
