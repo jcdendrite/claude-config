@@ -60,10 +60,10 @@ comment for that grammar's one residual rather than restating it here.
 ## The five structural detectors
 
 Unlike the blocklist, these run in every gated repo — no `<config-dir>/private-projects.md`
-setup required. Each is checked independently, so the deny message names
-which one fired. Regexes live in `_lib.sh` as `_LIB_IPV4_LITERAL_REGEX` and
-its four siblings, shared with any future consumer that needs the same
-definitions.
+setup required. Each is checked independently, in the table's order, so the
+deny message names the first one that matches. Regexes live in `_lib.sh` as
+`_LIB_IPV4_LITERAL_REGEX` and its four siblings, shared with any future
+consumer that needs the same definitions.
 
 | Detector | Catches | Does NOT catch |
 |---|---|---|
