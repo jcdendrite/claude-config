@@ -507,7 +507,7 @@ python evals/run_review_bench.py mine-rounds
 python evals/run_review_bench.py mine-pr-comments
 python evals/run_review_bench.py mine-szz
 
-# Triage every candidate at the [y/N/q] prompt (needs a terminal):
+# Triage every candidate at the [y/n/q] prompt (needs a terminal):
 python evals/run_review_bench.py confirm
 
 # Snapshot both frozen arms from production at the freeze commit:
@@ -617,9 +617,8 @@ then `pr-comment`, then `szz`) and then by the miner's own order, so an early
 `q` never starves the source whose transcripts age out. For each one it checks
 the schema, that its path exists at its introducing commit, and, when the
 candidate has a description, the description-provenance check against every
-`.local/` excerpt. It then prompts `[y/N/q]` for each candidate that passes,
-except one that `--source`, `--ids-file`, or the declined IDs described below leave out. The
-prompt shows:
+`.local/` excerpt. It then prompts `[y/n/q]` for each candidate that passes, except one that `--source`, `--ids-file`, or the declined
+IDs described below leave out. The prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
   subjects;
@@ -639,7 +638,7 @@ A candidate that shares its head, fix, and path with a candidate from another
 source is annotated with that candidate's ID, source, and status (confirmed,
 accepted this run, skipped this run, rejected by checks, declined in an earlier
 run, or pending). The annotation never suppresses either candidate, and the
-engineer's `y` or `N` decides.
+engineer's `y` or `n` decides.
 
 A candidate with no description is triaged first and described after `y`: `y`
 prompts for a one-line description, which runs through the same provenance
@@ -677,7 +676,7 @@ UTF-8, or empty of IDs.
 `--answers-file FILE --engineer-reviewed-answers` applies answers instead of
 prompting. The engineer's review of the answers file is the approval.
 `--engineer-reviewed-answers` is a self-attestation that the engineer reviewed
-every row. `confirm` cannot verify it, and `--answers-file` exits 2 without it.
+every row.
 
 The file is a JSON list of `{"id", "answer", "description", "lens"}` objects,
 applied in the file's order. A `y` row's description replaces the candidate's
@@ -727,17 +726,20 @@ The description policy:
   passes verbatim.
 - Words typed or edited in are still checked.
 
-`y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
-it, and it stays in `.local/`. `q` or end of input stops the loop and writes
-the candidates accepted so far. Ctrl-C during the prompts writes, pins, and
-records nothing.
+Answers at the `[y/n/q]` prompt (`y`, `n` and `q` work in either case):
+
+- `y` promotes the candidate.
+- `n` skips the candidate, and it stays in `.local/`.
+- `q`, or end of input, stops the loop and writes the candidates accepted so far.
+- Any other answer, `yes` and padded or longer text included, asks again.
+- Ctrl-C during the prompts writes, pins, and records nothing.
 
 When the prompts end, `confirm` appends the IDs it skipped to
 `.local/confirm_declined_ids.json`, a mode-0600 JSON list that the `.local/`
-ignore rule covers. A skipped ID is one answered with anything but `y` or `q`,
-or answered `y` and then given an empty description or three invalid lenses.
-Later runs do not prompt for those IDs and print how many they left out. `--include-declined` prompts for
-them again. A file that is not a JSON list of strings makes `confirm` exit 2
+ignore rule covers. A skipped ID is one answered `n`, or answered `y` and
+then given an empty description or three invalid lenses.
+Later runs do not prompt for those IDs and print how many they left out.
+`--include-declined` prompts for them again. A file that is not a JSON list of strings makes `confirm` exit 2
 before any prompt.
 
 After the last prompt, `confirm` pins each accepted candidate's fix

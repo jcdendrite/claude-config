@@ -101,7 +101,7 @@ class Candidate:
     `lines_exist_at_introducing_head`, `reviewer_could_have_caught_it`, and
     `file_is_markdown` are the miner's advisory guesses for three of the four
     inclusion fields, and `lens` is its guess for the fourth (the owning
-    lens). `cmd_confirm` shows all four at its `[y/N/q]` prompt. The
+    lens). `cmd_confirm` shows all four at its `[y/n/q]` prompt. The
     engineer's `y` is the approval. A non-empty `description` only marks a
     candidate as written up. `ConfirmedDefect` carries `lens` and none of the
     three guesses.
