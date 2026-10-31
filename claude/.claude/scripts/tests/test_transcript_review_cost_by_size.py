@@ -423,6 +423,33 @@ class TestJoinRoundsToPrs:
             dangling_dispatches=4,
         )
 
+    def test_a_multi_round_unmatched_or_ambiguous_branch_counts_once_and_adds_no_unpriced_or_dangling(self):
+        rounds = [
+            _round_entry("feat-joined", main_dollars=1.0, sort_ts=1.0, unpriced_turns=1, dangling=2),
+            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=1.0, unpriced_turns=5, dangling=13),
+            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=17),
+            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=3.0, unpriced_turns=11, dangling=19),
+            _round_entry("feat-reused", main_dollars=1.0, sort_ts=1.0, unpriced_turns=23, dangling=31),
+            _round_entry("feat-reused", main_dollars=1.0, sort_ts=2.0, unpriced_turns=29, dangling=37),
+            _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=41, dangling=43),
+            _round_entry("main", main_dollars=1.0, sort_ts=2.0, unpriced_turns=47, dangling=53),
+        ]
+        merged_prs = [
+            _merged_pr_sized(101, "feat-joined", additions=1, deletions=1),
+            _merged_pr_sized(201, "feat-reused", additions=1, deletions=1),
+            _merged_pr_sized(202, "feat-reused", additions=1, deletions=1),
+        ]
+        records, counts = review_cost_by_size._join_rounds_to_prs(rounds, merged_prs)
+
+        assert [record.number for record in records] == [101]
+        assert counts == review_cost_by_size._JoinCounts(
+            merged_pr_count=3,
+            unmatched_branch_count=2,  # feat-unmerged, main
+            ambiguous_branch_count=1,
+            unpriced_turns=1,
+            dangling_dispatches=2,
+        )
+
     def test_a_branch_joins_only_the_pr_whose_head_name_equals_it_exactly(self):
         """Merged PRs headed `feat-2`, `feat/x` and `Feat` share a prefix, a path segment or a case-fold
         with the round branch `feat`, and none of them joins it. The round branch `feat-2-fix` extends the
