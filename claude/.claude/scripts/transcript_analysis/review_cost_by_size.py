@@ -21,8 +21,8 @@ from transcript_analysis import gh_cli, render, review_rounds, scope
 _SIZED_REVIEW_SKILL = "code-review"
 
 # Lower edges, in changed lines (additions + deletions), of half-open size buckets; each bucket runs to
-# the next edge and the last is unbounded. Log-spaced at roughly half-decade steps.
-_SIZE_BUCKET_LOWER_EDGES: tuple[int, ...] = (0, 100, 300, 1000, 3000)
+# the next edge and the last is unbounded. The edges follow the bucket bounds named in GitHub issue #1364.
+_SIZE_BUCKET_LOWER_EDGES: tuple[int, ...] = (0, 150, 400, 800)
 
 # The smallest round count whose rank correlation of round index against round dollars can take more than a
 # few distinct values.
@@ -176,11 +176,8 @@ def _spearman_rho(xs: Sequence[float], ys: Sequence[float]) -> float | None:
 
 def _log_log_slope(lines: Sequence[int], values: Sequence[float]) -> tuple[float | None, int]:
     """Slope of ln(value) against ln(lines) over the pairs where both are positive, and how many pairs that is.
-    The slope is None when fewer than two pairs remain or every surviving `lines` is equal; it is exactly 0.0
-    when every surviving `value` is equal.
 
-    Both degenerate cases are decided on the pre-log inputs: after the log, a constant x is not reliably
-    detected by statistics.linear_regression, and a constant y comes back as a tiny nonzero slope.
+    Constant series are decided on the pre-log inputs, because statistics.linear_regression misjudges them after the log.
     """
     surviving = [(line_count, value) for line_count, value in zip(lines, values, strict=True)
                  if line_count > 0 and value > 0]
@@ -204,7 +201,6 @@ def _median_or_none(values: Sequence[float]) -> float | None:
 
 
 def _size_bucket_bounds() -> list[tuple[int, int | None]]:
-    """(lower, upper) per size bucket, the last bucket's upper bound None."""
     uppers: list[int | None] = [*_SIZE_BUCKET_LOWER_EDGES[1:], None]
     return list(zip(_SIZE_BUCKET_LOWER_EDGES, uppers, strict=True))
 
@@ -229,9 +225,11 @@ def _compute_within_pr_trend(records: Sequence[_PrRecord]) -> dict:
 def _compute_aggregates(records: Sequence[_PrRecord]) -> dict:
     """Every aggregate the report prints, with None wherever a value is undefined.
 
-    Keys: spearman (measure -> rho of lines against that measure), elasticity (measure -> (slope, PRs used)),
-    buckets (one dict per size bucket: lower, upper, pr_count, medians by measure) and trend
-    (_compute_within_pr_trend).
+    Keys:
+    - spearman: measure -> (rho, PRs ranked). Every PR is ranked, so the count is len(records) for all measures.
+    - elasticity: measure -> (slope, PRs used).
+    - buckets: one dict per size bucket (lower, upper, pr_count, medians by measure).
+    - trend: the result of _compute_within_pr_trend.
     """
     lines = [record.lines for record in records]
     measured = {measure: [getattr(record, measure) for record in records] for measure in _MEASURES}
@@ -249,7 +247,7 @@ def _compute_aggregates(records: Sequence[_PrRecord]) -> dict:
         })
 
     return {
-        "spearman": {measure: _spearman_rho(lines, measured[measure]) for measure in _MEASURES},
+        "spearman": {measure: (_spearman_rho(lines, measured[measure]), len(records)) for measure in _MEASURES},
         "elasticity": {measure: _log_log_slope(lines, measured[measure]) for measure in _MEASURES},
         "buckets": buckets,
         "trend": _compute_within_pr_trend(records),
@@ -277,9 +275,10 @@ def _bucket_label(lower: int, upper: int | None) -> str:
 
 def _print_aggregates(aggregates: dict) -> None:
     print("\nAggregates -- code-review rounds per merged PR; size is additions + deletions")
-    print("Spearman rho of lines against:")
+    print("Spearman rho of lines against (rho; PRs used):")
     for measure in _MEASURES:
-        print(f"  {_MEASURE_LABELS[measure]}: {_fmt_optional(aggregates['spearman'][measure], '.2f')}")
+        rho, ranked_pr_count = aggregates["spearman"][measure]
+        print(f"  {_MEASURE_LABELS[measure]}: {_fmt_optional(rho, '.2f')} (n={ranked_pr_count})")
     print("Log-log elasticity against lines (slope; PRs used):")
     for measure in _MEASURES:
         slope, pr_count = aggregates["elasticity"][measure]
@@ -328,10 +327,8 @@ def _print_pr_rows(records: Sequence[_PrRecord]) -> None:
 def cmd_review_cost_by_size(args: argparse.Namespace) -> None:
     """How code-review round count and round cost vary with merged-PR size.
 
-    Requires --this-repo and refuses any --projects scope. By default it reads the active account's
-    `config_dir() / "projects"` alone. --all-accounts reads every declared root as one merged scan and is a
-    private view that prints a DO NOT PUBLISH line on both streams. See docs/transcript-analysis.md's
-    `review-cost-by-size` section for the join rules, aggregates and publication scope.
+    See docs/transcript-analysis.md's `review-cost-by-size` section for the flags, join rules, aggregates and
+    publication scope.
     """
     this_repo = bool(getattr(args, "this_repo", False))
     projects_arg = getattr(args, "projects", None)

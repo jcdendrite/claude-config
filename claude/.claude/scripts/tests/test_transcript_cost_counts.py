@@ -877,4 +877,4 @@ class TestCostCounts:
         err = capsys.readouterr().err
         assert subcommand in err
         assert "use that instead" not in err
-        assert "with no override" in err
+        assert err.rstrip().endswith("since this subcommand resolves its scan roots itself")

@@ -695,7 +695,7 @@ _DO_NOT_PUBLISH_BANNER = (
 # so the flag can never validate against a different account than the one
 # the subcommand itself resolves. Most members resolve their own multi-root
 # scan via their own subcommand-level --config-dir (_resolve_cost_roots).
-# These members register no --config-dir flag of their own:
+# The exceptions register no --config-dir flag of their own:
 # - cost-counts and period-cost build their own single root.
 # - review-cost-by-size builds its own single root by default and calls
 #   resolve_scan_roots under --all-accounts.
@@ -742,8 +742,8 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     defines `--summary` today -- a bare `summary` check would silently
     narrow a future subcommand adding a same-named flag. This function is
     shared by every `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR` member
-    except the ones that bypass it and build their own roots, which the
-    comment above that tuple names.
+    except the members that bypass it and build their own roots; the
+    comment above that tuple names them.
     """
     try:
         resolved_config_dir = config_dir()

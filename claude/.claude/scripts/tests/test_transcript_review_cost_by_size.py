@@ -104,31 +104,28 @@ class TestComputeAggregates:
     """_compute_aggregates over literal records."""
 
     def test_each_size_bucket_holds_two_prs_and_reports_the_midpoint_medians(self):
-        """Lines 0, 99, 100, 299, 300, 999, 1000, 2999, 3000 and 10000 put two PRs in each half-open bucket.
+        """Lines 0, 149, 150, 399, 400, 799, 800 and 10000 put two PRs in each half-open bucket.
         Each bucket's two PRs differ on every measure, so the median is the midpoint, which neither
         median_low nor median_high returns."""
         records = [
             _record(1, 0, 1.0),
-            _record(2, 99, 2.0, 4.0),
-            _record(3, 100, 1.0, 1.0, 1.0),
-            _record(4, 299, 2.0, 2.0, 2.0, 2.0, 2.0),
-            _record(5, 300, 4.0, 4.0),
-            _record(6, 999, 1.0),
-            _record(7, 1000, 1.0, 1.0, 2.0, 4.0),
-            _record(8, 2999, 6.0),
-            _record(9, 3000, 2.0, 2.0),
-            _record(10, 10000, 8.0, 4.0, 4.0, 4.0),
+            _record(2, 149, 2.0, 4.0),
+            _record(3, 150, 1.0, 1.0, 1.0),
+            _record(4, 399, 2.0, 2.0, 2.0, 2.0, 2.0),
+            _record(5, 400, 4.0, 4.0),
+            _record(6, 799, 1.0),
+            _record(7, 800, 6.0),
+            _record(8, 10000, 8.0, 4.0, 4.0, 4.0),
         ]
         buckets = review_cost_by_size._compute_aggregates(records)["buckets"]
         assert [(bucket["lower"], bucket["upper"], bucket["pr_count"]) for bucket in buckets] == [
-            (0, 100, 2), (100, 300, 2), (300, 1000, 2), (1000, 3000, 2), (3000, None, 2),
+            (0, 150, 2), (150, 400, 2), (400, 800, 2), (800, None, 2),
         ]
         assert [bucket["medians"] for bucket in buckets] == [
             {"round_count": 1.5, "total_dollars": 3.5, "mean_dollars": 2.0},
             {"round_count": 4.0, "total_dollars": 6.5, "mean_dollars": 1.5},
             {"round_count": 1.5, "total_dollars": 4.5, "mean_dollars": 2.5},
-            {"round_count": 2.5, "total_dollars": 7.0, "mean_dollars": 4.0},
-            {"round_count": 3.0, "total_dollars": 12.0, "mean_dollars": 3.5},
+            {"round_count": 2.5, "total_dollars": 13.0, "mean_dollars": 5.5},
         ]
 
     def test_tied_series_use_average_ranks_and_each_measure_has_its_own_rho(self):
@@ -144,9 +141,9 @@ class TestComputeAggregates:
             _record(5, 40, 3.0),
         ]
         spearman = review_cost_by_size._compute_aggregates(records)["spearman"]
-        assert spearman["round_count"] == pytest.approx(-1.5 / math.sqrt(85.5))
-        assert spearman["total_dollars"] == pytest.approx(-0.75 / 9.5)
-        assert spearman["mean_dollars"] == pytest.approx(2.5 / 9.5)
+        assert spearman["round_count"] == (pytest.approx(-1.5 / math.sqrt(85.5)), 5)
+        assert spearman["total_dollars"] == (pytest.approx(-0.75 / 9.5), 5)
+        assert spearman["mean_dollars"] == (pytest.approx(2.5 / 9.5), 5)
 
     def test_elasticities_are_half_one_and_a_half_one_for_the_three_measures(self):
         """PRs of 1, 4, 9 and 16 lines with 1, 2, 3 and 4 rounds, each round costing the PR's line count:
@@ -163,9 +160,10 @@ class TestComputeAggregates:
         records = [_record(number, lines, *([float(lines)] * rounds))
                    for number, (lines, rounds) in enumerate([(1, 1), (4, 2), (9, 3), (16, 4)], start=1)]
         records.append(_record(5, 0, 3.0, 3.0))
-        elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
-        assert [elasticity[measure][1] for measure in review_cost_by_size._MEASURES] == [4, 4, 4]
-        assert elasticity["total_dollars"][0] == pytest.approx(1.5)
+        aggregates = review_cost_by_size._compute_aggregates(records)
+        assert [aggregates["elasticity"][measure][1] for measure in review_cost_by_size._MEASURES] == [4, 4, 4]
+        assert [aggregates["spearman"][measure][1] for measure in review_cost_by_size._MEASURES] == [5, 5, 5]
+        assert aggregates["elasticity"]["total_dollars"][0] == pytest.approx(1.5)
 
     def test_zero_dollar_pr_drops_out_of_the_two_dollar_elasticities_only(self):
         """A 25-line PR with five zero-dollar rounds sits on the rounds line (ln 5 / ln 25 = 0.5), so the
@@ -173,10 +171,33 @@ class TestComputeAggregates:
         records = [_record(number, lines, *([float(lines)] * rounds))
                    for number, (lines, rounds) in enumerate([(1, 1), (4, 2), (9, 3), (16, 4)], start=1)]
         records.append(_record(5, 25, *([0.0] * 5)))
-        elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
+        aggregates = review_cost_by_size._compute_aggregates(records)
+        elasticity = aggregates["elasticity"]
         assert elasticity["round_count"] == (pytest.approx(0.5), 5)
         assert elasticity["total_dollars"] == (pytest.approx(1.5), 4)
         assert elasticity["mean_dollars"] == (pytest.approx(1.0), 4)
+        assert [aggregates["spearman"][measure][1] for measure in review_cost_by_size._MEASURES] == [5, 5, 5]
+
+    def test_constant_dollars_among_the_surviving_prs_give_slope_zero_despite_a_zero_dollar_pr(self):
+        """The constant-value check runs on the pairs that survive the positivity filter. Run on the unfiltered
+        values, the zero-dollar PR would make them unequal and the regression would return a tiny nonzero
+        slope for these sizes (about -7e-32 after the logs)."""
+        constant_dollars = 5.901146528953873
+        records = [_record(number, lines, constant_dollars)
+                   for number, lines in enumerate([1847, 147, 3255], start=1)]
+        records.append(_record(4, 25, 0.0))
+        elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
+        assert elasticity["total_dollars"] == (0.0, 3)
+
+    def test_identical_line_counts_among_the_surviving_prs_give_no_slope_despite_a_zero_line_pr(self):
+        """The same-size check runs on the pairs that survive the positivity filter. Run on the unfiltered
+        line counts, the zero-line PR would make the sizes differ, so the same-size check would not
+        fire for five PRs of one size. Each round costs 1.0, so the mean-dollar value is constant and that
+        mutation returns 0.0 for it at any PR count, whatever the standard library does on a constant x."""
+        records = [_record(number, 7, *([1.0] * number)) for number in range(1, 6)]
+        records.append(_record(6, 0, 1.0))
+        elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
+        assert elasticity == {measure: (None, 5) for measure in review_cost_by_size._MEASURES}
 
     def test_constant_round_count_gives_slope_zero_and_no_rho(self):
         """A constant series has slope 0.0 by this module's definition (_log_log_slope), not by the regression
@@ -184,7 +205,7 @@ class TestComputeAggregates:
         records = [_record(1, 10, 1.0), _record(2, 100, 2.0), _record(3, 1000, 3.0)]
         aggregates = review_cost_by_size._compute_aggregates(records)
         assert aggregates["elasticity"]["round_count"] == (0.0, 3)
-        assert aggregates["spearman"]["round_count"] is None
+        assert aggregates["spearman"]["round_count"] == (None, 3)
 
     def test_constant_round_count_above_one_gives_exactly_positive_zero(self):
         """Three 6-round PRs: the regression's slope on a constant y can come out as a tiny nonzero (even
@@ -206,6 +227,11 @@ class TestComputeAggregates:
         records = [_record(number, 7, float(number)) for number in range(1, 6)]
         elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
         assert elasticity == {measure: (None, 5) for measure in review_cost_by_size._MEASURES}
+
+    def test_identical_line_counts_with_identical_values_give_no_slope_rather_than_zero(self):
+        """When both series are constant the slope is undefined, not 0.0: the equal-sizes check takes
+        precedence over the equal-values check."""
+        assert review_cost_by_size._log_log_slope([7, 7, 7], [2.0, 2.0, 2.0]) == (None, 3)
 
     def test_within_pr_trend_counts_only_prs_with_four_rounds_and_a_defined_rho(self):
         """Four 4-round PRs have rhos 1.0, -1.0, 0.8 and 0.0. A 3-round falling PR is under the round
@@ -230,7 +256,7 @@ class TestComputeAggregates:
 
     def test_empty_corpus_gives_none_for_every_value_and_zero_for_every_count(self):
         aggregates = review_cost_by_size._compute_aggregates([])
-        assert aggregates["spearman"] == {measure: None for measure in review_cost_by_size._MEASURES}
+        assert aggregates["spearman"] == {measure: (None, 0) for measure in review_cost_by_size._MEASURES}
         assert aggregates["elasticity"] == {measure: (None, 0) for measure in review_cost_by_size._MEASURES}
         assert all(
             bucket["pr_count"] == 0 and set(bucket["medians"].values()) == {None} for bucket in aggregates["buckets"]
@@ -239,14 +265,14 @@ class TestComputeAggregates:
 
     def test_one_pr_corpus_has_no_rho_slope_or_trend_and_its_bucket_reports_its_own_values(self):
         aggregates = review_cost_by_size._compute_aggregates([_record(1, 150, 1.0, 3.0)])
-        assert aggregates["spearman"] == {measure: None for measure in review_cost_by_size._MEASURES}
+        assert aggregates["spearman"] == {measure: (None, 1) for measure in review_cost_by_size._MEASURES}
         assert aggregates["elasticity"] == {measure: (None, 1) for measure in review_cost_by_size._MEASURES}
         assert aggregates["trend"]["pr_count"] == 0
-        populated = next(bucket for bucket in aggregates["buckets"] if bucket["lower"] == 100)
+        populated = next(bucket for bucket in aggregates["buckets"] if bucket["lower"] == 150)
         assert populated["pr_count"] == 1
         assert populated["medians"] == {"round_count": 2, "total_dollars": 4.0, "mean_dollars": 2.0}
         assert [(bucket["pr_count"], set(bucket["medians"].values())) for bucket in aggregates["buckets"]
-                if bucket["lower"] != 100] == [(0, {None})] * 4
+                if bucket["lower"] != 150] == [(0, {None})] * 3
 
 
 class TestPrintedReport:
@@ -257,6 +283,23 @@ class TestPrintedReport:
         review_cost_by_size._print_aggregates(review_cost_by_size._compute_aggregates(records))
         return capsys.readouterr().out.splitlines()
 
+    @staticmethod
+    def _block_after(lines: list[str], header: str) -> list[str]:
+        """The indented lines printed directly under `header`."""
+        start = lines.index(header) + 1
+        end = start
+        while end < len(lines) and lines[end].startswith("  "):
+            end += 1
+        return lines[start:end]
+
+    @classmethod
+    def _spearman_block(cls, lines: list[str]) -> list[str]:
+        return cls._block_after(lines, "Spearman rho of lines against (rho; PRs used):")
+
+    @classmethod
+    def _elasticity_block(cls, lines: list[str]) -> list[str]:
+        return cls._block_after(lines, "Log-log elasticity against lines (slope; PRs used):")
+
     def test_elasticity_lines_show_slope_and_pr_count_per_measure(self, capsys):
         records = [_record(number, lines, *([float(lines)] * rounds))
                    for number, (lines, rounds) in enumerate([(1, 1), (4, 2), (9, 3), (16, 4)], start=1)]
@@ -265,22 +308,48 @@ class TestPrintedReport:
         assert "  total dollars per PR: 1.50 (n=4)" in lines
         assert "  mean dollars per round: 1.00 (n=4)" in lines
 
+    def test_spearman_lines_count_every_pr_while_elasticity_lines_drop_the_zero_line_pr(self, capsys):
+        """The zero-line PR is ranked by Spearman but has no log, so each Spearman line reads n=5 and each
+        elasticity line n=4; a Spearman count copied from the elasticity pairs fails."""
+        records = [_record(number, lines, *([float(lines)] * rounds))
+                   for number, (lines, rounds) in enumerate([(1, 1), (4, 2), (9, 3), (16, 4)], start=1)]
+        records.append(_record(5, 0, 3.0, 3.0))
+        lines = self._aggregate_lines(capsys, records)
+        assert self._spearman_block(lines) == [
+            "  rounds per PR: 0.82 (n=5)",
+            "  total dollars per PR: 0.90 (n=5)",
+            "  mean dollars per round: 0.90 (n=5)",
+        ]
+        assert self._elasticity_block(lines) == [
+            "  rounds per PR: 0.50 (n=4)",
+            "  total dollars per PR: 1.50 (n=4)",
+            "  mean dollars per round: 1.00 (n=4)",
+        ]
+
     def test_constant_round_count_prints_slope_zero_beside_an_undefined_rho(self, capsys):
         records = [_record(1, 10, 1.0), _record(2, 100, 2.0), _record(3, 1000, 3.0)]
         lines = self._aggregate_lines(capsys, records)
-        assert "  rounds per PR: n/a" in lines
-        assert "  rounds per PR: 0.00 (n=3)" in lines
+        assert "  rounds per PR: n/a (n=3)" in self._spearman_block(lines)
+        assert "  rounds per PR: 0.00 (n=3)" in self._elasticity_block(lines)
+
+    def test_empty_corpus_prints_every_spearman_line_as_undefined_over_zero_prs(self, capsys):
+        lines = self._aggregate_lines(capsys, [])
+        assert self._spearman_block(lines) == [
+            "  rounds per PR: n/a (n=0)",
+            "  total dollars per PR: n/a (n=0)",
+            "  mean dollars per round: n/a (n=0)",
+        ]
 
     def test_populated_bucket_line_shows_its_label_dollar_medians_and_one_decimal_rounds_median(self, capsys):
         """Rounds medians 1 and 2 give 1.5, total medians 1.00 and 6.00 give $3.50, mean medians 1.00 and
-        3.00 give $2.00. The empty last bucket prints n=0 and n/a."""
+        3.00 give $2.00. The empty 800+ bucket prints n=0 and n/a."""
         records = [_record(1, 10, 1.0), _record(2, 20, 2.0, 4.0)]
         lines = self._aggregate_lines(capsys, records)
         assert (
-            "  0-99 lines: n=2; rounds per PR 1.5; total dollars per PR $3.50; mean dollars per round $2.00"
+            "  0-149 lines: n=2; rounds per PR 1.5; total dollars per PR $3.50; mean dollars per round $2.00"
         ) in lines
         assert (
-            "  3000+ lines: n=0; rounds per PR n/a; total dollars per PR n/a; mean dollars per round n/a"
+            "  800+ lines: n=0; rounds per PR n/a; total dollars per PR n/a; mean dollars per round n/a"
         ) in lines
 
     def test_trend_line_prints_the_share_above_zero_as_a_one_decimal_percentage(self, capsys):
@@ -333,6 +402,9 @@ class TestJoinRoundsToPrs:
             _merged_pr_sized(301, "feat-no-rounds", additions=5, deletions=6),
             _merged_pr_sized(401, "main", additions=7, deletions=8),
             _merged_pr_sized(402, "worktree-agent-abc", additions=9, deletions=10),
+            # A second PR per never-join branch makes the never-join check observable ahead of the ambiguity check.
+            _merged_pr_sized(403, "main", additions=11, deletions=12),
+            _merged_pr_sized(404, "worktree-agent-abc", additions=13, deletions=14),
         ]
         records, counts = review_cost_by_size._join_rounds_to_prs(rounds, merged_prs)
 
@@ -344,14 +416,49 @@ class TestJoinRoundsToPrs:
         assert record.total_dollars == pytest.approx(7.75)
         assert record.mean_dollars == pytest.approx(7.75 / 3)
         assert counts == review_cost_by_size._JoinCounts(
-            merged_pr_count=6,
+            merged_pr_count=8,
             unmatched_branch_count=3,  # feat-unmerged, main, worktree-agent-abc
             ambiguous_branch_count=1,  # feat-reused
             unpriced_turns=3,
             dangling_dispatches=4,
         )
 
-    @pytest.mark.parametrize("missing_field", ["additions", "deletions"])
+    def test_a_branch_joins_only_the_pr_whose_head_name_equals_it_exactly(self):
+        """Merged PRs headed `feat-2`, `feat/x` and `Feat` share a prefix, a path segment or a case-fold
+        with the round branch `feat`, and none of them joins it. The round branch `feat-2-fix` extends the
+        head `feat-2` and does not join it either."""
+        records, counts = review_cost_by_size._join_rounds_to_prs(
+            [
+                _round_entry("feat", main_dollars=1.0, sort_ts=1.0),
+                _round_entry("feat-2-fix", main_dollars=1.0, sort_ts=2.0),
+            ],
+            [
+                _merged_pr_sized(1, "feat-2", additions=1, deletions=1),
+                _merged_pr_sized(2, "feat/x", additions=1, deletions=1),
+                _merged_pr_sized(3, "Feat", additions=1, deletions=1),
+            ],
+        )
+        assert records == []
+        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (2, 0)
+
+    @pytest.mark.parametrize("default_branch", ["main", "master", "develop"])
+    def test_a_default_branch_round_stays_unmatched_beside_a_merged_pr_headed_by_that_name(self, default_branch):
+        records, counts = review_cost_by_size._join_rounds_to_prs(
+            [_round_entry(default_branch, main_dollars=1.0, sort_ts=1.0)],
+            [_merged_pr_sized(1, default_branch, additions=1, deletions=1)],
+        )
+        assert records == []
+        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (1, 0)
+
+    def test_a_detached_head_round_stays_unmatched_beside_a_merged_pr_headed_head(self):
+        records, counts = review_cost_by_size._join_rounds_to_prs(
+            [_round_entry(scope._DETACHED_HEAD_BRANCH, main_dollars=1.0, sort_ts=1.0)],
+            [_merged_pr_sized(1, scope._DETACHED_HEAD_BRANCH, additions=1, deletions=1)],
+        )
+        assert records == []
+        assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (1, 0)
+
+    @pytest.mark.parametrize("missing_field", ["additions", "deletions", "number", "headRefName"])
     def test_a_malformed_merged_pr_stops_the_join_instead_of_defaulting_to_zero_lines(self, missing_field):
         merged_pr = _merged_pr_sized(101, "feat-joined", additions=100, deletions=49)
         del merged_pr[missing_field]
@@ -406,6 +513,20 @@ class TestScanCodeReviewRounds:
         )
 
         assert self._joined_record(rounds).round_count == 2
+
+    def test_rounds_opened_after_a_prs_merge_still_count_toward_it(self, fake_projects):
+        """The session's rounds open on 2026-08-01, seven months after the PR's explicit mergedAt."""
+        _write_code_review_session(fake_projects / "sess-after-merge.jsonl", "feat", 2)
+        rounds, _scope_label = review_cost_by_size._scan_code_review_rounds(
+            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
+            [fake_projects.parent], Counter(),
+        )
+
+        records, _counts = review_cost_by_size._join_rounds_to_prs(
+            rounds, [{**_merged_pr_sized(7, "feat", additions=3, deletions=2), "mergedAt": "2026-01-01T00:00:00Z"}],
+        )
+
+        assert [(record.number, record.round_count) for record in records] == [(7, 2)]
 
     def test_dispatch_dollars_count_once_and_only_code_review_rounds_count(self, fake_projects):
         """The code-review round dispatches a subagent and sits alone in its session file, so it is that
@@ -482,8 +603,9 @@ class TestCmdReviewCostBySize:
     @staticmethod
     def _two_root_corpus(tmp_path, monkeypatch) -> list[dict]:
         """Active root: feat-a (2 rounds), the size-tied PRs feat-t1 and feat-t2 (1 round each) and an
-        unmerged sentinel branch. Declared root: feat-b (3 rounds). Returns the merged-PR list, with the
-        tied PRs listed out of PR-number order."""
+        unmerged sentinel branch. Declared root: feat-b (3 rounds). Returns the merged-PR list. The tied
+        PRs' session files sort opposite to their PR numbers (sess-t1 holds PR 31, sess-t2 holds PR 30), so
+        their records arrive out of PR-number order."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         active_project = roots[0] / _PROJECT_SLUG
         active_project.mkdir()
@@ -523,12 +645,24 @@ class TestCmdReviewCostBySize:
         assert "  PRs joined: 3" in lines
         assert "  Merged PRs listed: 5" in lines
         assert "  Unmatched branches: 1" in lines
+        assert any(line.startswith("  0-149 lines: n=3;") for line in lines)
         assert _printed_pr_numbers(out) == [11, 30, 31]
         assert out.index("Aggregates") < out.index("Join diagnostics") < out.index("Per-PR rows")
         for withheld in ("zz-unmerged-sentinel", "sentinel-org", "sentinel-repo", str(tmp_path)):
             assert withheld not in out + err
         # feat-a: two rounds at the opening-turn price.
         assert re.search(r"^\s+11\s+5\s+2\s+\$0\.40\s+\$0\.20$", out, re.MULTILINE)
+
+    def test_a_pr_of_a_thousand_or_more_lines_prints_its_lines_with_a_thousands_separator(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_code_review_session(fake_projects / "sess-large.jsonl", "feat-large", 2)
+        out, _err = _run_cmd(
+            monkeypatch, capsys,
+            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
+            merged_prs=[_merged_pr_sized(7, "feat-large", additions=1000, deletions=480)],
+        )
+        assert "        7     1,480       2       $0.40       $0.20" in out.splitlines()
 
     def test_origin_remote_host_reaches_the_auth_preflight_repo_pin_and_pr_discovery(
         self, tmp_path, monkeypatch, capsys,
@@ -568,15 +702,28 @@ class TestCmdReviewCostBySize:
         assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
         assert "scanning root" in err
         assert "  PRs joined: 4" in lines
+        assert any(line.startswith("  0-149 lines: n=4;") for line in lines)
         assert _printed_pr_numbers(out) == [11, 30, 31, 22]
 
-    def test_unreadable_session_file_is_counted_and_the_readable_one_still_joins(self, fake_projects, monkeypatch, capsys):
+    def test_all_accounts_over_a_single_root_still_marks_both_streams_do_not_publish(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        out, err = _run_cmd(
+            monkeypatch, capsys,
+            _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
+        )
+        assert out.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+        assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+        assert "scanning root" not in err
+
+    def test_unreadable_session_files_are_counted_and_the_readable_one_still_joins(self, fake_projects, monkeypatch, capsys):
         if os.geteuid() == 0:
             pytest.skip("root bypasses file permission bits")
         _write_code_review_session(fake_projects / "readable.jsonl", "feat-a", 1)
-        sealed = fake_projects / "sealed.jsonl"
-        _write_code_review_session(sealed, "feat-a", 1)
-        os.chmod(sealed, 0o000)
+        sealed_files = [fake_projects / "sealed-1.jsonl", fake_projects / "sealed-2.jsonl"]
+        for sealed in sealed_files:
+            _write_code_review_session(sealed, "feat-a", 1)
+            os.chmod(sealed, 0o000)
         try:
             out, _err = _run_cmd(
                 monkeypatch, capsys,
@@ -584,24 +731,65 @@ class TestCmdReviewCostBySize:
                 merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
             )
         finally:
-            os.chmod(sealed, 0o644)
+            for sealed in sealed_files:
+                os.chmod(sealed, 0o644)
         lines = out.splitlines()
-        assert "  Unreadable sources skipped: 1" in lines
+        assert "  Unreadable sources skipped: 2" in lines
         assert "  PRs joined: 1" in lines
 
-    def test_failing_gh_auth_under_all_accounts_exits_1_before_any_report_or_scan(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
+    def test_failing_gh_auth_exits_1_before_any_report_or_scan(self, tmp_path, monkeypatch, capsys, all_accounts):
         self._two_root_corpus(tmp_path, monkeypatch)
+        scan_calls: list[tuple] = []
+        monkeypatch.setattr(
+            review_cost_by_size, "_scan_code_review_rounds", lambda *scan_args: scan_calls.append(scan_args),
+        )
         with pytest.raises(SystemExit) as exc_info:
             _run_cmd(
                 monkeypatch, capsys,
-                _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
+                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
                 gh_auth_status_failure=True,
             )
         assert exc_info.value.code == 1
         out, err = capsys.readouterr()
-        assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
-        assert "review-cost-by-size: gh auth status failed" in err
+        error_lines = err.splitlines()
+        assert scan_calls == []
         assert "scanning root" not in err
+        if all_accounts:
+            assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+            assert error_lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+            assert error_lines[1].startswith("review-cost-by-size: gh auth status failed")
+        else:
+            assert out == ""
+            assert error_lines[0].startswith("review-cost-by-size: gh auth status failed")
+
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
+    def test_failing_origin_remote_lookup_exits_1_under_this_commands_name(
+        self, fake_projects, monkeypatch, capsys, all_accounts,
+    ):
+        """The helper's `subcommand` default is `pr-cost`; the failure message must name this command."""
+        remaining_calls_double = _fake_pr_cost_subprocess_run()
+
+        def origin_remote_lookup_fails(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                raise subprocess.CalledProcessError(128, cmd)
+            return remaining_calls_double(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", origin_remote_lookup_fails)
+        with pytest.raises(SystemExit) as exc_info:
+            review_cost_by_size.cmd_review_cost_by_size(
+                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
+            )
+        assert exc_info.value.code == 1
+        out, err = capsys.readouterr()
+        error_lines = err.splitlines()
+        if all_accounts:
+            assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+            assert error_lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+            assert error_lines[1].startswith("review-cost-by-size: could not resolve this repo's own remote")
+        else:
+            assert out == ""
+            assert error_lines[0].startswith("review-cost-by-size: could not resolve this repo's own remote")
 
     def test_limit_note_prints_only_when_the_merged_list_reaches_the_gh_limit(self, fake_projects, monkeypatch, capsys):
         """No sessions are in scope, so each run is the empty scope: the full report with n/a aggregates."""

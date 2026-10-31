@@ -998,7 +998,7 @@ def main() -> None:
                 )
             else:
                 own_scope_clause = (
-                    "this subcommand is scoped to the active account's config dir with no override"
+                    "this subcommand resolves its scan roots itself"
                 )
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "

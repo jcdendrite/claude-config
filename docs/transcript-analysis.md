@@ -74,7 +74,7 @@ The four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ## Corpus scope: the declared-roots file
 
-Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below); `period-cost`, which reads the active account's whole projects directory only (see its section below); `cost-counts`, which reads the active account's `projects` directory only (see its section below); `review-cost-by-size` without `--all-accounts`, which reads the active account's `projects` directory only, scoped to this repository (see its section below); and `user-input`, which reads the active account's `projects` directory only, narrowed by `--projects GLOB`. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead, and `review-cost-by-size`, whose header names the scope label and whether it read the active account or every declared account, with no root count. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below); `period-cost`, which reads the active account's whole projects directory only (see its section below); `cost-counts`, which reads the active account's `projects` directory only (see its section below); `review-cost-by-size` without `--all-accounts`, which reads the active account's `projects` directory only, scoped to this repository (see its section below); and `user-input`, which reads the active account's `projects` directory only, narrowed by `--projects GLOB`. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead. `review-cost-by-size` is a second exception: its header names the scope label and whether it read the active account or every declared account, with no root count. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
 
 This union amplifies two costs, both linearly in the number of declared roots:
 
@@ -1400,7 +1400,13 @@ A withheld block prints `(95% CI not computed — too few branches in scope)` fo
 
 ## review-cost-by-size
 
-**Purpose.** How `code-review` round count and round cost vary with merged-PR size. It prices `code-review` rounds with `review-round-cost`'s own round detection and joins each branch to its merged PR by exact head-branch name, then prints aggregates, join diagnostics and one row per PR. Requires `gh`: a `gh auth status` preflight, a `gh repo view` repo pin that must match this checkout's `origin` remote, then one bulk `gh pr list --state merged` call (limit 1000). Exit 2 means a refused flag scope, an unresolvable config directory, or a `gh`/`origin` identity mismatch. Exit 1 means any other failure before a report prints: `gh` auth, the `origin` remote, the repo pin or the discovery call, or running outside a listed worktree. The pin and discovery messages carry a `pr-cost:` prefix, because they come from the helpers `pr-cost` shares.
+**Purpose.** How `code-review` round count and round cost vary with merged-PR size. It prices `code-review` rounds with `review-round-cost`'s own round detection and joins each branch to its merged PR by exact head-branch name, then prints aggregates, join diagnostics and one row per PR.
+
+**Requires `gh`.** A `gh auth status` preflight, a `gh repo view` repo pin that must match this checkout's `origin` remote, then one bulk `gh pr list --state merged` call (limit 1000). The pin and discovery messages carry a `pr-cost:` prefix, because they come from the helpers `pr-cost` shares.
+
+**Exit codes.**
+- 2 -- a refused flag scope, an unresolvable config directory, or `gh repo view` naming a different repository or host than `origin`.
+- 1 -- any other failure before a report prints: `gh` auth, the `origin` remote, the repo pin (including a `GH_HOST` that matches none of this repo's remotes) or the discovery call, or running outside a listed worktree.
 
 **Flags.**
 - `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
@@ -1416,26 +1422,28 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - A branch matching more than one merged PR (a reused branch name) counts as an ambiguous branch and is excluded.
 - A merged PR with no `code-review` round in scope is not a record.
 - Rounds opened after a PR's merge still count toward it, as `pr-cost` counts a branch's later activity.
+- The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it.
 
-**What a record measures.** A PR's size is `additions + deletions`. Each round's dollars are its main-thread turns plus every subagent dispatched inside it, as in `review-round-cost`. Those dollars are an upper bound on review cost; see "Round detection caveats" under `review-round-cost`. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds).
+**What a record measures.** A PR's size is `additions + deletions`. Each round's dollars are its main-thread turns plus every subagent dispatched inside it, as in `review-round-cost`. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds).
 
 **Aggregates.** An aggregate that cannot be computed prints `n/a`.
-- Spearman rho of lines against each of the three values, with tied values taking the mean of their ranks.
-- Log-log elasticity of each value against lines: the slope of the natural log of the value on the natural log of lines, over PRs with lines above 0 and that value above 0. Each value prints its own PR count, because a zero-dollar PR drops out of the two dollar values only. A value that is the same for every PR gives slope 0.0.
-- Size-bucket medians. Buckets are half-open on lines: 0-99, 100-299, 300-999, 1000-2999 and 3000 or more. Each prints its PR count and the median of the three values.
+- Spearman rho of lines against each of the three values, with tied values taking the mean of their ranks. Each prints as `rho (n=N)`, or `n/a (n=N)` when rho is undefined. Every PR is ranked, so N is the number of PRs joined, which can exceed an elasticity's count.
+- Log-log elasticity of each value against lines: the slope of the natural log of the value on the natural log of lines, over PRs with lines above 0 and that value above 0. Each value prints its own PR count, because a zero-dollar PR drops out of the two dollar values only. A value that is the same for every PR counted for it gives slope 0.0 when those PRs' sizes differ.
+- Size-bucket medians. Buckets are half-open on lines: 0-149, 150-399, 400-799 and 800 or more. Each prints its PR count and the median of the three values.
 - Within-PR trend, over PRs with at least 4 `code-review` rounds: Spearman's rho of round index against round dollars. The line prints how many PRs yielded a rho, their median rho, and the share above zero. A PR whose rounds all cost the same has no rho and is skipped.
 
-**Diagnostics.** Counts only, never a branch name: merged PRs listed, PRs joined, unmatched and ambiguous branches, unpriced turns and dangling dispatches inside the joined rounds, and unreadable sources skipped. When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR, because the ambiguity check sees only the listed PRs. An unpriced turn or a dangling dispatch is spend missing from the dollar figures, so nonzero counts mean those figures read low; the **Reconciliation line.** paragraph under `review-round-cost` defines both.
+**Diagnostics.** Counts only, never a branch name: merged PRs listed, PRs joined, unmatched and ambiguous branches, unpriced turns and dangling dispatches inside the joined rounds, and unreadable sources skipped. When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR. That wrong join is possible because the ambiguity check sees only the listed PRs. An unpriced turn or a dangling dispatch is spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. A nonzero unreadable-sources count means the rounds and dollars those sources held are missing.
 
 **Known limits.**
+- A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.
+- Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
+- A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
+- A fork PR whose head branch matches a local feature branch joins to it, so that record carries the fork PR's size. No diagnostic counts such a join.
 - A PR enters only with at least one in-scope `code-review` round, so its round count floors at 1 and a PR that skipped review is absent.
-- A PR whose early sessions aged out of Claude Code's transcript retention reads smaller than it was.
+- A PR whose early sessions aged out of Claude Code's transcript retention shows fewer rounds and dollars than it had, and is absent when every session aged out.
 - A PR whose worktree was removed is absent. `--this-repo` reads only live worktrees' project directories (see the "An orphaned project directory" bullet under "Scoping to this repo"), and this command refuses `--projects`, so there is no glob fallback.
-- A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost: fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
-- The scan reads this machine's transcripts only, so a PR worked partly or wholly on another machine reads smaller or is absent.
-- A fork PR whose head branch matches a local feature branch joins to it.
-- The gap between merged PRs listed and PRs joined mixes these causes. The diagnostics give no per-cause count.
-- The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it. In the default mode such a directory under the active `projects/` is read wherever it points.
+- The scan reads this machine's transcripts only, so a PR worked partly or wholly on another machine shows fewer rounds and dollars than it had, or is absent.
+- The gap between merged PRs listed and PRs joined mixes the four causes above with reused branch names and unreadable sources. The diagnostics count only the last two: reused names by branch on the `Ambiguous branches (excluded)` line, and unreadable sources by source on the `Unreadable sources skipped` line.
 
 **Publication.**
 - Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account", and only when run from this repository's own checkout. `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead. It reads the active config directory's `projects/` alone, and a project directory symlinked from there is read wherever it points. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
@@ -1446,20 +1454,19 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 REVIEW COST BY SIZE SOURCES (this repo (3 project dirs); active account only)
 
 Aggregates -- code-review rounds per merged PR; size is additions + deletions
-Spearman rho of lines against:
-  rounds per PR: 0.84
-  total dollars per PR: 0.94
-  mean dollars per round: 0.94
+Spearman rho of lines against (rho; PRs used):
+  rounds per PR: 0.94 (n=6)
+  total dollars per PR: 0.94 (n=6)
+  mean dollars per round: 0.94 (n=6)
 Log-log elasticity against lines (slope; PRs used):
-  rounds per PR: 0.28 (n=6)
+  rounds per PR: 0.34 (n=6)
   total dollars per PR: 0.85 (n=6)
-  mean dollars per round: 0.57 (n=6)
+  mean dollars per round: 0.51 (n=6)
 Size buckets, median per PR:
-  0-99 lines: n=2; rounds per PR 1.5; total dollars per PR $0.75; mean dollars per round $0.48
-  100-299 lines: n=1; rounds per PR 3.0; total dollars per PR $2.80; mean dollars per round $0.93
-  300-999 lines: n=1; rounds per PR 4.0; total dollars per PR $6.10; mean dollars per round $1.52
-  1000-2999 lines: n=1; rounds per PR 5.0; total dollars per PR $16.60; mean dollars per round $3.32
-  3000+ lines: n=1; rounds per PR 4.0; total dollars per PR $21.00; mean dollars per round $5.25
+  0-149 lines: n=2; rounds per PR 1.5; total dollars per PR $0.75; mean dollars per round $0.48
+  150-399 lines: n=1; rounds per PR 3.0; total dollars per PR $2.80; mean dollars per round $0.93
+  400-799 lines: n=1; rounds per PR 4.0; total dollars per PR $6.10; mean dollars per round $1.52
+  800+ lines: n=2; rounds per PR 5.5; total dollars per PR $18.80; mean dollars per round $3.41
 Within-PR trend, rho of round index against round dollars, PRs with at least 4 rounds:
   PRs with a rho: 3; median rho 0.90; share above zero 100.0%
 
@@ -1479,7 +1486,7 @@ Per-PR rows, sorted by lines then PR number
      9104       260       3       $2.80       $0.93
      9107       610       4       $6.10       $1.52
      9110     1,480       5      $16.60       $3.32
-     9113     3,720       4      $21.00       $5.25
+     9113     3,720       6      $21.00       $3.50
 ```
 
 **When to reach for it.** Answer "does the spend in code-review rounds grow with a PR, and by how much", for example to ground a diff-size threshold on a measurement of round spend. Reach for `review-round-cost` instead for one branch's round-by-round cost, and for `pr-cost` for a PR's whole-branch cost.
