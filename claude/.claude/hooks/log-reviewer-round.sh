@@ -21,8 +21,8 @@
 #     absent one included, is a consult.
 #
 # exits 0 on every path -- an informational hook never denies, and every
-# failure here (no jq, no _lib.sh, unresolvable session id/config
-# dir/repo root, detached HEAD) is a reason to stay quiet rather than
+# failure here (no jq, no _lib.sh, unresolvable config dir/repo root,
+# detached HEAD) is a reason to stay quiet rather than
 # interfere with the tool call already in flight.
 #
 # Known gaps, same list as the gate's own header:

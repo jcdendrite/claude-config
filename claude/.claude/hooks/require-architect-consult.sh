@@ -14,8 +14,8 @@
 #   - Deny on payload failure (malformed JSON, empty stdin, non-object
 #     tool_input, missing _lib.sh, missing jq) -- TestGateHookBehavior
 #     requires this uniformly of every gate.
-#   - Allow on state failure (unusable session id, unresolvable config dir,
-#     unresolvable repo root, detached HEAD) -- this is a cost-and-quality
+#   - Allow on state failure (unresolvable config dir, unresolvable repo
+#     root, detached HEAD) -- this is a cost-and-quality
 #     interruption, not a security control, and an over-firing deny on
 #     unresolvable git state would block legitimate reviewer fan-out.
 #   - A state file absent at the existence check allows.

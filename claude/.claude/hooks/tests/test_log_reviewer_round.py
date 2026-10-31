@@ -615,8 +615,7 @@ class TestLogReviewerRoundConsultReset:
         self, isolated_home, tmp_path
     ):
         """A state path `rm -f --` cannot remove (a non-empty directory) is
-        tolerated: the consult still exits 0, prints nothing and writes the
-        latch."""
+        tolerated."""
         repo = tmp_path / "reset-undeletable"
         _init_repo(repo)
         config_dir = isolated_home / ".claude"
@@ -627,7 +626,7 @@ class TestLogReviewerRoundConsultReset:
         result = _run_hook_raw(self._consult_payload("s-reset-undeletable"), repo, isolated_home)
 
         assert result.returncode == 0
-        assert result.stderr == ""
+        assert (result.stdout, result.stderr) == ("", "")
         assert architect_consult_latch_path(config_dir, repo).exists()
         assert occupant.is_dir()
 

@@ -566,6 +566,19 @@ class TestRound2PilotCap:
             cwd=repo,
         ) == "allow"
 
+    def test_one_recorded_state_repeated_state_allows_under_pilot(self, isolated_home, tmp_path):
+        """At cap=1 under the pilot, a current state equal to the single
+        recorded state (the rest of a parallel reviewer batch, once the first
+        member's recorder has run) allows -- the repeated-state exemption
+        does not depend on the cap."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-one-state-repeat")
+        enable_round2_pilot(isolated_home / ".claude")
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-repeat", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
     def test_empty_state_file_allows_under_pilot(self, isolated_home, tmp_path):
         """No recorded state yet -- even under cap=1, allow without paying
         for the current state's own hash (the below-cap fast path is
