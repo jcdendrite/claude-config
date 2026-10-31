@@ -156,7 +156,7 @@ Flag these on a hook PR:
   - `turn-gate` on PreToolUse `SubagentHandback`: `hookSpecificOutput.permissionDecision`, either `deny`, or `allow` with an `updatedInput` that differs from the call's input only by hook-written text prepended to `message`.
   - Flag any other `updatedInput`, whatever the hook, tool or field.
   - The harness routes on those exact literal keys for both shapes, so a typo silently no-ops.
-  - `gate` and `turn-gate` are distinct contracts, and `turn-gate`'s shape follows its event; do not test or review one as though it were the other.
+  - `gate` and `turn-gate` are distinct contracts; do not test or review one as though it were the other.
 - Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated. `SubagentStop` matches on agent type, and PreToolUse `SubagentHandback` matches on tool name.
 - Scope is narrow enough to avoid false positives: matcher + internal filter + repo-url guard exclude operations outside the stated purpose; header documents what the hook deliberately does NOT gate.
 - Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn or a lost report, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).

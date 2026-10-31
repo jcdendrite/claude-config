@@ -6,14 +6,9 @@
 
 ## Decision
 
-One fail-open hook, `turn-gate` class, runs one evaluator (`evaluate-code-writer-self-review.py`) from two registrations. It reads the writer's own transcript and checks:
+One fail-open hook, `turn-gate` class, runs one evaluator (`evaluate-code-writer-self-review.py`) from two registrations. It reads the writer's own transcript and checks the R1-R5 items listed in the evaluator's module docstring.
 
-- every reviewer file the ledger names was Read in this dispatch;
-- every reviewer the changed paths require has a ledger line and a Read;
-- at least one Read-backed ledger line exists whenever a path changed;
-- a `git diff` or a Read of a changed path follows the last edit.
-
-A return that lacks any of these is sent back once per report cycle. The second return goes through. The hook never judges whether an angle was genuinely applied, because that is not observable.
+A return that lacks any of those items is sent back once per report cycle. The second return goes through. The hook never judges whether an angle was genuinely applied, because that is not observable.
 
 ## Two entry points, chosen from a probe
 
@@ -39,7 +34,6 @@ The registrations and the script therefore behave as follows.
 - Neither registration carries `onFailure`, and the hook never exits 2.
 - Both registrations set `"timeout": 20` seconds.
 - The in-script worst case is 14 seconds: two capped calls, each 5 seconds plus a 2-second kill grace. So the in-script cap fires and logs first.
-- The hook omits `set -e`, because an aborting command's own status could be 2, which blocks on both events.
 - Every handled failure allows. The only blocking output is the once-per-cycle send-back, emitted after its marker is claimed.
 - The threat-model tier framework covers `gate` hooks only (see `docs/hooks.md` § "Threat-model tiers"), so the hook takes no tier row. It is a workflow check for a cooperative writer, not a security boundary.
 
@@ -97,12 +91,12 @@ This section is the single home for the log vocabulary. The hook appends to `<co
 |---|---|---|---|
 | `clean` | No item is missing. A leftover marker is removed. | Yes, when `dropped` is above 0: those paths were not checked. | None. |
 | `sent-back` | An item is missing and the marker was claimed, so the deny or block went out. | No | None. One per incomplete cycle is expected. |
-| `passed-flagged` | PreToolUse arm, marker already spent, items still missing. The report went through with the `SELF-REVIEW INCOMPLETE (hook-verified)` prefix. | No | Treat the diff as not self-reviewed. |
-| `passed-labeled` | SubagentStop arm, marker already spent, items still missing. The report starts with the `SELF-REVIEW INCOMPLETE` label the send-back asked for. | No | Treat the diff as not self-reviewed. |
-| `passed-unlabeled` | Same as `passed-labeled`, but the report has no label. | Yes: no hook-authored line reaches the parent. | Treat the diff as not self-reviewed. |
-| `passed-unflaggable` | PreToolUse arm, marker already spent, items still missing, and `message` is not a string. The call went through unchanged. | Yes: the prefix could not be written. | Treat the diff as not self-reviewed. |
+| `passed-flagged` | PreToolUse arm, marker already spent, items still missing. The report went through with the `SELF-REVIEW INCOMPLETE (hook-verified)` prefix. | No | None. |
+| `passed-labeled` | SubagentStop arm, marker already spent, items still missing. The report starts with the `SELF-REVIEW INCOMPLETE` label the send-back asked for. | No | None. |
+| `passed-unlabeled` | Same as `passed-labeled`, but the report has no label. | Yes: no hook-authored line reaches the parent. | None. |
+| `passed-unflaggable` | PreToolUse arm, marker already spent, items still missing, and `message` is not a string. The call went through unchanged. | Yes: the prefix could not be written. | None. |
 | `not-owned` | SubagentStop arm, and the transcript holds a `SubagentHandback` call of any outcome. The PreToolUse arm owns that cycle. | No | None. |
-| `allowed-continuation` | SubagentStop arm with `stop_hook_active` true, no marker, items missing. The hook never blocks a continuation. | Yes: an incomplete return is not sent back. | Treat the diff as not self-reviewed. |
+| `allowed-continuation` | SubagentStop arm with `stop_hook_active` true, no marker, items missing. The hook never blocks a continuation. | Yes: an incomplete return is not sent back. | None. |
 | `allowed-no-repo-path` | The writer made edits, none of which sits in a repository or still exists. | Yes: the path-based checks do not run for those paths, but a ledger name with no Read is still sent back. | Project outside git: check that a `.git` entry sits above the edited path. Deleted path: none. |
 | `allowed-no-transcript` | The writer's transcript file was not found. | Yes | Check that the payload still carries `agent_transcript_path` (SubagentStop) or `transcript_path` (PreToolUse) after a Claude Code upgrade, and that the writer's transcript still sits at `subagents/agent-<agent id>.jsonl` beside the session transcript. |
 | `allowed-unparsed-transcript` | The transcript did not decode as expected. See the conditions below the table. | Yes | The transcript record shape changed. Compare it with the fixture under `claude/.claude/hooks/tests/fixtures/code-writer-self-review/`. |

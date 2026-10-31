@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Decide whether a `code-writer` return carries evidence of its self-review.
 
-Co-located helper of send-back-skipped-self-review.sh, which runs it with the
-hook payload on stdin and the arguments `<agent_id> <marker_dir> <log_path>`.
+Co-located helper of send-back-skipped-self-review.sh.
 The evaluator reads the writer's own transcript and checks, with no git
 invocation:
 
@@ -12,12 +11,6 @@ invocation:
     R3  every reviewer the ledger names has a Read
     R4  every R1 reviewer has a ledger line and a Read
     R5  a `git diff` or a Read of a changed path follows the last edit
-
-stdout carries the hook envelope or nothing. Exit 0 means stdout is the hook's
-output. Exit 1 means an evaluator error, after which the caller prints
-nothing. The send-back is claimed once per cycle through a marker directory
-(`<marker_dir>/<agent_id>`) shared by the PreToolUse `SubagentHandback` arm
-and the SubagentStop arm.
 
 Design record: docs/design-decisions/code-writer-self-review-send-back.md.
 """
@@ -330,7 +323,6 @@ def scan_transcript(transcript_lines):
 
 
 def has_message_content_record(transcript_lines):
-    """A transcript with no such record is in a shape the extractor does not know."""
     for raw_line in transcript_lines:
         try:
             record = json.loads(raw_line)
@@ -589,7 +581,9 @@ def build_reason(items, unrecognized_count, event):
     lines.append("Accepted ledger names: " + ", ".join(ACCEPTED_REVIEWERS) + ".")
     lines.append(f"Ledger names not recognized: {unrecognized_count}.")
     request = (
-        "Then give the complete report again in the Return format (the One line summary, "
+        "Then, if you edit a file while finishing these items, re-read its diff "
+        "(`git diff -- <paths>` or a Read of the changed path) before you hand back. "
+        "Give the complete report again in the Return format (the One line summary, "
         "Self-review and Still uncertain included), because only the final report reaches the parent."
     )
     if event == "PreToolUse":
@@ -611,7 +605,6 @@ def build_reason(items, unrecognized_count, event):
 
 
 def claim_marker(marker_dir, agent_id):
-    """Claim the one send-back for this cycle. Returns None on success, else a verdict."""
     try:
         os.makedirs(marker_dir, exist_ok=True)
     except OSError:
@@ -777,10 +770,7 @@ def run(payload, agent_id, marker_dir, log_path, stdout):
             if not isinstance(message, str):
                 record("passed-unflaggable", assessment)
                 return
-            prefix = (
-                f"{INCOMPLETE_LABEL} (hook-verified): {items_summary(assessment.items)}. "
-                "Treat this diff as not self-reviewed.\n\n"
-            )
+            prefix = f"{INCOMPLETE_LABEL} (hook-verified): {items_summary(assessment.items)}.\n\n"
             updated_input = dict(tool_input)
             updated_input["message"] = prefix + message
             stdout.write(json.dumps(pretooluse_allow_envelope(updated_input)))

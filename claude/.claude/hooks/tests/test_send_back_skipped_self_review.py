@@ -132,7 +132,6 @@ def test_reviewer_name_for_read_path_credits_no_lookalike(lookalike_path):
         ("a.py", "# note", True),
         ("a.py", '"""Module docstring."""', True),
         ("a.py", "'''text", True),
-        # A line that starts with a delimiter counts even when it only closes a string or continues with code.
         ("a.py", '"""', True),
         ("a.py", '    """', True),
         ("a.py", '""")', True),
@@ -1554,9 +1553,7 @@ def test_flagged_prefix_names_the_missing_items_and_the_send_back_reason_counts_
 
     reason = first.envelope["hookSpecificOutput"]["permissionDecisionReason"]
     updated_message = second.envelope["hookSpecificOutput"]["updatedInput"]["message"]
-    assert updated_message.startswith(
-        f"SELF-REVIEW INCOMPLETE (hook-verified): {TWO_MISSING_ITEMS_SUMMARY}. Treat this diff as not self-reviewed.\n\n"
-    )
+    assert updated_message == f"SELF-REVIEW INCOMPLETE (hook-verified): {TWO_MISSING_ITEMS_SUMMARY}.\n\n" + report
     assert "Ledger names not recognized: 3." in reason
     assert first.fields["unrecognized"] == "3"
 

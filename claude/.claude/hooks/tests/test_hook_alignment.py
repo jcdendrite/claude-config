@@ -474,8 +474,9 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     main-hooks-dir hook, that plugin's own hooks/hooks.json for a
     plugin-dir hook.
 
-    hook-class: gate declares intent to fire on PreToolUse (see
-    TestHookClassHeader.test_hook_class_value_valid's docstring above), and
+    hook-class: gate declares intent to fire on PreToolUse (see the
+    hook-class bullets under the "**`# hook-class:` header**" bullet in
+    plugins/claude-hook-review/skills/claude-hook-review/SKILL.md), and
     Layer 2's behavior checks (TestGateHookBehavior) assume the hook
     actually receives a PreToolUse payload — neither catches a gate hook
     left unregistered after a rename or a config edit that drops its entry.
@@ -1831,21 +1832,8 @@ class TestHookClassHeader:
     def test_hook_class_value_valid(self, hook: Path) -> None:
         """hook-class value must be 'gate', 'informational', 'turn-gate', or 'batch-gate'.
 
-        'gate' fires PreToolUse and may deny a tool call. A PreToolUse
-        SubagentHandback hook is 'turn-gate', not 'gate'. 'informational'
-        fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
-        'turn-gate' fires where an agent's run ends: Stop, SubagentStop or
-        PreToolUse SubagentHandback.
-
-        Its output shape follows the event: top-level decision "block" on
-        Stop and SubagentStop, and hookSpecificOutput.permissionDecision on
-        SubagentHandback, where the send-back is a deny of that call.
-
-        It is a separate value from 'gate' because it sends the agent back
-        instead of guarding a tool call, so Layer 2's PreToolUse-specific
-        behavior checks (e.g. test_emit_deny_defined_before_lib_source) do not
-        apply to it. 'informational' would be a false label on a hook that
-        blocks.
+        The hook-class bullets in plugins/claude-hook-review/skills/claude-hook-review/SKILL.md
+        define 'gate', 'informational' and 'turn-gate'.
 
         'batch-gate' fires on PostToolBatch and may stop the agentic loop
         before the next model call (exit 2, reason on stderr).
