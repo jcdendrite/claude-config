@@ -13,8 +13,8 @@
 # would be noise. The agent re-checks at any time by invoking
 # /ready-for-review (Checkpoint 2) or via a fresh session.
 #
-# Detection primitive (same recipe used at all three checkpoints — see
-# git-feature-branch-sync/SKILL.md §"Detecting divergence"):
+# Detection primitive. The hook measures against the default branch only.
+# It never reads the stack-base key that branch-divergence-status.sh reads.
 #   git rev-list --count HEAD..origin/<default>   → behind count
 #   git merge-tree --write-tree origin/<default> HEAD  → trial merge
 # The trial-merge line is omitted in the stale-ref fallback (no

@@ -688,7 +688,7 @@ class TestDenyPiiInCommits:
         repo = tmp_path / "no-commits-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         _stage(repo, "f.txt", "x\nclean\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo) == "allow"
@@ -704,7 +704,7 @@ class TestDenyPiiInCommits:
         repo = tmp_path / "no-commits-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         _stage(repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo)
@@ -1822,7 +1822,7 @@ class TestDenyPiiInCommits:
         conflicted file, never its real content. This is a git primitive
         fact, pinned separately by
         test_git_diff_cached_against_unresolved_conflict_git_primitive_fact
-        in test_lib.py. This hook's scan sees the same marker text, not the
+        in test_lib_gate_diff_base.py. This hook's scan sees the same marker text, not the
         conflicted file's actual content, so it allows here. Git's own "you
         have not concluded your merge" error is what actually stops the
         commit, not this scanner."""

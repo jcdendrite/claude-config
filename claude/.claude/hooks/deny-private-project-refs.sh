@@ -213,6 +213,10 @@
 #   filter drops path headers.
 # - The hook never reads the current branch name, which `git push` and a
 #   `gh pr create` without `--head` publish.
+# - The hook never reads the `branch.<branch>.gh-merge-base` key, which a
+#   `gh pr create` without `--base` publishes as the PR's base when the key is
+#   set. GitHub accepts a PR only against a branch that already exists in the
+#   PR's base repository, so that base name is already visible there.
 # - Surfaces this hook never scans (such as `gh pr comment` and writing files)
 #   are listed in
 #   `docs/private-project-redaction.md` § "Opting in another repository".

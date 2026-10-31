@@ -8,13 +8,15 @@ transcript_analysis and loads no shim copy may be missing from TEST_FILES, so
 a newly converted file keeps the coverage above instead of going unchecked
 silently. Committed as a permanent test rather than run once by hand, so a
 later edit that reintroduces a stale reference, or drops a converted file off
-the list, still fails CI. Scope stays those modules and test files; no
-earlier package module carries an equivalent check yet.
+the list, still fails CI. Scope is those modules, those test files, and the
+shim-loading test files. No earlier package module carries an equivalent check
+yet.
 """
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import TypeGuard
 
 from helpers import REPO_ROOT
 
@@ -105,6 +107,13 @@ TEST_FILES = (
     "test_transcript_edit_format.py",
     "test_transcript_instrument_authoring.py",
     "test_transcript_analysis.py",
+    "test_transcript_cost.py",
+    "test_transcript_review_rounds.py",
+    "test_transcript_cache_rebuild_ttl_rules.py",
+    "test_transcript_ledger_common.py",
+    "test_transcript_pr_cost_gh.py",
+    "test_transcript_pr_cost_export.py",
+    "test_transcript_cache_rebuild.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
@@ -391,14 +400,14 @@ def test_test_files_reference_only_real_module_attributes():
     on a real module raises AttributeError at collection or call time, not merely a failed
     assertion."""
     package_names = _package_module_names()
+    top_level_names_by_module = {module: _top_level_names(PACKAGE_DIR / f"{module}.py") for module in package_names}
     for filename in TEST_FILES:
         tree = ast.parse((TESTS_DIR / filename).read_text())
         reads = _package_module_attribute_reads(tree, package_names) + _mod_prefixed_module_attribute_reads(
             tree, package_names
         )
         for module_name, node in reads:
-            names = _top_level_names(PACKAGE_DIR / f"{module_name}.py")
-            assert node.attr in names, (
+            assert node.attr in top_level_names_by_module[module_name], (
                 f"{filename} reads {module_name}.{node.attr}, which {module_name}.py does not bind "
                 f"at module level -- stale rename or typo"
             )
@@ -468,18 +477,22 @@ def _imports_package(tree: ast.Module) -> bool:
     return False
 
 
+def _called_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _is_spec_from_file_location_call(node: ast.AST) -> TypeGuard[ast.Call]:
+    return isinstance(node, ast.Call) and _called_name(node) == "spec_from_file_location"
+
+
 def _calls_spec_from_file_location(tree: ast.Module) -> bool:
     """True if tree calls spec_from_file_location, as a bare name or as an attribute (e.g.
     `importlib.util.spec_from_file_location(...)`, the shim loader's own call shape)."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Name) and func.id == "spec_from_file_location":
-            return True
-        if isinstance(func, ast.Attribute) and func.attr == "spec_from_file_location":
-            return True
-    return False
+    return any(_is_spec_from_file_location_call(node) for node in ast.walk(tree))
 
 
 def test_loader_free_package_importing_test_files_are_in_test_files():
@@ -494,3 +507,121 @@ def test_loader_free_package_importing_test_files_are_in_test_files():
     assert package_importing_loader_free, "expected at least one loader-free package-importing test file"
     missing = sorted(package_importing_loader_free - set(TEST_FILES))
     assert not missing, f"{missing} import transcript_analysis without loading the shim but are missing from TEST_FILES"
+
+
+SHIM_COPY_ALLOWED_READS = frozenset({"build_parser", "main"})
+_SCOPE_BODY_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _module_scope_nodes(tree: ast.Module) -> list[ast.AST]:
+    found: list[ast.AST] = []
+    pending = list(ast.iter_child_nodes(tree))
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        if not isinstance(node, _SCOPE_BODY_NODES):
+            pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _contains_string_constant(expression: ast.AST, text: str) -> bool:
+    return any(isinstance(node, ast.Constant) and node.value == text for node in ast.walk(expression))
+
+
+def _loads_spec_named_transcript_analysis(call: ast.Call) -> bool:
+    first_argument = call.args[0] if call.args else None
+    return isinstance(first_argument, ast.Constant) and first_argument.value == "transcript_analysis"
+
+
+def _locates_shim_script(call: ast.Call, module_assignments: dict[str, ast.expr]) -> bool:
+    location_arguments = call.args[1:2] + [keyword.value for keyword in call.keywords if keyword.arg == "location"]
+    for argument in location_arguments:
+        bound_values = [
+            module_assignments[node.id]
+            for node in ast.walk(argument)
+            if isinstance(node, ast.Name) and node.id in module_assignments
+        ]
+        if any(_contains_string_constant(candidate, "transcript-analysis.py") for candidate in [argument, *bound_values]):
+            return True
+    return False
+
+
+def _module_assignments(module_nodes: list[ast.AST]) -> dict[str, ast.expr]:
+    return {
+        target.id: node.value
+        for node in module_nodes
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+
+def _shim_copy_names(module_nodes: list[ast.AST]) -> set[str]:
+    return {
+        target.id
+        for node in module_nodes
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and _called_name(node.value) == "module_from_spec"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+
+def _shim_copy_uses(tree: ast.Module, copy_names: set[str]) -> tuple[int, list[str]]:
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    allowed_reads = 0
+    misuses: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and node.id in copy_names and isinstance(node.ctx, ast.Load)):
+            continue
+        parent = parents[node]
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            if isinstance(parent.ctx, ast.Load) and parent.attr in SHIM_COPY_ALLOWED_READS:
+                allowed_reads += 1
+            else:
+                cause = "read of non-allowed attribute" if isinstance(parent.ctx, ast.Load) else "write or delete"
+                misuses.append(f"{node.lineno}: {node.id}.{parent.attr} ({cause})")
+        elif (
+            isinstance(parent, ast.Call)
+            and parent.args == [node]
+            and not parent.keywords
+            and isinstance(parent.func, ast.Attribute)
+            and parent.func.attr == "exec_module"
+        ):
+            continue
+        else:
+            misuses.append(f"{node.lineno}: bare use of {node.id}")
+    return allowed_reads, misuses
+
+
+def test_shim_copy_reads_only_build_parser_and_main():
+    """A read of any other name couples a test to a shim binding, even one production code also reads."""
+    loads_by_spec_name: dict[str, ast.Module] = {}
+    locates_shim_script: set[str] = set()
+    for path in sorted(TESTS_DIR.glob("test_*.py")):
+        tree = ast.parse(path.read_text())
+        module_nodes = _module_scope_nodes(tree)
+        module_assignments = _module_assignments(module_nodes)
+        spec_calls = [node for node in ast.walk(tree) if _is_spec_from_file_location_call(node)]
+        if any(_loads_spec_named_transcript_analysis(call) for call in spec_calls):
+            loads_by_spec_name[path.name] = tree
+        if any(_locates_shim_script(call, module_assignments) for call in spec_calls):
+            locates_shim_script.add(path.name)
+
+    shim_loading_files = set(loads_by_spec_name)
+    assert shim_loading_files and shim_loading_files == locates_shim_script, (
+        f"files passing the spec name transcript_analysis only: {sorted(shim_loading_files - locates_shim_script)}; "
+        f"files locating transcript-analysis.py only: {sorted(locates_shim_script - shim_loading_files)}; "
+        f"the two sets must be equal and non-empty"
+    )
+
+    violations: list[str] = []
+    for filename, tree in loads_by_spec_name.items():
+        copy_names = _shim_copy_names(_module_scope_nodes(tree))
+        if not copy_names:
+            violations.append(f"{filename} loads a shim copy but assigns no module_from_spec(...) result at module level")
+            continue
+        allowed_reads, misuses = _shim_copy_uses(tree, copy_names)
+        violations.extend(f"{filename}:{misuse}" for misuse in misuses)
+        if not allowed_reads:
+            violations.append(f"{filename} makes no allowed read of build_parser or main through its copy")
+    assert not violations, f"shim copy violations: {violations}"

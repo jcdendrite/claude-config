@@ -6,7 +6,7 @@ Every other test in this suite loads these scripts via
 A real `python3 transcript-analysis.py ...` invocation has neither of those --
 it resolves the package purely through `sys.path[0]` (the script's own
 directory, which CPython sets for a directly-invoked script). This is the one
-bootstrap path no `_mod.cmd_*`-style test exercises, and the one a later
+bootstrap path no in-process test exercises, and the one a later
 phase's import changes could break silently while every in-process test still
 passes.
 """

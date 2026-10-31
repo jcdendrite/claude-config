@@ -6,7 +6,8 @@ is bootstrap-project-plugins.sh's own invocation contract, exercised by that
 hook's tests (claude/.claude/hooks/tests/test_bootstrap_project_plugins.py).
 `_lib_missing_plugin_ids` and `_lib_validate_plugin_id`, the shared `_lib.sh`
 helpers this script calls, have their own direct unit tests in
-claude/.claude/hooks/tests/test_lib.py.
+claude/.claude/hooks/tests/test_lib_missing_plugin_ids.py and
+claude/.claude/hooks/tests/test_lib_validate_plugin_id.py.
 """
 from __future__ import annotations
 

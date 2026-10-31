@@ -78,7 +78,7 @@ def _assert_denied(result: subprocess.CompletedProcess) -> None:
 def _init_repo(repo: Path) -> None:
     repo.mkdir()
     _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.email", "t@example.invalid")
     _git(repo, "config", "user.name", "t")
     (repo / "README.md").write_text("seed\n")
     _git(repo, "add", "README.md")

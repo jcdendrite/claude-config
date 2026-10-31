@@ -9,10 +9,10 @@ session transcripts; `mine-pr-comments` reads the authenticated `gh` user's
 inline PR review comments; `mine-szz` and `confirm` read this repo's own git
 history. Every miner writes to the gitignored evals/review_bench/.local/;
 only `confirm` writes to the committed evals/review_bench/defects.json, and
-only for a candidate the engineer approves at its interactive prompt, which
-needs a terminal. `smoke`, `run`, and
-`judge` launch real `claude -p` sessions against real Claude subscription
-auth.
+only for a candidate the engineer approves, either at its interactive prompt
+(which needs a terminal) or through `--answers-file` with
+`--engineer-reviewed-answers` (which does not). `smoke`, `run`, and `judge` launch real `claude -p` sessions
+against real Claude subscription auth.
 
 See evals/README.md's "Review bench" section for usage and the operational
 design: frozen conditions and invalidation, building a later arm, reading
@@ -28,8 +28,9 @@ import stat
 import subprocess
 import sys
 import uuid
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -206,6 +207,7 @@ _CONFIRM_SOURCE_ORDER = ("review-round", "pr-comment", "szz")
 # Inside `--local-dir`, named so the `*_candidates.json` shortlist glob never matches it.
 _CONFIRM_DECLINED_IDS_FILENAME = "confirm_declined_ids.json"
 _CONFIRM_MAX_INVALID_LENS_ENTRIES = 3
+_CONFIRM_UNKNOWN_IDS_SHOWN = 3
 # Sources whose evidence records whether the head is among the PR's own commits.
 _SOURCES_LABELING_HEAD_BRANCH = frozenset({"pr-comment"})
 _HEAD_OUTSIDE_PR_BRANCH_LABEL = " (head is outside the PR branch)"
@@ -220,6 +222,16 @@ _CONFIRM_HEADER = (
 _DECISION_PROMOTE = "y"
 _DECISION_SKIP = "n"
 _DECISION_QUIT = "q"
+_ANSWER_FILE_ANSWERS = (_DECISION_PROMOTE, _DECISION_SKIP)
+_ANSWER_FILE_ROW_KEYS = frozenset({"id", "answer", "description", "lens"})
+_SKIP_ALREADY_APPROVED = "already approved"
+_SKIP_APPROVED_WITH_DIFFERENT_TEXT = "already approved with a different description or lens"
+_SKIP_REJECTED_BY_CHECKS = "rejected by the checks"
+_SKIP_PREVIOUSLY_DECLINED = "previously declined"
+_SKIP_OUTSIDE_SOURCE = "outside --source"
+_SKIP_COULD_NOT_BE_PINNED = "could not be pinned"
+_SKIP_DECLINE_NOT_RECORDED = "decline could not be recorded"
+_SKIP_SAME_LOCATION_AS_ANOTHER_SOURCE = "same location as another source's defect"
 # Neither is a lens name: lens names hold no space.
 _LENS_END_OF_INPUT = "end of input"
 _LENS_GAVE_UP = "gave up"
@@ -231,8 +243,7 @@ def _short_sha(sha: str) -> str:
 
 def _stdin_is_terminal() -> bool:
     """Whether `confirm` may prompt. Tests patch this seam. No environment
-    variable or command-line flag reaches it, so approval needs a real
-    terminal."""
+    variable or command-line flag changes the answer."""
     if sys.stdin is None:
         return False
     try:
@@ -265,6 +276,18 @@ def _print_git_failure_rejection(
         f"({_escape_control_characters(detail)})",
         file=sys.stderr,
     )
+
+
+def _commit_subjects_or_none(candidate) -> list[tuple[str, str]] | None:
+    from review_bench import defects
+
+    try:
+        return defects.commit_subjects(
+            REPO_ROOT, (candidate.head_commit, candidate.fix_commit, candidate.base_commit),
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        _print_git_failure_rejection(_escape_control_characters(candidate.id), "read its commit subjects", exc)
+        return None
 
 
 def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
@@ -521,6 +544,64 @@ def _from_sources_clause(sources: Sequence[str] | None) -> str:
     return f" from source(s) {_source_names(sources)}" if sources else ""
 
 
+def _listed_in_ids_file_clause(ids_file_path: Path | None) -> str:
+    return f" listed in {_escape_control_characters(str(ids_file_path))}" if ids_file_path is not None else ""
+
+
+def _load_ids_file(ids_file_path: Path) -> list[str]:
+    try:
+        text = ids_file_path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ValueError(f"could not be read ({exc})") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"is not UTF-8 text ({exc})") from exc
+    stripped_lines = (line.strip() for line in text.split("\n"))
+    listed_ids = list(dict.fromkeys(line for line in stripped_lines if line and not line.startswith("#")))
+    if not listed_ids:
+        raise ValueError("lists no candidate IDs")
+    return listed_ids
+
+
+def _candidate_skip_reason(
+    candidate_id: str, existing_ids: set[str], rejected_ids: set[str], previously_declined_ids: set[str],
+) -> str | None:
+    if candidate_id in existing_ids:
+        return _SKIP_ALREADY_APPROVED
+    if candidate_id in rejected_ids:
+        return _SKIP_REJECTED_BY_CHECKS
+    if candidate_id in previously_declined_ids:
+        return _SKIP_PREVIOUSLY_DECLINED
+    return None
+
+
+def _print_ids_file_unprompted_note(
+    ids_file_path: Path,
+    listed_ids: Sequence[str],
+    to_prompt: Sequence[tuple],
+    existing_ids: set[str],
+    rejected_ids: set[str],
+    skipped_as_declined_ids: set[str],
+) -> None:
+    prompted_ids = {candidate.id for candidate, _ in to_prompt}
+    reason_counts = Counter(
+        _candidate_skip_reason(candidate_id, existing_ids, rejected_ids, skipped_as_declined_ids) or _SKIP_OUTSIDE_SOURCE
+        for candidate_id in listed_ids
+        if candidate_id not in prompted_ids
+    )
+    if not reason_counts:
+        return
+    reasons = [
+        f"{reason_counts[reason]} {reason}"
+        for reason in (_SKIP_REJECTED_BY_CHECKS, _SKIP_ALREADY_APPROVED, _SKIP_PREVIOUSLY_DECLINED, _SKIP_OUTSIDE_SOURCE)
+        if reason_counts[reason]
+    ]
+    print(
+        f"confirm: {sum(reason_counts.values())} of the {len(listed_ids)} ID(s){_listed_in_ids_file_clause(ids_file_path)} "
+        f"not prompted ({', '.join(reasons)})",
+        file=sys.stderr,
+    )
+
+
 def _print_declined_skip_note(skipped_as_declined: int) -> None:
     if skipped_as_declined:
         print(
@@ -540,8 +621,287 @@ def _cross_source_location(candidate) -> tuple:
     return (candidate.head_commit, candidate.fix_commit, candidate.evidence.get("path"))
 
 
+@dataclass(frozen=True)
+class _AnswerRow:
+    id: str
+    answer: str
+    description: str
+    lens: str
+
+
+def _answer_row(position: int, raw_row, known_ids: set[str]) -> _AnswerRow:
+    from review_bench import defects
+
+    where = f"row {position}"
+    if not isinstance(raw_row, dict):
+        raise ValueError(f"{where} is not a JSON object")
+    unknown_keys = sorted(set(raw_row) - _ANSWER_FILE_ROW_KEYS)
+    if unknown_keys:
+        raise ValueError(f"{where} has unknown key(s) {', '.join(unknown_keys)}")
+    candidate_id = raw_row.get("id")
+    if not isinstance(candidate_id, str):
+        raise ValueError(f"{where} has no string id")
+    if candidate_id not in known_ids:
+        raise ValueError(f"{where} names {candidate_id!r}, which matches no candidate")
+    answer = raw_row.get("answer")
+    if answer not in _ANSWER_FILE_ANSWERS:
+        raise ValueError(f"{where} answer must be one of {', '.join(_ANSWER_FILE_ANSWERS)}")
+    if answer == _DECISION_SKIP:
+        return _AnswerRow(candidate_id, answer, description="", lens="")
+    description = raw_row.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError(f"{where} answers {_DECISION_PROMOTE} with no description")
+    # The prompt reads one line, so a typed description holds no LF.
+    if "\n" in description.strip():
+        raise ValueError(f"{where} answers {_DECISION_PROMOTE} with a description of more than one line")
+    lens = raw_row.get("lens")
+    if not isinstance(lens, str):
+        raise ValueError(f"{where} answers {_DECISION_PROMOTE} with no lens")
+    try:
+        defects._validate_lens(lens)
+    except ValueError as exc:
+        raise ValueError(f"{where}: {exc}") from exc
+    return _AnswerRow(candidate_id, answer, description, lens)
+
+
+def _object_without_repeated_keys(pairs: list[tuple[str, object]]) -> dict:
+    key_counts = Counter(key for key, _ in pairs)
+    repeated_keys = sorted(key for key, count in key_counts.items() if count > 1)
+    if repeated_keys:
+        raise ValueError(f"a JSON object repeats key(s) {', '.join(repeated_keys)}")
+    return dict(pairs)
+
+
+def _load_answers_file(answers_file_path: Path, known_ids: set[str]) -> list[_AnswerRow]:
+    try:
+        parsed = json.loads(
+            answers_file_path.read_text(encoding="utf-8"), object_pairs_hook=_object_without_repeated_keys,
+        )
+    except OSError as exc:
+        raise ValueError(f"could not be read ({exc})") from exc
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        raise ValueError(f"could not be read as JSON ({exc})") from exc
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("is not a non-empty JSON list of answers")
+    rows: list[_AnswerRow] = []
+    seen_ids: set[str] = set()
+    for position, raw_row in enumerate(parsed, start=1):
+        row = _answer_row(position, raw_row, known_ids)
+        if row.id in seen_ids:
+            raise ValueError(f"row {position} repeats {row.id!r}")
+        seen_ids.add(row.id)
+        rows.append(row)
+    return rows
+
+
+def _answers_file_flag_problem(args: argparse.Namespace) -> str | None:
+    if args.answers_file is None:
+        return "--engineer-reviewed-answers applies only with --answers-file" if args.engineer_reviewed_answers else None
+    if args.ids_file is not None:
+        return "--answers-file and --ids-file are mutually exclusive"
+    if args.source or args.include_declined:
+        return "--answers-file does not combine with --source or --include-declined"
+    if not args.engineer_reviewed_answers:
+        return (
+            "--answers-file stands in for the terminal prompt, and --engineer-reviewed-answers states "
+            "that the engineer reviewed every row; pass it to proceed"
+        )
+    return None
+
+
+@dataclass(frozen=True)
+class _RecordedAnswers:
+    appended: list
+    declined_ids_recorded: bool
+    aborted_on_concurrent_edit: bool = False
+
+
+def _record_answers(
+    approved: Sequence,
+    declined_ids: set[str],
+    *,
+    existing: list,
+    defects_path: Path,
+    declined_ids_path: Path,
+    previously_declined_ids: set[str],
+) -> _RecordedAnswers:
+    """An abort on a concurrent edit does not undo the declined-IDs write."""
+    from review_bench import defects
+
+    # A failed write must not cost the engineer the approvals below.
+    # Confirm assumes one run per `--local-dir` at a time, so a concurrent run's declines can be overwritten
+    # and those candidates are asked again.
+    # A crash that truncates the file makes the next run exit 2 at load.
+    declined_ids_recorded = True
+    if declined_ids:
+        try:
+            defects.atomic_write_text(
+                declined_ids_path, json.dumps(sorted(previously_declined_ids | declined_ids), indent=2) + "\n",
+            )
+        except OSError as exc:
+            declined_ids_recorded = False
+            print(
+                f"confirm: could not record the declined IDs in {_escape_control_characters(str(declined_ids_path))} "
+                f"({_escape_control_characters(str(exc))})",
+                file=sys.stderr,
+            )
+
+    # Pinning precedes the write, so no committed defect names commits that
+    # only a deletable branch or a moved PR-head ref holds.
+    appended: list[defects.ConfirmedDefect] = []
+    for defect in approved:
+        try:
+            defects.pin_defect_commits(REPO_ROOT, defect)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _print_git_failure_rejection(_escape_control_characters(defect.id), "pin its fix commit", exc)
+            continue
+        appended.append(defect)
+
+    if appended:
+        # `existing` was read at load time. A difference from the file's
+        # current defects means a concurrent edit landed since then, so this
+        # aborts rather than overwriting with a stale existing+appended set.
+        # A count comparison would miss an add paired with a remove.
+        current = defects.load_confirmed_defects(defects_path)
+        if current != existing:
+            print(
+                f"confirm: aborted -- {_escape_control_characters(str(defects_path))} changed underneath this run "
+                f"(had {len(existing)} defect(s) at load, now has {len(current)}); rerun confirm",
+                file=sys.stderr,
+            )
+            return _RecordedAnswers([], declined_ids_recorded, aborted_on_concurrent_edit=True)
+        defects.save_confirmed_defects(defects_path, existing + appended)
+    return _RecordedAnswers(appended, declined_ids_recorded)
+
+
+def _approved_location(defect) -> tuple:
+    return (defect.head_commit, defect.fix_commit, defect.path)
+
+
+def _approved_cross_source_sibling_id(
+    candidate, approved_by_location: dict[tuple, list[tuple[str, str]]],
+) -> str | None:
+    return next(
+        (
+            approved_id for approved_id, approved_source in approved_by_location.get(_cross_source_location(candidate), ())
+            if approved_source != candidate.source
+        ),
+        None,
+    )
+
+
+def _same_location_skip_note(sibling_id: str, existing_ids: set[str]) -> str:
+    shown_sibling_id = _escape_control_characters(sibling_id)
+    if sibling_id in existing_ids:
+        return f"same head, fix, and path as approved {shown_sibling_id}"
+    return f"same head, fix, and path as {shown_sibling_id}, approved by an earlier row and pending its pin"
+
+
+def _differs_from_committed(committed, answer: _AnswerRow) -> bool:
+    return committed.description.strip() != answer.description.strip() or committed.lens != answer.lens
+
+
+def _confirm_from_answers(
+    answers: Sequence[_AnswerRow],
+    candidates: Sequence,
+    excerpts_by_id: dict[str, str],
+    *,
+    existing: list,
+    existing_ids: set[str],
+    rejected_ids: set[str],
+    previously_declined_ids: set[str],
+    defects_path: Path,
+    declined_ids_path: Path,
+) -> int:
+    """The cross-source sibling check is stricter than the prompt path, which only shows the sibling."""
+    candidates_by_id = {candidate.id: candidate for candidate in candidates}
+    committed_by_id = {committed.id: committed for committed in existing}
+    approved = []
+    approved_by_location: defaultdict[tuple, list[tuple[str, str]]] = defaultdict(list)
+    for committed in existing:
+        approved_by_location[_approved_location(committed)].append((committed.id, committed.source))
+    declined_ids: set[str] = set()
+    skip_reasons: Counter[str] = Counter()
+    unapplied_approvals = 0
+    for answer in answers:
+        skip_reason = _candidate_skip_reason(answer.id, existing_ids, rejected_ids, previously_declined_ids)
+        if skip_reason is None and answer.answer == _DECISION_SKIP:
+            declined_ids.add(answer.id)
+            continue
+        skip_note = None
+        if answer.answer == _DECISION_SKIP and skip_reason == _SKIP_ALREADY_APPROVED:
+            skip_note = "defects.json already holds it; confirm does not remove an approved defect, so edit defects.json by hand"
+        if answer.answer == _DECISION_PROMOTE:
+            if skip_reason == _SKIP_ALREADY_APPROVED and _differs_from_committed(committed_by_id[answer.id], answer):
+                skip_reason = _SKIP_APPROVED_WITH_DIFFERENT_TEXT
+                skip_note = "defects.json already holds it with a different description or lens, and keeps those"
+            elif skip_reason == _SKIP_PREVIOUSLY_DECLINED:
+                skip_note = (
+                    f"previously declined; remove it from {_escape_control_characters(str(declined_ids_path))} "
+                    "or run confirm at a terminal with --include-declined to be asked again"
+                )
+            elif skip_reason is None:
+                candidate = candidates_by_id[answer.id]
+                defect = None
+                if _commit_subjects_or_none(candidate) is not None:
+                    defect = _defect_with_typed_description(candidate, answer.description, excerpts_by_id)
+                sibling_id = _approved_cross_source_sibling_id(candidate, approved_by_location)
+                if defect is None:
+                    skip_reason = _SKIP_REJECTED_BY_CHECKS
+                elif sibling_id is not None:
+                    skip_reason = _SKIP_SAME_LOCATION_AS_ANOTHER_SOURCE
+                    skip_note = _same_location_skip_note(sibling_id, existing_ids)
+                else:
+                    approved.append(replace(defect, lens=answer.lens))
+                    approved_by_location[_approved_location(defect)].append((defect.id, defect.source))
+        if skip_note is not None:
+            print(f"confirm: skipped {_escape_control_characters(answer.id)} -- {skip_note}", file=sys.stderr)
+        if skip_reason is not None:
+            skip_reasons[skip_reason] += 1
+            if answer.answer == _DECISION_PROMOTE and skip_reason != _SKIP_ALREADY_APPROVED:
+                unapplied_approvals += 1
+
+    recorded = _record_answers(
+        approved, declined_ids, existing=existing, defects_path=defects_path,
+        declined_ids_path=declined_ids_path, previously_declined_ids=previously_declined_ids,
+    )
+    for defect in recorded.appended:
+        print(
+            f"confirm: approved {_escape_control_characters(defect.id)} [{_escape_control_characters(defect.lens)}] "
+            f"(base {_short_sha(defect.base_commit)}, head {_short_sha(defect.head_commit)}, "
+            f"fix {_short_sha(defect.fix_commit)}, "
+            f"{_escape_control_characters(defect.path)}): {_escape_control_characters(defect.description)}",
+            file=sys.stderr,
+        )
+    if recorded.declined_ids_recorded:
+        for declined_id in sorted(declined_ids):
+            print(f"confirm: declined {_escape_control_characters(declined_id)}", file=sys.stderr)
+    if recorded.aborted_on_concurrent_edit:
+        return 1
+    pin_failures = len(approved) - len(recorded.appended)
+    skip_reasons[_SKIP_COULD_NOT_BE_PINNED] += pin_failures
+    unapplied_approvals += pin_failures
+    declined_count = len(declined_ids)
+    if not recorded.declined_ids_recorded:
+        skip_reasons[_SKIP_DECLINE_NOT_RECORDED] += declined_count
+        declined_count = 0
+    skipped = sum(skip_reasons.values())
+    reasons = ", ".join(f"{count} {reason}" for reason, count in skip_reasons.items() if count)
+    print(
+        f"confirm: approved {len(recorded.appended)}, declined {declined_count}, skipped {skipped}"
+        f"{f' ({reasons})' if skipped else ''}",
+        file=sys.stderr,
+    )
+    return 2 if unapplied_approvals or not recorded.declined_ids_recorded else 0
+
+
 def cmd_confirm(args: argparse.Namespace) -> int:
     from review_bench import defects
+
+    flag_problem = _answers_file_flag_problem(args)
+    if flag_problem:
+        print(f"confirm: {flag_problem} -- nothing written", file=sys.stderr)
+        return 2
 
     local_dir = Path(args.local_dir)
     candidates: list[defects.Candidate] = []
@@ -574,6 +934,44 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         )
         return 2
 
+    ids_file_path = Path(args.ids_file) if args.ids_file is not None else None
+    listed_ids: list[str] = []
+    if ids_file_path is not None:
+        try:
+            listed_ids = _load_ids_file(ids_file_path)
+        except ValueError as exc:
+            print(
+                f"confirm: {_escape_control_characters(str(ids_file_path))} "
+                f"{_escape_control_characters(str(exc))} -- fix it or drop --ids-file and rerun; nothing prompted",
+                file=sys.stderr,
+            )
+            return 2
+        known_ids = {c.id for c in candidates}
+        unknown_ids = [candidate_id for candidate_id in listed_ids if candidate_id not in known_ids]
+        if unknown_ids:
+            shown_ids = ", ".join(
+                _escape_control_characters(candidate_id) for candidate_id in unknown_ids[:_CONFIRM_UNKNOWN_IDS_SHOWN]
+            )
+            elision = ", ..." if len(unknown_ids) > _CONFIRM_UNKNOWN_IDS_SHOWN else ""
+            print(
+                f"confirm: {_escape_control_characters(str(ids_file_path))} lists {len(unknown_ids)} ID(s) "
+                f"that match no candidate ({shown_ids}{elision}) -- fix it or drop --ids-file and rerun; nothing prompted",
+                file=sys.stderr,
+            )
+            return 2
+
+    answers: list[_AnswerRow] | None = None
+    if args.answers_file is not None:
+        try:
+            answers = _load_answers_file(Path(args.answers_file), {c.id for c in candidates})
+        except ValueError as exc:
+            print(
+                f"confirm: {_escape_control_characters(args.answers_file)} "
+                f"{_escape_control_characters(str(exc))} -- fix it and rerun; nothing written",
+                file=sys.stderr,
+            )
+            return 2
+
     passing: list[tuple[defects.Candidate, defects.ConfirmedDefect]] = []
     rejected = 0
     rejected_ids: set[str] = set()
@@ -590,19 +988,41 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         else:
             passing.append((candidate, defect))
 
-    # The sources, and the declined IDs, narrow only what is prompted. Every candidate above
+    if answers is not None:
+        return _confirm_from_answers(
+            answers, candidates, excerpts_by_id, existing=existing, existing_ids=existing_ids,
+            rejected_ids=rejected_ids, previously_declined_ids=previously_declined_ids,
+            defects_path=defects_path, declined_ids_path=declined_ids_path,
+        )
+
+    # The sources, the ids file, and the declined IDs, narrow only what is prompted. Every candidate above
     # still loaded, passed the checks, and fed `excerpts_by_id`.
-    from_selected_sources = [(c, d) for c, d in passing if not args.source or c.source in args.source]
+    position_in_ids_file = {candidate_id: position for position, candidate_id in enumerate(listed_ids)}
+    in_selected_scope = [
+        (c, d) for c, d in passing
+        if (not args.source or c.source in args.source) and (ids_file_path is None or c.id in position_in_ids_file)
+    ]
+    if ids_file_path is not None:
+        in_selected_scope.sort(key=lambda pair: position_in_ids_file[pair[0].id])
     to_prompt = [
-        (c, d) for c, d in from_selected_sources
+        (c, d) for c, d in in_selected_scope
         if args.include_declined or c.id not in previously_declined_ids
     ]
+    skipped_as_declined_ids = {
+        c.id for c, _ in in_selected_scope if c.id in previously_declined_ids and not args.include_declined
+    }
+    skipped_as_declined = len(skipped_as_declined_ids)
     # No override: a rejected entry is never written, on this or any later run,
     # until the engineer edits its own .local/ description and reruns confirm.
     if not _stdin_is_terminal():
-        _print_declined_skip_note(len(from_selected_sources) - len(to_prompt))
+        _print_declined_skip_note(skipped_as_declined)
+        if ids_file_path is not None:
+            _print_ids_file_unprompted_note(
+                ids_file_path, listed_ids, to_prompt, existing_ids, rejected_ids, skipped_as_declined_ids,
+            )
         print(
-            f"confirm: {len(to_prompt)} candidate(s){_from_sources_clause(args.source)} awaiting the engineer at a terminal, "
+            f"confirm: {len(to_prompt)} candidate(s){_from_sources_clause(args.source)}"
+            f"{_listed_in_ids_file_clause(ids_file_path)} awaiting the engineer at a terminal, "
             f"{rejected} rejected -- "
             "nothing written or pinned; rerun confirm from an interactive terminal to approve",
             file=sys.stderr,
@@ -616,15 +1036,20 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     print(_CONFIRM_HEADER.format(count=len(to_prompt)), file=sys.stderr)
     if args.source:
         print(f"confirm: prompting only for source(s) {_source_names(args.source)}", file=sys.stderr)
-    _print_declined_skip_note(len(from_selected_sources) - len(to_prompt))
+    if ids_file_path is not None:
+        print(
+            f"confirm: prompting only for the IDs{_listed_in_ids_file_clause(ids_file_path)}, in that order",
+            file=sys.stderr,
+        )
+    _print_declined_skip_note(skipped_as_declined)
+    if ids_file_path is not None:
+        _print_ids_file_unprompted_note(
+            ids_file_path, listed_ids, to_prompt, existing_ids, rejected_ids, skipped_as_declined_ids,
+        )
     try:
         for candidate, defect in to_prompt:
-            try:
-                subjects = defects.commit_subjects(
-                    REPO_ROOT, (candidate.head_commit, candidate.fix_commit, candidate.base_commit),
-                )
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                _print_git_failure_rejection(_escape_control_characters(candidate.id), "read its commit subjects", exc)
+            subjects = _commit_subjects_or_none(candidate)
+            if subjects is None:
                 rejected += 1
                 rejected_ids.add(candidate.id)
                 continue
@@ -681,52 +1106,14 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         print("confirm: interrupted -- nothing written or pinned", file=sys.stderr)
         return 128 + getattr(exc, "signum", signal.SIGINT)
 
-    # Only a normal end of the prompt loop records answers, so Ctrl-C above leaves the file as it was.
-    # A failed write must not cost the engineer the approvals below.
-    # Confirm assumes one run per `--local-dir` at a time, so a concurrent run's declines can be overwritten
-    # and those candidates are asked again.
-    # A crash that truncates the file makes the next run exit 2 at load.
-    if declined_ids:
-        try:
-            defects.atomic_write_text(
-                declined_ids_path, json.dumps(sorted(previously_declined_ids | declined_ids), indent=2) + "\n",
-            )
-        except OSError as exc:
-            print(
-                f"confirm: could not record the declined IDs in {_escape_control_characters(str(declined_ids_path))} "
-                f"({_escape_control_characters(str(exc))})",
-                file=sys.stderr,
-            )
-
-    # Pinned after the prompt loop and only for approved candidates, so a
-    # skipped or interrupted candidate leaves no ref. Pinning precedes the
-    # write, so no committed defect names commits that only a deletable
-    # branch or a moved PR-head ref holds.
-    appended: list[defects.ConfirmedDefect] = []
-    for defect in approved:
-        try:
-            defects.pin_defect_commits(REPO_ROOT, defect)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            _print_git_failure_rejection(_escape_control_characters(defect.id), "pin its fix commit", exc)
-            rejected += 1
-            continue
-        appended.append(defect)
-
-    if appended:
-        # `existing` was read at load time. A difference from the file's
-        # current defects means a concurrent edit landed during the prompts,
-        # so this aborts rather than overwriting with a stale
-        # existing+appended set. A count comparison would miss an add paired
-        # with a remove.
-        current = defects.load_confirmed_defects(defects_path)
-        if current != existing:
-            print(
-                f"confirm: aborted -- {defects_path} changed underneath this run "
-                f"(had {len(existing)} defect(s) at load, now has {len(current)}); rerun confirm",
-                file=sys.stderr,
-            )
-            return 1
-        defects.save_confirmed_defects(defects_path, existing + appended)
+    recorded = _record_answers(
+        approved, declined_ids, existing=existing, defects_path=defects_path,
+        declined_ids_path=declined_ids_path, previously_declined_ids=previously_declined_ids,
+    )
+    if recorded.aborted_on_concurrent_edit:
+        return 1
+    appended = recorded.appended
+    rejected += len(approved) - len(appended)
     print(f"confirm: {len(appended)} appended, {skipped} skipped, {rejected} rejected", file=sys.stderr)
     return 0
 
@@ -1716,7 +2103,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_confirm = sub.add_parser(
         "confirm",
         help="Check each .local/ candidate, then promote into the committed defects.json the ones the engineer "
-        "approves at a [y/N/q] prompt, asking for a one-line description of any that has none. Needs a terminal.",
+        "approves at a [y/N/q] prompt, asking for a one-line description of any that has none. Needs a "
+        "terminal unless --answers-file supplies the answers.",
     )
     p_confirm.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")
     p_confirm.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
@@ -1727,6 +2115,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_confirm.add_argument(
         "--include-declined", action="store_true",
         help=f"Prompt again for candidates a past run recorded as declined in {_CONFIRM_DECLINED_IDS_FILENAME}.",
+    )
+    p_confirm.add_argument(
+        "--ids-file", default=None, metavar="FILE",
+        help="Prompt only for the candidate IDs this text file lists; see evals/README.md's `confirm` section.",
+    )
+    p_confirm.add_argument(
+        "--answers-file", default=None, metavar="FILE",
+        help="Apply the answers this JSON file holds instead of prompting; needs --engineer-reviewed-answers. "
+        "See evals/README.md's `confirm` section.",
+    )
+    p_confirm.add_argument(
+        "--engineer-reviewed-answers", action="store_true",
+        help="States that the engineer reviewed every row of --answers-file; --answers-file refuses to run without it.",
     )
     p_confirm.set_defaults(func=cmd_confirm)
 

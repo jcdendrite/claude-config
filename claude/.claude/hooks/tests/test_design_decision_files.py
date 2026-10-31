@@ -639,6 +639,7 @@ _SCOPE_CITED_ANGLE_NAMES = (
     "Multi-fact comment structure",
     "PR-defined terminology",
     "Prose at the wrong altitude",
+    "Restated canonical rule",
 )
 
 

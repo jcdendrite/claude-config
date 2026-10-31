@@ -152,8 +152,9 @@ _EXPECTED_COST_BLOCK_COMBINED_ZERO_STATE = (
     "\n"
     "### Subagent spawns\n"
     "\n"
-    "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
-    " counted.\n"
+    "Counts recorded spawn calls in each session's main transcript and its subagent transcripts"
+    " (not those nested in workflow directories), including agents dispatched by another agent,"
+    " such as the reviewers a `review-orchestrator` spawns.\n"
     "\n"
     "No subagent spawns found in scope.\n"
     "\n"
@@ -330,8 +331,9 @@ def _fake_transcript_analysis_source_combined_zero_state() -> str:
             print("### Subagent spawns")
             print()
             print(
-                "Counts main-thread dispatches only; an agent spawned from inside another agent"
-                " is not counted."
+                "Counts recorded spawn calls in each session's main transcript and its subagent"
+                " transcripts (not those nested in workflow directories), including agents dispatched"
+                " by another agent, such as the reviewers a `review-orchestrator` spawns."
             )
             print()
             print("No subagent spawns found in scope.")

@@ -16,6 +16,8 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    _make_blocking_merge_tree_git,
+    _timeout_binary_present,
     absolute_git_dir,
     assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
@@ -69,7 +71,7 @@ def plan_review_repo(tmp_path):
     repo = tmp_path / "plan-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     plans_dir = repo / ".claude" / "plans"
     plans_dir.mkdir(parents=True)
@@ -179,7 +181,7 @@ class TestRequirePlanReview:
         repo = tmp_path / "no-plans"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         assert (
             run_hook(
@@ -195,7 +197,7 @@ class TestRequirePlanReview:
         repo = tmp_path / "empty-plans"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         (repo / ".claude" / "plans").mkdir(parents=True)
         assert (
@@ -221,7 +223,7 @@ class TestRequirePlanReview:
         repo = tmp_path / "historical-plans"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
@@ -268,7 +270,7 @@ class TestRequirePlanReview:
         repo = tmp_path / "historical-plans-call-count"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
@@ -1804,7 +1806,7 @@ def _init_repo_with_plan(root, plan_text: str = PLAN_TEXT):
     """
     root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
     (root / "README.md").write_text("seed\n")
     subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
@@ -2472,31 +2474,6 @@ def _active_plan_files(repo, env_overrides: dict | None = None) -> subprocess.Co
     )
 
 
-def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """For `merge-tree` specifically, writes a partial line to stdout then
-    blocks past the 5s cap; every other subcommand proxies to the real git.
-    Local copy of test_require_code_review.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "merge-tree" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _timeout_binary_present() -> bool:
-    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
-
-
 class TestActivePlanFilesMergeAwareBase:
     """_lib_active_plan_files diffs against _lib_gate_diff_base's resolved
     base instead of the literal HEAD, so a plan file a trusted merge brought
@@ -2519,7 +2496,7 @@ class TestActivePlanFilesMergeAwareBase:
 
         push_clone = tmp_path / "push_clone"
         subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
         (push_clone / ".claude" / "plans" / "shared-plan.md").write_text(
             "# shared plan\n\norigin edit\n"
@@ -2566,7 +2543,7 @@ class TestActivePlanFilesMergeAwareBase:
         no_merge_repo = tmp_path / "no-merge-repo"
         no_merge_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=no_merge_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=no_merge_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=no_merge_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=no_merge_repo, check=True)
         (no_merge_repo / ".claude" / "plans").mkdir(parents=True)
         (no_merge_repo / ".claude" / "plans" / "impl-plan.md").write_text(
@@ -2629,7 +2606,7 @@ def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo")
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     plans_dir = repo / ".claude" / "plans"
     plans_dir.mkdir(parents=True)
@@ -2673,7 +2650,7 @@ def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") 
     repo = tmp_path / name
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     plans_dir = repo / ".claude" / "plans"
     plans_dir.mkdir(parents=True)
@@ -2810,7 +2787,7 @@ def _push_upstream_plan_addition(tmp_path: Path, bare: Path) -> None:
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     plan_path = push_clone / _FIXTURE_PLAN_REL
     plan_path.parent.mkdir(parents=True)

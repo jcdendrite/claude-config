@@ -1431,6 +1431,176 @@ _lib_default_branch_or_guess() {
   return 1
 }
 
+# _lib_print_unusable_stack_base STDERR_PREFIX BRANCH VALUE REASON
+# Prints the one stderr line every stack-base stop uses, and is the one home of
+# its fix text. The line names the script, the key, its value and REASON,
+# gives the fix, and says the engineer runs it, not the agent.
+# BRANCH and VALUE are %q-quoted so a hostile or empty value cannot break the
+# single line or read as blank.
+# Returns 0 always; the caller owns the exit status.
+_lib_print_unusable_stack_base() {
+  local stderr_prefix="$1" branch="$2" value="$3" reason="$4"
+  local key quoted_value
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  printf -v quoted_value '%q' "$value"
+  printf '%s: %s is %s, which cannot be used as the stack base: %s. The engineer runs the fix, not the agent: correct the value with "git config --replace-all %s <stack-base>"; if the stack base merged, rebase this branch onto the branch it merged into with "git rebase --onto origin/<merged-into> <old stack-base commit>", then run "git config --unset-all %s".\n' \
+    "$stderr_prefix" "$key" "$quoted_value" "$reason" "$key" "$key" >&2
+}
+
+# _lib_stack_base_git STDERR_PREFIX CALL_LABEL REPO_ROOT GIT_ARGS...
+# Runs `git -C REPO_ROOT GIT_ARGS...` capped, discarding git's stderr and passing
+# its stdout through. Returns git's status when it is 0 or 1. Any other status (a
+# cap kill included) prints the one read-failure line every stack-base git call
+# shares, naming CALL_LABEL and the status, and returns 2. CALL_LABEL must not hold
+# the key's value.
+_lib_stack_base_git() {
+  local stderr_prefix="$1" call_label="$2" repo_root="$3"
+  shift 3
+  local git_status=0
+  _lib_capped git -C "$repo_root" "$@" 2>/dev/null || git_status=$?
+  case "$git_status" in
+    0 | 1) return "$git_status" ;;
+  esac
+  printf '%s: %s failed (status %s), so the stack-base key was not checked; retry the command, and if it fails again, run that git call by hand to see its error\n' \
+    "$stderr_prefix" "$call_label" "$git_status" >&2
+  return 2
+}
+
+# _lib_configured_stack_base STDERR_PREFIX REPO_ROOT
+# Reads and validates the stack base the engineer set for REPO_ROOT's current branch with
+# `git config branch.<branch>.gh-merge-base <stack-base>`.
+# gh also reads that key when its PR-create command gets no --base.
+# The read is `git config --get` (every config scope) and never touches the network.
+#
+# Exit status:
+# - 0: stdout is "<branch> <stack-base>" on one line, and the split is unambiguous because a branch name holds no space.
+# - 1, empty stdout: no key is set, or HEAD is detached. The caller runs its no-key path.
+# - 2, empty stdout: the key is set but unusable, or git could not be read.
+#   One stderr line prefixed with STDERR_PREFIX has already been written.
+#   - An unusable value gets _lib_print_unusable_stack_base's line.
+#   - A read failure is any `symbolic-ref`, `config` or `check-ref-format` status other than 0 and 1, a cap kill included.
+#     It gets _lib_stack_base_git's line, which names the failed git call and its status and carries no key value or key fix.
+#     It can stop a branch that has no key set.
+#
+# A value is unusable when it:
+# - is empty
+# - starts with `-` or `origin/`
+# - fails `git check-ref-format "refs/heads/<value>"`
+# - holds a character outside [A-Za-z0-9._/-]
+# - is `HEAD`
+# - names the branch itself
+# The `-`, character-set, `origin/` and `HEAD` tests are _lib_stack_base_name_shape's statuses 1 to 4.
+# Any other nonzero status from that check is also unusable, so a status added there fails closed here.
+#
+# Callers capture with `rc=0; out=$(...) || rc=$?`, which suspends `set -e` inside the function, so every status is tested explicitly.
+# A caller treats every status other than 0 and 1 as a stop.
+_lib_configured_stack_base() {
+  local stderr_prefix="$1" repo_root="$2"
+  local head_ref head_status=0 branch key value config_status=0 ref_format_status=0 name_shape_status=0
+  head_ref=$(_lib_stack_base_git "$stderr_prefix" "git symbolic-ref HEAD" "$repo_root" symbolic-ref -q HEAD) || head_status=$?
+  case "$head_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  case "$head_ref" in
+    refs/heads/?*) branch="${head_ref#refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  value=$(_lib_stack_base_git "$stderr_prefix" "git config $key" "$repo_root" config --get "branch.$branch.gh-merge-base") || config_status=$?
+  case "$config_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  if [ -z "$value" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is empty"
+    return 2
+  fi
+  _lib_stack_base_name_shape "$value" || name_shape_status=$?
+  if [ "$name_shape_status" -eq 1 ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with '-'"
+    return 2
+  fi
+  _lib_stack_base_git "$stderr_prefix" "git check-ref-format on the value of $key" "$repo_root" check-ref-format "refs/heads/$value" >/dev/null || ref_format_status=$?
+  case "$ref_format_status" in
+    0) ;;
+    1)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is not a valid branch name"
+      return 2
+      ;;
+    *) return 2 ;;
+  esac
+  case "$name_shape_status" in
+    0) ;;
+    2)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'"
+      return 2
+      ;;
+    3)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with 'origin/'; give the branch name without that prefix"
+      return 2
+      ;;
+    4)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is HEAD, not a branch name"
+      return 2
+      ;;
+    *)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value failed a name check this reader has no message for (status $name_shape_status)"
+      return 2
+      ;;
+  esac
+  if [ "$value" = "$branch" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is this branch itself"
+    return 2
+  fi
+  printf '%s %s\n' "$branch" "$value"
+}
+
+# _lib_stack_base_name_shape NAME
+# Classifies a branch name the caller will pass to git or print in a command the engineer copies. Prints nothing.
+# Exit 0: NAME starts with a character other than `-`, holds only [A-Za-z0-9._/-], does not start with `origin/` and is not `HEAD`.
+# Exit 1: NAME starts with `-`, which git would read as an option.
+# Exit 2: NAME holds a character outside that set.
+# Exit 3: NAME starts with `origin/`, which reads as a remote-tracking ref instead of a branch.
+# Exit 4: NAME is `HEAD`, which a fetch destination would resolve through the `origin/HEAD` symref.
+# The set is narrower than `git check-ref-format`, which accepts shell metacharacters, quotes and bidi controls.
+# The tests run in status order, so the first failing one wins. An empty NAME exits 0, so the caller owns the empty check.
+# The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
+# A caller under `set -e` captures the status with `|| status=$?` or calls it in a conditional context, since statuses 1 to 4 are answers and a bare call aborts the script.
+_lib_stack_base_name_shape() {
+  local name="$1"
+  case "$name" in
+    -*) return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 2 ;;
+    origin/*) return 3 ;;
+    HEAD) return 4 ;;
+  esac
+  return 0
+}
+
+# _lib_open_pr_base REPLY
+# Parses REPLY, the output of `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`.
+# Exit 0 and the base branch on stdout, only for a two-line reply whose first line is
+# `OPEN` and whose second line is non-empty. Exit 1 with empty stdout for every other reply:
+# empty, one line, three or more lines, MERGED, CLOSED, or an empty base.
+_lib_open_pr_base() {
+  local reply="$1"
+  local state base
+  case "$reply" in
+    *$'\n'*) ;;
+    *) return 1 ;;
+  esac
+  state="${reply%%$'\n'*}"
+  base="${reply#*$'\n'}"
+  case "$base" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$state" = "OPEN" ] && [ -n "$base" ] || return 1
+  printf '%s' "$base"
+}
+
 # _lib_git_inprogress_state REPO_ROOT [GITDIR]
 # Detects which git operation, if any, is paused mid-way in REPO_ROOT:
 # rebase, merge, cherry-pick, or revert. Precedence is checked in that

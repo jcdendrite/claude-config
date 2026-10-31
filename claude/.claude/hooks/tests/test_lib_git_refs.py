@@ -324,8 +324,8 @@ def _commit_sentinel_at_ref(repo: Path, ref: str) -> None:
     tmp_index.unlink()
     commit_env = {
         **os.environ,
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
     }
     commit_oid = subprocess.run(
         ["git", "commit-tree", tree_oid, "-m", "sentinel"],
@@ -428,8 +428,8 @@ def _commit_sentinel_tree_at_ref(repo: Path, ref: str) -> None:
     tmp_index.unlink()
     commit_env = {
         **os.environ,
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
     }
     commit_oid = subprocess.run(
         ["git", "commit-tree", tree_oid, "-m", "sentinel tree"],

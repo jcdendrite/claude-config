@@ -3881,7 +3881,7 @@ class TestReviewLedgerSweepWindowFromSettings:
     cleanupPeriodDays setting, floored at 30 days, via clear-stale's
     --dry-run report. This is a thin integration test proving the
     resolved number is plumbed into `find -mtime +N` -- see
-    TestLedgerSweepWindowDays in test_lib.py for the arithmetic itself
+    TestLedgerSweepWindowDays in test_lib_review_ledger.py for the arithmetic itself
     (absent settings file, custom value, below-floor value, malformed
     input)."""
 

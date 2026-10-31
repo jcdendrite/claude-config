@@ -670,7 +670,7 @@ def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
     clone = tmp_path / "base-clone"
     for command in (
         ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
-        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.email", "test@example.invalid"],
         ["git", "-C", str(clone), "config", "user.name", "test"],
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=60)
@@ -758,7 +758,7 @@ def _build_repo_with_pr_ref(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("main\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
@@ -1621,6 +1621,79 @@ def _make_repo_with_remote(tmp_path: Path, default_branch: str = "main") -> tupl
     # Set origin/HEAD so a caller relying on it can resolve the default branch
     subprocess.run(["git", "remote", "set-head", "origin", default_branch], cwd=local, check=True)
     return local, bare
+
+
+_STACKED_BRANCH = "feat/own"
+
+
+def _commit_new_file(repo: Path, file_name: str) -> None:
+    (repo / file_name).write_text(f"{file_name} content\n")
+    subprocess.run(["git", "add", file_name], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"add {file_name}"], cwd=repo, check=True)
+
+
+def _make_stacked_repo(tmp_path: Path, stack_base: str = "stack", *, key_value: str | None = None) -> tuple[Path, Path]:
+    """Three tiers: the default tip, `stack_base` adding base.txt, and
+    _STACKED_BRANCH (checked out) adding own.txt. Both branches are pushed.
+    The branch's gh-merge-base key is set to stack_base unless key_value
+    overrides it."""
+    local, bare = _make_repo_with_remote(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", stack_base], cwd=local, check=True)
+    _commit_new_file(local, "base.txt")
+    subprocess.run(["git", "push", "-q", "origin", stack_base], cwd=local, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", _STACKED_BRANCH], cwd=local, check=True)
+    _commit_new_file(local, "own.txt")
+    subprocess.run(["git", "push", "-q", "origin", _STACKED_BRANCH], cwd=local, check=True)
+    subprocess.run(
+        ["git", "config", f"branch.{_STACKED_BRANCH}.gh-merge-base", stack_base if key_value is None else key_value],
+        cwd=local, check=True,
+    )
+    return local, bare
+
+
+def _shim_call_logging_command(calls_log: Path) -> str:
+    """The shell line a shim script runs first to append its arguments, one per line then a
+    blank line, to calls_log. _read_logged_calls reads that format back."""
+    append_arguments = "for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done; printf '\\n'"
+    return f"{{ {append_arguments}; }} >> {shlex.quote(str(calls_log))}\n"
+
+
+def _read_logged_calls(calls_log: Path) -> list[list[str]]:
+    """The argument list of each call a shim wrote to calls_log, empty when it never ran."""
+    if not calls_log.exists():
+        return []
+    return [call.splitlines() for call in calls_log.read_text().split("\n\n") if call]
+
+
+def _make_gh_pr_view_shim(
+    shim_dir: Path, *, reply: str = "", exit_status: int = 1, stderr_line: str | None = None
+) -> Path:
+    """Write an executable `gh` into shim_dir that answers only
+    `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`, comparing
+    each argument, never a joined string. That call prints `reply` verbatim and
+    exits `exit_status`, after printing `stderr_line` to stderr when it is given.
+    Any other argv exits 1 with no output. Every call appends its arguments, one
+    per line, then a blank line, to the returned log (a call with an empty
+    argument is not representable). Rebuilding the shim clears the log."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    calls_log = shim_dir / "gh-calls.log"
+    reply_file = shim_dir / "gh-reply.txt"
+    calls_log.unlink(missing_ok=True)
+    reply_file.write_bytes(reply.encode())
+    stderr_command = f"printf '%s\\n' {shlex.quote(stderr_line)} >&2\n  " if stderr_line is not None else ""
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(
+        "#!/bin/sh\n"
+        f"{_shim_call_logging_command(calls_log)}"
+        "if [ \"$#\" -eq 6 ] && [ \"$1\" = pr ] && [ \"$2\" = view ] && [ \"$3\" = --json ] \\\n"
+        "  && [ \"$4\" = state,baseRefName ] && [ \"$5\" = --jq ] && [ \"$6\" = '.state, .baseRefName' ]; then\n"
+        f"  {stderr_command}cat {shlex.quote(str(reply_file))}\n"
+        f"  exit {exit_status}\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    gh_shim.chmod(0o755)
+    return calls_log
 
 
 def _make_feature_branch(repo: Path, branch_name: str, return_to: str = "main") -> None:

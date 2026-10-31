@@ -23,7 +23,11 @@ from _config import config_enabled, config_value, schema  # noqa: E402
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
-_OPT_IN_PILOT_KEYS = ["architect_fix_plan_pilot", "review_orchestrator_routing"]
+_OPT_IN_PILOT_KEYS = [
+    "architect_fix_plan_pilot",
+    "review_orchestrator_routing",
+    "architect_disposition_challenge_pilot",
+]
 
 
 def _count_config_keys_psv_rows() -> int:
@@ -87,6 +91,7 @@ class TestSchema:
             "test_selection_tracking": "false",
             "architect_fix_plan_pilot": "false",
             "review_orchestrator_routing": "false",
+            "architect_disposition_challenge_pilot": "false",
             "plugin_bootstrap": "true",
         }
 

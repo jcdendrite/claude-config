@@ -86,7 +86,7 @@ def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) 
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     target = repo / target_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def make_repo_with_file(tmp_path: Path, target_path: str, head_lines: int) -> Pa
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     target = repo / target_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -264,7 +264,7 @@ class TestCheckClaudeMdLength:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         (repo / "README.md").write_text("hello\n")
         subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
@@ -324,7 +324,7 @@ class TestCheckClaudeMdLength:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         (repo / "README.md").write_text("hello\n")
         subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
@@ -554,7 +554,7 @@ class TestCheckClaudeMdLength:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         (repo / "README.md").write_text("hello\n")
         subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
@@ -580,7 +580,7 @@ class TestCheckClaudeMdLength:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         target = repo / CLAUDE_MD_PATH
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -702,7 +702,7 @@ class TestCheckClaudeMdLength:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         (repo / "CLAUDE.md").write_text(make_lines(190))
         (repo / "AGENTS.md").write_text(make_lines(190))
@@ -939,7 +939,7 @@ def _build_clean_merge_growing_claude_md(tmp_path: Path) -> Path:
 
     push_clone = tmp_path / "push_clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
     (push_clone / CLAUDE_MD_PATH).write_text(make_lines(250))
@@ -963,7 +963,7 @@ def _build_conflicted_rebase_with_growing_claude_md(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
     (repo / CLAUDE_MD_PATH).write_text(make_lines(100))
@@ -1033,7 +1033,7 @@ def _build_clean_merge_mode_bit_only_claude_md(tmp_path: Path) -> Path:
 
     push_clone = tmp_path / "push_clone"
     subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     os.chmod(push_clone / CLAUDE_MD_PATH, 0o755)
     subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=push_clone, check=True)

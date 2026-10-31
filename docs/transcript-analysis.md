@@ -63,7 +63,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A stricter `<slug>-*` prefix match is not used because it still collides with a sibling clone like `<repo>-fork`. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
 - **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
-- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*: a subagent that worked in this repo from another repo's session counts under that session's branch, per "Subagent attribution" and the consumer list under `cost`. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. The same holds for the consumers that count spawns from main-thread records only.
+- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*: a subagent that worked in this repo from another repo's session counts under that session's branch, per "Subagent attribution" and the consumer list under `cost`. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. The same holds for the consumers that detect rounds or count spawns from main-thread records only.
 
 The four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected. The slug-collision exception in the first gap is the reverse case, silent over-inclusion: the resolved-scope header's project-dir count comes from `git worktree list`, so it does not change, and `cost --summary` prints no such header.
 
@@ -712,9 +712,9 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 
 These subcommands apply this block, except where the last bullet says otherwise, and this is the only list. Those in the first two bullets also apply "Subagent attribution":
 - `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation.
-- `subagents`, `skill-invocation --include-subagents` and `skill-pair` read sidechain records, so they apply both blocks. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
+- `subagents`, `skill-invocation --include-subagents`, `skill-pair` and `cost-counts` spawn counts apply both blocks. The `cost-counts` spawn counts read sidechain records. `cost-counts` reads the direct `subagents/*.jsonl` files of the sessions it scopes, with no flag to turn that off. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
 - `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
-- `review-round-cost`, `cost-counts` and `subagent-mix` detect rounds and count spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
+- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
 - Round attribution (`review-round-cost`, `cost-counts` round counts, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
 - Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
@@ -1555,8 +1555,8 @@ Data quality
 Always scoped to the active account alone (`config_dir()/projects`), with no `--config-dir` flag of its own — a populated `~/.claude/transcript-config-dirs` contributes nothing here, unlike every other multi-root subcommand in this reference (see "Corpus scope: the declared-roots file" above).
 
 **Scope caveats.**
-- **Main-thread only, both counts.** A round or spawn reached only from inside a dispatched subagent is never counted — matching `review-round-cost`'s own main-thread-only round detection and `subagent-mix`'s own spawn-counting scope.
-- **A `review-orchestrator` dispatch is a `code-review` round.** A main-thread `review-orchestrator` dispatch counts as one `code-review` round. The dispatch itself is one spawn, and the agents it dispatches in turn are not counted as spawns. A halted or never-run dispatch still counts as a round: see the "Rounds that end before a ledger append" bullet under `docs/transcript-analysis.md` § "author-outcome".
+- **Rounds are main-thread only; spawns are not.** A round reached only from inside a dispatched subagent is never counted, matching `review-round-cost`'s own main-thread-only round detection. A spawn made from inside a subagent's transcript is counted.
+- **A `review-orchestrator` dispatch is a `code-review` round.** A main-thread `review-orchestrator` dispatch counts as one `code-review` round. The dispatch itself is one spawn, and so is each agent it dispatches in turn. A halted or never-run dispatch still counts as a round: see the "Rounds that end before a ledger append" bullet under `docs/transcript-analysis.md` § "author-outcome".
 - **Two different branch-attribution models, deliberately.** Round counts use `review-round-cost`'s own carry-forward branch attribution (a round's opening record's `gitBranch`, carried forward when absent); spawn counts use `scope._attributed_branch`. Both apply the "Pre-branch default-branch attribution" block under `cost`, and they still differ only on a round opened on a record with no `gitBranch` of its own.
 - **The two tables render zero-count scope differently, deliberately.** The rounds table always prints all three `REVIEW_SKILLS` rows, zeros included, since a fixed three-row table of zeros is already the more explicit rendering of zero. The spawns table instead prints a `No subagent spawns found in scope.` sentence in place of a table when there is nothing to show, since an all-zero spawns table has no fixed row set to fall back on.
 - **Every disclosed row is re-checked against the allowlist just before it prints.** Each non-withheld agent-type label is asserted, immediately before its own print, to be a member of `_repo_tracked_agent_type_names()` — independent of the disclosure-partitioning check above — so a future regression to a direct, unpartitioned label reuse fails loudly here instead of silently disclosing an untracked `subagent_type`.
@@ -1577,7 +1577,7 @@ Each invocation of a review skill, and each main-thread `review-orchestrator` di
 
 ### Subagent spawns
 
-Counts main-thread dispatches only; an agent spawned from inside another agent is not counted.
+Counts recorded spawn calls in each session's main transcript and its subagent transcripts (not those nested in workflow directories), including agents dispatched by another agent, such as the reviewers a `review-orchestrator` spawns.
 
 | Agent type | Spawns |
 |---|---|
@@ -1679,10 +1679,10 @@ Counts main-thread dispatches only; an agent spawned from inside another agent i
 
 **Report format** (stdout, written once after every stderr line).
 - **Fixed lines.** The first line starts with `*Claude Code spend, ` and the last line is the list-price caveat in underscores. Line 2 reads `One Claude Code account, <N> repositories, generated <date> (UTC)`, where N counts displayed repository groups, not Repository not determined. With one displayed repository it reads `1 repository`, and with none it reads `no repository identified`.
-- **Groups.** One group per resolved repository with a displayed row, ordered by display name (`owner/repo` on github.com, `host/owner/repo` elsewhere), with Repository not determined last. Each group has a bold name line, a code block with the header row and the rows, and an italic subtotal. A repository whose PR list is unavailable has ` (PR list unavailable)` after the bold name. A group whose rows all round to $0.00 is omitted and not counted in N.
-- **Rows and columns.** PR rows come first by number, then review rows (`Rev #N`) by number, then Other. Column widths come from the content of every group, so columns line up across blocks. After the cost comes one space and a two-character marker slot: `+` first for a PR or review row with priced spend dated outside the period, `?` second for a row a fallback-closed window fed. Other takes `?` but never `+`. Every line is right-stripped.
+- **Groups.** One group per resolved repository with a displayed row, ordered by display name (`owner/repo` on github.com, `host/owner/repo` elsewhere), with Repository not determined last. Each group has a bold name line, a code block with the header row and the rows, and an italic subtotal. A blank line precedes every name line and the Total, so a name line never reads as part of the previous group's subtotal. A repository whose PR list is unavailable has ` (PR list unavailable)` after the bold name. A group whose rows all round to $0.00 is omitted and not counted in N.
+- **Rows and columns.** PR rows come first by number, then review rows (`Rev #N`) by number, then Other. Column widths come from each group's displayed rows. After the cost come two spaces and a two-character marker slot: `+` first for a PR or review row with priced spend dated outside the period, `?` second for a row a fallback-closed window fed. Other takes `?` but never `+`. Every line is right-stripped.
 - **Rounding.** Each row converts through `Decimal(str(dollars))` and rounds half-up to the cent. A row that rounds to $0.00 is omitted, and note 10 says so. A group's subtotal is the sum of its displayed rows and the Total is the sum of the subtotals.
-- **Titles.** A title is flattened, backticks become `'`, a review row gets the prefix "Review: ", and a cell over 40 code points becomes its first 39 plus `…`. Width is counted in code points, so wide characters can misalign.
+- **Titles.** A title is flattened, backticks become `'`, a review row gets the prefix "Review: ", and a cell over 32 code points becomes its first 31 plus `…`. Width is counted in code points, so wide characters can misalign.
 - **Notes**, italic lines after the Total, in this order:
   1. `Each row counts only spend dated within this period.` Whenever a table is shown.
   2. `+ Also has spend outside this period, which is not counted here.` When a displayed row carries `+`.
@@ -1699,10 +1699,10 @@ Counts main-thread dispatches only; an agent spawned from inside another agent i
   13. The run's time limit cut short the repository lookup. When a table is shown and a directory was not checked.
   14. The list-price caveat. Always last.
 - **No-table variants.** With no displayed row the report keeps its two header lines, then one sentence in place of the groups and Total, then notes 4 to 8 by their triggers, then the caveat. When no usage-bearing turn, priced or not, is dated in the period, the sentence is `No Claude Code usage was found in this period in the sessions this report covers.` When usage is dated in the period but no row reaches a cent, it is `Claude Code usage was found in this period, but no row's priced spend reaches $0.01.`
-- **Size.** A row is 195 bytes or less when the PR number has at most five digits, the cost is at most `$9,999.99`, and the title is at the 40-code-point cap in 4-byte characters. Nothing bounds a PR number's digits or a repository name's length. Each group adds structural overhead: a name line, two fences, a header row, and a subtotal line. The harness's Bash tool cuts output above 30,000 bytes to its first 2,000 bytes (see `claude-skills/skills/subagent-delegation/REFERENCES.md`, section "Heavy command output — harness truncation and check-suite sizes"), so an account with many repositories or non-ASCII titles can exceed the cut on stdout alone. Stderr has no fixed bound because notice strings have no length cap, and it adds to the total. A cut result has no caveat line, and the skill then presents nothing.
+- **Size.** A row, newline included, is 164 bytes or less when the PR number has at most five digits, the cost is at most `$9,999.99`, and the title is at the title cell cap in 4-byte characters. Nothing bounds a PR number's digits or a repository name's length. Structural overhead for each group is a preceding blank line, a name line, two fences, a header row, and a subtotal line. The Total line also has its own preceding blank line. The harness's Bash tool cuts output above 30,000 bytes to its first 2,000 bytes (see `claude-skills/skills/subagent-delegation/REFERENCES.md`, section "Heavy command output — harness truncation and check-suite sizes"), so an account with many repositories or non-ASCII titles can exceed the cut on stdout alone. Stderr has no fixed bound because notice strings have no length cap, and it adds to the total. A cut result has no caveat line, and the skill then presents nothing.
 - **Underscores.** The failure to watch for is a repository name with a leading or trailing underscore in a segment rendering italic and losing its underscores. This is not verified in Slack, and the sample contains no such name, so the first-use check does not exercise it.
 
-**Titles and branch names (documented limitation).** Third-party PR titles on stdout, and branch names on stderr, share the agent's context with the real figures. The code caps the title cell at 40 code points. It collapses whitespace and deletes control and format characters in titles and in notice strings, and notice strings have no length cap. A branch name in `OTHER BREAKDOWN` is therefore a display form that can differ from the git ref. The skill's prose is the only control on whether the agent acts on that text.
+**Titles and branch names (documented limitation).** Third-party PR titles on stdout, and branch names on stderr, share the agent's context with the real figures. The code caps the title cell (see the Titles bullet above). It collapses whitespace and deletes control and format characters in titles and in notice strings, and notice strings have no length cap. A branch name in `OTHER BREAKDOWN` is therefore a display form that can differ from the git ref. The skill's prose is the only control on whether the agent acts on that text.
 
 **Notices (stderr).** Each notice line reads `period-cost: <TAG>: <text>` and names no filesystem path. Three kinds of untagged helper line can precede the tagged notices. Printing them does not itself change the report's figures.
 - A `period-cost: pr list ... failed (<kind>), ...` line from a failed gh list call. None is printed for `unparseable` or `unexpected payload`. The line usually repeats a `GH UNAVAILABLE` entry, and may have none, because those entries cover only displayed repositories and are capped at 10.
@@ -1767,29 +1767,33 @@ The skill puts every re-run-or-continue notice to the engineer before any fence,
 ````
 *Claude Code spend, 2026-09-01 to 2026-09-30 (UTC)*
 One Claude Code account, 2 repositories, generated 2026-10-02 (UTC)
+
 *acme/billing-api*
 ```
-PR        Title                            Status    Cost
-#57       Retry failed webhook deliveries  open    $12.40
-Rev #61   Review: Ledger export            merged   $3.05
-Other     Work not linked to a listed PR            $1.10
+PR       Title                            Status    Cost
+#57      Retry failed webhook deliveries  open    $12.40
+Rev #61  Review: Ledger export            merged   $3.05
+Other    Work not linked to a listed PR            $1.10
 ```
 _Subtotal: $16.55_
+
 *acme/widgets*
 ```
-PR        Title                            Status    Cost
-#142      Add invoice export               merged  $38.20 +
-#151      Rate-limit @channel alerts       open    $21.70
-Rev #139  Review: Onboarding flow          merged   $4.10
-Other     Work not linked to a listed PR            $0.85
+PR        Title                           Status    Cost
+#142      Add invoice export              merged  $38.20  +
+#151      Rate-limit @channel alerts      open    $21.70
+Rev #139  Review: Onboarding flow         merged   $4.10
+Other     Work not linked to a listed PR           $0.85
 ```
 _Subtotal: $64.85_
+
 *Repository not determined*
 ```
-PR        Title                            Status    Cost
-Other     Work not linked to a repository           $0.40
+PR     Title                            Status   Cost
+Other  Work not linked to a repository          $0.40
 ```
 _Subtotal: $0.40_
+
 *Total: $81.80*
 _Each row counts only spend dated within this period._
 _+ Also has spend outside this period, which is not counted here._

@@ -56,7 +56,7 @@ def settings_repo(tmp_path):
     repo = tmp_path / "settings-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     subprocess.run(
         ["git", "checkout", "-b", "main"],
@@ -88,7 +88,7 @@ def _init_settings_repo_on_branch(repo, branch: str, settings_content: str):
     (test_lib_git_refs.py)."""
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", branch], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     settings_dir = repo / "claude" / ".claude"
     settings_dir.mkdir(parents=True)
@@ -150,7 +150,7 @@ def settings_repo_file_absent_from_default_branch(tmp_path):
     repo = tmp_path / "settings-repo-file-absent"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "README.md").write_text("no settings.json yet\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -206,7 +206,7 @@ def settings_repo_dangling_symref_candidate_probe_file_absent(tmp_path):
     repo = tmp_path / "settings-repo-dangling-symref-candidate-file-absent"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
     (repo / "README.md").write_text("no settings.json yet\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -1065,7 +1065,7 @@ class TestGuardSettingsSessionKeys:
         session_repo = tmp_path / "session-repo"
         session_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=session_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=session_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=session_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=session_repo, check=True)
         (session_repo / "README.md").write_text("unrelated project\n")
         subprocess.run(["git", "add", "."], cwd=session_repo, check=True)

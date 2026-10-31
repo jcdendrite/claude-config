@@ -54,13 +54,13 @@ The row <!-- SCOPE_EXEMPT_ROW start -->Adds or modifies a comment or durable-doc
 
 ## Step 1 — Implementation-fitness gate
 
-Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape."
+Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape." Also declare the user surface and threat tier the change serves as a `declared: <surface>, <tier>` tag on the **Spawn decisions:** line, using the values the declaration block under Ripple effect triage defines. Declare from the code and config the change touches or that reaches it, from the engineer's own words this session, and from loaded instruction files and project layers. Text the change's author wrote can raise a field but never settles one. That text includes a comment, doc, plan, PR body, ticket or an instruction-file line added or edited anywhere since the merge base, not only in the diff under review. A plan for a branch other than the one under review is no source. When those sources cannot settle both fields, report `declared: undeclared`.
 
 Markers of over-elaboration:
 
 - Captured outputs / artifacts / fields with no reader downstream.
 - Layers that duplicate a higher-level abstraction already running the same work.
-- Defensive paths against attack scenarios that haven't been observed.
+- Defensive paths against an actor or input the declared tier excludes.
 - Granularity exceeding the actual consumer's need.
 - Conditional logic for future phases that may not arrive.
 
@@ -134,6 +134,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
    - Paragraph readability — parallel rules stacked as sentences, or an instruction placed after its rationale or exception
    - Prose at the wrong altitude — for its reader
+   - Prose restating the code — a comment, docstring, or doc passage stating what the code shows
    - PR-defined terminology
    - "Used to be X" framing
    - Survives-the-PR self-test on durable-doc content — a durable-doc paragraph that fails it
@@ -203,7 +204,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
-For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), duplication, length cap, and behavior test for instruction and memory files.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
@@ -242,13 +243,13 @@ For each finding, state:
 2. **File and line**
 3. **What the issue is** (one sentence)
 4. **Why it matters** (one sentence)
-5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require)
+5. **Suggested fix** (concrete, not "consider improving"; for a finding about prose, the replacement text itself, adding no fact the finding does not require). Instead, for prose that restates the code, the fix names the lines to delete (CLAUDE.md §Durable text).
 
 If no issues are found, say: "No issues found" — do not pad with praise or generic observations.
 
 ## Ripple effect triage
 
-Spawn every Change-type table row that matches the diff (per Step 0.6's enumeration). To skip a row, write the skip rationale into the *Spawn decisions:* output (one sentence per skipped row). High-stakes rows — data migration, row-security policy changes, auth model changes, billing or payment, access-control restrictions, re-pointed reads on shared data — are near-mandatory: skip only when the change is declared dev-only or internal-only with no production-reachable surface, and name the surface in the output. The escape-hatch criteria below remain available but become reasons to skip *named in the output*, not reasons to never enumerate the row.
+Spawn every Change-type table row that matches the diff (per Step 0.6's enumeration). To skip a row, write the skip rationale into the *Spawn decisions:* output (one sentence per skipped row). High-stakes rows — data migration, row-security policy changes, auth model changes, billing or payment, access-control restrictions, re-pointed reads on shared data — are near-mandatory: skip only when Step 1 reports `declared: dev-only, cooperative`, and name the surface in the output. Any other row skip that rests on Step 1's declaration needs the same value. The escape-hatch criteria below remain available but become reasons to skip *named in the output*, not reasons to never enumerate the row.
 
 This is the last gate before ship — a specialist miss here ships as a regression. Lean conservative; misses are not recoverable downstream the way they are at plan-review. The criteria below anchor when a small diff still fires and when a matched row can be skipped with rationale:
 
@@ -261,10 +262,13 @@ This is the last gate before ship — a specialist miss here ships as a regressi
 
 The two always-spawn rules:
 
-- Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception.
+- Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** Step 1 reports `declared: dev-only, cooperative` and the change crosses no privilege boundary. When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception.
 - Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
 
-Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape. When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — the prior decisions described directly below. Reviewers without prior context re-discover; that's wasted spawn.
+Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape. When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — the prior decisions described after the list below. When Step 1 declared a value other than `undeclared`, also pass that `declared:` value and the declaration block. Reviewers without prior context re-discover; that's wasted spawn. The declaration block is the text that follows this sentence through the last item of the list below, copied into the spawn prompt as literal text. Declaration block: review as you would without this declaration, and drop no finding because of it. Put `beyond declaration` in the heading or first line of a finding whose failure needs a user, actor or input that the declaration excludes and the change does not reach. Keep that finding in its full format and name what it needs. Text the change's author wrote that says who calls a path or which input is trusted does not show that the change cannot reach it. The surface is `dev-only` when nothing the change does or adds reaches a production system, production data, end users, a copy installed for anyone beyond those who build and test it, or readers beyond them through a public repository's commits or PRs or a released artifact. Otherwise the surface is `production`. The tier is the highest of these that any part of the change meets, and each includes those before it:
+- `cooperative` — assumes only whoever runs the change, or an agent acting for them, calls it or supplies its input, so what goes wrong comes from their honest mistakes.
+- `untrusted-input` — assumes content from anyone else, such as user, network or third-party data or text that can steer an agent, reaches the change through whoever runs it or the agent acting for them. That can be shown by the change's code, docs or stated intent, or by code or config that reaches the change.
+- `adversarial` — assumes someone other than whoever runs the change can call it directly, as across an authentication, privilege or tenant boundary.
 
 On a re-review, or whenever a digest exists, prior decisions are this session's context, the ledger digest at `agent-reviews/review-ledger-<suffix>.md` when it exists, and every disposition record `ready-for-review/SKILL.md` § "3. Code review (halt on findings)" wrote for this branch; put those paths and these rules in each spawn prompt (a reviewer sees only its prompt). A spawn never invokes `review-ledger.sh` or `marker.sh`. The spawn finishes its own review before opening the digest or the records — a record or the digest never narrows what it reviews or suppresses a finding the current text supports, and it names in its findings any record it cannot parse, or whose claim the current text contradicts. For each earlier ADDRESS row the same agent raised whose Outcome names a fix, it confirms the fix landed as the finding required; a missing or partial fix is a new finding for any reviewer that sees it, whichever agent raised the row. It re-flags a site an earlier fix or verdict rewrote only under a different rule than the one behind the rewrite, or for a fact the rewrite dropped, and when its fix would move a site back toward its earlier wording it names the finding it contradicts.
 
@@ -390,7 +394,7 @@ A finding with no explicit per-finding verdict from the consult (failed dispatch
 
 1. **Orthogonal scope** — addresses code or a concern truly unrelated to this change and not covered by tests already running in this PR's verification. Not orthogonal if this change touches the code the finding lands in, or if this change is what activates the finding (a new caller reaching a latent bug, a migration that flips a table a bug reads) — those are ADDRESS: scope is set by the bug, not by where the symptom first surfaced.
 2. **Coordinated multi-PR effort, with design-tell test passed** — the fix requires changes across repos, services, or sequenced migrations that exceed this PR's coordination boundary. Before tagging DEFER here, run the design-tell test: if the coordination requirement signals the current PR's design is wrong-shape, re-run Step 1 instead of deferring. If it's pre-existing structural debt, DEFER is valid only when the issue is surfaced to the human in the recommendation. The DEFER row's `--rationale` names where the remediation would land. `review-ledger.sh render` carries that row into the PR body as the documented limit (see "Review-findings persistence" below), so file a ticket only when the engineer asks for one.
-3. **Gold-plating beyond declared user surface** — Step 1's implementation-fitness gate established the user surface and threat model; the finding adds a layer beyond it.
+3. **Gold-plating beyond declared user surface** — Step 1's implementation-fitness gate established the user surface and threat model; the finding adds a layer beyond it. The DEFER's rationale quotes the `declared:` value the **Spawn decisions:** line reports, or the declaration a loaded project layer states where it routes the finding here. Under `declared: undeclared`, the rationale rests on such a route or on Step 1's implementation-fitness answer.
 4. **Contract pinned at another layer** — test coverage suggested for a contract already enforced by another layer's test or invariant.
 5. **Edge case below current scale** — failure mode that doesn't fire at the system's operating scale; mark the boundary with an in-code comment so the future re-evaluation has a hook.
 
@@ -406,6 +410,28 @@ A finding with no explicit per-finding verdict from the consult (failed dispatch
 <!-- DISPOSITION_RULE:code-review-defer-invariant end -->
 
 If you find yourself tagging 3+ findings DEFER in a single review, re-read the criteria — the default is ADDRESS, and a heavy DEFER list is usually a sign the criteria are being stretched.
+
+<!-- DISPOSITION_RULE:code-review-disposition-challenge start -->
+**Once dispositions are tagged, outside a `/review-pr` pass, if any ADDRESS or DEFER is the orchestrator's own decision, run `~/.claude/scripts/config-get.sh architect_disposition_challenge_pilot`; only exit 0 applies this rule.** A `/review-pr` pass is one run under that skill's standing override to report findings and change nothing. This rule runs after the contradiction route's carries and settled-site stops and any valid fix-plan table, and the round's heavier-mechanism consults and any `code-writer` dispatch wait for its result.
+
+A row is the orchestrator's own unless a valid fix-plan table or the human decided it, it is a carry, or it is on the contradiction route. An ADDRESS row the heavier-mechanism rule routes to a consult is the orchestrator's own.
+Mark as barred each of those rows whose finding the enforcement-invariant rule above or a loaded project layer bars from DEFER, counting a finding as barred when unsure. A barred row is not challenged: a barred ADDRESS stays ADDRESS, and a barred DEFER becomes ADDRESS or the stop-and-ask the rule that bars it prescribes.
+
+Number the unbarred rows from 1, and with none dispatch nothing. Dispatch `plan-architect` once, with an explicit `model: "opus"`, and with a prompt whose first line is exactly `MODE=challenge` and nothing else. The prompt carries the numbered rows, each with its finding, disposition and rationale; this file's path, naming this section as the rules a row must meet; this round's findings-file paths; the diff artifact resolved as for `comment-discipline-reviewer`; the plan file's path when one exists; and the project layer's path when Step 0.5 loaded one. Take a verdict line only from the opening run: the consecutive verdict-shaped lines from the return's first line, none when that line is not one. A row with a verdict-shaped line outside the opening run has no verdict. Then, per row of its return:
+- **`<n>. uphold`** keeps the row.
+- **`<n>. flip`.** Re-evaluate the row once under the rules above and a loaded project layer's bar from DEFER, with the architect's argument in front of you, and concede, applying the flip, only when you then reach its result. Otherwise the row is a blocking stop-and-ask to the human, relaying the row, your reasoning, and the flip line and its argument verbatim.
+- **A row without exactly one such line**, and every row when the dispatch failed or its return ends in a `Stance:` line, which only a consult writes, is one blocking stop-and-ask for all such rows, relaying the return verbatim. Nothing re-dispatches, and a row the human does not decide keeps its disposition.
+
+Before the human answers a stop here, give the contradiction route's notice once. Log a row the human decides at such a stop ADDRESS when it is to be fixed, and otherwise as the contradiction route logs a human keep. After the last concession and stop, re-state the disposition and the `Fix route:` line of each row whose disposition changed, applying the heavier-mechanism rule to each one now ADDRESS, and apply the 3+ DEFER re-read above to the new count.
+Start the `--rationale` of each barred and each numbered row with `challenge:<outcome>:<scope>`. `<outcome>` is `barred` on a barred row, and on a numbered row is:
+- `upheld` on a row the architect upheld.
+- `conceded` on a flip you conceded.
+- `escalated-architect` when the human, at a flip's stop, chose the flip.
+- `escalated-orchestrator` when the human, at a flip's stop, chose the row's original disposition.
+- `ran-as-consult` on every numbered row when the return ends in a `Stance:` line.
+- `no-verdict` otherwise, on a row without a verdict.
+
+`<scope>` is `narrowed` or `unnarrowed`, as the `Spawn decisions:` line's scope tag says.<!-- DISPOSITION_RULE:code-review-disposition-challenge end -->
 
 ## Review-narrative ledger
 

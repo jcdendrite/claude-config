@@ -35,6 +35,7 @@ from test_review_bench_mining import (
     _confirm_workspace,
     _feed_answers,
     _feed_answers_then_interrupt,
+    _git,
     _init_repo,
     _pin_refs,
     _write,
@@ -4365,7 +4366,7 @@ class TestMainRestrictsWrittenFilePermissions:
         assert "could not be restricted to its owner" in capsys.readouterr().err
 
 
-# --- confirm: declined IDs, lens prompt, --source ----------------------------
+# --- confirm: declined IDs, lens prompt, --source, --ids-file ----------------
 
 
 def _run_confirm(local_dir: Path, defects_path: Path, *extra_flags: str) -> int:
@@ -4378,6 +4379,55 @@ def _declined_ids_path(local_dir: Path) -> Path:
 
 def _recorded_declined_ids(local_dir: Path) -> list[str]:
     return json.loads(_declined_ids_path(local_dir).read_text())
+
+
+def _assert_nothing_written(
+    repo: Path, local_dir: Path, defects_path: Path, *, declined_ids_text: str | None = None,
+    defects_text: str | None = None,
+) -> None:
+    for path, expected_text in ((defects_path, defects_text), (_declined_ids_path(local_dir), declined_ids_text)):
+        assert (path.read_text() if path.exists() else None) == expected_text, path
+    assert _pin_refs(repo) == []
+
+
+def _fail_the_write_of_the_declined_file(monkeypatch, declined_ids_path: Path) -> None:
+    replace_unpatched = os.replace
+
+    def replace_failing_for_the_declined_file(source, destination):
+        # `defects.atomic_write_text` writes defects.json through the same process-wide `os.replace`.
+        if Path(destination) == declined_ids_path:
+            raise OSError("disk full")
+        return replace_unpatched(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace_failing_for_the_declined_file)
+
+
+def _fail_the_pin_of(monkeypatch, failing_ids: set[str], git_failure: Exception):
+    pin_defect_commits_unpatched = defects.pin_defect_commits
+
+    def pin_failing_for_the_chosen_ids(repo_dir, defect):
+        if defect.id in failing_ids:
+            raise git_failure
+        return pin_defect_commits_unpatched(repo_dir, defect)
+
+    monkeypatch.setattr(defects, "pin_defect_commits", pin_failing_for_the_chosen_ids)
+    return pin_defect_commits_unpatched
+
+
+def _write_a_defect_concurrently_during_the_first_load(monkeypatch):
+    load_confirmed_defects_unpatched = defects.load_confirmed_defects
+    concurrent_write_done = False
+
+    def load_then_write_concurrently_once(path):
+        nonlocal concurrent_write_done
+        loaded = load_confirmed_defects_unpatched(path)
+        if not concurrent_write_done:
+            concurrent_write_done = True
+            defects.save_confirmed_defects(path, [*loaded, _confirmed_single_defect("concurrent")])
+        return loaded
+
+    monkeypatch.setattr(defects, "load_confirmed_defects", load_then_write_concurrently_once)
+    return load_confirmed_defects_unpatched
 
 
 class TestReadLensChoice:
@@ -4566,15 +4616,7 @@ class TestConfirmRemembersDeclinedCandidates:
     ) -> None:
         repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
         declined_ids_path = _declined_ids_path(local_dir)
-        replace_unpatched = os.replace
-
-        def replace_failing_for_the_declined_file(source, destination):
-            # `defects.atomic_write_text` writes defects.json through the same process-wide `os.replace`.
-            if Path(destination) == declined_ids_path:
-                raise OSError("disk full")
-            return replace_unpatched(source, destination)
-
-        monkeypatch.setattr(os, "replace", replace_failing_for_the_declined_file)
+        _fail_the_write_of_the_declined_file(monkeypatch, declined_ids_path)
         _feed_answers(monkeypatch, "n", "y", "")
 
         assert _run_confirm(local_dir, defects_path) == 0
@@ -4856,3 +4898,2022 @@ class TestConfirmSourceFilter:
 
     def test_the_source_choices_are_the_known_sources(self) -> None:
         assert set(run_review_bench._CONFIRM_SOURCE_ORDER) == defects.KNOWN_SOURCES
+
+
+def _write_ids_file(tmp_path: Path, text: str, file_name: str = "ids.txt") -> Path:
+    ids_file_path = tmp_path / file_name
+    ids_file_path.write_text(text, encoding="utf-8")
+    return ids_file_path
+
+
+class TestConfirmIdsFile:
+    def test_ids_file_restricts_the_prompts_to_the_listed_ids_in_the_files_order_and_the_header_names_it(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        ids_file_path = _write_ids_file(tmp_path, "c-3\nc-1\n")
+        _feed_answers(monkeypatch, "y", "", "n")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert "confirm: 2 candidate(s) to review." in stderr
+        assert f"prompting only for the IDs listed in {ids_file_path}, in that order" in stderr
+        assert stderr.count("[y/N/q]") == 2
+        assert stderr.index("candidate c-3") < stderr.index("candidate c-1")
+        assert "candidate c-2" not in stderr
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-3"]
+        assert _recorded_declined_ids(local_dir) == ["c-1"]
+
+    def test_the_files_order_replaces_the_source_order(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        ids_file_path = _write_ids_file(tmp_path, "c-1\nc-2\n")
+        _feed_answers(monkeypatch, "y", "", "n")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert stderr.index("candidate c-1") < stderr.index("candidate c-2")
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert _recorded_declined_ids(local_dir) == ["c-2"]
+
+    def test_comments_blank_lines_whitespace_and_crlf_are_ignored_and_a_repeated_id_keeps_its_first_line(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        ids_file_path = _write_ids_file(tmp_path, "# the ones to review\r\n\r\n  c-2  \r\nc-1\n# c-3\n\nc-2\n")
+        _feed_answers(monkeypatch, "y", "", "n")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert "confirm: 2 candidate(s) to review." in stderr
+        assert stderr.count("candidate c-2") == 1
+        assert stderr.index("candidate c-2") < stderr.index("candidate c-1")
+        assert "candidate c-3" not in stderr
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
+        assert _recorded_declined_ids(local_dir) == ["c-1"]
+
+    @pytest.mark.parametrize("terminal", [True, False])
+    def test_ids_matching_no_candidate_exit_2_naming_the_file_the_count_and_the_first_three_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys, terminal: bool,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        ids_file_path = _write_ids_file(tmp_path, "c-1\nbad-1\x1b[31m\nbad-2\nbad-3\nbad-4\n")
+        _feed_answers(monkeypatch, "y", "", terminal=terminal)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {ids_file_path} lists 4 ID(s) that match no candidate" in stderr
+        assert "bad-2, bad-3, ..." in stderr
+        assert "bad-4" not in stderr
+        assert "\x1b" not in stderr
+        assert "nothing prompted" in stderr
+        assert "[y/N/q]" not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_ids_file_combines_with_source_as_an_intersection_and_counts_the_ids_outside_the_source(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "pr-comment"}, {"source": "szz"},
+        )
+        ids_file_path = _write_ids_file(tmp_path, "c-3\nc-2\nc-1\n")
+        _feed_answers(monkeypatch, "n", "n")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path), "--source", "szz") == 0
+
+        stderr = capsys.readouterr().err
+        assert "confirm: 2 candidate(s) to review." in stderr
+        assert "prompting only for source(s) szz" in stderr
+        assert stderr.index("candidate c-3") < stderr.index("candidate c-1")
+        assert "candidate c-2" not in stderr
+        assert f"1 of the 3 ID(s) listed in {ids_file_path} not prompted (1 outside --source)" in stderr
+
+    def test_declined_listed_ids_are_skipped_and_include_declined_prompts_for_them_again(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _declined_ids_path(local_dir).write_text('["c-2"]')
+        ids_file_path = _write_ids_file(tmp_path, "c-2\nc-1\n")
+        _feed_answers(monkeypatch, "n")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 0
+
+        stderr = capsys.readouterr().err
+        assert stderr.count("[y/N/q]") == 1
+        assert "candidate c-2" not in stderr
+        assert "1 candidate(s) skipped as previously declined" in stderr
+        assert f"1 of the 2 ID(s) listed in {ids_file_path} not prompted (1 previously declined)" in stderr
+
+        _feed_answers(monkeypatch, "n", "n")
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path), "--include-declined") == 0
+
+        stderr = capsys.readouterr().err
+        assert stderr.count("[y/N/q]") == 2
+        assert stderr.index("candidate c-2") < stderr.index("candidate c-1")
+        assert "not prompted" not in stderr
+
+    @pytest.mark.parametrize("terminal", [True, False])
+    @pytest.mark.parametrize(
+        ("declined_ids", "expected_note"),
+        [
+            pytest.param(["c-3", "c-4"], None, id="declined-candidates-the-file-does-not-list"),
+            pytest.param(
+                ["c-2", "c-3"], "1 candidate(s) skipped as previously declined", id="one-listed-beside-one-unlisted",
+            ),
+        ],
+    )
+    def test_the_previously_declined_count_covers_only_the_listed_ids(
+        self, tmp_path: Path, monkeypatch, capsys, terminal: bool, declined_ids: list[str], expected_note: str | None,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {}, {})
+        _declined_ids_path(local_dir).write_text(json.dumps(declined_ids))
+        ids_file_path = _write_ids_file(tmp_path, "c-1\nc-2\n")
+        _feed_answers(monkeypatch, "n", "n", terminal=terminal)
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        if expected_note is None:
+            assert "skipped as previously declined" not in stderr
+        else:
+            assert expected_note in stderr
+
+    def test_a_listed_id_that_was_rejected_or_is_already_approved_is_not_unknown_and_is_counted_by_reason(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the reviewer found that error handling silently swallows it",
+            },
+            {"description": "The reviewer found that error handling silently swallows it."},
+            {},
+        )
+        first_ids_file = _write_ids_file(tmp_path, "c-1\n")
+        _feed_answers(monkeypatch, "y", "")
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(first_ids_file)) == 0
+        capsys.readouterr()
+
+        second_ids_file = _write_ids_file(tmp_path, "c-1\nc-2\nc-3\n", "second_ids.txt")
+        _feed_answers(monkeypatch, "n")
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(second_ids_file)) == 0
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-2 -- description shares the word run" in stderr
+        assert stderr.count("[y/N/q]") == 1
+        assert "candidate c-3" in stderr
+        assert (
+            f"2 of the 3 ID(s) listed in {second_ids_file} not prompted (1 rejected by the checks, 1 already approved)"
+            in stderr
+        )
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+
+    def test_a_listed_id_outside_source_counts_as_outside_source_when_declined_but_as_approved_when_approved(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "pr-comment"}, {"source": "pr-comment"},
+        )
+        approving_ids_file = _write_ids_file(tmp_path, "c-1\n")
+        _feed_answers(monkeypatch, "y", "")
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(approving_ids_file)) == 0
+        _declined_ids_path(local_dir).write_text('["c-2"]')
+        capsys.readouterr()
+
+        both_ids_file = _write_ids_file(tmp_path, "c-1\nc-2\n", "both_ids.txt")
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(both_ids_file), "--source", "szz") == 0
+
+        stderr = capsys.readouterr().err
+        assert (
+            f"2 of the 2 ID(s) listed in {both_ids_file} not prompted (1 already approved, 1 outside --source)" in stderr
+        )
+        assert "previously declined" not in stderr
+
+    @pytest.mark.parametrize("terminal", [True, False])
+    @pytest.mark.parametrize("ids_text", ["", "\n  \n", "# only a comment\n\n"], ids=["empty", "blank", "comments"])
+    def test_a_file_listing_no_id_exits_2_instead_of_prompting_for_everything(
+        self, tmp_path: Path, monkeypatch, capsys, ids_text: str, terminal: bool,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        ids_file_path = _write_ids_file(tmp_path, ids_text)
+        _feed_answers(monkeypatch, "y", "", terminal=terminal)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {ids_file_path} lists no candidate IDs" in stderr
+        assert "[y/N/q]" not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    @pytest.mark.parametrize("terminal", [True, False])
+    @pytest.mark.parametrize(
+        ("unreadable_kind", "expected_message"),
+        [
+            pytest.param("missing", "could not be read ([Errno 2] No such file or directory", id="missing"),
+            pytest.param("directory", "could not be read ([Errno 21] Is a directory", id="directory"),
+            pytest.param("not-utf-8", "is not UTF-8 text", id="not-utf-8"),
+        ],
+    )
+    def test_an_unreadable_file_exits_2_with_its_kinds_message_the_fix_or_drop_line_and_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys, unreadable_kind: str, expected_message: str, terminal: bool,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        ids_file_path = tmp_path / "ids.txt"
+        if unreadable_kind == "directory":
+            ids_file_path.mkdir()
+        elif unreadable_kind == "not-utf-8":
+            ids_file_path.write_bytes(b"c-1\n\xff\xfe\n")
+        _feed_answers(monkeypatch, "y", "", terminal=terminal)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {ids_file_path} {expected_message}" in stderr
+        assert "fix it or drop --ids-file" in stderr
+        assert "nothing prompted" in stderr
+        assert "[y/N/q]" not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_an_empty_ids_file_argument_is_an_unreadable_file_not_an_absent_flag(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", "") == 2
+
+        assert "[y/N/q]" not in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_without_a_terminal_the_awaiting_line_counts_only_the_listed_candidates_and_names_the_file(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        ids_file_path = _write_ids_file(tmp_path, "c-3\nc-1\n")
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"2 candidate(s) listed in {ids_file_path} awaiting the engineer at a terminal" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_without_a_terminal_listed_ids_that_are_all_declined_or_outside_source_exit_0_with_none_awaiting(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "szz"}, {"source": "pr-comment"},
+        )
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        ids_file_path = _write_ids_file(tmp_path, "c-1\nc-3\n")
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path), "--source", "szz") == 0
+
+        stderr = capsys.readouterr().err
+        assert f"0 candidate(s) from source(s) szz listed in {ids_file_path} awaiting the engineer" in stderr
+        assert "1 candidate(s) skipped as previously declined" in stderr
+        assert (
+            f"2 of the 2 ID(s) listed in {ids_file_path} not prompted (1 previously declined, 1 outside --source)"
+            in stderr
+        )
+
+    def test_a_byte_order_mark_before_the_first_id_is_ignored(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        ids_file_path = _write_ids_file(tmp_path, "\ufeffc-2\nc-1\n")
+        _feed_answers(monkeypatch, "n", "n")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert "confirm: 2 candidate(s) to review." in stderr
+        assert stderr.index("candidate c-2") < stderr.index("candidate c-1")
+
+    def test_a_trailing_comment_is_part_of_the_line_so_the_id_is_unknown_and_confirm_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        ids_file_path = _write_ids_file(tmp_path, "c-1  # note\n")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert "lists 1 ID(s) that match no candidate (c-1  # note)" in stderr
+        assert "[y/N/q]" not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_an_id_as_a_miner_emits_it_with_colons_slashes_a_tilde_and_a_space_is_matched_whole(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        miner_emitted_id = "szz:0123456789ab:cdef01234567:pkg/a b~c.py"
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"id": miner_emitted_id})
+        ids_file_path = _write_ids_file(tmp_path, f"  {miner_emitted_id}  \n")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == [miner_emitted_id]
+        assert _pin_refs(repo) == [defects.defect_pin_ref(miner_emitted_id)]
+
+    def test_an_id_with_non_ascii_characters_is_matched_whole(self, tmp_path: Path, monkeypatch) -> None:
+        non_ascii_id = "szz:0123456789ab:cdef01234567:docs/résumé~é.py"
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"id": non_ascii_id})
+        ids_file_path = _write_ids_file(tmp_path, f"{non_ascii_id}\n")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == [non_ascii_id]
+        assert _pin_refs(repo) == [defects.defect_pin_ref(non_ascii_id)]
+
+    def test_exactly_three_ids_matching_no_candidate_are_all_named_with_no_elision(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        ids_file_path = _write_ids_file(tmp_path, "c-1\nbad-1\nbad-2\nbad-3\n")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert "lists 3 ID(s) that match no candidate (bad-1, bad-2, bad-3)" in stderr
+        assert "..." not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_an_id_that_only_defects_json_holds_matches_no_shortlist_candidate_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("gone-1")])
+        defects_text = defects_path.read_text()
+        ids_file_path = _write_ids_file(tmp_path, "gone-1\n")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == 2
+
+        assert "lists 1 ID(s) that match no candidate (gone-1)" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path, defects_text=defects_text)
+
+    def test_an_excerpt_from_an_unlisted_candidate_still_reaches_the_provenance_check_of_a_typed_description(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "id": "rr-excerpt", "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the reviewer found that error handling silently swallows it",
+            },
+            {"id": "szz-undescribed", "description": ""},
+        )
+        ids_file_path = _write_ids_file(tmp_path, "szz-undescribed\n")
+        _feed_answers(monkeypatch, "y", "The reviewer found that error handling silently swallows it.", "")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert "rejected szz-undescribed -- description shares the word run" in stderr
+        assert "rr-excerpt's excerpt" in stderr
+        assert stderr.count("[y/N/q]") == 1
+        assert not defects_path.exists()
+
+    def test_an_excerpt_from_an_unlisted_candidate_still_reaches_the_provenance_check_of_a_described_candidate(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "id": "rr-excerpt", "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the reviewer found that error handling silently swallows it",
+            },
+            {"id": "szz-copied", "description": "The reviewer found that error handling silently swallows it."},
+        )
+        ids_file_path = _write_ids_file(tmp_path, "szz-copied\n")
+        _feed_answers(monkeypatch, "y", "")
+
+        _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path))
+
+        stderr = capsys.readouterr().err
+        assert "rejected szz-copied -- description shares the word run" in stderr
+        assert "rr-excerpt's excerpt" in stderr
+        assert not defects_path.exists()
+
+
+# --- confirm --answers-file ---------------------------------------------------
+
+_ENGINEER_REVIEWED_FLAG = "--engineer-reviewed-answers"
+_ANSWERS_DESCRIPTION = "x was left at its stale initial value."
+
+
+def _answers_file_row(candidate_id: str, answer: str = "y", **overrides) -> dict:
+    row = {"id": candidate_id, "answer": answer}
+    if answer == "y":
+        row.update(description=_ANSWERS_DESCRIPTION, lens="staff-backend-engineer")
+    row.update(overrides)
+    return row
+
+
+def _write_answers_file(tmp_path: Path, rows) -> Path:
+    answers_file_path = tmp_path / "answers.json"
+    answers_file_path.write_text(rows if isinstance(rows, str) else json.dumps(rows), encoding="utf-8")
+    return answers_file_path
+
+
+def _run_confirm_with_answers(local_dir: Path, defects_path: Path, answers_file_path: Path, *extra_flags: str) -> int:
+    return _run_confirm(
+        local_dir, defects_path, "--answers-file", str(answers_file_path), _ENGINEER_REVIEWED_FLAG, *extra_flags,
+    )
+
+
+def _echoed_commits_and_path(approved: ConfirmedDefect) -> str:
+    short_sha = run_review_bench._short_sha
+    return (
+        f"(base {short_sha(approved.base_commit)}, head {short_sha(approved.head_commit)}, "
+        f"fix {short_sha(approved.fix_commit)}, {approved.path})"
+    )
+
+
+class TestConfirmAnswersFile:
+    @pytest.mark.parametrize("candidate_description", [_ANSWERS_DESCRIPTION, ""], ids=["described", "undescribed"])
+    def test_an_approved_row_writes_the_record_the_interactive_y_writes_and_pins_the_same_refs(
+        self, tmp_path: Path, monkeypatch, capsys, candidate_description: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"description": candidate_description},
+        )
+        typed_description = [] if candidate_description else [_ANSWERS_DESCRIPTION]
+        _feed_answers(monkeypatch, "y", *typed_description, "")
+        assert _run_confirm(local_dir, defects_path) == 0
+        interactive_text = defects_path.read_text()
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+        defects_path.unlink()
+        # Only the answers run below may create the ref the final assertion expects.
+        _git(repo, "update-ref", "-d", defects.defect_pin_ref("c-1"))
+        capsys.readouterr()
+
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert defects_path.read_text() == interactive_text
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+        assert "confirm: approved 1, declined 0, skipped 0" in capsys.readouterr().err
+
+    def test_the_rows_lens_replaces_the_candidates_lens_and_its_description_is_stripped(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        row = _answers_file_row("c-1", lens="staff-sdet", description="  x is reassigned too late.  ")
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [row])) == 0
+
+        [approved] = defects.load_confirmed_defects(defects_path)
+        assert (approved.lens, approved.description) == ("staff-sdet", "x is reassigned too late.")
+
+    def test_a_declined_row_is_persisted_and_merged_with_the_earlier_declined_ids_and_its_other_keys_are_ignored(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        _declined_ids_path(local_dir).write_text('["c-3"]')
+        _feed_answers(monkeypatch, terminal=False)
+        declined_row = _answers_file_row("c-2", "n", description=7, lens="staff-chef")
+        answers_file_path = _write_answers_file(tmp_path, [declined_row, _answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert _recorded_declined_ids(local_dir) == ["c-2", "c-3"]
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        stderr = capsys.readouterr().err
+        assert "confirm: approved 1, declined 1, skipped 0" in stderr
+        assert "confirm: declined c-2\n" in stderr
+        assert "confirm: declined c-3" not in stderr
+
+    def test_each_newly_declined_id_gets_one_declined_line_in_sorted_order_after_the_approved_lines(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, *[{"id": f"c-{number}"} for number in (1, 2, 3, 5, 10, 20)],
+        )
+        _declined_ids_path(local_dir).write_text('["c-5"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-3", "n"), _answers_file_row("c-20", "n"), _answers_file_row("c-2", "n"),
+            _answers_file_row("c-1"), _answers_file_row("c-10", "n"), _answers_file_row("c-5", "n"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        stderr_lines = capsys.readouterr().err.splitlines()
+        declined_lines = [line for line in stderr_lines if line.startswith("confirm: declined c-")]
+        assert declined_lines == [f"confirm: declined c-{number}" for number in (10, 2, 20, 3)]
+        approved_line_position = next(
+            position for position, line in enumerate(stderr_lines) if line.startswith("confirm: approved c-1 ")
+        )
+        assert approved_line_position < stderr_lines.index(declined_lines[0])
+
+    def test_rows_are_applied_in_the_files_order(self, tmp_path: Path, monkeypatch) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(
+            tmp_path, [_answers_file_row("c-3"), _answers_file_row("c-1"), _answers_file_row("c-2")],
+        )
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-3", "c-1", "c-2"]
+
+    def test_it_runs_without_a_terminal_and_never_prompts(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "n", terminal=False)  # a line a prompt would read as a decline
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert "[y/N/q]" not in capsys.readouterr().err
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert not _declined_ids_path(local_dir).exists()
+
+    def test_a_description_copied_from_an_excerpt_is_skipped_and_reported_and_the_other_rows_are_still_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the reviewer found that error handling silently swallows it",
+            },
+            {},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-2", description="The reviewer found that error handling silently swallows it."),
+            _answers_file_row("c-1"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-2 -- description shares the word run" in stderr
+        assert "confirm: approved 1, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert not _declined_ids_path(local_dir).exists()
+
+    def test_a_description_with_a_control_character_is_skipped_and_reported_not_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description="red \x1b[31m text")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- the description holds a control character" in stderr
+        assert "\x1b" not in stderr
+        assert not defects_path.exists()
+
+    def test_already_approved_rejected_and_previously_declined_candidates_are_skipped_with_reasons_counted(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {},
+            {"description": "x was reset by the older initial value."},
+            {},
+            {
+                "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "x was reset by the older initial value",
+            },
+            {},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        _declined_ids_path(local_dir).write_text('["c-3"]')
+        capsys.readouterr()
+
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-1"), _answers_file_row("c-2"), _answers_file_row("c-3", "n"), _answers_file_row("c-5"),
+        ])
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "confirm: approved 1, declined 0, skipped 3 (" in stderr
+        for reason_count in ("1 already approved", "1 rejected by the checks", "1 previously declined"):
+            assert reason_count in stderr
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1", "c-5"]
+        assert _recorded_declined_ids(local_dir) == ["c-3"]
+
+    @pytest.mark.parametrize(
+        ("rows", "problem"),
+        [
+            pytest.param("not json", "could not be read as JSON", id="not-json"),
+            pytest.param({"id": "c-1"}, "is not a non-empty JSON list", id="not-a-list"),
+            pytest.param([], "is not a non-empty JSON list", id="empty-list"),
+            pytest.param(["c-1"], "row 1 is not a JSON object", id="row-not-an-object"),
+            pytest.param([_answers_file_row("c-1", note="x")], "row 1 has unknown key(s) note", id="unknown-key"),
+            pytest.param(
+                [_answers_file_row("c-1", **{"\x1b[2J": 1})], "row 1 has unknown key(s) \\x1b[2J",
+                id="unknown-key-holding-an-escape-byte",
+            ),
+            pytest.param(
+                '[{"id": "c-1", "answer": "n", "answer": "y"}]', "a JSON object repeats key(s) answer", id="repeated-key",
+            ),
+            pytest.param(
+                '[{"id": "c-1", "id": "c-2", "answer": "n"}]', "a JSON object repeats key(s) id", id="repeated-id-key",
+            ),
+            pytest.param([{"answer": "n"}], "row 1 has no string id", id="missing-id"),
+            pytest.param([_answers_file_row("c-1", "maybe")], "row 1 answer must be one of y, n", id="bad-answer"),
+            pytest.param([_answers_file_row("c-1"), _answers_file_row("c-1", "n")], "row 2 repeats 'c-1'", id="duplicate-id"),
+            pytest.param(
+                [_answers_file_row("c-1"), _answers_file_row("nope\x1b[31m")], "row 2 names 'nope\\x1b[31m'",
+                id="unknown-id-after-a-valid-row",
+            ),
+            pytest.param([_answers_file_row("c-1", lens="staff-chef")], "row 1: lens 'staff-chef' is not in", id="invalid-lens"),
+            pytest.param(
+                [_answers_file_row("c-1", lens=" staff-sdet")], "row 1: lens ' staff-sdet' is not in",
+                id="lens-with-surrounding-whitespace",
+            ),
+            pytest.param(
+                [_answers_file_row("c-1", description="first line.\nsecond line.")],
+                "row 1 answers y with a description of more than one line", id="multi-line-description",
+            ),
+            pytest.param("[" * 100_000, "could not be read as JSON (maximum recursion depth", id="deeply-nested-json"),
+            pytest.param([_answers_file_row("c-1", lens=None)], "row 1 answers y with no lens", id="missing-lens"),
+            pytest.param(
+                [_answers_file_row("c-1", description="   ")], "row 1 answers y with no description", id="blank-description",
+            ),
+            pytest.param(
+                [_answers_file_row("c-1", description=None)], "row 1 answers y with no description", id="missing-description",
+            ),
+        ],
+    )
+    def test_an_invalid_file_exits_2_with_one_escaped_line_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch, capsys, rows, problem: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _declined_ids_path(local_dir).write_text('["c-2"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, rows)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert len(stderr.splitlines()) == 1
+        assert f"confirm: {answers_file_path} " in stderr
+        assert problem in stderr
+        assert "nothing written" in stderr
+        assert "\x1b" not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text='["c-2"]')
+
+    def test_a_missing_file_exits_2_and_writes_nothing(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, tmp_path / "absent.json") == 2
+
+        assert "could not be read" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_row_for_an_id_only_defects_json_holds_matches_no_candidate_and_applies_nothing(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("gone-1")])
+        defects_text = defects_path.read_text()
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("gone-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {answers_file_path} row 2 names 'gone-1', which matches no candidate" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path, defects_text=defects_text)
+
+    def test_without_the_engineer_reviewed_flag_it_exits_2_even_for_a_valid_file(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm(local_dir, defects_path, "--answers-file", str(answers_file_path)) == 2
+
+        stderr = capsys.readouterr().err
+        assert "stands in for the terminal prompt" in stderr
+        assert _ENGINEER_REVIEWED_FLAG in stderr
+        assert "reviewed every row" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    @pytest.mark.parametrize(
+        ("extra_flags", "problem"),
+        [
+            pytest.param(("--ids-file", "ids.txt"), "mutually exclusive", id="ids-file"),
+            pytest.param(("--source", "szz"), "does not combine with --source or --include-declined", id="source"),
+            pytest.param(
+                ("--include-declined",), "does not combine with --source or --include-declined", id="include-declined",
+            ),
+        ],
+    )
+    def test_it_does_not_combine_with_the_prompt_narrowing_flags(
+        self, tmp_path: Path, monkeypatch, capsys, extra_flags: tuple[str, ...], problem: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path, *extra_flags) == 2
+
+        assert problem in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_the_reviewed_flag_alone_does_not_stand_in_for_a_terminal(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "y", "", terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, _ENGINEER_REVIEWED_FLAG) == 2
+
+        assert "applies only with --answers-file" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_each_approved_row_prints_its_id_lens_commits_path_and_the_description_as_committed(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-2", lens="staff-sdet", description="  x is reassigned too late.  "),
+            _answers_file_row("c-1", "n"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        [approved] = defects.load_confirmed_defects(defects_path)
+        stderr = capsys.readouterr().err
+        assert (
+            f"confirm: approved c-2 [staff-sdet] {_echoed_commits_and_path(approved)}: x is reassigned too late.\n"
+        ) in stderr
+        assert "confirm: approved c-1 " not in stderr
+
+    def test_each_of_two_approved_rows_prints_its_own_commits_and_path_and_not_the_other_rows(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {"evidence": {"path": "other.py"}})
+        _write(repo, "app.py", "x = 3\n")
+        later_fix_sha = _commit(repo, "fix x again")
+        shortlist_path = local_dir / "szz_candidates.json"
+        first_candidate, second_candidate = defects.load_candidates(shortlist_path)
+        defects.save_candidates(
+            shortlist_path, [first_candidate, dataclasses.replace(second_candidate, fix_commit=later_fix_sha)],
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-1", lens="staff-sdet", description="x is reassigned too late."),
+            _answers_file_row("c-2", lens="ciso-reviewer", description="x is never validated."),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        first_approved, second_approved = defects.load_confirmed_defects(defects_path)
+        assert first_approved.fix_commit != second_approved.fix_commit
+        assert first_approved.path != second_approved.path
+        assert second_approved.fix_commit == later_fix_sha
+        assert second_approved.path == "other.py"
+        stderr = capsys.readouterr().err
+        assert (
+            f"confirm: approved c-1 [staff-sdet] {_echoed_commits_and_path(first_approved)}: x is reassigned too late.\n"
+        ) in stderr
+        assert (
+            f"confirm: approved c-2 [ciso-reviewer] {_echoed_commits_and_path(second_approved)}: x is never validated.\n"
+        ) in stderr
+
+    @pytest.mark.parametrize(
+        ("git_failure", "failing_ids", "expected_defect_ids", "expected_summary"),
+        [
+            pytest.param(
+                subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref"), {"c-1"}, ["c-2"],
+                "confirm: approved 1, declined 0, skipped 1 (1 could not be pinned)", id="one-of-two-fails",
+            ),
+            pytest.param(
+                subprocess.TimeoutExpired(["git", "update-ref"], 10.0), {"c-1"}, ["c-2"],
+                "confirm: approved 1, declined 0, skipped 1 (1 could not be pinned)", id="one-of-two-times-out",
+            ),
+            pytest.param(
+                subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref"), {"c-1", "c-2"}, [],
+                "confirm: approved 0, declined 0, skipped 2 (2 could not be pinned)", id="every-pin-fails",
+            ),
+        ],
+    )
+    def test_a_row_whose_fix_commit_cannot_be_pinned_is_not_written_and_makes_confirm_exit_2(
+        self, tmp_path: Path, monkeypatch, capsys, git_failure, failing_ids: set[str], expected_defect_ids: list[str],
+        expected_summary: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _feed_answers(monkeypatch, terminal=False)
+        _fail_the_pin_of(monkeypatch, failing_ids, git_failure)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == expected_defect_ids
+        assert _pin_refs(repo) == [defects.defect_pin_ref(defect_id) for defect_id in expected_defect_ids]
+        stderr = capsys.readouterr().err
+        assert expected_summary in stderr
+        assert "rejected c-1 -- could not pin its fix commit" in stderr
+        assert "confirm: approved c-1 " not in stderr
+
+    def test_a_concurrent_edit_of_the_defects_file_aborts_with_exit_1_and_keeps_the_other_writers_defect(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        load_confirmed_defects_unpatched = _write_a_defect_concurrently_during_the_first_load(monkeypatch)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 1
+
+        assert [d.id for d in load_confirmed_defects_unpatched(defects_path)] == ["concurrent"]
+        stderr = capsys.readouterr().err
+        assert "changed underneath this run" in stderr
+        assert "confirm: approved c-1 " not in stderr
+
+    def test_a_concurrent_edit_of_the_defects_file_still_names_the_declined_ids_it_recorded(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _feed_answers(monkeypatch, terminal=False)
+        load_confirmed_defects_unpatched = _write_a_defect_concurrently_during_the_first_load(monkeypatch)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-2", "n"), _answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 1
+
+        assert [d.id for d in load_confirmed_defects_unpatched(defects_path)] == ["concurrent"]
+        assert _recorded_declined_ids(local_dir) == ["c-2"]
+        stderr = capsys.readouterr().err
+        assert "changed underneath this run" in stderr
+        assert "confirm: declined c-2\n" in stderr
+        assert "confirm: approved" not in stderr
+
+    def test_a_concurrent_edit_after_a_failed_declined_write_exits_1_and_does_not_report_the_decline(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        declined_ids_path = _declined_ids_path(local_dir)
+        _fail_the_write_of_the_declined_file(monkeypatch, declined_ids_path)
+        _feed_answers(monkeypatch, terminal=False)
+        load_confirmed_defects_unpatched = _write_a_defect_concurrently_during_the_first_load(monkeypatch)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", "n"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 1
+
+        assert [d.id for d in load_confirmed_defects_unpatched(defects_path)] == ["concurrent"]
+        stderr = capsys.readouterr().err
+        assert "could not record the declined IDs" in stderr
+        assert "confirm: declined" not in stderr
+        assert "confirm: approved" not in stderr
+        assert not declined_ids_path.exists()
+
+    @pytest.mark.parametrize(
+        "unsafe_character",
+        ["\t", "\r", "\u202e", "\u200b", "\ud800"],
+        ids=["tab", "carriage-return", "bidi-override", "zero-width-space", "lone-surrogate"],
+    )
+    def test_a_description_with_a_policy_character_other_than_esc_is_skipped_and_makes_confirm_exit_2(
+        self, tmp_path: Path, monkeypatch, capsys, unsafe_character: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        description = f"x holds a {unsafe_character} stale value."
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description=description)])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- the description holds a control character" in stderr
+        assert "skipped 1 (1 rejected by the checks)" in stderr
+        assert unsafe_character not in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    @pytest.mark.parametrize(
+        "description",
+        ["x holds a stale value.\r", "x holds a stale value.\t", "\x85x holds a stale value.", "x holds a stale value.\u2028"],
+        ids=["trailing-carriage-return", "trailing-tab", "leading-next-line", "trailing-line-separator"],
+    )
+    def test_a_description_whose_unsafe_character_str_strip_would_remove_is_still_rejected(
+        self, tmp_path: Path, monkeypatch, capsys, description: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description=description)])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert "rejected c-1 -- the description holds a control character" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_description_with_a_trailing_line_feed_is_applied_without_it(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description=f"{_ANSWERS_DESCRIPTION}\n")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        [approved] = defects.load_confirmed_defects(defects_path)
+        assert approved.description == _ANSWERS_DESCRIPTION
+
+    def test_a_y_row_for_a_cross_source_sibling_of_an_earlier_approved_row_is_skipped_and_makes_confirm_exit_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+        stderr = capsys.readouterr().err
+        assert "skipped c-2 -- same head, fix, and path as c-1, approved by an earlier row and pending its pin" in stderr
+        assert "confirm: approved 1, declined 0, skipped 1 (1 same location as another source's defect)" in stderr
+
+    def test_a_y_row_for_a_cross_source_sibling_already_in_the_defects_file_is_skipped_and_makes_confirm_exit_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        defects_text = defects_path.read_text()
+        capsys.readouterr()
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-2")])) == 2
+
+        assert defects_path.read_text() == defects_text
+        stderr = capsys.readouterr().err
+        assert "skipped c-2 -- same head, fix, and path as approved c-1" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 same location as another source's defect)" in stderr
+
+    def test_an_n_row_for_a_cross_source_sibling_does_not_block_the_y_row_after_it(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", "n"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
+        assert _recorded_declined_ids(local_dir) == ["c-1"]
+
+    def test_two_cross_source_y_rows_at_different_paths_are_both_written_and_confirm_exits_0(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round", "evidence": {"path": "other.py"}},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert [(d.id, d.path) for d in defects.load_confirmed_defects(defects_path)] == [
+            ("c-1", "app.py"), ("c-2", "other.py"),
+        ]
+        stderr = capsys.readouterr().err
+        assert "same head, fix, and path" not in stderr
+        assert "confirm: approved 2, declined 0, skipped 0" in stderr
+
+    def test_a_y_row_at_a_different_path_from_a_cross_source_defect_already_in_the_defects_file_is_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round", "evidence": {"path": "other.py"}},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        capsys.readouterr()
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-2")])) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1", "c-2"]
+        stderr = capsys.readouterr().err
+        assert "same head, fix, and path" not in stderr
+        assert "confirm: approved 1, declined 0, skipped 0" in stderr
+
+    @pytest.mark.parametrize("sibling_is_committed", [False, True], ids=["sibling-pending", "sibling-committed"])
+    @pytest.mark.parametrize("differing_commit_field", ["head_commit", "fix_commit"])
+    def test_two_cross_source_y_rows_at_the_same_path_that_differ_in_one_commit_are_both_written_and_confirm_exits_0(
+        self, tmp_path: Path, monkeypatch, capsys, differing_commit_field: str, sibling_is_committed: bool,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        if differing_commit_field == "head_commit":
+            _write(repo, "notes.txt", "notes\n")
+        else:
+            _write(repo, "app.py", "x = 3\n")
+        other_commit_sha = _commit(repo, "commit the second candidate differs by")
+        shortlist_path = local_dir / "szz_candidates.json"
+        first_candidate, second_candidate = defects.load_candidates(shortlist_path)
+        second_candidate = dataclasses.replace(second_candidate, **{differing_commit_field: other_commit_sha})
+        defects.save_candidates(shortlist_path, [first_candidate, second_candidate])
+        _feed_answers(monkeypatch, terminal=False)
+        first_row, second_row = _answers_file_row("c-1"), _answers_file_row("c-2")
+        if sibling_is_committed:
+            assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [first_row])) == 0
+            capsys.readouterr()
+            rows_in_run = [second_row]
+        else:
+            rows_in_run = [first_row, second_row]
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, rows_in_run)) == 0
+
+        first_defect, second_defect = defects.load_confirmed_defects(defects_path)
+        assert first_defect.path == second_defect.path
+        assert getattr(first_defect, differing_commit_field) != getattr(second_defect, differing_commit_field)
+        stderr = capsys.readouterr().err
+        assert "same head, fix, and path" not in stderr
+        assert f"confirm: approved {len(rows_in_run)}, declined 0, skipped 0" in stderr
+
+    def test_a_y_row_that_fails_a_check_is_rejected_by_the_checks_even_when_an_earlier_row_approved_its_sibling(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-1"), _answers_file_row("c-2", description="red \x1b[31m text"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        stderr = capsys.readouterr().err
+        assert "rejected c-2 -- the description holds a control character" in stderr
+        assert "same head, fix, and path" not in stderr
+        assert "confirm: approved 1, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+
+    def test_a_skipped_cross_source_y_row_is_not_an_approved_sibling_for_a_later_row_of_the_first_source(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "pr-comment"}, {"source": "szz"}, {"source": "pr-comment"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-1"), _answers_file_row("c-2"), _answers_file_row("c-3"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1", "c-3"]
+        stderr = capsys.readouterr().err
+        assert "skipped c-2 -- same head, fix, and path as c-1, approved by an earlier row and pending its pin" in stderr
+        assert "skipped c-3" not in stderr
+        assert "confirm: approved 2, declined 0, skipped 1 (1 same location as another source's defect)" in stderr
+
+    def test_a_y_row_rejected_by_the_checks_does_not_make_a_later_cross_source_y_row_at_its_location_a_sibling(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [
+            _answers_file_row("c-1", description="red \x1b[31m text"), _answers_file_row("c-2"),
+        ])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- the description holds a control character" in stderr
+        assert "same head, fix, and path" not in stderr
+        assert "confirm: approved 1, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+
+    def test_a_cross_source_sibling_of_a_row_whose_pin_fails_is_skipped_without_claiming_an_approval_and_a_rerun_converges(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2")])
+        pin_defect_commits_unpatched = _fail_the_pin_of(
+            monkeypatch, {"c-1", "c-2"}, subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref"),
+        )
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "skipped c-2 -- same head, fix, and path as c-1, approved by an earlier row and pending its pin" in stderr
+        assert "as approved c-1" not in stderr
+        assert "rejected c-1 -- could not pin its fix commit" in stderr
+        assert (
+            "confirm: approved 0, declined 0, skipped 2 (1 same location as another source's defect, 1 could not be pinned)"
+        ) in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+        monkeypatch.setattr(defects, "pin_defect_commits", pin_defect_commits_unpatched)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+
+    def test_a_rerun_of_the_same_file_after_one_y_row_failed_to_pin_applies_it_and_keeps_the_rest_unchanged(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {}, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(
+            tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2"), _answers_file_row("c-3", "n")],
+        )
+        pin_defect_commits_unpatched = _fail_the_pin_of(
+            monkeypatch, {"c-2"}, subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref"),
+        )
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        [first_run_record] = defects.load_confirmed_defects(defects_path)
+        assert first_run_record.id == "c-1"
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+        assert _recorded_declined_ids(local_dir) == ["c-3"]
+
+        monkeypatch.setattr(defects, "pin_defect_commits", pin_defect_commits_unpatched)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        rerun_records = defects.load_confirmed_defects(defects_path)
+        assert [d.id for d in rerun_records] == ["c-1", "c-2"]
+        assert rerun_records[0] == first_run_record
+        assert set(_pin_refs(repo)) == {defects.defect_pin_ref("c-1"), defects.defect_pin_ref("c-2")}
+        assert _recorded_declined_ids(local_dir) == ["c-3"]
+
+    @pytest.mark.parametrize(
+        ("candidate_state", "answer", "retraction_note_expected", "expected_exit_code"),
+        [
+            ("already approved", "y", False, 0),
+            ("already approved", "n", True, 0),
+            ("rejected by the checks", "y", False, 2),
+            ("rejected by the checks", "n", False, 0),
+            ("previously declined", "y", False, 2),
+            ("previously declined", "n", False, 0),
+        ],
+    )
+    def test_a_row_for_a_candidate_that_is_not_promptable_changes_nothing_and_exits_2_only_for_an_unapplied_y(
+        self, tmp_path: Path, monkeypatch, capsys, candidate_state: str, answer: str, retraction_note_expected: bool,
+        expected_exit_code: int,
+    ) -> None:
+        stale_description = "x was reset by the older initial value."
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {"description": stale_description if candidate_state == "rejected by the checks" else "x is described here."},
+            {"source": "review-round", "description": "x holds a stale value.", "excerpt": stale_description},
+        )
+        defects_text = None
+        declined_ids_text = None
+        if candidate_state == "already approved":
+            # The committed text is the row's own, so the row is a retry rather than an edit.
+            committed = dataclasses.replace(_confirmed_single_defect("c-1"), description=_ANSWERS_DESCRIPTION)
+            defects.save_confirmed_defects(defects_path, [committed])
+            defects_text = defects_path.read_text()
+        if candidate_state == "previously declined":
+            declined_ids_text = '["c-1"]'
+            _declined_ids_path(local_dir).write_text(declined_ids_text)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", answer)])
+
+        exit_code = _run_confirm_with_answers(local_dir, defects_path, answers_file_path)
+
+        assert exit_code == expected_exit_code
+        stderr = capsys.readouterr().err
+        assert f"confirm: approved 0, declined 0, skipped 1 (1 {candidate_state})" in stderr
+        retraction_note = (
+            "confirm: skipped c-1 -- defects.json already holds it; "
+            "confirm does not remove an approved defect, so edit defects.json by hand"
+        )
+        assert (retraction_note in stderr) == retraction_note_expected
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text=declined_ids_text, defects_text=defects_text)
+
+    def test_an_empty_answers_file_argument_is_an_unreadable_file_not_an_absent_flag(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--answers-file", "", _ENGINEER_REVIEWED_FLAG) == 2
+
+        assert "could not be read" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_failed_write_of_the_declined_file_still_writes_the_y_row_but_exits_2_and_does_not_report_the_decline(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        declined_ids_path = _declined_ids_path(local_dir)
+        _fail_the_write_of_the_declined_file(monkeypatch, declined_ids_path)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", "n"), _answers_file_row("c-2")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-2")]
+        stderr = capsys.readouterr().err
+        assert f"could not record the declined IDs in {declined_ids_path}" in stderr
+        assert "confirm: approved 1, declined 0, skipped 1 (1 decline could not be recorded)" in stderr
+        assert "confirm: declined c-1" not in stderr
+        assert not declined_ids_path.exists()
+
+    def test_an_unreadable_declined_file_exits_2_before_any_row_is_applied_and_is_left_unchanged(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        unreadable_declined_ids_text = "not json"
+        _declined_ids_path(local_dir).write_text(unreadable_declined_ids_text)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1"), _answers_file_row("c-2", "n")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert f"confirm: {_declined_ids_path(local_dir)} " in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text=unreadable_declined_ids_text)
+
+    @pytest.mark.parametrize(
+        "retry_description", [_ANSWERS_DESCRIPTION, f"  {_ANSWERS_DESCRIPTION}  "], ids=["same-text", "padded-text"],
+    )
+    def test_a_y_row_matching_the_committed_record_is_a_quiet_retry_that_exits_0(
+        self, tmp_path: Path, monkeypatch, capsys, retry_description: str,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        defects_text = defects_path.read_text()
+        capsys.readouterr()
+
+        retry_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description=retry_description)])
+        assert _run_confirm_with_answers(local_dir, defects_path, retry_file_path) == 0
+
+        stderr = capsys.readouterr().err
+        assert "confirm: skipped" not in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 already approved)" in stderr
+        assert defects_path.read_text() == defects_text
+
+    @pytest.mark.parametrize(
+        "edited_text",
+        [{"description": "x was rewritten by hand."}, {"lens": "staff-sdet"}],
+        ids=["description", "lens"],
+    )
+    def test_a_y_row_that_edits_the_committed_record_is_skipped_under_its_own_reason_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys, edited_text: dict,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        defects_text = defects_path.read_text()
+        capsys.readouterr()
+
+        edited_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", **edited_text)])
+        assert _run_confirm_with_answers(local_dir, defects_path, edited_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "confirm: skipped c-1 -- defects.json already holds it with a different description or lens" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 already approved with a different description or lens)" in stderr
+        assert defects_path.read_text() == defects_text
+
+    def test_a_y_row_for_a_previously_declined_candidate_names_how_to_clear_the_decline(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert (
+            f"confirm: skipped c-1 -- previously declined; remove it from {_declined_ids_path(local_dir)} "
+            "or run confirm at a terminal with --include-declined to be asked again"
+        ) in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 previously declined)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text='["c-1"]')
+
+    @pytest.mark.parametrize(
+        "git_failure",
+        [
+            pytest.param(
+                subprocess.CalledProcessError(128, ["git", "log"], stderr=b"fatal: bad object"), id="called-process-error",
+            ),
+            pytest.param(subprocess.TimeoutExpired(["git", "log"], 10.0), id="timeout"),
+        ],
+    )
+    def test_a_y_row_whose_commit_subjects_cannot_be_read_is_rejected_and_exits_2_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys, git_failure,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+
+        def failing_commit_subjects(repo_dir, commits, **kwargs):
+            raise git_failure
+
+        monkeypatch.setattr(defects, "commit_subjects", failing_commit_subjects)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- could not read its commit subjects (" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_y_row_whose_base_commit_is_absent_from_the_repository_is_rejected_and_exits_2_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"base_commit": "c" * 40})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- could not read its commit subjects (" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_an_n_row_whose_commit_subjects_cannot_be_read_is_recorded_as_declined_and_exits_0(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"base_commit": "c" * 40})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", "n")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        stderr = capsys.readouterr().err
+        assert "could not read its commit subjects" not in stderr
+        assert "confirm: approved 0, declined 1, skipped 0" in stderr
+        assert _recorded_declined_ids(local_dir) == ["c-1"]
+        assert not defects_path.exists()
+        assert _pin_refs(repo) == []
+
+    def test_a_y_row_for_a_sibling_of_a_committed_defect_whose_candidate_left_the_shortlists_is_skipped(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "review-round"},
+        )
+        shortlist_path = local_dir / "szz_candidates.json"
+        both_candidates = defects.load_candidates(shortlist_path)
+        _feed_answers(monkeypatch, terminal=False)
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-1")])) == 0
+        defects_text = defects_path.read_text()
+        defects.save_candidates(shortlist_path, [c for c in both_candidates if c.id == "c-2"])
+        capsys.readouterr()
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [_answers_file_row("c-2")])) == 2
+
+        assert defects_path.read_text() == defects_text
+        stderr = capsys.readouterr().err
+        assert "skipped c-2 -- same head, fix, and path as approved c-1" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 same location as another source's defect)" in stderr
+
+    def test_a_description_sharing_a_word_run_with_a_different_candidates_excerpt_is_rejected_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {"source": "szz"},
+            {
+                "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the reviewer found that error handling silently swallows it",
+            },
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        borrowed_description = "The reviewer found that error handling silently swallows it."
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description=borrowed_description)])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- description shares the word run" in stderr
+        assert "c-2's excerpt" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    _PUBLIC_COMMENT_TEXT = "app.py:2 — alpha bravo charlie delta echo foxtrot golf."
+
+    def _public_comment_and_excerpt_workspace(
+        self, tmp_path: Path, monkeypatch, *, comment_source: str,
+    ) -> tuple[Path, Path, Path, str]:
+        return _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "id": "rr-excerpt", "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the finding says alpha bravo charlie delta echo foxtrot golf and more",
+            },
+            {
+                "id": "comment-1", "source": comment_source,
+                "evidence": {"path": "other.py", "public_comment_text": self._PUBLIC_COMMENT_TEXT},
+            },
+        )
+
+    def test_a_row_repeating_the_public_comment_of_a_pr_comment_candidate_is_applied(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        _, local_dir, defects_path, _ = self._public_comment_and_excerpt_workspace(
+            tmp_path, monkeypatch, comment_source="pr-comment",
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        row = _answers_file_row("comment-1", description=self._PUBLIC_COMMENT_TEXT)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [row])) == 0
+
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["comment-1"]
+
+    @pytest.mark.parametrize("comment_source", ["review-round", "szz"])
+    def test_a_candidate_outside_the_github_comment_sources_gets_no_public_comment_exemption_on_the_answers_path(
+        self, tmp_path: Path, monkeypatch, capsys, comment_source: str,
+    ) -> None:
+        repo, local_dir, defects_path, _ = self._public_comment_and_excerpt_workspace(
+            tmp_path, monkeypatch, comment_source=comment_source,
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        row = _answers_file_row("comment-1", description=self._PUBLIC_COMMENT_TEXT)
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [row])) == 2
+
+        assert "rejected comment-1 -- description shares the word run" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_words_appended_to_a_public_comment_that_form_an_excerpt_run_are_rejected_on_the_answers_path(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {
+                "id": "rr-excerpt", "source": "review-round", "description": "x holds a stale value.",
+                "excerpt": "the finding says one two three four five six seven and more",
+            },
+            {
+                "id": "comment-1", "source": "pr-comment",
+                "evidence": {"path": "other.py", "public_comment_text": self._PUBLIC_COMMENT_TEXT},
+            },
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        row = _answers_file_row("comment-1", description=f"{self._PUBLIC_COMMENT_TEXT} one two three four five six")
+
+        assert _run_confirm_with_answers(local_dir, defects_path, _write_answers_file(tmp_path, [row])) == 2
+
+        assert "rejected comment-1 -- description shares the word run 'one two three four five six'" in (
+            capsys.readouterr().err
+        )
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_y_row_whose_path_is_absent_at_its_head_is_rejected_and_exits_2_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _write(repo, "added_by_the_fix.py", "y = 1\n")
+        fix_sha = _commit(repo, "add y")
+        shortlist_path = local_dir / "szz_candidates.json"
+        [candidate] = defects.load_candidates(shortlist_path)
+        defects.save_candidates(shortlist_path, [
+            dataclasses.replace(candidate, fix_commit=fix_sha, evidence={"path": "added_by_the_fix.py"}),
+        ])
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- added_by_the_fix.py does not exist at its introducing commit" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_timeout_checking_a_rows_path_rejects_it_and_exits_2_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"evidence": {"path": "slow.py"}})
+
+        def path_check_timing_out(repo_dir, commit, path, **kwargs):
+            raise subprocess.TimeoutExpired(["git", "cat-file"], 10.0)
+
+        monkeypatch.setattr(defects, "path_exists_at_commit", path_check_timing_out)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- could not check whether its path exists at its introducing commit" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_y_row_whose_public_git_text_cannot_be_read_is_rejected_and_exits_2_with_nothing_written(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"head_commit": "d" * 40, "fix_commit": "e" * 40},
+        )
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- could not read its public git text" in stderr
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_with_a_terminal_attached_an_applied_row_never_reads_stdin_or_prompts(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "n", "n", terminal=True)  # lines a prompt would read as declines
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert "[y/N/q]" not in capsys.readouterr().err
+        assert sys.stdin.read() == "n\nn\n"
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+
+    def test_with_a_terminal_attached_a_rejected_row_exits_2_and_stdin_answers_do_not_approve_it(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, "y", _ANSWERS_DESCRIPTION, "", terminal=True)  # answers a prompt would approve with
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", description="red \x1b[31m text")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert "[y/N/q]" not in capsys.readouterr().err
+        assert sys.stdin.read() == f"y\n{_ANSWERS_DESCRIPTION}\n\n"
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+    def test_a_declined_and_approved_candidate_is_skipped_as_already_approved_not_as_previously_declined(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        committed = dataclasses.replace(_confirmed_single_defect("c-1"), description=_ANSWERS_DESCRIPTION)
+        defects.save_confirmed_defects(defects_path, [committed])
+        defects_text = defects_path.read_text()
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        assert "confirm: approved 0, declined 0, skipped 1 (1 already approved)" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text='["c-1"]', defects_text=defects_text)
+
+    def test_a_declined_and_rejected_candidate_is_skipped_as_rejected_by_the_checks_not_as_previously_declined(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        stale_description = "x was reset by the older initial value."
+        repo, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch,
+            {"description": stale_description},
+            {"source": "review-round", "description": "x holds a stale value.", "excerpt": stale_description},
+        )
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        assert "confirm: approved 0, declined 0, skipped 1 (1 rejected by the checks)" in capsys.readouterr().err
+        _assert_nothing_written(repo, local_dir, defects_path, declined_ids_text='["c-1"]')
+
+    def test_a_non_ascii_id_and_description_round_trip_through_a_raw_utf8_file(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        non_ascii_id = "szz:0123456789ab:cdef01234567:docs/résumé~é.py"
+        non_ascii_description = "x — “left” stale at é."
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {"id": non_ascii_id})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = tmp_path / "answers.json"
+        answers_file_path.write_bytes(json.dumps(
+            [_answers_file_row(non_ascii_id, description=non_ascii_description)], ensure_ascii=False,
+        ).encode("utf-8"))
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 0
+
+        [approved] = defects.load_confirmed_defects(defects_path)
+        assert (approved.id, approved.description) == (non_ascii_id, non_ascii_description)
+        assert _pin_refs(repo) == [defects.defect_pin_ref(non_ascii_id)]
+        assert (
+            f"confirm: approved {non_ascii_id} [staff-backend-engineer] {_echoed_commits_and_path(approved)}: "
+            f"{non_ascii_description}\n"
+        ) in capsys.readouterr().err
+
+    def test_a_byte_order_mark_before_the_json_exits_2_as_unreadable_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = tmp_path / "answers.json"
+        answers_file_path.write_bytes(b"\xef\xbb\xbf" + json.dumps([_answers_file_row("c-1")]).encode("utf-8"))
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert len(stderr.splitlines()) == 1
+        assert "could not be read as JSON" in stderr
+        _assert_nothing_written(repo, local_dir, defects_path)
+
+
+def _escaped(path: Path) -> str:
+    return str(path).replace("\x1b", "\\x1b")
+
+
+def _escape_byte_local_dir(local_dir: Path) -> Path:
+    return local_dir.rename(local_dir.with_name("local\x1b[31m"))
+
+
+class TestConfirmEchoedPathsAreEscaped:
+    @pytest.mark.parametrize(
+        ("ids_text", "declined_ids_text", "answers", "terminal", "expected_exit_code", "echoed_line"),
+        [
+            pytest.param(None, None, [], True, 2, "confirm: {path} could not be read", id="unreadable-file"),
+            pytest.param(
+                "c-9\n", None, [], True, 2, "confirm: {path} lists 1 ID(s) that match no candidate", id="unknown-id",
+            ),
+            pytest.param(
+                "c-1\n", None, ["n"], True, 0, "prompting only for the IDs listed in {path}, in that order",
+                id="prompt-header",
+            ),
+            pytest.param(
+                "c-1\nc-2\n", '["c-1"]', ["n"], True, 0, "1 of the 2 ID(s) listed in {path} not prompted",
+                id="unprompted-note",
+            ),
+            pytest.param(
+                "c-1\n", None, [], False, 2, "listed in {path} awaiting the engineer at a terminal", id="awaiting-line",
+            ),
+        ],
+    )
+    def test_an_ids_file_path_holding_an_escape_byte_is_echoed_escaped(
+        self, tmp_path: Path, monkeypatch, capsys, ids_text: str | None, declined_ids_text: str | None,
+        answers: list[str], terminal: bool, expected_exit_code: int, echoed_line: str,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        if declined_ids_text is not None:
+            _declined_ids_path(local_dir).write_text(declined_ids_text)
+        ids_file_path = tmp_path / "ids\x1b[31m.txt"
+        if ids_text is not None:
+            ids_file_path.write_text(ids_text, encoding="utf-8")
+        _feed_answers(monkeypatch, *answers, terminal=terminal)
+
+        assert _run_confirm(local_dir, defects_path, "--ids-file", str(ids_file_path)) == expected_exit_code
+
+        stderr = capsys.readouterr().err
+        assert echoed_line.format(path=_escaped(ids_file_path)) in stderr
+        assert "\x1b" not in stderr
+
+    def test_an_answers_file_path_holding_an_escape_byte_is_echoed_escaped(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = tmp_path / "answers\x1b[31m.json"
+        answers_file_path.write_text("not json", encoding="utf-8")
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {_escaped(answers_file_path)} could not be read as JSON" in stderr
+        assert "\x1b" not in stderr
+
+    def test_an_unreadable_declined_ids_file_under_a_local_dir_holding_an_escape_byte_is_echoed_escaped(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        local_dir = _escape_byte_local_dir(local_dir)
+        _declined_ids_path(local_dir).write_text("not json")
+        _feed_answers(monkeypatch, "y", "")
+
+        assert _run_confirm(local_dir, defects_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: {_escaped(_declined_ids_path(local_dir))} " in stderr
+        assert "\x1b" not in stderr
+
+    def test_a_failed_declined_ids_write_under_a_local_dir_holding_an_escape_byte_echoes_the_path_escaped(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        local_dir = _escape_byte_local_dir(local_dir)
+        declined_ids_path = _declined_ids_path(local_dir)
+        _fail_the_write_of_the_declined_file(monkeypatch, declined_ids_path)
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1", "n")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"could not record the declined IDs in {_escaped(declined_ids_path)}" in stderr
+        assert "\x1b" not in stderr
+
+    def test_a_previously_declined_note_under_a_local_dir_holding_an_escape_byte_echoes_the_path_escaped(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        local_dir = _escape_byte_local_dir(local_dir)
+        declined_ids_path = _declined_ids_path(local_dir)
+        declined_ids_path.write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert f"previously declined; remove it from {_escaped(declined_ids_path)} " in stderr
+        assert "\x1b" not in stderr
+
+    def test_a_defects_path_holding_an_escape_byte_is_echoed_escaped_when_a_concurrent_edit_aborts_the_run(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, _, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        defects_path = tmp_path / "defects\x1b[31m.json"
+        _feed_answers(monkeypatch, terminal=False)
+        _write_a_defect_concurrently_during_the_first_load(monkeypatch)
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        assert _run_confirm_with_answers(local_dir, defects_path, answers_file_path) == 1
+
+        stderr = capsys.readouterr().err
+        assert f"confirm: aborted -- {_escaped(defects_path)} changed underneath this run" in stderr
+        assert "\x1b" not in stderr
+
+
+# --- the pure parsers ----------------------------------------------------------
+
+
+class TestLoadIdsFile:
+    def test_ids_come_back_in_file_order_stripped_with_comments_blank_lines_and_repeats_dropped(
+        self, tmp_path: Path,
+    ) -> None:
+        ids_file_path = _write_ids_file(tmp_path, "# header\r\n\r\n  c-2  \r\nc-1\n# c-3\n\nc-2\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == ["c-2", "c-1"]
+
+    def test_a_leading_byte_order_mark_is_not_part_of_the_first_id(self, tmp_path: Path) -> None:
+        ids_file_path = _write_ids_file(tmp_path, "\ufeffc-1\nc-2\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == ["c-1", "c-2"]
+
+    def test_a_byte_order_mark_before_a_comment_line_still_skips_the_comment(self, tmp_path: Path) -> None:
+        ids_file_path = _write_ids_file(tmp_path, "\ufeff# header\nc-1\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == ["c-1"]
+
+    def test_an_indented_comment_line_is_skipped(self, tmp_path: Path) -> None:
+        ids_file_path = _write_ids_file(tmp_path, "  # indented\nc-1\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == ["c-1"]
+
+    def test_a_trailing_comment_stays_part_of_the_line(self, tmp_path: Path) -> None:
+        ids_file_path = _write_ids_file(tmp_path, "c-1  # note\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == ["c-1  # note"]
+
+    def test_an_id_keeps_its_internal_space_colons_slashes_and_tilde(self, tmp_path: Path) -> None:
+        miner_emitted_id = "szz:0123456789ab:cdef01234567:pkg/a b~c.py"
+        ids_file_path = _write_ids_file(tmp_path, f"  {miner_emitted_id}\t\n")
+
+        assert run_review_bench._load_ids_file(ids_file_path) == [miner_emitted_id]
+
+    @pytest.mark.parametrize(
+        ("make_unreadable", "expected_message"),
+        [
+            pytest.param(lambda path: None, "could not be read ([Errno 2] No such file or directory", id="missing"),
+            pytest.param(lambda path: path.mkdir(), "could not be read ([Errno 21] Is a directory", id="directory"),
+            pytest.param(lambda path: path.write_bytes(b"c-1\n\xff\xfe\n"), "is not UTF-8 text", id="not-utf-8"),
+            pytest.param(lambda path: path.write_text("# only a comment\n\n"), "lists no candidate IDs", id="no-ids"),
+        ],
+    )
+    def test_each_unreadable_shape_raises_value_error_with_its_own_message(
+        self, tmp_path: Path, make_unreadable, expected_message: str,
+    ) -> None:
+        ids_file_path = tmp_path / "ids.txt"
+        make_unreadable(ids_file_path)
+
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_ids_file(ids_file_path)
+
+        assert expected_message in str(exc_info.value)
+
+
+_KNOWN_ANSWER_IDS = {"c-1", "c-2"}
+
+
+class TestAnswerRow:
+    def test_a_y_row_carries_its_description_and_lens(self) -> None:
+        raw_row = _answers_file_row("c-1", lens="staff-sdet", description="x is reassigned too late.")
+
+        assert run_review_bench._answer_row(1, raw_row, _KNOWN_ANSWER_IDS) == run_review_bench._AnswerRow(
+            "c-1", "y", "x is reassigned too late.", "staff-sdet",
+        )
+
+    def test_an_n_row_ignores_a_description_and_lens_of_any_type(self) -> None:
+        raw_row = _answers_file_row("c-1", "n", description=7, lens=["not", "a", "lens"])
+
+        assert run_review_bench._answer_row(1, raw_row, _KNOWN_ANSWER_IDS) == run_review_bench._AnswerRow(
+            "c-1", "n", "", "",
+        )
+
+    def test_a_trailing_line_feed_is_not_a_second_line(self) -> None:
+        raw_row = _answers_file_row("c-1", description="x is reassigned too late.\n")
+
+        assert run_review_bench._answer_row(1, raw_row, _KNOWN_ANSWER_IDS).answer == "y"
+
+    @pytest.mark.parametrize(
+        ("raw_row", "problem"),
+        [
+            pytest.param(_answers_file_row("c-1", description="first.\nsecond."), "more than one line", id="line-feed-inside"),
+            pytest.param(_answers_file_row("c-1", description="first.\r\nsecond."), "more than one line", id="crlf-inside"),
+            pytest.param(_answers_file_row("c-1", lens=" staff-sdet"), "lens ' staff-sdet' is not in", id="lens-leading-space"),
+            pytest.param(
+                _answers_file_row("c-1", lens="staff-sdet\n"), "lens 'staff-sdet\\n' is not in", id="lens-trailing-line-feed",
+            ),
+            pytest.param(_answers_file_row("c-1", description=" \n "), "with no description", id="whitespace-only-description"),
+            pytest.param(_answers_file_row("c-1", description=7), "with no description", id="non-string-description"),
+            pytest.param(_answers_file_row("c-1", lens=7), "with no lens", id="non-string-lens"),
+            pytest.param(_answers_file_row("c-1", answer="maybe"), "answer must be one of y, n", id="unknown-answer"),
+            pytest.param({"id": "c-1", "answer": ["y"]}, "answer must be one of y, n", id="unhashable-answer"),
+            pytest.param(_answers_file_row("nope"), "matches no candidate", id="unknown-id"),
+            pytest.param({"answer": "n"}, "no string id", id="missing-id"),
+            pytest.param(_answers_file_row("c-1", note="x"), "unknown key(s) note", id="unknown-key"),
+            pytest.param("c-1", "not a JSON object", id="not-an-object"),
+        ],
+    )
+    def test_each_malformed_row_raises_value_error_naming_its_position_and_problem(self, raw_row, problem: str) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._answer_row(3, raw_row, _KNOWN_ANSWER_IDS)
+
+        assert "row 3" in str(exc_info.value)
+        assert problem in str(exc_info.value)
+
+
+class TestLoadAnswersFile:
+    def test_rows_come_back_in_file_order(self, tmp_path: Path) -> None:
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-2"), _answers_file_row("c-1", "n")])
+
+        rows = run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert [(row.id, row.answer) for row in rows] == [("c-2", "y"), ("c-1", "n")]
+
+    @pytest.mark.parametrize(
+        ("make_unreadable", "expected_message"),
+        [
+            pytest.param(lambda path: None, "could not be read ([Errno 2] No such file or directory", id="missing"),
+            pytest.param(lambda path: path.mkdir(), "could not be read ([Errno 21] Is a directory", id="directory"),
+            pytest.param(lambda path: path.write_bytes(b"[\xff\xfe]"), "could not be read as JSON", id="not-utf-8"),
+            pytest.param(lambda path: path.write_text("not json"), "could not be read as JSON", id="not-json"),
+            pytest.param(
+                lambda path: path.write_text("[" * 100_000), "could not be read as JSON (maximum recursion depth",
+                id="deeply-nested-json",
+            ),
+        ],
+    )
+    def test_each_unreadable_shape_raises_value_error_with_its_own_message(
+        self, tmp_path: Path, make_unreadable, expected_message: str,
+    ) -> None:
+        answers_file_path = tmp_path / "answers.json"
+        make_unreadable(answers_file_path)
+
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert expected_message in str(exc_info.value)
+
+    def test_an_empty_path_is_read_as_the_current_directory_and_raises_value_error(self) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_answers_file(Path(""), _KNOWN_ANSWER_IDS)
+
+        assert "could not be read" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("rows", "problem"),
+        [
+            pytest.param({"id": "c-1"}, "is not a non-empty JSON list of answers", id="not-a-list"),
+            pytest.param([], "is not a non-empty JSON list of answers", id="empty-list"),
+            pytest.param([_answers_file_row("c-1"), _answers_file_row("c-1", "n")], "row 2 repeats 'c-1'", id="repeated-id"),
+            pytest.param([_answers_file_row("c-1"), _answers_file_row("nope")], "row 2 names 'nope'", id="unknown-id-in-row-2"),
+        ],
+    )
+    def test_a_file_that_is_not_a_list_of_valid_unique_rows_raises_value_error(
+        self, tmp_path: Path, rows, problem: str,
+    ) -> None:
+        answers_file_path = _write_answers_file(tmp_path, rows)
+
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert problem in str(exc_info.value)
+
+
+class TestLoadAnswersFileRepeatedKeys:
+    @pytest.mark.parametrize(
+        ("file_text", "repeated_keys"),
+        [
+            pytest.param('[{"id": "c-1", "answer": "n", "answer": "y"}]', "answer", id="answer-in-a-row"),
+            pytest.param('[{"id": "c-1", "id": "c-2", "answer": "n"}]', "id", id="id-in-a-row"),
+            pytest.param('[{"id": "c-1", "id": "c-1", "answer": "n"}]', "id", id="id-repeated-with-the-same-value"),
+            pytest.param('[{"id": "c-1", "answer": "n", "id": "c-2", "answer": "y"}]', "answer, id", id="two-keys-in-a-row"),
+        ],
+    )
+    def test_a_repeated_key_in_a_row_raises_value_error_naming_each_repeated_key(
+        self, tmp_path: Path, file_text: str, repeated_keys: str,
+    ) -> None:
+        answers_file_path = _write_answers_file(tmp_path, file_text)
+
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert f"could not be read as JSON (a JSON object repeats key(s) {repeated_keys})" in str(exc_info.value)
+
+    def test_the_same_key_in_two_different_rows_is_not_a_repeat(self, tmp_path: Path) -> None:
+        answers_file_path = _write_answers_file(tmp_path, '[{"id": "c-1", "answer": "n"}, {"id": "c-2", "answer": "n"}]')
+
+        rows = run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert [row.id for row in rows] == ["c-1", "c-2"]
+
+
+class TestCandidateSkipReason:
+    @pytest.mark.parametrize(
+        ("existing_ids", "rejected_ids", "declined_ids", "expected_reason"),
+        [
+            pytest.param({"c-1"}, set(), set(), "already approved", id="approved"),
+            pytest.param(set(), {"c-1"}, set(), "rejected by the checks", id="rejected"),
+            pytest.param(set(), set(), {"c-1"}, "previously declined", id="declined"),
+            pytest.param(set(), set(), set(), None, id="none"),
+            pytest.param({"c-1"}, set(), {"c-1"}, "already approved", id="approved-and-declined"),
+            pytest.param({"c-1"}, {"c-1"}, set(), "already approved", id="approved-and-rejected"),
+            pytest.param(set(), {"c-1"}, {"c-1"}, "rejected by the checks", id="rejected-and-declined"),
+            pytest.param({"c-1"}, {"c-1"}, {"c-1"}, "already approved", id="all-three"),
+            pytest.param({"c-2"}, {"c-3"}, {"c-4"}, None, id="other-candidates-only"),
+        ],
+    )
+    def test_the_first_matching_state_wins_in_the_order_approved_rejected_declined(
+        self, existing_ids: set[str], rejected_ids: set[str], declined_ids: set[str], expected_reason: str | None,
+    ) -> None:
+        reason = run_review_bench._candidate_skip_reason("c-1", existing_ids, rejected_ids, declined_ids)
+
+        assert reason == expected_reason
+
+
+class TestAnswersFileFlagProblem:
+    @staticmethod
+    def _problem(tmp_path: Path, *flags: str) -> str | None:
+        return run_review_bench._answers_file_flag_problem(_confirm_args(tmp_path, tmp_path / "defects.json", *flags))
+
+    def test_no_answers_flags_is_no_problem(self, tmp_path: Path) -> None:
+        assert self._problem(tmp_path) is None
+
+    def test_the_reviewed_flag_without_an_answers_file_is_a_problem(self, tmp_path: Path) -> None:
+        assert "applies only with --answers-file" in self._problem(tmp_path, _ENGINEER_REVIEWED_FLAG)
+
+    def test_an_answers_file_without_the_reviewed_flag_is_a_problem(self, tmp_path: Path) -> None:
+        assert "reviewed every row" in self._problem(tmp_path, "--answers-file", "answers.json")
+
+    def test_an_answers_file_with_the_reviewed_flag_is_no_problem(self, tmp_path: Path) -> None:
+        assert self._problem(tmp_path, "--answers-file", "answers.json", _ENGINEER_REVIEWED_FLAG) is None
+
+    def test_an_empty_answers_file_argument_counts_as_given(self, tmp_path: Path) -> None:
+        assert self._problem(tmp_path, "--answers-file", "", _ENGINEER_REVIEWED_FLAG) is None
+        assert "reviewed every row" in self._problem(tmp_path, "--answers-file", "")
+
+    @pytest.mark.parametrize(
+        ("narrowing_flags", "problem"),
+        [
+            pytest.param(("--ids-file", "ids.txt"), "mutually exclusive", id="ids-file"),
+            pytest.param(("--ids-file", ""), "mutually exclusive", id="empty-ids-file"),
+            pytest.param(("--source", "szz"), "does not combine with --source or --include-declined", id="source"),
+            pytest.param(("--include-declined",), "does not combine with --source or --include-declined", id="include-declined"),
+        ],
+    )
+    def test_a_prompt_narrowing_flag_is_a_problem_even_with_the_reviewed_flag(
+        self, tmp_path: Path, narrowing_flags: tuple[str, ...], problem: str,
+    ) -> None:
+        flags = ("--answers-file", "answers.json", _ENGINEER_REVIEWED_FLAG, *narrowing_flags)
+
+        assert problem in self._problem(tmp_path, *flags)

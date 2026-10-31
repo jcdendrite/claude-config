@@ -28,39 +28,63 @@ from helpers import (
     set_gitlink,
 )
 
-from .conftest import _commit, _init_repo, _make_feature_branch, _make_repo_with_remote
+from .conftest import (
+    _STACKED_BRANCH,
+    _commit,
+    _init_repo,
+    _make_feature_branch,
+    _make_repo_with_remote,
+    _make_stacked_repo,
+)
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-diff-against-base.sh"
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
 
-def _gh_shim_source(base_ref: str | None) -> str:
+def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str:
     """Return source for a gh shim answering `gh pr view --json baseRefName
     --jq .baseRefName`.
 
     base_ref=None models `gh pr view` failing (no PR open for this branch,
     or gh not authenticated) -- the shim exits 1 with no stdout, exercising
     pr-diff-against-base.sh's default-branch fallback path.
+
+    state_reply answers the stack-base path's `gh pr view --json
+    state,baseRefName --jq '.state, .baseRefName'` call by printing its raw
+    value verbatim with exit 0, so "" is an exit-0 empty reply.
+    The shim answers only when the argument after `--jq` is exactly
+    `.state, .baseRefName`, so an inverted or altered filter reads as a gh
+    failure.
+    None leaves that call failing with exit 1.
     """
     body = "sys.exit(1)" if base_ref is None else f"print({base_ref!r})"
+    state_body = "sys.exit(1)" if state_reply is None else f"sys.stdout.write({state_reply!r})"
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import sys
         args = sys.argv[1:]
         if args[:2] == ["pr", "view"] and "--json" in args and "baseRefName" in args:
             {body}
+        elif (
+            args[:2] == ["pr", "view"]
+            and "--json" in args
+            and "state,baseRefName" in args
+            and "--jq" in args
+            and args[args.index("--jq") + 1 : args.index("--jq") + 2] == [".state, .baseRefName"]
+        ):
+            {state_body}
         else:
             sys.exit(1)
     """)
 
 
-def _env_with_gh_shim(tmp_path: Path, base_ref: str | None) -> dict:
+def _env_with_gh_shim(tmp_path: Path, base_ref: str | None, state_reply: str | None = None) -> dict:
     """Build an env with a gh shim reporting base_ref prepended to PATH."""
     shim_dir = tmp_path / "gh_shim"
     shim_dir.mkdir()
     gh_shim = shim_dir / "gh"
-    gh_shim.write_text(_gh_shim_source(base_ref))
+    gh_shim.write_text(_gh_shim_source(base_ref, state_reply))
     gh_shim.chmod(0o755)
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(shim_dir), env.get("PATH", "")])
@@ -747,6 +771,198 @@ class TestDefaultBranchUnresolvable:
         assert result.returncode == 1
         assert result.stdout == ""
         assert "no default branch resolved" in result.stderr
+
+
+class TestStackBaseKeyPath:
+    """With branch.<branch>.gh-merge-base set the script uses its value or
+    stops; with no key it runs the default-branch path (the classes above)."""
+
+    @pytest.mark.parametrize("stack_base", ["stack", "team/stack"])
+    def test_key_set_with_no_pr_diffs_only_the_branches_own_commits(self, tmp_path, stack_base):
+        local, _bare = _make_stacked_repo(tmp_path, stack_base)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base = {stack_base}" in result.stderr
+        assert "defaulting base to" not in result.stderr
+
+    def test_no_key_control_on_the_same_fixture_diffs_the_stack_bases_commits_too(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(
+            ["git", "config", "--unset-all", f"branch.{_STACKED_BRANCH}.gh-merge-base"], cwd=local, check=True
+        )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" in result.stdout
+        assert "defaulting base to main" in result.stderr
+
+    def test_gh_pr_view_failure_on_the_key_path_adds_a_clause_to_the_using_line(self, tmp_path):
+        """A gh failure reads as no open PR, so the `using` line says the open-PR check did not run.
+        The clause rides on that one line, never on a second stderr line."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        using_lines = result.stderr.splitlines()
+        assert len(using_lines) == 1
+        assert using_lines[0] == (
+            f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base"
+            "; gh pr view failed or found no PR, so no open-PR base was checked"
+        )
+
+    @pytest.mark.parametrize(
+        "state_reply",
+        [
+            pytest.param("OPEN\nstack\n", id="open-pr-agreeing-with-the-key"),
+            pytest.param("MERGED\nmain\n", id="merged-pr"),
+            pytest.param("", id="exit-0-empty-reply"),
+        ],
+    )
+    def test_gh_pr_view_exiting_zero_leaves_the_using_line_without_the_clause(self, tmp_path, state_reply):
+        """The clause fires on a non-zero gh exit only, not on a reply the parser reads as no open PR."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, state_reply))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == f"pr-diff-against-base.sh: using branch.{_STACKED_BRANCH}.gh-merge-base = stack as the base\n"
+
+    def test_open_pr_agreeing_with_the_key_diffs_only_the_branches_own_commits(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\nstack\n"))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_open_pr_with_another_base_stops_naming_both_bases(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\nmain\n"))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        stop_lines = result.stderr.splitlines()
+        assert len(stop_lines) == 1
+        assert stop_lines[0].startswith("pr-diff-against-base.sh:")
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base" in stop_lines[0]
+        assert "targets main, not stack" in stop_lines[0]
+        assert "gh pr edit --base stack" in stop_lines[0]
+
+    @pytest.mark.parametrize("pr_state", ["MERGED", "CLOSED"])
+    def test_merged_or_closed_pr_with_another_base_is_ignored(self, tmp_path, pr_state):
+        """gh pr view with no argument can return the branch's merged or closed PR, whose base
+        says nothing about the stack base, so only an OPEN PR's base is compared with the key."""
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, f"{pr_state}\nmain\n"))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+        assert "targets" not in result.stderr
+
+    def test_open_pr_base_with_a_shell_metacharacter_is_quoted_in_the_stop_line(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None, "OPEN\na&b\n"))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        stop_lines = result.stderr.splitlines()
+        assert len(stop_lines) == 1
+        assert "targets a\\&b, not stack" in stop_lines[0]
+
+    def test_local_branch_named_like_the_remote_tracking_ref_does_not_replace_the_base(self, tmp_path):
+        """A local branch `origin/stack` outranks `origin/stack` in git's short-name lookup, so
+        the script must measure through the fully qualified remote-tracking ref."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "origin/stack", "main"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_diff_is_measured_against_the_remote_tracking_stack_base_not_a_local_branch_of_the_same_name(self, tmp_path):
+        """A local `stack` sitting at the default tip would put base.txt in the diff if the
+        script measured against it, so the base must be refs/remotes/origin/stack."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "-f", "stack", "main"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("key_value", "reason_fragment"),
+        [
+            pytest.param("-stack", "starts with '-'", id="leading-dash"),
+            pytest.param(_STACKED_BRANCH, "this branch itself", id="own-branch-name"),
+            pytest.param("never-fetched", "no merge-base with origin/never-fetched", id="never-fetched"),
+        ],
+    )
+    def test_unusable_key_stops_with_a_prefixed_line_and_no_default_fallback(
+        self, tmp_path, key_value, reason_fragment
+    ):
+        local, _bare = _make_stacked_repo(tmp_path, key_value=key_value)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr.startswith("pr-diff-against-base.sh:")
+        assert f"branch.{_STACKED_BRANCH}.gh-merge-base" in result.stderr
+        assert reason_fragment in result.stderr
+        assert "defaulting base to" not in result.stderr
+        assert len(result.stderr.splitlines()) == 1
+
+    def test_never_fetched_stack_base_stop_names_the_script_that_fetches_it(self, tmp_path):
+        """The merge-base stop keeps the `no merge-base with origin/<value>` prefix and names
+        the script that fetches the stack base, so the engineer does not edit a key that was fine."""
+        local, _bare = _make_stacked_repo(tmp_path, key_value="never-fetched")
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 1
+        assert "no merge-base with origin/never-fetched" in result.stderr
+        assert "~/.claude/scripts/branch-divergence-status.sh" in result.stderr
+
+    def test_stack_base_deleted_on_origin_still_diffs_from_the_stale_local_ref(self, tmp_path):
+        """Pins the ordering dependency: this script never fetches, so only
+        branch-divergence-status.sh's earlier fetch catches a deleted stack
+        base."""
+        local, bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "branch", "-D", "stack"], cwd=bare, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert "own.txt" in result.stdout
+        assert "base.txt" not in result.stdout
+
+    def test_staged_mode_never_reads_an_unusable_key(self, tmp_path):
+        local, _bare = _make_stacked_repo(tmp_path, key_value="-stack")
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None), staged=True)
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/staged.txt b/staged.txt" in result.stdout
 
 
 def _lib_cumulative_diff_hash(repo_root: str, pr_diff_script: str, env: dict) -> str:

@@ -301,7 +301,7 @@ class TestRequireWorktreeForGitWrites:
         assert (
             run_hook(
                 WORKTREE_HOOK,
-                bash_input("git -c user.email=t@t.com log"),
+                bash_input("git -c user.email=t@example.invalid log"),
                 cwd=opted_in_repo,
             )
             == "allow"
@@ -324,7 +324,7 @@ class TestRequireWorktreeForGitWrites:
         repo = tmp_path / "weird"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         (repo / ".claude").mkdir()
         (repo / ".claude" / "worktree-required").mkdir()
