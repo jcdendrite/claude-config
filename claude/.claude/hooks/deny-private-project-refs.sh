@@ -172,8 +172,8 @@
 #     - a miscased marker name on a case-sensitive filesystem
 # - A filesystem error on the marker's `-f` test reads as an absent marker,
 #   which fails open.
-# - The staged diff is read without a size cap. docs/hooks.md § "Bash version"
-#   and § "Gate deadlock recovery" state what a gate timeout does.
+# - The staged diff is read without a size cap. `docs/hooks.md` § "Bash version"
+#   and `docs/hooks.md` § "Gate deadlock recovery" state what a gate timeout does.
 # - An unbroken run of letters, digits, `.` and `-` makes the combined
 #   structural pattern scan super-linearly, reaching tens of seconds at
 #   25 KB on GNU grep 3.11 (GH-1371).
