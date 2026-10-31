@@ -15,6 +15,9 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    _make_blocking_diff_git,
+    _make_blocking_merge_tree_git,
+    _timeout_binary_present,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_cherry_pick,
@@ -1193,31 +1196,6 @@ def _build_forged_anchor_clean_merge(
     return repo
 
 
-def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """For `merge-tree` specifically, writes a partial line to stdout then
-    blocks past the 5s cap; every other subcommand proxies to the real git.
-    Local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "merge-tree" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _timeout_binary_present() -> bool:
-    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
-
-
 class TestRequireCodeReviewMergeAwareBase:
     """require-code-review.sh threads _lib_gate_diff_base's resolved base
     through both the empty-diff early exit and the marker hash, so a
@@ -1454,28 +1432,6 @@ class TestRequireCodeReviewMergeAwareBase:
             )
             == "allow"
         )
-
-
-def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
-    """For `diff` specifically, writes `stdout_before_block` to stdout (nothing
-    when empty) then blocks past the 5s cap; every other subcommand proxies to
-    the real git. Extended local copy of test_lib_gate_diff_base_fallbacks.py's shim of the same name
-    (it takes `stdout_before_block`)."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "diff" ]; then\n'
-        f'    printf "{stdout_before_block}"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
 
 
 class TestRequireCodeReviewEmptyDiffCheckCapFaultInjection:
