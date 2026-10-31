@@ -4504,8 +4504,6 @@ class _PublishedBytesSink(io.RawIOBase):
 
 
 class _StdinRecordingPromptsVisibleAtEachRead(_StdinThatFailsOnAReadPastEndOfInput):
-    """Records how many promotion prompts `stderr` has published when each `readline()` starts."""
-
     def __init__(self, lines: list[str], stderr_sink: _PublishedBytesSink) -> None:
         super().__init__(lines)
         self._stderr_sink = stderr_sink
