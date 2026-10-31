@@ -130,8 +130,8 @@ class TestComputeAggregates:
 
     def test_tied_series_use_average_ranks_and_each_measure_has_its_own_rho(self):
         """Lines 10, 20, 20, 30, 40 tie two PRs. Round counts 2, 1, 3, 3, 1, totals 4, 5, 3, 6, 3 and means
-        2, 5, 1, 2, 3 each order the PRs differently. Average ranks give line ranks 1, 2.5, 2.5, 4, 5; the
-        rhos below are Pearson's r over those and each measure's average ranks, worked by hand. Min ranks,
+        2, 5, 1, 2, 3 each order the PRs differently. Average ranks give line ranks 1, 2.5, 2.5, 4, 5.
+        The rhos below are Pearson's r over those and each measure's average ranks, worked by hand. Min ranks,
         ordinal ranks and raw Pearson each give a different value for every measure."""
         records = [
             _record(1, 10, 2.0, 2.0),
@@ -190,10 +190,11 @@ class TestComputeAggregates:
         assert elasticity["total_dollars"] == (0.0, 3)
 
     def test_identical_line_counts_among_the_surviving_prs_give_no_slope_despite_a_zero_line_pr(self):
-        """The same-size check runs on the pairs that survive the positivity filter. Run on the unfiltered
-        line counts, the zero-line PR would make the sizes differ, so the same-size check would not
-        fire for five PRs of one size. Each round costs 1.0, so the mean-dollar value is constant and that
-        mutation returns 0.0 for it at any PR count, whatever the standard library does on a constant x."""
+        """The same-size check runs on the pairs that survive the positivity filter. The mutation this test
+        guards runs it on the unfiltered line counts: the zero-line PR would make the sizes differ, so the
+        check would not fire for five PRs of one size. Each round costs 1.0, so the mean-dollar value is
+        constant, and that mutation returns 0.0 for it at any PR count. It does so whatever the standard
+        library does on a constant x."""
         records = [_record(number, 7, *([1.0] * number)) for number in range(1, 6)]
         records.append(_record(6, 0, 1.0))
         elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
@@ -694,18 +695,17 @@ class TestCmdReviewCostBySize:
         assert "        7     1,480       2       $0.40       $0.20" in out.splitlines()
 
     def test_origin_remote_host_reaches_the_auth_preflight_repo_pin_and_pr_discovery(
-        self, tmp_path, monkeypatch, capsys,
+        self, fake_projects, monkeypatch, capsys,
     ):
         """A GitHub Enterprise origin host is the host the preflight, the repo pin and the PR listing use.
 
         The pin's gh-side host must agree with the origin host, or the run exits 2.
         """
-        merged_prs = self._two_root_corpus(tmp_path, monkeypatch)
         call_log: list[list[str]] = []
-        out, _err = _run_cmd(
+        _run_cmd(
             monkeypatch, capsys,
             _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=merged_prs, host="ghe.example.com", repo="ghe-org/ghe-repo", call_log=call_log,
+            host="ghe.example.com", repo="ghe-org/ghe-repo", call_log=call_log,
             gh_repo_view_host="ghe.example.com",
         )
         auth_argv = next(argv for argv in call_log if argv[:3] == ["gh", "auth", "status"])
@@ -713,8 +713,6 @@ class TestCmdReviewCostBySize:
         assert any(argv[:3] == ["gh", "repo", "view"] for argv in call_log)
         pr_list_argv = next(argv for argv in call_log if argv[:3] == ["gh", "pr", "list"])
         assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "ghe.example.com/ghe-org/ghe-repo"
-        lines = out.splitlines()
-        assert "  PRs joined: 3" in lines
 
     def test_all_accounts_merges_every_root_and_marks_both_streams_do_not_publish(
         self, tmp_path, monkeypatch, capsys,
@@ -762,6 +760,37 @@ class TestCmdReviewCostBySize:
         finally:
             for sealed in sealed_files:
                 os.chmod(sealed, 0o644)
+        lines = out.splitlines()
+        assert "  Unreadable sources skipped: 2" in lines
+        assert "  PRs joined: 1" in lines
+
+    def test_unreadable_sources_at_different_scan_levels_are_summed_across_roots(self, tmp_path, monkeypatch, capsys):
+        """A sealed session file in one root and a sealed project directory in the other count as 2.
+
+        The count sums the session-file and project-dir gap levels across both roots, so a count that read one
+        level alone would report 1.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses file permission bits")
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        active_project = roots[0] / _PROJECT_SLUG
+        active_project.mkdir()
+        _write_code_review_session(active_project / "readable.jsonl", "feat-a", 1)
+        sealed_file = active_project / "sealed.jsonl"
+        _write_code_review_session(sealed_file, "feat-a", 1)
+        sealed_project_dir = roots[1] / _PROJECT_SLUG
+        sealed_project_dir.mkdir()
+        os.chmod(sealed_file, 0o000)
+        os.chmod(sealed_project_dir, 0o000)
+        try:
+            out, _err = _run_cmd(
+                monkeypatch, capsys,
+                _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
+                merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
+            )
+        finally:
+            os.chmod(sealed_file, 0o644)
+            os.chmod(sealed_project_dir, 0o755)
         lines = out.splitlines()
         assert "  Unreadable sources skipped: 2" in lines
         assert "  PRs joined: 1" in lines

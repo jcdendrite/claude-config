@@ -715,7 +715,7 @@ These subcommands apply this block, except where the last bullet says otherwise,
 - `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation.
 - `subagents`, `skill-invocation --include-subagents`, `skill-pair` and `cost-counts` spawn counts apply both blocks. The `cost-counts` spawn counts read sidechain records. `cost-counts` reads the direct `subagents/*.jsonl` files of the sessions it scopes, with no flag to turn that off. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
 - `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
-- `review-round-cost` and `review-cost-by-size` (which reuses its round detection) detect rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
+- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. `review-cost-by-size` reuses `review-round-cost`'s round detection, so the same applies. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
 - Round attribution (`review-round-cost`, `review-cost-by-size`, `cost-counts` round counts, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
 - Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
@@ -1419,7 +1419,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - A branch joins the merged PR whose `headRefName` equals it exactly, and the PR number keys the record.
 - One PR's rounds sum across every project directory and root the scan reads, so a branch worked on in two checkouts is one record.
 - A branch matching no merged PR counts as an unmatched branch. So does a default-branch name (`main`, `master`, `develop`), a detached head and a `worktree-agent-*` branch, which never join, even when a merged PR carries that head name.
-- A branch matching more than one merged PR (a reused branch name) counts as an ambiguous branch and is excluded.
+- A branch matching more than one merged PR counts as an ambiguous branch and is excluded. The check sees only merged PRs, so it does not detect a name reused by a merged PR and a later PR that is open, closed unmerged or not yet opened. That later PR's rounds join the merged PR.
 - A merged PR with no `code-review` round in scope is not a record.
 - Rounds opened after a PR's merge still count toward it, as `pr-cost` counts a branch's later activity.
 - The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it.
@@ -1432,7 +1432,11 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - Size-bucket medians. Buckets are half-open on lines: 0-149, 150-399, 400-799 and 800 or more. Each prints its PR count and the median of the three values.
 - Within-PR trend, over PRs with at least 4 `code-review` rounds: Spearman's rho of round index against round dollars. The line prints how many PRs yielded a rho, their median rho, and the share above zero. A PR whose rounds all cost the same has no rho and is skipped.
 
-**Diagnostics.** Counts only, never a branch name: merged PRs listed, PRs joined, unmatched and ambiguous branches, unpriced turns and dangling dispatches inside the joined rounds, and unreadable sources skipped. When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR. That wrong join is possible because the ambiguity check sees only the listed PRs. An unpriced turn or a dangling dispatch is spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both. A nonzero unreadable-sources count means the rounds and dollars those sources held are missing.
+**Diagnostics.** Counts only, never a branch name.
+- Merged PRs listed, PRs joined, and unmatched and ambiguous branches count the join's outcome.
+- Unpriced turns and dangling dispatches inside the joined rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both.
+- Unreadable sources skipped counts the session files, project directories and roots the scan could not read. A nonzero count means the rounds and dollars those sources held are missing.
+- When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR. That wrong join is possible because the ambiguity check sees only the listed PRs.
 
 **Known limits.**
 - A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.

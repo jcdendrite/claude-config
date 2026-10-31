@@ -20,15 +20,13 @@ from transcript_analysis import gh_cli, render, review_rounds, scope
 
 _SIZED_REVIEW_SKILL = "code-review"
 
-# Lower edges, in changed lines (additions + deletions), of half-open size buckets; each bucket runs to
-# the next edge and the last is unbounded. The edges follow the bucket bounds named in GitHub issue #1364.
+# Half-open size buckets on changed lines (additions + deletions), with bounds from GitHub issue #1364.
 _SIZE_BUCKET_LOWER_EDGES: tuple[int, ...] = (0, 150, 400, 800)
 
 # The smallest round count whose rank correlation of round index against round dollars can take more than a
 # few distinct values.
 _MIN_ROUNDS_FOR_TREND = 4
 
-# Every figure this command prints is measured per merged PR.
 _ROUND_COUNT = "round_count"
 _TOTAL_DOLLARS = "total_dollars"
 _MEAN_DOLLARS = "mean_dollars"
@@ -49,8 +47,7 @@ _PRIVATE_VIEW_BANNER = (
 
 
 class _PrRecord(NamedTuple):
-    """One merged PR with at least one in-scope code-review round: its number, its size in changed
-    lines, and each round's dollars in round order."""
+    """One merged PR with at least one in-scope code-review round."""
 
     number: int
     lines: int

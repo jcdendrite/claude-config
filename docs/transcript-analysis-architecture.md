@@ -283,8 +283,7 @@ when absent and passed through `scope._attribute_carried_branch`, and every reco
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
 main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
 `spawn_round_skill`, and `round_opened_by_spawn` are the public names here. `compute_review_round_costs`
-is read by `review_cost_by_size.py`, which passes it a multi-root iterator with `resolved_roots=None`
-so a branch's rounds merge across roots. `spawn_round_skill` maps a spawn block to the
+is read by `review_cost_by_size.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
 miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
@@ -307,8 +306,9 @@ and prints aggregates, join diagnostics and per-PR rows. Imports `gh_cli`, `rend
 module reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` to keep default-branch and
 no-PR branches from joining. Three functions carry the logic so tests can feed them literals:
 `_scan_code_review_rounds` runs the scan, `_join_rounds_to_prs` applies the join, and
-`_compute_aggregates` computes the figures. The scan passes `resolved_roots=None`, so it never reaches
-`scope._root_index_for_path` and a project directory symlinked outside every root cannot abort it.
+`_compute_aggregates` computes the figures. The scan passes `resolved_roots=None`, so a branch's rounds
+merge across roots, it never reaches `scope._root_index_for_path`, and a project directory symlinked
+outside every root cannot abort it.
 
 ### `author_outcome.py`
 
