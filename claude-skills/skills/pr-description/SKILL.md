@@ -223,10 +223,15 @@ tool or heredoc.
 
 Then, by mode:
 
-- **Author mode:** end your report with the path on a line of its own, in
-  the form `BODY_FILE: <path>`. The caller builds its `gh pr create` argument
-  by reading that line out of an otherwise long report; a fixed single-line
+- **Author mode:** put the path on a line of its own, in the form
+  `BODY_FILE: <path>`. The caller builds its `gh pr create` argument by
+  reading that line out of an otherwise long report; a fixed single-line
   form makes the path extractable rather than transcribed.
+  - Invoked from another skill's step: the calling skill is not finished. Add
+    one last line, `Returning to the calling skill's next step.`, and run that
+    next step in the same turn. A report that ends on the `BODY_FILE:` line
+    reads as a final answer, and the turn stops there.
+  - Run standalone: end the report on the `BODY_FILE:` line.
 - **Sync mode:** apply with `gh pr edit <n> --body-file <path>`.
 
 Write the path as literal text in both commands, not a `$VAR` — the

@@ -107,4 +107,5 @@ authorization_boundary_restore|bool|true|config-dir|false|config-dir|.authorizat
 test_selection_tracking|bool|false|config-dir|false|config-dir|||Test-selection fallback tracking|README.md § Tests|
 architect_fix_plan_pilot|bool|false|config-dir|false|config-dir|||Architect-authored fix-plan pilot|docs/design-decisions/architect-authored-fix-plan-pilot.md|
 review_orchestrator_routing|bool|false|config-dir|false|config-dir|||Review-orchestrator routing|docs/design-decisions/review-orchestrator-routing-gate.md|
+architect_disposition_challenge_pilot|bool|false|config-dir|false|config-dir|||Architect disposition-challenge pilot|docs/design-decisions/architect-disposition-challenge-pilot.md|
 plugin_bootstrap|bool|true|config-dir|false|config-dir|||Project-plugin registry bootstrap|docs/hooks.md § Utility hooks|

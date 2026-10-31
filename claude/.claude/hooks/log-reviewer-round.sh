@@ -13,12 +13,12 @@
 #   - A reviewer-persona dispatch appends "<head-sha> <staged-diff-sha256>"
 #     to <config-dir>/.reviewer-round-state.d/<key>, capped at the gate's
 #     threshold (see _lib.sh's _lib_architect_consult_threshold).
-#   - A `plan-architect` dispatch whose prompt's first line is not
-#     `MODE=plan-sections` first deletes that branch's state file, restarting
-#     the gate's count, then writes a content-free, presence-only latch to
-#     <config-dir>/.architect-consult-latch.d/<key>: the fail-safe direction
-#     treats any non-plan-sections first line, including an absent one, as
-#     a consult.
+#   - A `plan-architect` dispatch whose prompt's first line is neither
+#     `MODE=plan-sections` nor `MODE=challenge` first deletes that branch's
+#     state file, restarting the gate's count, then writes a content-free,
+#     presence-only latch to <config-dir>/.architect-consult-latch.d/<key>.
+#     As in plan-architect.md's own mode selection, any other first line, an
+#     absent one included, is a consult.
 #
 # exits 0 on every path -- an informational hook never denies, and every
 # failure here (no jq, no _lib.sh, unresolvable session id/config
@@ -34,8 +34,9 @@
 #       - A state file the consult reset cannot delete can leave the gate
 #         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
 #       - The 30-day latch sweep re-applies the first-firing threshold.
-#       - Any `plan-architect` dispatch not led by `MODE=plan-sections`
-#         restarts the count, whether or not it returns a verdict.
+#       - Any `plan-architect` dispatch led by neither `MODE=plan-sections`
+#         nor `MODE=challenge` restarts the count, whether or not it returns
+#         a verdict.
 
 set -uo pipefail
 
@@ -118,10 +119,11 @@ _maybe_write_consult_latch() {
   local prompt first_line
   prompt=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.prompt // empty' 2>/dev/null)
   first_line="${prompt%%$'\n'*}"
-  # Fail-safe direction: any first line other than the literal
-  # MODE=plan-sections -- including an absent one -- is a consult
-  # (plan-architect.md: "A dispatch carrying neither line is a consult").
-  [ "$first_line" = "MODE=plan-sections" ] && return 0
+  # plan-architect.md runs these two first lines as non-consult modes, and
+  # any other first line, an absent one included, as a consult.
+  case "$first_line" in
+    MODE=plan-sections | MODE=challenge) return 0 ;;
+  esac
 
   _resolve_round_context || return 0
 

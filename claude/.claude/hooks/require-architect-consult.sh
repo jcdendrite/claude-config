@@ -30,8 +30,9 @@
 #       - A state file the consult reset cannot delete can leave the gate
 #         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
 #       - The 30-day latch sweep re-applies the first-firing threshold.
-#       - Any `plan-architect` dispatch not led by `MODE=plan-sections`
-#         restarts the count, whether or not it returns a verdict.
+#       - Any `plan-architect` dispatch led by neither `MODE=plan-sections`
+#         nor `MODE=challenge` restarts the count, whether or not it returns
+#         a verdict.
 
 set -uo pipefail
 
