@@ -77,7 +77,13 @@ Every example above is deliberately non-matching — e.g. the `<username>`
 placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
 charset — so committing this table doesn't trip its own detectors.
 
-Slack channel names are not detected structurally. They are covered only by the blocklist, when `<config-dir>/private-projects.md` is populated. List a channel in the blocklist without its leading `#`, because blocklist lines starting with `#` are comments that the hook skips. The hook matches each entry as a whole word, so an entry cannot be anchored to a hash. A channel name is therefore mechanically covered only when it is distinctive enough to blocklist as a bare word. A common-word channel name has no mechanical coverage, because listing a common word would match every ordinary mention of it. An underscore-joined or concatenated form of the name needs its own entry (see the "Concatenated identifiers" bullet under the blocklist guidance below).
+Slack channel names have no structural detector. Only the blocklist covers them, when `<config-dir>/private-projects.md` is populated.
+
+List a channel without its leading `#`, because the hook skips blocklist lines starting with `#` as comments and matches each entry as a whole word. Coverage limits:
+
+- A distinctive name is covered when listed as a bare word.
+- A common-word name has no mechanical coverage, because listing it would match every ordinary mention.
+- An underscore-joined or concatenated form needs its own entry (see the "Concatenated identifiers" bullet under the blocklist guidance below).
 
 ## Publishing a tooling measurement
 
@@ -506,21 +512,24 @@ measurement time, which the wide ranges below partly reflect):
 | 50 KB | 697ms | 562–1,312ms |
 | 500 KB | 894ms | 837–1,017ms |
 
-These figures are approximate and were not re-measured for the current detector count.
+The table was measured when the hook ran six structural detectors and scanned one copy of the input. The hook now scans the raw input plus a quote-stripped copy, and the fast-path pattern has lost one alternative, so absolute figures are approximate.
 
 This still exceeds this repo's stated hook performance budget (<100ms per
 fire). The five structural detectors run as one combined-pattern fast-path
-spawn, falling through to the original five only when it matches, so a
-here-string bash materializes to a temp file before exec at most once per
-fire instead of up to five times. Subprocess-spawn overhead still dominates over
-byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
-and blocklist scans' own subprocess calls, remain unchanged — which is why
-cost still does not scale cleanly with body size. At commit/PR-authoring
-time (a human-interactive action, not a hot path), this is tolerable in
-absolute terms but is still a measured budget overrun, not a clean pass — a
-future revision that needs more headroom should look at collapsing the
-remaining tracker-ID and blocklist `grep` spawns into the same fast-path
-treatment.
+spawn, falling through to the per-detector loop only when it matches, so on
+content that matches no detector, a here-string bash materializes to a temp
+file before exec once per fire instead of up to five times. Subprocess-spawn
+overhead still dominates over byte-scanning cost — the fast path itself, plus
+the pre-existing tracker-ID and blocklist scans' own subprocess calls, remain
+unchanged — which is why cost still does not scale cleanly with body size. At
+commit/PR-authoring time (a human-interactive action, not a hot path), this is
+tolerable in absolute terms but is still a measured budget overrun, not a
+clean pass — a future revision that needs more headroom should look at
+collapsing the remaining tracker-ID and blocklist `grep` spawns into the same
+fast-path treatment. An unbroken run of letters, digits, `.` and `-` makes the
+combined pattern scan super-linearly, well beyond the figures above (see the
+Known-gaps comment in `claude/.claude/hooks/deny-private-project-refs.sh`,
+GH-1371).
 
 ## Opting in another repository
 

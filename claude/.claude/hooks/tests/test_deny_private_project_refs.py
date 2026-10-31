@@ -3914,7 +3914,7 @@ class TestDenyPrivateProjectRefs:
         assert "private-projects.md blocklist" in reason
         assert "  - example-channel" in reason
 
-    def test_slack_channel_mention_allowed_by_hash_led_blocklist_entry(self, claude_config_repo, private_projects_file):
+    def test_slack_channel_mention_allowed_when_hash_led_line_is_comment(self, claude_config_repo, private_projects_file):
         """A blocklist line starting with `#` is a comment, so a hash-led channel entry never matches
         even though its text occurs in the scanned message."""
         private_projects_file("#example-channel\n")
