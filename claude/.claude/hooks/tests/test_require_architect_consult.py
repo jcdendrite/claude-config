@@ -473,11 +473,8 @@ class TestRequireArchitectConsult:
 
     @pytest.mark.parametrize("pilot_enabled", [False, True], ids=["default", "pilot"])
     def test_latch_present_deny_message_reports_the_rearm_window(self, isolated_home, tmp_path, pilot_enabled):
-        """With a latch the deny text reports the re-arm window of 3, says the
-        states were recorded since the branch's last consult, reads plural
-        with and without the pilot, still names the routing section, and
-        carries the stop-after-consulting, escalation-clause, and
-        do-not-disable sentences."""
+        """A latched branch's deny text reports the re-arm window and the
+        since-last-consult wording under both pilot states."""
         repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-deny-message")
         _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
         write_architect_consult_latch(isolated_home / ".claude", repo)
@@ -509,12 +506,9 @@ class TestRequireArchitectConsult:
     def test_gate_demands_a_consult_every_three_reviewed_states(
         self, isolated_home, tmp_path, pilot_enabled, expected_denial_states
     ):
-        """Drives the recorder and the gate through ten new reviewed states.
-        At each denial it dispatches a consult through the recorder, then
-        retries the denied state, which must allow and become the new
-        window's first state. The recorder never runs for a denied spawn,
-        since a denied spawn runs no PostToolUse. The expected states are
-        literals, so a changed interval or cap fails here."""
+        """The recorder never runs for a denied spawn, since a denied spawn
+        runs no PostToolUse. The expected states are literals, so a changed
+        interval or cap fails here."""
         repo = tmp_path / "cadence"
         _init_repo(repo)
         if pilot_enabled:

@@ -86,8 +86,9 @@ _record_reviewer_round() {
   local state_value
   state_value=$(_lib_reviewer_round_state_value "$REPO_ROOT") || return 0
 
-  local state_dir="$CONFIG_DIR/.reviewer-round-state.d"
-  local state_file="$state_dir/$STATE_KEY"
+  local state_file
+  state_file=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+  local state_dir="${state_file%/*}"
   mkdir -p "$state_dir" 2>/dev/null || return 0
 
   local threshold
@@ -127,16 +128,18 @@ _maybe_write_consult_latch() {
 
   _resolve_round_context || return 0
 
+  local state_file latch_file
+  state_file=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+  latch_file=$(_lib_architect_consult_latch_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+
   # Restarts the gate's count at this consult. A failed delete is tolerated
   # and no lock is taken: a reviewer append racing the delete only moves the
   # next denial by one state.
-  # A state file this delete cannot remove leaves the gate denying; the repair
-  # is in docs/hooks.md § "Gate deadlock recovery".
-  rm -f -- "$CONFIG_DIR/.reviewer-round-state.d/$STATE_KEY" 2>/dev/null
+  rm -f -- "$state_file" 2>/dev/null
 
-  local latch_dir="$CONFIG_DIR/.architect-consult-latch.d"
+  local latch_dir="${latch_file%/*}"
   mkdir -p "$latch_dir" 2>/dev/null || return 0
-  touch -- "$latch_dir/$STATE_KEY" 2>/dev/null
+  touch -- "$latch_file" 2>/dev/null
 
   find "$latch_dir" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
   return 0

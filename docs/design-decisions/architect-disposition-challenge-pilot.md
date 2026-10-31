@@ -2,7 +2,13 @@
 
 *2026-10-29.*
 
-**Partially superseded by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the gate re-arms after every consult, so a first line that runs as a consult no longer releases the branch's round-3 gate for good. It restarts the count, and the branch meets its next consult after three more reviewed states. That bears on the "own mode" bullet under "How this differs from the not-adopted pilot", the rejected-alternative bullet that says the first key-on dispatch would "release" the branch's round-3 gate, the "Why an unknown mode line fails toward consult" paragraph, and the Known-gaps bullet that says a branch "loses" its round-3 foundation consult. Everything else here stands.
+**Partially superseded by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the gate re-arms after every consult, so a first line that runs as a consult no longer releases the branch's round-3 gate for good. It restarts the count, and the branch meets its next consult after three more reviewed states. That bears on these sites:
+- The "own mode" bullet under "How this differs from the not-adopted pilot".
+- The rejected-alternative bullet that says the first key-on dispatch would "release" the branch's round-3 gate.
+- The "Why an unknown mode line fails toward consult" paragraph.
+- The Known-gaps bullet that says a branch "loses" its round-3 foundation consult.
+
+Everything else here stands.
 
 By default, the `/code-review` orchestrator both writes and judges its own ADDRESS and DEFER dispositions, so a DEFER that should have been an ADDRESS, or an ADDRESS that over-fixes, stands on one judgment. A per-account config key, `architect_disposition_challenge_pilot`, default `false`, pilots a second opinion. With the key on, one Opus `plan-architect` dispatch in a new `MODE=challenge` argues each row the orchestrator decided itself, and answers `uphold` or `flip` per row. A flip changes a row only when the orchestrator concedes it after one re-evaluation, or the human decides it.
 

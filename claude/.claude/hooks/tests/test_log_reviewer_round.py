@@ -636,9 +636,9 @@ class TestLogReviewerRoundConsultReset:
         self, isolated_home, tmp_path
     ):
         """A consult whose `rm -f --` fails on a regular three-line state file
-        (its directory is not writable) still exits 0 silently and writes the
-        latch, but leaves the window full, so the gate keeps denying a new
-        reviewer state instead of treating the consult as the reset."""
+        (its directory is not writable) leaves the window full, so the gate
+        keeps denying a new reviewer state instead of treating the consult as
+        the reset."""
         repo = tmp_path / "reset-undeletable-regular-file"
         _init_repo(repo)
         config_dir = isolated_home / ".claude"

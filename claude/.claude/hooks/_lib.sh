@@ -4683,6 +4683,25 @@ _lib_reviewer_round_state_cap() {
 # run, independent of the round-2 pilot.
 _LIB_ARCHITECT_CONSULT_REARM_INTERVAL=3
 
+# _lib_reviewer_round_state_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's round-state file. Returns 1 with no stdout
+# when CONFIG_DIR or STATE_KEY is empty. The gate and the recorder both build
+# the path here, so they cannot disagree on where the state lives.
+_lib_reviewer_round_state_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.reviewer-round-state.d/$state_key"
+}
+
+# _lib_architect_consult_latch_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's consult latch, with the same empty-argument
+# contract and shared-definition role as _lib_reviewer_round_state_file.
+_lib_architect_consult_latch_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.architect-consult-latch.d/$state_key"
+}
+
 # _lib_architect_consult_threshold CONFIG_DIR STATE_KEY
 # Prints the number of distinct reviewed states at which the gate demands the
 # next consult: $_LIB_ARCHITECT_CONSULT_REARM_INTERVAL when this branch's
@@ -4692,9 +4711,9 @@ _LIB_ARCHITECT_CONSULT_REARM_INTERVAL=3
 # A latch that is not a regular file (e.g. a directory) reads as no latch,
 # matching the gate's latch-presence test.
 _lib_architect_consult_threshold() {
-  local config_dir="${1:-}" state_key="${2:-}"
-  if [ -n "$config_dir" ] && [ -n "$state_key" ] \
-    && [ -f "$config_dir/.architect-consult-latch.d/$state_key" ]; then
+  local latch_file
+  if latch_file=$(_lib_architect_consult_latch_file "${1:-}" "${2:-}") \
+    && [ -f "$latch_file" ]; then
     printf '%s\n' "$_LIB_ARCHITECT_CONSULT_REARM_INTERVAL"
   else
     _lib_reviewer_round_state_cap

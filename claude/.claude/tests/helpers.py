@@ -2255,8 +2255,9 @@ def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
 
 
 def write_architect_consult_latch(config_dir: Path, repo: Path) -> Path:
-    """Create the branch's consult latch, as log-reviewer-round.sh does after a
-    plan-architect consult, bypassing the recorder."""
+    """Create only the branch's consult latch, bypassing the recorder.
+    Unlike a real consult, which deletes the state file first, this leaves the
+    branch's state file untouched."""
     latch = architect_consult_latch_path(config_dir, repo)
     latch.parent.mkdir(parents=True, exist_ok=True)
     latch.touch()

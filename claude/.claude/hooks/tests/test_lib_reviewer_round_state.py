@@ -1,5 +1,6 @@
-"""Tests for _lib.sh's _lib_reviewer_round_state_key and
-_lib_reviewer_round_state_value (round3-review-consult-trigger plan).
+"""Tests for _lib.sh's _lib_reviewer_round_state_key,
+_lib_reviewer_round_state_value, and the branch state path helpers
+(round3-review-consult-trigger plan).
 Relational assertions only -- never a golden sha256 literal -- mirroring
 test_marker_lib.py's TestLibActivePlanHash precedent for
 _lib_active_plan_hash: the exact digest recipe is free to evolve as long as
@@ -114,6 +115,55 @@ def _architect_consult_threshold(
         check=False,
         env=env,
     )
+
+
+def _path_helper(function_name: str, config_dir_arg: str, state_key_arg: str) -> subprocess.CompletedProcess:
+    """Shell out to a real _lib.sh path helper with the given positional
+    arguments."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; {function_name} "$1" "$2"', "_", config_dir_arg, state_key_arg],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLibBranchStatePathHelpers:
+    """Contract for the path helpers the gate and the recorder share. The
+    expected paths are literals, so a renamed directory fails here."""
+
+    @pytest.mark.parametrize(
+        ("function_name", "expected_path"),
+        [
+            pytest.param(
+                "_lib_reviewer_round_state_file",
+                "/cfg/.reviewer-round-state.d/repohash.branchhash",
+                id="state file",
+            ),
+            pytest.param(
+                "_lib_architect_consult_latch_file",
+                "/cfg/.architect-consult-latch.d/repohash.branchhash",
+                id="latch file",
+            ),
+        ],
+    )
+    def test_prints_the_path_under_the_config_dir(self, function_name, expected_path):
+        result = _path_helper(function_name, "/cfg", "repohash.branchhash")
+        assert result.returncode == 0
+        assert result.stdout == f"{expected_path}\n"
+
+    @pytest.mark.parametrize("function_name", ["_lib_reviewer_round_state_file", "_lib_architect_consult_latch_file"])
+    @pytest.mark.parametrize(
+        ("config_dir_arg", "state_key_arg"),
+        [
+            pytest.param("", "repohash.branchhash", id="empty config dir"),
+            pytest.param("/cfg", "", id="empty state key"),
+        ],
+    )
+    def test_an_empty_argument_returns_1_with_no_stdout(self, function_name, config_dir_arg, state_key_arg):
+        result = _path_helper(function_name, config_dir_arg, state_key_arg)
+        assert result.returncode == 1
+        assert result.stdout == ""
 
 
 class TestLibArchitectConsultThreshold:

@@ -18,6 +18,10 @@
 #     unresolvable repo root, detached HEAD) -- this is a cost-and-quality
 #     interruption, not a security control, and an over-firing deny on
 #     unresolvable git state would block legitimate reviewer fan-out.
+#   - A state file absent at the existence check allows.
+#   - A state file that exists there but fails the later read (unreadable,
+#     or deleted by a concurrent consult) allows with a latch and denies
+#     without one (docs/hooks.md § "Gate hooks").
 #
 # Known gaps, stated rather than left implicit (repo hook-review
 # convention):
@@ -96,9 +100,9 @@ REPO_ROOT=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 
 STATE_KEY=$(_lib_reviewer_round_state_key "$REPO_ROOT") || exit 0
 
-STATE_FILE="$CONFIG_DIR/.reviewer-round-state.d/$STATE_KEY"
+STATE_FILE=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || exit 0
 
-LATCH_FILE="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
+LATCH_FILE=$(_lib_architect_consult_latch_file "$CONFIG_DIR" "$STATE_KEY") || exit 0
 
 THRESHOLD=$(_lib_architect_consult_threshold "$CONFIG_DIR" "$STATE_KEY")
 LATCH_PRESENT=0

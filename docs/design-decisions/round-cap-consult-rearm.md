@@ -18,9 +18,10 @@ No hook, state directory or file format is added: the gate's existing counter an
 
 ## The interval and the reset
 
-- **Three reviewed states between consults.** With the default cap the gate demands a consult before states 3, 6, 9 and so on, and before 2, 5, 8 under the round-2 pilot. A consult from any source restarts the count.
+- **Three reviewed states between consults.** With the default cap the gate demands a consult before states 3, 6, 9 and so on, and before 2, 5, 8 under [the round-2 pilot](round2-consult-trigger-pilot.md). A consult from any source restarts the count.
 - **Why three.**
-  - The cadence is three rounds, and a consult's cost is weighed against the rounds it prevents.
+  - The interval is three rounds, and the design counts every reviewed round whatever its outcome.
+  - A consult's cost is weighed against the rounds it prevents.
   - No trend rule can be shown to beat a fixed interval, because no branch in the ledger is labelled converging or grinding. A backtest could therefore not show a trend rule firing more often on grinding branches.
   - Without a discriminating trigger, the trigger only sets the cadence and the judgment belongs to the consult. This is why every consult receives the series, in place of a hook computing a verdict from it.
   - Three caps the run left unchecked after a wrong "foundation is fine" verdict at two states, and matches the first firing, so one spacing describes the whole gate.
@@ -30,7 +31,7 @@ No hook, state directory or file format is added: the gate's existing counter an
 - **The counter is the gate's own state file, reset by deleting it.** On a consult, `log-reviewer-round.sh` removes the branch's state file with `rm -f --`, then touches the latch. It tolerates a failed delete and takes no lock. Only the two hooks read that file, so deleting it loses nothing.
 - **Two windows the order of those steps leaves.**
   - A kill between the delete and a branch's first latch write leaves no latch, so the next consult comes one state early, two under the pilot. Later consults find the latch already present.
-  - During a branch's first consult, a gate read that fails between the delete and the latch write denies, which costs at most one extra consult. Writing the latch first would turn that deny into an allow, but a kill between the steps would then leave the old window behind a fresh latch, so the next consult could come up to three states early after any consult. Delete-then-latch keeps the smaller cost.
+  - During a branch's first consult, a gate read that fails between the delete and the latch write denies, which costs at most one extra consult. Writing the latch first would turn that deny into an allow. A kill between the steps would then leave the old window behind a fresh latch. The next consult could then come up to three states early after any consult. Delete-then-latch keeps the smaller cost.
 - **No lock.** A lock changes no outcome. A reviewer append racing the delete either survives as the new window's first state or is lost, which moves the next denial by one state. On a config dir with no state directory, the lock would also spend every retry and print a warning before going ahead unlocked.
 - **A read error defers to the latch.** grep's no-match status denies. Only grep's read-error status runs the latch-presence exit, which allows when the latch is a regular file. A state file that a later consult's reset deletes mid-read therefore allows. Counting a failed read as zero states, or re-testing the file after a failed count read, would allow an unreadable or vanished file on a branch with no latch.
 - **Rejected counters.**
@@ -39,7 +40,7 @@ No hook, state directory or file format is added: the gate's existing counter an
   - The ledger's `max_round` lags by a round and can skip one, because the session appends a round's rows only after dispositioning it. A `PreToolUse` gate would also parse the whole ledger on every reviewer spawn.
 - **The recorder hashes the branch's state on every reviewer spawn for the branch's whole life outside a live `/plan-review`.** That is the cost of counting latched branches and `/ready-for-review` runs.
 - **The latch directory's 30-day sweep** can drop a long-lived branch's latch. The first-firing cap then applies once more, one state earlier than the interval would by default and two under the round-2 pilot (default cap 2 against interval 3, pilot cap 1 against 3).
-- **A regular state file the consult cannot delete** keeps the file at three lines, so the gate denies every new reviewed state, and a plain `rm` from the engineer's terminal fails for the same reason. A non-regular object at that path leaves the gate inert instead, since the gate allows it and the recorder cannot append to it. `docs/hooks.md` § "Gate deadlock recovery" names the repair, with the `round_consult_gate` kill switch as the human's fallback.
+- **A regular state file the consult cannot delete** keeps the file at three lines, so the gate denies every new reviewed state. A plain `rm` from the engineer's terminal fails for the same reason. A non-regular object at that path leaves the gate inert instead, since the gate allows it and the recorder cannot append to it. `docs/hooks.md` § "Gate deadlock recovery" names the repair, with the `round_consult_gate` kill switch as the human's fallback.
 - **A revert is state-compatible.** No file format changes, and the reverted hooks ignore a state file of up to three lines once a latch exists.
 
 ## `/ready-for-review` reviews count
@@ -83,19 +84,19 @@ Its named residual closes too: dirty passes alternating with clean ones escaped 
   - The dirty classification is the session's own reading of prose, with no independent check. This is accepted under the gate's `cooperative` tier. A later check would use the hook-observed record of a reviewer spawn at the reviewed state, which `log-reviewer-round.sh` already keeps.
   - The no-code exit ends the run without the final step, so the run's active marker keeps the push arm released until the session ends, as every other early exit does. Deactivating the marker at this one exit was set aside because every other exit leaves the same gap.
 - **The disposition record stays, minus its counting role.** Every re-review spawn prompt carries it, spawns check each earlier ADDRESS row's Outcome against its text, and the ledger has no pass-kind, reviewer or Outcome column. Its clean-pass definition stays because the `cumulative-review` marker write keys on it.
-- **No clean-pass reset.** The engineer's cadence counts rounds, not dirty rounds. The reset is what let the Cap's residual escape. The hook cannot see a pass's outcome without reading the ledger, which the counter above rejects as gate input. A consult on a converging branch costs one dispatch, and the series lets it return the noise verdict cheaply.
+- **No clean-pass reset.** The design counts every reviewed round, not only dirty ones. The reset is what let the Cap's residual escape. The hook cannot see a pass's outcome without reading the ledger, which the counter above rejects as gate input. A consult on a converging branch costs one dispatch, and the series lets it return the noise verdict cheaply.
 - **No separate human ladder.** Each consult's own input and routing serve in place of a mechanical one.
   - Each consult sees the series, so a loop still grinding after an earlier verdict shows in its input.
   - A consult that finds the foundation fine but the loop not converging, with no single defect to name, fits none of the three verdicts. `plan-architect` says so in its first line, and the round-cap section makes that a blocking stop-and-ask.
   - The noise verdict is evidence for the gold-plating DEFER criterion, and a DEFERred finding counts as resolved.
-  - A mechanical ladder has no home. The gate sees a presence-only latch and a state count, but a second-trip rule needs the previous verdict and whether a clean pass followed it. The hook cannot observe either, and the routing prose would need a durable verdict record to carry them across a handoff. That record is the cross-consult bookkeeping the engineer rejected.
+  - A mechanical ladder has no home. The gate sees a presence-only latch and a state count, but a second-trip rule needs the previous verdict and whether a clean pass followed it. The hook cannot observe either. The routing prose would need a durable verdict record to carry them across a handoff. A durable verdict record would be cross-consult bookkeeping, which this design does not keep.
 
 ### What a run loses
 
 - A foundation-wrong verdict inside a run is an ADDRESS finding whose fix revises the plan inside the run's fix loop, in place of stopping for the human.
 - A dirty streak reaches the human only when a consult's judgment sends it there, not after one consult by rule. No rule sends a long streak to the human by its length.
 - The Cap consulted before a dirty pass's fix, so its *stop* prevented the fix. The gate consults at a later state's first spawn, after up to two more states of work on the same foundation.
-- The Cap was prose and ignored the kill switch. With `round_consult_gate` off, the gate no longer demands a consult in a run either, and with the fix-plan pilot on, a run's only foundation check is that pilot's per-round consult.
+- The Cap was prose and ignored the kill switch. With `round_consult_gate` off, the gate no longer demands a consult in a run either, and with [the fix-plan pilot](architect-authored-fix-plan-pilot.md) on, a run's only foundation check is that pilot's per-round consult.
 - The Cap ran wherever the skill ran. Where the gate allows on state failure, which is an unresolvable config dir or repo root or a detached HEAD, a run gets no consult and no signal. This is accepted under the gate's allow-on-state-failure posture, which treats the consult as a cost-and-quality interruption, not a security control.
 - The Cap's `cap` row in the disposition record was the one per-branch artifact showing that a consult ran and what it ruled. What remains is the `architect-consult: <verdict>` tag on the report's *Spawn decisions:* line, and the transcript.
 
@@ -119,7 +120,7 @@ Its named residual closes too: dirty passes alternating with clean ones escaped 
 
 ## Accepted residuals
 
-- **A narrow consult restarts the count without asking the foundation question.** Narrow means the contradiction route, the heavier-mechanism route or the fix-plan pilot. Such a consult still receives the series and the history, and with the pilot on the gate stays silent, because that consult already returns a `foundation:` line every round.
+- **A narrow consult restarts the count without asking the foundation question.** Narrow means the contradiction route or the heavier-mechanism route, both in `code-review/SKILL.md` § "Finding disposition", or the fix-plan pilot. Such a consult still receives the series and the history, and with the pilot on the gate stays silent, because that consult already returns a `foundation:` line every round.
 - **The gate fires before a pass's reviewers run**, so a consult can land on a pass that would have come out clean. That costs one consult, not a stop.
 - **One-time upgrade effects** on branches latched before the re-arm and on a `/ready-for-review` run under way at upgrade are described in `CHANGELOG.md`.
 - **The `round_consult_gate` schema row's label** still reads "Round-3 architect-consult gate". Retitling it for a label alone would bring `config-keys.psv` under hook review, so the label stays. The switch also silences the consult inside `/ready-for-review` runs.

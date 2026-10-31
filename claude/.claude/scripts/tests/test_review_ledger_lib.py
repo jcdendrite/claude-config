@@ -2541,6 +2541,26 @@ class TestTrend:
 
         assert result.stdout == "round 1: 1\n"
 
+    def test_round_9999_counts_as_the_upper_bound_append_accepts(self):
+        result = _trend(_row_in_round(1), _row_in_round(9999))
+
+        assert result.stdout == "round 1: 1, round 9999: 1\n"
+
+    @pytest.mark.parametrize(
+        "non_object_line",
+        [
+            pytest.param(json.dumps([_row_in_round(2)]), id="a JSON array line"),
+            pytest.param(json.dumps("round 2"), id="a JSON string line"),
+        ],
+    )
+    def test_a_stdin_line_that_is_not_a_json_object_is_skipped(self, non_object_line):
+        valid_row_line = json.dumps(_row_in_round(1))
+
+        result = _call("_review_ledger_trend", stdin=f"{non_object_line}\n{valid_row_line}\n")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "round 1: 1\n"
+
     def test_a_row_with_no_round_is_skipped(self):
         row_without_round = _row_in_round(2)
         del row_without_round["round"]

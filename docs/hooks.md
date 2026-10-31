@@ -498,7 +498,7 @@ Three skill gates have no safe condition-removal path — the gate's intent is t
 
 Use this when a session reports that `require-architect-consult.sh` denied a reviewer spawn again after the session dispatched the consult the deny message asked for. Each step is the human's to run or direct, not the session's to take unasked:
 
-1. From a separate terminal, check that `<config-dir>/.reviewer-round-state.d` is writable by your user, and restore its write permission if it is not.
+1. From a separate terminal, check that `<config-dir>/.reviewer-round-state.d` and `<config-dir>/.architect-consult-latch.d` are both writable by your user, and restore write permission on either if it is not.
 2. Tell the session to dispatch `plan-architect MODE=consult` once more, then retry the spawn.
 3. Last resort, when step 1 cannot be done or step 2's retry is still denied: set `round_consult_gate = false` in `<config-dir>/claude-config.toml` (format in [`docs/config-file.md`](config-file.md)).
    - It turns the gate off for every repository and branch on that config dir.
