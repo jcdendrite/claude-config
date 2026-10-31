@@ -615,7 +615,7 @@ class TestRound2PilotCap:
         under cap=1 the /ready-for-review marker still does not exempt a
         denied spawn."""
         repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-ready-for-review-active")
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        enable_round2_pilot(isolated_home / ".claude")
         _stage_change(repo, "first\nround-one\nround-two\n")
         sid = "s-pilot-ready-for-review-active"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
@@ -633,7 +633,7 @@ class TestRound2PilotCap:
         default's "states" (plural), name the literal threshold 1, and say
         no consult is recorded for the branch."""
         repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-deny-message")
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        enable_round2_pilot(isolated_home / ".claude")
         _stage_change(repo, "first\nround-one\nround-two\n")
         reason = run_hook_reason(
             REQUIRE_ARCHITECT_CONSULT_HOOK,

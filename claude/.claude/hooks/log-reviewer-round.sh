@@ -30,6 +30,12 @@
 #     dispatch is never recorded.
 #   - Zero-start residual: a branch already in flight when this hook ships
 #     starts its round count from zero.
+#   - Consult-reset residuals:
+#       - A state file the consult reset cannot delete can leave the gate
+#         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
+#       - The 30-day latch sweep re-applies the first-firing threshold.
+#       - Any `plan-architect` dispatch not led by `MODE=plan-sections`
+#         restarts the count, whether or not it returns a verdict.
 
 set -uo pipefail
 

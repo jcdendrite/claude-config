@@ -26,6 +26,12 @@
 #   - Zero-start residual: a branch already in flight when this gate ships
 #     starts its round count from zero, since transcript retention is a
 #     rolling 30 days and this state file is written forward only.
+#   - Consult-reset residuals:
+#       - A state file the consult reset cannot delete can leave the gate
+#         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
+#       - The 30-day latch sweep re-applies the first-firing threshold.
+#       - Any `plan-architect` dispatch not led by `MODE=plan-sections`
+#         restarts the count, whether or not it returns a verdict.
 
 set -uo pipefail
 
@@ -111,9 +117,9 @@ CURRENT_STATE=$(_lib_reviewer_round_state_value "$REPO_ROOT") || exit 0
 
 # The current state is already one of the recorded rounds (a repeated
 # reviewer fan-out against the same commit/diff, or a whole parallel batch)
-# -- allow. grep's no-match status (1) falls through to the deny. Its
-# error status (2, unreadable or vanished file) defers to the latch, since a
-# consult's reset deletes the state file and a latch shows one ran.
+# -- allow. grep's error status (2, unreadable or vanished file) defers to
+# the latch, since a consult's reset deletes the state file and a latch
+# shows one ran.
 grep -qFx -e "$CURRENT_STATE" -- "$STATE_FILE" 2>/dev/null
 GREP_STATUS=$?
 [ "$GREP_STATUS" -eq 0 ] && exit 0

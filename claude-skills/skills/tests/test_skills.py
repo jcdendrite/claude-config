@@ -6349,12 +6349,7 @@ class TestReadyForReviewFixLoopRule:
         )
 
 
-# The Overview's last two sentences, pinned as one contiguous clause so a
-# sentence inserted between them fails. First, a gate-denied step-4 spawn
-# reviewed nothing, so the Overview's "Step 4 does not re-run on its own
-# output" does not apply. Second, inside a run, a re-plan verdict from the
-# round-cap consult is an ADDRESS row (in a step-3 pass's disposition record)
-# or a step-4 finding, and the fix loop carries it.
+# Pinned as one contiguous clause so a sentence inserted between them fails.
 _PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE = (
     "A step-4 spawn the gate denied reviewed nothing, so step 4 runs again "
     "after the fix loop. "
@@ -6392,15 +6387,9 @@ _STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
 
 
 class TestReadyForReviewRunExitAndStep3Pins:
-    """Pin the Overview's step-4 re-run sentence together with its re-plan
-    ADDRESS-finding sentence, and step 3's clean/dirty definition and
-    loop-back sentence, so dropping the step-4 re-run after a denied spawn,
-    the rule that a re-plan verdict enters the fix loop, the condition that
-    every reviewer the *Spawn decisions:* line lists as spawned has returned
-    before a pass is clean, the statement that a record grants no review skip, or the fix-loop
-    return to a full pass fails a test instead of drifting silently. A
-    negative test also asserts that step 3 carries no sentence forbidding a
-    re-review of a fix's own output.
+    """Pin the Overview's run-exit sentences and step 3's clean/dirty and
+    loop-back sentences verbatim, so dropping one fails a test instead of
+    drifting silently.
     """
 
     def test_overview_denied_step4_rerun_and_re_plan_address_clause_match_live_text(

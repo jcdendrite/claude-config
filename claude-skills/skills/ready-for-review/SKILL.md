@@ -16,7 +16,14 @@ Run steps in order. Halt on failures unless the step is marked **warn only**. Af
 
 A halt on step 2, 3, or 4 triggers the fix loop above first; only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 6 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
-When `require-architect-consult.sh` denies a reviewer spawn in this run, step 4's included, dispatch the consult per `code-review/SKILL.md` § "Round-cap architect consult" and retry the spawn unless the verdict is re-plan, which ends that round with no further spawns. When a retried spawn is denied again after the consult, stop and report to the engineer instead of consulting again. A re-plan verdict's fix is not a `code-writer` dispatch: revise the plan by that section's route, run `/plan-review`, then implement the revision and commit it through the staged-diff `/code-review`, together with any fix staged when the verdict arrived or after discarding that fix. A revision that changes no code ends the run with a report to the engineer. A step-4 spawn the gate denied reviewed nothing, so step 4 runs again after the fix loop. A re-plan verdict is an ADDRESS row in the disposition record of the step-3 pass under review or whose fix is under review, or a step-4 finding, and the fix loop takes it like any other finding.
+When `require-architect-consult.sh` denies a reviewer spawn in this run, step 4's included:
+- Dispatch the consult per `code-review/SKILL.md` § "Round-cap architect consult" and retry the spawn unless the verdict is re-plan, which ends that round with no further spawns.
+- When a retried spawn is denied again after the consult, stop and report to the engineer instead of consulting again.
+- A re-plan verdict's fix is not a `code-writer` dispatch: revise the plan by that section's route, run `/plan-review`, then implement the revision and commit it through the staged-diff `/code-review`.
+- That commit carries any fix staged when the verdict arrived, or follows discarding that fix.
+- A revision that changes no code ends the run with a report to the engineer.
+
+A step-4 spawn the gate denied reviewed nothing, so step 4 runs again after the fix loop. A re-plan verdict is an ADDRESS row in the disposition record of the step-3 pass under review or whose fix is under review, or a step-4 finding, and the fix loop takes it like any other finding.
 
 ## 0. Activate gate session
 
@@ -54,10 +61,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 Before selecting any commands, run `~/.claude/scripts/marker.sh check verification`. `match` means this exact tree already passed a clean verification pass inside the freshness window. On a match: skip the commands below, report the cache hit in the Completion summary, and continue to step 3. On `no-match`, run the step normally, then write `~/.claude/scripts/marker.sh write verification` only after every selected command has run and passed. Do not write it after the scope-exception skip below — that path runs no commands, so nothing has passed.
 <!-- CACHE_RULE:ready-for-review-verification-cache end -->
 
-If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
-those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
-`go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
-test, lint, and typecheck commands. Do not invent — skip undefined steps.
+If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4. The read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
@@ -108,8 +112,7 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 
 ## 5. PR description (unconditional; warn + fix)
 
-Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
+Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass. Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Final hygiene recheck (halt on fail)
 
@@ -126,8 +129,7 @@ With a PR open, launch the CI watch now (see "CI watch (out-of-band)" below), wh
 
 **Do NOT write the completion marker if:**
 
-- Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session
-  (a DEFERred or SETTLED finding counts as resolved).
+- Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session (a DEFERred or SETTLED finding counts as resolved).
 - Any of steps 1–6 did not run, or ended in an outcome its own text does not define as complete. Only these outcomes count as complete without full execution: step 2's scope-exception skip, step 2's skip of undefined commands, step 2's reported cache hit, step 3's reported cache hit, step 4's empty-list no-op, and step 5's already-in-sync report (see Completion). With no PR open, step 5 is also incomplete unless it reported a `BODY_FILE:` path whose file exists and is non-empty; that file check applies only to a reported path when no PR is open.
 - A dispatched subagent never writes this marker; it reports to its caller.
 - The user asked you to present findings without finishing the gate.
