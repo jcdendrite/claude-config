@@ -17,15 +17,12 @@ from ._lib_sh_helpers import (
 
 # --- _lib_length_ratchet_exceeded -----------------------------------------
 #
-# Extracted out of _lib_staged_length_gate's loop body in _lib.sh so the
-# growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable without
-# a real git repo. _lib_staged_length_gate calls this same predicate for
-# both its line-count check and its byte-count check, so the boundary
-# matrix below stands in for the pure-triple cases pruned out of
-# test_check_claude_md_length.py and test_check_skill_length.py (see the
-# hook length-limit tests' end-to-end matrices for the second-dimension
-# cases -- path pattern, command parsing, message text, fail-closed
-# posture -- that stay end-to-end).
+# The growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable here
+# without a real git repo. _lib_staged_length_gate calls this same predicate
+# for both its line-count check and its byte-count check, so the boundary
+# matrix below covers the (new, old, limit) cases for both.
+# test_check_claude_md_length.py and test_check_skill_length.py cover path
+# pattern, command parsing, message text and fail-closed posture end-to-end.
 
 
 def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
@@ -48,33 +45,23 @@ def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
 
 class TestLengthRatchetExceeded:
     def test_new_at_exactly_limit_not_exceeded(self) -> None:
-        """new == limit is not "over" it -- migrated from
-        test_claude_md_at_exactly_200_allows / test_skill_at_exactly_200_allows."""
         assert not _length_ratchet_exceeded(200, 190, 200)
 
     def test_new_over_limit_and_over_old_exceeded(self) -> None:
-        """Crossing the limit for the first time -- migrated from
-        test_claude_md_growing_to_201_denies / test_skill_growing_to_201_denies."""
         assert _length_ratchet_exceeded(201, 190, 200)
 
     def test_new_over_limit_growing_further_while_already_over_exceeded(self) -> None:
-        """Already over the limit and growing further still denies --
-        migrated from test_already_over_limit_growing_denies."""
         assert _length_ratchet_exceeded(215, 210, 200)
 
     def test_new_over_limit_but_shrinking_from_old_not_exceeded(self) -> None:
-        """Reducing an already-over-limit file is allowed -- migrated from
-        test_already_over_limit_reducing_allows."""
         assert not _length_ratchet_exceeded(205, 210, 200)
 
     def test_new_over_limit_same_size_as_old_not_exceeded(self) -> None:
         """Different content, same count, still over limit: not growing, so
-        allowed -- migrated from test_already_over_limit_same_size_allows."""
+        allowed."""
         assert not _length_ratchet_exceeded(210, 210, 200)
 
     def test_new_under_limit_growing_not_exceeded(self) -> None:
-        """Growing but never crossing the limit -- migrated from
-        test_byte_cap_under_limit_growing_allows."""
         assert not _length_ratchet_exceeded(190, 180, 200)
 
     def test_new_zero_not_exceeded(self) -> None:
@@ -253,11 +240,11 @@ class TestCommandConcludesCommit:
     def test_failed_fragment_read_returns_could_not_determine(
         self, command: str, expected_status_without_shim: int
     ) -> None:
-        """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
-        the fragment loop; the matcher must report undetermined, not no-match.
+        """The matcher must report undetermined, not no-match, when a here-string
+        redirect fails (e.g. an unwritable TMPDIR) and skips the fragment loop.
         The `read` shim stands in for that failure without touching the
-        filesystem and prints a marker so a shell syntax error (which also
-        exits 2) cannot pass for the sentinel.
+        filesystem. It prints a marker so a shell syntax error, which also
+        exits 2, cannot pass for the sentinel.
         Without the shim, the sentinel must not over-deny."""
         shim_marker = "read-shim-ran"
 

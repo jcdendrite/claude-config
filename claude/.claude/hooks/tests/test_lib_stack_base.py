@@ -58,10 +58,6 @@ def _assert_stack_base_stop(result: subprocess.CompletedProcess, branch: str) ->
 
 
 class TestLibConfiguredStackBase:
-    """Exit 0 prints "<branch> <stack-base>", exit 1 is "no key or detached
-    HEAD", exit 2 is a stop whose one stderr line comes from
-    _lib_print_unusable_stack_base. Every non-zero exit has empty stdout."""
-
     def test_unset_key_exits_1_with_no_output(self, tmp_path: Path) -> None:
         repo = _repo_on_branch_with_key(tmp_path, "feat/x", None)
         result = _configured_stack_base(repo)
@@ -311,11 +307,6 @@ def _stack_base_name_shape(name: str) -> subprocess.CompletedProcess:
 
 
 class TestLibStackBaseNameShape:
-    """Exit 0 for a name of allowed characters that has no leading `-`, no `origin/` prefix and
-    is not `HEAD`, exit 1 for a leading `-`, exit 2 for a character outside [A-Za-z0-9._/-],
-    exit 3 for an `origin/` prefix, exit 4 for `HEAD`. The first failing test in that order
-    wins. It prints nothing."""
-
     @pytest.mark.parametrize(
         "name",
         [
@@ -396,9 +387,6 @@ def _open_pr_base(reply: str) -> subprocess.CompletedProcess:
 
 
 class TestLibOpenPrBase:
-    """Exit 0 prints the base only for a two-line reply whose first line is `OPEN` and
-    whose second line is non-empty; every other reply exits 1 with empty stdout."""
-
     def test_open_two_line_reply_prints_the_base(self) -> None:
         result = _open_pr_base("OPEN\nstack")
         assert (result.returncode, result.stdout, result.stderr) == (0, "stack", "")

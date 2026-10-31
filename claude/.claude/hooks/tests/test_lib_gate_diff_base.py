@@ -317,13 +317,11 @@ class TestGateDiffBaseTrustedAnchor:
     def test_rebase_trusted_via_origin_when_replayed_commit_already_pushed(
         self, tmp_path: Path
     ) -> None:
-        """Atypical in practice -- a rebase fails both anchors in the
-        ordinary case, since REBASE_HEAD is the pre-rebase commit being
-        replayed and mid-rebase HEAD is the new base plus already-replayed
-        commits -- but this exercises the anchor mechanism uniformly across
-        all four states: REBASE_HEAD reaches
-        origin/<default> when the replayed commit was already pushed there
-        before the rebase started."""
+        """REBASE_HEAD reaches origin/<default> when the replayed commit was
+        already pushed there before the rebase started, so the origin anchor
+        trusts it. This is atypical: a rebase ordinarily fails both anchors.
+        REBASE_HEAD is the pre-rebase commit being replayed. Mid-rebase HEAD
+        is the new base plus already-replayed commits."""
         bare, clone = bare_remote_with_default_branch(tmp_path)
         _run_git(clone, "checkout", "-qb", "upstream")
         (clone / "f").write_text("upstream-edit\n")
@@ -425,7 +423,8 @@ class TestGateDiffBaseUntrustedAnchor:
         assert result.returncode == 1
         assert result.stdout == ""
 
-    @pytest.mark.parametrize("state", ["rebase", "merge", "cherry-pick", "revert"])
+    # No "merge": git refuses to merge unrelated histories whatever the anchor decides.
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick", "revert"])
     def test_forged_ref_pointing_at_unreachable_commit_falls_back(
         self, tmp_path: Path, state: str
     ) -> None:
@@ -437,8 +436,13 @@ class TestGateDiffBaseUntrustedAnchor:
         _run_git(repo, "checkout", "-q", "--orphan", "orphan")
         (repo / "orphan.txt").write_text("z\n")
         _run_git(repo, "add", "orphan.txt")
+        _run_git(repo, "commit", "-qm", "orphan root commit")
+        # A parent, so the <oid>^ in the merge-tree commands resolves.
+        (repo / "orphan.txt").write_text("z2\n")
+        _run_git(repo, "add", "orphan.txt")
         _run_git(repo, "commit", "-qm", "orphan commit")
         orphan_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "rev-parse", "--verify", f"{orphan_oid}^")
         _run_git(repo, "checkout", "-q", "main")
         _forge_state_marker(repo / ".git", state, orphan_oid)
         result = _gate_diff_base(repo)
@@ -452,7 +456,7 @@ class TestGateDiffBaseUntrustedAnchor:
         """A declined third anchor, pinned as a negative assertion: a
         commit reachable only from a hand-created
         refs/remotes/origin/<fabricated-name> must not be trusted, since
-        _lib_resolve_default_branch's candidate probe is deliberately
+        _lib_default_branch_or_guess's candidate probe is deliberately
         narrow (exactly main/master/develop, never a refs/remotes/* pattern)
         and never resolves to this name."""
         repo = tmp_path / "repo"
@@ -473,18 +477,21 @@ class TestGateDiffBaseUntrustedAnchor:
     def test_resolvable_non_hex_state_ref_falls_back(
         self, tmp_path: Path, state: str
     ) -> None:
-        """A state ref file is plain, unauthenticated content anyone with
-        filesystem access could write directly -- not proof of a real git
-        operation. `HEAD` is syntactically valid and trivially its own
-        ancestor, so without state_oid's own shape validation it would
-        sail past the anchor check and reach merge-tree, producing a real
-        tree OID (rc=0) instead of falling back. A `--flag`-shaped payload
-        would not discriminate here: git's own CLI parser already rejects
-        an unrecognized option in merge-base/merge-tree, independent of
-        state_oid's shape guard, so it can't prove the guard is
-        load-bearing."""
+        """A resolvable but non-hex state ref must fall back to the empty base.
+        A state ref file is plain, unauthenticated content that anyone with
+        filesystem access could write, so it is not proof of a real git
+        operation. `HEAD` is its own ancestor, so without state_oid's shape
+        guard it would pass the anchor check and reach merge-tree, producing a
+        real tree OID. A `--flag`-shaped payload would not discriminate,
+        because git's CLI parser rejects an unknown option in
+        merge-base/merge-tree independent of the guard."""
         repo = tmp_path / "repo"
         init_git_repo_with_commit(repo, branch="main")
+        # A parent, so the HEAD^ in the rebase/cherry-pick/revert merge-tree commands resolves.
+        (repo / "f.txt").write_text("second\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "second commit")
+        _run_git(repo, "rev-parse", "--verify", "HEAD^")
         _forge_state_marker(repo / ".git", state, "HEAD")
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -503,15 +510,14 @@ class TestGateDiffBaseTopologyFallback:
     def test_octopus_merge_head_falls_back_even_when_first_line_alone_is_trusted(
         self, tmp_path: Path
     ) -> None:
-        """The stronger adversarial sub-case, distinct from the
-        both-untrusted-lines fixture above: line 1 of MERGE_HEAD is by
-        itself a genuine ancestor of HEAD, with only line 2 unreachable.
-        state_oid's own shape validation rejects the multi-line value
-        outright before any anchor check runs; even without that guard,
-        `git merge-base --is-ancestor` fails to parse a multi-line revision
-        regardless of which line would individually pass. Either way this
-        must still fall back to the empty base -- not treat line 1's own
-        trust as good enough for the whole value."""
+        """A multi-line MERGE_HEAD must fall back to the empty base, even
+        though line 1 alone is trusted. Line 1 is by itself a genuine
+        ancestor of HEAD, with only line 2 unreachable. This is the stronger
+        adversarial sub-case, distinct from the both-untrusted-lines fixture
+        above. state_oid's shape validation rejects the multi-line value
+        before any anchor check runs. Without that guard,
+        `git merge-base --is-ancestor` still fails to parse a multi-line
+        revision, regardless of which line would individually pass."""
         repo = tmp_path / "repo"
         init_git_repo_with_commit(repo, branch="main")
         trusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()

@@ -135,7 +135,7 @@ class TestLedgerSweepWindowDays:
         """A 9+-digit all-digit value can exceed bash's signed-integer
         range, making the `-lt` floor comparison itself error and fall
         through unfloored instead of returning _LEDGER_SWEEP_FLOOR_DAYS --
-        this pins the digit-count guard added to reject it before that
+        this pins the digit-count guard, which rejects it before that
         comparison runs."""
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))

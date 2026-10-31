@@ -16,6 +16,8 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    _make_blocking_merge_tree_git,
+    _timeout_binary_present,
     absolute_git_dir,
     assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
@@ -2470,31 +2472,6 @@ def _active_plan_files(repo, env_overrides: dict | None = None) -> subprocess.Co
         text=True,
         env={**os.environ, **(env_overrides or {})},
     )
-
-
-def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
-    """For `merge-tree` specifically, writes a partial line to stdout then
-    blocks past the 5s cap; every other subcommand proxies to the real git.
-    Local copy of test_require_code_review.py's shim of the same name."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  if [ "$arg" = "merge-tree" ]; then\n'
-        '    printf "partialline"\n'
-        '    sleep 20\n'
-        '    exit 0\n'
-        '  fi\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
-
-
-def _timeout_binary_present() -> bool:
-    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
 
 
 class TestActivePlanFilesMergeAwareBase:
