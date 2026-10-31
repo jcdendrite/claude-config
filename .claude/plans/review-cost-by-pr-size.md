@@ -265,7 +265,7 @@ Test helpers to reuse:
      - A branch matching two merged PRs counts as ambiguous.
      - A `main` round and a `worktree-agent-*` round count as unmatched, though the list holds two merged PRs headed by each of those two names. With one PR per name, checking the never-join names after the ambiguity check would still pass. `test_a_default_branch_round_stays_unmatched_beside_a_merged_pr_headed_by_that_name` repeats the default-branch case for `main`, `master` and `develop`.
      - A round on the detached head (`HEAD`) counts as unmatched beside a merged PR headed `HEAD`.
-     - An unmatched branch, a `main` branch and an ambiguous branch with two or more rounds each add 1 to their count, and their rounds add nothing to the unpriced and dangling sums, so a per-round count fails.
+     - An unmatched branch, a `main` branch, a `worktree-agent-*` branch and an ambiguous branch with two or more rounds each add 1 to their count, and their rounds add nothing to the unpriced and dangling sums, so a per-round count fails.
      - A merged PR with no round makes no record.
      - Scan plus join: rounds timestamped after a PR's explicit `mergedAt` still count toward it.
      - `test_a_branch_joins_only_the_pr_whose_head_name_equals_it_exactly`: near-miss heads (`feat` beside `feat-2`, `feat/x` and `Feat`, and a longer round branch beside a shorter head) never join, so the join is exact-name.

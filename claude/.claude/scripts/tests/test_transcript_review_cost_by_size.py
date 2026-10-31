@@ -433,6 +433,8 @@ class TestJoinRoundsToPrs:
             _round_entry("feat-reused", main_dollars=1.0, sort_ts=2.0, unpriced_turns=29, dangling=37),
             _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=41, dangling=43),
             _round_entry("main", main_dollars=1.0, sort_ts=2.0, unpriced_turns=47, dangling=53),
+            _round_entry("worktree-agent-abc", main_dollars=1.0, sort_ts=1.0, unpriced_turns=59, dangling=61),
+            _round_entry("worktree-agent-abc", main_dollars=1.0, sort_ts=2.0, unpriced_turns=67, dangling=71),
         ]
         merged_prs = [
             _merged_pr_sized(101, "feat-joined", additions=1, deletions=1),
@@ -444,7 +446,7 @@ class TestJoinRoundsToPrs:
         assert [record.number for record in records] == [101]
         assert counts == review_cost_by_size._JoinCounts(
             merged_pr_count=3,
-            unmatched_branch_count=2,  # feat-unmerged, main
+            unmatched_branch_count=3,  # feat-unmerged, main, worktree-agent-abc
             ambiguous_branch_count=1,
             unpriced_turns=1,
             dangling_dispatches=2,
