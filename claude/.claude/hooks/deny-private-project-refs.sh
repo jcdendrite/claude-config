@@ -867,13 +867,11 @@ if [ -n "$HITS" ]; then
   exit 0
 fi
 
-# Structural-shape detectors: IPv4 literal, SSH key path reference,
-# home-rooted path, long hex identifier, internal hostname. Two-phase: a
-# single combined-alternation pre-check below finds out
-# whether any detector matches at all, then (only on a match) the per-detector
-# loop is checked independently (not one alternation) so the deny message can
-# name which detector fired. Regex constants live in _lib.sh so this scan and
-# any future consumer share one definition.
+# Structural-shape detectors. Two-phase: a single combined-alternation
+# pre-check finds out whether any detector matches at all. Only on a match are
+# the detectors checked one at a time, in array order, so the deny message can
+# name the first one that matches. Regex constants live in _lib.sh so this
+# scan and any future consumer share one definition.
 #
 # Deny message names the detector label only — never the matched substring.
 # Deliberate divergence from the tracker-ID and blocklist branches above,
@@ -914,8 +912,9 @@ for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
 done
 
 # Single fast-path grep across the combined pattern: on the common case (no
-# detector matches), this replaces 5 subprocess spawns with 1; on a match, it
-# falls through to the per-detector loop below unchanged to name the label.
+# detector matches), this replaces one subprocess spawn per detector with 1;
+# on a match, it falls through to the per-detector loop below unchanged to
+# name the label.
 structural_fastpath_rc=0
 grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET_BOTH" || structural_fastpath_rc=$?
 if [ "$structural_fastpath_rc" -eq 0 ]; then

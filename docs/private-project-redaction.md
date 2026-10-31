@@ -362,9 +362,9 @@ missing-data problem or making a security-relevant choice without user
 review:
 
 1. **Widen the always-on structural detectors** — the five above cover the
-   shapes that can be matched at a tolerable false-positive rate; other
-   shapes, such as a hash-prefixed word, are left to the blocklist. Further
-   candidates just need a name list too, or deny ordinary PR prose constantly.
+   shapes matchable at a tolerable false-positive rate. Others, such as a
+   hash-prefixed word, need a name list (the blocklist) or deny ordinary PR
+   prose constantly.
 2. **Auto-derive a starter blocklist** from SSH config hosts, sibling repo
    names, or shell history — always incomplete, and arms a security-relevant
    list without user review.
@@ -516,15 +516,15 @@ The table was measured when the hook ran six structural detectors and scanned on
 
 This still exceeds this repo's stated hook performance budget (<100ms per
 fire). The five structural detectors run as one combined-pattern fast-path
-spawn, falling through to the per-detector loop only when it matches, so on
-content that matches no detector, a here-string bash materializes to a temp
-file before exec once per fire instead of up to five times. Subprocess-spawn
-overhead still dominates over byte-scanning cost — the fast path itself, plus
-the pre-existing tracker-ID and blocklist scans' own subprocess calls, remain
-unchanged — which is why cost still does not scale cleanly with body size. At
-commit/PR-authoring time (a human-interactive action, not a hot path), this is
-tolerable in absolute terms but is still a measured budget overrun, not a
-clean pass — a future revision that needs more headroom should look at
+spawn. The hook falls through to the per-detector loop only when the fast path
+matches. On content that matches no detector, a here-string bash materializes
+to a temp file before exec once per fire instead of up to five times. The fast
+path itself, plus the pre-existing tracker-ID and blocklist scans' own
+subprocess calls, remain unchanged. Subprocess-spawn overhead still dominates
+over byte-scanning cost, which is why cost still does not scale cleanly with
+body size. At commit/PR-authoring time (a human-interactive action, not a hot
+path), this is tolerable in absolute terms but is still a measured budget
+overrun, not a clean pass — a future revision that needs more headroom should look at
 collapsing the remaining tracker-ID and blocklist `grep` spawns into the same
 fast-path treatment. An unbroken run of letters, digits, `.` and `-` makes the
 combined pattern scan super-linearly, well beyond the figures above (see the
