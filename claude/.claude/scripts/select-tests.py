@@ -737,14 +737,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
-# TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_REDACTION_TEST_PATH, and
-# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. Each has a test
-# that reads the real agents directory unpatched, through a production constant:
-# redaction._REPO_AGENT_DEFINITIONS_DIR for the first two,
-# measure_subagent_model_resolution's AGENTS_DIR for the third.
-# TestCrossDomainReadCompleteness cannot see a read through a production
-# constant, so test_select_tests.py's _HAND_AUDITED_AGENTS_DIR_READERS lists
-# the pinned targets.
+# Some further targets read the real agents directory through a production
+# constant, which TestCrossDomainReadCompleteness cannot see.
+# test_select_tests.py's _HAND_AUDITED_AGENTS_DIR_READERS lists them.
 # TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target. Its test file reads
 # the directory through a module-level _AGENTS_DIR constant, so
 # TestCrossDomainReadCompleteness verifies it.

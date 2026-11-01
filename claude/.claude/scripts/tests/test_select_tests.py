@@ -422,7 +422,8 @@ class TestCrossDomainReadCompleteness:
         )
 
 
-# A hand-audited AGENTS_DIR target enters the selection only through this tuple.
+# Each pair is (select-tests.py attribute of a hand-audited AGENTS_DIR target,
+# name of the test in that target that reads the real agents directory).
 _HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
     ("TRANSCRIPT_COST_COUNTS_TEST_PATH", "test_every_tracked_agent_stem_matches_the_charset"),
     ("TRANSCRIPT_REDACTION_TEST_PATH", "test_real_agents_directory_allowlists_code_writer"),
@@ -744,8 +745,12 @@ class TestSelectPytestTargets:
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
-    def test_measure_subagent_model_resolution_test_change_selects_its_own_test(self):
-        """The test file selects itself rather than falling through to the full suite."""
+    def test_measure_subagent_model_resolution_test_change_also_selects_test_select_tests(self):
+        """An edit to evals/test_measure_subagent_model_resolution.py also
+        selects test_select_tests.py, because the hand-audited-reader test
+        reads that file by path. The review_bench and recall-scorer tests are
+        selected as well, and the change does not fall through to the full
+        suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -754,9 +759,9 @@ class TestSelectPytestTargets:
         }
 
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
-        """The recall scorer's own test file selects itself rather than
-        falling through to the full suite -- same shape as the sibling
-        pair's own test above."""
+        """The recall scorer's own test file selects itself, the review_bench
+        tests and the sibling measure_subagent test rather than falling
+        through to the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1093,9 +1098,8 @@ class TestSelectPytestTargets:
         self, target_attribute, reader_test_name,
     ):
         """A read through a production constant is invisible to
-        TestCrossDomainReadCompleteness. This pins only that each hand-audited
-        AGENTS_DIR target defines exactly one function of the reader's name,
-        taking no parameters beyond self."""
+        TestCrossDomainReadCompleteness, so whether each target's reader hits
+        the real agents directory stays a hand audit."""
         target_relative_path = getattr(_mod, target_attribute)
         tree = ast.parse((_REPO_ROOT / target_relative_path).read_text())
         reader_definitions = [
