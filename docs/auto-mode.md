@@ -77,7 +77,7 @@ render refuses `"auto"` for `permissions.defaultMode` in
 default. Start auto mode per session with `claude --permission-mode auto` (see
 "Activating" above) or `claude-auto`.
 
-The render accepts only `default` and `plan` for `defaultMode`:
+The render accepts only `default` and `plan` for `defaultMode` in the overlay:
 
 ```json
 {
@@ -90,10 +90,10 @@ The render accepts only `default` and `plan` for `defaultMode`:
 `defaultMode` sets the *mode*, not the *model* — the session-model requirement
 above still applies regardless of how auto mode is activated.
 
-The render refuses `"auto"` until the shipped `ask-review-permissions.sh`'s
+The render refuses `"auto"` in the overlay until the shipped `ask-review-permissions.sh`'s
 reason text is verified under `--permission-mode auto`. A throwaway hook's
 `ask` prompted a human there, but the shipped hook's reason text was not
-tested. It also refuses `"dontAsk"`, which no live session has exercised.
+tested. It also refuses `"dontAsk"` in the overlay, which no live session has exercised.
 `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the `acceptEdits`, `bypassPermissions`, and `auto` results.
 `bypassPermissions` and `acceptEdits` are refused outright for
 `permissions.defaultMode` in the overlay — use per-session `claude
@@ -183,9 +183,20 @@ What a render does with each key:
 
 - `permissions`, `hooks`, `statusLine`, and `skillOverrides` come from
   `settings.base.json` alone.
-- `autoMode`, `env`, `skillListingBudgetFraction`, and
-  `permissions.defaultMode` come from the overlay alone, so deleting one from
-  the overlay clears it on the next render.
+- `autoMode`, `env`, and `skillListingBudgetFraction` come from the overlay
+  alone, so deleting one from the overlay clears it on the next render. The
+  exception is `env.CLAUDE_CODE_EFFORT_LEVEL` and `env.ANTHROPIC_MODEL`, which
+  carry forward as described below.
+- `permissions.defaultMode` is the one nested exception to base's ownership of
+  `permissions`. An overlay value, checked against the `default`/`plan` set
+  documented above, replaces base's. With no overlay value, the render keeps
+  whatever `settings.base.json` sets.
+- The render refuses when `settings.base.json` sets `autoMode`, `env`, or
+  `skillListingBudgetFraction` and the overlay does not set the same key. Any
+  previous `settings.json` stays in place. A profile with none stays without
+  one. No base change reaches that profile until base drops the key or the
+  overlay sets it. For what that costs, see
+  `docs/security-hardening.md` § "Limitations".
 - Every other top-level key that neither file defines carries forward from the
   live `settings.json` unchanged, so a Claude Code write such as `/config` or
   `/theme` survives.
