@@ -8,6 +8,8 @@
 
 **Partially superseded by [architect-disposition-challenge-pilot.md](architect-disposition-challenge-pilot.md) (2026-10-29):** the "round-3 latch" Known-gaps bullet, on `log-reviewer-round.sh` writing the latch for any `plan-architect` dispatch whose first line is not `MODE=plan-sections`, no longer holds for a first line of exactly `MODE=challenge`, which writes no latch. Everything else here stands.
 
+**Superseded in part by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the Known-gaps latch bullet no longer describes a once-per-branch latch, since a consult now resets the count and the gate re-arms, and the Cap-overlap bullet describes a consult that no longer exists.
+
 By default, `/code-review` has the orchestrating session decide each round's
 dispositions, and consults `plan-architect` only on three narrow triggers:
 a heavier mechanism, a contradiction with an earlier fix, and the round cap.

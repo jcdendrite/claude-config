@@ -2467,6 +2467,146 @@ class TestWriteOut:
         assert result.stdout == ""
 
 
+def _row_in_round(round_value, disposition: str = "ADDRESS", **fields) -> dict:
+    return _row(round=round_value, disposition=disposition, **fields)
+
+
+def _trend(*rows: dict) -> subprocess.CompletedProcess:
+    return _call("_review_ledger_trend", stdin="".join(f"{json.dumps(row)}\n" for row in rows))
+
+
+class TestTrend:
+    def test_a_round_counts_its_address_defer_and_settled_rows_carries_included_and_not_clean(self):
+        result = _trend(
+            _row_in_round(1, "ADDRESS"),
+            _row_in_round(2, "ADDRESS"),
+            _row_in_round(1, "ADDRESS"),
+            _row_in_round(1, "DEFER"),
+            _row_in_round(1, "SETTLED"),
+            _row_in_round(1, "DEFER", decided_by="carry"),
+            _row_in_round(1, "CLEAN"),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "round 1: 5, round 2: 1\n"
+
+    def test_a_settled_carry_counts(self):
+        result = _trend(_row_in_round(1, "SETTLED", decided_by="carry"))
+
+        assert result.stdout == "round 1: 1\n"
+
+    def test_a_row_a_later_ref_retired_counts(self):
+        decision = _defer(_DECISION_ID, round=1)
+        retirer = _address(_SUCCESSOR_ID, round=2, ref=_DECISION_ID)
+
+        result = _trend(decision, retirer)
+
+        assert result.stdout == "round 1: 1, round 2: 1\n"
+
+    def test_a_round_holding_only_clean_rows_prints_clean(self):
+        result = _trend(_row_in_round(1, "CLEAN"))
+
+        assert result.stdout == "round 1: clean\n"
+
+    @pytest.mark.parametrize(
+        "disposition",
+        [
+            pytest.param(None, id="a null disposition"),
+            pytest.param(7, id="a non-string disposition"),
+            pytest.param("PENDING", id="an unrecognized disposition"),
+        ],
+    )
+    def test_a_round_whose_rows_hold_no_recognized_disposition_prints_clean(self, disposition):
+        # The series counts only ADDRESS, DEFER and SETTLED rows, so an unresolvable row adds no finding.
+        result = _trend(_row_in_round(1, disposition))
+
+        assert result.stdout == "round 1: clean\n"
+
+    def test_a_round_with_no_row_gets_no_entry(self):
+        result = _trend(_row_in_round(1), _row_in_round(3))
+
+        assert result.stdout == "round 1: 1, round 3: 1\n"
+
+    def test_rounds_print_in_numeric_order_whatever_the_input_order(self):
+        result = _trend(_row_in_round(100), _row_in_round(9), _row_in_round(10))
+
+        assert result.stdout == "round 9: 1, round 10: 1, round 100: 1\n"
+
+    def test_a_round_stored_as_a_float_joins_the_same_whole_number_round(self):
+        result = _trend(_row_in_round(1.0), _row_in_round(1))
+
+        assert result.stdout == "round 1: 2\n"
+
+    @pytest.mark.parametrize(
+        "round_value",
+        [
+            pytest.param("2", id="a text round"),
+            pytest.param("2\ntrend: round 9: 9", id="a text round holding a newline and trend:"),
+            pytest.param(None, id="a null round"),
+            pytest.param(True, id="a boolean round"),
+            pytest.param(0, id="round zero"),
+            pytest.param(-1, id="a negative round"),
+            pytest.param(2.5, id="a fractional round"),
+            pytest.param(10000, id="a round above 9999"),
+        ],
+    )
+    def test_a_round_that_is_not_an_integer_from_1_to_9999_is_skipped(self, round_value):
+        result = _trend(_row_in_round(1), _row_in_round(round_value))
+
+        assert result.stdout == "round 1: 1\n"
+
+    def test_round_9999_counts_as_the_upper_bound_append_accepts(self):
+        result = _trend(_row_in_round(1), _row_in_round(9999))
+
+        assert result.stdout == "round 1: 1, round 9999: 1\n"
+
+    @pytest.mark.parametrize(
+        "non_object_line",
+        [
+            pytest.param(json.dumps([_row_in_round(2)]), id="a JSON array line"),
+            pytest.param(json.dumps("round 2"), id="a JSON string line"),
+        ],
+    )
+    def test_a_stdin_line_that_is_not_a_json_object_is_skipped(self, non_object_line):
+        valid_row_line = json.dumps(_row_in_round(1))
+
+        result = _call("_review_ledger_trend", stdin=f"{non_object_line}\n{valid_row_line}\n")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "round 1: 1\n"
+
+    def test_a_row_with_no_round_is_skipped(self):
+        row_without_round = _row_in_round(2)
+        del row_without_round["round"]
+
+        result = _trend(_row_in_round(1), row_without_round)
+
+        assert result.stdout == "round 1: 1\n"
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param([], id="no rows"),
+            pytest.param([_row_in_round(0), _row_in_round(10000)], id="rows none of which has a counted round"),
+        ],
+    )
+    def test_nothing_prints_when_no_row_has_a_counted_round(self, rows):
+        result = _trend(*rows)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_a_failing_jq_returns_non_zero_and_prints_nothing(self, tmp_path):
+        failing_jq_path = path_with_failing_tool_shim(tmp_path / "bin", "jq")
+
+        result = _call(
+            "_review_ledger_trend", stdin=json.dumps(_row_in_round(1)) + "\n", env={"PATH": failing_jq_path},
+        )
+
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
 class TestRenderPrJsonFile:
     @pytest.mark.parametrize("kind", ["missing file", "directory"])
     def test_a_pr_json_path_that_cannot_be_read_fails_and_removes_a_stale_out_file(self, ledger, tmp_path, kind):

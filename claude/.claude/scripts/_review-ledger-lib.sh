@@ -780,6 +780,29 @@ def last_cell:
   end
 '
 
+# Only rows with an integer round from 1 to 9999 count, the range append accepts.
+# `floor` joins a stored `1.0` to round 1 and prints it as `1`, which jq 1.7 would otherwise print as written.
+# shellcheck disable=SC2016 # single-quoted on purpose: $disposition and $count are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
+_REVIEW_LEDGER_JQ_TREND='
+def counted_round: type == "number" and . == floor and . >= 1 and . <= 9999;
+def raised: (.disposition | s) as $disposition
+  | $disposition == "ADDRESS" or $disposition == "DEFER" or $disposition == "SETTLED";
+def round_entry:
+  ([.[] | select(raised)] | length) as $count
+  | "round \(.[0].round): \(if $count == 0 then "clean" else $count end)";
+
+[inputs | select(type == "object" and (.round | counted_round)) | .round |= floor]
+| if length == 0 then empty
+  else group_by(.round) | map(round_entry) | join(", ")
+  end
+'
+
+# _review_ledger_trend
+# Reads ledger rows on stdin, one JSON object per line, and prints nothing when no row has a counted round.
+_review_ledger_trend() {
+  _lib_jq -n -r "$_REVIEW_LEDGER_JQ_COMMON$_REVIEW_LEDGER_JQ_TREND"
+}
+
 # _review_ledger_confirm_ignored REAL_ROOT NAME SUBCOMMAND TARGET
 # Succeeds only when git confirms agent-reviews/NAME is ignored in REAL_ROOT.
 # Exit 1 from `git check-ignore` (not ignored, negated, or tracked) and every

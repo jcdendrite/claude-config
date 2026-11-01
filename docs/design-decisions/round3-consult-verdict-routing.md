@@ -2,6 +2,8 @@
 
 *2026-09-16.*
 
+**Partially superseded by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the gate no longer has "one per-branch firing". The routing below serves every firing, `/ready-for-review` passes included.
+
 `require-architect-consult.sh` denies a reviewer-persona spawn once a
 branch is at its round cap without a recent architect consult, and its
 deny message prescribes dispatching `plan-architect MODE=consult` and
