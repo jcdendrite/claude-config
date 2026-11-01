@@ -31,7 +31,8 @@ if ! common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-co
 fi
 
 main=$(dirname -- "$common_dir")
-# ':' is PATH's separator, so the entry prepended below would split into two or more elements, which can name an unrelated directory or resolve against the cwd.
+# ':' is PATH's separator, so the entry prepended below would split into two or more elements.
+# Those elements can name an unrelated directory or resolve against the cwd.
 if [[ "$main" == *:* ]]; then
   fail 127 "the main checkout's path must not contain ':': $main"
 fi

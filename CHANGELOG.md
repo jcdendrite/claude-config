@@ -8,7 +8,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**
   - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
-  - The wrapper exits 127 when the main checkout's path contains `:`, because `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
+  - The wrapper exits 127 when the main checkout's path contains `:`.
+  - `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
 - **The `/period-cost-report` Slack report now separates its groups with a blank line, sizes each group's table on its own rows, and cuts titles at 32 code points instead of 40.**
   - A blank line now precedes each repository name and the Total.
   - Each group's table column widths come from that group's own displayed rows.

@@ -233,7 +233,7 @@ class TestSuccess:
         """A system copy of a pinned tool (e.g. shellcheck) earlier on PATH must not shadow the venv's copy.
 
         The prepended entry is the main checkout's absolute `.venv/bin`, not one relative to the
-        working directory, and the rest of PATH stays reachable behind it.
+        working directory. The rest of PATH stays reachable behind it.
         """
         no_op_stub_source = "#!/usr/bin/env bash\n"
         decoy_dir = tmp_path.resolve() / "decoy"
