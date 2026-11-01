@@ -6360,10 +6360,7 @@ _PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE = (
     "finding, and the fix loop takes it like any other finding."
 )
 
-# Step 3's clean/dirty definition for a disposition record: a pass is clean
-# only when every reviewer its *Spawn decisions:* line lists as spawned has
-# returned, and the closing sentence keeps the record from granting a review
-# skip.
+# Step 3's clean/dirty definition.
 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
     "The pass is clean when every reviewer its *Spawn decisions:* line lists "
     "as spawned has returned and every row is resolved as "
@@ -6373,9 +6370,7 @@ _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
     "authorization; later reviews read it only as context."
 )
 
-# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
-# gate, then the Overview's fix-loop rule returns the loop to a full pass of
-# step 3 over the fixed bytes.
+# Step 3's loop-back sentence.
 _PINNED_STEP3_LOOP_BACK_CLAUSE = (
     "Its fix commit goes through the standard staged-diff `/code-review` + "
     "marker gate, and the Overview's fix-loop rule then brings the loop back "

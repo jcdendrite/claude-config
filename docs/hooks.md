@@ -208,7 +208,7 @@ A new gate registers every handler with `"onFailure": "block"` and ends its scri
   - slugs can collide across branches
   - the hook's own `git rev-parse` calls scrub none of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE`, while the script's ignore check scrubs all four
   - the hook passes the series on unchecked, because `show` builds it from integers and fixed words
-  - the series grows with the number of rounds that have rows, at about 13 bytes a round, and carries no cap
+  - the series grows with the number of rounds that have rows, at about 13 bytes a round, and the hook applies no byte cap to it
   - there is no kill switch other than removing its `settings.json` entry
 
   To diagnose an "unavailable" or absent line:
@@ -504,7 +504,7 @@ Use this when a session reports that `require-architect-consult.sh` denied a rev
 2. Tell the session to dispatch `plan-architect MODE=consult` once more, then retry the spawn.
 3. Last resort, when step 1 cannot be done or step 2's retry is still denied: set `round_consult_gate = false` in `<config-dir>/claude-config.toml` (format in [`docs/config-file.md`](config-file.md)).
    - It turns the gate off for every repository and branch on that config dir.
-   - Once the cause is fixed, set it back to `true` rather than deleting the row. Item 3 of the [`require-architect-consult.sh`](#gate-hooks) bullet gives the reason.
+   - Once the cause is fixed, set it back to `true` rather than deleting the row, because deleting it hands the key to its legacy sentinel (item 3 of the [`require-architect-consult.sh`](#gate-hooks) bullet).
 
 ### Orphaned active-bypass markers
 

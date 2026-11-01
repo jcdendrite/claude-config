@@ -2508,6 +2508,20 @@ class TestTrend:
 
         assert result.stdout == "round 1: clean\n"
 
+    @pytest.mark.parametrize(
+        "disposition",
+        [
+            pytest.param(None, id="a null disposition"),
+            pytest.param(7, id="a non-string disposition"),
+            pytest.param("PENDING", id="an unrecognized disposition"),
+        ],
+    )
+    def test_a_round_whose_rows_hold_no_recognized_disposition_prints_clean(self, disposition):
+        # The series counts only ADDRESS, DEFER and SETTLED rows, so an unresolvable row adds no finding.
+        result = _trend(_row_in_round(1, disposition))
+
+        assert result.stdout == "round 1: clean\n"
+
     def test_a_round_with_no_row_gets_no_entry(self):
         result = _trend(_row_in_round(1), _row_in_round(3))
 

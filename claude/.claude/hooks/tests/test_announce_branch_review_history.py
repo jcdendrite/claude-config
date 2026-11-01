@@ -395,6 +395,28 @@ class TestAnnounceBranchReviewHistoryTrendLine:
     @pytest.mark.parametrize(
         "trailing_stdout",
         [
+            pytest.param("unrelated\n", id="a second line without the trend prefix"),
+            pytest.param("trend:round 1: 1\n", id="a trend prefix with no space after the colon"),
+            pytest.param(
+                "unrelated\ntrend: round 1: 1\n",
+                id="a later line with the trend prefix after an unprefixed second line",
+            ),
+        ],
+    )
+    def test_a_second_line_without_the_trend_prefix_is_not_appended(self, tmp_path, outside_cwd, trailing_stdout):
+        context, history_file = self._context(tmp_path, outside_cwd, "no-prefix", trailing_stdout)
+
+        assert context == _file_context(history_file)
+
+    def test_a_trend_value_with_a_quote_and_a_backslash_still_yields_valid_json(self, tmp_path, outside_cwd):
+        # `_context` runs json.loads over the hook's stdout, so a mis-encoded envelope fails there.
+        context, history_file = self._context(tmp_path, outside_cwd, "json-escape", 'trend: say "hi" \\n done\n')
+
+        assert context == f'{_file_context(history_file)} {SERIES_LEGEND} say "hi" \\n done'
+
+    @pytest.mark.parametrize(
+        "trailing_stdout",
+        [
             pytest.param("trend: \n", id="a trend line with an empty value"),
             pytest.param("", id="an absent trend line"),
         ],

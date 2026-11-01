@@ -20,8 +20,6 @@ No hook, state directory or file format is added: the gate's existing counter an
 
 - **Three reviewed states between consults.** With the default cap the gate demands a consult before states 3, 6, 9 and so on, and before 2, 5, 8 under [the round-2 pilot](round2-consult-trigger-pilot.md). A consult from any source restarts the count.
 - **Why three.**
-  - The interval is three rounds, and the design counts every reviewed round whatever its outcome.
-  - A consult's cost is weighed against the rounds it prevents.
   - No trend rule can be shown to beat a fixed interval, because no branch in the ledger is labelled converging or grinding. A backtest could therefore not show a trend rule firing more often on grinding branches.
   - Without a discriminating trigger, the trigger only sets the cadence and the judgment belongs to the consult. This is why every consult receives the series, in place of a hook computing a verdict from it.
   - Three caps the run left unchecked after a wrong "foundation is fine" verdict at two states. It also matches the first firing, so one spacing describes the whole gate.
@@ -30,8 +28,10 @@ No hook, state directory or file format is added: the gate's existing counter an
   - Switch to a trend rule computed from `show --trend` if a labelled set of converging and grinding branches shows that rule firing on the grinding ones materially more often than the fixed interval does.
 - **The counter is the gate's own state file, reset by deleting it.** On a consult, `log-reviewer-round.sh` removes the branch's state file with `rm -f --`, then touches the latch. It tolerates a failed delete and takes no lock. Only the two hooks read that file, so deleting it loses nothing.
 - **Two windows the order of those steps leaves.**
-  - A kill between the delete and a branch's first latch write leaves no latch, so the next consult comes one state early, two under the pilot. Later consults find the latch already present.
-  - During a branch's first consult, a gate read that fails between the delete and the latch write denies, which costs at most one extra consult. Writing the latch first would turn that deny into an allow. A kill between the steps would then leave the old window behind a fresh latch. The next consult could then come up to three states early after any consult. Delete-then-latch keeps the smaller cost.
+  - A kill before the first latch write, after the delete, leaves no latch, so the next consult comes one state early, two under the pilot. Later consults find the latch already present.
+  - The steps run delete then latch, and a second window follows from that order.
+    - Chosen: during a branch's first consult, a gate read that fails between the delete and the latch write denies. That costs at most one extra consult.
+    - Rejected, latch first: it would turn that deny into an allow. A kill between the latch write and the delete would leave the pre-consult state file behind the latch, after any consult rather than only the first, so the next consult could come up to three states early.
 - **No lock.** A lock changes no outcome. A reviewer append racing the delete either survives as the new window's first state or is lost, which moves the next denial by one state. On a config dir with no state directory, the lock would also spend every retry and print a warning before going ahead unlocked.
 - **A read error defers to the latch.** grep's no-match status denies. Only grep's read-error status runs the latch-presence exit, which allows when the latch is a regular file. A state file that a later consult's reset deletes mid-read therefore allows. Counting a failed read as zero states, or re-testing the file after a failed count read, would allow an unreadable or vanished file on a branch with no latch.
 - **Rejected counters.**
@@ -107,7 +107,7 @@ Its named residual closes too: dirty passes alternating with clean ones escaped 
   - `<count>` is the findings raised that round: its ADDRESS, DEFER and SETTLED rows, carries included. A carry is a finding raised again at a site already decided, so counting it is what shows a branch stuck on one settled finding. A row a later `--ref` retired still counts.
   - A clean round usually ends one diff's review, so the round after it usually reviews a different diff. This lets a consult tell a new diff's first findings from a relapse. `/code-review`'s already-reviewed skip logs a clean round for the same diff, which is the exception.
   - Only rounds 1 to 9999 count, the range `append` accepts, normalized to plain digits. With no counted row, no `trend:` line prints.
-  - **The series has no byte cap.** Each entry comes from at least one row, so the output grows with the number of rounds that have rows, never with the size of a round number. An entry takes about 13 bytes a round. The series is the last element of the history line, so any truncation of that line costs only the series' newest entries.
+  - **The series has no byte cap.** Each entry comes from at least one row, so the output grows with the number of rounds that have rows, never with the size of a round number. An entry takes about 13 bytes a round. The hook appends the series last on the history line and applies no byte cap to it.
 - **Delivery.** `announce-branch-review-history.sh` passes `--trend` to the `show` call it already makes and appends the second stdout line to the `Review-ledger history:` line after a one-phrase legend. It does not check the value, because `show`'s own jq program builds it from integers and fixed words, so a check could only reject output that program cannot produce. Every `plan-architect` dispatch receives it, whichever skill or hook prescribed the dispatch.
 - **The `Ask:` line and the SETTLED and DEFER rows.** Every prescribed consult site already passes the plan path, and the history file holds every SETTLED and DEFER row. The agent body's **Foundation questions.** paragraph tells the consult to find the `Ask:` line and those rows with Grep and to judge the foundation from the series, the `Ask:` line and those rows, not from the latest round's findings.
 - **Rejected.**
