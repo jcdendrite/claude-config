@@ -771,8 +771,10 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
-`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`). `pricing.py`'s
+`pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in `tests/test_transcript_pricing.py`,
+`tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `corpus.py` and `scope.py`
+are exercised through `transcript-analysis.py`'s existing test suite
+(`tests/test_transcript_analysis.py`). `pricing.py`'s
 shared per-session step, staleness rule, and canary return values, and
 `cost.py`'s accumulation of that step's counts, also have direct tests in
 `tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
@@ -946,7 +948,7 @@ three loads the shim: each imports its package module directly and relies on the
 `fake_projects` fixture. `tests/_skill_helpers.py`, a plain module, not a test file itself, holds the
 helpers more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file
 imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
-why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
+why. `TestIsFreshUserPrompt` lives in `tests/test_transcript_render.py` because it tests
 `render.py`, not the judgment-pair command.
 
 The session-signal command group splits at command seams, one test file per module:

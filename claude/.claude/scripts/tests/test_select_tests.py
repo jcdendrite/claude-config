@@ -422,6 +422,14 @@ class TestCrossDomainReadCompleteness:
         )
 
 
+# A hand-audited AGENTS_DIR target enters the selection only through this tuple.
+_HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
+    ("TRANSCRIPT_COST_COUNTS_TEST_PATH", "test_every_tracked_agent_stem_matches_the_charset"),
+    ("TRANSCRIPT_REDACTION_TEST_PATH", "test_real_agents_directory_allowlists_code_writer"),
+    ("MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST", "test_staff_backend_engineer_declared_model_is_sonnet"),
+)
+
+
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
         """TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also selected: this is a
@@ -742,6 +750,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.SELECT_TESTS_TEST_PATH,
         }
 
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
@@ -1065,16 +1074,51 @@ class TestSelectPytestTargets:
     def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
         """Tests that read claude/.claude/agents/*.md by path, not by import,
         are selected by the cross-domain exception; without it a change there
-        falls open to the full suite. The AGENTS_DIR comment on
-        CROSS_DOMAIN_EXCEPTIONS carries the hand-audited list."""
+        falls open to the full suite. _HAND_AUDITED_AGENTS_DIR_READERS carries
+        the hand-audited targets."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
-            _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+        } | {
+            getattr(_mod, target_attribute)
+            for target_attribute, _ in _HAND_AUDITED_AGENTS_DIR_READERS
         }
+
+    @pytest.mark.parametrize(
+        ("target_attribute", "reader_test_name"), _HAND_AUDITED_AGENTS_DIR_READERS,
+    )
+    def test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self(
+        self, target_attribute, reader_test_name,
+    ):
+        """A read through a production constant is invisible to
+        TestCrossDomainReadCompleteness. This pins only that each hand-audited
+        AGENTS_DIR target defines exactly one function of the reader's name,
+        taking no parameters beyond self."""
+        target_relative_path = getattr(_mod, target_attribute)
+        tree = ast.parse((_REPO_ROOT / target_relative_path).read_text())
+        reader_definitions = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == reader_test_name
+        ]
+        assert len(reader_definitions) == 1, (
+            f"{target_relative_path} defines {len(reader_definitions)} functions "
+            f"named {reader_test_name}; expected exactly one"
+        )
+        arguments = reader_definitions[0].args
+        parameter_names = [
+            parameter.arg
+            for parameter in (
+                *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                *filter(None, (arguments.vararg, arguments.kwarg)),
+            )
+        ]
+        assert parameter_names == ["self"], (
+            f"{target_relative_path}: {reader_test_name} takes {parameter_names}; "
+            f"expected only self"
+        )
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
         """test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
@@ -2076,6 +2120,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
     _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
+    _mod.TRANSCRIPT_REDACTION_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
