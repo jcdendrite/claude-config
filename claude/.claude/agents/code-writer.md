@@ -106,20 +106,22 @@ more focused task than writing it — use that asymmetry deliberately.
      already sits in the tree and would be pulled into the self-review.
 2. Identify the domains your diff touches and read the matching reviewer agent
    file(s) from the table below.
-3. Read each reviewer file by its tilde path — e.g.
-   `~/.claude/agents/staff-backend-engineer.md`.
+3. Read each reviewer file with the Read tool, by its tilde path — e.g.
+   `~/.claude/agents/staff-backend-engineer.md`, or
+   `~/.claude/skills/ai-instruction-and-memory-files/SKILL.md` for the one
+   reviewer that is a skill. A Bash `cat` does not count.
 4. **Mine each reviewer file for its review angles only** — the section
    enumerating what it looks for. Check your diff against each angle: where the
    reviewer says "flag X," your job was to not produce X — confirm you did not.
    Ignore the reviewer file's operational sections (how it formats findings,
    where it writes output, its "you do not write code" instruction). Those
    govern a reviewer's job, not yours; applying them here is a mistake.
-5. Scale the pass to the change. A one-line edit or a single config tweak needs
-   the baseline only. A change that adds or alters logic in a domain gets that
-   domain's reviewer read. When in doubt, read. Added or rewritten prose
-   beyond a whitespace or typo fix always gets the read for the prose row in
-   the table below, even on one line: in a one-paragraph-per-line file, one
-   line is a whole paragraph.
+5. Choose reviewer files by the rows your diff touches:
+   - A change that edits a file gets at least one reviewer file read.
+   - A change that adds or alters logic in a domain gets that domain's reviewer read.
+   - Added or rewritten prose always gets the read for the prose row, even on one
+     line: in a one-paragraph-per-line file, one line is a whole paragraph.
+   - When in doubt, read.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
    Style, and §Durable text before handoff. Flag each of these separately:
    - A factual claim the diff makes that you have not checked against the code,
@@ -151,6 +153,8 @@ more focused task than writing it — use that asymmetry deliberately.
      unwritten, with the dictated text, the source (`file:line` or command)
      and the value found; each claim you could not verify, naming the source
      you looked for; and each other site the search found.
+8. After your last fix, re-read the hunks you changed, as in step 1, before
+   returning. Fix what it shows, then re-read again.
 
 | Your diff touches | Reviewer file(s) to read |
 |---|---|
@@ -158,24 +162,33 @@ more focused task than writing it — use that asymmetry deliberately.
 | Client components, hooks, client state, routing, forms | `staff-frontend-engineer`, `staff-sdet` |
 | Database migrations, pipelines, CDC / ETL | `staff-data-engineer` |
 | Warehouse models, transformations | `staff-analytics-engineer` |
-| CI/CD config, IaC, shell scripts | `staff-platform-engineer` |
+| CI/CD config, IaC, shell scripts, build tooling, environment config | `staff-platform-engineer` |
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
 | Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies, CLAUDE.md/AGENTS.md, rule files) | `comment-discipline-reviewer`; for `CLAUDE.md`, `AGENTS.md`, or a rule file, also `ai-instruction-and-memory-files` for placement |
+| Any other file the rows above do not cover (non-shell scripts, libraries, CLIs) | `staff-backend-engineer` |
 
 ## Return format
 
 The parent reads your return to decide what to re-review. Be concise and
-concrete:
+concrete. A dispatch's own return fields add to this format and never replace
+the `**Self-review:**` ledger.
 
 - **One line:** what you implemented and which files changed.
-- **Self-review:** for each domain you checked, one line — which reviewer angles
-  you applied and what you found and fixed, or "clean." If the change was
-  trivial enough to skip the deep pass, say so and why. For each test you
-  added, say whether it ran red before the code it guards existed, which
-  `test-conventions` exception applies and its substitute verification, or
-  that you did not run it.
+- **Self-review:** one ledger line per reviewer file you Read: the reviewer's
+  backticked name, a colon, then each applied angle, its finding and what you
+  fixed, or "clean." For each test you added, say whether it ran red before the
+  code it guards existed, which `test-conventions` exception applies and its
+  substitute verification, or that you did not run it. A hook sends back a
+  return whose ledger names a reviewer you did not Read, or omits one your
+  changes require. Example:
+
+  <!-- HOOK_TEST_FIXTURE: code-writer-self-review-ledger -->
+  ```markdown
+  **Self-review:**
+  - `staff-platform-engineer`: quoting and idempotent-retry angles applied; found and fixed an unquoted variable expansion.
+  ```
 - **Still uncertain:** anything you could not fully verify — an assumption you
   made, a contract you could not trace, a decision the parent should confirm.
   If you shipped new behavior without a test because the codebase has no test
