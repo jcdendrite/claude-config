@@ -1,10 +1,11 @@
 """Tests for scripts/venv-run.sh.
 
 Runs a copy of the wrapper as a subprocess against a real git repository and a
-linked worktree four levels deep, with one case per exit branch.
+linked worktree, with one case per exit branch.
 
 Fixture defaults, applied by `_make_fixture`:
 - The main checkout sits under a directory whose name contains a space.
+- The linked worktree sits at `<main>/.claude/worktrees/T-1/topic-slug`, four levels below the main checkout.
 - The wrapper is committed at `scripts/venv-run.sh`, so the linked worktree
   checks out its own copy at the committed mode.
 - `core.hooksPath` points at an empty directory, so the contributor's global
@@ -73,8 +74,10 @@ def _write_executable(path: Path, source: str) -> None:
     path.chmod(0o755)
 
 
-def _make_fixture(tmp_path: Path) -> _Fixture:
-    base = tmp_path.resolve() / "dir with space"
+def _make_fixture(
+    tmp_path: Path, base_name: str = "dir with space", worktrees_root: Path | None = None
+) -> _Fixture:
+    base = tmp_path.resolve() / base_name
     main = base / "main"
     main.mkdir(parents=True)
     _git(main, "init", "-q", "-b", "main")
@@ -96,7 +99,8 @@ def _make_fixture(tmp_path: Path) -> _Fixture:
     _git(main, "add", f"scripts/{_SCRIPT.name}")
     _git(main, "commit", "-q", "-m", "add the wrapper")
 
-    worktree = main / ".claude" / "worktrees" / _WORKTREE_BRANCH
+    resolved_worktrees_root = main / ".claude" / "worktrees" if worktrees_root is None else worktrees_root
+    worktree = resolved_worktrees_root / _WORKTREE_BRANCH
     _git(main, "worktree", "add", "-q", "-b", _WORKTREE_BRANCH, str(worktree))
 
     stubs_dir = main / ".venv" / "stubs"
@@ -223,6 +227,55 @@ class TestSuccess:
         assert wrapper_process.returncode == 0
         assert int(stdout) == wrapper_process.pid
 
+    def test_children_resolve_a_bare_tool_name_from_venv_bin_before_an_earlier_path_entry(
+        self, venv_checkout, tmp_path
+    ):
+        """A system copy of a pinned tool (e.g. shellcheck) earlier on PATH must not shadow the venv's copy.
+
+        The prepended entry is the main checkout's absolute `.venv/bin`, not one relative to the
+        working directory. The rest of PATH stays reachable behind it.
+        """
+        no_op_stub_source = "#!/usr/bin/env bash\n"
+        decoy_dir = tmp_path.resolve() / "decoy"
+        _write_executable(decoy_dir / "probe-tool", no_op_stub_source)
+        _write_executable(decoy_dir / "other-tool", no_op_stub_source)
+        _write_executable(venv_checkout.bin_dir / "probe-tool", no_op_stub_source)
+        _write_executable(venv_checkout.worktree / ".venv" / "bin" / "probe-tool", no_op_stub_source)
+        _write_executable(
+            venv_checkout.bin_dir / "resolve-probe",
+            "#!/usr/bin/env bash\ncommand -v probe-tool\ncommand -v other-tool\n",
+        )
+        env = _clean_env()
+        env["PATH"] = f"{decoy_dir}:{env['PATH']}"
+
+        result = _run_wrapper("scripts/venv-run.sh", "resolve-probe", cwd=venv_checkout.worktree, env=env)
+
+        assert result.returncode == 0, result.stderr
+        probe_tool_path, other_tool_path = result.stdout.splitlines()
+        assert Path(probe_tool_path) == venv_checkout.bin_dir / "probe-tool"
+        assert Path(other_tool_path) == decoy_dir / "other-tool"
+
+    def test_runs_the_tool_with_the_main_venv_bin_first_on_path_when_only_the_worktree_path_contains_a_colon(
+        self, tmp_path
+    ):
+        """A colon outside the main checkout's path must not trip the guard, because only that path reaches PATH."""
+        colon_worktree_checkout = _make_fixture(
+            tmp_path, worktrees_root=tmp_path.resolve() / "worktrees:with colon"
+        )
+        assert ":" in str(colon_worktree_checkout.worktree)
+        assert ":" not in str(colon_worktree_checkout.main)
+        _write_executable(
+            colon_worktree_checkout.bin_dir / "first-path-element-probe",
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"${PATH%%:*}\"\n",
+        )
+
+        result = _run_wrapper(
+            "scripts/venv-run.sh", "first-path-element-probe", cwd=colon_worktree_checkout.worktree
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == colon_worktree_checkout.bin_dir
+
     def test_runs_a_real_venv_python_so_the_prefix_is_the_main_checkout_venv(self, venv_checkout):
         """Python derives its prefix from the path it was invoked by, so the wrapper must not resolve the venv symlink."""
         main_venv = venv_checkout.main / ".venv"
@@ -347,6 +400,41 @@ class TestResolutionFailures:
         )
         # The tool is not the missing item; naming it would send the user to the wrong remedy.
         assert "python3" not in result.stderr
+
+    def test_exits_127_before_running_the_tool_when_the_main_checkout_path_contains_a_colon(self, tmp_path):
+        """':' is PATH's separator, so the prepended `.venv/bin` would split into two or more PATH elements."""
+        colon_checkout = _make_fixture(tmp_path, base_name="dir:with colon")
+
+        result = _run_wrapper(
+            "scripts/venv-run.sh", "python3", _ARGUMENT_WITH_SPACE, cwd=colon_checkout.worktree
+        )
+
+        _assert_wrapper_failure(
+            result,
+            returncode=127,
+            fragments=("must not contain ':'", str(colon_checkout.main), "re-clone"),
+        )
+
+    def test_exits_127_for_a_colon_in_the_main_checkout_path_when_the_cwd_and_worktree_paths_have_none(
+        self, tmp_path
+    ):
+        """The guard inspects the main checkout's path, not the cwd, the worktree path, or the relative script directory."""
+        colon_free_worktrees_root = tmp_path.resolve() / "worktrees outside main"
+        colon_checkout = _make_fixture(
+            tmp_path, base_name="dir:with colon", worktrees_root=colon_free_worktrees_root
+        )
+        assert ":" not in str(colon_checkout.worktree)
+        assert colon_checkout.main not in colon_checkout.worktree.parents
+
+        result = _run_wrapper(
+            "scripts/venv-run.sh", "python3", _ARGUMENT_WITH_SPACE, cwd=colon_checkout.worktree
+        )
+
+        _assert_wrapper_failure(
+            result,
+            returncode=127,
+            fragments=("must not contain ':'", str(colon_checkout.main)),
+        )
 
     @pytest.mark.parametrize(
         ("tool_name", "prepare_tool"),

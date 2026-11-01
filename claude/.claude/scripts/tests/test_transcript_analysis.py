@@ -38,6 +38,7 @@ from transcript_analysis import (
     rearm_backtest,
     redaction,
     render,
+    review_cost_by_size,
     review_trace,
     reviewer_yield,
     scope,
@@ -324,6 +325,23 @@ class TestConfigDirRouting:
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert "context-composition" in err
+
+
+def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypatch, capsys):
+    """main() reaches cmd_review_cost_by_size with the parsed Namespace, which refuses before any gh or git call."""
+
+    def fail_on_any_subprocess(cmd, *args, **kwargs):
+        pytest.fail(f"refusal must precede every subprocess call, got {cmd!r}")
+
+    monkeypatch.setattr(subprocess, "run", fail_on_any_subprocess)
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "review-cost-by-size"])
+    with pytest.raises(SystemExit) as exc_info:
+        _mod.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "review-cost-by-size: requires --this-repo" in err
 
 
 # ---------------------------------------------------------------------------
@@ -2047,6 +2065,15 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
+
+    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
+        parser = _mod.build_parser()
+        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
+        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
+        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert with_flag.all_accounts is True
+        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
+        assert without_flag.all_accounts is False
 
     def test_pr_link_without_repo_flag_defaults_to_none(self):
         parser = _mod.build_parser()

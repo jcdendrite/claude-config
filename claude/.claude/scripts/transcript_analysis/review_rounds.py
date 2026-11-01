@@ -366,7 +366,8 @@ def compute_review_round_costs(
     merging into one row, mirroring subagent-mix's own (root_idx, branch)
     keying. resolved_roots is only consulted when it has more than one
     entry; caller passes None (or an empty/single-element sequence) under a
-    single root.
+    single root. Passing None over a multi-root iterator keys every round
+    (None, branch), so a branch's rounds merge across those roots.
 
     skill_filter/branch_filter/since_ts/until_ts are applied as a final
     filter over the detected rounds, by the round's own skill / attributed

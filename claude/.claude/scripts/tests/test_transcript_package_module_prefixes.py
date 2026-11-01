@@ -53,6 +53,7 @@ PRODUCTION_MODULES = (
     "cache_efficiency.py",
     "edit_format.py",
     "instrument_authoring.py",
+    "review_cost_by_size.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -114,6 +115,7 @@ TEST_FILES = (
     "test_transcript_pr_cost_gh.py",
     "test_transcript_pr_cost_export.py",
     "test_transcript_cache_rebuild.py",
+    "test_transcript_review_cost_by_size.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

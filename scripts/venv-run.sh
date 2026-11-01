@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a tool from the main checkout's contributor .venv, from the main checkout or any linked worktree.
 # Usage: scripts/venv-run.sh <tool> [args...]
-# Exit 2: usage error. Exit 127: the main checkout, its .venv, or the tool was not found.
+# Exit 2: usage error. Exit 127: the main checkout's path contains ':', or the main checkout, its .venv, or the tool was not found.
 # A missing exec target or interpreter, e.g. a stale console-script shebang,
 # fails in bash's own exec, which sets the exit status.
 # On bash 5.x, bash reports that failure with a `scripts/venv-run.sh: line N:` prefix instead of this script's `venv-run.sh:` prefix.
@@ -31,6 +31,12 @@ if ! common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-co
 fi
 
 main=$(dirname -- "$common_dir")
+# ':' is PATH's separator, so the entry prepended below would split into two or more elements.
+# Those elements can name an unrelated directory or resolve against the cwd.
+if [[ "$main" == *:* ]]; then
+  fail 127 "the main checkout's path must not contain ':': $main; re-clone the repository to a path without ':'"
+fi
+
 if [[ ! -d "$main/.venv" ]]; then
   fail 127 "no .venv in the main checkout; run ./install-dev.sh in $main"
 fi
@@ -42,4 +48,5 @@ if [[ ! -f "$main/.venv/bin/$tool" || ! -x "$main/.venv/bin/$tool" ]]; then
 fi
 
 # Exec the unresolved path: Python finds its venv from the path it was invoked by.
-exec "$main/.venv/bin/$tool" "$@"
+# Prepend .venv/bin so the tool's children resolve pinned tools (e.g. shellcheck) before system copies.
+PATH="$main/.venv/bin:$PATH" exec "$main/.venv/bin/$tool" "$@"

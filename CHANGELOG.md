@@ -14,6 +14,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The `round_consult_gate` kill switch now silences the consult inside `/ready-for-review` runs too. The Cap ignored it.
   - A branch already latched at pull time meets its first re-armed consult two states early, one under the round-2 pilot. Its deny text counts its earlier states as recorded since the last consult.
   - A `/ready-for-review` run already under way at pull time keeps the old Cap text while the hooks already count its reviews, so it can run both consults until it ends.
+- **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**
+  - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
+  - The wrapper exits 127 when the main checkout's path contains `:`.
+  - `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
 - **`claude-hook-review` 2.6.0 now defines `turn-gate` as firing where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, with an output shape that follows its event.**
   - The bump is minor because the `turn-gate` definition widens and nothing is reversed.
   - The checklist now flags any `updatedInput` other than the `SubagentHandback` prefix rewrite.
@@ -477,6 +481,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix. Its domain table routes build tooling and environment config to `staff-platform-engineer`, and any other file to `staff-backend-engineer`.
   - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. Until then each subagent handback and each `code-writer` stop runs a registration whose script is missing, which does not block the call, and the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
   - The harness behavior the hook relies on was probed on Claude Code 2.1.310 only. Versions 2.1.295 through 2.1.309 are unverified and fail open (see `docs/design-decisions/code-writer-self-review-send-back.md` § "Known degradations and unverified paths").
+- **`transcript-analysis.py review-cost-by-size` reports how `code-review` round count and round cost vary with merged-PR size.**
+  - It joins each branch's rounds to its merged PR by exact head-branch name, then prints rank correlations, log-log elasticities, size-bucket medians, a within-PR round-cost trend, join diagnostics and per-PR rows.
+  - It requires `--this-repo` and `gh`, and reads the active account only by default.
+  - `--all-accounts` reads every declared account as one scan. That output is a private view that prints DO NOT PUBLISH and is never proposed for publication.
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.

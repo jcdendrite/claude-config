@@ -860,12 +860,12 @@ class TestCostCounts:
         out = capsys.readouterr().out
         assert "| staff-sdet | 1 |" in out
 
-    @pytest.mark.parametrize("subcommand", ["cost-counts", "period-cost"])
+    @pytest.mark.parametrize("subcommand", ["cost-counts", "period-cost", "review-cost-by-size"])
     def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
-        """cost-counts and period-cost register no --config-dir flag of their
-        own, unlike every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
-        member -- the shared refusal message must not recommend a flag that
-        doesn't exist on their own parsers."""
+        """The members named in the comment above
+        scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR register no
+        --config-dir flag of their own -- the shared refusal message must not
+        recommend a flag that doesn't exist on their own parsers."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(
@@ -877,4 +877,4 @@ class TestCostCounts:
         err = capsys.readouterr().err
         assert subcommand in err
         assert "use that instead" not in err
-        assert "with no override" in err
+        assert "since this subcommand resolves its scan roots itself" in err
