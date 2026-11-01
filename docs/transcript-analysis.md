@@ -1420,7 +1420,6 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - One PR's rounds sum across every project directory and root the scan reads, so a branch worked on in two checkouts is one record.
 - A branch matching no merged PR counts as an unmatched branch. So does a default-branch name (`main`, `master`, `develop`), a detached head and a `worktree-agent-*` branch, which never join, even when a merged PR carries that head name.
 - A branch matching more than one merged PR counts as an ambiguous branch and is excluded. The check sees only merged PRs, so it does not detect a name reused by a merged PR and a later PR that is open, closed unmerged or not yet opened. That later PR's rounds join the merged PR.
-- A merged PR with no `code-review` round in scope is not a record.
 - Rounds opened after a PR's merge still count toward it, as `pr-cost` counts a branch's later activity.
 - The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it.
 

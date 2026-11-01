@@ -7,6 +7,7 @@ import math
 import os
 import re
 import subprocess
+import time
 from collections import Counter
 
 import pytest
@@ -95,14 +96,11 @@ def _run_cmd(monkeypatch, capsys, args, *, merged_prs=(), call_log=None, **fake_
 
 
 def _printed_pr_numbers(stdout: str) -> list[int]:
-    """PR numbers of the per-PR rows, in print order."""
     _, _, rows_section = stdout.partition("Per-PR rows")
     return [int(match.group(1)) for match in re.finditer(r"^\s+(\d+)\s+[\d,]+\s+\d+\s", rows_section, re.MULTILINE)]
 
 
 class TestComputeAggregates:
-    """_compute_aggregates over literal records."""
-
     def test_each_size_bucket_holds_two_prs_and_reports_the_midpoint_medians(self):
         """Lines 0, 149, 150, 399, 400, 799, 800 and 10000 put two PRs in each half-open bucket.
         Each bucket's two PRs differ on every measure, so the median is the midpoint, which neither
@@ -190,11 +188,9 @@ class TestComputeAggregates:
         assert elasticity["total_dollars"] == (0.0, 3)
 
     def test_identical_line_counts_among_the_surviving_prs_give_no_slope_despite_a_zero_line_pr(self):
-        """The same-size check runs on the pairs that survive the positivity filter. The mutation this test
-        guards runs it on the unfiltered line counts: the zero-line PR would make the sizes differ, so the
-        check would not fire for five PRs of one size. Each round costs 1.0, so the mean-dollar value is
-        constant, and that mutation returns 0.0 for it at any PR count. It does so whatever the standard
-        library does on a constant x."""
+        """The same-size check runs on the pairs that survive the positivity filter. Run on the unfiltered
+        line counts, the zero-line PR would hide the five equal sizes, and the constant mean-dollar series
+        would return 0.0 instead of None."""
         records = [_record(number, 7, *([1.0] * number)) for number in range(1, 6)]
         records.append(_record(6, 0, 1.0))
         elasticity = review_cost_by_size._compute_aggregates(records)["elasticity"]
@@ -286,7 +282,6 @@ class TestPrintedReport:
 
     @staticmethod
     def _block_after(lines: list[str], header: str) -> list[str]:
-        """The indented lines printed directly under `header`."""
         start = lines.index(header) + 1
         end = start
         while end < len(lines) and lines[end].startswith("  "):
@@ -383,8 +378,6 @@ class TestPrintedReport:
 
 
 class TestJoinRoundsToPrs:
-    """_join_rounds_to_prs over literal round dicts and merged-PR dicts."""
-
     def test_every_join_outcome(self):
         rounds = [
             # Arrive out of sort_key order: sorted order is the second, third, first.
@@ -499,8 +492,6 @@ class TestJoinRoundsToPrs:
 
 
 class TestScanCodeReviewRounds:
-    """_scan_code_review_rounds plus the join, on transcript files."""
-
     @staticmethod
     def _joined_record(rounds):
         records, _ = review_cost_by_size._join_rounds_to_prs(
@@ -596,8 +587,6 @@ class TestScanCodeReviewRounds:
 
 
 class TestCmdReviewCostBySize:
-    """cmd_review_cost_by_size with `gh` faked."""
-
     @pytest.mark.parametrize(
         "args_kwargs",
         [
@@ -848,6 +837,45 @@ class TestCmdReviewCostBySize:
         else:
             assert out == ""
             assert error_lines[0].startswith("review-cost-by-size: could not resolve this repo's own remote")
+
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
+    def test_failing_merged_pr_discovery_exits_1_before_any_scan_or_report(
+        self, fake_projects, monkeypatch, capsys, all_accounts,
+    ):
+        scan_calls: list[tuple] = []
+        monkeypatch.setattr(
+            review_cost_by_size, "_scan_code_review_rounds", lambda *scan_args: scan_calls.append(scan_args),
+        )
+        remaining_calls_double = _fake_pr_cost_subprocess_run()
+        pr_list_calls: list[list[str]] = []
+        requested_sleeps: list[float] = []
+        monkeypatch.setattr(time, "sleep", lambda seconds: requested_sleeps.append(seconds))
+
+        def merged_pr_discovery_fails(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "list"]:
+                pr_list_calls.append(cmd)
+                # Auth-shaped stderr is never retried.
+                return subprocess.CompletedProcess(cmd, 1, "", "error: not logged into any GitHub hosts\n")
+            return remaining_calls_double(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", merged_pr_discovery_fails)
+        with pytest.raises(SystemExit) as exc_info:
+            review_cost_by_size.cmd_review_cost_by_size(
+                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
+            )
+        assert exc_info.value.code == 1
+        out, err = capsys.readouterr()
+        error_lines = err.splitlines()
+        assert len(pr_list_calls) == 1
+        assert requested_sleeps == []
+        assert scan_calls == []
+        # The abort label's command prefix is shared-helper wording, so only the fragment after it is pinned.
+        assert "gh pr list failed (degraded_auth) before any row could be captured" in error_lines[-1]
+        if all_accounts:
+            assert out == review_cost_by_size._PRIVATE_VIEW_BANNER + "\n"
+            assert error_lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
+        else:
+            assert out == ""
 
     def test_limit_note_prints_only_when_the_merged_list_reaches_the_gh_limit(self, fake_projects, monkeypatch, capsys):
         """No sessions are in scope, so each run is the empty scope: the full report with n/a aggregates."""

@@ -327,6 +327,23 @@ class TestConfigDirRouting:
         assert "context-composition" in err
 
 
+def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypatch, capsys):
+    """main() reaches cmd_review_cost_by_size with the parsed Namespace, which refuses before any gh or git call."""
+
+    def fail_on_any_subprocess(cmd, *args, **kwargs):
+        pytest.fail(f"refusal must precede every subprocess call, got {cmd!r}")
+
+    monkeypatch.setattr(subprocess, "run", fail_on_any_subprocess)
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "review-cost-by-size"])
+    with pytest.raises(SystemExit) as exc_info:
+        _mod.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "review-cost-by-size: requires --this-repo" in err
+
+
 # ---------------------------------------------------------------------------
 # _table_cols self-tests
 # ---------------------------------------------------------------------------

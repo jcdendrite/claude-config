@@ -307,7 +307,7 @@ module reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` 
 no-PR branches from joining. Three functions carry the logic so tests can feed them literals:
 `_scan_code_review_rounds` runs the scan, `_join_rounds_to_prs` applies the join, and
 `_compute_aggregates` computes the figures. The scan passes `resolved_roots=None`, so a branch's rounds
-merge across roots, it never reaches `scope._root_index_for_path`, and a project directory symlinked
+merge across roots. It never reaches `scope._root_index_for_path`, so a project directory symlinked
 outside every root cannot abort it.
 
 ### `author_outcome.py`

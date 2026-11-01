@@ -86,7 +86,7 @@ Alternatives weighed:
   - **No match:** the branch counts as unmatched. This covers unmerged branches and PRs past the list limit. Never-joining branches count here too.
   - **More than one match:** the branch counts as ambiguous and is excluded, because resolving it needs `_resolve_branch_pr`'s per-PR enrichment (row 13).
 
-  A merged PR with no code-review round in scope is not a record, since its sessions may have aged out (G1), run on another machine (row 2), or sat in a since-removed worktree (row 44). The join reads every entry's `headRefName`, and the matched entry's `number`, `additions` and `deletions`, by direct indexing, never `.get(..., 0)`, so a malformed `gh` entry stops the run instead of entering the smallest bucket (Out of scope). Alternatives checked:
+  A merged PR with no code-review round in scope is not a record, since its sessions may have aged out (G1), run on another machine (row 2), or sat in a since-removed worktree (row 44). The join reads every entry's `headRefName`, and the matched entry's `number`, `additions` and `deletions`, by direct indexing, never `.get(..., 0)`. A malformed `gh` entry therefore stops the run instead of entering the smallest bucket (Out of scope). Alternatives checked:
   - `pr_cost._direct_headref_matches`. It is a one-line comprehension, and importing `pr_cost` would make this the first command module to depend on that command group and its ledger imports (row 32). The equality test is a small duplicated value, and workstream-cost already inlines it.
   - period-cost's `_pr_for_branch`. It takes period-cost's own validated PR type, which carries `isCrossRepository`, and it resolves a reused branch name to the highest-numbered PR, where this command excludes the branch.
 
@@ -106,7 +106,7 @@ Alternatives weighed:
   - The within-PR trend, over PRs with at least 4 code-review rounds: Spearman's rho of round index against round dollars. A PR whose rho raises, such as one whose rounds all cost the same, is skipped. The line prints how many PRs yielded a rho, their median rho and the share above zero, and it reads `n/a` when none did.
   - A `statistics.StatisticsError`, from too few points or a constant series, yields `None` for that one value. An empty set yields `None` before any division.
 
-  The edges and the 4 are named module constants. The edges are the bucket bounds named in the figure published in issue #1364, a grid and not a result, and neither this plan nor the code restates a measured result from that figure, such as a median or a count. Context records only its direction (row 50). The 4 is the smallest round count whose rank correlation can take more than a few values. The lighter primitive, `statistics.correlation(..., method="ranked")`, needs Python 3.12 (rows 20-21).
+  The edges and the 4 are named module constants. The edges are the bucket bounds named in issue #1364's published figure. They are a grid, not a result. Neither this plan nor the code restates a measured result from that figure, such as a median or a count. Context records only its direction (row 50). The 4 is the smallest round count whose rank correlation can take more than a few values. The lighter primitive, `statistics.correlation(..., method="ranked")`, needs Python 3.12 (rows 20-21).
 
   anchors: root, row20, row21, row22, row40, row53, row54
 - **M10. Output order.** The output prints in this order:
