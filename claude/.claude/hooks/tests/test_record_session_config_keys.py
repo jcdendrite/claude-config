@@ -166,8 +166,22 @@ def one_row_expected_keys() -> dict[str, str]:
     return values
 
 
+def synthetic_bool_row(key: str, default: str) -> str:
+    """A `config-dir` row with an empty legacy polarity, so the key resolves to its raw `default`."""
+    columns = [key, "bool", default, "config-dir", "false", "config-dir", "", "", "Synthetic key", "docs/hooks.md", ""]
+    return "|".join(columns)
+
+
+def synthetic_one_row_schema_text(key: str, default: str) -> str:
+    header_lines = []
+    for line in SHIPPED_SCHEMA_TEXT.splitlines():
+        if line and not line.startswith("#"):
+            break
+        header_lines.append(line)
+    return "\n".join([*header_lines, synthetic_bool_row(key, default)]) + "\n"
+
+
 def schema_with_row_edit(schema_text: str, key: str, column: str, new_value: str) -> str:
-    """One schema row's column replaced, every other line left as it is."""
     column_index = SCHEMA_COLUMNS.index(column)
     lines = []
     for line in schema_text.splitlines():
@@ -208,10 +222,14 @@ def make_sandbox(tmp_path: Path, *, config_dir_name: str = "config", create_conf
 
 
 def isolated_hook(tmp_path: Path, schema_text: str | None, *, name: str = "hook-dir") -> Path:
-    """The hook beside its libraries and a schema holding `schema_text`, in its own directory."""
     hook_dir = tmp_path / name
     hook_dir.mkdir()
     return build_isolated_hook(hook_dir, HOOK, schema_text=schema_text)
+
+
+def one_row_hook(tmp_path: Path) -> Path:
+    """For cases whose subject is not a schema row: the key loop runs once, and no other row's polarity can fail them."""
+    return isolated_hook(tmp_path, ONE_ROW_SCHEMA_TEXT)
 
 
 def payload_json(*, source: str | None = "startup", **overrides: object) -> str:
@@ -249,9 +267,11 @@ def hook_env(
     path: str | None = None,
     bash_env_file: Path | None = None,
 ) -> dict[str, str]:
-    """HOME, CLAUDE_CONFIG_DIR and TZ always explicit. BASH_ENV and ENV are dropped first, so a
-    shell startup file that prints cannot reach the exact output assertions, and a case's own
-    BASH_ENV is applied after the drop because _build_subprocess_env merges before it."""
+    """HOME, CLAUDE_CONFIG_DIR and TZ are always explicit.
+
+    BASH_ENV and ENV are dropped first, so a shell startup file that prints cannot reach the exact output assertions.
+    A case's own BASH_ENV is applied after the drop, because _build_subprocess_env merges before it.
+    """
     env = _build_subprocess_env(
         sandbox.home,
         {"CLAUDE_CONFIG_DIR": str(sandbox.config_dir), "TZ": TZ_NON_WHOLE_HOUR, **(extra_env or {})},
@@ -330,7 +350,6 @@ class Stubs:
 
 JQ_ENCODE_FAILURE_BODIES = {
     "passthrough": "",
-    # Prints a partial object and a stderr line, then fails.
     "partial_output_then_exit_1": "printf '{\"session_id\":'\n  echo 'spy: forced encode failure' >&2\n  exit 1",
     # Prints nothing and exits 0, which only the hook's `[ -n "$row" ]` guard stops.
     "no_output_exit_0": "exit 0",
@@ -343,7 +362,6 @@ def install_stubs(bin_dir: Path, *, jq_encode: str = "passthrough", chmod: str |
     The spy logs each call and runs the real jq, except that the row encode call, recognized by
     the argument `key_names` after `--arg`, follows `jq_encode`. That couples the spy to the
     hook's binding name, so renaming the binding fails the cases that look for the encode call.
-    The chmod stub logs its arguments and exits 1 (`"fail"`) or 0 without changing a mode (`"noop"`).
     """
     real_jq = shutil.which("jq")
     assert real_jq is not None
@@ -411,7 +429,6 @@ def assert_row_appended(
     expected_keys: dict[str, str],
     expected_non_blank_lines: int,
 ) -> dict:
-    """The run left the earlier bytes alone and appended exactly: newline, one row line, newline."""
     assert_silent_success(run)
     after = sandbox.log_path.read_bytes()
     assert after.startswith(earlier_bytes)
@@ -450,7 +467,7 @@ def assert_seam_intercepted(intercept_log: Path, *, guard: str, calls: int = 1) 
 
 
 # --------------------------------------------------------------------------- #
-# Case 1 and the notice constant                                              #
+# Registration and the notice constant                                        #
 # --------------------------------------------------------------------------- #
 
 
@@ -525,11 +542,12 @@ class TestLogStaysOutOfGit:
 
 
 # --------------------------------------------------------------------------- #
-# Row-writing cases (2-11)                                                    #
+# Row-writing cases                                                           #
 # --------------------------------------------------------------------------- #
 
 
 NON_ASCII_VALUE = "café"
+SYNTHETIC_KEY = "synthetic_added_key"
 
 
 @requires_jq
@@ -654,6 +672,65 @@ class TestRowContent:
             sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
         )
 
+    def test_a_directory_at_the_state_file_path_counts_as_an_absent_state_file(self, tmp_path):
+        """The reader doc says a state file the account cannot read counts as absent."""
+        sandbox = make_sandbox(tmp_path)
+        (sandbox.config_dir / "claude-config.toml").mkdir()
+        sentinel_row = first_row(SHIPPED_SCHEMA_TEXT, resolution="config-dir", legacy_polarity="presence-enables")
+        (sandbox.config_dir / sentinel_row["legacy_filename"]).write_text("")
+        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), sentinel_row["key"]: "true"}
+
+        run = run_hook(sandbox)
+
+        assert_row_appended(
+            sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
+        )
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses discretionary file-permission bits (CAP_DAC_OVERRIDE on Linux), "
+        "so chmod(0o000) does not make the state file unreadable",
+    )
+    def test_a_state_file_the_account_cannot_read_counts_as_an_absent_state_file(self, tmp_path):
+        """The reader doc says a state file the account cannot read counts as absent."""
+        sandbox = make_sandbox(tmp_path)
+        state_file = sandbox.config_dir / "claude-config.toml"
+        sentinel_row = first_row(SHIPPED_SCHEMA_TEXT, resolution="config-dir", legacy_polarity="presence-enables")
+        state_file.write_text(f"{sentinel_row['key']} = false\n")
+        state_file.chmod(0o000)
+        (sandbox.config_dir / sentinel_row["legacy_filename"]).write_text("")
+        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), sentinel_row["key"]: "true"}
+
+        try:
+            run = run_hook(sandbox)
+        finally:
+            state_file.chmod(0o600)
+
+        assert_row_appended(
+            sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
+        )
+
+    def test_a_value_printed_before_the_library_reports_failure_records_unreadable(self, tmp_path):
+        """The printed value passes the token check, so only the exit status of `_config_value` can mark it unreadable."""
+        sandbox = make_sandbox(tmp_path)
+        hook = one_row_hook(tmp_path)
+        library_text = (HOOKS_DIR / "_config.sh").read_text()
+        printing_success = "  printf '%s' \"$_CONFIG_LOOKUP_VALUE\"\n  return 0\n"
+        assert library_text.count(printing_success) == 1, "_config_value no longer ends in print-then-return-0"
+        library_copy = hook.parent / "_config.sh"
+        library_copy.unlink()
+        library_copy.write_text(library_text.replace(printing_success, printing_success.replace("return 0", "return 4")))
+        [(key, no_state_value)] = one_row_expected_keys().items()
+        control = run_bare(sandbox, hook.parent, f"_config_value {key}")
+
+        run = run_hook(sandbox, hook=hook)
+
+        assert control.returncode == 4
+        assert control.stdout == no_state_value
+        assert_row_appended(
+            sandbox, run, b"", expected_source="startup", expected_keys={key: UNREADABLE}, expected_non_blank_lines=1
+        )
+
     @pytest.mark.parametrize(
         ("default_value", "expected_value"),
         [
@@ -669,15 +746,17 @@ class TestRowContent:
     ):
         """An empty-polarity key with no state returns its raw schema default, so the token check is the only guard."""
         sandbox = make_sandbox(tmp_path)
-        raw_default_row = first_row(SHIPPED_SCHEMA_TEXT, resolution="config-dir", legacy_polarity="")
-        schema_text = schema_with_row_edit(SHIPPED_SCHEMA_TEXT, raw_default_row["key"], "default", default_value)
-        hook = isolated_hook(tmp_path, schema_text)
-        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), raw_default_row["key"]: expected_value}
+        hook = isolated_hook(tmp_path, synthetic_one_row_schema_text(SYNTHETIC_KEY, default_value))
 
         run = run_hook(sandbox, hook=hook)
 
         assert_row_appended(
-            sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
+            sandbox,
+            run,
+            b"",
+            expected_source="startup",
+            expected_keys={SYNTHETIC_KEY: expected_value},
+            expected_non_blank_lines=1,
         )
 
     def test_non_ascii_source_and_value_record_unreadable_where_a_range_class_would_accept_them(self, tmp_path):
@@ -688,24 +767,24 @@ class TestRowContent:
             absent_message="no installed UTF-8 locale makes bash's [a-z] match a non-ASCII letter",
         )
         sandbox = make_sandbox(tmp_path)
-        raw_default_row = first_row(SHIPPED_SCHEMA_TEXT, resolution="config-dir", legacy_polarity="")
-        schema_text = schema_with_row_edit(SHIPPED_SCHEMA_TEXT, raw_default_row["key"], "default", NON_ASCII_VALUE)
-        hook = isolated_hook(tmp_path, schema_text)
-        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), raw_default_row["key"]: UNREADABLE}
+        hook = isolated_hook(tmp_path, synthetic_one_row_schema_text(SYNTHETIC_KEY, NON_ASCII_VALUE))
 
         run = run_hook(sandbox, payload_json(source=NON_ASCII_VALUE), hook=hook, extra_env={"LC_ALL": widening_locale})
 
         assert_row_appended(
-            sandbox, run, b"", expected_source=UNREADABLE, expected_keys=expected_keys, expected_non_blank_lines=1
+            sandbox,
+            run,
+            b"",
+            expected_source=UNREADABLE,
+            expected_keys={SYNTHETIC_KEY: UNREADABLE},
+            expected_non_blank_lines=1,
         )
 
     def test_a_key_added_to_the_schema_is_recorded_with_no_hook_edit(self, tmp_path):
         sandbox = make_sandbox(tmp_path)
-        added_columns = ["synthetic_added_key", "bool", "true", "config-dir", "false", "config-dir", "", ""]
-        added_row = "|".join([*added_columns, "Synthetic key", "docs/hooks.md", ""])
-        schema_text = SHIPPED_SCHEMA_TEXT + added_row + "\n"
+        schema_text = SHIPPED_SCHEMA_TEXT + synthetic_bool_row(SYNTHETIC_KEY, "true") + "\n"
         hook = isolated_hook(tmp_path, schema_text)
-        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), "synthetic_added_key": "true"}
+        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), SYNTHETIC_KEY: "true"}
 
         run = run_hook(sandbox, hook=hook)
 
@@ -734,13 +813,14 @@ class TestRowContent:
 class TestSourceAndAppend:
     def test_four_events_append_four_rows_in_order_each_after_one_blank_line(self, tmp_path):
         sandbox = make_sandbox(tmp_path)
-        expected_keys = no_state_values(SHIPPED_SCHEMA_TEXT)
+        hook = one_row_hook(tmp_path)
+        expected_keys = one_row_expected_keys()
         sources = ["startup", "clear", "compact", "resume"]
         logged_at_values = []
 
         earlier_bytes = b""
         for run_number, source in enumerate(sources, start=1):
-            run = run_hook(sandbox, payload_json(source=source))
+            run = run_hook(sandbox, payload_json(source=source), hook=hook)
             row = assert_row_appended(
                 sandbox,
                 run,
@@ -758,6 +838,26 @@ class TestSourceAndAppend:
         parsed_times = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in logged_at_values]
         assert parsed_times == sorted(parsed_times)
 
+    def test_a_pretty_printed_payload_with_extra_fields_records_the_same_row(self, tmp_path):
+        """The hook reads three payload fields and ignores the rest, whatever the layout."""
+        sandbox = make_sandbox(tmp_path)
+        payload = json.dumps(
+            {**json.loads(payload_json()), "cwd": "/work/café", "transcript_path": "/work/t.jsonl", "model": {"id": "x"}},
+            indent=2,
+        )
+        assert payload.count("\n") > 1
+
+        run = run_hook(sandbox, payload, hook=one_row_hook(tmp_path))
+
+        assert_row_appended(
+            sandbox,
+            run,
+            b"",
+            expected_source="startup",
+            expected_keys=one_row_expected_keys(),
+            expected_non_blank_lines=1,
+        )
+
     @pytest.mark.parametrize(
         "payload_source",
         [
@@ -773,14 +873,14 @@ class TestSourceAndAppend:
         """The embedded-newline variant fails a check that matches line by line."""
         sandbox = make_sandbox(tmp_path)
 
-        run = run_hook(sandbox, payload_json(source=payload_source))
+        run = run_hook(sandbox, payload_json(source=payload_source), hook=one_row_hook(tmp_path))
 
         assert_row_appended(
             sandbox,
             run,
             b"",
             expected_source=UNREADABLE,
-            expected_keys=no_state_values(SHIPPED_SCHEMA_TEXT),
+            expected_keys=one_row_expected_keys(),
             expected_non_blank_lines=1,
         )
 
@@ -790,7 +890,7 @@ class TestLogFile:
     def test_a_new_log_is_created_at_mode_600(self, tmp_path):
         sandbox = make_sandbox(tmp_path)
 
-        run = run_hook(sandbox)
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path))
 
         assert_silent_success(run)
         assert stat.S_IMODE(sandbox.log_path.stat().st_mode) == 0o600
@@ -801,14 +901,14 @@ class TestLogFile:
         sandbox.log_path.write_bytes(seed)
         sandbox.log_path.chmod(0o644)
 
-        run = run_hook(sandbox)
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path))
 
         assert_row_appended(
             sandbox,
             run,
             seed,
             expected_source="startup",
-            expected_keys=no_state_values(SHIPPED_SCHEMA_TEXT),
+            expected_keys=one_row_expected_keys(),
             expected_non_blank_lines=2,
         )
 
@@ -817,7 +917,7 @@ class TestLogFile:
         sandbox = make_sandbox(tmp_path)
         stubs = install_stubs(tmp_path / "stubs", chmod="noop")
 
-        run = run_hook(sandbox, path=stubs.path, umask=0o022)
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path), path=stubs.path, umask=0o022)
 
         assert_silent_success(run)
         assert stat.S_IMODE(sandbox.log_path.stat().st_mode) == 0o600
@@ -829,30 +929,45 @@ class TestLogFile:
         real_config_dir.mkdir()
         sandbox.config_dir.symlink_to(real_config_dir)
 
-        run = run_hook(sandbox)
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path))
 
         assert_row_appended(
             sandbox,
             run,
             b"",
             expected_source="startup",
-            expected_keys=no_state_values(SHIPPED_SCHEMA_TEXT),
+            expected_keys=one_row_expected_keys(),
             expected_non_blank_lines=1,
         )
         assert (real_config_dir / LOG_FILENAME).read_bytes() == sandbox.log_path.read_bytes()
+
+    def test_an_unset_home_with_an_absolute_config_dir_still_writes_the_row(self, tmp_path):
+        """The hook runs under `set -u`, so an unset HOME must not abort the library's reads."""
+        sandbox = make_sandbox(tmp_path)
+        union_row = first_row(
+            SHIPPED_SCHEMA_TEXT, resolution="config-dir-or-home", legacy_polarity="presence-enables"
+        )
+        (sandbox.config_dir / union_row["legacy_filename"]).write_text("")
+        expected_keys = {**no_state_values(SHIPPED_SCHEMA_TEXT), union_row["key"]: "true"}
+
+        run = run_hook(sandbox, unset=("HOME",))
+
+        assert_row_appended(
+            sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
+        )
 
     def test_an_unset_config_dir_variable_writes_the_row_under_home_dot_claude(self, tmp_path):
         """The default account has no CLAUDE_CONFIG_DIR, so the log path must come from HOME alone."""
         sandbox = make_sandbox(tmp_path, config_dir_name="home/.claude")
 
-        run = run_hook(sandbox, unset=("CLAUDE_CONFIG_DIR",))
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path), unset=("CLAUDE_CONFIG_DIR",))
 
         assert_row_appended(
             sandbox,
             run,
             b"",
             expected_source="startup",
-            expected_keys=no_state_values(SHIPPED_SCHEMA_TEXT),
+            expected_keys=one_row_expected_keys(),
             expected_non_blank_lines=1,
         )
         assert sandbox.log_path == sandbox.home / ".claude" / LOG_FILENAME
@@ -860,33 +975,40 @@ class TestLogFile:
     def test_concurrent_sessions_each_get_one_parseable_row_in_a_fresh_log(self, tmp_path):
         """End-to-end check that overlapping sessions lose no row, which a rewrite of the log (temp file plus mv) would.
 
-        It does not discriminate a truncating create or a split append: `noclobber` is pinned only by
-        `test_the_exclusive_create_keeps_the_bytes_of_a_log_that_appears_after_the_existence_check`,
-        and the one-write append by `TestRowReachesTheLogInOneWrite`.
+        It does not discriminate a truncating create or a split append.
+        `noclobber` is pinned only by `test_the_exclusive_create_keeps_the_bytes_of_a_log_that_appears_after_the_existence_check`.
+        The one-write append is pinned by `TestRowReachesTheLogInOneWrite`.
         """
         sandbox = make_sandbox(tmp_path)
+        hook = one_row_hook(tmp_path)
         session_ids = [f"concurrent-session-{number:02d}" for number in range(CONCURRENT_SESSION_COUNT)]
         env = hook_env(sandbox)
         stdin_dir = tmp_path / "stdin-payloads"
         stdin_dir.mkdir()
 
-        processes = []
-        for session_id in session_ids:
-            stdin_path = stdin_dir / f"{session_id}.json"
-            stdin_path.write_text(payload_json(session_id=session_id))
-            with stdin_path.open() as stdin_file:
-                processes.append(
-                    subprocess.Popen(
-                        [str(HOOK)],
-                        stdin=stdin_file,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        cwd=sandbox.workdir,
-                        env=env,
+        processes: list[subprocess.Popen] = []
+        try:
+            for session_id in session_ids:
+                stdin_path = stdin_dir / f"{session_id}.json"
+                stdin_path.write_text(payload_json(session_id=session_id))
+                with stdin_path.open() as stdin_file:
+                    processes.append(
+                        subprocess.Popen(
+                            [str(hook)],
+                            stdin=stdin_file,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            cwd=sandbox.workdir,
+                            env=env,
+                        )
                     )
-                )
-        outputs = [process.communicate(timeout=HOOK_TIMEOUT_SECONDS) for process in processes]
+            outputs = [process.communicate(timeout=HOOK_TIMEOUT_SECONDS) for process in processes]
+        finally:
+            # A timeout in one communicate() must not leave the other hooks running into later cases.
+            for process in processes:
+                process.kill()
+                process.wait()
 
         assert [process.returncode for process in processes] == [0] * CONCURRENT_SESSION_COUNT
         assert outputs == [("", "")] * CONCURRENT_SESSION_COUNT
@@ -901,7 +1023,7 @@ class TestLogFile:
         seed = b'{"session_id":"earlier","sou'
         sandbox.log_path.write_bytes(seed)
 
-        run = run_hook(sandbox)
+        run = run_hook(sandbox, hook=one_row_hook(tmp_path))
 
         assert_silent_success(run)
         after = sandbox.log_path.read_bytes()
@@ -915,7 +1037,7 @@ class TestLogFile:
 
 
 # --------------------------------------------------------------------------- #
-# No-row cases (12-23)                                                        #
+# No-row cases                                                                #
 # --------------------------------------------------------------------------- #
 
 
@@ -958,6 +1080,7 @@ class TestConfigDirUnresolvable:
             pytest.param({"extra_env": {"CLAUDE_CONFIG_DIR": "//"}}, id="config-dir-is-slashes-only"),
             pytest.param({"unset": ("HOME", "CLAUDE_CONFIG_DIR")}, id="home-and-config-dir-unset"),
             pytest.param({"extra_env": {"HOME": ""}, "unset": ("CLAUDE_CONFIG_DIR",)}, id="home-empty"),
+            pytest.param({"extra_env": {"HOME": "/"}, "unset": ("CLAUDE_CONFIG_DIR",)}, id="home-is-filesystem-root"),
         ],
     )
     def test_no_config_dir_writes_no_row_anywhere_and_prints_the_notice(self, tmp_path, env_options):
@@ -1038,9 +1161,10 @@ class TestEncodeFailure:
         assert_no_log_anywhere(tmp_path)
 
 
-# Replaces the `[` builtin for tests on the log path only. `builtin [` in the match and
-# the pass-through avoids recursion, and `${1-}` survives the hook's `set -u`. A function named `[`
-# receives the closing `]` as its last argument, so the pass-through hands `"$@"` on whole.
+# Replaces the `[` builtin for tests on the log path only.
+# `builtin [` in the match and the pass-through avoids recursion.
+# `${1-}` survives the hook's `set -u`.
+# A function named `[` receives the closing `]` as its last argument, so the pass-through hands `"$@"` on whole.
 BRACKET_SEAM_TEMPLATE = r"""
 [() {
   if __MATCH_CONDITION__; then
@@ -1293,9 +1417,10 @@ class TestBelowBashFloor:
         assert sandbox.log_path.read_bytes() == control_bytes
 
 
-# Replaces the printf builtin for the hook's append only. `builtin printf` in the log write and the
-# pass-through avoids recursion, `${1-}` survives the hook's `set -u`, and the match string is a raw
-# backslash-n because the hook's format argument is the two characters backslash and n.
+# Replaces the printf builtin for the hook's append only.
+# `builtin printf` in the log write and the pass-through avoids recursion.
+# `${1-}` survives the hook's `set -u`.
+# The match string is a raw backslash-n, because the hook's format argument is the two characters backslash and n.
 PRINTF_SEAM_TEMPLATE = r"""
 printf() {
   if [ "${1-}" != '\n%s\n' ]; then
@@ -1430,7 +1555,7 @@ class TestRowReachesTheLogInOneWrite:
 
 
 def trim_recipe_from_reader_doc(days: int) -> str:
-    """The reader doc's trim command with `<days>` filled in, so the case runs the text an engineer would copy."""
+    """Fills `<days>` so the case runs the text an engineer would copy."""
     fenced_bash_blocks = re.findall(r"```bash\n(.*?)\n```", READER_DOC.read_text(), flags=re.DOTALL)
     [recipe] = [block for block in fenced_bash_blocks if "jq -cR" in block]
     assert "<days>" in recipe

@@ -14,7 +14,7 @@ Each row is one line holding a JSON object. Skip blank lines, and skip a line th
 - `source` is the SessionStart source the harness sent, such as `startup`, `resume`, `clear` or `compact`. `unreadable` means the hook could not read it.
 - `keys` maps every schema key at that event to a string value.
 
-Rows are advisory and unauthenticated, because any process running as the account can append, forge or trim them. A reader must not use a row to excuse or allow an action. A reader re-validates key names, value tokens and the `logged_at` shape.
+A reader must not use a row to excuse or allow an action. A reader re-validates key names, value tokens and the `logged_at` shape. Rows are advisory and unauthenticated, because any process running as the account can append, forge or trim them.
 
 ## Values
 
@@ -25,7 +25,7 @@ A value is the key's resolved value at that event. A key nobody set shows its sc
 - Any other value means on, an enum literal such as `dollars` included.
 - A key absent from a row has no state in that row.
 
-A value can be the fail-safe value `_config.sh` substitutes for a state file it cannot read. A gate in that state gets the same value, and the row does not mark it as substituted.
+A state file the account cannot read counts as absent, so its keys show their legacy-file or schema-default value. A value can also be the fail-safe value `_config.sh` substitutes when a re-read of the schema fails partway through resolving a key whose default was already read. A gate in that state gets the same value, and the row does not mark it as substituted.
 
 ## Joining a row to its transcript
 
@@ -37,7 +37,9 @@ A subagent's transcript records carry its parent's `sessionId`, so a subagent ta
 
 To find the key state at one transcript record, use the rows whose `session_id` equals the record's `sessionId`:
 
-- Take the latest row whose `logged_at` is at or before the record's `timestamp`. Compare the two as times, not as strings. `logged_at` has whole seconds, as in `2026-05-19T10:00:00Z`, and a record's `timestamp` has milliseconds, as in `2026-05-19T10:00:00.000Z`. `jq`'s `fromdateiso8601` accepts only the first shape, so drop the fraction before parsing a `timestamp` with it.
+- Take the latest row whose `logged_at` is at or before the record's `timestamp`.
+- Compare the two as times, not as strings. `logged_at` has whole seconds, as in `2026-05-19T10:00:00Z`, and a record's `timestamp` has milliseconds, as in `2026-05-19T10:00:00.000Z`.
+- `jq`'s `fromdateiso8601` accepts only the whole-second shape, so drop the fraction before parsing a `timestamp` with it.
 - Among rows with equal `logged_at`, take the later line in the file.
 - A record earlier than every such row has unknown state.
 - A record after a lost event, as Coverage defines it, has unknown state unless a row has a `logged_at` between that event's attachment `timestamp` and the record's `timestamp`.
@@ -50,7 +52,7 @@ The row taken is the newest evidence of the state at that transcript record, not
 
 ## Coverage
 
-Report four counts, each on its own: sessions of each of the two recorder-failure kinds below, lost events, and sessions with unknown state. Do not fold unknown state into a recorder-failure count.
+Report four counts, each on its own: sessions of each of the two recorder-failure kinds below, lost events, and sessions with unknown state. Do not fold unknown state into a recorder-failure count. A record's state for a key is also unknown when the row taken under State at a transcript record holds `unreadable` for that key. The fourth count is the sessions with unknown state for the key under analysis.
 
 Apply these rules once per session id, pooling every transcript file whose records carry that id, subagent transcripts included.
 
@@ -58,7 +60,7 @@ A hook attachment is a transcript attachment of type `hook_success` whose `comma
 
 The coverage start is the earliest `logged_at` among the log's rows. On an account whose log holds no row, or that has no log, it is the earliest hook attachment `timestamp` in the account's transcripts. Compare these times as State at a transcript record says.
 
-An account with neither a row nor a hook attachment has no coverage start. Report it as an account where the hook has not run, not as one with no failures, and tell the engineer to run the `ls` check in `README.md` § "Updating after git pull" on `~/.claude/hooks/record-session-config-keys.sh`. That section says when to re-run the installer.
+An account with neither a row nor a hook attachment has no coverage start. Report it as an account where the hook has not run, not as one with no failures, and tell the engineer to run the `ls` check in `README.md` § "Updating after git pull" on `~/.claude/hooks/record-session-config-keys.sh`. That section says when to re-run the installer. The path is the same whatever `CLAUDE_CONFIG_DIR` is set to, so do not apply the README's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` form to it.
 
 A session is covered when either of these is at or after the coverage start:
 
@@ -68,7 +70,15 @@ A session is covered when either of these is at or after the coverage start:
 A covered session with no row is a recorder failure of one of two kinds:
 
 - The hook ran and wrote no row: its transcripts hold a hook attachment.
-- The hook did not run: they hold none. Usual causes are a `<config-dir>/hooks` directory that leaves the hook unlinked, a session started without the user-layer settings, the engineer having removed the hook's `settings.json` entry, the harness killing the hook on a hung `<config-dir>` filesystem before it exits, an IDE or desktop session if those skip SessionStart, and a Claude Code release that stops firing SessionStart hooks.
+- The hook did not run: they hold none. Usual causes:
+  - A `~/.claude/hooks` directory that leaves the hook unlinked.
+  - A session started without the user-layer settings.
+  - The engineer having removed the hook's `settings.json` entry.
+  - The harness killing the hook on a hung `<config-dir>` filesystem before it exits.
+  - An IDE or desktop session, if those skip SessionStart.
+  - A Claude Code release that stops firing SessionStart hooks.
+
+Whether a `claude -p` run keeps a hook attachment is untested, so a headless session with no row can read as the hook-did-not-run kind when the hook ran.
 
 A session that is not covered has unknown state. It predates the coverage start, or its rows were trimmed or deleted.
 
@@ -76,7 +86,7 @@ An event at which the hook did not run leaves no hook attachment. In a session t
 
 ## Notice
 
-A notice means that event wrote no row. A missing notice does not show that a row was written, and Coverage is the check for that.
+A notice means that event wrote no row. A missing notice does not show that a row was written, and Coverage is the check for that. A row can carry `unreadable` for a key with no notice.
 
 The engineer runs the checks below and files any issue. An agent that sees the notice reports it and does nothing else unless the engineer asks. In a `claude -p` run, the agent's report can land in the run's output.
 
@@ -93,7 +103,7 @@ To find the cause, the engineer runs these checks in the shell that launches Cla
 - The filesystem holding `<config-dir>` has free space.
 - That filesystem is not read-only.
 - That filesystem accepts `chmod`.
-- Any file already at `<config-dir>/.session-config-keys-log.jsonl` is a regular file.
+- Any file already at `<config-dir>/.session-config-keys-log.jsonl` is a regular file and not a symlink.
 - The account owns that file.
 - The account can write that file.
 - `bash -c '. ~/.claude/hooks/_lib.sh && _config_schema_known_keys'` prints the key list, or the error that stops the hook reading `config-keys.psv`.
@@ -104,15 +114,19 @@ The notice prints at every event until its cause is fixed. Until then, the engin
 
 To record the session that showed the notice, the engineer gives it a new event after the fix, because the hook writes a row for the session only at its next event:
 
-- A fix to `bash`, `jq`, `timeout` or `CLAUDE_CONFIG_DIR` changes the shell's environment, which reaches only a Claude Code process launched from that shell. The engineer restarts the session from the fixed shell with `claude --continue` or `claude --resume`.
+- A fix to `bash`, `jq`, `timeout`, `HOME` or `CLAUDE_CONFIG_DIR` changes the shell's environment, which reaches only a Claude Code process launched from that shell. The engineer restarts the session from the fixed shell with `claude --continue` or `claude --resume`.
 - After any other fix, `/compact` in the running session records it.
 - `/clear` and a plain restart start a new session and leave the one that showed the notice without a row.
 
 ## Retention
 
-The log holds a session id and time for every session on the account. It outlives transcript cleanup. Nothing trims it automatically, so old rows stay available as a baseline.
+The log holds a session id and time for every session on the account. It outlives transcript cleanup, so shortening `cleanupPeriodDays` does not shorten this log. Nothing trims it automatically, so old rows stay available as a baseline. A row for a harness-shaped session id (36 characters) and the shipped key set is under the 2048-byte bound that the hook's row-size test pins. `claude -p` runs add rows.
 
-After a deletion, or a trim that keeps no row, read Coverage only after the next event writes the log's first row, because until then the account has no row. With no hook attachment either, Coverage reports that the hook has not run. With one, Coverage starts at the earliest hook attachment and counts each later session whose row was removed as a recorder failure. A session from before the deletion or trim that gets no later row has unknown state.
+After a deletion, or a trim that keeps no row, read Coverage only after the next event writes the log's first row, because until then the account has no row. Before that row, Coverage reads as follows:
+
+- With no hook attachment, Coverage reports that the hook has not run.
+- With a hook attachment, Coverage starts at the earliest hook attachment and counts each later session whose row was removed as a recorder failure.
+- A session from before the deletion or trim that gets no later row has unknown state.
 
 Only the engineer runs the trim, because an agent's own session stays open while it runs. To trim:
 

@@ -2,7 +2,7 @@
 
 *2026-10-17.*
 
-**Superseded in part (2026-11-01):** Dogfood recipe step 1's reason, "no transcript records the key's state", no longer holds for a session with rows in the log that `docs/session-config-keys-log.md` describes. When a log row records the routing key as on, the escape audit reads an un-denied block with no leading `unrouted` under it as "the gate did not run". Such a block can instead come from a routing-key flip after that row. That doc says when a row shows a flip. Every other clause here stands, the sample rule included.
+**Superseded in part (2026-11-01):** Dogfood recipe step 1's reason, "no transcript records the key's state", no longer holds for a session with rows in the log that `docs/session-config-keys-log.md` describes. When a log row records the routing key as on, the escape audit reads an un-denied block with no leading `unrouted` under it as "the gate did not run". Such a block can instead come from a routing-key flip after that row. That doc says when a row shows a flip. Every other clause here stands, including the Dogfood section's sample definition.
 
 The decision is a per-account config key, `review_orchestrator_routing`, off by default, and a gate, `require-review-orchestrator-routing.sh`, on `PreToolUse` matcher `Skill`. While the key is on, the gate denies a main-session `Skill(code-review)` call unless the call's args begin with the word `unrouted`. The deny text sends the session through the `review-orchestrator` protocol in `claude-skills/skills/subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven" for that round. The protocol stays in that one home. The deny text carries only the routing instruction.
 

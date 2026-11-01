@@ -17,10 +17,13 @@
 # Such a swap can redirect or stall the write.
 # A link swapped in before the chmod also has its target, file or directory, set to mode 600.
 # The append takes no lock, because a row under the 2048 bytes the tests pin goes out in one write.
+# The lock-free append assumes a local filesystem on one host.
 # The test pinning that one write runs only where `strace` is installed and skips elsewhere.
 # Each append starts with a newline, so a row never fuses with a line an earlier failed write left unfinished.
 # No config key turns this hook off, because the record has to exist where every key is off too.
 # A hung config-dir filesystem stalls the hook until the harness hook timeout, because the registration sets no timeout.
+# The hook knowingly exceeds the 100 ms per-fire budget in plugins/claude-hook-review/skills/claude-hook-review/SKILL.md § "7. Performance budget", because it fires once per session event.
+# The hook's cost grows with the number of config keys.
 set -uo pipefail
 exec 2>/dev/null
 
@@ -41,8 +44,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-# Defense-in-depth: self-check hook_event_name rather than trust the
-# settings.json registration alone (repo CLAUDE.md "Hook defense-in-depth").
+# Repo CLAUDE.md "Hook defense-in-depth".
 event_name=$(printf '%s\n' "$INPUT" | _lib_jq -r '.hook_event_name // empty') || exit 0
 [ "$event_name" = SessionStart ] || exit 0
 
