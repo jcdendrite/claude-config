@@ -34,7 +34,7 @@ main=$(dirname -- "$common_dir")
 # ':' is PATH's separator, so the entry prepended below would split into two or more elements.
 # Those elements can name an unrelated directory or resolve against the cwd.
 if [[ "$main" == *:* ]]; then
-  fail 127 "the main checkout's path must not contain ':': $main"
+  fail 127 "the main checkout's path must not contain ':': $main; re-clone the repository to a path without ':'"
 fi
 
 if [[ ! -d "$main/.venv" ]]; then
