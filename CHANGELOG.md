@@ -10,12 +10,17 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
   - The wrapper exits 127 when the main checkout's path contains `:`.
   - `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
+- **`claude-hook-review` 2.6.0 now defines `turn-gate` as firing where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, with an output shape that follows its event.**
+  - The bump is minor because the `turn-gate` definition widens and nothing is reversed.
+  - The checklist now flags any `updatedInput` other than the `SubagentHandback` prefix rewrite.
+  - Run `claude plugin update claude-hook-review@claude-config --scope project` from the consuming repository's root directory, then `/reload-plugins` (or restart Claude Code), to refresh it.
 - **The `/period-cost-report` Slack report now separates its groups with a blank line, sizes each group's table on its own rows, and cuts titles at 32 code points instead of 40.**
   - A blank line now precedes each repository name and the Total.
   - Each group's table column widths come from that group's own displayed rows.
   - A title cell over 32 code points is cut to its first 31 plus "…" (was 40 and 39). A review row's cell starts with "Review: ", so a review title of 24 code points or fewer shows in full and a longer one shows its first 23 plus "…".
   - Two spaces now precede the `+`/`?` marker slot.
   - The change is live on `git pull`.
+- **`deny-private-project-refs.sh` no longer detects the Slack-channel shape (a hash-prefixed channel name).** A channel name is now caught only by the `~/.claude/private-projects.md` blocklist when it is populated, and only if distinctive enough to list as a bare word (see `docs/private-project-redaction.md`). The change is live on `git pull`.
 - **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
   - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
   - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.
@@ -464,6 +469,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new hook, `send-back-skipped-self-review.sh`, with its evaluator `evaluate-code-writer-self-review.py`, sends a `code-writer` return back once when it is missing any part of the self-review evidence `code-writer.md` mandates.** A second return that is still incomplete goes through, prefixed with a `SELF-REVIEW INCOMPLETE (hook-verified)` line in auto permission mode. In `acceptEdits` mode no hook-written line reaches the parent, so a missing `SELF-REVIEW INCOMPLETE` line there is not evidence of a completed self-review. The hook is fail-open and registers under PreToolUse `SubagentHandback` and SubagentStop `code-writer`.
+  - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix. Its domain table routes build tooling and environment config to `staff-platform-engineer`, and any other file to `staff-backend-engineer`.
+  - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. Until then each subagent handback and each `code-writer` stop runs a registration whose script is missing, which does not block the call, and the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
+  - The harness behavior the hook relies on was probed on Claude Code 2.1.310 only. Versions 2.1.295 through 2.1.309 are unverified and fail open (see `docs/design-decisions/code-writer-self-review-send-back.md` § "Known degradations and unverified paths").
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.

@@ -474,8 +474,9 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     main-hooks-dir hook, that plugin's own hooks/hooks.json for a
     plugin-dir hook.
 
-    hook-class: gate declares intent to fire on PreToolUse (see
-    TestHookClassHeader.test_hook_class_value_valid's docstring above), and
+    hook-class: gate declares intent to fire on PreToolUse (see the
+    hook-class bullets under the "**`# hook-class:` header**" bullet in
+    plugins/claude-hook-review/skills/claude-hook-review/SKILL.md), and
     Layer 2's behavior checks (TestGateHookBehavior) assume the hook
     actually receives a PreToolUse payload — neither catches a gate hook
     left unregistered after a rename or a config edit that drops its entry.
@@ -1831,21 +1832,16 @@ class TestHookClassHeader:
     def test_hook_class_value_valid(self, hook: Path) -> None:
         """hook-class value must be 'gate', 'informational', 'turn-gate', or 'batch-gate'.
 
-        'gate' fires PreToolUse and may deny a tool call. 'informational'
-        fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
-        'turn-gate' fires on Stop and may block the *turn* from ending
-        (decision: "block") rather than a tool call from running — a
-        distinct contract from 'gate', which is why it is a separate value
-        rather than a Stop hook being mislabeled 'gate' (Layer 2's
-        PreToolUse-specific behavior checks, e.g.
-        test_emit_deny_defined_before_lib_source, do not apply to it) or
-        'informational' (which would be a false label on a hook that
-        blocks). 'batch-gate' fires on PostToolBatch and may stop the
-        agentic loop before the next model call (exit 2, reason on stderr)
-        — PostToolBatch's own native block, distinct from both 'gate'
-        (PreToolUse deny, JSON envelope) and 'turn-gate' (Stop
-        block-to-force-continuation); Layer 2's PreToolUse-specific
-        behavior checks don't apply to it either.
+        The hook-class bullets in plugins/claude-hook-review/skills/claude-hook-review/SKILL.md
+        define 'gate', 'informational' and 'turn-gate'.
+
+        'batch-gate' fires on PostToolBatch and may stop the agentic loop
+        before the next model call (exit 2, reason on stderr).
+
+        It is PostToolBatch's own native block, distinct from 'gate'
+        (PreToolUse deny, JSON envelope) and 'turn-gate' (end-of-run
+        send-back). Layer 2's PreToolUse-specific behavior checks don't apply
+        to it either.
         """
         value = _hook_class(hook)
         if value is None:

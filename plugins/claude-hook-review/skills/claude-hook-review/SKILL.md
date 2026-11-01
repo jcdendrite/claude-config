@@ -111,9 +111,9 @@ After the helper call, `INPUT`, `TOOL_NAME`, and `COMMAND` are set as globals. H
 State the chosen posture in the script header. Reviewers shouldn't have to re-derive it from the code.
 
 **`# hook-class:` header** — every hook must declare its class on the second line:
-- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
+- `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks. A PreToolUse `SubagentHandback` hook is `turn-gate`, not `gate`.
 - `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
-- `# hook-class: turn-gate` — fires on `Stop` and may block the *turn* from ending (`{"decision":"block","reason":...}`) rather than a tool call from running. A distinct contract from `gate`, not a Stop hook mislabeled `gate`: the emission shape differs (see §9), and `GATE_HOOKS` — which drives every Layer-2 auto-parametrized behavior test in `test_hook_alignment.py` — excludes it entirely, so a turn-gate hook needs hand-written equivalents for cases like jq-absent (see §9's note on the reversed fail posture there).
+- `# hook-class: turn-gate` — fires where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`. It sends the agent back instead of letting its run end, with an output shape that follows its event (see §9). It is a distinct contract from `gate`. `GATE_HOOKS` in `test_hook_alignment.py` excludes it (see §9 for the hand-written-test requirement).
 
 In a repo that adopts tier headers (in claude-config, see `docs/hooks.md` § "Threat-model tiers"), a new or edited `hook-class: gate` hook also carries a `# tier-threat-model: <tiers>` line on line 3. `cooperative` guards honest mistakes only; add `untrusted-input` when the hook's own header or docs entry states that steered content is part of its threat model, or another `untrusted-input` gate names it as a backstop; add `irreversible` when a bypass produces an outcome the session cannot retract. Checklist: the tier line matches the header's stated threat model. Adding or dropping `untrusted-input` or `irreversible` on an existing gate is a security-class relaxation either way; the commit message states the rationale.
 
@@ -150,10 +150,16 @@ Flag these on a hook PR:
 - `if`-dispatch in `settings.json` matches the internal regex (no drift between the two).
 - `set -uo pipefail` present for gates with non-trivial parsing; if absent, justified.
 - JSON input parsed with `jq`; fail-closed on parse error.
-- Emitted JSON shape matches the hook's class. `gate`: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set. `turn-gate`: a top-level `{"decision":"block","reason":...}` pair (not nested under `hookSpecificOutput`) — the harness routes on those exact literal keys, so a typo silently no-ops. These are two distinct emission contracts; do not test or review one as though it were the other.
-- Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated.
+- Emitted JSON shape matches the hook's class.
+  - `gate`: `hookSpecificOutput.permissionDecision` is exactly `"deny"` (lowercase, case-sensitive — `"Deny"` or `"block"` silently allows), `permissionDecisionReason` set.
+  - `turn-gate` on `Stop` and `SubagentStop`: a top-level `{"decision":"block","reason":...}` pair (not nested under `hookSpecificOutput`).
+  - `turn-gate` on PreToolUse `SubagentHandback`: `hookSpecificOutput.permissionDecision`, either `deny`, or `allow` with an `updatedInput` that differs from the call's input only by hook-written text prepended to `message`.
+  - Flag any other `updatedInput`, whatever the hook, tool or field.
+  - The harness routes on those exact literal keys for both shapes, so a typo silently no-ops.
+  - `gate` and `turn-gate` are distinct contracts; do not test or review one as though it were the other.
+- Matcher (`Bash` vs `Edit|Write|MultiEdit` vs matcher-less `Stop`, which has no matcher support at all) matches the operation surface being gated. `SubagentStop` matches on agent type, and PreToolUse `SubagentHandback` matches on tool name.
 - Scope is narrow enough to avoid false positives: matcher + internal filter + repo-url guard exclude operations outside the stated purpose; header documents what the hook deliberately does NOT gate.
-- Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
+- Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn or a lost report, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
 - No unbounded loops, no network calls, no unbounded file I/O.
 - Header lists known gaps the hook does not close.
 - Only `hook-class: gate` registrations set `"onFailure": "block"`; no other class carries it. Gate scripts end with an unconditional `exit 0`; Section 3 gives the version caveat.
