@@ -93,6 +93,13 @@ _EXPECTED_FREEZE_CONDITIONS_FIELDS: frozenset[str] = frozenset({
 
 _STUBBED_ENVIRONMENT = runner.EnvironmentRecord("2.0.0", "deadbeef")
 
+# json.loads raises RecursionError only past a nesting depth that grows with the interpreter's C stack allowance.
+# Measured on a macOS main-thread C stack (16 MB): 100_000 overflowed on Python 3.12 but not on 3.14, where 1_000_000 does.
+# The overflow depth varies with the stack allowance as well as the Python minor (an 8 MB Linux thread overflows 3.14 near 58K).
+_JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT = 2_000_000
+# The wrapper in run_review_bench._load_answers_file puts the interpreter's own error text inside these parentheses.
+_JSON_READ_ERROR_WRAPPER_PREFIX = "could not be read as JSON ("
+
 
 @pytest.fixture
 def stubbed_environment(monkeypatch: pytest.MonkeyPatch) -> runner.EnvironmentRecord:
@@ -5721,7 +5728,10 @@ class TestConfirmAnswersFile:
                 [_answers_file_row("c-1", description="first line.\nsecond line.")],
                 "row 1 answers y with a description of more than one line", id="multi-line-description",
             ),
-            pytest.param("[" * 100_000, "could not be read as JSON (maximum recursion depth", id="deeply-nested-json"),
+            pytest.param(
+                "[" * _JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT, _JSON_READ_ERROR_WRAPPER_PREFIX,
+                id="deeply-nested-json",
+            ),
             pytest.param([_answers_file_row("c-1", lens=None)], "row 1 answers y with no lens", id="missing-lens"),
             pytest.param(
                 [_answers_file_row("c-1", description="   ")], "row 1 answers y with no description", id="blank-description",
@@ -6963,10 +6973,6 @@ class TestLoadAnswersFile:
             pytest.param(lambda path: path.mkdir(), "could not be read ([Errno 21] Is a directory", id="directory"),
             pytest.param(lambda path: path.write_bytes(b"[\xff\xfe]"), "could not be read as JSON", id="not-utf-8"),
             pytest.param(lambda path: path.write_text("not json"), "could not be read as JSON", id="not-json"),
-            pytest.param(
-                lambda path: path.write_text("[" * 100_000), "could not be read as JSON (maximum recursion depth",
-                id="deeply-nested-json",
-            ),
         ],
     )
     def test_each_unreadable_shape_raises_value_error_with_its_own_message(
@@ -6979,6 +6985,16 @@ class TestLoadAnswersFile:
             run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
 
         assert expected_message in str(exc_info.value)
+
+    def test_deeply_nested_json_raises_value_error_caused_by_a_recursion_error(self, tmp_path: Path) -> None:
+        answers_file_path = tmp_path / "answers.json"
+        answers_file_path.write_text("[" * _JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT)
+
+        with pytest.raises(ValueError) as exc_info:
+            run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert _JSON_READ_ERROR_WRAPPER_PREFIX in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RecursionError)
 
     def test_an_empty_path_is_read_as_the_current_directory_and_raises_value_error(self) -> None:
         with pytest.raises(ValueError) as exc_info:

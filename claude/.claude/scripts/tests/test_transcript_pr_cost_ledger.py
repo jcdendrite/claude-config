@@ -49,6 +49,10 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _priced, _two_declared_roots, _write_jsonl
 
+# json.loads of `{"a":` repeated overflows between 116_000 and 120_000 repetitions on Python 3.14.7 (macOS main thread);
+# this depth is about 8x that, so a smaller C stack still overflows.
+_OBJECT_NESTING_DEPTH_PAST_RECURSION_LIMIT = 1_000_000
+
 
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):
@@ -605,9 +609,9 @@ class TestDecodeModelBreakdownCell:
         assert str(exc_info.value) == "line 5: malformed model_breakdown (not valid JSON)"
 
     def test_deeply_nested_input_maps_recursion_error_to_a_parse_error(self):
-        deeply_nested_cell = '{"a":' * 100000
+        deeply_nested_cell = '{"a":' * _OBJECT_NESTING_DEPTH_PAST_RECURSION_LIMIT
 
-        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed model_breakdown") as exc_info:
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match=r"\(nesting too deep\)") as exc_info:
             pr_cost_ledger._decode_model_breakdown_cell(deeply_nested_cell, 2)
 
         assert exc_info.value.__cause__ is None

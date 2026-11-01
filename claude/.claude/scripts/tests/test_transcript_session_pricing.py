@@ -1198,12 +1198,14 @@ class TestErrors:
         valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
         deeply_nested = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z")])
         with deeply_nested.open("a") as handle:
-            handle.write("[" * 200_000 + "\n")
+            # json.loads overflows the C stack between 116_000 and 120_000 `[` on Python 3.14.7 (macOS main thread).
+            handle.write("[" * 1_000_000 + "\n")
 
         with pytest.raises(session_pricing.SessionPricingError) as raised:
             _price([valid, deeply_nested])
 
         assert raised.value.session_index == 1
+        assert isinstance(raised.value.__cause__, RecursionError)
 
     @pytest.mark.parametrize(
         "token_count",
@@ -1827,7 +1829,10 @@ print(json.dumps({"loaded": loaded, "priced": result.total_micro_dollars > 0}))
         assert report["priced"] is True
 
     def test_changed_modules_parse_at_the_python_3_11_grammar(self):
-        """A partial guard: CI runs only 3.12, so this catches newer syntax but not newer library calls."""
+        """A partial guard: CI runs a single Python minor newer than the 3.11 floor.
+
+        It catches newer syntax but not newer library calls.
+        """
         package_dir = Path(session_pricing.__file__).parent
         for module_name in ("session_pricing.py", "pricing.py", "corpus.py"):
             source = (package_dir / module_name).read_text()

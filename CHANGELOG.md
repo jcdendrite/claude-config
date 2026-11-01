@@ -6,6 +6,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
+  - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI. An earlier bump of CI to 3.14 was added and reverted within one branch before it merged, because no rationale for it survived, so `main` never carried it. This one is made for that mismatch.
+  - Contributors whose `.venv` was built from another Python minor version remove it and rerun `./install-dev.sh` with a `python3` of the pinned minor first on PATH, because `install-dev.sh` keeps a healthy `.venv` of any minor.
+  - Four tests assumed a recursion-limit overflow at depths that overflow on 3.12 but not on 3.14 under a 16 MB macOS main-thread stack: three in `evals/` and one in `test_transcript_pr_cost_ledger.py`. A fifth, in `test_transcript_session_pricing.py`, was deepened for margin. All five now use depths that overflow on 3.14. The answers-file loader test and the session-pricing test assert that the error's cause is a `RecursionError`, and the ledger test asserts the code's own "(nesting too deep)" text. None asserts CPython's message text, which differs between 3.12 and 3.14.
+  - The README's Python floor for stow users stays 3.11, and CI exercises only 3.14. Code that needs a newer stdlib API or newer behavior than 3.11 passes CI and can fail on a stow user's Python.
 - **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
   - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
   - `/ready-for-review` reviews now count and can trip the gate. A consult interrupts a run at a denied reviewer spawn. It routinely does so once the run needs a fix. It can also land on a pass that would have come out clean.

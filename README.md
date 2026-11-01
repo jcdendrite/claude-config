@@ -535,6 +535,8 @@ scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/  #
 scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck          # shell
 ```
 
+Build `.venv` from a `python3` whose minor version equals the `python-version` pin in `.github/workflows/tests.yml`: `./install-dev.sh` uses the first `python3` on PATH and keeps a healthy existing `.venv` of any minor, so remove a mismatched `.venv` before rerunning it. `claude/.claude/hooks/tests/test_ci_python_matches_dev_interpreter.py` fails when the interpreter running the suite, which is the `.venv` under `scripts/venv-run.sh`, differs from the pin.
+
 ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
