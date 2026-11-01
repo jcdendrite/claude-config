@@ -4321,7 +4321,7 @@ _lib_redact_credential_shaped_strings() {
   printf '%s' "$redacted"
 }
 
-# Six structural-shape detectors for content that can identify a specific
+# Structural-shape detectors for content that can identify a specific
 # machine, person, or private project without naming it directly. Sourced by
 # deny-private-project-refs.sh's always-on structural scan. POSIX ERE, one
 # constant per detector so a match can be reported by label rather than
@@ -4373,72 +4373,6 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 # trick the SSH-key-path detector's own comment above uses -- otherwise this
 # comment would trip the very detector it documents.
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
-
-# A `#`-prefixed lowercase-hyphenated Slack-channel shape.
-# - Excludes a tail that is all digits, or digits followed by one `s` and
-#   then a non-name character or end of line, so a plain GitHub issue
-#   reference (e.g. issue #421) still passes once quote-stripping deletes a
-#   possessive's apostrophe.
-# - The `#` must be reachable from a valid start position, across a run
-#   that excludes parens, braces, and whitespace.
-#   - Valid start positions: line start, whitespace, a close-paren, a
-#     close-brace, or an open-paren not immediately preceded by `]`.
-#   - The run may still contain another `#`.
-# - The single rule underlying every case above: no `{` may appear
-#   between the start position and the channel `#`. This is what excludes
-#   bash parameter-expansion syntax (`${var#<pattern>}`,
-#   `${var##<pattern>}`) and array-length syntax (`${#array[@]}`), since
-#   in both a `{` sits between the run's start and the `#`.
-# - `}` is a valid start position: without it, a real mention immediately
-#   after a closed brace (e.g. `${x}#<slug>`, or a `}#<slug>`-shaped CSS
-#   selector) would be missed, unlike `${var#<pattern>}` where `}` comes
-#   after the `#`.
-# - A bare `#` is not a valid start position: it can't be distinguished
-#   from the `#` inside `${var#<pattern>}`. Allowing `#` inside the run
-#   (above) still catches a "second #<slug> elsewhere in the same match"
-#   without needing a bare `#` as its own start point.
-# - That reachability predicate is what excludes the `#` inside a markdown
-#   inline link's destination (`[text](other-file.md#<anchor-name>)`): the
-#   link's own `(` is immediately preceded by `]`, which disqualifies it as
-#   a valid start for the destination run.
-# - A second `#<slug>` inside the same link destination is still caught
-#   by a dedicated alternative: a `]` immediately followed by `(`, then a
-#   run to a `#`, is itself a valid start for a later `#<slug>` match.
-# - Residual gap: the exemption doesn't require a well-formed `[text]`
-#   before the `]`, and it doesn't restrict what the destination run
-#   contains. A splice like `](x#<slug>)` right after a bare `]` therefore
-#   evades this detector too.
-# - Residual gap: a channel reference wrapped as `{#<slug>}` (e.g. a
-#   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
-#   evades this detector, because its `{` sits directly before the `#`
-#   with nothing rescuing it.
-# - Residual gap: a `#<slug>` inside a compact JSON object with no space
-#   after the colon (e.g. `{"channel":"#<slug>"}`) evades this detector
-#   for the same reason. The spaced form (`{"channel": "#<slug>"}`) still
-#   denies, because the space after the colon is its own valid start
-#   position that reaches the `#` without crossing the `{`.
-# - Residual gap: the `{`-before-`#` exemption is content-blind. It
-#   exempts any `${...}`-shaped span between a start position and the
-#   channel `#` regardless of what occupies the pattern position, so a
-#   real Slack-channel-shaped slug placed there (e.g. `${var#<slug>}`,
-#   `${var##<slug>}`) evades this detector too.
-# - A CommonMark angle-bracket link destination (`[t](<a b.md#<slug>>)`)
-#   stays denied. The space that form permits breaks the destination run,
-#   so the scan reaches the `#` past that break as an unparenthesized
-#   mention.
-# - The link exemption is purely syntactic: it exempts the `#` inside any
-#   well-formed `[text](destination#<slug>)` without verifying that
-#   `destination` resolves to a real file. This is a separate gap from the
-#   smuggled-second-slug residual above, which concerns a second `#`
-#   token rather than the first token's unresolved destination.
-# - Residual gap: a `{` anywhere in the link destination before the first
-#   anchor `#`, with no rescuing whitespace/`)`/`}` before a real second
-#   mention, evades the "second slug is caught" guarantee too. The
-#   second-slug alternative's own internal run excludes `{` the same way
-#   the outer run does, so a `{` there blocks reachability just like it
-#   does in the outer run. Same content-blindness root cause as the
-#   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#([a-z_-]|[0-9]+(s[a-z0-9_-]|[a-rt-z_-]))'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a

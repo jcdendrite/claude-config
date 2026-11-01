@@ -193,6 +193,7 @@ flowchart LR
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
+| `send-back-skipped-self-review.sh` | — (PreToolUse `SubagentHandback` + SubagentStop, `turn-gate`) | Sends a `code-writer` subagent back once when its return lacks reviewer-file Reads, a ledger line or a diff re-read; see [`docs/hooks.md`](docs/hooks.md) |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
@@ -452,7 +453,7 @@ Moving or renaming this checkout (`mv ~/current-location/claude-config ~/somewhe
 
 This repo is public — any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. `claude-config` defends against that in three tiers:
 
-1. **Tracker-ID and structural-shape scan** (always on in a gated repo, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist, or one of six structural shapes (see [The six structural detectors](docs/private-project-redaction.md#the-six-structural-detectors)).
+1. **Tracker-ID and structural-shape scan** (always on in a gated repo, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist, or one of five structural shapes (see [The five structural detectors](docs/private-project-redaction.md#the-five-structural-detectors)).
 2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `<config-dir>/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word). `install-dev.sh` requires this file to exist before setting up a contributor's `.venv`, so the opt-in isn't silently skippable at first setup.
 3. **Reviewer discipline** — what the hook can't catch: structural fingerprints (a verbatim RLS policy, a rare column-naming pattern) and private-corpus provenance (a fact known only through exposure to private engagement material, whether quoted, computed, or recalled) are a review responsibility, not a mechanical one.
 

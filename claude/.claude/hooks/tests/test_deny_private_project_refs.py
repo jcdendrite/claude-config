@@ -3366,7 +3366,7 @@ class TestDenyPrivateProjectRefs:
         assert "Acme Corp" not in reason
         assert "acme corp" not in reason.lower()
 
-    # -- Structural-shape scan (six always-on detectors) --------------------
+    # -- Structural-shape scan (always-on detectors) --------------------------
     # Ported from the deleted scan-issue-body.sh's test suite (see git
     # history for claude/.claude/scripts/tests/test_scan_issue_body.py) and
     # exercised through the real PreToolUse hook path rather than a
@@ -3889,754 +3889,42 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
-    # Slack-channel shape
-    #
-    # These tests pin at the full-hook (`run_hook`) layer deliberately.
-    # The hook scans the union of the raw scan target and a quote-stripped
-    # copy of it.
-    # Many cases below turn on which character sits immediately before a
-    # `#`, `(`, or `]`.
-    # Quote stripping deletes characters, so it changes that adjacency.
-    # For those cases, a unit-level assertion against
-    # `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw literal is a different
-    # check than the one the hook performs.
-    # A unit pin would also miss a detector left out of
-    # `STRUCTURAL_DETECTORS`, a scan-target regression, or a
-    # fast-path/per-detector pattern drifting out of sync
-    # (`deny-private-project-refs.sh` has an explicit deny branch for
-    # exactly that last case).
+    # Slack channel names
 
-    def test_structural_slack_channel_no_reference_allowed(self, claude_config_repo):
+    def test_slack_channel_mention_allowed_without_blocklist_entry(self, claude_config_repo):
+        """No structural detector reads a hash-prefixed channel name; see docs/private-project-redaction.md."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Cost audit findings. See F1 through F4 below'"),
+                bash_input("git commit -m 'Discussed in #example-channel'"),
                 cwd=claude_config_repo,
             )
             == "allow"
         )
 
-    def test_structural_slack_channel_shape_denied(self, claude_config_repo):
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Discussed in #eng-platform-alerts before filing'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
+    def test_slack_channel_mention_denied_by_bare_word_blocklist_entry(self, claude_config_repo, private_projects_file):
+        """A channel listed without its leading `#` matches as a whole word; the blocklist-tier deny reason lists the entry."""
+        private_projects_file("example-channel\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Discussed in #example-channel'"),
+            cwd=claude_config_repo,
         )
+        assert reason is not None
+        assert "private-projects.md blocklist" in reason
+        assert "  - example-channel" in reason
 
-    def test_structural_slack_github_issue_reference_not_flagged_allowed(self, claude_config_repo):
-        """A plain issue reference (#421) is all-digits and must not
-        collide with the Slack-channel shape."""
+    def test_slack_channel_mention_allowed_when_hash_led_line_is_comment(self, claude_config_repo, private_projects_file):
+        """A blocklist line starting with `#` is a comment, so a hash-led channel entry never matches
+        even though its text occurs in the scanned message."""
+        private_projects_file("#example-channel\n")
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Posting the misparse note as a comment on #421'"),
+                bash_input("git commit -m 'Discussed in #example-channel'"),
                 cwd=claude_config_repo,
             )
             == "allow"
-        )
-
-    @pytest.mark.parametrize(
-        "message",
-        [
-            "Follow-up to #4210's",
-            "Follow-up to #4210's. Done",
-            "Follow-up to #4210's, then more",
-            "Follow-up (#4210's)",
-            "Follow-up to #4210's fix",
-        ],
-        ids=["end-of-message", "period", "comma", "close-paren", "space"],
-    )
-    def test_structural_slack_possessive_issue_reference_allowed(self, claude_config_repo, message):
-        """GH-826: a possessive issue reference is not a Slack channel.
-        Quote stripping deletes the apostrophe and joins the `s` onto the
-        digits, so the stripped copy of the possessive must still read as
-        an issue reference rather than a digit-led channel name."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(f'git commit -m "{message}"'),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_typed_digits_plus_s_accepted_allowed(self, claude_config_repo):
-        """GH-826: a typed digits-plus-`s` token with no apostrophe is an
-        accepted gap. The quote-stripped copy cannot tell it from a
-        possessive, so the two share one verdict."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Follow-up to #4210s'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    @pytest.mark.parametrize(
-        "channel",
-        [
-            "#_alerts",
-            "#-alerts",
-            "#42-alerts",
-            "#42_alerts",
-            "#2026-alerts",
-            "#7a",
-            "#42a",
-            "#42r",
-            "#42t",
-            "#42z",
-            "#42s0",
-            "#42s9",
-            "#42s_",
-            "#42s-",
-            "#42sa",
-            "#42sz",
-            "#42ss",
-        ],
-        ids=[
-            "underscore-led",
-            "hyphen-led",
-            "digits-hyphen",
-            "digits-underscore",
-            "four-digits-hyphen",
-            "single-digit-a",
-            "digits-a",
-            "digits-r",
-            "digits-t",
-            "digits-z",
-            "digits-s-zero",
-            "digits-s-nine",
-            "digits-s-underscore",
-            "digits-s-hyphen",
-            "digits-s-a",
-            "digits-s-z",
-            "digits-s-s",
-        ],
-    )
-    def test_structural_slack_channel_tail_alphabet_denied(self, claude_config_repo, channel):
-        """GH-826: each row pins one member of the tail class that must stay flagged:
-        - letter-led names
-        - digit-led names whose first non-digit is not `s`
-        - digit-led names whose first letter is `s` followed by another name character
-        """
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(f"git commit -m 'Discussed in {channel} before filing'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_quote_split_digit_led_channel_denied(self, claude_config_repo):
-        """GH-826: an apostrophe splitting a digit-led channel name leaves
-        the raw copy allowed (`#42` then a quote). Only the quote-stripped
-        copy joins it into `#42s-alerts`, so this pins that the stripped
-        view still denies the `s` branch."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input('git commit -m "Discussed in #42\'s-alerts before filing"'),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_markdown_anchor_link_denied(self, claude_config_repo):
-        """A cross-reference anchor fragment (#word-word) written outside
-        markdown inline-link syntax is indistinguishable from a real Slack
-        channel by shape alone — deliberately still blocked; loosening the
-        charset to admit hyphenated words would defeat the detector's
-        actual purpose."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'See docs/skills.md#skill-architecture-notes for the breakdown'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_markdown_inline_link_anchor_allowed(self, claude_config_repo):
-        """A markdown inline-link anchor target, `[text](#slug)`, is
-        excluded: the open-paren is immediately preceded by `]`, which
-        disqualifies it as a valid start for a channel-mention match."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'Add [Permission-prompt tracking](#permission-prompt-tracking) to the TOC'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_bash_array_length_syntax_allowed(self, claude_config_repo):
-        """Bash parameter-expansion-length syntax, `${#array[@]}`, is
-        excluded: the run to `#` crosses a `{`, which the detector's one
-        governing rule treats the same as any other bash
-        parameter-expansion shape."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Guard the empty-array case: [ \"${#items[@]}\" -eq 0 ]'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_bash_param_expansion_single_hash_allowed(self, claude_config_repo):
-        """Bash parameter-expansion syntax stripping a prefix,
-        `${var#<pattern>}`, is excluded the same way array-length syntax
-        is: the run to `#` crosses a `{`."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'Resolve default branch: ${DEFAULT_REF#"
-                    "refs/remotes/origin/}'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_bash_param_expansion_double_hash_allowed(self, claude_config_repo):
-        """The double-`#` (longest-match) form of prefix removal,
-        `${var##<pattern>}`, is excluded the same way the single-`#` form
-        is. This pins the removal of a bare `#` from the start-position
-        class: without it, the first `#` here would be reachable as its
-        own reset point."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'Strip namespace prefix: ${DEFAULT_BRANCH##"
-                    "refs/heads/}'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_multiple_param_expansions_one_line_allowed(
-        self, claude_config_repo
-    ):
-        """Two independent parameter expansions on the same line, `${a#x}`
-        and `${b##y}`, are both excluded — this pins that per-expansion
-        exclusion composes across multiple expansions on one line."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Use ${a#x} and ${b##y} together'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_param_expansion_content_blind_slug_allowed(
-        self, claude_config_repo
-    ):
-        """A real Slack-channel-shaped slug used as a `${var#<pattern>}`
-        pattern, e.g. `${SLACK_CHANNEL_VAR#eng-alerts}`, is not caught: the
-        exemption covers the whole `${...}`-shaped span regardless of what
-        occupies the pattern position. This is an accepted, documented
-        tradeoff, pinned the same way
-        test_structural_slack_compact_json_no_space_after_colon_allowed
-        pins the compact-JSON gap, so a later edit can't silently close or
-        widen this accepted gap without a test noticing."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Legacy alias: ${SLACK_CHANNEL_VAR#eng-alerts}'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_default_value_expansion_content_blind_slug_allowed(
-        self, claude_config_repo
-    ):
-        """A real Slack-channel-shaped slug used as a `${var:-<default>}`
-        default-value expansion, e.g. `${SLACK_CHANNEL:-eng-alerts}`, is
-        not caught either: the content-blind exemption covers any
-        `${...}`-shaped span, not only the `#`/`##` prefix-stripping
-        operators every other param-expansion test above exercises. Backs
-        the doc's generality claim alongside
-        test_structural_slack_param_expansion_content_blind_slug_allowed."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Legacy alias: ${SLACK_CHANNEL:-eng-alerts}'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_param_expansion_and_real_mention_denied(self, claude_config_repo):
-        """A parameter expansion and a real channel mention on the same
-        line: the expansion is excluded but the mention still denies,
-        driven by the trailing `#eng-alerts` shape."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'Set ${branch#"
-                    "refs/heads/} then ping #eng-alerts'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_brace_adjacent_mention_denied(self, claude_config_repo):
-        """A real mention immediately after a closed brace, `${branch}#eng-alerts`,
-        still denies: `}` closes before the channel `#`, so no `{` sits
-        between the `}` start position and the `#`."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Notify ${branch}#eng-alerts about this'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_parenthetical_mention_not_adjacent_denied(self, claude_config_repo):
-        """A real Slack-channel mention written inside prose parentheses,
-        separated from `(` by other words, must still be caught — the `#`
-        is reached from the whitespace before it, not from any open-paren,
-        so it's unaffected by the markdown-inline-link exclusion
-        entirely."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Flagged in review (see #eng-platform-alerts for context)'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_bare_parenthetical_mention_denied(self, claude_config_repo):
-        """A Slack-channel mention immediately wrapped in parens with no
-        link text before it, e.g. "(#eng-alerts)", must still be caught —
-        this open-paren has no `]` immediately before it, so it still
-        qualifies as a valid start and the mention isn't exempted."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Ping (#eng-alerts) about this'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_paren_adjacent_mention_with_trailing_prose_denied(self, claude_config_repo):
-        """A Slack-channel mention immediately after a bare `(`, with more
-        prose before the closing `)`, must still be caught — whether a
-        match is exempted does not depend on how (or whether) the
-        parenthetical closes, only on whether the open-paren is preceded
-        by `]`."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'See (#eng-alerts is being discussed) for background'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_cross_file_anchor_link_allowed(self, claude_config_repo):
-        """A markdown cross-file anchor link, `[text](other-file.md#slug)`,
-        is allowed: the open-paren is immediately preceded by `]`, so the
-        destination text up to the `#` never opens a channel-mention match."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Permission-prompt tracking](other-file.md#permission-prompt-tracking)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_cross_file_anchor_link_deep_path_allowed(self, claude_config_repo):
-        """A cross-file anchor link whose destination is a multi-segment
-        path is allowed the same way a single-segment destination is — the
-        destination run has no length limit, only a
-        no-paren/no-whitespace/no-brace requirement."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](docs/skills/some/deep/path.md#permission-prompt-tracking)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_cross_file_anchor_link_after_unrelated_close_paren_allowed(
-        self, claude_config_repo
-    ):
-        """An unrelated close-paren earlier in the same line doesn't
-        disturb a later cross-file anchor link — each candidate match is
-        evaluated at its own open-paren, not against an unrelated paren
-        elsewhere on the line."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'After (a quick note) see [Docs](other-file.md#permission-prompt-tracking)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_bare_mention_after_cross_file_link_denied(self, claude_config_repo):
-        """A cross-file anchor link earlier on the line does not exempt a
-        bare `#slug` mention later on the same line — the exemption applies
-        per match, not to the rest of the line once one exempted link has
-        been seen."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking)"
-                    " and also #permission-prompt-tracking'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_bare_mention_after_link_close_paren_denied(self, claude_config_repo):
-        """A bare `#slug` mention immediately after a link's closing paren,
-        with no whitespace between them, is still caught: a close-paren is
-        its own valid start position, independent of the link that produced
-        it. The only route to this match is that close-paren, so dropping it
-        from the start-position class would silently exempt the shape."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md)#eng-super-secret-channel"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_link_destination_with_space_denied(self, claude_config_repo):
-        """Not valid CommonMark — a raw space inside an unbracketed
-        destination — but it probes the regex mechanics directly. The
-        space breaks the destination-run exemption, so the scan restarts
-        after it and still catches a real channel-shaped fragment."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](a file.md#permission-prompt-tracking) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_parenthesized_path_fragment_no_link_text_denied(self, claude_config_repo):
-        """A parenthesized path-shaped fragment with no `]` before the
-        open-paren is treated the same as a prose parenthetical channel
-        mention — the destination-run exemption only applies when `]`
-        immediately precedes `(`, and nothing here marks it as real link
-        syntax."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Ping (other-file.md#permission-prompt-tracking) about this'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_space_between_bracket_and_paren_denied(self, claude_config_repo):
-        """A space between `]` and `(` breaks the adjacency the
-        destination-run exemption requires, so `[text] (other-file.md#slug)`
-        is treated as an ordinary parenthetical mention and stays denied —
-        the exemption only recognizes real, unspaced markdown link syntax."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m '[Docs] (other-file.md#permission-prompt-tracking) needs review'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_two_independent_cross_file_links_allowed(self, claude_config_repo):
-        """Two independent cross-file anchor links on the same line, a
-        common doc-index or table-of-contents shape, are both allowed —
-        each link's own open-paren is evaluated on its own adjacency to
-        `]`, independent of any other link on the line."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'See [A](a.md#eng-alerts) and [B](b.md#other-alerts) both'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_link_destination_with_query_string_allowed(self, claude_config_repo):
-        """A link destination carrying a query string before the fragment,
-        `[text](other-file.md?x=1#slug)`, is allowed the same way a plain
-        destination is — a `?` is not a paren or whitespace character, so
-        it stays inside the destination run."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md?x=1#permission-prompt-tracking)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_bash_array_length_syntax_in_prose_parens_allowed(self, claude_config_repo):
-        """Bash parameter-expansion-length syntax inside an unrelated
-        prose parenthetical is still excluded: the run to `#` crosses a
-        `{` even mid-parenthetical, not only right at the match's start."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input('git commit -m \'Guard the case: (echo "${#items[@]}" is nonzero)\''),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_accepted_splice_after_fabricated_bracket_allowed(self, claude_config_repo):
-        """A channel-shaped fragment spliced directly after a fabricated
-        `](` with a filler run and no real link text before it, e.g.
-        `](x#slug)`, is not caught. The exemption fires on the bracket
-        shape alone: it never verifies that a genuine `[text` opened the
-        link. Pinned the same way
-        test_structural_slack_github_issue_reference_not_flagged_allowed
-        pins the all-digit exclusion, so a later edit can't silently
-        change this fragment's verdict without a test noticing."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'See ](x#permission-prompt-tracking) weird formatting'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_link_destination_not_a_real_file_allowed(self, claude_config_repo):
-        """A cross-file anchor link whose destination doesn't correspond to
-        any actual file is still allowed — the exemption is purely
-        syntactic and never checks that the destination resolves to a real
-        path. Pinned the same way
-        test_structural_slack_github_issue_reference_not_flagged_allowed
-        pins the all-digit exclusion, so a later edit can't silently close
-        this trust gap without a test noticing."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](does-not-exist.md#permission-prompt-tracking)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_brace_wrapped_mention_allowed(self, claude_config_repo):
-        """A channel-shaped fragment wrapped as `{#slug}` (e.g. a
-        kramdown/Jekyll header-ID anchor) is not caught: the `{` sits
-        directly before the `#` with nothing rescuing it. Pinned the same
-        way test_structural_slack_github_issue_reference_not_flagged_allowed
-        pins the all-digit exclusion, so a later edit to the
-        brace-exclusion rule can't silently close or widen this gap
-        without a test noticing."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'See {#permission-prompt-tracking} weird formatting'"),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_compact_json_no_space_after_colon_allowed(self, claude_config_repo):
-        """A channel-shaped fragment inside a compact JSON object with no
-        space after the colon (e.g. `{"channel":"#slug"}`) is not caught:
-        the `{` sits before the `#` with nothing rescuing it, same
-        mechanism as the kramdown/Jekyll brace-wrap gap above. The spaced
-        form (`{"channel": "#slug"}`) still denies — the space after the
-        colon is its own valid start position that reaches the `#`
-        without crossing the `{`. Pinned the same way
-        test_structural_slack_github_issue_reference_not_flagged_allowed
-        pins the all-digit exclusion, so a later edit can't silently
-        close or widen this accepted gap without a test noticing."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    'git commit -m \'Compact form: {"channel":"#permission-prompt-tracking"}\''
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_compact_json_spaced_after_colon_denied(self, claude_config_repo):
-        """The spaced form of the same JSON object, `{"channel":
-        "#slug"}`, still denies: the space after the colon is its own
-        valid start position that reaches the `#` without crossing the
-        `{`. Pairs with
-        test_structural_slack_compact_json_no_space_after_colon_allowed
-        above, which documents that only the no-space form is exempt."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    'git commit -m \'Spaced form: {"channel": "#permission-prompt-tracking"}\''
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_second_slug_in_same_link_destination_denied(self, claude_config_repo):
-        """A second, independent `#slug`-shaped token in the same link
-        destination is caught even though the destination's first `#slug`
-        is a legitimate anchor. This is caught by the dedicated
-        second-slug-in-a-link-destination alternative: a `]` immediately
-        followed by `(`, then a run to a `#`, is itself a valid start for
-        the second `#slug`. That catch doesn't hold when the
-        second `#` is brace-wrapped — see
-        test_structural_slack_brace_wrapped_second_slug_in_link_destination_allowed."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking"
-                    "#eng-super-secret-channel) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_brace_wrapped_second_slug_in_link_destination_allowed(
-        self, claude_config_repo
-    ):
-        """Same brace-wrap mechanism as test_structural_slack_brace_wrapped_mention_allowed.
-        Pinned here because it sits directly adjacent to the denied case
-        above with the same shape apart from the brace, so a reader
-        doesn't over-generalize that case's reach."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking"
-                    "{#eng-super-secret-channel}) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_leading_brace_second_slug_in_link_destination_allowed(
-        self, claude_config_repo
-    ):
-        """A second sibling exception to the "second slug is caught"
-        guarantee, distinct from the brace-wrapped-second-slug case above:
-        a `{` placed in the link destination before the first anchor `#`,
-        with no rescuing whitespace/`)`/`}` before the real second
-        mention, defeats the second-slug alternative too. That
-        alternative's own internal run excludes `{` the same way the
-        outer run does, so the `{` here blocks reachability to the second
-        `#eng-super-secret-channel` slug just as it would in the outer
-        run."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file{.md#"
-                    "permission-prompt-tracking#eng-super-secret-channel) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "allow"
-        )
-
-    def test_structural_slack_commonmark_angle_bracket_destination_denied(self, claude_config_repo):
-        """A CommonMark angle-bracket link destination stays denied: the
-        space it permits breaks the destination run before the `#`."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](<a file.md#permission-prompt-tracking>) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_adjacent_double_hash_zero_length_destination_denied(
-        self, claude_config_repo
-    ):
-        """Pins the zero-length branch of the run between the
-        link-destination-second-slug alternative's own `#` and the final
-        channel `#`: a future edit changing that run's `*` quantifier to
-        `+` would silently stop catching this shape with no test
-        failure."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [Docs](other-file.md##eng-super-secret-channel)"
-                    " for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
-        )
-
-    def test_structural_slack_second_slug_after_same_page_anchor_denied(self, claude_config_repo):
-        """Pins the same second-slug mechanism as
-        test_structural_slack_second_slug_in_same_link_destination_denied,
-        but for the no-path/same-page anchor form, distinct from that
-        test's cross-file-destination sibling."""
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(
-                    "git commit -m 'See [text](#permission-prompt-tracking"
-                    "#eng-super-secret-channel) for the breakdown'"
-                ),
-                cwd=claude_config_repo,
-            )
-            == "deny"
         )
 
     @pytest.mark.parametrize(
@@ -4647,9 +3935,8 @@ class TestDenyPrivateProjectRefs:
             "Session data was read from /Users/alice/.claude/projects",
             "Session 9fe9b39a-6b7e-4e0f-9a0f-96081f0a215b drove the spike",
             "The dashboard is hosted at metrics.eng.corp for this team",
-            "Discussed in #eng-platform-alerts before filing",
         ],
-        ids=["ipv4", "ssh_key_path", "home_rooted_path", "long_hex", "internal_hostname", "slack_channel"],
+        ids=["ipv4", "ssh_key_path", "home_rooted_path", "long_hex", "internal_hostname"],
     )
     def test_structural_detector_in_staged_diff_denied(self, claude_config_repo, payload):
         """Every structural detector must scan staged file content, not
@@ -4731,7 +4018,7 @@ class TestDenyPrivateProjectRefs:
         pre-check matches but the follow-up per-detector loop finds
         nothing — must fail closed rather than silently allow. Should be
         structurally unreachable (the combined pattern is derived from the
-        same six patterns the loop iterates), but per the standing rule an
+        same patterns the loop iterates), but per the standing rule an
         untested security branch is indistinguishable from an absent one.
 
         The stub discriminates by the grep pattern's length: the combined
@@ -4807,7 +4094,7 @@ class TestDenyPrivateProjectRefs:
     # -- Structural scan: deny message never echoes the matched value -------
     # Regression guard against reintroducing the adjacent tracker-ID and
     # blocklist branches' echo convention (HIT_LIST / matched_lines) for
-    # the six new detectors.
+    # the structural detectors.
 
     def test_structural_ipv4_deny_message_omits_matched_value(self, claude_config_repo):
         reason = run_hook_reason(
@@ -4858,16 +4145,6 @@ class TestDenyPrivateProjectRefs:
         assert reason is not None
         assert "internal hostname" in reason
         assert "metrics.eng.corp" not in reason
-
-    def test_structural_slack_channel_deny_message_omits_matched_value(self, claude_config_repo):
-        reason = run_hook_reason(
-            DENY_PRIVATE_PROJECT_REFS_HOOK,
-            bash_input("git commit -m 'Discussed in #eng-platform-alerts before filing'"),
-            cwd=claude_config_repo,
-        )
-        assert reason is not None
-        assert "Slack-channel shape" in reason
-        assert "#eng-platform-alerts" not in reason
 
     # --- Quote-aware flag extraction: false-positive locks ---
 

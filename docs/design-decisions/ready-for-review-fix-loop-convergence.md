@@ -6,6 +6,8 @@
 
 **Superseded in part by [cumulative-review-marker-keyed-on-normalized-diff.md](cumulative-review-marker-keyed-on-normalized-diff.md) (2026-10-22):** the sentence "The byte-exact cumulative guarantee stays intact" now describes a normalized-text key, and that note also qualifies the earlier note's "Everything else here stands" for this guarantee.
 
+**Superseded in part by [code-writer-self-review-send-back.md](code-writer-self-review-send-back.md) (2026-10-26):** every added or rewritten prose line now gets the prose-row read, because `code-writer.md` step 5 no longer exempts a whitespace or typo fix.
+
 **Superseded in part by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** `/ready-for-review` has no Cap consult, and both hooks now record and gate its reviews. That retires these sections:
 - "The cap".
 - The hook's blindness inside a run.
@@ -110,10 +112,10 @@ A *keep* verdict counts as resolved, so a pass whose only open finding resolves 
 
 ## Sources
 
-- `claude-skills/skills/ready-for-review/SKILL.md` — the Overview's fix-loop rule, step 3's record and cap, and the CI watch's "Land the fix" arm.
+- `claude-skills/skills/ready-for-review/SKILL.md` — the Overview's fix-loop rule, step 3's record, and the CI watch's "Land the fix" arm.
 - `claude-skills/skills/code-review/SKILL.md` — "Ripple effect triage"'s carry-forward rules and the `code-review-contradiction-route` and `code-review-round-cap-consult-verdict` regions.
 - `claude/.claude/agents/code-writer.md` — the prose self-review row and Step 5 scaling guidance.
-- `claude/.claude/hooks/require-architect-consult.sh`, `claude/.claude/hooks/log-reviewer-round.sh` — the round-3 gate and recorder, and their RFR-active-marker early return.
+- `claude/.claude/hooks/require-architect-consult.sh`, `claude/.claude/hooks/log-reviewer-round.sh` — the round-3 gate and recorder.
 - `docs/design-decisions.md` [§45](round3-plan-architect-consult-gate.md) — the round-3 gate's cap number, its latch semantics, and the population it was measured on.
 - `docs/design-decisions.md` [§44](ready-for-review-cumulative-diff-cache.md) — the self-attestation residual this decision's disposition record shares.
 - `docs/cost-levers-considered.md` — prior rejection of a `SendMessage` reviewer continuation as a carry-forward mechanism.
