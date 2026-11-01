@@ -8,13 +8,13 @@ Ask: tracker #1116's unchecked box "leaf-module tests — move the tests of corp
 
 Why now: the shim-reader retarget (#1350, #1361) merged, so the legacy file no longer reads shim bindings other than `build_parser` and `main`, and the leaf tests can move without touching the shim. Governing plan: `.claude/plans/transcript-analysis-decomposition.md`. Tracker: #1116, commits say `Refs GH-1116`, no comment is posted on it.
 
-Measured at `origin/main` 28c5d3e1 by a read-only exploration (evidence, not a design conclusion): the legacy file is 4,573 lines. The leaf-module tests are about 3,139 lines, not the tracker's 1,500–2,000 estimate: scope about 1,134 (about 1,371 with four ambiguous classes), pricing about 636, corpus about 539, redaction about 329, render about 264. The `cli.py` phase's classes are about 616 lines. Cross-module classes that the architecture doc says stay in the legacy file are about 603 lines. No `test_transcript_{corpus,scope,redaction,pricing,render}.py` exists, and the convention is `test_transcript_<module>.py`. Scope alone is over the 1,000-line limit, so it needs two files.
+Measured by a read-only exploration at `origin/main` 28c5d3e1 and re-checked at 7eb3c439 (evidence, not a design conclusion): the legacy file is 4,600 lines. The leaf-module tests are about 3,139 lines, not the tracker's 1,500–2,000 estimate: scope about 1,134 (about 1,371 with four ambiguous classes), pricing about 636, corpus about 539, redaction about 329, render about 264. The `cli.py` phase's classes are about 642 lines. Cross-module classes that the architecture doc says stay in the legacy file are about 603 lines. No `test_transcript_{corpus,scope,redaction,pricing,render}.py` exists, and the convention is `test_transcript_<module>.py`. Scope alone is over the 1,000-line limit, so it needs two files.
 
 Straddling classes the plan must place: `TestHelpers` (mixed, render-dominant), `TestSingleLevelProjectsGlob` (corpus, but two tests call `_mod.build_parser()`), `TestParseAbsoluteWindowArgs`, `TestRedactionOrdinalStability`, `TestPoisonedProjectsDirGlobal`, `TestThisRepoUnionsAcrossRoots`. `docs/transcript-analysis-architecture.md` currently says `TestSubagentFormatContract` and `TestIsFreshUserPrompt` stay in or relate to the legacy file; the tracker body, rewritten this session at the engineer's request, lists both as moving with this phase and is the later statement.
 
 ## Approach
 
-Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below, L) into a per-module file, in two sequenced PRs. PR A creates `test_transcript_pricing.py`, `test_transcript_redaction.py`, and `test_transcript_render.py`. PR B is cut from `origin/main` after PR A merges and creates `test_transcript_scope.py`, `test_transcript_scope_scan.py`, and `test_transcript_corpus.py`. Each PR has two commits. Commit 1 edits L in place: it splits the three classes that mix subjects, and in PR B it frees the `scope.py` loads from the shim path. Commit 2 is a pure move that `_move_fidelity.py nodes --verbatim` proves byte for byte. No production code changes.
+Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below, L) into a per-module file, in two sequenced PRs. PR A creates `test_transcript_pricing.py`, `test_transcript_redaction.py`, and `test_transcript_render.py`. PR B is cut from `origin/main` after PR A merges and creates `test_transcript_scope.py`, `test_transcript_scope_scan.py`, and `test_transcript_corpus.py`. Each PR has two implementation commits. Commit 1 edits L in place: it splits the three classes that mix subjects, and in PR B it frees the `scope.py` loads from the shim path. Commit 2 is a pure move that `_move_fidelity.py nodes --verbatim` proves byte for byte. No production code changes.
 
 **Placement rule.** A test moves with the module that owns the function it exercises, even when one of its tests drives that function end to end through a command (rows 4, 5). A test stays in L when it reads `build_parser` or `main` (G1), spans command groups (G6), or reads a `SKILL.md` (row 15). A class that mixes these is split in place, not moved whole.
 
@@ -56,7 +56,7 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
     - `test_transcript_scope_scan.py`: `"""scope.py's scan traversal and scan-gap counter; test_transcript_scope.py holds scope.py's other tests."""`
   - No file gets a section banner or any other statement (rows 3, 25).
 - **L** loses the moved nodes, the listed banners, and every import nothing left in it reads. Commit 2 changes nothing else in L.
-- **`test_transcript_package_module_prefixes.py`.** Append the PR's three files to `TEST_FILES`, in the order listed above. It grows from 59 entries to 62 in PR A and to 65 in PR B (row 11).
+- **`test_transcript_package_module_prefixes.py`.** Append the PR's three files to `TEST_FILES`, in the order listed above. It grows from 60 entries to 63 in PR A and to 66 in PR B (row 11).
 - **PR A only, `select-tests.py`** (rows 13, 14):
   - Replace the comment above `TRANSCRIPT_COST_COUNTS_TEST_PATH` (:126-128) with `# test_transcript_cost_counts.py and test_transcript_redaction.py read` / `# claude/.claude/agents/ through redaction._REPO_AGENT_DEFINITIONS_DIR, a` / `# production constant TestCrossDomainReadCompleteness's scan cannot see.`
   - After that constant, add `TRANSCRIPT_REDACTION_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_redaction.py"`.
@@ -67,91 +67,91 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
   - Add `_mod.TRANSCRIPT_REDACTION_TEST_PATH` to `_FILE_TARGETS` (:2073-2090), after `_mod.TRANSCRIPT_COST_COUNTS_TEST_PATH`.
 - **Prose** (rows 3, 17). Each edit anchors on content and rewraps only the lines it touches.
   - PR A, `docs/transcript-analysis-architecture.md`:
-    - Replace the sentence starting "Each of `corpus.py`, `scope.py`" (:760-761) with "`pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in `tests/test_transcript_pricing.py`, `tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `corpus.py` and `scope.py` are exercised through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`)."
-    - Replace "`TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests `render.py`, not the judgment-pair command." (:935-936) with "`TestIsFreshUserPrompt` lives in `tests/test_transcript_render.py` because it tests `render.py`, not the judgment-pair command."
+    - Replace the sentence starting "Each of `corpus.py`, `scope.py`" (:774-775) with "`pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in `tests/test_transcript_pricing.py`, `tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `corpus.py` and `scope.py` are exercised through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`)."
+    - Replace "`TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests `render.py`, not the judgment-pair command." (:949-950) with "`TestIsFreshUserPrompt` lives in `tests/test_transcript_render.py` because it tests `render.py`, not the judgment-pair command."
   - PR A, `test_transcript_context_composition.py` :311 and :416: change `test_transcript_analysis.py's` to `test_transcript_pricing.py's`.
   - PR B, `docs/transcript-analysis-architecture.md`:
     - Replace PR A's two sentences with "`corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`, `tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `scope.py`'s scan traversal and scan-gap counter are tested in `tests/test_transcript_scope_scan.py`, and the rest of `scope.py` in `tests/test_transcript_scope.py`. `TestProjectsFlagHasNoArgparseType` stays in `tests/test_transcript_analysis.py` because it reads `build_parser`. `TestSkillFilesQuoteRootCountDescLiteral` stays there too, because `select-tests.py` declares that file, not the scope files, as a `SKILL.md` reader."
-    - Replace "`TestSubagentFormatContract` stays there too: it pins" (:890-891) with "`TestSubagentFormatContract` lives in `tests/test_transcript_corpus.py`: it pins", keeping the rest of that sentence.
+    - Replace "`TestSubagentFormatContract` stays there too: it pins" (:904-905) with "`TestSubagentFormatContract` lives in `tests/test_transcript_corpus.py`: it pins", keeping the rest of that sentence.
   - PR B, `test_transcript_cost.py` :2743: change `test_transcript_analysis.py's` to `test_transcript_scope_scan.py's`.
 
 **Assumption ledger.**
 
-**Root:** L is 4,573 lines, and about 3,100 of them test one of the five leaf modules rather than the `cli.py` phase's `build_parser` and `main` or a cross-group behavior. Moving those tests to per-module files leaves L holding only what the governing plan's later phases own. `[verified: line count and class spans, Grep of L at 28c5d3e1]` `[unverified: the 3,100 is span arithmetic; each PR's test-ids totals recount the tests]`
+**Root:** L is 4,600 lines, and about 3,100 of them test one of the five leaf modules rather than the `cli.py` phase's `build_parser` and `main` or a cross-group behavior. Moving those tests to per-module files leaves L holding only what the governing plan's later phases own. `[verified: line count and class spans, Grep of L, re-verified against 7eb3c439]` `[unverified: the 3,100 is span arithmetic; each PR's test-ids totals recount the tests]`
 
 **Givens:**
 - G1. The shim keeps `build_parser()` and `main()` until the `cli.py` phase, so a test that reads either stays in L. Reason: changing this needs a decision outside this plan, the governing plan's phase order. `[verified: transcript-analysis-decomposition.md:155-161]`
 - G2. Agents run `select-tests.py`, not the full suite, outside CLAUDE.md's two named cases. Reason: changing this needs an edit to CLAUDE.md § "Commands". `[verified: CLAUDE.md "Commands"]`
 - G3. Code files stay under 1,000 lines. No test enforces the limit yet. Reason: it is a repo decision this plan does not own. `[verified: docs/design-decisions/code-file-line-limit.md:19, :50-57]`
 - G4. This machine runs the suite with one xdist worker, and a scoped `select-tests.py` run takes 37 to 51 minutes. Reason: machine memory lies outside the plan's reach. `[unverified — relayed by the dispatching session]`
-- G5. Four `test_shellcheck.py` tests fail on this machine at 28c5d3e1. `scripts/venv-run.sh` execs `.venv/bin/<tool>` without putting `.venv/bin` on PATH (:44-45). So `shutil.which("shellcheck")` (`test_shellcheck.py:104-105`) finds system `shellcheck` 0.9.0, which fails the check against the `shellcheck-py==0.11.*` pin (:152-159, `requirements-dev.txt:5`). Open PR #1379 makes `venv-run.sh` prepend the main checkout's `.venv/bin` to PATH, which fixes it. Reason: another session owns #1379, and merging it is the engineer's. `[verified: scripts/venv-run.sh:44-45; test_shellcheck.py:104-105, :152-159; requirements-dev.txt:5]` `[verified: /plan-review round 4 ran /usr/bin/shellcheck --version, which reports 0.9.0, and scripts/venv-run.sh shellcheck --version, which reports 0.11.0. It re-read scripts/venv-run.sh:44-45, which still execs .venv/bin/<tool> with PATH unchanged, and ran gh pr view 1379 --json state,mergeCommit, which returned "state":"OPEN" and "mergeCommit":null.]` `[verified: /plan-review round 3 read gh pr diff 1379, which makes the PATH change above]` `[unverified — relayed: the count of four failures, from /plan-review round 2. Verification 8 runs test_shellcheck.py alone before the selected run.]`
-- G6. A test spanning several command groups stays in L until every group it references has moved. Reason: the governing plan's rule for cross-group tests. `[verified: transcript-analysis-decomposition.md:157-161; docs/transcript-analysis-architecture.md:836-838]`
+- G5. `test_shellcheck.py` compares the version of the `shellcheck` that `shutil.which` resolves (:104-105) against the `shellcheck-py==0.11.*` pin (:152-159, `requirements-dev.txt:5`). This machine's system `shellcheck` is 0.9.0. Before #1379, when `venv-run.sh` left PATH unchanged, four of `test_shellcheck.py`'s tests failed. #1379, merged in this base, makes `venv-run.sh` prepend the main checkout's `.venv/bin` to PATH before it execs the tool (:51-52). Under the wrapper, `shutil.which` now resolves the pinned console script, which reports 0.11.0. Reason: `venv-run.sh`'s PATH handling is #1379's, outside this plan's Critical files. `[verified: scripts/venv-run.sh:51-52; test_shellcheck.py:104-105, :152-159; requirements-dev.txt:5, re-read against 7eb3c439]` `[verified: /plan-review round 4 ran /usr/bin/shellcheck --version, which reports 0.9.0]` `[verified: /plan-review round 5 ran shutil.which("shellcheck") and shellcheck --version from Python under scripts/venv-run.sh, which printed the main checkout's .venv/bin/shellcheck and version 0.11.0]` `[verified: the message of 5e593df9, #1379's commit, says "four of its tests failed"; that is the #1379 author's count, not a rerun, read by /plan-review round 5]` `[unverified: the whole test_shellcheck.py file passing on this machine at 7eb3c439. Verification 8 runs it alone before the selected run.]`
+- G6. A test spanning several command groups stays in L until every group it references has moved. Reason: the governing plan's rule for cross-group tests. `[verified: transcript-analysis-decomposition.md:157-161]` `[verified: docs/transcript-analysis-architecture.md:850-852, re-verified against 7eb3c439]`
 
 **Rows:**
 1. The engineer chose the phase split `[engineer-verified: "Two PRs, one plan (Recommended)"]`. The PR contents (PR A pricing, redaction, render; PR B scope, corpus) and the after-merge cut were the dispatching session's own proposal under that label. This plan adopts them on rows 19 and 20, not on the engineer's authority. `[unverified]`
 2. `[engineer-verified: "Yes. And autonomous shipping is active."]` This covers the branch name and shipping only.
 3. The engineer's prose rule, quoted in `.claude/plans/shim-reader-retarget-pr2.md` row 26, says docstrings should not restate the code and should carry non-obvious information. `[verified: that plan's row 26]` The dispatching session relayed it as standing for this plan. `[unverified]`
-4. Every top-level node in L, and the leaf module each one reads, was mapped by Grep. `[verified: Grep of top-level defs and of every <leaf>.<attr> read, at 28c5d3e1]`
+4. Every top-level node in L, and the leaf module each one reads, was mapped by Grep. `[verified: Grep of top-level defs and of every <leaf>.<attr> read, at 28c5d3e1]` `[verified: top-level defs and the lines below re-verified against 7eb3c439. The test 7eb3c439 adds at top level, :330-344, and the one it adds to TestBuildParser, :2069-2076, read no leaf module.]`
    - Each of PR A's 17 nodes reads only its own module, apart from two:
-     - `TestBuildRedactMapDirectUnit` also calls `scope._redaction_ordinals` (:4216).
-     - `TestDedupTurnsByRequestId` drives `cost._cost_report` (:1514, :1531).
-   - PR B's scope nodes drive `buckets`, `cost`, and `skill_invocation` end to end in a few tests (:1981, :1988, :3024, :3832, :3850, :3873, :4048, :4051).
-5. The straddling classes, by line at 28c5d3e1. `[verified: read]`
-   - `TestHelpers` (:414-527) holds 20 `render` tests, three `corpus._parse_ts` tests (:437-445), and three `scope._iso_date` tests (:447-456).
-   - `TestSingleLevelProjectsGlob` (:3691-3852) reads `_mod.build_parser()` only at :3721 and :3730.
-   - `TestRootCountDescDirectUnit` reads `SKILLS_DIR` only in :4147-4159.
-   - `TestParseAbsoluteWindowArgs` uses `corpus._parse_ts` only to compute expected values (:565-584).
-   - `TestRedactionOrdinalStability` calls `scope._redaction_ordinals` (:4030-4031).
-   - Of the three classes that commit 1 splits, none holds a member other than its docstring and its test methods: no helper method, fixture, or class attribute. `[verified: Grep of class-body lines at four-space indentation in L at 28c5d3e1]`
-6. L reads `_mod` only at :193-320, :1766, :1773, :1998-2057, :3721, and :3730. It reads `_SCRIPT` at those loader lines and at :119, :134, and :154. `[verified: Grep]`
-7. Module reads left in L after the moves. `[verified: Grep]`
+     - `TestBuildRedactMapDirectUnit` also calls `scope._redaction_ordinals` (:4243).
+     - `TestDedupTurnsByRequestId` drives `cost._cost_report` (:1532, :1549).
+   - PR B's scope nodes drive `buckets`, `cost`, and `skill_invocation` end to end in a few tests (:1999, :2006, :3051, :3859, :3877, :3900, :4075, :4078).
+5. The straddling classes, by line at 7eb3c439. `[verified: read, re-verified against 7eb3c439]`
+   - `TestHelpers` (:432-545) holds 20 `render` tests, three `corpus._parse_ts` tests (:455-463), and three `scope._iso_date` tests (:465-474).
+   - `TestSingleLevelProjectsGlob` (:3718-3879) reads `_mod.build_parser()` only at :3748 and :3757.
+   - `TestRootCountDescDirectUnit` reads `SKILLS_DIR` only in :4174-4186.
+   - `TestParseAbsoluteWindowArgs` uses `corpus._parse_ts` only to compute expected values (:583-602).
+   - `TestRedactionOrdinalStability` calls `scope._redaction_ordinals` (:4057-4058).
+   - Of the three classes that commit 1 splits, none holds a member other than its docstring and its test methods: no helper method, fixture, or class attribute. `[verified: Grep of class-body lines at four-space indentation in L, re-verified against 7eb3c439]`
+6. L reads `_mod` only at :194-339, :1784, :1791, :2016-2084, :3748, and :3757. It reads `_SCRIPT` at those loader lines and at :120, :135, and :155. `[verified: Grep, re-verified against 7eb3c439]`
+7. Module reads left in L after the moves. `[verified: Grep, re-verified against 7eb3c439]`
    - No remaining class reads `pricing.`, `redaction.`, or `render.`, so PR A drops those three names from L's package import.
-   - `corpus.` and `scope.` stay read, for example at :2265, :2891, and :3884.
-   - Every relative helper import in L (:54-68) is read only by classes that stay. The architecture doc's "the legacy file imports it too" sentences therefore stay true.
-   - Of the `.conftest` names (:69-96), nothing left in L reads `_TASK_NOTIFICATION_TEXT`, `_task_notification_msg`, or `_tool_result` after PR A, nor `_write_cost_root` or `_write_subagent_dispatch` after PR B. `_priced` stays read, for example at :1793 and :2296.
-8. The only comments in L outside top-level node spans are :99-101, :2548-2552, and fifteen `# ---` banner blocks (:329 through :4329). No comment sits at four-space indentation, and every deeper comment is followed by a statement at its own indentation, so no comment sits in a class body outside a member. No indented comment trails a node. `[verified: Grep for ^# ; multiline Grep for an indented comment followed by blank lines and a top-level statement]`
-9. L's only autouse fixture is `TestRepoTrackedAgentTypeNames._clear_cache` (:673), and it moves with its class. L has no module-level `pytestmark`. Its one `timing` mark is in `TestParseSinceNdArg` (:534). `[verified: Grep]`
-10. The harness, `_move_fidelity.py`. `[verified: read]` Its own committed self-tests cover it. `[verified: docs/transcript-analysis-architecture.md:806-813]`
+   - `corpus.` and `scope.` stay read, for example at :187, :2292, and :2918.
+   - Every relative helper import in L (:55-69) is read only by classes that stay. The architecture doc's "the legacy file imports it too" sentences therefore stay true.
+   - Of the `.conftest` names (:70-97), nothing left in L reads `_TASK_NOTIFICATION_TEXT`, `_task_notification_msg`, or `_tool_result` after PR A, nor `_write_cost_root` or `_write_subagent_dispatch` after PR B. `_priced` stays read, for example at :1811 and :2323.
+8. The only comments in L outside top-level node spans are :100-102, :2575-2579, and fifteen `# ---` banner blocks (:347 through :4356). No comment sits at four-space indentation, and every deeper comment is followed by a statement at its own indentation, so no comment sits in a class body outside a member. No indented comment trails a node. `[verified: Grep for ^# ; multiline Grep for an indented comment followed by blank lines and a top-level statement, at 28c5d3e1]` `[verified: Grep for ^# and for four-space-indented comments re-run against 7eb3c439, and the lines 7eb3c439 adds to L, :330-344 and :2069-2076, read; they hold no comment]`
+9. L's only autouse fixture is `TestRepoTrackedAgentTypeNames._clear_cache` (:691), and it moves with its class. L has no module-level `pytestmark`. Its one `timing` mark is in `TestParseSinceNdArg` (:552). `[verified: Grep, re-verified against 7eb3c439]`
+10. The harness, `_move_fidelity.py`. `[verified: read]` Its own committed self-tests cover it. `[verified: docs/transcript-analysis-architecture.md:820-827, re-verified against 7eb3c439]`
     - `nodes` compares top-level defs, classes, and single-name assignments, from the first decorator line through `end_lineno` (:147-159). `--verbatim` requires byte-identical lines (:335-336).
     - `remainder` drops imports and declared nodes. It then compares the remaining statements and the comment blocks outside dropped spans (:375-405, :451-481).
     - `test-ids` keys a test as `Class::name`, without the module (:745-750). An unchanged class name therefore keeps its ID across files. `--rename` matches an exact ID or an `::` or `[` prefix (:775-779). An ID present on one side only prints `id-missing` or `id-unexpected` (:807-812).
     - `remainder --changed` drops the named node from both sides, so a changed class's body is never compared (:466-467).
     - `nodes` compares each named node's text, but not the nodes' order (:295-323).
-11. The prefix guard, `test_transcript_package_module_prefixes.py`. `[verified: read]`
-    - `TEST_FILES` has 59 entries (:57-117).
-    - A file that imports the package and calls no `spec_from_file_location` must be listed (:498-509). `test_transcript_scope.py` will call it on `scope.py`, so listing it is a choice that keeps its reads checked, not a requirement.
-    - A listed file needs unaliased imports and at least one resolvable `<module>.<name>` read. `__file__` is in `IMPLICIT_MODULE_ATTRS` (:122).
-    - The pin test's two sets select by the spec name `"transcript_analysis"` or by a path constant containing `"transcript-analysis.py"` (:531-546). The moved `scope.py` loads pass other spec names (:120, :135, :155) and a function-local path, so they enter neither set.
+11. The prefix guard, `test_transcript_package_module_prefixes.py`. `[verified: read, re-verified against 7eb3c439]`
+    - `TEST_FILES` has 60 entries (:58-119).
+    - A file that imports the package and calls no `spec_from_file_location` must be listed (:500-511). `test_transcript_scope.py` will call it on `scope.py`, so listing it is a choice that keeps its reads checked, not a requirement.
+    - A listed file needs unaliased imports and at least one resolvable `<module>.<name>` read. `__file__` is in `IMPLICIT_MODULE_ATTRS` (:124).
+    - The pin test's two sets select by the spec name `"transcript_analysis"` or by a path constant containing `"transcript-analysis.py"` (:533-548). The moved `scope.py` loads pass other spec names (L :121, :136, :156) and a function-local path, so they enter neither set.
 12. `select-tests.py` is in its own `GLOBAL_TRIGGER_PATHS` (:458-462), so PR A's selected run widens to the full suite (:918-920). That is CLAUDE.md's first named case. `[verified: read]`
 13. The agents row: `CROSS_DOMAIN_EXCEPTIONS` :850-857, its comment :736-744, and the constant comment :126-129. `test_select_tests.py` pins the row's targets as a set (:1065-1077). It lists file targets in `_FILE_TARGETS` (:2073-2090), which the directory and file existence tests read (:2319-2333). `[verified: read]`
-14. After PR A, no `test_transcript_analysis*.py` file reads the real agents directory. `[verified: Grep]`
+14. After PR A, no `test_transcript_analysis*.py` file reads the real agents directory. `[verified: Grep, re-verified against 7eb3c439]`
     - In L, `_repo_tracked_agent_type_names` appears only in `TestRepoTrackedAgentTypeNames`.
     - `subagent_mix.py` calls it at :263 behind `this_repo and`, at :555 in `cmd_cost_counts`, and at :467 in `_partition_spawn_counts_by_disclosure`, which only `cmd_cost_counts` calls (:537).
-    - L's one `cmd_subagent_mix` row (:2563) and `test_transcript_analysis_branch_attribution.py` (:588-592) pass `this_repo` False. No such file calls `cmd_cost_counts` or `_partition_spawn_counts_by_disclosure`.
-    - L's other `cmd_subagent_mix` hits are three docstring lines in `TestParseAbsoluteWindowArgs` (:558, :576, :578), which moves in PR B.
-15. The `SKILL.md` row. `[verified: Grep]`
+    - L's one `cmd_subagent_mix` row (:2590) and `test_transcript_analysis_branch_attribution.py` (:588-592) pass `this_repo` False. No such file calls `cmd_cost_counts` or `_partition_spawn_counts_by_disclosure`.
+    - L's other `cmd_subagent_mix` hits are three docstring lines in `TestParseAbsoluteWindowArgs` (:576, :594, :596), which moves in PR B.
+15. The `SKILL.md` row. `[verified: Grep, re-verified against 7eb3c439]`
     - `_is_hooks_or_skills_change` selects `TRANSCRIPT_ANALYSIS_TEST_GLOB` (:799), which matches `test_transcript_analysis*.py` only (:119).
-    - `TestSkillFilesReportObservedScopeNotUnionGuarantee` (:4162-4195) stays in L, so the row keeps a reader either way.
+    - `TestSkillFilesReportObservedScopeNotUnionGuarantee` (:4189-4222) stays in L, so the row keeps a reader either way.
     - Moving the literal test would need a new constant in that row. It would also need edits to every `test_select_tests.py` expectation that names the row's targets (:432, :445, :513, :875, :1410, :1601, :1635, :1650, :2820).
 16. `scope.PROJECTS_DIR` resolves lazily and is cached in module globals (scope.py:45-82). `[verified: read]` `Path(scope.__file__)` names the same file as `_SCRIPT.parent / "transcript_analysis" / "scope.py"`. `[unverified: B1's test run checks it]`
-17. Prose sites. `[verified: Grep]`
-    - Sites that name a moved test as living in L: the architecture doc :760-761, :889-891, and :935-936; `test_transcript_context_composition.py` :311 and :416, citing L:982 in `TestPriceTurnArity`; and `test_transcript_cost.py` :2743-2744, citing L:844 in `TestScanRootTranscripts`.
+17. Prose sites. `[verified: Grep, re-verified against 7eb3c439]`
+    - Sites that name a moved test as living in L: the architecture doc :774-775, :903-905, and :949-950; `test_transcript_context_composition.py` :311 and :416, citing L:1000 in `TestPriceTurnArity`; and `test_transcript_cost.py` :2743-2744, citing L:862 in `TestScanRootTranscripts`.
     - Other references name a moved class but not L: `test_transcript_cost_counts.py` :226, `test_transcript_subagent_mix.py` :569 and :805, `test_transcript_cost.py` :1717, and `test_transcript_edit_format.py` :432. They stay true.
-    - Prose on L's staying nodes. `[verified: read of L at 28c5d3e1]`
-      - `TestConfigDirFlag`'s docstring (:167-169) says `test_projects_dir_honors_claude_config_dir` "covers above", which PR B makes false. That docstring and `test_no_flag_leaves_projects_dir_unchanged_after_parsing`'s (:202-205) also say that test covers import-time behavior, which row 16 shows was already false.
-      - `# Helpers` (:409-411) heads `TestHelpers`, `TestParseSinceNdArg`, and `TestParseAbsoluteWindowArgs`. `# _sanitize_table_cell (render.py)` (:791-793) heads every node from :796 up to the `# cache-efficiency` banner (:1754), including `TestScanRootTranscripts` and the pricing and corpus nodes.
-      - PR A deletes both banners. Until PR B merges, `# _table_cols self-tests` (:329-331) then heads `TestTableColsHelper`, `TestParseTs`, `TestIsoDate`, `TestParseSinceNdArg`, `TestParseAbsoluteWindowArgs`, `TestScanRootTranscripts`, `_read_tool_use`, `_text_marker_assistant`, `_text_markers`, and `TestCorpusSubagentDirAndUtf8ErrorHandling`. PR B moves all of them but `TestTableColsHelper`.
-18. Projected file sizes: render about 270 lines, redaction about 320, pricing about 680, corpus about 430, scope_scan about 790, and scope about 870. L ends near 1,440. `[unverified: span arithmetic; each commit-2 dispatch reports wc -l]`
+    - Prose on L's staying nodes. `[verified: read of L, re-verified against 7eb3c439]`
+      - `TestConfigDirFlag`'s docstring (:168-170) says `test_projects_dir_honors_claude_config_dir` "covers above", which PR B makes false. That docstring and `test_no_flag_leaves_projects_dir_unchanged_after_parsing`'s (:203-206) also say that test covers import-time behavior, which row 16 shows was already false.
+      - `# Helpers` (:427-429) heads `TestHelpers`, `TestParseSinceNdArg`, and `TestParseAbsoluteWindowArgs`. `# _sanitize_table_cell (render.py)` (:809-811) heads every node from :814 up to the `# cache-efficiency` banner (:1772), including `TestScanRootTranscripts` and the pricing and corpus nodes.
+      - PR A deletes both banners. Until PR B merges, `# _table_cols self-tests` (:347-349) then heads `TestTableColsHelper`, `TestParseTs`, `TestIsoDate`, `TestParseSinceNdArg`, `TestParseAbsoluteWindowArgs`, `TestScanRootTranscripts`, `_read_tool_use`, `_text_marker_assistant`, `_text_markers`, and `TestCorpusSubagentDirAndUtf8ErrorHandling`. PR B moves all of them but `TestTableColsHelper`.
+18. Projected file sizes: render about 270 lines, redaction about 320, pricing about 680, corpus about 430, scope_scan about 790, and scope about 870. L ends near 1,470. `[unverified: span arithmetic; each commit-2 dispatch reports wc -l]`
 19. Cutting both PRs from main would conflict:
     - Both edit L's package-import block.
-    - PR A's `TestCorpusFingerprintRootRemovalLimits` (:4062) sits between PR B's `TestRedactionOrdinalStability` (:4018) and `TestResolvedScopeHeaderDirectUnit` (:4079).
+    - PR A's `TestCorpusFingerprintRootRemovalLimits` (:4089) sits between PR B's `TestRedactionOrdinalStability` (:4045) and `TestResolvedScopeHeaderDirectUnit` (:4106).
     - Both append to `TEST_FILES`'s tail.
-    - Both edit the architecture doc at :760-761.
+    - Both edit the architecture doc at :774-775.
 
-    `[verified: line numbers above]`
+    `[verified: line numbers above, re-verified against 7eb3c439]`
 20. PR B's proofs compare against L as PR A leaves it. PR B needs no plan edit: `require-plan-review.sh` arms only on an uncommitted or modified plan file (:4-15), and this plan reaches main with PR A. `[verified: read]`
 21. No new class name or file name collides with an existing one: `TestParseTs`, `TestIsoDate`, `TestProjectsFlagHasNoArgparseType`, `TestSkillFilesQuoteRootCountDescLiteral`, and the six file names. `[verified: Grep; Glob]`
-22. The moved `GH-1312` docstring (:2453) is a bare tracker ID, which `test_ticket_reference_discipline.py` allows (:191). `[verified: read]`
+22. The moved `GH-1312` docstring (:2480) is a bare tracker ID, which `test_ticket_reference_discipline.py` allows (:191). `[verified: read]` `[verified: L :2480 re-read against 7eb3c439]`
 23. Neither PR changes `transcript-analysis.py` or any module under `transcript_analysis/`, so no CLI output can change. `capture --all-help` is not run, and Verification 6 checks the changed-file list instead. `[verified: Critical files]`
 24. The governing plan's Verification 7 requires a revert rehearsal at each phase boundary. `[verified: transcript-analysis-decomposition.md:276-279]` The engineer's earlier waiver covered only the two shim-retarget PRs. `[verified: shim-reader-retarget-pr2.md row 12]` Neither PR here changes `conftest.py`, which is the failure the rehearsal guards against. The engineer waived the rehearsal for both PRs. `[engineer-verified: "Waive for both (Recommended)"]`
 25. The repo convention for module docstrings. 10 of 10 sampled per-module test files open with a "Tests for transcript_analysis/<module>.py" docstring (buckets, fail_seq, commit_gate, pr_link, turn_shape, denials, gh_cli, read_scope, edit_format, duration). `[verified: Grep]` This plan departs from that convention under row 3.
@@ -183,7 +183,7 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
   - Leaving `TestSingleLevelProjectsGlob` whole in L strands nine scope tests until the `cli.py` phase, which would have to split the class anyway.
   - Moving the `SKILL.md` literal test costs a new row target and nine `test_select_tests.py` expectation edits, all for one test (row 15).
   - Moving `TestHelpers` whole puts three `corpus._parse_ts` and three `scope._iso_date` tests in the render file against the placement rule and guarantees a later move, while the split cuts two contiguous blocks, six short tests in all (row 5).
-- M3: Two commits per PR, an in-place commit and then a pure move. `anchors: row10`. A single commit checked by `nodes` without `--verbatim` was set aside: `nodes` cannot compare a split class or a non-name edit such as the `scope_path` change, so those changes would rest on review alone.
+- M3: Two implementation commits per PR, an in-place commit and then a pure move. `anchors: row10`. A single commit checked by `nodes` without `--verbatim` was set aside: `nodes` cannot compare a split class or a non-name edit such as the `scope_path` change, so those changes would rest on review alone.
 - M4: A scratch mover that cuts and pastes AST spans, so no moved line is retyped. `anchors: row8, row10`. The lighter primitives each fail:
   - Having the code-writer re-emit about 3,100 lines through Write risks a retyping slip in each one. `--verbatim` catches such a slip, but each slip costs a round.
   - Hand-read line ranges cut with `sed` miss decorator lines, and A1 and B1 shift the lines anyway. AST spans are exact.
@@ -207,7 +207,7 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
   - Rebasing and re-proving unattended needs a second proof procedure, with snapshots rebuilt from the rebased commits.
 - M13: `/ready-for-review` step 2 as each PR's only selected-suite run, preceded by `test_shellcheck.py` alone and followed by one re-activation of the gate's active marker. `anchors: G2, G4, G5, row26, row27, row30`. The alternatives each fail:
   - A separate run before commit 2 doubles the longest step, because step 2 runs the suite again regardless (row 26). Staging the new files for such a run would also leave index entries that the Abort procedure's `git restore --source=HEAD` and `rm` do not clear.
-  - A stop at Verification 0 on #1379's merge state holds every proof for a fix only the selected run reads, and it tests a PR number rather than what `test_shellcheck.py` resolves (G5).
+  - A check of #1379's merge state, in place of the pre-run, tests a PR number rather than what `test_shellcheck.py` resolves (G5).
 
 ## Critical files
 
@@ -276,7 +276,7 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
   - `claude/.claude/scripts/tests/test_select_tests.py`;
   - `claude/.claude/scripts/tests/test_transcript_context_composition.py`;
   - `docs/transcript-analysis-architecture.md`.
-- Commit: `.claude/plans/leaf-module-tests.md`, this plan, as Verification 0 states.
+- Commit: `.claude/plans/leaf-module-tests.md`, this plan, in one or more plan commits before the two implementation commits, as Verification 0 states.
 
 **Files, PR B** (its own branch and worktree per `branch-management`, from `origin/main` after PR A merges):
 - Create, all under `claude/.claude/scripts/tests/`: `test_transcript_scope.py`, `test_transcript_scope_scan.py`, and `test_transcript_corpus.py`.
@@ -300,12 +300,12 @@ Each leaf-module test moves verbatim out of `test_transcript_analysis.py` (below
 Never use `git clean`, `git checkout .`, `git reset --hard`, or `git stash`.
 
 **Explicitly unchanged:**
-- the repository root's `scripts/venv-run.sh`, whose PATH fix #1379 owns (G5);
+- the repository root's `scripts/venv-run.sh`, whose PATH handling #1379 owns (G5);
 - `tests/conftest.py`, `tests/_move_fidelity.py`, and every other `tests/_*.py` helper module;
 - `transcript-analysis.py` and every module under `transcript_analysis/`;
 - `docs/transcript-analysis.md` and CHANGELOG.md;
 - every skill, hook, and rule file;
-- every committed plan, this one included once PR A has committed it.
+- every committed plan, this one included after Verification 0's plan-commit bullet: neither implementation commit edits it.
 
 **Reuse:**
 - `_move_fidelity.py`'s `nodes`, `remainder`, and `test-ids`, unchanged;
@@ -315,7 +315,7 @@ Never use `git clean`, `git checkout .`, `git reset --hard`, or `git stash`.
 **PR body carries:**
 - `Refs GH-1116`.
 - What moved: each new file's node count and the `test-ids` testcase totals.
-- The two commits and each one's proof results.
+- The two implementation commits and each one's proof results. PR A may carry more than one plan commit before them.
 - PR A also states the agents-row change and why the glob left that row.
 - The selected-suite result. PR A's body also says `select-tests.py` widened to the full suite (row 12).
 - The rollback statement: "Revert last in, first out: PR B before PR A. Reverting PR A alone after PR B merges conflicts in `test_transcript_analysis.py`, because both PRs cut adjacent regions. This is an inference; no revert was run." (row 19)
@@ -342,7 +342,7 @@ Run everything from the worktree root, each git command as its own literal call.
     - Commit-1 diff lines, each with its four-space indentation where it has one:
       - `> class TestProjectsFlagHasNoArgparseType:` and `> class TestSkillFilesQuoteRootCountDescLiteral:`;
       - three `<     scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"` lines and three `>     scope_path = Path(scope.__file__)` lines;
-      - one `<` line for each non-blank line of `test_projects_dir_honors_claude_config_dir`'s old docstring, eight in all (:109-111 and :113-117 at 28c5d3e1), and `>     """Execs a fresh copy of scope.py because the imported module caches PROJECTS_DIR on first access."""`.
+      - one `<` line for each non-blank line of `test_projects_dir_honors_claude_config_dir`'s old docstring, eight in all (:110-112 and :114-118 at 7eb3c439), and `>     """Execs a fresh copy of scope.py because the imported module caches PROJECTS_DIR on first access."""`.
     - Commit 2: 30 moved names; two deleted banners and one changed banner expected.
 
 Per PR, in order:
@@ -350,7 +350,10 @@ Per PR, in order:
 0. **Preconditions.**
    - `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 in the session that makes each commit, push, or `gh pr create`. A session that resumes, restarts, or lands a fix commit past this step runs it again before its first such act. A non-zero exit means stop before that act and ask the engineer, because row 2's quote does not carry to another session.
    - `scripts/venv-run.sh pytest --version` and `scripts/venv-run.sh ruff --version` each exit 0.
-   - PR A first runs `git diff --cached --name-only`, which must print exactly `.claude/plans/leaf-module-tests.md`. Any other path stops the step and goes to the engineer. It then commits the plan with the message `Refs GH-1116`, after which `git status --short` prints nothing.
+   - PR A's plan commit. The parent stages and commits the plan, not a dispatch. An earlier plan commit stays as it is, and pending plan edits land as a further plan commit.
+     - If `git status --short -- .claude/plans/leaf-module-tests.md` prints nothing, the plan is in HEAD and clean. There is nothing to commit, so no plan commit is made and only the last sub-bullet applies.
+     - Otherwise the plan is not yet in HEAD, or it is in HEAD with pending edits. The parent stages it with `git add .claude/plans/leaf-module-tests.md`. Then `git diff --cached --name-only` must print exactly `.claude/plans/leaf-module-tests.md`, and any other path stops the step and goes to the engineer. The parent then makes a new commit, never an amend, with the message `Refs GH-1116`.
+     - In every state, including the clean one, `git status --short` must print nothing once any plan commit is made. Any output stops the step and goes to the engineer.
    - Run `git fetch origin main`, then `git rev-list --count HEAD..origin/main`. A non-zero count means run `git rebase origin/main` now, before any snapshot exists (Sync rule). A rebase that does not complete stops the run (Sync rule).
    - PR B, in a fresh worktree from `origin/main`:
      - `git grep -n "TRANSCRIPT_REDACTION_TEST_PATH" origin/main -- claude/.claude/scripts/select-tests.py` hits.
@@ -392,7 +395,7 @@ Per PR, in order:
    - PR A: rerun step 6's agents-directory check on the synced tree.
 8. **Selected suite and hand-off** (G2, M13).
    - Run `/ready-for-review`, which opens the PR with the body Critical files lists. Its step 2 is the PR's only selected-suite run (row 26). That run follows commit 2, so tracked-file scanners such as `test_ticket_reference_discipline.py` see the new files (row 27).
-   - In step 2, first run `<w1> scripts/venv-run.sh pytest -n0 claude/.claude/hooks/tests/test_shellcheck.py`. If it fails, stop and report to the engineer that both commits and all proofs are done, and that the selected run would fail on G5 until #1379 or an equivalent fix lands. A later run resumes at Verification 7's `git fetch origin main`.
+   - In step 2, first run `<w1> scripts/venv-run.sh pytest -n0 claude/.claude/hooks/tests/test_shellcheck.py`. If it fails, stop and report to the engineer that both commits and all proofs are done, quoting the failing assertion. Name G5 only when the failure message contains "PATH is resolving a shellcheck binary other than the pinned" (`test_shellcheck.py:155-159`): the selected run would then fail on G5's version check, which #1379's PATH change did not fix on this machine. Report any other failure to the engineer as it stands, without naming G5. A later run resumes at Verification 7's `git fetch origin main`.
    - Then run `<w1> scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` as a background Bash call, and edit nothing until it finishes. In PR A it selects the full suite (row 12), whose duration on this machine is unmeasured. In PR B the scoped run takes 37 to 51 minutes (G4).
    - Only while the `/ready-for-review` run that activated the marker is still in flight (its step 9 has not run and the run has not halted or deferred), re-run `~/.claude/scripts/marker.sh activate ready-for-review` after the run returns, because the wait can outlast the gate's active marker (row 30). Otherwise leave the marker alone and report to the engineer.
    - The run must pass. A failing `timing`-marked test is rerun alone with `<w1> scripts/venv-run.sh pytest -m timing -n0 <node id>`, per the marker's own definition in `pyproject.toml`, before it counts.
@@ -403,20 +406,20 @@ Per PR, in order:
 
 ## Out of scope
 
-- **The `cli.py` phase's classes**, which stay in L: `TestConfigDirFlag`, `TestConfigDirRouting`, `TestCacheEfficiencyArgparseWiring`, `TestBuildParser`, `TestProjectsFlagHasNoArgparseType`, `_UNCONDITIONAL_HEADER_CASES` with its two classes, and the loader (G1).
+- **The `cli.py` phase's tests**, which stay in L: `TestConfigDirFlag`, `TestConfigDirRouting`, `test_review_cost_by_size_without_this_repo_is_refused_through_main`, `TestCacheEfficiencyArgparseWiring`, `TestBuildParser`, `TestProjectsFlagHasNoArgparseType`, `_UNCONDITIONAL_HEADER_CASES` with its two classes, and the loader (G1).
 - **Cross-group classes**, which stay in L under G6: `TestCacheRebuildCrossInstrumentReconciliation`, `TestFormatDriftCanary`, `TestMultiRootFormatOutliers`, `TestPerRecordConsumersCreditPrefixToTheBranchEntered`, and `TestSubagentRecordsFollowTheDispatchingBranch`.
 - **The `SKILL.md` pins in L**, `TestSkillFilesReportObservedScopeNotUnionGuarantee` and `TestSkillFilesQuoteRootCountDescLiteral`. Moving them needs the `select-tests.py` row change row 15 describes.
 - **`TestTableColsHelper`.** It tests a `conftest.py` helper, not a leaf module. `test_transcript_shared_fixtures.py` is a candidate home. DEFER: outside the Ask.
-- **L staying over 1,000 lines**, about 1,440 after both PRs (row 18). The `cli.py` phase shrinks it further.
+- **L staying over 1,000 lines**, about 1,470 after both PRs (row 18). The `cli.py` phase shrinks it further.
 - **Renaming `TestHelpers`** in the render file. A rename turns 20 test IDs into renames and makes the move unprovable by `nodes --verbatim`.
 - **Prose that was already stale and that this change neither causes nor touches**, listed in PR A's body as follow-ups:
   - `test_transcript_context_composition.py` :616-617 cites `TestCostMultiRootReport` in L, and L has no such class.
   - `claude/.claude/hooks/tests/test_check_claude_md_length.py` :889-890 cites L for a test in `test_transcript_denials.py` (:324).
   - `select-tests.py` :112 says the glob has "two siblings", but it matches six files.
-- **`TestConfigDirFlag`'s stale docstring prose** (row 17). PR B makes its "covers above" false, and its import-time wording, like :202-205's, was already false. Editing it would add `--changed TestConfigDirFlag` to PR B's commit-1 `remainder`, which drops that whole class from the comparison, for a few docstring words in a class the `cli.py` phase moves and owns. PR B's body lists it as a follow-up.
+- **`TestConfigDirFlag`'s stale docstring prose** (row 17). PR B makes its "covers above" false, and its import-time wording, like :203-206's, was already false. Editing it would add `--changed TestConfigDirFlag` to PR B's commit-1 `remainder`, which drops that whole class from the comparison, for a few docstring words in a class the `cli.py` phase moves and owns. PR B's body lists it as a follow-up.
 - **The banner between the PRs** (row 17). Until PR B merges, `# _table_cols self-tests` heads nine nodes it does not describe, and PR B's moves end that. Keeping `# Helpers` until PR B was set aside: it would still head `TestScanRootTranscripts` and the corpus nodes, and it changes both PRs' banner counts and proof expectations, all for an interim state. PR A's body states it.
 - **The governing plan's revert rehearsal**, which the engineer waived for both PRs (row 24).
-- **The `venv-run.sh` PATH fix** behind G5's `test_shellcheck.py` failures. Open PR #1379 owns it. This plan neither duplicates it nor adds a PATH prefix of its own, and Verification 8 checks for its effect just before the selected run.
+- **The `venv-run.sh` PATH fix** behind G5's `test_shellcheck.py` failures. #1379 owns it and merged it in this base. This plan neither duplicates it nor adds a PATH prefix of its own, and Verification 8 checks for its effect just before the selected run.
 - **The active marker lapsing during a long step 2** (row 30). Its single home is `/ready-for-review` step 2, which could re-activate the marker after a long run as the skill already does on its CI-watch path (`claude-skills/skills/ready-for-review/SKILL.md` § "CI watch (out-of-band)", :198). That is a follow-up in the skill. This plan leaves skill files unchanged and carries only Verification 8's one re-activation line.
 - **Committing the mover**, a single-use scratch tool.
 - **GH-1116 tracker edits.** No comment is posted on the tracker; the PR bodies state what each PR moved.
