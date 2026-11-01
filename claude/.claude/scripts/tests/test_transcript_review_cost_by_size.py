@@ -9,6 +9,7 @@ import re
 import subprocess
 import time
 from collections import Counter
+from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
@@ -27,12 +28,32 @@ from .conftest import (
 
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees this read.
 _PRIVATE_PROJECT_REDACTION_DOC = REPO_ROOT / "docs" / "private-project-redaction.md"
+_TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
 
 _PROJECT_SLUG = "-home-user-testrepo"
 _HEADER_ACTIVE_ACCOUNT = "REVIEW COST BY SIZE SOURCES (this repo (1 project dirs); active account only)"
 _HEADER_EVERY_ACCOUNT = "REVIEW COST BY SIZE SOURCES (this repo (1 project dirs); every declared account)"
 # A claude-sonnet-5 turn of 100_000 input tokens prices at this many dollars.
 _ROUND_OPENING_TURN_DOLLARS = 0.20
+# A head name carrying a line break and an ANSI escape, as a hostile gh response could supply.
+_HOSTILE_HEAD_BRANCH = "feat-t1\nforged-report-line\x1b[31m"
+# Every head name `_two_root_corpus` feeds through `gh pr list` or writes to a transcript, plus the parts of the
+# hostile one that would forge or recolor a report line on their own.
+_TWO_ROOT_CORPUS_WITHHELD = (
+    "feat-a", "feat-b", "feat-t1", "feat-t2", "feat-no-sessions", "zz-unmerged-sentinel",
+    _HOSTILE_HEAD_BRANCH, "forged-report-line", "\x1b",
+)
+# The origin identity the success runs feed through `gh` and the project slug. Each test adds the tmp path, and
+# the two-root tests add `_account_directory_names(roots)`.
+_REPORT_IDENTITY_WITHHELD = ("sentinel-org", "sentinel-repo", _PROJECT_SLUG)
+_SENTINEL_ORIGIN_REPO = "sentinel-org/sentinel-repo"
+
+
+def _account_directory_names(roots: list[Path]) -> tuple[str, ...]:
+    """The account directory names of roots returned by `_two_declared_roots`, each root being `<account>/projects`."""
+    for root in roots:
+        assert root.name == "projects", f"expected an <account>/projects root, got {root}"
+    return tuple(root.parent.name for root in roots)
 
 
 def _review_cost_by_size_args(
@@ -98,6 +119,32 @@ def _run_cmd(monkeypatch, capsys, args, *, merged_prs=(), call_log=None, **fake_
 def _printed_pr_numbers(stdout: str) -> list[int]:
     _, _, rows_section = stdout.partition("Per-PR rows")
     return [int(match.group(1)) for match in re.finditer(r"^\s+(\d+)\s+[\d,]+\s+\d+\s", rows_section, re.MULTILINE)]
+
+
+# The first alternative matches the digits that belong to a label: a size bucket's edges and the trend's rounds floor.
+# The second matches a value slot.
+_LABEL_OR_FIGURE_PATTERN = re.compile(
+    r"(?P<label>^\s+\d+(?:-\d+|\+) lines:|at least \d+ rounds)|(?P<figure>n/a|-?\$?\d[\d,]*(?:\.\d+)?%?)"
+)
+_PER_PR_ROWS_HEADING = "Per-PR rows"
+
+
+def _docs_sample_lines() -> list[str]:
+    """The lines of the fenced block that follows the review-cost-by-size section's "Sample output" label."""
+    text = _TRANSCRIPT_ANALYSIS_DOC.read_text(encoding="utf-8")
+    section = text[text.index("\n## review-cost-by-size\n"):]
+    after_label = section[section.index("**Sample output**"):]
+    start = after_label.index("\n```\n") + len("\n```\n")
+    return after_label[start:after_label.index("\n```", start)].splitlines()
+
+
+def _label_lines_with_figures_masked(report_lines: list[str]) -> list[str]:
+    """Every line through the per-PR table's column header, each value replaced by `#` and each label kept."""
+    heading_index = next(index for index, line in enumerate(report_lines) if line.startswith(_PER_PR_ROWS_HEADING))
+    return [
+        _LABEL_OR_FIGURE_PATTERN.sub(lambda match: match["label"] or "#", line)
+        for line in report_lines[: heading_index + 2]
+    ]
 
 
 class TestComputeAggregates:
@@ -481,6 +528,23 @@ class TestJoinRoundsToPrs:
         assert records == []
         assert (counts.unmatched_branch_count, counts.ambiguous_branch_count) == (1, 0)
 
+    def test_branchless_rounds_never_join_and_count_as_one_unmatched_branch(self):
+        """A round with no attributable gitBranch carries the empty string, so rounds from separate sessions
+        share one unmatched branch."""
+        rounds = [
+            _round_entry("", main_dollars=1.0, sort_ts=1.0, unpriced_turns=3, dangling=5),
+            _round_entry("", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=11),
+            _round_entry("", main_dollars=1.0, sort_ts=3.0, unpriced_turns=13, dangling=17),
+        ]
+        records, counts = review_cost_by_size._join_rounds_to_prs(
+            rounds, [_merged_pr_sized(101, "feat-other", additions=1, deletions=1)],
+        )
+        assert records == []
+        assert counts == review_cost_by_size._JoinCounts(
+            merged_pr_count=1, unmatched_branch_count=1, ambiguous_branch_count=0, unpriced_turns=0,
+            dangling_dispatches=0,
+        )
+
     @pytest.mark.parametrize("missing_field", ["additions", "deletions", "number", "headRefName"])
     def test_a_malformed_merged_pr_stops_the_join_instead_of_defaulting_to_zero_lines(self, missing_field):
         merged_pr = _merged_pr_sized(101, "feat-joined", additions=100, deletions=49)
@@ -620,39 +684,40 @@ class TestCmdReviewCostBySize:
         assert "review-cost-by-size: no HOME" in capsys.readouterr().err
 
     @staticmethod
-    def _two_root_corpus(tmp_path, monkeypatch) -> list[dict]:
-        """Active root: feat-a (2 rounds), the size-tied PRs feat-t1 and feat-t2 (1 round each) and an
-        unmerged sentinel branch. Declared root: feat-b (3 rounds). Returns the merged-PR list. The tied
+    def _two_root_corpus(tmp_path, monkeypatch) -> tuple[list[dict], list[Path]]:
+        """Active root: feat-a (2 rounds), the size-tied PRs _HOSTILE_HEAD_BRANCH and feat-t2 (1 round each) and an
+        unmerged sentinel branch. Declared root: feat-b (3 rounds). Returns the merged-PR list and the two roots. The tied
         PRs' session files sort opposite to their PR numbers (sess-t1 holds PR 31, sess-t2 holds PR 30), so
         their records arrive out of PR-number order."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         active_project = roots[0] / _PROJECT_SLUG
         active_project.mkdir()
         _write_code_review_session(active_project / "sess-a.jsonl", "feat-a", 2)
-        _write_code_review_session(active_project / "sess-t1.jsonl", "feat-t1", 1)
+        _write_code_review_session(active_project / "sess-t1.jsonl", _HOSTILE_HEAD_BRANCH, 1)
         _write_code_review_session(active_project / "sess-t2.jsonl", "feat-t2", 1)
         _write_code_review_session(active_project / "sess-sentinel.jsonl", "zz-unmerged-sentinel", 1)
         declared_project = roots[1] / _PROJECT_SLUG
         declared_project.mkdir()
         _write_code_review_session(declared_project / "sess-b.jsonl", "feat-b", 3)
-        return [
-            _merged_pr_sized(31, "feat-t1", additions=4, deletions=3),
+        merged_prs = [
+            _merged_pr_sized(31, _HOSTILE_HEAD_BRANCH, additions=4, deletions=3),
             _merged_pr_sized(22, "feat-b", additions=20, deletions=5),
             _merged_pr_sized(11, "feat-a", additions=3, deletions=2),
             _merged_pr_sized(30, "feat-t2", additions=6, deletions=1),
             _merged_pr_sized(99, "feat-no-sessions", additions=1, deletions=1),
         ]
+        return merged_prs, roots
 
     def test_default_mode_reads_the_active_root_alone_and_prints_rows_after_every_aggregate(
         self, tmp_path, monkeypatch, capsys,
     ):
-        merged_prs = self._two_root_corpus(tmp_path, monkeypatch)
+        merged_prs, roots = self._two_root_corpus(tmp_path, monkeypatch)
         call_log: list[list[str]] = []
         out, err = _run_cmd(
             monkeypatch, capsys,
             _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=merged_prs, repo="sentinel-org/sentinel-repo", call_log=call_log,
-            enforce_repo_pin="sentinel-org/sentinel-repo",
+            merged_prs=merged_prs, repo=_SENTINEL_ORIGIN_REPO, call_log=call_log,
+            enforce_repo_pin=_SENTINEL_ORIGIN_REPO,
         )
         pr_list_argv = next(argv for argv in call_log if argv[:3] == ["gh", "pr", "list"])
         requested_fields = set(pr_list_argv[pr_list_argv.index("--json") + 1].split(","))
@@ -667,7 +732,9 @@ class TestCmdReviewCostBySize:
         assert any(line.startswith("  0-149 lines: n=3;") for line in lines)
         assert _printed_pr_numbers(out) == [11, 30, 31]
         assert out.index("Aggregates") < out.index("Join diagnostics") < out.index("Per-PR rows")
-        for withheld in ("zz-unmerged-sentinel", "sentinel-org", "sentinel-repo", str(tmp_path)):
+        for withheld in (
+            *_TWO_ROOT_CORPUS_WITHHELD, *_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path),
+        ):
             assert withheld not in out + err
         # feat-a: two rounds at the opening-turn price.
         assert re.search(r"^\s+11\s+5\s+2\s+\$0\.40\s+\$0\.20$", out, re.MULTILINE)
@@ -706,11 +773,11 @@ class TestCmdReviewCostBySize:
     def test_all_accounts_merges_every_root_and_marks_both_streams_do_not_publish(
         self, tmp_path, monkeypatch, capsys,
     ):
-        merged_prs = self._two_root_corpus(tmp_path, monkeypatch)
+        merged_prs, roots = self._two_root_corpus(tmp_path, monkeypatch)
         out, err = _run_cmd(
             monkeypatch, capsys,
             _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
-            merged_prs=merged_prs,
+            merged_prs=merged_prs, repo=_SENTINEL_ORIGIN_REPO,
         )
         lines = out.splitlines()
         assert lines[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
@@ -720,6 +787,29 @@ class TestCmdReviewCostBySize:
         assert "  PRs joined: 4" in lines
         assert any(line.startswith("  0-149 lines: n=4;") for line in lines)
         assert _printed_pr_numbers(out) == [11, 30, 31, 22]
+        for withheld in (
+            *_TWO_ROOT_CORPUS_WITHHELD, *_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path),
+        ):
+            assert withheld not in out + err
+
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
+    def test_a_head_name_carried_by_two_merged_prs_is_counted_as_ambiguous_and_never_printed(
+        self, fake_projects, monkeypatch, capsys, all_accounts,
+    ):
+        _write_code_review_session(fake_projects / "sess-reused.jsonl", _HOSTILE_HEAD_BRANCH, 1)
+        out, err = _run_cmd(
+            monkeypatch, capsys,
+            _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts, this_repo_slugs=[_PROJECT_SLUG]),
+            merged_prs=[
+                _merged_pr_sized(40, _HOSTILE_HEAD_BRANCH, additions=3, deletions=2),
+                _merged_pr_sized(41, _HOSTILE_HEAD_BRANCH, additions=6, deletions=1),
+            ],
+        )
+        lines = out.splitlines()
+        assert "  Ambiguous branches (excluded): 1" in lines
+        assert "  PRs joined: 0" in lines
+        for withheld in _TWO_ROOT_CORPUS_WITHHELD:
+            assert withheld not in out + err
 
     def test_all_accounts_over_a_single_root_still_marks_both_streams_do_not_publish(
         self, fake_projects, monkeypatch, capsys,
@@ -732,7 +822,9 @@ class TestCmdReviewCostBySize:
         assert err.splitlines()[0] == review_cost_by_size._PRIVATE_VIEW_BANNER
         assert "scanning root" not in err
 
-    def test_unreadable_session_files_are_counted_and_the_readable_one_still_joins(self, fake_projects, monkeypatch, capsys):
+    def test_unreadable_session_files_are_counted_and_the_readable_one_still_joins(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
         if os.geteuid() == 0:
             pytest.skip("root bypasses file permission bits")
         _write_code_review_session(fake_projects / "readable.jsonl", "feat-a", 1)
@@ -741,10 +833,11 @@ class TestCmdReviewCostBySize:
             _write_code_review_session(sealed, "feat-a", 1)
             os.chmod(sealed, 0o000)
         try:
-            out, _err = _run_cmd(
+            out, err = _run_cmd(
                 monkeypatch, capsys,
                 _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
                 merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
+                repo=_SENTINEL_ORIGIN_REPO,
             )
         finally:
             for sealed in sealed_files:
@@ -752,6 +845,8 @@ class TestCmdReviewCostBySize:
         lines = out.splitlines()
         assert "  Unreadable sources skipped: 2" in lines
         assert "  PRs joined: 1" in lines
+        for withheld in (*_REPORT_IDENTITY_WITHHELD, str(tmp_path)):
+            assert withheld not in out + err
 
     def test_unreadable_sources_at_different_scan_levels_are_summed_across_roots(self, tmp_path, monkeypatch, capsys):
         """A sealed session file in one root and a sealed project directory in the other count as 2.
@@ -772,10 +867,11 @@ class TestCmdReviewCostBySize:
         os.chmod(sealed_file, 0o000)
         os.chmod(sealed_project_dir, 0o000)
         try:
-            out, _err = _run_cmd(
+            out, err = _run_cmd(
                 monkeypatch, capsys,
                 _review_cost_by_size_args(this_repo=True, all_accounts=True, this_repo_slugs=[_PROJECT_SLUG]),
                 merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
+                repo=_SENTINEL_ORIGIN_REPO,
             )
         finally:
             os.chmod(sealed_file, 0o644)
@@ -783,6 +879,8 @@ class TestCmdReviewCostBySize:
         lines = out.splitlines()
         assert "  Unreadable sources skipped: 2" in lines
         assert "  PRs joined: 1" in lines
+        for withheld in (*_REPORT_IDENTITY_WITHHELD, *_account_directory_names(roots), str(tmp_path)):
+            assert withheld not in out + err
 
     @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
     def test_failing_gh_auth_exits_1_before_any_report_or_scan(self, tmp_path, monkeypatch, capsys, all_accounts):
@@ -837,6 +935,28 @@ class TestCmdReviewCostBySize:
         else:
             assert out == ""
             assert error_lines[0].startswith("review-cost-by-size: could not resolve this repo's own remote")
+
+    @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
+    def test_failing_worktree_listing_exits_1_under_this_commands_name_before_any_report(
+        self, fake_projects, monkeypatch, capsys, all_accounts,
+    ):
+        """With no pre-seeded slugs the scan resolves them from `git worktree list`, which fails here."""
+        remaining_calls_double = _fake_pr_cost_subprocess_run()
+
+        def worktree_listing_fails(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                raise subprocess.CalledProcessError(128, cmd)
+            return remaining_calls_double(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", worktree_listing_fails)
+        with pytest.raises(SystemExit) as exc_info:
+            review_cost_by_size.cmd_review_cost_by_size(
+                _review_cost_by_size_args(this_repo=True, all_accounts=all_accounts),
+            )
+        assert exc_info.value.code == 1
+        out, err = capsys.readouterr()
+        assert "review-cost-by-size: cannot determine repo scope" in err
+        assert out == (review_cost_by_size._PRIVATE_VIEW_BANNER + "\n" if all_accounts else "")
 
     @pytest.mark.parametrize("all_accounts", [False, True], ids=["default-mode", "all-accounts"])
     def test_failing_merged_pr_discovery_exits_1_before_any_scan_or_report(
@@ -923,3 +1043,15 @@ class TestCmdReviewCostBySize:
         cited = re.search(r'§\s+"([^"\n]+)"', banner)
         assert cited, f"{banner!r} does not cite a heading in the § \"...\" form"
         assert normalize_heading(cited.group(1)) in heading_texts(_PRIVATE_PROJECT_REDACTION_DOC.read_text())
+
+    def test_the_docs_sample_labels_match_the_real_report_over_a_fixture(self, fake_projects, monkeypatch, capsys):
+        _write_code_review_session(fake_projects / "sess-sample.jsonl", "feat-a", 2)
+        out, _err = _run_cmd(
+            monkeypatch, capsys,
+            _review_cost_by_size_args(this_repo=True, this_repo_slugs=[_PROJECT_SLUG]),
+            merged_prs=[_merged_pr_sized(11, "feat-a", additions=3, deletions=2)],
+        )
+
+        assert _label_lines_with_figures_masked(_docs_sample_lines()) == _label_lines_with_figures_masked(
+            out.splitlines()
+        )

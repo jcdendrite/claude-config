@@ -304,11 +304,8 @@ registration, and every helper used only by it. It prices `code-review` rounds w
 and prints aggregates, join diagnostics and per-PR rows. Imports `gh_cli`, `render`, `review_rounds`, and
 `scope` all by module (attribute access). The shim reads `_add_review_cost_by_size_subparser` bare. The
 module reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` to keep default-branch and
-no-PR branches from joining. Three functions carry the logic so tests can feed them literals:
-`_scan_code_review_rounds` runs the scan, `_join_rounds_to_prs` applies the join, and
-`_compute_aggregates` computes the figures. The scan passes `resolved_roots=None`, so a branch's rounds
-merge across roots. It never reaches `scope._root_index_for_path`, so a project directory symlinked
-outside every root cannot abort it.
+no-PR branches from joining. The scan, the join and the aggregation are separate functions so tests can
+feed each one literals.
 
 ### `author_outcome.py`
 

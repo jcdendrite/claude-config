@@ -208,6 +208,7 @@ Alternatives weighed:
 - `claude/.claude/scripts/tests/test_transcript_package_module_prefixes.py`: add the new module to `PRODUCTION_MODULES` and the new test file to `TEST_FILES`.
 - `claude/.claude/scripts/tests/test_transcript_analysis.py`: the wiring test in Verification step 4.
 - `claude/.claude/scripts/tests/test_transcript_cost_counts.py`: add `review-cost-by-size` to the refusal-message test's parametrization (`:863`), and point its docstring at the tuple comment (M2).
+- `claude/.claude/scripts/tests/test_transcript_cli_bootstrap.py`: one fresh-interpreter test that `review-cost-by-size` without `--this-repo` exits 2 with an empty stdout and `requires --this-repo` on stderr (the stderr assertion separates the command's own refusal from argparse's invalid-choice exit 2), mirroring the `period-cost` refusal test there. It covers the sys.path[0]-only bootstrap path that no in-process test reaches.
 - `docs/transcript-analysis.md`:
   - Add `review-cost-by-size` to the gh-calling list (`:7-12`).
   - At `:3`, replace the intro's partial list of active-account-only exceptions with a pointer to "Corpus scope: the declared-roots file", whose `:76` list stays the complete one (row 46).

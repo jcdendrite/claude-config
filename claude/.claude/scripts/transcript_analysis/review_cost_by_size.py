@@ -225,8 +225,6 @@ def _compute_aggregates(records: Sequence[_PrRecord]) -> dict:
     Keys:
     - spearman: measure -> (rho, PRs ranked). Every PR is ranked, so the count is len(records) for all measures.
     - elasticity: measure -> (slope, PRs used).
-    - buckets: one dict per size bucket (lower, upper, pr_count, medians by measure).
-    - trend: the result of _compute_within_pr_trend.
     """
     lines = [record.lines for record in records]
     measured = {measure: [getattr(record, measure) for record in records] for measure in _MEASURES}

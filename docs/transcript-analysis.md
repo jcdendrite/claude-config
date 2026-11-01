@@ -1406,7 +1406,12 @@ A withheld block prints `(95% CI not computed — too few branches in scope)` fo
 
 **Exit codes.**
 - 2 -- a refused flag scope, an unresolvable config directory, or `gh repo view` naming a different repository or host than `origin`.
-- 1 -- any other failure before a report prints: `gh` auth, the `origin` remote, the repo pin (including a `GH_HOST` that matches none of this repo's remotes) or the discovery call, or running outside a listed worktree.
+- 1 -- any other failure before a report prints:
+  - `gh` auth.
+  - The `origin` remote.
+  - The repo pin, including a `GH_HOST` that matches none of this repo's remotes.
+  - The discovery call.
+  - Running outside a listed worktree.
 
 **Flags.**
 - `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
@@ -1449,7 +1454,10 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 - The gap between merged PRs listed and PRs joined mixes the four causes above with reused branch names and unreadable sources. The diagnostics count only the last two: reused names by branch on the `Ambiguous branches (excluded)` line, and unreadable sources by source on the `Unreadable sources skipped` line.
 
 **Publication.**
-- Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account", and only when run from this repository's own checkout. `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead. It reads the active config directory's `projects/` alone, and a project directory symlinked from there is read wherever it points. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
+- Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account".
+  - Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead.
+  - It reads the active config directory's `projects/` alone, and a project directory symlinked from there is read wherever it points.
+  - A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 - `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication. Under it stderr also carries a `scanning root K/N` line per root, printed only when more than one root resolves.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
