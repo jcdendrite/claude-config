@@ -570,6 +570,31 @@ class TestLogReviewerRoundConsultReset:
         assert architect_consult_latch_path(config_dir, repo).exists()
         assert other_branch_state.read_bytes() == other_branch_bytes
 
+    @pytest.mark.parametrize("non_architect_subagent_type", ["code-writer", "general-purpose", "Explore"])
+    def test_non_architect_dispatch_leaves_state_file_byte_identical_and_writes_no_latch(
+        self, isolated_home, tmp_path, non_architect_subagent_type
+    ):
+        """Only a `plan-architect` dispatch is a consult: any other
+        non-reviewer type, whose prompt's first line is not a MODE= line,
+        must not reset the count."""
+        repo = tmp_path / "reset-non-architect"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        state_file = write_reviewer_round_state(
+            config_dir, repo, ["head-a diff-a", "head-b diff-b", "head-c diff-c"]
+        )
+        seeded_bytes = state_file.read_bytes()
+        payload = agent_input(
+            session_id="s-reset-non-architect",
+            subagent_type=non_architect_subagent_type,
+            prompt="Implement the change described in the plan.",
+        )
+
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_bytes() == seeded_bytes
+        assert not architect_consult_latch_path(config_dir, repo).exists()
+
     def test_second_consult_in_a_row_exits_zero_and_keeps_the_latch(self, isolated_home, tmp_path):
         repo = tmp_path / "reset-twice"
         _init_repo(repo)
