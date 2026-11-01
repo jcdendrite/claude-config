@@ -452,27 +452,6 @@ class TestHelpers:
     def test_content_text_none_returns_empty(self):
         assert render._content_text(None) == ""
 
-    def test_parse_ts_valid_iso_z(self):
-        ts = corpus._parse_ts("2024-06-01T12:00:00.000Z")
-        assert ts is not None and ts > 0
-
-    def test_parse_ts_none_input(self):
-        assert corpus._parse_ts(None) is None
-
-    def test_parse_ts_invalid_string(self):
-        assert corpus._parse_ts("not-a-date") is None
-
-    def test_iso_date_valid_returns_string(self):
-        assert scope._iso_date("2026-05-19") == "2026-05-19"
-
-    def test_iso_date_invalid_month_raises_type_error(self):
-        with pytest.raises(argparse.ArgumentTypeError):
-            scope._iso_date("2026-13-01")
-
-    def test_iso_date_garbage_raises_type_error(self):
-        with pytest.raises(argparse.ArgumentTypeError):
-            scope._iso_date("garbage")
-
     def test_strip_task_notifications_multiline_envelope_removed(self):
         text = "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
         assert render._strip_task_notifications(text) == " "
@@ -543,6 +522,31 @@ class TestHelpers:
         user-typed text."""
         text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
         assert render._strip_task_notifications(text) == text
+
+
+class TestParseTs:
+    def test_parse_ts_valid_iso_z(self):
+        ts = corpus._parse_ts("2024-06-01T12:00:00.000Z")
+        assert ts is not None and ts > 0
+
+    def test_parse_ts_none_input(self):
+        assert corpus._parse_ts(None) is None
+
+    def test_parse_ts_invalid_string(self):
+        assert corpus._parse_ts("not-a-date") is None
+
+
+class TestIsoDate:
+    def test_iso_date_valid_returns_string(self):
+        assert scope._iso_date("2026-05-19") == "2026-05-19"
+
+    def test_iso_date_invalid_month_raises_type_error(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            scope._iso_date("2026-13-01")
+
+    def test_iso_date_garbage_raises_type_error(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            scope._iso_date("garbage")
 
 
 class TestParseSinceNdArg:
