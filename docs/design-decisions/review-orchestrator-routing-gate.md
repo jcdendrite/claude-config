@@ -2,6 +2,8 @@
 
 *2026-10-17.*
 
+**Superseded in part (2026-11-01):** Dogfood recipe step 1's reason, "no transcript records the key's state", no longer holds for a session with rows in the log that `docs/session-config-keys-log.md` describes. When a log row records the routing key as on, the escape audit reads an un-denied block with no leading `unrouted` under it as "the gate did not run". Such a block can instead come from a routing-key flip after that row. That doc says when a row shows a flip. Every other clause here stands, the sample rule included.
+
 The decision is a per-account config key, `review_orchestrator_routing`, off by default, and a gate, `require-review-orchestrator-routing.sh`, on `PreToolUse` matcher `Skill`. While the key is on, the gate denies a main-session `Skill(code-review)` call unless the call's args begin with the word `unrouted`. The deny text sends the session through the `review-orchestrator` protocol in `claude-skills/skills/subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven" for that round. The protocol stays in that one home. The deny text carries only the routing instruction.
 
 The problem it solves: the agent's `TRIGGER` and the `subagent-delegation` protocol both require an explicit request, and an engineer who wants every round routed has to remember to ask each time. [review-orchestrator-gate-release-decoupling.md](review-orchestrator-gate-release-decoupling.md) planned a SessionStart hook for the key's delivery. That delivery point was set aside, because the reminder would reach every main session, including ones that never run a review. Delivering at invocation time reaches only the session that is about to run a round.

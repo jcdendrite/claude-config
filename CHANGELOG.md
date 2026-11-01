@@ -477,6 +477,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - It joins each branch's rounds to its merged PR by exact head-branch name, then prints rank correlations, log-log elasticities, size-bucket medians, a within-PR round-cost trend, join diagnostics and per-PR rows.
   - It requires `--this-repo` and `gh`, and reads the active account only by default.
   - `--all-accounts` reads every declared account as one scan. That output is a private view that prints DO NOT PUBLISH and is never proposed for publication.
+- **A new SessionStart hook, `record-session-config-keys.sh`, records every config key's value for each session, always on.** At each startup, `/clear`, compaction and resume, it appends one row to `<config-dir>/.session-config-keys-log.jsonl`. Each row carries the session id, so a later analysis can tell which keys were on for a session. `docs/session-config-keys-log.md` says how to read and trim the log.
+  - It prints nothing when it writes the row.
+  - When it runs and cannot write the row, it prints a short notice and asks the agent to tell the engineer, unless the harness kills the hook first. The notice repeats at every event until the cause is fixed.
+  - In a `claude -p` run, the agent's report can land in the run's output.
+  - The log holds a session id and time for every session on the account.
+  - Nothing trims the log, and it outlives transcript cleanup.
+  - The hook has no config key and no off switch other than removing its `settings.json` entry. `docs/session-config-keys-log.md` § "Notice" says what removal costs.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then a real hooks directory leaves the new hook unlinked while `settings.json` already registers it.
+  - Whether IDE and desktop sessions record a row is untested.
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.
