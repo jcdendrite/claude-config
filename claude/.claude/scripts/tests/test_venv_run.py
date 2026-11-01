@@ -412,7 +412,7 @@ class TestResolutionFailures:
         _assert_wrapper_failure(
             result,
             returncode=127,
-            fragments=("must not contain ':'", str(colon_checkout.main)),
+            fragments=("must not contain ':'", str(colon_checkout.main), "re-clone"),
         )
 
     def test_exits_127_for_a_colon_in_the_main_checkout_path_when_the_cwd_and_worktree_paths_have_none(
