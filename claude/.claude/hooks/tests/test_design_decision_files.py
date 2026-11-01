@@ -634,7 +634,6 @@ _SCOPE_SECTION_RE = re.compile(r"^## Scope$\n(.*?)(?=^## |\Z)", re.DOTALL | re.M
 # The angle names the agent's Scope section cites.
 # This tuple is maintained by hand.
 # Update it whenever the Scope section cites a new angle.
-# The check runs only from the tuple to the file, so an angle the Scope section cites but the tuple omits goes unchecked.
 _SCOPE_CITED_ANGLE_NAMES = (
     "Comment verbosity",
     "Multi-fact comment structure",
@@ -674,6 +673,14 @@ def _scope_cited_angle_violations(
                 f"comment-discipline-reviewer.md's Scope section does not "
                 f"cite angle '{angle_name}' -- restore the reference or drop "
                 "the name from _SCOPE_CITED_ANGLE_NAMES."
+            )
+    for header in headers:
+        if header in scope_text and header not in cited_angle_names:
+            violations.append(
+                f"comment-discipline-reviewer.md's Scope section cites angle "
+                f"'{header}', which is missing from _SCOPE_CITED_ANGLE_NAMES -- "
+                "add it to the tuple, or reword the Scope section so it no "
+                "longer names the angle."
             )
     return violations
 
@@ -1768,6 +1775,24 @@ class TestFaultInjection:
         )
         assert len(violations) == 1
         assert "'Core review angles' section not found" in violations[0]
+
+    def test_scope_cited_angles_rejects_scope_citation_missing_from_the_names_tuple(self) -> None:
+        """An angle header whose name the Scope section cites, but the tuple omits, fails."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact comment structure only;\n"
+            "PR-defined terminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure",),
+        )
+        assert len(violations) == 1
+        assert "cites angle 'PR-defined terminology', which is missing from _SCOPE_CITED_ANGLE_NAMES" in violations[0]
 
     def test_scope_cited_angles_rejects_name_missing_from_headers_and_scope(self) -> None:
         """A cited name absent from both the angle headers and the Scope text

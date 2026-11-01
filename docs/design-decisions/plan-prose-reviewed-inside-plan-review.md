@@ -33,7 +33,7 @@ The cells ran through a `general-purpose` dispatch at `model: sonnet` carrying t
 | D | A diff holding two plan files and a `docs/` positive control | 5 | `docs/` site flagged in 4 of 5; each plan-file site cited in at most 1 of 5 | Pass: `docs/` site 5 of 5, plan-file sites 0 of 5 |
 | RR | A re-review round: a declined finding's site | 5 | Returned as a new finding in at most 1 of 5 | Pass: 1 of 5 |
 | V | The `/plan-review` session's verdict with one finding labeled `BLOCKER` | 5 | All 5 end **Approve with changes** with a Plan prose section | Pass: 5 of 5 |
-| R | Two committed plans, read finding by finding | 1 each | At most one out-of-scope finding per run | Pass: 14 findings with 1 out of scope, and 7 findings with 1 |
+| R | Two committed plans, read finding by finding | 1 each | At most one out-of-scope finding per run | Pass: one run had 14 findings with 1 out of scope; the other run had 7 findings with 1 out of scope |
 
 Cell P first cited the must-pass sentence naming a prior round's finding in 3 of 5 runs. The Scope plan rule's list of content a plan properly carries then gained "references to its own review rounds and findings". P, D, and R were re-run on the agent text as committed, and the outcomes above are from those runs.
 

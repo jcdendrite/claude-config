@@ -1,5 +1,6 @@
 """Tests for transcript_analysis/review_trace.py (cmd_review_trace, --deny-summary)."""
 import argparse
+import re
 
 import pytest
 from helpers import CONSULT_CLASSIFICATION_TABLE, SKILLS_DIR, extract_skill_command
@@ -1902,6 +1903,7 @@ def _spawn_rec(
 _PLAN_REVIEW_SKILL_MD = SKILLS_DIR / "plan-review" / "SKILL.md"
 _DEACTIVATE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "deactivate-gate")
 _WRITE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "record-completion")
+_READY_FOR_REVIEW_SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
 
 
 def _bash_rec(command: str, ts: str, *, tool_id: str = "b1", **kwargs) -> dict:
@@ -2046,6 +2048,30 @@ class TestReviewerSpawnRoundLabels:
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
         ]) == ["plan-review"]
 
+    def test_session_shaped_records_label_a_ready_for_review_spawn_and_a_spawn_opened_window(self):
+        """Tool results and isMeta skill-body records between the dispatches keep each spawn on its own record's window.
+
+        The second spawn shares a record with the review-orchestrator dispatch that opens its window, so a
+        position mapping that lands one record early reads the ready-for-review window instead.
+        """
+        ts = "2026-05-19T10:{minute:02d}:00.000Z"
+        assert _spawn_rounds([
+            _skill_use_rec("ready-for-review", ts.format(minute=0), tool_id="s1", branch="feat"),
+            _user_msg([_tool_result("s1", "Launching skill")], branch="feat", ts=ts.format(minute=1)),
+            {**_user_msg("Base directory for this skill", branch="feat", ts=ts.format(minute=2)), "isMeta": True},
+            _spawn_rec("staff-sdet", ts.format(minute=3), tool_id="a1"),
+            _user_msg([_tool_result("a1", "No concerns")], branch="feat", ts=ts.format(minute=4)),
+            _bash_rec("ls", ts.format(minute=5), tool_id="b1"),
+            _user_msg([_tool_result("b1", "ok")], branch="feat", ts=ts.format(minute=6)),
+            _user_msg([_tool_result("x1", "earlier output")], branch="feat", ts=ts.format(minute=7)),
+            _user_msg([_tool_result("x2", "earlier output")], branch="feat", ts=ts.format(minute=8)),
+            _asst(
+                "claude-sonnet-4-6", branch="feat", ts=ts.format(minute=9),
+                content=[_agent_use("o1", "review-orchestrator"), _agent_use("a2", "ciso-reviewer")],
+            ),
+            _user_msg([_tool_result("a2", "No concerns")], branch="feat", ts=ts.format(minute=10)),
+        ]) == ["ready-for-review", "code-review"]
+
     @staticmethod
     def _write_plan_review_session_with_two_dispatches(proj, session_id: str) -> None:
         """Main thread: a plan-review Skill call, a ciso-reviewer spawn, and two general-purpose
@@ -2081,6 +2107,33 @@ class TestReviewerSpawnRoundLabels:
         assert "ciso-reviewer  round=plan-review  (branch=feat" in out
         assert "staff-sdet  round=?  (branch=feat" in out
         assert "staff-backend-engineer  round=?  (branch=feat" in out
+
+    def test_row_for_a_plan_review_spawn_carries_the_round_token_ready_for_review_names(self, fake_projects, capsys):
+        """The [SILENT-SKIP] recovery step tells the human which round= token to look for in the rerun."""
+        silent_skip_paragraph = next(
+            (
+                paragraph for paragraph in _READY_FOR_REVIEW_SKILL_MD.read_text().split("\n\n")
+                if paragraph.startswith("**Spawn-dispatch `[SILENT-SKIP]`.**")
+            ),
+            None,
+        )
+        assert silent_skip_paragraph is not None, (
+            "ready-for-review/SKILL.md no longer has a paragraph starting with '**Spawn-dispatch `[SILENT-SKIP]`.**'"
+        )
+        round_token_match = re.search(r"`(round=[^`]+)`", silent_skip_paragraph)
+        assert round_token_match, "ready-for-review/SKILL.md's [SILENT-SKIP] paragraph no longer names a backticked round= token"
+        round_token = round_token_match.group(1)
+        _write_jsonl(fake_projects / "sess-recovery-token.jsonl", [
+            _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
+            _spawn_rec("ciso-reviewer", "2026-05-19T10:01:00.000Z"),
+        ])
+
+        review_trace.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+
+        ciso_reviewer_row = next((line for line in out.splitlines() if "ciso-reviewer" in line), None)
+        assert ciso_reviewer_row is not None, f"review-trace printed no ciso-reviewer row:\n{out}"
+        assert round_token in ciso_reviewer_row
 
     def test_omit_flag_drops_plan_review_rows_and_prints_no_round_field(self, fake_projects, capsys):
         """The flag removes the round=plan-review row, keeps sidechain rows, and counts only what it prints."""
@@ -2210,8 +2263,8 @@ class TestReviewerSpawnRoundLabels:
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", tool_id="s1", branch="feat"),
             _skill_use_rec("code-review", "2026-05-19T10:01:00.000Z", tool_id="s2", branch="feat"),
-            _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:03:00.000Z"),
+            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z"),
+            _spawn_rec("staff-sdet", "2026-05-19T10:03:00.000Z"),
         ]) == ["code-review"]
 
     def test_sidechain_records_neither_shift_the_end_nor_end_a_main_thread_window(self):
@@ -2482,11 +2535,7 @@ class TestReviewerSpawnRoundLabels:
         return [first_record, second_record]
 
     def test_session_without_a_reviewer_spawn_never_dedups_a_drifted_run(self, fake_projects, capsys):
-        """The spawn guard keeps the dedup, and its stderr drift notice, off sessions that never dispatched a reviewer.
-
-        A session that does spawn a reviewer reaches the same dedup, so the same run prints the
-        once-per-process drift WARNING on stderr and the timeline still prints.
-        """
+        """The spawn guard keeps the dedup, and its stderr drift notice, off sessions that never dispatched a reviewer."""
         _write_jsonl(fake_projects / "sess-drift.jsonl", self._drifted_two_record_run())
 
         review_trace.cmd_review_trace(_review_trace_args())
@@ -2509,6 +2558,25 @@ class TestReviewerSpawnRoundLabels:
         assert "reviewer-spawns=1" in captured.out
         assert "WARNING: requestId 'r1' has non-identical input/cache usage" in captured.err
         assert pricing._usage_drift_warned is True
+
+    def test_deny_summary_never_dedups_a_spawn_bearing_drifted_run_with_or_without_the_omit_flag(self, fake_projects, capsys):
+        """--deny-summary returns before the spawn labeler and dedup run, so a drifted run
+        that also holds a reviewer spawn prints no drift warning."""
+        _write_jsonl(fake_projects / "sess-deny-summary-spawn.jsonl", [
+            *self._drifted_two_record_run(),
+            _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
+        ])
+
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
+        without_flag = capsys.readouterr()
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True, omit_plan_review_spawns=True))
+        with_flag = capsys.readouterr()
+
+        assert "No denials found in scope." in without_flag.out
+        assert "No denials found in scope." in with_flag.out
+        assert without_flag.err == ""
+        assert with_flag.err == ""
+        assert pricing._usage_drift_warned is False
 
 
 class TestReviewTracePreBranchAttribution:

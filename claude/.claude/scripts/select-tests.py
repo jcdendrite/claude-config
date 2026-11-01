@@ -129,6 +129,7 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 # test_transcript_review_trace.py reads plan-review/SKILL.md by path, to tie
 # the deactivate and completion recipes it replays to the ones /plan-review runs.
+# It also reads ready-for-review/SKILL.md by path, for the round= token step 4 names.
 TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
@@ -698,7 +699,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. test_pr_create_preflight.py
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
-# 1 and 8 name to the script's. Same standalone-row rationale as
+# 1 and 8 name to the script's. test_transcript_review_trace.py
+# (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
+# step names. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
 # PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
 # (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate

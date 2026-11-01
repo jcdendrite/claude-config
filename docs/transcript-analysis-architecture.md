@@ -28,8 +28,8 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 `judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
 `author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`), and
 `review_cost_by_size.py` (for `compute_review_round_costs`). `review_trace.py` imports `reviewer_yield.py` (for
-`_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
-`_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
+`_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
+`review_rounds.py` for the reads listed in the `review_trace.py` section below.
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
 `STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
@@ -358,7 +358,8 @@ Imports `corpus`, `denials`, `pricing`, `render`, `reviewer_yield`, `review_roun
 `reviewer_yield._is_reviewer_subagent_type` for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
 `review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see the intro for the
 cross-command-group import rule. It also calls `pricing.dedup_turns_by_request_id` and
-`review_rounds.detect_round_windows`, to label each reviewer spawn with its review round. It ends a
+`review_rounds.detect_round_windows`, to label each reviewer spawn with its review round, and
+`review_rounds._assistant_content_blocks`, to read an assistant record's content blocks. It ends a
 `plan-review` round at that run's `marker.sh deactivate plan-review` call. It finds the call with its own
 line-by-line `shlex` segmenter, not `corpus.split_command_segments`, which splits at neither an attached
 operator nor a newline.

@@ -33,7 +33,7 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
 _PLAN_REVIEW_SKILL = "plan-review"
 
 # shlex's cost grows with the square of one token's length, so the deactivate scan skips a longer line instead of lexing it.
-# A real call line is a few dozen characters, and this cap is over 100 times the recipe line.
+# A `marker.sh deactivate plan-review` call line is a few dozen characters, and this cap is over 100 times that length.
 _MAX_LEXED_LINE_CHARS = 8192
 
 # plan-architect.md's non-consult modes. A plan-architect Agent/Task dispatch
