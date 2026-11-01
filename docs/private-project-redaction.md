@@ -121,6 +121,12 @@ re-run and check.
   worked in, so every figure is per-account and per-project, even on this
   repository's own account. It is built for private delivery to the owner
   of the projects that account works on.
+- `transcript-analysis.py review-cost-by-size --this-repo`, run from
+  this repository's checkout, refuses `--projects` and a top-level
+  `--config-dir` and reads the active config directory alone. A new
+  figure from it still takes the check under "New figures against the
+  grandfathered set" below. Its `--all-accounts` output is never
+  proposed for publication — see the next section.
 - A subcommand with no scope refusal of its own is not a publication
   instrument. Route it through the next section instead.
 
