@@ -58,7 +58,7 @@ A hook attachment is a transcript attachment of type `hook_success` whose `comma
 
 The coverage start is the earliest `logged_at` among the log's rows. On an account whose log holds no row, or that has no log, it is the earliest hook attachment `timestamp` in the account's transcripts. Compare these times as State at a transcript record says.
 
-An account with neither a row nor a hook attachment has no coverage start. Report it as an account where the hook has not run, not as one with no failures, and tell the engineer to run the `ls` check in `README.md` § "Updating after git pull" on `<config-dir>/hooks/record-session-config-keys.sh`. That section says when to re-run the installer.
+An account with neither a row nor a hook attachment has no coverage start. Report it as an account where the hook has not run, not as one with no failures, and tell the engineer to run the `ls` check in `README.md` § "Updating after git pull" on `~/.claude/hooks/record-session-config-keys.sh`. That section says when to re-run the installer.
 
 A session is covered when either of these is at or after the coverage start:
 
