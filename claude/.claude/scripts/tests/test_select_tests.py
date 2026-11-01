@@ -2087,6 +2087,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
@@ -2132,6 +2133,8 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
      "claude-skills/skills/resume-context/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+     "claude-skills/skills/plan-review/SKILL.md"),
 )
 
 

@@ -2,10 +2,11 @@
 import argparse
 
 import pytest
-from helpers import CONSULT_CLASSIFICATION_TABLE
+from helpers import CONSULT_CLASSIFICATION_TABLE, SKILLS_DIR, extract_skill_command
 from transcript_analysis import (
     corpus,
     denials,
+    pricing,
     review_rounds,
     review_trace,
     scope,
@@ -1898,8 +1899,9 @@ def _spawn_rec(
     return _asst(model, branch=branch, ts=ts, content=[_agent_use(tool_id, subagent_type)], **kwargs)
 
 
-_DEACTIVATE_PLAN_REVIEW = "~/.claude/scripts/marker.sh deactivate plan-review"
-_WRITE_PLAN_REVIEW = "~/.claude/scripts/marker.sh write plan-review"
+_PLAN_REVIEW_SKILL_MD = SKILLS_DIR / "plan-review" / "SKILL.md"
+_DEACTIVATE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "deactivate-gate")
+_WRITE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "record-completion")
 
 
 def _bash_rec(command: str, ts: str, *, tool_id: str = "b1", **kwargs) -> dict:
@@ -1920,7 +1922,6 @@ class TestReviewerSpawnRoundLabels:
     """_attach_reviewer_spawn_rounds and the round= / --omit-plan-review-spawns surface."""
 
     def test_spawn_after_a_code_review_skill_call_reads_code_review(self):
-        """A main-thread spawn inside a code-review round window takes that round's skill."""
         assert _spawn_rounds([
             _skill_use_rec("code-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
@@ -1972,7 +1973,6 @@ class TestReviewerSpawnRoundLabels:
         assert _spawn_rounds([plan_review_rec, both_blocks_rec]) == ["plan-review", "code-review"]
 
     def test_sidechain_spawn_reads_none_even_inside_a_main_thread_window(self):
-        """Only a main-thread spawn takes a label."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z", sidechain=True),
@@ -2146,7 +2146,6 @@ class TestReviewerSpawnRoundLabels:
         assert "opus" not in out
 
     def test_omit_flag_with_every_event_dropped_prints_no_session_header(self, fake_projects, capsys):
-        """A session whose only event is a dropped spawn emits no ### block."""
         _write_jsonl(fake_projects / "sess-empty.jsonl", [
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
@@ -2158,7 +2157,6 @@ class TestReviewerSpawnRoundLabels:
         assert "###" not in out
 
     def test_spawn_after_the_deactivate_call_reads_none(self):
-        """A plan-review window ends at its own deactivate call, so a later spawn is outside it."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("ciso-reviewer", "2026-05-19T10:01:00.000Z", tool_id="a1"),
@@ -2177,7 +2175,6 @@ class TestReviewerSpawnRoundLabels:
         ]) == [None]
 
     def test_each_plan_review_round_ends_at_its_own_deactivate_call(self):
-        """A second /plan-review round in one session gets its own end."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", tool_id="s1", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z", tool_id="a1"),
@@ -2230,7 +2227,6 @@ class TestReviewerSpawnRoundLabels:
         ]) == ["plan-review", None]
 
     def test_sidechain_deactivate_call_leaves_the_main_thread_window_open(self):
-        """Only a main-thread call ends a main-thread window."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z", sidechain=True),
@@ -2256,7 +2252,6 @@ class TestReviewerSpawnRoundLabels:
         ids=["activate-plan-review", "deactivate-other-skill", "echo-naming-the-args", "deactivate-without-skill"],
     )
     def test_other_marker_calls_leave_the_window_open(self, other_marker_call):
-        """Only deactivate plan-review ends a plan-review window."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _bash_rec(other_marker_call, "2026-05-19T10:01:00.000Z"),
@@ -2264,7 +2259,6 @@ class TestReviewerSpawnRoundLabels:
         ]) == ["plan-review"]
 
     def test_deactivate_call_inside_a_code_review_window_ends_nothing(self):
-        """Only a plan-review window ends at the call."""
         assert _spawn_rounds([
             _skill_use_rec("code-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z"),
@@ -2354,6 +2348,55 @@ class TestReviewerSpawnRoundLabels:
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == [None]
 
+    @pytest.mark.parametrize(
+        ("padding_chars", "expected_rounds"),
+        [(0, [None]), (1, ["plan-review"])],
+        ids=["line-at-the-cap-is-read", "line-one-over-the-cap-is-not-read"],
+    )
+    def test_call_line_ends_the_window_only_when_within_the_length_cap(self, padding_chars, expected_rounds):
+        padding = "a" * (review_trace._MAX_LEXED_LINE_CHARS - len(_DEACTIVATE_PLAN_REVIEW) - 1 + padding_chars)
+        command = f"{_DEACTIVATE_PLAN_REVIEW} {padding}"
+        assert len(command) == review_trace._MAX_LEXED_LINE_CHARS + padding_chars
+        assert _spawn_rounds([
+            _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
+            _bash_rec(command, "2026-05-19T10:01:00.000Z"),
+            _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
+        ]) == expected_rounds
+
+    def test_call_on_a_line_after_an_over_cap_line_ends_the_window(self):
+        """The cap skips only the over-cap line, measured per line, so a later line is still read."""
+        over_cap_line = "echo " + "a" * review_trace._MAX_LEXED_LINE_CHARS
+        assert len(over_cap_line) > review_trace._MAX_LEXED_LINE_CHARS
+        assert len(_DEACTIVATE_PLAN_REVIEW) <= review_trace._MAX_LEXED_LINE_CHARS
+        assert _spawn_rounds([
+            _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
+            _bash_rec(f"{over_cap_line}\n{_DEACTIVATE_PLAN_REVIEW}", "2026-05-19T10:01:00.000Z"),
+            _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
+        ]) == [None]
+
+    @pytest.fixture()
+    def lexed_lines(self, monkeypatch):
+        """Every line handed to shlex.shlex, in call order."""
+        lines: list[str] = []
+        real_shlex = review_trace.shlex.shlex
+
+        def recording_shlex(line, *args, **kwargs):
+            lines.append(line)
+            return real_shlex(line, *args, **kwargs)
+
+        monkeypatch.setattr(review_trace.shlex, "shlex", recording_shlex)
+        return lines
+
+    def test_line_past_the_length_cap_is_never_lexed(self, lexed_lines):
+        over_cap_call_line = f"{_DEACTIVATE_PLAN_REVIEW} {'a' * review_trace._MAX_LEXED_LINE_CHARS}"
+        assert review_trace._runs_plan_review_deactivate(_bash_rec(over_cap_call_line, "2026-05-19T10:01:00.000Z")) is False
+        assert lexed_lines == []
+
+    def test_line_within_the_length_cap_is_lexed(self, lexed_lines):
+        """Control for the never-lexed case: the recording wrapper sees a line within the cap."""
+        assert review_trace._runs_plan_review_deactivate(_bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z"))
+        assert lexed_lines == [_DEACTIVATE_PLAN_REVIEW]
+
     def test_non_bash_tool_use_carrying_the_call_leaves_the_window_open(self):
         """Only a Bash tool_use runs the call, whatever another tool's input.command holds."""
         non_bash_block = {
@@ -2425,6 +2468,47 @@ class TestReviewerSpawnRoundLabels:
         reviewer_rows = [line for line in out.splitlines() if "  reviewer     " in line]
         assert len(reviewer_rows) == 1
         assert "comment-discipline-reviewer" in reviewer_rows[0]
+
+    @staticmethod
+    def _drifted_two_record_run() -> list[dict]:
+        """One requestId run whose two records disagree on input_tokens, the usage-drift trigger."""
+        first_record = _skill_use_rec("code-review", "2026-05-19T10:00:00.000Z", branch="feat", request_id="r1")
+        second_record = _asst(
+            "claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:01.000Z", request_id="r1",
+            content=[{"type": "text", "text": "done"}],
+        )
+        first_record["message"]["usage"] = {"input_tokens": 10}
+        second_record["message"]["usage"] = {"input_tokens": 11}
+        return [first_record, second_record]
+
+    def test_session_without_a_reviewer_spawn_never_dedups_a_drifted_run(self, fake_projects, capsys):
+        """The spawn guard keeps the dedup, and its stderr drift notice, off sessions that never dispatched a reviewer.
+
+        A session that does spawn a reviewer reaches the same dedup, so the same run prints the
+        once-per-process drift WARNING on stderr and the timeline still prints.
+        """
+        _write_jsonl(fake_projects / "sess-drift.jsonl", self._drifted_two_record_run())
+
+        review_trace.cmd_review_trace(_review_trace_args())
+        captured = capsys.readouterr()
+
+        assert "skills=1" in captured.out
+        assert captured.err == ""
+        assert pricing._usage_drift_warned is False
+
+    def test_session_with_a_reviewer_spawn_dedups_a_drifted_run_and_warns(self, fake_projects, capsys):
+        """Pairs the no-spawn test: one reviewer spawn is what lets the same drifted run reach the dedup."""
+        _write_jsonl(fake_projects / "sess-drift-spawn.jsonl", [
+            *self._drifted_two_record_run(),
+            _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
+        ])
+
+        review_trace.cmd_review_trace(_review_trace_args())
+        captured = capsys.readouterr()
+
+        assert "reviewer-spawns=1" in captured.out
+        assert "WARNING: requestId 'r1' has non-identical input/cache usage" in captured.err
+        assert pricing._usage_drift_warned is True
 
 
 class TestReviewTracePreBranchAttribution:

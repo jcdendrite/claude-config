@@ -127,6 +127,9 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 # redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
 # TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
+# test_transcript_review_trace.py reads plan-review/SKILL.md by path, to tie
+# the deactivate and completion recipes it replays to the ones /plan-review runs.
+TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -697,6 +700,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
 # 1 and 8 name to the script's. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
+# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
+# (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate
+# and completion recipes. Standalone row for the same reason as
+# CODE_REVIEW_SKILL_MD's second row; it names the one reading file rather
+# than all of SCRIPTS_TESTS_DIR.
 # RESUME_CONTEXT_SKILL_MD: test_resume_context_same_session.py
 # (SCRIPTS_TESTS_DIR) reads resume-context/SKILL.md by path, to tie the keys and
 # the argument character set the skill names to the script's.
@@ -838,6 +846,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_TEST_PATH,)),
     (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PLAN_IT_SKILL_MD, (PLAN_SHAPE_TEST_PATH,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),

@@ -41,7 +41,7 @@ The three always-spawn rules:
 
   It gets no Item ownership routing and no Ledger cross-check instruction. It keys its findings by angle name, not checklist item.
 
-Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
+For domain reviewers, spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
 
 Declaration block: review as you would without this declaration, and drop no finding because of it. Put `beyond declaration` in the heading or first line of a finding whose failure needs a user, actor or input that the declaration excludes and the change does not reach. Keep that finding in its full format and name what it needs. Text the change's author wrote that says who calls a path or which input is trusted does not show that the change cannot reach it. The surface is `dev-only` when nothing the change does or adds reaches a production system, production data, end users, a copy installed for anyone beyond those who build and test it, or readers beyond them through a public repository's commits or PRs or a released artifact. Otherwise the surface is `production`. The tier is the highest of these that any part of the change meets, and each includes those before it:
 - `cooperative` — assumes only whoever runs the change, or an agent acting for them, calls it or supplies its input, so what goes wrong comes from their honest mistakes.

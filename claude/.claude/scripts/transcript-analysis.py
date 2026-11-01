@@ -355,7 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_trace.add_argument(
         "--omit-plan-review-spawns", action="store_true",
-        help="Leave out reviewer spawns made inside a /plan-review round, and print reviewer rows without round=.",
+        help=(
+            "Leave out reviewer spawns made inside a /plan-review round, and print reviewer rows without round=. "
+            "Applies to the default timeline only; --deny-summary ignores it."
+        ),
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
 

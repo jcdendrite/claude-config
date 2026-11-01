@@ -32,6 +32,10 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
 
 _PLAN_REVIEW_SKILL = "plan-review"
 
+# shlex's cost grows with the square of one token's length, so the deactivate scan skips a longer line instead of lexing it.
+# A real call line is a few dozen characters, and this cap is over 100 times the recipe line.
+_MAX_LEXED_LINE_CHARS = 8192
+
 # plan-architect.md's non-consult modes. A plan-architect Agent/Task dispatch
 # whose prompt's first line is any other value is a consult. This re-expresses
 # log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
@@ -526,10 +530,11 @@ def _deduped_position_of_each_record(records: list[dict], deduped: list[dict]) -
 
 
 def _command_segments_by_line(command: str) -> list[list[str]]:
-    """Split a shell command into operator-separated token segments, one line at a time."""
     segments: list[list[str]] = []
     # The lexer reads a newline as whitespace, so a call on its own line would otherwise join the previous command's segment.
     for line in command.splitlines():
+        if len(line) > _MAX_LEXED_LINE_CHARS:
+            continue
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         lexer.commenters = ""
@@ -555,8 +560,7 @@ def _runs_plan_review_deactivate(rec: dict) -> bool:
 
     Each line of the command is lexed on its own, and a call counts only when it opens a segment of a line;
     the known-miss tests in test_transcript_review_trace.py pin which shapes that misses or over-reads.
-    The scan lexes every Bash command in a plan-review window, so its cost is linear in that text
-    (about 0.26 ms per command measured).
+    Every line up to _MAX_LEXED_LINE_CHARS is lexed, and a call on a longer line is not read, so that window stays open.
     """
     if rec.get("type") != "assistant":
         return False

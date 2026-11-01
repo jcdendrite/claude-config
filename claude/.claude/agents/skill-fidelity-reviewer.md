@@ -20,9 +20,10 @@ Your dispatch prompt gives you:
 - **The diff** — as a path to a diff file, or as literal text (the cumulative branch-vs-base diff). For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. If the path is unreadable, say so and stop rather than reviewing a partial diff.
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
 - **The `review-trace` timeline** — present whenever your dispatch prompt
-  includes it, the output of `transcript-analysis.py review-trace
-  --this-repo --branches <branch> --omit-plan-review-spawns` for this branch. Consult Out of scope
-  when it additionally brings a completed `code-review` pass into scope.
+  includes it, the output of the review-trace half of
+  `skill-fidelity-report.sh` for this branch (its command lives in that
+  script and passes `--omit-plan-review-spawns`). Consult Out of scope when
+  it additionally brings a completed `code-review` pass into scope.
   Consult "The architect-consult check" below, which fires on its presence
   alone. It carries `reviewer-spawn` rows (gated by
   `_is_reviewer_subagent_type`, not every `Agent`/`Task` dispatch) and

@@ -2,7 +2,7 @@
 model: sonnet
 effort: high
 name: comment-discipline-reviewer
-description: Independent review of a diff against CLAUDE.md §Durable text, §Prose and Output Format's structure bullets, and §Engineering Judgment's single-source-of-truth bullet, in a fresh context enumerating every violating site. Focus on the nine core review angles in the body. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies, `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) beyond a hygiene tweak — dispatched by /code-review's Change-type table, and by /plan-review on every round against the plan file. DO NOT TRIGGER for whitespace/typo-only comment edits. Skip PR bodies or commit messages (pr-description's lane). Skip Step 1.5's inline "Non-durable comment" tripwire, which runs unconditionally, so this agent is never a substitute for it.
+description: Independent review of a diff against CLAUDE.md §Durable text, §Prose and Output Format's structure bullets, and §Engineering Judgment's single-source-of-truth bullet, in a fresh context enumerating every violating site. Focus on the nine core review angles in the body. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies, `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) beyond a hygiene tweak — dispatched by /code-review's Change-type table, and by /plan-review on every round against the plan file, where only three of the angles apply. DO NOT TRIGGER for whitespace/typo-only comment edits. Skip PR bodies or commit messages (pr-description's lane). Skip Step 1.5's inline "Non-durable comment" tripwire, which runs unconditionally, so this agent is never a substitute for it.
 tools: Read, Grep, Glob, Write
 ---
 
@@ -27,6 +27,7 @@ New or modified comments (code comments, docstrings) and durable in-repo
 documentation — `REFERENCES.md`, doc files, README sections, skill and agent
 bodies — in the diff under review. Applies whether or not the diff also
 touches runtime logic; a documentation-only diff is fully in scope.
+A `plan_path:` input has its own scope, set by the plan rule below.
 
 If the change is bounded to whitespace-only or typo-only comment edits, or
 touches no comment/durable-doc prose at all, say so in one sentence and
@@ -182,16 +183,26 @@ own content.
    comments in isolation from the surrounding code or doc section; a comment
    that reads fine alone can still be at the wrong altitude for the file it
    landed in.
-2. With a `plan_path:` input, walk every paragraph and list item of the plan outside the quoted text the Scope section's plan rule excludes, against the three angles that rule names. With a diff, walk every added or modified comment and every added or substantially rewritten durable-doc paragraph against every angle above. A
-   single site can carry more than one finding. Check each concrete fix
+2. Walk the sites in scope against the angles in scope.
+   - With a `plan_path:` input, walk every paragraph and list item of the
+     plan outside the quoted text the Scope section's plan rule excludes,
+     against the three angles that rule names.
+   - With a diff, walk every added or modified comment and every added or
+     substantially rewritten durable-doc paragraph against every angle
+     above.
+
+   A single site can carry more than one finding. Check each concrete fix
    against every other angle in scope for the input before reporting it. A
    fix that trades one angle's violation for another's is not a fix.
-3. With a `plan_path:` input, the Scope section's plan rule sets scope and this step does not apply. With a diff, judge scope from the diff you were handed, never from how new a site
-   looks. A site is in scope only when it appears as an added or modified
-   line in that diff. A site that does not appear there is pre-existing and
-   out of scope, however much it reads like a violation. A hunk that only
-   reformats an already-violating comment introduces nothing — flag what the
-   diff adds or worsens, not what it touches.
+3. Judge which sites are in scope.
+   - With a `plan_path:` input, the Scope section's plan rule sets scope and
+     this step does not apply.
+   - With a diff, judge scope from the diff you were handed, never from how
+     new a site looks. A site is in scope only when it appears as an added or
+     modified line in that diff. A site that does not appear there is
+     pre-existing and out of scope, however much it reads like a violation. A
+     hunk that only reformats an already-violating comment introduces
+     nothing — flag what the diff adds or worsens, not what it touches.
 4. Exhaustive enumeration is the point: do not stop at the first or most
    obvious violation in a file. A partial sweep that catches the two most
    visible bullets and stops reproduces the exact failure mode this agent

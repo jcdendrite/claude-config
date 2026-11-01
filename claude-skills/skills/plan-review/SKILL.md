@@ -270,7 +270,14 @@ If any items were flagged by B7 (scope creep), include an **Out of Scope** secti
 
 If any spawned reviewer's ledger cross-check finds the revision touching a row already confirmed in a prior round, include a **Previously-settled, now reopened** section naming the row and what changed — this surfaces the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
-**Plan prose findings.** Put `comment-discipline-reviewer`'s findings in their own **Plan prose** section, each naming its angle in place of a checklist item. List the reviewer among the spawned ones as `comment-discipline-reviewer: Plan prose`. The Exclusions list does not apply to these findings. A plan prose finding never makes the verdict **Request changes**, whatever severity the reviewer gave it, so plan prose alone never adds a review round. Apply each one you accept in the same edit pass as the round's other changes, and name any you decline with the reason.
+**Plan prose findings.** Handle `comment-discipline-reviewer`'s findings as follows:
+
+- A plan prose finding never makes the verdict **Request changes**, whatever severity the reviewer gave it, so plan prose alone never adds a review round.
+- A round whose only findings are plan prose ends **Approve with changes** when you accept any of them. It ends **Approve** otherwise. The completion marker follows once the accepted edits are applied.
+- Put them in their own **Plan prose** section, each naming its angle in place of a checklist item.
+- List the reviewer among the spawned ones as `comment-discipline-reviewer: Plan prose`.
+- The Exclusions list does not apply to these findings.
+- Apply each one you accept in the same edit pass as the round's other changes, and name any you decline with the reason.
 
 <!-- DISPOSITION_RULE:plan-review-fix-or-ask start -->
 **Enforcement-invariant findings are fix-or-ask.** When a finding is that the plan opens a path around an enforcement invariant — a gate, hook, permission check, required-approval, or marker guarantee that some mechanism currently makes unbypassable — the verdict may not be "Approve with changes: disclose in PR body." This finding class has exactly two dispositions: **Request changes** until the plan closes the hole, or a blocking one-line decision point via `AskUserQuestion` (e.g., "this design lets a UI flip bypass the full gate — accept?") before the verdict is finalized. Disclosure without a fix or explicit user acceptance is not informed consent — approval of a plan does not surface a hole buried mid-document to the human reading it.
