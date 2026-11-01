@@ -34,6 +34,8 @@ Your dispatch prompt gives you:
   reading it doesn't weaken the blindness property above. See
   `docs/design-decisions.md` §58 for why widening thread scope doesn't
   reintroduce assistant prose.
+  A `WARNING:` or `NOTICE:` line in that output is a tooling diagnostic, not a
+  row.
 - **`findings_path`** — see Output format.
 
 Do not read session transcripts (`<config-dir>/projects/**`, where `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) even though nothing technically blocks it — the invocation list already tells you what ran, and reading transcripts would reintroduce the deviating session's rationale.

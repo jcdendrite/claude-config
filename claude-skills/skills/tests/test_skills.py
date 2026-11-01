@@ -5529,20 +5529,46 @@ def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
 
 
 def test_plan_prose_findings_never_block_and_plan_diffs_stay_out_of_lane() -> None:
-    """These sentences keep plan prose non-blocking and reviewed once, before approval."""
-    output_format_text = _heading_section_text(_skill_file("plan-review"), "## Output format")
+    """These sentences keep plan prose non-blocking and reviewed once, before approval.
+
+    The plan rule is pinned because a plan may cite its own review rounds without being flagged.
+    """
+    plan_review_skill_path = _skill_file("plan-review")
+    output_format_text = _heading_section_text(plan_review_skill_path, "## Output format")
     agent_scope_text = _heading_section_text(
         _AGENTS_DIR / "comment-discipline-reviewer.md", "## Scope"
     )
-    non_blocking_literal = "A plan prose finding never makes the verdict **Request changes**"
+    rerun_note = (
+        "Re-run the cells in docs/design-decisions/plan-prose-reviewed-inside-plan-review.md "
+        "by hand after this edit."
+    )
+    non_blocking_literal = (
+        "A plan prose finding never makes the verdict **Request changes**, "
+        "whatever severity the reviewer gave it, so plan prose alone never adds a review round."
+    )
+    approve_with_changes_literal = (
+        "A round whose only findings are plan prose ends **Approve with changes** "
+        "when you accept any of them. It ends **Approve** otherwise."
+    )
     diff_exclusion_literal = (
         "A plan file under `.claude/plans/` that appears in a diff is out of scope"
     )
+    review_rounds_literal = "references to its own review rounds and findings"
     assert non_blocking_literal in output_format_text, (
-        f"plan-review Output format no longer carries {non_blocking_literal!r}"
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{non_blocking_literal!r}. {rerun_note}"
+    )
+    assert approve_with_changes_literal in output_format_text, (
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{approve_with_changes_literal!r}. {rerun_note}"
     )
     assert diff_exclusion_literal in agent_scope_text, (
-        f"comment-discipline-reviewer.md: Scope no longer carries {diff_exclusion_literal!r}"
+        f"comment-discipline-reviewer.md: Scope no longer carries {diff_exclusion_literal!r}. "
+        f"{rerun_note}"
+    )
+    assert review_rounds_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer lists {review_rounds_literal!r}. "
+        f"{rerun_note}"
     )
 
 

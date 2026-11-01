@@ -489,6 +489,8 @@ Branch and model are resolved *per event*, from the record that produced it — 
 
 Each reviewer row prints `round=<skill>` between the subagent type and the parenthetical, naming the review skill whose round window holds the spawn; the `review-round-cost` section below defines the window. A `plan-review` window here also ends at that run's own `marker.sh deactivate plan-review` call, so a spawn after the call reads `round=?`. `review-round-cost`'s window does not end there, so it charges that spawn to the `plan-review` round. Only a main-thread spawn takes a label, and a nested invocation takes over the window. A `thread=sidechain` spawn, or a spawn outside every window, prints `round=?`.
 
+For a session holding a reviewer spawn, `review-trace` can print pricing's `WARNING:` and `NOTICE:` lines on stderr. These are tooling diagnostics, not timeline rows.
+
 **Sample output.**
 ```
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
