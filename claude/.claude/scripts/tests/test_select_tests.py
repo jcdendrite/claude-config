@@ -2090,18 +2090,18 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
 })
 
-# Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
-# test, plus the SCRIPTS_TESTS_DIR reads of a SKILL.md path and the
-# settings.json read from test_claude_enable_tool.py. The SCRIPTS_TESTS_DIR
-# SKILL.md entries are not exhaustive. Each pair was hand-checked against its
-# citing test's own read call. This list is not derived from
+# Add a pair only for a SKILL.md path read from a HOOKS_TESTS_DIR test, a
+# SKILL.md path read from a SCRIPTS_TESTS_DIR test, or the settings.json read
+# from test_claude_enable_tool.py. Each pair was hand-checked against its
+# citing test's own read call. The list is not derived from
 # SKILL_FILES_READ_BY_HOOK_TESTS or the CLAUDE_SETTINGS_JSON row, so it is DAMP
-# test data (CLAUDE.md's named exception) rather than a DRY violation. Add a
-# newly-mapped read here only when it is a read of one of those kinds. A
-# HOOKS_TESTS_DIR entry whose read path is not a SKILL_FILES_READ_BY_HOOK_TESTS
-# member fails the equality test below. Nothing checks that a listed reader
-# still reads its pair's file. TestCrossDomainReadCompleteness is the enforced
-# read check and does not consult this list.
+# test data (CLAUDE.md's named exception) rather than a DRY violation.
+# - HOOKS_TESTS_DIR entries are complete; an entry whose read path is not a
+#   SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
+# - SCRIPTS_TESTS_DIR SKILL.md entries are not exhaustive.
+# - Nothing checks that a listed reader still reads its pair's file.
+# - TestCrossDomainReadCompleteness is the enforced read check and does not
+#   consult this list.
 _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
      "claude-skills/skills/code-review/SKILL.md"),

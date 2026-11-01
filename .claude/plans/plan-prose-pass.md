@@ -145,6 +145,7 @@ Alternatives set aside:
 56. Verification step 6's first run, before the deactivate end, found `comment-discipline-reviewer` and `skill-fidelity-reviewer` rows reading `round=plan-review`. Each is a spawn `/plan-review` did not make (row 50). The one session traced in full ran `/plan-review` through its deactivate call. It then dispatched reviewers directly, with no human message and no `/code-review` or `/ready-for-review` invocation. Its window stayed open over every later spawn, its `staff-*` and `ciso-reviewer` spawns included. `[verified: Verification step 6's first run; that session's main transcript, read in this session]` `anchors: row44, M8`
 57. `shlex.shlex` built with `posix=True` and `punctuation_chars=True`, with `whitespace_split` set, returns each run of the characters `();<>|&` as a token of its own, even where the run touches a word. It keeps quoted text inside one token, with the quotes removed. It reads a newline as whitespace. It raises `ValueError` on an unclosed quote or a trailing backslash. Its `commenters` default to `#`, which drops the rest of a line from a `#` inside a word, and `shlex.split` empties them. `[verified: Python 3.12's shlex.py:36, 42, 54-58, 160-175, 185-267, 305-313]` `anchors: M8`
 58. `select-tests.py` and `test_select_tests.py` stay in this PR, though they were added after approval. `[engineer-verified: "Keep both (Recommended)"]` The question named the two files and what their row does. The option's description was the session's proposal.
+59. `claude-skills/skills/review-loop-cost-audit/SKILL.md` joins this PR, with a pointer to the `round=` window difference. `[engineer-verified: "Add the pointer (Recommended)"]` The engineer gave that answer at the cumulative review. The option's description was the session's proposal.
 
 **Mechanisms:**
 
@@ -390,6 +391,7 @@ One phase, two `code-writer` dispatches with disjoint file sets, then the follow
   End with a `Sources` section citing this plan, `plan-review/ROUTING.md` § "Reviewer roles", `comment-discipline-reviewer.md`'s Scope section, and `docs/transcript-analysis.md` § "review-trace".
 - **`claude/.claude/scripts/select-tests.py`**: a `CROSS_DOMAIN_EXCEPTIONS` row selects `test_transcript_review_trace.py` for `plan-review/SKILL.md`, which that test reads by path (row 58).
 - **`claude/.claude/scripts/tests/test_select_tests.py`**: the matching `_KNOWN_CROSS_DOMAIN_READS` and `_FILE_TARGETS` entries (row 58).
+- **`claude-skills/skills/review-loop-cost-audit/SKILL.md`**: step (b) gains one sentence pointing at the `round=` window difference, citing `docs/transcript-analysis.md` § "review-trace" (row 59). It is a `SKILL.md` edit, so `/code-review` runs `/skill-review` on it (`.claude/rules/review-pipeline-dispatch.md`).
 - **`.claude/plans/plan-prose-pass.md`**: this plan, committed with the change.
 
 ## Verification

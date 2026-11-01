@@ -127,9 +127,9 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 # redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
 # TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
-# test_transcript_review_trace.py reads plan-review/SKILL.md by path, to tie
-# the deactivate and completion recipes it replays to the ones /plan-review runs.
-# It also reads ready-for-review/SKILL.md by path, for the round= token step 4 names.
+# test_transcript_review_trace.py reads SKILL.md files by path. It is a
+# SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
+# selecting that whole domain from a SKILL.md edit.
 TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
