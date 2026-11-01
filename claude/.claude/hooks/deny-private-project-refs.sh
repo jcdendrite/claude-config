@@ -36,13 +36,12 @@
 #   ~/.claude/private-projects.md: a literal, case-insensitive
 #   whole-word scan against entries in that user-local file. See the
 #   "Deliberate scope" section below for the full design.
-# - Catches six structural shapes, wherever its content scans run (not gated by
+# - Catches five structural shapes, wherever its content scans run (not gated by
 #   private-projects.md): an IPv4 literal, an SSH config-directory or
 #   id_<algorithm> key path reference, a /Users/ or /home/ home-rooted
-#   filesystem path, a 32+ hex-char or UUID-shaped identifier, an
-#   internal-TLD hostname, and a Slack-channel-shaped reference (excluding
-#   bare issue-number refs like issue #421). Regexes live in _lib.sh as
-#   _LIB_IPV4_LITERAL_REGEX and its five siblings; see that file for the
+#   filesystem path, a 32+ hex-char or UUID-shaped identifier, and an
+#   internal-TLD hostname. Regexes live in _lib.sh as
+#   _LIB_IPV4_LITERAL_REGEX and its four siblings; see that file for the
 #   exact TLD list and key-algorithm list.
 # - Does NOT catch internal tool names, a custom-named SSH key with
 #   neither shape above, an internal hostname on a TLD outside the list
@@ -93,6 +92,8 @@
 #   command, because an unsplittable value is unbounded.
 #
 # Known gaps (documented, not closed by this hook):
+# - A hash-prefixed Slack channel name has no structural detector. See
+#   docs/private-project-redaction.md for when the blocklist covers one.
 # - `gh pr create --fill|-f|--fill-first|--fill-verbose` sources the PR
 #   body from commit messages. Since the git-commit gate already scans
 #   each commit's message, this is safe ONLY if every commit went
@@ -159,14 +160,6 @@
 #   holds the example shape.
 # - The gate's scope comes from the hook process's cwd, so a chained `cd`
 #   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
-# - The Slack-channel shape accepts digits, `s`, then end of line or any
-#   non-name character (`#<n>s`, `#<n>s.`), because the quote-stripped
-#   copy cannot tell it from a possessive issue reference.
-# - Under a non-C collation locale, a digit-led name whose first non-digit
-#   collates between `r` and `t` also passes the Slack-channel shape.
-# - A possessive issue reference still denies when the quote-strip joins a
-#   name character onto its `s`, such as an escape like `\n` or a hyphen
-#   or underscore continuation.
 # - In a repo armed only by `.claude/private-projects-optin`, the gate is
 #   armed only while that file is present at that exact path in the current
 #   worktree's checked-out tree at hook time.
@@ -179,8 +172,11 @@
 #     - a miscased marker name on a case-sensitive filesystem
 # - A filesystem error on the marker's `-f` test reads as an absent marker,
 #   which fails open.
-# - The staged diff is read without a size cap, so a diff large enough to
-#   outrun the harness hook timeout commits unscanned.
+# - The staged diff is read without a size cap. `docs/hooks.md` § "Bash version"
+#   and `docs/hooks.md` § "Gate deadlock recovery" state what a gate timeout does.
+# - An unbroken run of letters, digits, `.` and `-` makes the combined
+#   structural pattern scan super-linearly, reaching tens of seconds at
+#   25 KB on GNU grep 3.11 (GH-1371).
 # - A file git classifies as binary, including one a `.gitattributes` rule
 #   marks `-diff` or `binary`, renders without added lines, so its content is
 #   never scanned.
@@ -871,13 +867,11 @@ if [ -n "$HITS" ]; then
   exit 0
 fi
 
-# Six structural-shape detectors: IPv4 literal, SSH key path reference,
-# home-rooted path, long hex identifier, internal hostname, Slack-channel
-# shape. Two-phase: a single combined-alternation pre-check below finds out
-# whether any detector matches at all, then (only on a match) the per-detector
-# loop is checked independently (not one alternation) so the deny message can
-# name which detector fired. Regex constants live in _lib.sh so this scan and
-# any future consumer share one definition.
+# Structural-shape detectors. Two-phase: a single combined-alternation
+# pre-check finds out whether any detector matches at all. Only on a match are
+# the detectors checked one at a time, in array order, so the deny message can
+# name the first one that matches. Regex constants live in _lib.sh so this
+# scan and any future consumer share one definition.
 #
 # Deny message names the detector label only — never the matched substring.
 # Deliberate divergence from the tracker-ID and blocklist branches above,
@@ -902,11 +896,10 @@ STRUCTURAL_DETECTORS=(
   "home-rooted path:${_LIB_HOME_ROOTED_PATH_REGEX}"
   "long hex identifier:${_LIB_LONG_HEX_IDENTIFIER_REGEX}"
   "internal hostname:${_LIB_INTERNAL_HOSTNAME_REGEX}"
-  "Slack-channel shape:${_LIB_SLACK_CHANNEL_SHAPE_REGEX}"
 )
 
-# Combined alternation of all six patterns above, derived here (not
-# hand-maintained as a second constant) so a future 7th detector added to
+# Combined alternation of all patterns above, derived here (not
+# hand-maintained as a second constant) so a future detector added to
 # STRUCTURAL_DETECTORS is automatically covered by the fast path below.
 structural_combined_pattern=""
 for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
@@ -919,8 +912,9 @@ for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
 done
 
 # Single fast-path grep across the combined pattern: on the common case (no
-# detector matches), this replaces 6 subprocess spawns with 1; on a match, it
-# falls through to the per-detector loop below unchanged to name the label.
+# detector matches), this replaces one subprocess spawn per detector with 1;
+# on a match, it falls through to the per-detector loop below unchanged to
+# name the label.
 structural_fastpath_rc=0
 grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET_BOTH" || structural_fastpath_rc=$?
 if [ "$structural_fastpath_rc" -eq 0 ]; then

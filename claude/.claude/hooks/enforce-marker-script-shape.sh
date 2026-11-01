@@ -541,17 +541,14 @@ _bash_marker_fragment_candidates() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  # Capitalized (unlike this file's other locals): bash's array-length
-  # operator on the lowercase name reads as a Slack-channel-shaped reference
-  # to this repo's own redaction detector.
-  local -a Words=()
+  local -a words=()
   local word
   for word in $fragment; do
-    Words+=("$word")
+    words+=("$word")
   done
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 
-  local n=${#Words[@]}
+  local n=${#words[@]}
   [ "$n" -gt 0 ] || return 0
 
   # Mirrors deny-network-installs.sh:84-91's redirect_op_re/redirect_glued_re
@@ -567,12 +564,12 @@ _bash_marker_fragment_candidates() {
   local redirect_glued_re='^([0-9]*(>>|<>|>)|&>>|&>)([^[:space:]].*)$'
   local i
   for ((i = 0; i < n; i++)); do
-    word="${Words[$i]}"
+    word="${words[$i]}"
     # Exact-operator test first: for a standalone `>>`, redirect_glued_re
     # would otherwise backtrack its (>>|>|...) alternation down to `>` and
     # misread the second `>` as a one-character glued target.
     if [[ "$word" =~ $redirect_op_re ]]; then
-      [ $((i + 1)) -lt "$n" ] && printf '%s\n' "${Words[$((i + 1))]}"
+      [ $((i + 1)) -lt "$n" ] && printf '%s\n' "${words[$((i + 1))]}"
     elif [[ "$word" =~ $redirect_glued_re ]]; then
       printf '%s\n' "${BASH_REMATCH[3]}"
     fi
@@ -580,7 +577,7 @@ _bash_marker_fragment_candidates() {
 
   if _fragment_may_invoke_tool "$fragment" tee; then
     local seen_tee=false
-    for word in "${Words[@]}"; do
+    for word in "${words[@]}"; do
       if ! $seen_tee; then
         [ "${word##*/}" = "tee" ] && seen_tee=true
         continue
@@ -597,31 +594,28 @@ _bash_marker_fragment_candidates() {
     || _fragment_may_invoke_tool "$fragment" install \
     || _fragment_may_invoke_tool "$fragment" ln \
     || _fragment_may_invoke_tool "$fragment" link; then
-    printf '%s\n' "${Words[$((n - 1))]}"
+    printf '%s\n' "${words[$((n - 1))]}"
     # A destination that is an existing directory receives the file inside it.
     # The shape globs end in `/*`, so a destination with no trailing slash
     # needs one appended to match; the `*` then matches the empty remainder.
-    case "${Words[$((n - 1))]}" in
+    case "${words[$((n - 1))]}" in
       */) ;;
-      *) printf '%s/\n' "${Words[$((n - 1))]}" ;;
+      *) printf '%s/\n' "${words[$((n - 1))]}" ;;
     esac
   fi
 
   if _fragment_may_invoke_tool "$fragment" dd; then
-    for word in "${Words[@]}"; do
+    for word in "${words[@]}"; do
       case "$word" in
-        # Substring offset, not a `#`-prefix strip: the latter's literal
-        # "of=" reads as a Slack-channel-shaped reference to this repo's own
-        # redaction detector. offset 3 skips exactly "of=", matched above.
-        of=*) printf '%s\n' "${word:3}" ;;
+        of=*) printf '%s\n' "${word#of=}" ;;
       esac
     done
   fi
 
   if _fragment_may_invoke_tool "$fragment" sed; then
-    for word in "${Words[@]}"; do
+    for word in "${words[@]}"; do
       case "$word" in
-        -i*) printf '%s\n' "${Words[$((n - 1))]}"; break ;;
+        -i*) printf '%s\n' "${words[$((n - 1))]}"; break ;;
       esac
     done
   fi

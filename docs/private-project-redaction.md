@@ -45,9 +45,9 @@ comment for that grammar's one residual rather than restating it here.
    prefixes — `PROJ-` and `TICKET-` — so skill examples and commit messages can
    use a realistic-looking tracker shape (`PROJ-<digits>`, `TICKET-<digits>`)
    without obfuscating the digits to defeat the scan.
-2. **Structural-shape scan (always on in every gated repo, no setup).** Six independent detectors
+2. **Structural-shape scan (always on in every gated repo, no setup).** Five independent detectors
    for shapes that can identify a specific machine, person, or private
-   project without naming it directly — see "The six structural detectors"
+   project without naming it directly — see "The five structural detectors"
    below.
 3. **Private-projects blocklist (opt-in).** Reads `<config-dir>/private-projects.md`
    at hook runtime when that file exists, else the same-named file in the
@@ -57,13 +57,13 @@ comment for that grammar's one residual rather than restating it here.
    non-comment, non-blank line from the file as a case-insensitive whole-word
    match.
 
-## The six structural detectors
+## The five structural detectors
 
 Unlike the blocklist, these run in every gated repo — no `<config-dir>/private-projects.md`
-setup required. Each is checked independently, so the deny message names
-which one fired. Regexes live in `_lib.sh` as `_LIB_IPV4_LITERAL_REGEX` and
-its five siblings, shared with any future consumer that needs the same
-definitions.
+setup required. Each is checked independently, in the table's order, so the
+deny message names the first one that matches. Regexes live in `_lib.sh` as
+`_LIB_IPV4_LITERAL_REGEX` and its four siblings, shared with any future
+consumer that needs the same definitions.
 
 | Detector | Catches | Does NOT catch |
 |---|---|---|
@@ -72,29 +72,18 @@ definitions.
 | Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
 | Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
 | Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` — for `.internal`/`.corp`/`.lan`/`.intranet`/`.private`, also an FQDN shape like `host[.]corp[.]example[.]com` where the TLD word is a subdomain label, not the string end | a hostname on any other TLD, or a filename convention like `settings.local.json` (only `.local`'s boundary excludes a following dot-segment — `.local` doubles as a common per-machine-override filename convention, e.g. `[.]env[.]local`, that the other five words don't) |
-| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word written outside markdown link syntax | a plain or possessive GitHub issue reference (`#421`; the hook header's Known gaps list states the exact accepted shape); bash parameter-expansion syntax (`${var#…}`, `${var##…}`); a markdown anchor-link fragment (see below) |
 
 Every example above is deliberately non-matching — e.g. the `<username>`
 placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
 charset — so committing this table doesn't trip its own detectors.
 
-The Slack-channel detector still matches a bare anchor fragment like
-`docs/skills.md#<heading-slug>`, since it shares the real-channel-name
-shape. Rephrase around that false positive rather than loosening the
-charset. An anchor fragment inside a real link's destination —
-`[text](other-file.md#<anchor-name>)` — is exempted instead, so a
-functional cross-file anchor link doesn't need rewording. That exemption is
-purely syntactic: it doesn't check that the destination resolves to a real
-file. A `#<slug>` inside a compact JSON object with no space after the
-colon (e.g. `{"channel":"#<slug>"}`) is also not caught, because the `{`
-sits before the `#` with nothing rescuing it; the spaced form
-(`{"channel": "#<slug>"}`) still denies. The same content-blind exemption
-covers bash parameter-expansion syntax: a real Slack-channel-shaped slug
-placed inside `${var#<pattern>}` or `${var##<pattern>}` is not caught
-either, because the exemption covers the whole `${...}`-shaped span
-regardless of what occupies the pattern position. See
-`_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
-exemption's matching mechanics.
+Slack channel names have no structural detector. Only the blocklist covers them, when `<config-dir>/private-projects.md` is populated.
+
+List a channel without its leading `#`, because the hook skips blocklist lines starting with `#` as comments and matches each entry as a whole word. Coverage limits:
+
+- A distinctive name is covered when listed as a bare word.
+- A common-word name has no mechanical coverage, because listing it would match every ordinary mention.
+- An underscore-joined or concatenated form needs its own entry (see the "Concatenated identifiers" bullet under the blocklist guidance below).
 
 ## Publishing a tooling measurement
 
@@ -372,9 +361,10 @@ alternatives were considered and rejected, each for reducing to the same
 missing-data problem or making a security-relevant choice without user
 review:
 
-1. **Widen the always-on structural detectors** — the six above already
-   exhaust what's structurally identifiable without a name list; further
-   candidates just need a name list too, or deny ordinary PR prose constantly.
+1. **Widen the always-on structural detectors** — the five above cover the
+   shapes matchable at a tolerable false-positive rate. Others, such as a
+   hash-prefixed word, need a name list (the blocklist) or deny ordinary PR
+   prose constantly.
 2. **Auto-derive a starter blocklist** from SSH config hosts, sibling repo
    names, or shell history — always incomplete, and arms a security-relevant
    list without user review.
@@ -508,7 +498,7 @@ sensitive and echoing it would leak it into the session transcript.
 
 ## Performance
 
-Measured per-fire wall-clock cost of the full hook (tracker-ID scan, six
+Measured per-fire wall-clock cost of the full hook (tracker-ID scan, the
 structural detectors, private-projects blocklist scan) against a
 `gh api -X POST ... -F body=@<file>` call with a representative body file,
 run directly against `deny-private-project-refs.sh` with a synthetic
@@ -522,19 +512,24 @@ measurement time, which the wide ranges below partly reflect):
 | 50 KB | 697ms | 562–1,312ms |
 | 500 KB | 894ms | 837–1,017ms |
 
+The table was measured when the hook ran six structural detectors and scanned one copy of the input. The hook now scans the raw input plus a quote-stripped copy, and the fast-path pattern has lost one alternative, so absolute figures are approximate.
+
 This still exceeds this repo's stated hook performance budget (<100ms per
-fire). The six structural detectors run as one combined-pattern fast-path
-spawn, falling through to the original six only when it matches, so a
-here-string bash materializes to a temp file before exec at most once per
-fire instead of up to six times. Subprocess-spawn overhead still dominates over
-byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
-and blocklist scans' own subprocess calls, remain unchanged — which is why
-cost still does not scale cleanly with body size. At commit/PR-authoring
-time (a human-interactive action, not a hot path), this is tolerable in
-absolute terms but is still a measured budget overrun, not a clean pass — a
-future revision that needs more headroom should look at collapsing the
-remaining tracker-ID and blocklist `grep` spawns into the same fast-path
-treatment.
+fire). The five structural detectors run as one combined-pattern fast-path
+spawn. The hook falls through to the per-detector loop only when the fast path
+matches. On content that matches no detector, a here-string bash materializes
+to a temp file before exec once per fire instead of up to five times. The fast
+path itself, plus the pre-existing tracker-ID and blocklist scans' own
+subprocess calls, remain unchanged. Subprocess-spawn overhead still dominates
+over byte-scanning cost, which is why cost still does not scale cleanly with
+body size. At commit/PR-authoring time (a human-interactive action, not a hot
+path), this is tolerable in absolute terms but is still a measured budget
+overrun, not a clean pass — a future revision that needs more headroom should look at
+collapsing the remaining tracker-ID and blocklist `grep` spawns into the same
+fast-path treatment. An unbroken run of letters, digits, `.` and `-` makes the
+combined pattern scan super-linearly, well beyond the figures above (see the
+Known-gaps comment in `claude/.claude/hooks/deny-private-project-refs.sh`,
+GH-1371).
 
 ## Opting in another repository
 
@@ -558,7 +553,7 @@ whole hook there: all three scans, with no per-scan switch.
 - Every structural detector over added diff lines and command text. Long-hex
   hits include SHA-pinned workflow actions, image digests, lockfile hashes,
   full commit SHAs quoted in a PR body, and UUID fixtures. See
-  [The six structural detectors](#the-six-structural-detectors).
+  [The five structural detectors](#the-five-structural-detectors).
 - Every entry in `<config-dir>/private-projects.md`.
 
 The hook has no per-repo or per-path exclusion and no bypass. For content that
