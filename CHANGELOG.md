@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**
+  - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
+  - The wrapper exits 127 when the main checkout's path contains `:`.
+  - `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
 - **`claude-hook-review` 2.6.0 now defines `turn-gate` as firing where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, with an output shape that follows its event.**
   - The bump is minor because the `turn-gate` definition widens and nothing is reversed.
   - The checklist now flags any `updatedInput` other than the `SubagentHandback` prefix rewrite.
