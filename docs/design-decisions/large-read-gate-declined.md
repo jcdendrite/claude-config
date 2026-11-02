@@ -12,7 +12,7 @@ Figures come from `transcript-analysis.py read-cost --this-repo`, which refuses 
 
 - Whole-file reads over 350 lines: 41 calls.
 - Of those, 17 target a file the main thread itself edited later, where the agent needed the exact content.
-- The other 24 are the only reads a gate could help, as far as the main thread's own edits show. Their share of total spend rounds to 0.0%, before subtracting the cost of the worker's answer and the denied turn.
+- The other 24 are the only reads a gate could help, as far as the main thread's own edits show. Edits made through Bash are invisible, which overstates never-edited. Failed edits and edits after a compaction count as edits, which understates it (`docs/transcript-analysis.md` `read-cost` Known limits). Their share of total spend rounds to 0.0%, before subtracting the cost of the worker's answer and the denied turn.
 - A threshold of 800 lines catches 2 calls.
 - Long-line files mean a token threshold catches more: reads of 2,000+ tokens are 43% of main-thread whole-file read calls. That population includes files later edited.
 
@@ -41,16 +41,16 @@ The specialist reviewer agents' whole-file reads are about 3.9% of spend. That s
 
 ## When to reopen
 
-Run `read-cost` again if the workload changes. The result binds this repo's mix, which is review-heavy with short files. A codebase of very large source files is not described by these numbers, and that is the case where this design could pay.
-
 Reopen when the never-edited main-thread whole-file reads in either the 350-line or the 800-line cohort the report prints reach 1% of total spend.
+
+Run `read-cost` again if the workload changes. The result binds this repo's mix, which is review-heavy with short files. A codebase of very large source files is not described by these numbers, and that is the case where this design could pay.
 
 ## Limits
 
 - One price ratio is applied across models, so Opus-pinned `plan-architect` is understated relative to Sonnet agents. Per-model cache-read exceptions, the fast-mode multiplier and the inference-geo multiplier are not applied either, so every share is a token-equivalent share, not a dollar share.
 - Each read is priced at the 5-minute cache-write rate.
 - `read-cost` measures the `Read` tool only. The considered design also covered Bash reads, which are not measured.
-- `read-scope` overstated main-thread reads until it learned to skip `api-request-blob` records. Main/subagent shares published from it before that fix, including in `docs/case-studies/targeted-read-discipline.md`, were not re-derived here.
+- The main/subagent shares in `docs/case-studies/targeted-read-discipline.md` come from `read-scope` runs that counted `api-request-blob` records, and are not re-derived here.
 
 ## Sources
 

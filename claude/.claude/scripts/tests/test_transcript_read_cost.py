@@ -5,11 +5,10 @@ command is tested on transcript files under the fake_projects corpus.
 """
 import dataclasses
 import os
-import types
 from collections import Counter
 
 import pytest
-from transcript_analysis import pricing, read_cost, redaction, scope, subagent_mix
+from transcript_analysis import corpus, pricing, read_cost, redaction, scope, subagent_mix
 
 from .conftest import (
     _api_request_blob_rec,
@@ -28,7 +27,7 @@ _PROJECT_SLUG = "-home-user-testrepo"
 _TRACKED_AGENT_TYPE = "staff-backend-engineer"
 _UNTRACKED_AGENT_TYPE = "sentinel-untracked-agent-type"
 
-# A Read result of this many characters is this many estimated tokens (chars // 4).
+# 400 characters are 100 estimated tokens (chars // 4).
 _HUNDRED_TOKEN_TEXT = "x" * 400
 
 
@@ -37,7 +36,6 @@ def _weights() -> dict[str, float]:
 
 
 def _turn(message_id: str, content: list | None = None, *, usage: dict | None = None) -> dict:
-    """An assistant record for one API call, identified by message.id."""
     rec = _asst("claude-sonnet-5", content=content)
     rec["message"]["id"] = message_id
     if usage is not None:
@@ -60,7 +58,6 @@ def _scan(records: list[dict], seen_tool_use_ids: set[str] | None = None) -> rea
 
 
 def _read_exchange(message_id: str, tool_id: str, path: str, *, text: str = _HUNDRED_TOKEN_TEXT) -> list[dict]:
-    """An assistant turn issuing one Read, then the Read's text result."""
     return [_turn(message_id, [_read_tool_use(tool_id, file_path=path)]), _read_result(tool_id, text)]
 
 
@@ -80,7 +77,7 @@ def _row_with_every_field_set(value: int) -> read_cost._AgentTypeRow:
 
 
 class TestCacheReadEquivalentWeights:
-    def test_weights_are_each_class_multiplier_over_the_cache_read_multiplier(self):
+    def test_weights_pin_the_literal_ratios_of_each_class_to_cache_read(self):
         assert _weights() == pytest.approx({
             "cache_read": 1.0, "cache_write_5m": 12.5, "cache_write_1h": 20.0, "output": 50.0, "input": 10.0,
         })
@@ -278,6 +275,14 @@ class TestScanWindow:
             ]),
             _read_result("r1", "boom", is_error=True),
             _read_result("r2", [{"type": "image"}]),
+        ])
+        assert scan.events == []
+
+    def test_text_block_list_result_is_dropped_like_any_non_string_result(self):
+        # docs/transcript-analysis.md's read-cost Known limits: a result that is not plain text is left out.
+        scan = _scan([
+            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _read_result("r1", [{"type": "text", "text": _HUNDRED_TOKEN_TEXT}]),
         ])
         assert scan.events == []
 
@@ -582,6 +587,8 @@ class TestAgentTypeRow:
         ("/repo/.claude/rules/style.md", read_cost._KIND_INSTRUCTION),
         ("/repo/CLAUDE.md", read_cost._KIND_INSTRUCTION),
         ("/repo/.claude/skills/x/run.py", read_cost._KIND_INSTRUCTION),
+        # Kind is read from path fragments, so a code file under any rules/ directory reads as instruction (the
+        # kind definition in docs/transcript-analysis.md's read-cost Output bullet).
         ("/repo/src/rules/engine.py", read_cost._KIND_INSTRUCTION),
         ("/repo/docs/myclaude.md", read_cost._KIND_OTHER_PROSE),
         ("/repo/docs/guide.md", read_cost._KIND_OTHER_PROSE),
@@ -790,6 +797,8 @@ class TestAccumulateSession:
         assert (row.agents, row.turns) == expected_agents_and_turns
 
     def test_subagent_read_of_a_path_the_main_thread_edits_reads_as_unedited(self):
+        # Edited-later is per window, so an edit in another window is invisible; this is the documented limit in
+        # docs/transcript-analysis.md's read-cost Known limits.
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
             totals, read_cost._SeenIds(),
@@ -957,10 +966,29 @@ class TestReadSubagentWindows:
 
         windows = read_cost._read_subagent_windows(tmp_path / "sess.jsonl", Counter())
 
-        assert isinstance(windows, types.GeneratorType)
         assert [(agent_type, records[0]["message"]["id"]) for agent_type, records in windows] == [
             (_TRACKED_AGENT_TYPE, "m-agent-a"), ("Plan", "m-agent-b"),
         ]
+
+    def test_a_transcript_is_not_parsed_until_the_window_before_it_is_consumed(self, tmp_path, monkeypatch):
+        subagent_dir = self._subagent_dir(tmp_path)
+        for agent_id in ("agent-a", "agent-b"):
+            _write_jsonl(subagent_dir / f"{agent_id}.jsonl", [_turn(f"m-{agent_id}")])
+        parsed_file_names: list[str] = []
+        parse_jsonl_records = corpus._parse_jsonl_records
+
+        def recording_parse(path):
+            parsed_file_names.append(path.name)
+            return parse_jsonl_records(path)
+
+        monkeypatch.setattr(corpus, "_parse_jsonl_records", recording_parse)
+
+        windows = read_cost._read_subagent_windows(tmp_path / "sess.jsonl", Counter())
+        next(windows)
+        assert parsed_file_names == ["agent-a.jsonl"]
+
+        next(windows)
+        assert parsed_file_names == ["agent-a.jsonl", "agent-b.jsonl"]
 
     def test_session_without_a_subagent_directory_yields_nothing_and_records_no_gap(self, tmp_path):
         scan_gaps: Counter = Counter()
@@ -1080,13 +1108,11 @@ _NO_SKIPPED_INPUT = dict.fromkeys(_SKIPPED_INPUT_KEYS, 0)
 
 
 def _skipped_input_counts(report: str) -> dict[str, int]:
-    """The `key=value` counts on the report's single `skipped input:` line."""
     line = next(line for line in report.splitlines() if line.startswith("skipped input:"))
     return {key: int(value.replace(",", "")) for key, value in (token.split("=") for token in line.split()[2:])}
 
 
 def _lines_after(report: str, header: str, count: int) -> list[str]:
-    """The `count` lines that follow the line equal to `header`."""
     lines = report.splitlines()
     start = lines.index(header) + 1
     return lines[start:start + count]
@@ -1242,6 +1268,20 @@ class TestReport:
         assert f"\n{subagent_mix._WITHHELD_AGENT_TYPE_LABEL}: agents=1 " in out
         assert "\nTOTAL: agents=2 " in out
 
+    def test_agent_type_named_only_by_the_allowlist_seam_prints_by_name(self, fake_projects, monkeypatch, capsys):
+        allowlist_only_type = "sentinel-allowlist-only-agent-type"
+        monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: frozenset({allowlist_only_type}))
+        _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")], agent_type=allowlist_only_type,
+        )
+
+        read_cost.cmd_read_cost(_read_cost_args())
+
+        out = capsys.readouterr().out
+        assert f"\n{allowlist_only_type}: agents=1 " in out
+        assert f"\n{subagent_mix._WITHHELD_AGENT_TYPE_LABEL}:" not in out
+
     def test_empty_corpus_prints_zero_shares_without_division_error(self, fake_projects, capsys):
         read_cost.cmd_read_cost(_read_cost_args())
 
@@ -1296,7 +1336,7 @@ class TestPrintedFigures:
             _TRACKED_AGENT_TYPE: read_cost._AgentTypeRow(
                 agents=2, turns=10, billed=7500.0, whole_file_reads=3, whole_file_tokens=600,
                 whole_file_weight=3000.0, all_read_weight=4500.0, large_weight=1500.0,
-                large_unedited_weight=750.0, repeat_in_agent_weight=300.0, seen_elsewhere_weight=600.0,
+                large_unedited_weight=750.0, repeat_in_agent_weight=450.0, seen_elsewhere_weight=600.0,
                 kind_weight=Counter({read_cost._KIND_INSTRUCTION: 1200.0, read_cost._KIND_CODE_OR_OTHER: 1800.0}),
             ),
         }
@@ -1306,29 +1346,118 @@ class TestPrintedFigures:
         out = self._print(self._hand_computed_totals(), frozenset({_TRACKED_AGENT_TYPE}), capsys)
         assert "billed share: main=66.7% subagent=33.3%" in out
 
-    def test_cohort_over_350_lines_excludes_exactly_350_and_splits_by_edited_later(self, capsys):
+    def test_cohort_over_350_lines_excludes_exactly_350_and_splits_by_edited_later(self):
+        totals = self._hand_computed_totals()
+
+        cohort = read_cost._cohort_figures(
+            totals.main_whole_file_events, 350, _weights(), totals.billed_total, totals.billed_main,
+        )
+
+        assert cohort.reads == 4
+        assert cohort.edited_later.reads == 2
+        assert cohort.edited_later.tokens == 400
+        assert cohort.edited_later.median_remaining_turns == 3
+        assert cohort.edited_later.share_of_total_pct == pytest.approx(100 * 5800 / 75000)
+        assert cohort.edited_later.share_of_main_pct == pytest.approx(11.6)
+        assert cohort.never_edited.reads == 2
+        assert cohort.never_edited.tokens == 400
+        assert cohort.never_edited.median_remaining_turns == 6
+        assert cohort.never_edited.share_of_total_pct == pytest.approx(100 * 7000 / 75000)
+        assert cohort.never_edited.share_of_main_pct == pytest.approx(14.0)
+
+    def test_cohort_over_800_lines_excludes_exactly_800_and_splits_by_edited_later(self):
+        totals = self._hand_computed_totals()
+
+        cohort = read_cost._cohort_figures(
+            totals.main_whole_file_events, 800, _weights(), totals.billed_total, totals.billed_main,
+        )
+
+        assert cohort.reads == 2
+        assert cohort.edited_later.reads == 1
+        assert cohort.edited_later.tokens == 200
+        assert cohort.edited_later.median_remaining_turns == 3
+        assert cohort.edited_later.share_of_total_pct == pytest.approx(100 * 3100 / 75000)
+        assert cohort.edited_later.share_of_main_pct == pytest.approx(6.2)
+        assert cohort.never_edited.reads == 1
+        assert cohort.never_edited.tokens == 200
+        assert cohort.never_edited.median_remaining_turns == 6
+        assert cohort.never_edited.share_of_total_pct == pytest.approx(100 * 3700 / 75000)
+        assert cohort.never_edited.share_of_main_pct == pytest.approx(7.4)
+
+    def test_prints_exactly_the_350_and_800_line_cohorts_in_that_order(self, capsys):
         out = self._print(self._hand_computed_totals(), frozenset({_TRACKED_AGENT_TYPE}), capsys)
-        assert _lines_after(out, "## Main-thread whole-file reads over 350 lines: 4", 2) == [
-            "  edited_later=True: n=2 tokens=400 median_remaining_turns=3 share_of_total=7.7% share_of_main=11.6%",
-            "  edited_later=False: n=2 tokens=400 median_remaining_turns=6 share_of_total=9.3% share_of_main=14.0%",
+
+        cohort_headers = [line for line in out.splitlines() if line.startswith("## Main-thread whole-file reads over")]
+        assert cohort_headers == [
+            "## Main-thread whole-file reads over 350 lines: 4",
+            "## Main-thread whole-file reads over 800 lines: 2",
         ]
 
-    def test_cohort_over_800_lines_excludes_exactly_800_and_splits_by_edited_later(self, capsys):
-        out = self._print(self._hand_computed_totals(), frozenset({_TRACKED_AGENT_TYPE}), capsys)
-        assert _lines_after(out, "## Main-thread whole-file reads over 800 lines: 2", 2) == [
-            "  edited_later=True: n=1 tokens=200 median_remaining_turns=3 share_of_total=4.1% share_of_main=6.2%",
-            "  edited_later=False: n=1 tokens=200 median_remaining_turns=6 share_of_total=4.9% share_of_main=7.4%",
-        ]
+    def test_cohort_with_no_reads_has_zero_figures(self):
+        cohort = read_cost._cohort_figures([], 350, _weights(), 0.0, 0.0)
 
-    def test_agent_type_and_total_rows_print_each_share_over_its_denominator(self, capsys):
+        assert cohort.reads == 0
+        for subset in (cohort.edited_later, cohort.never_edited):
+            assert subset.reads == 0
+            assert subset.tokens == 0
+            assert subset.median_remaining_turns == 0
+            assert subset.share_of_total_pct == 0.0
+            assert subset.share_of_main_pct == 0.0
+
+    def test_agent_type_figures_divide_each_weight_by_its_denominator(self):
+        row = self._hand_computed_totals().rows_by_agent_type[_TRACKED_AGENT_TYPE]
+
+        figures = read_cost._agent_type_figures(row, 75000.0)
+
+        assert figures == read_cost._AgentTypeFigures(
+            agents=2,
+            whole_file_reads=3,
+            whole_file_tokens=600,
+            mean_turns=5.0,
+            share_of_total_spend_pct=pytest.approx(10.0),
+            whole_file_weight_share_pct=pytest.approx(4.0),
+            all_read_weight_share_pct=pytest.approx(6.0),
+            large_pct=pytest.approx(50.0),
+            large_unedited_pct=pytest.approx(25.0),
+            repeat_in_agent_pct=pytest.approx(15.0),
+            seen_elsewhere_pct=pytest.approx(20.0),
+            kind_pcts={
+                read_cost._KIND_CODE_OR_OTHER: pytest.approx(60.0), read_cost._KIND_INSTRUCTION: pytest.approx(40.0),
+            },
+        )
+
+    def test_agent_type_with_no_agents_and_no_reads_has_zero_figures(self):
+        figures = read_cost._agent_type_figures(read_cost._AgentTypeRow(), 0.0)
+
+        assert figures == read_cost._AgentTypeFigures(
+            agents=0,
+            whole_file_reads=0,
+            whole_file_tokens=0,
+            mean_turns=0.0,
+            share_of_total_spend_pct=0.0,
+            whole_file_weight_share_pct=0.0,
+            all_read_weight_share_pct=0.0,
+            large_pct=0.0,
+            large_unedited_pct=0.0,
+            repeat_in_agent_pct=0.0,
+            seen_elsewhere_pct=0.0,
+            kind_pcts={},
+        )
+
+    def test_printed_cohort_and_agent_type_lines_keep_their_published_layout(self, capsys):
         out = self._print(self._hand_computed_totals(), frozenset({_TRACKED_AGENT_TYPE}), capsys)
-        for label in ("TOTAL", _TRACKED_AGENT_TYPE):
-            assert (
-                f"\n{label}: agents=2 mean_turns=5 share_of_total_spend=10.0% whole_file_reads=3"
-                " whole_file_tokens=600 whole_file_weight_share=4.0% all_read_weight_share=6.0%\n"
-                "    of whole: large=50.0% large_unedited=25.0% repeat_in_agent=10.0% seen_elsewhere=20.0%"
-                " kinds: code/other=60.0% instruction=40.0%\n"
-            ) in out
+
+        assert (
+            "\n## Main-thread whole-file reads over 800 lines: 2\n"
+            "  edited_later=True: n=1 tokens=200 median_remaining_turns=3 share_of_total=4.1% share_of_main=6.2%\n"
+            "  edited_later=False: n=1 tokens=200 median_remaining_turns=6 share_of_total=4.9% share_of_main=7.4%\n"
+        ) in out
+        assert (
+            f"\n{_TRACKED_AGENT_TYPE}: agents=2 mean_turns=5 share_of_total_spend=10.0% whole_file_reads=3"
+            " whole_file_tokens=600 whole_file_weight_share=4.0% all_read_weight_share=6.0%\n"
+            "    of whole: large=50.0% large_unedited=25.0% repeat_in_agent=15.0% seen_elsewhere=20.0%"
+            " kinds: code/other=60.0% instruction=40.0%\n"
+        ) in out
 
     def test_every_tracked_agent_type_prints_a_row(self, capsys):
         tracked_names = [f"tracked-agent-{index:02d}" for index in range(20)]

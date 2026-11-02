@@ -776,4 +776,4 @@ The fixture's own `pinned_commit` field names the exact commit to check out; the
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Hook-deny large whole-file reads and redirect them to a worker model | Rejected (measured) | See [`design-decisions/large-read-gate-declined.md`](design-decisions/large-read-gate-declined.md). |
+| Hook-deny large whole-file reads and redirect them to a worker model | Rejected (measured) | Never-edited main-thread whole-file reads over 350 lines are about 0.0% of spend. See [`design-decisions/large-read-gate-declined.md`](design-decisions/large-read-gate-declined.md). |

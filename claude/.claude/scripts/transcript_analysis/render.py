@@ -77,15 +77,18 @@ def _fmt_usd(amount: float) -> str:
     return f"-${-amount:,.2f}" if amount < 0 else f"${amount:,.2f}"
 
 
+def _fmt_pct(pct: float) -> str:
+    return f"{pct:.1f}%"
+
+
 def _pct_of(value: float, total: float) -> str:
     """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
-    return f"{100 * value / total:.1f}%" if total else "0.0%"
+    return _fmt_pct(_pct_value(value, total))
 
 
 def _pct_value(value: float, total: float) -> float:
-    """value/total as a percentage float, matching _pct_of's 0.0-when-zero
-    convention -- for a caller (cost-ledger) that stores the number rather
-    than printing it."""
+    """value/total as a percentage float, for a caller that stores or further
+    processes the number rather than printing it."""
     return 100 * value / total if total else 0.0
 
 

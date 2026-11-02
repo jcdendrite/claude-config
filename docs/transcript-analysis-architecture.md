@@ -136,8 +136,7 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 it deduplicates one session's records and returns its subagent-spawn count, its sidechain
 assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
 the re-verify-by staleness rule both apply.
-`_cache_read_equivalent_weights` turns the base multipliers into per-class weights relative to one
-cache-read token, for `read_cost.py`.
+`read_cost.py` consumes `_cache_read_equivalent_weights`.
 
 ### `session_pricing.py`
 
@@ -385,13 +384,10 @@ reached bare from the shim — see the exception noted above. `context_compositi
 ### `read_cost.py`
 
 The read-cost command: `cmd_read_cost`, its `_add_read_cost_subparser` registration, and every helper
-used only by it. `_scan_window` turns one transcript file into Read events, turn ids and usage;
-`_accumulate_session` folds a session's main-thread window and subagent windows into the totals;
-`_refuse_wider_scope` is the single-account, `--this-repo` refusal. Imports `corpus`, `cost`, `pricing`,
-`redaction`, `render`, `scope`, and `subagent_mix` all by module (attribute access). The shim reads
-`_add_read_cost_subparser` bare. It reads `pricing._cache_read_equivalent_weights` for the price ratios,
-`cost._usage_is_invalid` for usage validation, `redaction._repo_tracked_agent_type_names` for the
-agent-type allowlist, and `subagent_mix._WITHHELD_AGENT_TYPE_LABEL` for the folded row's label.
+used only by it. Imports `corpus`, `cost`, `pricing`, `redaction`, `render`, `scope`, and `subagent_mix`
+all by module (attribute access). The shim reads `_add_read_cost_subparser` bare. Cross-module private
+reads are `cost._usage_is_invalid`, `redaction._repo_tracked_agent_type_names`, and
+`subagent_mix._WITHHELD_AGENT_TYPE_LABEL`.
 
 ### `ledger_common.py`
 

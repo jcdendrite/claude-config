@@ -1,7 +1,8 @@
 """The read-cost command: what share of spend whole-file Read results account for, split by main thread and
 subagent type, with the cuts that show how much of it a read gate could reach -- plus its subparser registration.
 
-Every printed figure is an aggregate: no path, session identifier, or project name is retained past the scan.
+Every printed figure is an aggregate: nothing printed carries a path, session identifier, project name or
+untracked agent-type name.
 
 Imports sibling modules by module (attribute access, not by name) -- see scope.py's own top-of-file comment for why.
 """
@@ -75,9 +76,8 @@ class _WindowScan(NamedTuple):
 
 @dataclass
 class _SeenIds:
-    """`message_ids` is the set of billed ids and `turn_message_ids` the set of counted turns. A turn whose usage
-    was invalid in one window and valid in a later one is billed in the later window but was counted as a turn
-    in the earlier.
+    """A turn whose usage was invalid in one window and valid in a later one is billed in the later window but
+    was counted as a turn in the earlier.
     """
 
     tool_use_ids: set[str] = field(default_factory=set)
@@ -439,6 +439,73 @@ def _read_cost_report(args: argparse.Namespace, roots: Sequence[Path]) -> None:
     _print_read_cost_report(totals, weights, redaction._repo_tracked_agent_type_names())
 
 
+class _CohortSubsetFigures(NamedTuple):
+    reads: int
+    tokens: int
+    median_remaining_turns: int
+    share_of_total_pct: float
+    share_of_main_pct: float
+
+
+class _CohortFigures(NamedTuple):
+    reads: int
+    edited_later: _CohortSubsetFigures
+    never_edited: _CohortSubsetFigures
+
+
+class _AgentTypeFigures(NamedTuple):
+    agents: int
+    whole_file_reads: int
+    whole_file_tokens: int
+    mean_turns: float
+    share_of_total_spend_pct: float
+    whole_file_weight_share_pct: float
+    all_read_weight_share_pct: float
+    large_pct: float
+    large_unedited_pct: float
+    repeat_in_agent_pct: float
+    seen_elsewhere_pct: float
+    kind_pcts: dict[str, float]
+
+
+def _cohort_figures(
+    events: Sequence[_ReadEvent], line_threshold: int, weights: dict[str, float],
+    billed_total: float, billed_main: float,
+) -> _CohortFigures:
+    cohort = [event for event in events if event.lines > line_threshold]
+
+    def subset_figures(edited_later: bool) -> _CohortSubsetFigures:
+        subset = [event for event in cohort if event.edited_later is edited_later]
+        weight = sum(_read_weight(event, weights) for event in subset)
+        return _CohortSubsetFigures(
+            reads=len(subset),
+            tokens=sum(event.tokens for event in subset),
+            median_remaining_turns=statistics.median_high(event.remaining_turns for event in subset) if subset else 0,
+            share_of_total_pct=render._pct_value(weight, billed_total),
+            share_of_main_pct=render._pct_value(weight, billed_main),
+        )
+
+    return _CohortFigures(len(cohort), subset_figures(True), subset_figures(False))
+
+
+def _agent_type_figures(row: _AgentTypeRow, billed_total: float) -> _AgentTypeFigures:
+    whole_weight = row.whole_file_weight
+    return _AgentTypeFigures(
+        agents=row.agents,
+        whole_file_reads=row.whole_file_reads,
+        whole_file_tokens=row.whole_file_tokens,
+        mean_turns=row.turns / max(row.agents, 1),
+        share_of_total_spend_pct=render._pct_value(row.billed, billed_total),
+        whole_file_weight_share_pct=render._pct_value(whole_weight, billed_total),
+        all_read_weight_share_pct=render._pct_value(row.all_read_weight, billed_total),
+        large_pct=render._pct_value(row.large_weight, whole_weight),
+        large_unedited_pct=render._pct_value(row.large_unedited_weight, whole_weight),
+        repeat_in_agent_pct=render._pct_value(row.repeat_in_agent_weight, whole_weight),
+        seen_elsewhere_pct=render._pct_value(row.seen_elsewhere_weight, whole_weight),
+        kind_pcts={kind: render._pct_value(weight, whole_weight) for kind, weight in sorted(row.kind_weight.items())},
+    )
+
+
 def _print_read_cost_report(
     totals: _ReadCostTotals, weights: dict[str, float], tracked_agent_types: frozenset[str],
 ) -> None:
@@ -470,17 +537,14 @@ def _print_read_cost_report(
     print(f"main-thread whole-file reads scanned={len(totals.main_whole_file_events):,}")
 
     for threshold in _LINE_THRESHOLDS:
-        cohort = [event for event in totals.main_whole_file_events if event.lines > threshold]
-        print(f"\n## Main-thread whole-file reads over {threshold} lines: {len(cohort):,}")
-        for edited_later in (True, False):
-            subset = [event for event in cohort if event.edited_later is edited_later]
-            weight = sum(_read_weight(event, weights) for event in subset)
-            median_remaining = statistics.median_high(event.remaining_turns for event in subset) if subset else 0
+        cohort = _cohort_figures(totals.main_whole_file_events, threshold, weights, total_billed, totals.billed_main)
+        print(f"\n## Main-thread whole-file reads over {threshold} lines: {cohort.reads:,}")
+        for edited_later, subset in ((True, cohort.edited_later), (False, cohort.never_edited)):
             print(
-                f"  edited_later={edited_later}: n={len(subset):,} tokens={sum(e.tokens for e in subset):,}"
-                f" median_remaining_turns={median_remaining}"
-                f" share_of_total={render._pct_of(weight, total_billed)}"
-                f" share_of_main={render._pct_of(weight, totals.billed_main)}"
+                f"  edited_later={edited_later}: n={subset.reads:,} tokens={subset.tokens:,}"
+                f" median_remaining_turns={subset.median_remaining_turns}"
+                f" share_of_total={render._fmt_pct(subset.share_of_total_pct)}"
+                f" share_of_main={render._fmt_pct(subset.share_of_main_pct)}"
             )
 
     print("\n## Whole-file reads by size bucket (est. tokens)")
@@ -529,31 +593,25 @@ def _skipped_input_line(totals: _ReadCostTotals) -> str:
 
 
 def _print_agent_type_row(label: str, row: _AgentTypeRow, total_billed: float) -> None:
-    whole_weight = row.whole_file_weight
-    mean_turns = row.turns / max(row.agents, 1)
-    kinds = " ".join(
-        f"{kind}={render._pct_of(weight, whole_weight)}" for kind, weight in sorted(row.kind_weight.items())
+    figures = _agent_type_figures(row, total_billed)
+    kinds = " ".join(f"{kind}={render._fmt_pct(pct)}" for kind, pct in figures.kind_pcts.items())
+    print(
+        f"{label}: agents={figures.agents:,} mean_turns={figures.mean_turns:.0f}"
+        f" share_of_total_spend={render._fmt_pct(figures.share_of_total_spend_pct)}"
+        f" whole_file_reads={figures.whole_file_reads:,} whole_file_tokens={figures.whole_file_tokens:,}"
+        f" whole_file_weight_share={render._fmt_pct(figures.whole_file_weight_share_pct)}"
+        f" all_read_weight_share={render._fmt_pct(figures.all_read_weight_share_pct)}"
     )
     print(
-        f"{label}: agents={row.agents:,} mean_turns={mean_turns:.0f}"
-        f" share_of_total_spend={render._pct_of(row.billed, total_billed)}"
-        f" whole_file_reads={row.whole_file_reads:,} whole_file_tokens={row.whole_file_tokens:,}"
-        f" whole_file_weight_share={render._pct_of(whole_weight, total_billed)}"
-        f" all_read_weight_share={render._pct_of(row.all_read_weight, total_billed)}"
-    )
-    print(
-        f"    of whole: large={render._pct_of(row.large_weight, whole_weight)}"
-        f" large_unedited={render._pct_of(row.large_unedited_weight, whole_weight)}"
-        f" repeat_in_agent={render._pct_of(row.repeat_in_agent_weight, whole_weight)}"
-        f" seen_elsewhere={render._pct_of(row.seen_elsewhere_weight, whole_weight)}"
+        f"    of whole: large={render._fmt_pct(figures.large_pct)}"
+        f" large_unedited={render._fmt_pct(figures.large_unedited_pct)}"
+        f" repeat_in_agent={render._fmt_pct(figures.repeat_in_agent_pct)}"
+        f" seen_elsewhere={render._fmt_pct(figures.seen_elsewhere_pct)}"
         f" kinds: {kinds}"
     )
 
 
 def _add_read_cost_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register the read-cost subparser on build_parser()'s subparsers action,
-    binding cmd_read_cost through set_defaults(func=...).
-    """
     p_read_cost = subparsers.add_parser(
         "read-cost",
         help=(

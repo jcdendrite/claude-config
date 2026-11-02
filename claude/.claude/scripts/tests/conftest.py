@@ -903,10 +903,9 @@ def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, l
 
 
 def _read_result(tool_id: str, content, *, is_error: bool = False) -> dict:
-    """A user-record tool_result for a Read call. `content` is either a plain
-    string (a real Read's text output) or a content-block list (e.g. an
-    image result) — read-scope's own classification depends on telling the
-    two apart, mirroring _tool_result's role for edit-format's tests."""
+    """A user-record tool_result for a Read call, shared by the read-scope and read-cost tests. `content` is
+    either a plain string (a real Read's text output) or a content-block list (e.g. an image result); the
+    string-versus-list split is how an image result is told apart from text."""
     return _user_msg([{"type": "tool_result", "tool_use_id": tool_id, "content": content, "is_error": is_error}])
 
 
