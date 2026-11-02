@@ -27,6 +27,7 @@ from helpers import (
     isolated_git_config_env,
     path_with_failing_tool_shim,
     unwrapped_check_ignore_status,
+    write_repo_file,
 )
 
 # claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_author_outcome.py.
@@ -362,15 +363,6 @@ def repo(tmp_path) -> Path:
     return init_git_repo(tmp_path / "repo", branch="feature")
 
 
-def _write(repo: Path, name: str, content: str | bytes) -> None:
-    path = repo / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(content, bytes):
-        path.write_bytes(content)
-    else:
-        path.write_text(content)
-
-
 def _site_hash(repo: Path, path: str, start: int, end: int) -> subprocess.CompletedProcess:
     return _call("_review_ledger_site_hash", str(repo), path, str(start), str(end))
 
@@ -383,19 +375,19 @@ def _hash_of(repo: Path, path: str, start: int, end: int) -> str:
 
 class TestSiteHash:
     def test_is_the_first_12_hex_digits_of_the_sha256_of_the_range_text(self, repo):
-        _write(repo, "a.txt", "one\ntwo\nthree\nfour\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\nthree\nfour\n")
 
         digest = _hash_of(repo, "a.txt", 2, 3)
 
         assert digest == hashlib.sha256(b"two\nthree").hexdigest()[:12]
 
     def test_an_edit_inside_the_range_changes_it_and_an_edit_outside_does_not(self, repo):
-        _write(repo, "a.txt", "one\ntwo\nthree\nfour\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\nthree\nfour\n")
         before = _hash_of(repo, "a.txt", 2, 3)
 
-        _write(repo, "a.txt", "ONE\ntwo\nthree\nfour\n")
+        write_repo_file(repo, "a.txt", "ONE\ntwo\nthree\nfour\n")
         outside = _hash_of(repo, "a.txt", 2, 3)
-        _write(repo, "a.txt", "one\ntwo\nthree, reworded\nfour\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\nthree, reworded\nfour\n")
         inside = _hash_of(repo, "a.txt", 2, 3)
 
         assert outside == before
@@ -403,20 +395,20 @@ class TestSiteHash:
 
     def test_an_edit_anywhere_in_a_single_long_line_changes_it(self, repo):
         line = "word " * 200
-        _write(repo, "a.txt", f"{line}\n")
+        write_repo_file(repo, "a.txt", f"{line}\n")
         before = _hash_of(repo, "a.txt", 1, 1)
 
-        _write(repo, "a.txt", f"{line[:500]}X{line[501:]}\n")
+        write_repo_file(repo, "a.txt", f"{line[:500]}X{line[501:]}\n")
 
         assert _hash_of(repo, "a.txt", 1, 1) != before
 
     def test_a_range_ending_at_an_unterminated_last_line_hashes_it(self, repo):
-        _write(repo, "a.txt", "one\ntwo")
+        write_repo_file(repo, "a.txt", "one\ntwo")
 
         assert _hash_of(repo, "a.txt", 2, 2) == hashlib.sha256(b"two").hexdigest()[:12]
 
     def test_a_range_one_line_past_an_unterminated_last_line_is_rejected(self, repo):
-        _write(repo, "a.txt", "one\ntwo")
+        write_repo_file(repo, "a.txt", "one\ntwo")
 
         result = _site_hash(repo, "a.txt", 2, 3)
 
@@ -424,7 +416,7 @@ class TestSiteHash:
         assert "past the end of the file" in result.stderr
 
     def test_a_range_starting_inside_the_file_and_ending_past_it_is_rejected(self, repo):
-        _write(repo, "a.txt", "one\ntwo\nthree")
+        write_repo_file(repo, "a.txt", "one\ntwo\nthree")
 
         result = _site_hash(repo, "a.txt", 2, 9)
 
@@ -432,24 +424,24 @@ class TestSiteHash:
         assert "past the end of the file" in result.stderr
 
     def test_a_newline_added_at_end_of_file_does_not_change_it(self, repo):
-        _write(repo, "a.txt", "one\ntwo")
+        write_repo_file(repo, "a.txt", "one\ntwo")
         before = _hash_of(repo, "a.txt", 1, 2)
 
-        _write(repo, "a.txt", "one\ntwo\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\n")
 
         assert _hash_of(repo, "a.txt", 1, 2) == before
 
     def test_a_change_from_lf_to_crlf_changes_it(self, repo):
-        _write(repo, "a.txt", b"one\ntwo\n")
+        write_repo_file(repo, "a.txt", b"one\ntwo\n")
         before = _hash_of(repo, "a.txt", 1, 2)
 
-        _write(repo, "a.txt", b"one\r\ntwo\r\n")
+        write_repo_file(repo, "a.txt", b"one\r\ntwo\r\n")
 
         assert _hash_of(repo, "a.txt", 1, 2) != before
 
     @pytest.mark.parametrize("content", ["one\n\n   \n\t\nfour\n", "one\n\n\n\nfour\n"])
     def test_a_blank_only_range_is_rejected(self, repo, content):
-        _write(repo, "a.txt", content)
+        write_repo_file(repo, "a.txt", content)
 
         result = _site_hash(repo, "a.txt", 2, 4)
 
@@ -496,22 +488,22 @@ class TestSiteHash:
         assert "resolves outside the repository" in result.stderr
 
     def test_a_symlink_to_a_file_inside_the_repo_hashes_the_target_text(self, repo):
-        _write(repo, "real/a.txt", "one\ntwo\n")
+        write_repo_file(repo, "real/a.txt", "one\ntwo\n")
         (repo / "alias.txt").symlink_to("real/a.txt")
 
         assert _hash_of(repo, "alias.txt", 1, 2) == _hash_of(repo, "real/a.txt", 1, 2)
 
     def test_reads_the_working_tree_not_the_index(self, repo):
-        _write(repo, "a.txt", "one\ntwo\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\n")
         _git(repo, "add", "a.txt")
         staged = _hash_of(repo, "a.txt", 1, 2)
 
-        _write(repo, "a.txt", "one\ntwo, edited unstaged\n")
+        write_repo_file(repo, "a.txt", "one\ntwo, edited unstaged\n")
 
         assert _hash_of(repo, "a.txt", 1, 2) != staged
 
     def test_text_staged_at_decision_time_hashes_the_same_once_committed(self, repo):
-        _write(repo, "a.txt", "one\ntwo\n")
+        write_repo_file(repo, "a.txt", "one\ntwo\n")
         _git(repo, "add", "a.txt")
         staged = _hash_of(repo, "a.txt", 1, 2)
 
@@ -1223,7 +1215,7 @@ def _settled_at(repo: Path, path: str, start: int, end: int, **fields) -> dict:
 
 class TestCheckCarry:
     def test_an_unchanged_block_at_the_same_range_with_the_cited_line_inside_is_accepted(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:2")
@@ -1232,7 +1224,7 @@ class TestCheckCarry:
         assert result.stdout == decision["site_hash"]
 
     def test_a_cited_line_outside_the_carry_range_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT + "x = 3\n")
+        write_repo_file(repo, "a.py", _BLOCK_TEXT + "x = 3\n")
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:3")
@@ -1241,7 +1233,7 @@ class TestCheckCarry:
         assert "not inside the carry's --source" in result.stderr
 
     def test_a_cited_span_wider_than_the_carry_range_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT + "x = 3\n")
+        write_repo_file(repo, "a.py", _BLOCK_TEXT + "x = 3\n")
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:2-3")
@@ -1250,8 +1242,8 @@ class TestCheckCarry:
         assert "not inside the carry's --source" in result.stderr
 
     def test_a_cited_line_in_another_path_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
-        _write(repo, "b.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "b.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="b.py:1")
@@ -1260,9 +1252,9 @@ class TestCheckCarry:
         assert "not inside the carry's --source" in result.stderr
 
     def test_a_carry_naming_the_decisions_old_range_while_the_cited_line_is_elsewhere_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:4")
 
@@ -1271,9 +1263,9 @@ class TestCheckCarry:
         assert "no longer matches" not in result.stderr
 
     def test_an_edit_inside_the_range_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "def settled_block():\n    return 2\n")
+        write_repo_file(repo, "a.py", "def settled_block():\n    return 2\n")
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:1")
 
@@ -1281,18 +1273,18 @@ class TestCheckCarry:
         assert "no longer matches the decided block" in result.stderr
 
     def test_lines_inserted_above_are_accepted_when_the_carry_names_the_new_range(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
 
         result = _carry_check(repo, ledger, decision, source="a.py:3-4", cited_line="a.py:3")
 
         assert result.returncode == 0, result.stderr
 
     def test_the_same_insertion_naming_the_old_range_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", "# new header\n# another\n" + _BLOCK_TEXT)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:1")
 
@@ -1300,9 +1292,9 @@ class TestCheckCarry:
         assert "no longer matches the decided block" in result.stderr
 
     def test_a_renamed_file_is_accepted_when_the_carry_names_the_new_path(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "renamed/b.py", _BLOCK_TEXT)
+        write_repo_file(repo, "renamed/b.py", _BLOCK_TEXT)
         (repo / "a.py").unlink()
 
         result = _carry_check(repo, ledger, decision, source="renamed/b.py:1-2", cited_line="renamed/b.py:1")
@@ -1310,10 +1302,10 @@ class TestCheckCarry:
         assert result.returncode == 0, result.stderr
 
     def test_text_edited_unstaged_only_after_being_staged_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         _git(repo, "add", "a.py")
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "def settled_block():\n    return 99  # edited, never staged\n")
+        write_repo_file(repo, "a.py", "def settled_block():\n    return 99  # edited, never staged\n")
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:1")
 
@@ -1321,7 +1313,7 @@ class TestCheckCarry:
         assert "no longer matches the decided block" in result.stderr
 
     def test_text_staged_at_decision_time_then_committed_is_accepted(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         _git(repo, "add", "a.py")
         decision = _settled_at(repo, "a.py", 1, 2)
         _git(repo, "commit", "-q", "-m", "commit the decided text")
@@ -1333,7 +1325,7 @@ class TestCheckCarry:
     def test_a_carry_range_ending_at_an_unterminated_last_line_is_accepted_and_one_line_past_is_rejected(
         self, repo, ledger
     ):
-        _write(repo, "a.py", "first\nlast line, no newline")
+        write_repo_file(repo, "a.py", "first\nlast line, no newline")
         decision = _settled_at(repo, "a.py", 2, 2)
 
         at_end = _carry_check(repo, ledger, decision, source="a.py:2-2", cited_line="a.py:2")
@@ -1343,18 +1335,18 @@ class TestCheckCarry:
         assert past_end.returncode == 1
 
     def test_a_trailing_newline_added_at_end_of_file_is_accepted(self, repo, ledger):
-        _write(repo, "a.py", "first\nlast line, no newline")
+        write_repo_file(repo, "a.py", "first\nlast line, no newline")
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "first\nlast line, no newline\n")
+        write_repo_file(repo, "a.py", "first\nlast line, no newline\n")
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:2")
 
         assert result.returncode == 0, result.stderr
 
     def test_a_change_from_lf_to_crlf_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", b"one\ntwo\n")
+        write_repo_file(repo, "a.py", b"one\ntwo\n")
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", b"one\r\ntwo\r\n")
+        write_repo_file(repo, "a.py", b"one\r\ntwo\r\n")
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:1")
 
@@ -1362,9 +1354,9 @@ class TestCheckCarry:
         assert "no longer matches the decided block" in result.stderr
 
     def test_a_carry_range_over_blank_lines_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
-        _write(repo, "a.py", "\n\n   \n")
+        write_repo_file(repo, "a.py", "\n\n   \n")
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py:1")
 
@@ -1372,7 +1364,7 @@ class TestCheckCarry:
         assert "only whitespace" in result.stderr
 
     def test_a_missing_file_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
         (repo / "a.py").unlink()
 
@@ -1382,7 +1374,7 @@ class TestCheckCarry:
         assert "does not exist" in result.stderr
 
     def test_a_path_only_cited_line_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py:1-2", cited_line="a.py")
@@ -1391,7 +1383,7 @@ class TestCheckCarry:
         assert "needs a line number" in result.stderr
 
     def test_a_path_only_carry_source_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _settled_at(repo, "a.py", 1, 2)
 
         result = _carry_check(repo, ledger, decision, source="a.py", cited_line="a.py:1")
@@ -1400,7 +1392,7 @@ class TestCheckCarry:
         assert "range-form" in result.stderr
 
     def test_a_defer_carry_restating_the_decisions_criterion_is_accepted(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _defer(_DECISION_ID, source="a.py:1-2", site_hash=_hash_of(repo, "a.py", 1, 2))
 
         result = _carry_check(
@@ -1410,7 +1402,7 @@ class TestCheckCarry:
         assert result.returncode == 0, result.stderr
 
     def test_a_defer_carry_with_a_different_criterion_is_rejected(self, repo, ledger):
-        _write(repo, "a.py", _BLOCK_TEXT)
+        write_repo_file(repo, "a.py", _BLOCK_TEXT)
         decision = _defer(_DECISION_ID, source="a.py:1-2", site_hash=_hash_of(repo, "a.py", 1, 2))
 
         result = _carry_check(

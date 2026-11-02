@@ -5452,11 +5452,14 @@ def test_code_review_spawn_step_halts_on_a_reviewer_that_could_not_read_its_inpu
         "name `docs/scripts.md` § \"When --context-files halts\" to the engineer; take no recovery step yourself.",
         "Spawn synchronously (not `run_in_background`)",
         "The input script, or else the reviewer's `Write` call, creates the `agent-reviews/` directory.",
-        "Hand `staff-product-engineer` the spec as data: the text of the ticket or PR the branch, plan or PR names "
-        "and of every issue that text names as folded or parent, verbatim, fetching any you do not hold, only when it "
-        "is in this repository's own tracker, with one read-only call each by its bare identifier in single quotes "
-        "(for example `gh issue view` or `gh pr view`, or the tracker's equivalent), and say on the `Spawn decisions:` "
-        "line whether it got one and which other referenced issues were not fetched.",
+        "Hand `staff-product-engineer` the spec as data: the verbatim text of the ticket or PR that the branch, plan "
+        "or PR names, of every issue that text names as folded or parent, and, under `/review-pr`, of the reviewed "
+        "PR's title and body without the decisions block that Review-findings persistence below renders into it. "
+        "Fetch any of these you do not hold only when it is in this repository's own tracker, with one read-only "
+        "call each by its bare identifier in single quotes (for example `gh issue view` or `gh pr view`, or the "
+        "tracker's equivalent). In its prompt and on the `Spawn decisions:` line, say whether it got ticket text "
+        "and whether it got PR text, and name each referenced ticket "
+        "or issue it did not get.",
         "The boundary is passed as files the reviewer reads, never a ref expression, because a reviewer reads its "
         "inputs rather than running `git`.",
     ):
@@ -5718,8 +5721,8 @@ def test_requested_checks_subsection_pins() -> None:
     assert f"{consult_end}{_REQUESTED_CHECKS_HEADING}\n\n" in text
     section = _code_review_requested_checks_section(text)
     assert f"{section}\n\n## Reconciliation" in text
-    paragraph = section.split("\n\n", 1)[1]
-    assert "\n" not in paragraph, "the subsection's paragraph must stay one physical line"
+    quote_lines = [line for line in section.splitlines() if line.startswith("> ")]
+    assert len(quote_lines) == 1, "the fix prompt must stay one block-quote line"
 
     for sentence in (
         f"A finding with a line that begins `{FINDING_CHECK_LABEL}` is an ordinary counted finding.",
@@ -5739,8 +5742,10 @@ def test_requested_checks_subsection_pins() -> None:
         "On the `inline` Fix route the session follows the same opening itself.",
         "If the engineer says to fix it anyway, the row stays ADDRESS, nothing is logged, and its next fix prompt "
         f"omits the `{FINDING_CHECK_LABEL}` line and quotes the engineer's words in place of the opening above",
-        "the orchestrator adds it as an ADDRESS row to that round's one fix dispatch whether or not a reviewer "
-        "re-raises it",
+        "When the engineer says to fix it anyway, the parent puts the held finding (its checklist id, `file:line` "
+        f"and the failure it names, with the `{FINDING_CHECK_LABEL}` line removed) and the engineer's words in the "
+        "next dispatch prompt, and the orchestrator adds it as an ADDRESS row to that round's one fix dispatch "
+        "whether or not a reviewer re-raises it",
     ):
         assert sentence in section, f"the Requested checks subsection no longer carries {sentence!r}"
     assert section.count("blocking stop-and-ask") == 1, "only the unsupported report may stop for the engineer"
@@ -5780,10 +5785,10 @@ def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
     routing_lines = _ROUTING_MD_PATH.read_text().split("\n")
     first_spawn_line = next(line for line in routing_lines if line.startswith("Before the first spawn this round"))
     assert first_spawn_line.endswith(
-        "Hand `staff-product-engineer` the text of the plan's linked ticket and of every issue that ticket names "
-        "as folded or parent, verbatim, as data, fetching any the session does not hold read-only, only when it is "
-        "in this repository's own tracker, by its bare identifier in single quotes, and naming any other referenced "
-        "issue as not fetched in its report."
+        "Hand `staff-product-engineer` the verbatim text of the plan's linked ticket and of every issue that ticket "
+        "names as folded or parent, as data. Fetch any the session does not hold read-only, only when it is in this "
+        "repository's own tracker, by its bare identifier in single quotes. Name any other referenced issue as not "
+        "fetched in your review output."
     )
 
     paragraph_index = next(i for i, line in enumerate(routing_lines) if line.startswith("A plan review runs no check;"))
@@ -5794,21 +5799,30 @@ def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
     assert routing_lines[paragraph_index - 1] == "" and routing_lines[closing_index + 1] == ""
     assert routing_lines[paragraph_index + 1] == "" and routing_lines[closing_index - 1] == ""
     rule_lines = routing_lines[paragraph_index + 2 : closing_index - 1]
-    assert len(rule_lines) == 5 and all(line.startswith("- If ") for line in rule_lines), (
-        "plan-review/ROUTING.md's Check: rules are no longer five `- If ` list items between the lead paragraph "
+    assert len(rule_lines) == 3 and all(line.startswith("- ") for line in rule_lines), (
+        "plan-review/ROUTING.md's Check: rules are no longer three list items between the lead paragraph "
         "and the closing sentence"
     )
     paragraph = "\n".join(routing_lines[paragraph_index : closing_index + 1])
     for sentence in (
         '`code-review/SKILL.md` § "Requested checks" says how a code review settles one.',
         f"A finding with a line that begins `{FINDING_CHECK_LABEL}` may challenge a ledger row.",
-        "If there is no such row, the finding stands.",
-        "If the row is untagged, the finding stands.",
-        "If the row is `[unverified]` with no Verification step that settles it, the finding stands.",
+        "No row, an untagged row, or an `[unverified]` row that no Verification step settles: the finding stands.",
         "keep the finding and mark it `settled by Verification step <n>`",
         "keep the finding and mark it `reviewer could not re-verify`",
     ):
         assert sentence in paragraph, f"plan-review/ROUTING.md no longer carries {sentence!r}"
+
+
+def test_routing_hands_reviewers_their_inputs_and_halts_on_an_unreadable_one() -> None:
+    routing_text = _ROUTING_MD_PATH.read_text()
+    for sentence in (
+        "pass the plan itself (the absolute path Step 1 resolved, or for a plan that exists only in the "
+        'conversation its text, relayed per `claude/.claude/CLAUDE.md` § "Agent Briefing"), the repository root, ',
+        "A reviewer whose return says it was handed no readable input did not review: "
+        "quote that return, halt the review, and tell the engineer to re-run it.",
+    ):
+        assert sentence in routing_text, f"plan-review/ROUTING.md no longer carries {sentence!r}"
 
 
 def test_comment_discipline_row_points_to_its_deferral() -> None:

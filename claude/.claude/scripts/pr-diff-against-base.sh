@@ -101,7 +101,6 @@ _context_exit_trap() {
   exit "$exit_code"
 }
 
-# A halt prints one stderr line naming the step, the failing status and an optional detail, then exits 1.
 _context_halt() {
   _pr_diff_halt_line "$1" "$2" "${3-}" >&2
   CONTEXT_EXIT_KIND=halted
@@ -114,7 +113,7 @@ _context_usage_error() {
   exit 2
 }
 
-# Fills the lane arrays and CONTEXT_SOURCE; exits 2 on any usage error.
+# Fills the lane arrays and CONTEXT_SOURCE.
 _context_validate_args() {
   local lane_arg agent seen_agents=' ' source_count
   if [ -n "$CONTEXT_DUPLICATE_FLAG" ]; then
@@ -179,7 +178,6 @@ _context_validate_args() {
   fi
 }
 
-# Unsets the git environment, resolves the base, finds the repository root and makes the private temp directory.
 _context_prepare() {
   local physical_tmp_base='' physical_root=''
   # Unsets every name in _LIB_GIT_REPOSITORY_SELECTING_ENV_VARS, which _lib.sh defines.
@@ -217,7 +215,7 @@ _context_prepare() {
   readonly CONTEXT_TMP_DIR
 }
 
-# Runs the core git calls into temp files and fills the PR_DIFF_ROW_* arrays; prints DIFF_EMPTY and exits 0 when nothing changed.
+# Exits 0 from here with DIFF_EMPTY when nothing changed.
 _context_collect_rows() {
   local head_status=0 recompute_status=0 handed_status=0 handed='' recomputed=''
   DIFF_PIN=(
@@ -301,7 +299,6 @@ _context_collect_rows() {
   fi
 }
 
-# Checks statuses, classifies rows, marks withheld rows and computes the listing id.
 _context_build_listing() {
   local index old_path
   CONTEXT_STEP='status-check'
@@ -348,7 +345,6 @@ _context_build_listing() {
   LISTING_ID=$PR_DIFF_RESULT
 }
 
-# The listing, one CHANGED_PATH line per index row, goes to stderr in a single write.
 # The listing has no row ceiling, so a listing of thousands of rows is the point to add one.
 _context_print_listing() {
   local index withheld_field listing_text
@@ -371,7 +367,6 @@ _context_print_listing() {
   printf '%s' "$listing_text" >&2
 }
 
-# Exits 2 on a stale id, a number outside 1..count, or a listed ciso-reviewer lane that omits a withheld row.
 _context_check_lanes_against_listing() {
   local lane number index
   if [ "$CONTEXT_LISTING_SEEN" -eq 1 ] && [ "$CONTEXT_LISTING_ID" != "$LISTING_ID" ]; then
@@ -401,7 +396,6 @@ _context_check_lanes_against_listing() {
   done
 }
 
-# Exits 3 when a lane-file kind is not ignored, exits 1 when the check itself fails, then validates or creates agent-reviews/.
 _context_prepare_output_dir() {
   local lane kind ignore_status stem final_path
   local -a kinds=(index diff)
@@ -445,7 +439,6 @@ _context_prepare_output_dir() {
   done
 }
 
-# Writes the unrestricted shared diff outside the repository, checks its diff --git headers against the index rows and cuts one .diff temp per lane.
 _context_slice_lane_diffs() {
   local grep_status=0 lane row reason preamble run header_index shared_file found_file
   local -a keep=() keep_indices=()
@@ -507,7 +500,6 @@ _context_slice_lane_diffs() {
   rm -f -- "$shared_file" "$found_file"
 }
 
-# Fetches the pre-image of row $1 into a temp, or records why it is absent.
 _context_enrich_base() {
   local row=$1 size_text='' size_status=0 blob_status=0 base_temp blob
   blob=${PR_DIFF_ROW_OLD_BLOB[row]}
@@ -555,7 +547,6 @@ _context_log_into_file() {
   _lib_capped_for "$CONTEXT_GIT_CALL_SECONDS" git "$@" 2>/dev/null | head -c "$((HISTORY_BYTES_PER_PATH + 1))" > "$file" || HISTORY_LOG_STATUS=$?
 }
 
-# Fetches the history of row $1's pre-image path into a temp, or records why it is absent.
 _context_enrich_history() {
   local row=$1 history_temp commit_temp pre_image_path history_exceeds=0 commit_exceeds=0
   local -a log_pin=(
@@ -615,8 +606,6 @@ _context_enrich_history() {
   HISTORY_FILE_ROW[$history_temp]=$row
 }
 
-# Withholds, whole, any history body whose patch headers name a path the Read-side credential gates would deny.
-# One grep over every body and one pass of each predicate, so the process count does not grow with the number of bodies.
 # The grep runs inside the history directory and prints "<name>:<line>" records, which any grep dialect does; a temp name holds no colon, so the first colon ends the name.
 # A header scan that fails marks every history body unavailable, since no header was checked. A scan that finds no header has still completed, so grep's status 1 is success.
 # This runs outside the enrichment clock, and its time grows with the number of header lines, not rows.
@@ -657,7 +646,6 @@ _context_withhold_history_bodies() {
   done
 }
 
-# Fetches base and history once per path, in enrichment order, within the budget.
 _context_enrich() {
   local row status old_mode eligible_base
   CONTEXT_STEP='enrichment'
@@ -690,8 +678,6 @@ _context_enrich() {
   _context_withhold_history_bodies
 }
 
-# Appends row $1's base and history bodies to the current lane's temps and sets ROW_BASE_RANGE, ROW_HISTORY_RANGE and ROW_BODY_NOTES.
-# A body is omitted, and its row says so, once the lane's bodies have reached CONTEXT_BYTES_PER_LANE.
 _context_lane_row_bodies() {
   local row=$1 state
   ROW_BASE_RANGE=- ROW_HISTORY_RANGE=- ROW_BODY_NOTES=''
@@ -745,7 +731,6 @@ _context_lane_row_bodies() {
   esac
 }
 
-# Writes the index, base and history temps of every lane and builds the LANE_ROW lines.
 _context_compose_lane_files() {
   local lane row stem form member_count next_member in_lane lane_label generated
   local rows_text header_text row_path row_old_path notes_extra lane_field
@@ -831,7 +816,7 @@ _context_compose_lane_files() {
   done
 }
 
-# Moves every temp onto its final name, the index last, and records each so a later failure removes it again.
+# The index moves last, and each moved file is recorded so a later failure removes it again.
 _context_move_into_place() {
   local lane stem final_path
   CONTEXT_STEP='write'

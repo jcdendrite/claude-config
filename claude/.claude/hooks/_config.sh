@@ -1040,40 +1040,25 @@ _config_quote_value_for_write() {
 }
 
 # _config_set KEY VALUE [CONFIG_DIR_OVERRIDE]
-# The only writer. Preserves comments, blank lines, and key order: rewrites
-# KEY's own line in place at its existing position if present (normalizing
-# that one line to `key = value`), else appends a new `key = value` line.
-# Refuses to write at all (returns 1, target file left byte-for-byte
-# unchanged) when the existing file contains any line outside the
-# value-subset grammar -- a write against content this reader doesn't fully
-# understand risks silently discarding it.
+# The only writer. Preserves comments, blank lines, and key order.
+# Refuses to write at all when the existing file contains any line outside the
+# value-subset grammar, because a write against content this reader doesn't
+# fully understand risks silently discarding it.
 #
-# Also refuses (returns 1, no write) when VALUE doesn't match KEY's own
-# declared config-keys.psv type: a `bool` key accepts only `true`/`false`;
-# an `enum:X` key accepts only `false` or the literal `X`. VALUE itself is
-# always passed bare (e.g. `dollars`, never `"dollars"`). The line actually
-# written quotes an `enum:X` key's own literal (`key = "dollars"`) via
-# _config_quote_value_for_write above. `false` itself stays bare for either
-# key type.
+# VALUE is always passed bare (e.g. `dollars`, never `"dollars"`); the line
+# written quotes an `enum:X` key's own literal via _config_quote_value_for_write
+# above.
 #
-# Atomicity: mktemp targets the SAME directory as the state file, not a
-# bare `mktemp` (which defaults to $TMPDIR, commonly a different filesystem
-# — silently defeating `mv`'s same-filesystem atomicity via EXDEV or a
-# copy+unlink fallback). Matches pr-diff-against-base.sh:69 and
-# _stow_migration_lib.sh:551's existing precedent. The new content is built
-# in a shell variable first, then written to the temp file in one `printf`
-# whose own exit status is checked before the `mv`. This file has no
-# `set -e`, per its own header, so a write failure such as ENOSPC would
-# otherwise leave a truncated temp file that still gets installed as though
-# the write had fully succeeded. A nonzero status instead removes the temp
-# file and returns 1, rather than clobbering the real state file with
-# partial content.
+# mktemp targets the SAME directory as the state file, because a bare `mktemp`
+# defaults to $TMPDIR, commonly a different filesystem, which defeats `mv`'s
+# atomicity via EXDEV or a copy+unlink fallback.
+# The `printf` status is checked before the `mv`. This file has no `set -e`, per
+# its own header, so a write failure such as ENOSPC would otherwise install a
+# truncated temp file as though the write had succeeded.
 #
-# Rejects an empty or exactly-`/` resolved config dir before any
-# mkdir/write, failing the same way an unresolvable config dir already
-# fails (exit 2) — neither _lib_config_dir nor config_dir() validates its
-# own output beyond "absolute," and this is the first thing in this repo
-# that routes a WRITE through that resolver.
+# An empty or exactly-`/` resolved config dir is rejected (exit 2) before any
+# write. Neither _lib_config_dir nor config_dir() validates its own output
+# beyond "absolute," and this is the first write routed through that resolver.
 #
 # Sanctioned callers only: install.sh's interactive [y/N] path and
 # migrate-legacy-config.sh's import phase. Not mechanically enforced at the

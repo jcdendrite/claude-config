@@ -15,6 +15,7 @@ from helpers import (
     HOOKS_DIR,
     assert_cap_engaged,
     build_path_without,
+    commit_all,
     cumulative_review_value,
     head_sha,
     init_git_repo,
@@ -247,11 +248,6 @@ class TestLibHashDiffText:
         assert result.stdout.strip() == ""
 
 
-def _commit_all(repo: Path, message: str) -> None:
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
-
-
 BODY_LOOKALIKE_PATH = "body-lookalikes.txt"
 
 
@@ -290,7 +286,7 @@ def entry_shapes_repo(tmp_path_factory) -> Path:
     (repo / BODY_LOOKALIKE_PATH).write_text(
         "\n".join(_body_lookalike_lines("7") + _body_lookalike_lines("5")) + "\n"
     )
-    _commit_all(repo, "shape fixtures, before")
+    commit_all(repo, "shape fixtures, before")
     set_gitlink(repo, "gitlink", GITLINK_BEFORE)
     subprocess.run(["git", "commit", "-q", "-m", "gitlink, before"], cwd=repo, check=True)
 
@@ -507,9 +503,9 @@ class TestGitDiffEntryShapes:
         """The one body line without a prefix character, so the grammar pin above is not vacuous for it."""
         repo = init_git_repo(tmp_path / "blank-context")
         (repo / "blank.txt").write_text("a\n\nb\nc\n")
-        _commit_all(repo, "before")
+        commit_all(repo, "before")
         (repo / "blank.txt").write_text("a\n\nb\nC\n")
-        _commit_all(repo, "after")
+        commit_all(repo, "after")
         default_diff = isolated_git_diff(repo, "HEAD~1", "HEAD")
         suppressed_diff = isolated_git_diff(repo, "HEAD~1", "HEAD", config=SUPPRESS_BLANK_EMPTY_CONFIG)
         assert b"\n \n" in default_diff
@@ -556,14 +552,14 @@ def _commit_variant(repo: Path, base_sha: str, branch: str, *file_sets: dict[str
     for file_set in file_sets:
         for name, content in file_set.items():
             (repo / name).write_bytes(content)
-        _commit_all(repo, f"{branch} step")
+        commit_all(repo, f"{branch} step")
     return isolated_git_diff(repo, "HEAD~1", "HEAD")
 
 
 def _repo_with_base_file(tmp_path: Path, name: str, content: bytes) -> tuple[Path, str]:
     repo = init_git_repo(tmp_path / "variants")
     (repo / name).write_bytes(content)
-    _commit_all(repo, "base")
+    commit_all(repo, "base")
     return repo, head_sha(repo)
 
 
@@ -862,15 +858,15 @@ def empty_file_repo(tmp_path: Path) -> Path:
     for name in ("a-deleted.empty", "z-deleted.empty"):
         (repo / name).write_text("")
     (repo / "m-middle.txt").write_text("one\ntwo\n")
-    _commit_all(repo, "before")
+    commit_all(repo, "before")
     for name in ("a-created.empty", "z-created.empty"):
         (repo / name).write_text("")
     (repo / "m-middle.txt").write_text("one\nTWO\n")
-    _commit_all(repo, "create empty files")
+    commit_all(repo, "create empty files")
     for name in ("a-deleted.empty", "z-deleted.empty"):
         (repo / name).unlink()
     (repo / "m-middle.txt").write_text("one\ntwo\n")
-    _commit_all(repo, "delete empty files")
+    commit_all(repo, "delete empty files")
     return repo
 
 
@@ -949,7 +945,7 @@ class TestLibCumulativeReviewValue:
         """A binary entry's `index` line is its only content identity."""
         repo, _first_commit = _repo_with_base_file(tmp_path, "x.bin", b"\x00base")
         (repo / "y.bin").write_bytes(b"\x00base")
-        _commit_all(repo, "second path, same blob")
+        commit_all(repo, "second path, same blob")
         base_sha = head_sha(repo)
         edit_one = _commit_variant(repo, base_sha, "one", {"x.bin": b"\x00one"})
         edit_two = _commit_variant(repo, base_sha, "two", {"x.bin": b"\x00two"})
@@ -987,7 +983,7 @@ class TestLibCumulativeReviewValue:
         for branch, replacement in (("last-one", "H1"), ("last-two", "H2")):
             subprocess.run(["git", "checkout", "-q", "-b", branch, base_sha], cwd=repo, check=True)
             (repo / "f.txt").write_bytes(with_last_hunk(replacement))
-            _commit_all(repo, branch)
+            commit_all(repo, branch)
             diffs.append(isolated_git_diff(repo, "HEAD~1", "HEAD", config=config))
 
         assert len(re.findall(rb"^@@ ", diffs[0], re.MULTILINE)) == 2, "the diff must hold two hunks"
@@ -1173,9 +1169,9 @@ class TestLibCumulativeReviewValue:
         """`entry_shapes_repo` holds no blank context line, so its suppress-blank-empty variant equals the default one."""
         repo = init_git_repo(tmp_path / "blank-context")
         (repo / "blank.txt").write_text("a\n\nb\nc\n")
-        _commit_all(repo, "before")
+        commit_all(repo, "before")
         (repo / "blank.txt").write_text("a\n\nb\nC\n")
-        _commit_all(repo, "after")
+        commit_all(repo, "after")
         diff = isolated_git_diff(repo, "HEAD~1", "HEAD", config=SUPPRESS_BLANK_EMPTY_CONFIG)
         assert b"\n\n" in diff
 
@@ -1237,13 +1233,13 @@ class TestLibCumulativeReviewValue:
         config = (f"core.quotePath={quote_path}",)
         repo, base_sha = _repo_with_base_file(tmp_path, "p\u00e4th.txt", "h\u00e9llo\n".encode())
         (repo / "p\u00f6th.txt").write_text("h\u00e9llo\n")
-        _commit_all(repo, "second multibyte path")
+        commit_all(repo, "second multibyte path")
         base_sha = head_sha(repo)
 
         def diff_of(branch: str, name: str, content: str) -> bytes:
             subprocess.run(["git", "checkout", "-q", "-b", branch, base_sha], cwd=repo, check=True)
             (repo / name).write_text(content)
-            _commit_all(repo, branch)
+            commit_all(repo, branch)
             return isolated_git_diff(repo, "HEAD~1", "HEAD", config=config)
 
         content_one = diff_of("content-one", "p\u00e4th.txt", "h\u00e9llo w\u00f6rld\n")
@@ -1261,7 +1257,7 @@ class TestLibCumulativeReviewValue:
         """A gitlink entry is identified by its `Subproject commit` line, which passes through."""
         repo = init_git_repo(tmp_path / "gitlinks")
         (repo / "seed.txt").write_text("seed\n")
-        _commit_all(repo, "seed")
+        commit_all(repo, "seed")
         set_gitlink(repo, "gitlink", GITLINK_BEFORE)
         subprocess.run(["git", "commit", "-q", "-m", "gitlink before"], cwd=repo, check=True)
         base_sha = head_sha(repo)

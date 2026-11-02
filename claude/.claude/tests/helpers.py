@@ -1386,6 +1386,20 @@ def init_git_repo_with_commit(
     return path
 
 
+def commit_all(repo: Path, message: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+
+
+def write_repo_file(repo: Path, name: str, text: str | bytes) -> None:
+    target = repo / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(text, bytes):
+        target.write_bytes(text)
+    else:
+        target.write_text(text)
+
+
 GITLINK_BEFORE = "1" * 40
 GITLINK_AFTER = "2" * 40
 

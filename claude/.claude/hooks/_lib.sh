@@ -622,7 +622,7 @@ _LIB_GIT_REPOSITORY_LOCAL_ENV_VARS=("${_LIB_GIT_REPOSITORY_SELECTING_ENV_VARS[@]
 # _lib_path_ignore_status DIR PATH
 # Returns 0 when PATH is ignored in DIR's repository, 1 when it is not, else git's or the cap's status.
 # Status 3, which git never returns here, marks an empty DIR or a failed cd, so neither reads as git's status 1 ("not ignored").
-# Writes nothing to stdout, and the git call's own 2>/dev/null also swallows _lib_capped_for's uncapped-run notice.
+# The git call's 2>/dev/null also swallows the uncapped-run notice that _lib_capped_for emits.
 # Unsets every name in _LIB_GIT_REPOSITORY_LOCAL_ENV_VARS, so an inherited value cannot point the check at another repository's ignore rules or at an env-injected excludes file.
 # Dropping the command-scope config names also drops config from the environment such as safe.directory, so a dubious-ownership repository surfaces as status 128.
 # The hook denies on that status and pr-diff-against-base.sh halts at its ignore check.
@@ -631,7 +631,6 @@ _LIB_GIT_REPOSITORY_LOCAL_ENV_VARS=("${_LIB_GIT_REPOSITORY_SELECTING_ENV_VARS[@]
 # GIT_CONFIG_NOSYSTEM is a switch that removes the system config source, not config that applies.
 # Git reads $HOME/.config/git/ignore when XDG_CONFIG_HOME is unset or empty.
 # Uses cd and not git -C because the Write tool resolves a relative PATH against the caller's cwd, which can be a repository subdirectory.
-# Runs git through _lib_capped so a stalled call cannot hang the caller.
 # Checks an empty DIR first because `cd ''` succeeds in place on bash 5.2.
 _lib_path_ignore_status() {
   local dir="$1" path="$2"

@@ -34,15 +34,18 @@ from helpers import (
     LANE_INDEX_ROW_FIELDS,
     ambient_umask,
     assert_cap_engaged,
+    commit_all,
     cumulative_review_value,
     file_mode,
     git_config_isolation_env,
+    init_git_repo_with_commit,
     installed_locale_where,
     isolated_git_diff,
     isolated_git_env,
     require_cumulative_review_value,
     scaled_shim_sleep,
     set_gitlink,
+    write_repo_file,
     write_scaled_timeout_shim,
 )
 
@@ -1937,12 +1940,7 @@ def _numbered_lines(tag: str, count: int) -> str:
 
 def _init_nested_repo(path: Path, text: str) -> None:
     """A nested repository with one commit, which `git add` records as a gitlink (mode 160000)."""
-    path.mkdir(parents=True, exist_ok=True)
-    for command in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t.com"], ["config", "user.name", "t"]):
-        subprocess.run(["git", *command], cwd=path, check=True, capture_output=True)
-    (path / "inner.txt").write_text(text)
-    subprocess.run(["git", "add", "inner.txt"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-q", "-m", "nested"], cwd=path, check=True, capture_output=True)
+    init_git_repo_with_commit(path, branch="main", file_name="inner.txt", content=text)
 
 
 # Names: a non-ASCII byte, a leading dash, a space, a colon, and one per git quoting class.
@@ -2055,24 +2053,19 @@ def _apply_realistic_changes(repo: Path) -> None:
         (repo / name).write_text(_numbered_lines(f"tricky-{index}", 6).replace("line 0002", "line two, edited"))
 
 
-def _commit_all(repo: Path, message: str) -> None:
-    _git_out(repo, "add", "-A")
-    _git_out(repo, "commit", "-q", "-m", message)
-
-
 def _build_realistic_repo(root: Path, source: str) -> Path:
     """A repository in `source`'s state: staged (changes in the index), working-tree (staged, plus an unstaged edit
     and untracked paths) or cumulative (committed on a feature branch off origin/main)."""
     local, _bare = _make_repo_with_remote(root)
     _write_realistic_base(local)
-    _commit_all(local, "realistic base")
+    commit_all(local, "realistic base")
     _git_out(local, "push", "-q", "origin", "main")
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
     if source == "cumulative":
         _git_out(local, "checkout", "-q", "-b", "feature")
     _apply_realistic_changes(local)
     if source == "cumulative":
-        _commit_all(local, "realistic change")
+        commit_all(local, "realistic change")
         return local
     _git_out(local, "add", "-A")
     if source == "working-tree":
@@ -2129,7 +2122,7 @@ def _small_repo(tmp_path: Path, source: str = "staged", *, credential: bool = Fa
     (local / "keep.txt").write_text(_numbered_lines("keep", 4))
     if credential:
         (local / _CREDENTIAL_NAME).write_text("SECRET=base-canary\n")
-    _commit_all(local, "small base")
+    commit_all(local, "small base")
     _git_out(local, "push", "-q", "origin", "main")
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
     if source == "cumulative":
@@ -2142,7 +2135,7 @@ def _small_repo(tmp_path: Path, source: str = "staged", *, credential: bool = Fa
     if extra_changes is not None:
         extra_changes(local)
     if source == "cumulative":
-        _commit_all(local, "small change")
+        commit_all(local, "small change")
     else:
         _git_out(local, "add", "-A")
     return local
@@ -2792,13 +2785,13 @@ def _conflicted_repo(tmp_path: Path) -> tuple[Path, str]:
     repo = _small_repo(tmp_path, "cumulative")
     _git_out(repo, "reset", "-q", "--hard", "origin/main")
     (repo / conflict_name).write_text("base\n")
-    _commit_all(repo, "conflict base")
+    commit_all(repo, "conflict base")
     _git_out(repo, "checkout", "-q", "-b", "other")
     (repo / conflict_name).write_text("other\n")
-    _commit_all(repo, "other side")
+    commit_all(repo, "other side")
     _git_out(repo, "checkout", "-q", "main")
     (repo / conflict_name).write_text("main side\n")
-    _commit_all(repo, "main side")
+    commit_all(repo, "main side")
     assert _git_out(repo, "merge", "-q", "other", check=False).returncode != 0
     return repo, conflict_name
 
@@ -3976,9 +3969,9 @@ def _hostile_repo(tmp_path: Path) -> Path:
     (local / "two.txt").write_text(_numbered_lines("two", 12))
     (local / "ünï.txt").write_text(_numbered_lines("uni", 6))
     _init_nested_repo(local / "gl", "gl one\n")
-    _commit_all(local, "hostile base one")
+    commit_all(local, "hostile base one")
     (local / "one.txt").write_text(_numbered_lines("one", 12).replace("line 0002", "line two, first edit"))
-    _commit_all(local, "hostile base two")
+    commit_all(local, "hostile base two")
     _git_out(local, "push", "-q", "origin", "main")
     root_commits = _git_out(local, "rev-list", "--max-parents=0", "HEAD").stdout
     file_txt_added_in = _git_out(local, "log", "--diff-filter=A", "--format=%H", "--", "file.txt").stdout
@@ -4079,16 +4072,16 @@ class TestHostileGitConfiguration:
         new name an add whose block ships, the content a direct Read of the new name returns."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, f"keys/{_RSA_KEY}", "preimage-only-canary\n" + _numbered_lines("key", 20))
-        _commit_all(local, "base")
+        write_repo_file(local, f"keys/{_RSA_KEY}", "preimage-only-canary\n" + _numbered_lines("key", 20))
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         _git_out(local, "config", "diff.renameLimit", "1")
         _git_out(local, "mv", f"keys/{_RSA_KEY}", "keys/moved-key.txt")
-        _write(local, "keys/moved-key.txt", "renamed-content line\n" + _numbered_lines("key", 20))
+        write_repo_file(local, "keys/moved-key.txt", "renamed-content line\n" + _numbered_lines("key", 20))
         # Three add destinations against one delete exceed diff.renameLimit=1, so git skips inexact pairing.
-        _write(local, "extra_a.txt", "extra a\n")
-        _write(local, "extra_b.txt", "extra b\n")
+        write_repo_file(local, "extra_a.txt", "extra a\n")
+        write_repo_file(local, "extra_b.txt", "extra b\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id, _count, rows = _parse_listing(_run_context(local, env, "--staged", list_only=True))
@@ -4176,7 +4169,7 @@ class TestForeignGitEnvironment:
         monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
         foreign = _small_repo(tmp_path / "theirs")
         (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
-        _commit_all(foreign, "foreign work")
+        commit_all(foreign, "foreign work")
         exported = {
             "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign), "GIT_INDEX_FILE": str(foreign / ".git" / "index"),
             "GIT_COMMON_DIR": str(foreign / ".git"),
@@ -4237,7 +4230,7 @@ class TestForeignGitEnvironment:
         repo = _small_repo(tmp_path / "mine", "cumulative")
         foreign = _small_repo(tmp_path / "theirs", "cumulative")
         (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
-        _commit_all(foreign, "foreign work")
+        commit_all(foreign, "foreign work")
         clean_env = _context_env(tmp_path / "mine")
         foreign_capture_env = {**clean_env, "GIT_DIR": str(foreign / ".git")}
         handed = tmp_path / "handed.diff"
@@ -4256,7 +4249,7 @@ class TestForeignGitEnvironment:
         repo = _small_repo(tmp_path / "mine", "cumulative")
         foreign = _small_repo(tmp_path / "theirs", "cumulative")
         (foreign / "foreign-only.txt").write_text("belongs to the other repository\n")
-        _commit_all(foreign, "foreign work")
+        commit_all(foreign, "foreign work")
         env = _context_env(tmp_path / "mine")
         polluted_env = {**env, "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign)}
 
@@ -4269,12 +4262,6 @@ class TestForeignGitEnvironment:
 
 
 # --- withholding --------------------------------------------------------------------------------------------------------------
-
-
-def _write(repo: Path, name: str, text: str) -> None:
-    target = repo / name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text)
 
 
 def _write_credential_guard(env: dict, *globs: str) -> None:
@@ -4298,32 +4285,32 @@ def _canary_repo(tmp_path: Path, source: str) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     local, _bare = _make_repo_with_remote(tmp_path)
     for name, label in ((_CREDENTIAL_NAME, "secret"), ("notes.txt", "control")):
-        _write(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
-    _write(local, f"keys/{_RSA_KEY}", "rename-history-canary\n" + _numbered_lines("key", 20))
-    _write(local, f"deploy/{_ED25519_KEY}", "earlier-name-canary\n" + _numbered_lines("deploy", 20))
-    _commit_all(local, "canary history")
+        write_repo_file(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
+    write_repo_file(local, f"keys/{_RSA_KEY}", "rename-history-canary\n" + _numbered_lines("key", 20))
+    write_repo_file(local, f"deploy/{_ED25519_KEY}", "earlier-name-canary\n" + _numbered_lines("deploy", 20))
+    commit_all(local, "canary history")
     for name, label in ((_CREDENTIAL_NAME, "secret"), ("notes.txt", "control")):
-        _write(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
+        write_repo_file(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
     (local / "deploy").mkdir(exist_ok=True)
     _git_out(local, "mv", f"deploy/{_ED25519_KEY}", "deploy/renamed.txt")
-    _write(local, "deploy/renamed.txt", "deploy edited at rename\n" + _numbered_lines("deploy", 20))
-    _commit_all(local, "canary base")
+    write_repo_file(local, "deploy/renamed.txt", "deploy edited at rename\n" + _numbered_lines("deploy", 20))
+    commit_all(local, "canary base")
     _git_out(local, "push", "-q", "origin", "main")
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
     if source == "cumulative":
         _git_out(local, "checkout", "-q", "-b", "feature")
     for name, label in ((_CREDENTIAL_NAME, "secret"), ("notes.txt", "control")):
-        _write(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
+        write_repo_file(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
     _git_out(local, "mv", f"keys/{_RSA_KEY}", "keys/moved-key.txt")
-    _write(local, "keys/moved-key.txt", "rename-diff-canary\n" + _numbered_lines("key", 20))
-    _write(local, "deploy/renamed.txt", "deploy edited again\n" + _numbered_lines("deploy", 20))
+    write_repo_file(local, "keys/moved-key.txt", "rename-diff-canary\n" + _numbered_lines("key", 20))
+    write_repo_file(local, "deploy/renamed.txt", "deploy edited again\n" + _numbered_lines("deploy", 20))
     if source == "cumulative":
-        _commit_all(local, "canary change")
+        commit_all(local, "canary change")
     else:
         _git_out(local, "add", "-A")
     if source == "working-tree":
-        _write(local, f"{_CREDENTIAL_NAME}.local", "untracked-canary\n")
-        _write(local, "loose.txt", "untracked and innocuous\n")
+        write_repo_file(local, f"{_CREDENTIAL_NAME}.local", "untracked-canary\n")
+        write_repo_file(local, "loose.txt", "untracked and innocuous\n")
     return local
 
 
@@ -4375,14 +4362,14 @@ class TestWithholding:
         nothing is withheld and the new file ships."""
         repo = tmp_path / store_directory
         _init_repo(repo)
-        _write(repo, "credentials", "history-canary-a\n" + _numbered_lines("line", 20))
-        _commit_all(repo, "add credentials")
+        write_repo_file(repo, "credentials", "history-canary-a\n" + _numbered_lines("line", 20))
+        commit_all(repo, "add credentials")
         _git_out(repo, "mv", "credentials", "notes.txt")
-        _write(repo, "notes.txt", "renamed content\n" + _numbered_lines("line", 20))
-        _commit_all(repo, "rename credentials to notes")
+        write_repo_file(repo, "notes.txt", "renamed content\n" + _numbered_lines("line", 20))
+        commit_all(repo, "rename credentials to notes")
         (repo / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(repo, "notes.txt", "edited content\n" + _numbered_lines("line", 20))
-        _write(repo, "credentials", "diff-canary-b\n" + _numbered_lines("other", 3))
+        write_repo_file(repo, "notes.txt", "edited content\n" + _numbered_lines("line", 20))
+        write_repo_file(repo, "credentials", "diff-canary-b\n" + _numbered_lines("other", 3))
         _git_out(repo, "add", "-A")
         env = _context_env(tmp_path)
         hook_verdict = _credential_read_gates_verdict("credentials", Path(env["HOME"]), str(repo.resolve()))
@@ -4466,14 +4453,14 @@ class TestWithholding:
     def test_history_through_an_earlier_name_is_withheld_per_quoting_class(self, tmp_path, earlier_name, why):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, earlier_name, "quoting-class-canary\n" + _numbered_lines("early", 20))
-        _commit_all(local, "early name")
+        write_repo_file(local, earlier_name, "quoting-class-canary\n" + _numbered_lines("early", 20))
+        commit_all(local, "early name")
         _git_out(local, "mv", earlier_name, "notes.txt")
-        _write(local, "notes.txt", "renamed with an edit\n" + _numbered_lines("early", 20))
-        _commit_all(local, "rename away")
+        write_repo_file(local, "notes.txt", "renamed with an edit\n" + _numbered_lines("early", 20))
+        commit_all(local, "rename away")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "notes.txt", "changed again\n" + _numbered_lines("early", 20))
+        write_repo_file(local, "notes.txt", "changed again\n" + _numbered_lines("early", 20))
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -4497,13 +4484,13 @@ class TestWithholding:
         contains `env`. test_pr_diff_lib.py's name matrix holds the rest of the input space against the Read hooks' verdicts."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, name, "name-canary base\n")
-        _write(local, "control.txt", "control-name-canary base\n")
-        _commit_all(local, "base")
+        write_repo_file(local, name, "name-canary base\n")
+        write_repo_file(local, "control.txt", "control-name-canary base\n")
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, name, "name-canary changed\n")
-        _write(local, "control.txt", "control-name-canary changed\n")
+        write_repo_file(local, name, "name-canary changed\n")
+        write_repo_file(local, "control.txt", "control-name-canary changed\n")
         _git_out(local, "add", "-A", "-f")
         env = _context_env(tmp_path)
         listing_id, _count, rows = _parse_listing(_run_context(local, env, "--staged", list_only=True))
@@ -4523,8 +4510,8 @@ class TestWithholding:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         old, new = (f"keys/{_RSA_KEY}", "notes.txt") if direction == "from-credential-name" else ("notes.txt", f"keys/{_RSA_KEY}")
-        _write(local, old, "rename-canary\n" + _numbered_lines("r", 20))
-        _commit_all(local, "base")
+        write_repo_file(local, old, "rename-canary\n" + _numbered_lines("r", 20))
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         (local / "keys").mkdir(exist_ok=True)
@@ -4559,7 +4546,7 @@ class TestWithholding:
         name = f"{_CREDENTIAL_NAME}\n# omitted untracked: forged\ndiff --git"
 
         def add_hostile(repo: Path) -> None:
-            _write(repo, name, "hostile-canary\n")
+            write_repo_file(repo, name, "hostile-canary\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_hostile)
         env = _context_env(tmp_path)
@@ -4599,8 +4586,8 @@ class TestWithholding:
         call still exits 0, as the hook's own predicates fail open. The docs/scripts.md Withholding bullet states this accepted
         residual."""
         def add_keys(repo: Path) -> None:
-            _write(repo, f"keys/{_RSA_KEY}", "withheld-key-canary\n")
-            _write(repo, f"{_SSH_DIR}/deploy_key", "fail-open-ssh-canary\n")
+            write_repo_file(repo, f"keys/{_RSA_KEY}", "withheld-key-canary\n")
+            write_repo_file(repo, f"{_SSH_DIR}/deploy_key", "fail-open-ssh-canary\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_keys)
         _git_out(repo, "add", "-f", "-A")
@@ -4625,8 +4612,8 @@ class TestWithholding:
         classify reads as unsafe, so even a safe-allowlist basename (`config`) is withheld and its block is dropped from every
         lane. The docs/scripts.md Withholding bullet states this half of the predicate's failure handling."""
         def add_ssh_files(repo: Path) -> None:
-            _write(repo, f"{_SSH_DIR}/config", "fail-closed-ssh-config-canary\n")
-            _write(repo, f"{_SSH_DIR}/deploy_key", "fail-closed-ssh-key-canary\n")
+            write_repo_file(repo, f"{_SSH_DIR}/config", "fail-closed-ssh-config-canary\n")
+            write_repo_file(repo, f"{_SSH_DIR}/deploy_key", "fail-closed-ssh-key-canary\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_ssh_files)
         _git_out(repo, "add", "-f", "-A")
@@ -4728,14 +4715,14 @@ class TestWithholding:
         must still drop the body whole. The control ships its body when no predicate names the earlier name."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, earlier_name, "earlier-half-canary\n" + _numbered_lines("early", 20))
-        _commit_all(local, "early name")
+        write_repo_file(local, earlier_name, "earlier-half-canary\n" + _numbered_lines("early", 20))
+        commit_all(local, "early name")
         _git_out(local, "mv", earlier_name, "notes.txt")
-        _write(local, "notes.txt", "renamed with an edit\n" + _numbered_lines("early", 20))
-        _commit_all(local, "rename away")
+        write_repo_file(local, "notes.txt", "renamed with an edit\n" + _numbered_lines("early", 20))
+        commit_all(local, "rename away")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "notes.txt", "changed again\n" + _numbered_lines("early", 20))
+        write_repo_file(local, "notes.txt", "changed again\n" + _numbered_lines("early", 20))
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         if guard_glob is not None:
@@ -4760,17 +4747,17 @@ class TestWithholding:
         local, _bare = _make_repo_with_remote(tmp_path)
         for name in ("vault/ledger.txt", "control.txt"):
             label = "glob" if name.startswith("vault") else "control"
-            _write(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
-        _commit_all(local, "history")
+            write_repo_file(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
+        commit_all(local, "history")
         for name in ("vault/ledger.txt", "control.txt"):
             label = "glob" if name.startswith("vault") else "control"
-            _write(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
-        _commit_all(local, "base")
+            write_repo_file(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         for name in ("vault/ledger.txt", "control.txt"):
             label = "glob" if name.startswith("vault") else "control"
-            _write(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
+            write_repo_file(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         _write_credential_guard(env, "*/vault/*")
@@ -4789,12 +4776,14 @@ class TestWithholding:
     def test_a_rename_whose_old_name_alone_matches_a_user_glob_is_withheld(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "vault/old-name.txt", "glob-rename-canary\n" + _numbered_lines("moved", 20))
-        _commit_all(local, "base")
+        write_repo_file(local, "vault/old-name.txt", "glob-rename-canary\n" + _numbered_lines("moved", 20))
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         _git_out(local, "mv", "vault/old-name.txt", "moved-out.txt")
-        _write(local, "moved-out.txt", "glob-rename-canary\n" + _numbered_lines("moved", 20).replace("line 0003", "line three"))
+        write_repo_file(
+            local, "moved-out.txt", "glob-rename-canary\n" + _numbered_lines("moved", 20).replace("line 0003", "line three")
+        )
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         _write_credential_guard(env, "*/vault/*")
@@ -4816,20 +4805,20 @@ class TestWithholding:
         local, _bare = _make_repo_with_remote(tmp_path)
         by_label = {"data/export.csv": "extension", "exports-private/report.txt": "glob", "notes.txt": "control"}
         for name, label in by_label.items():
-            _write(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
-        _write(local, "early/old-export.csv", "earlier-name-canary\n" + _numbered_lines("deploy", 20))
-        _commit_all(local, "history")
+            write_repo_file(local, name, f"{label}-history-canary\n" + _numbered_lines(label, 6))
+        write_repo_file(local, "early/old-export.csv", "earlier-name-canary\n" + _numbered_lines("deploy", 20))
+        commit_all(local, "history")
         for name, label in by_label.items():
-            _write(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
+            write_repo_file(local, name, f"{label}-base-canary\n" + _numbered_lines(label, 6))
         (local / "deploy").mkdir()
         _git_out(local, "mv", "early/old-export.csv", "deploy/renamed.txt")
-        _write(local, "deploy/renamed.txt", "deploy edited at rename\n" + _numbered_lines("deploy", 20))
-        _commit_all(local, "base")
+        write_repo_file(local, "deploy/renamed.txt", "deploy edited at rename\n" + _numbered_lines("deploy", 20))
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         for name, label in by_label.items():
-            _write(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
-        _write(local, "deploy/renamed.txt", "deploy edited again\n" + _numbered_lines("deploy", 20))
+            write_repo_file(local, name, f"{label}-diff-canary\n" + _numbered_lines(label, 6))
+        write_repo_file(local, "deploy/renamed.txt", "deploy edited again\n" + _numbered_lines("deploy", 20))
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         if armed:
@@ -4866,14 +4855,14 @@ class TestWithholding:
     def test_a_withheld_type_change_leaves_neither_of_its_two_header_blocks_in_any_lane_file(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, f"keys/{_RSA_KEY}", "type-change-canary\n" + _numbered_lines("key", 6))
-        _write(local, "control.txt", "control-diff-canary base\n")
-        _commit_all(local, "base")
+        write_repo_file(local, f"keys/{_RSA_KEY}", "type-change-canary\n" + _numbered_lines("key", 6))
+        write_repo_file(local, "control.txt", "control-diff-canary base\n")
+        commit_all(local, "base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         (local / "keys" / _RSA_KEY).unlink()
         os.symlink("elsewhere", local / "keys" / _RSA_KEY)
-        _write(local, "control.txt", "control-diff-canary changed\n")
+        write_repo_file(local, "control.txt", "control-diff-canary changed\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id, _count, rows = _parse_listing(_run_context(local, env, "--staged", list_only=True))
@@ -4901,11 +4890,11 @@ def _history_repo(tmp_path: Path, prior_commits: int, *, name: str = "hist.txt")
     tmp_path.mkdir(parents=True, exist_ok=True)
     local, _bare = _make_repo_with_remote(tmp_path)
     for index in range(prior_commits):
-        _write(local, name, _numbered_lines("hist", 10).replace(f"line {index + 1:04d}", f"line edit {index}"))
-        _commit_all(local, f"history commit {index}")
+        write_repo_file(local, name, _numbered_lines("hist", 10).replace(f"line {index + 1:04d}", f"line edit {index}"))
+        commit_all(local, f"history commit {index}")
     _git_out(local, "push", "-q", "origin", "main")
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-    _write(local, name, _numbered_lines("hist", 10) + "staged change\n")
+    write_repo_file(local, name, _numbered_lines("hist", 10) + "staged change\n")
     _git_out(local, "add", "-A")
     return local
 
@@ -4939,7 +4928,7 @@ class TestHistoryAndBodies:
 
     def test_a_new_path_has_no_history_range_and_no_note(self, tmp_path):
         repo = _history_repo(tmp_path, 1)
-        _write(repo, "brand-new.txt", "new\n")
+        write_repo_file(repo, "brand-new.txt", "new\n")
         _git_out(repo, "add", "-A")
         env = _context_env(tmp_path)
         listing_id, _count, rows = _parse_listing(_run_context(repo, env, "--staged", list_only=True))
@@ -4954,13 +4943,13 @@ class TestHistoryAndBodies:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         for index in range(3):
-            _write(local, "old.txt", _numbered_lines("old", 20).replace(f"line {index + 1:04d}", f"line edit {index}"))
-            _commit_all(local, f"old name commit {index}")
+            write_repo_file(local, "old.txt", _numbered_lines("old", 20).replace(f"line {index + 1:04d}", f"line edit {index}"))
+            commit_all(local, f"old name commit {index}")
         _git_out(local, "mv", "old.txt", "new.txt")
-        _commit_all(local, "rename commit")
+        commit_all(local, "rename commit")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "new.txt", _numbered_lines("old", 20) + "staged\n")
+        write_repo_file(local, "new.txt", _numbered_lines("old", 20) + "staged\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -4974,14 +4963,14 @@ class TestHistoryAndBodies:
     def test_history_reads_a_path_with_glob_characters_literally(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "g[lo]b*?.txt", _numbered_lines("literal", 5))
-        _write(local, "globx.txt", _numbered_lines("sibling", 5))
-        _commit_all(local, "both files")
-        _write(local, "globx.txt", _numbered_lines("sibling", 5) + "more\n")
-        _commit_all(local, "sibling only")
+        write_repo_file(local, "g[lo]b*?.txt", _numbered_lines("literal", 5))
+        write_repo_file(local, "globx.txt", _numbered_lines("sibling", 5))
+        commit_all(local, "both files")
+        write_repo_file(local, "globx.txt", _numbered_lines("sibling", 5) + "more\n")
+        commit_all(local, "sibling only")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "g[lo]b*?.txt", _numbered_lines("literal", 5) + "staged\n")
+        write_repo_file(local, "g[lo]b*?.txt", _numbered_lines("literal", 5) + "staged\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5090,11 +5079,11 @@ class TestHistoryAndBodies:
     def test_a_base_over_the_byte_cap_is_omitted_and_noted_over_cap(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "huge.txt", "x" * 300_000 + "\n")
-        _commit_all(local, "huge base")
+        write_repo_file(local, "huge.txt", "x" * 300_000 + "\n")
+        commit_all(local, "huge base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "huge.txt", "y" * 300_000 + "\n")
+        write_repo_file(local, "huge.txt", "y" * 300_000 + "\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5110,11 +5099,11 @@ class TestHistoryAndBodies:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         for index in range(3):
-            _write(local, "churn.txt", "".join(f"churn {index} line {number:05d}\n" for number in range(5000)))
-            _commit_all(local, f"churn commit {index}")
+            write_repo_file(local, "churn.txt", "".join(f"churn {index} line {number:05d}\n" for number in range(5000)))
+            commit_all(local, f"churn commit {index}")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "churn.txt", "tiny\n")
+        write_repo_file(local, "churn.txt", "tiny\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5133,12 +5122,12 @@ class TestHistoryAndBodies:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         for number in range(1, 7):
-            _write(local, f"big{number}.txt", "a" * 250_000 + "\n")
-        _commit_all(local, "six big files")
+            write_repo_file(local, f"big{number}.txt", "a" * 250_000 + "\n")
+        commit_all(local, "six big files")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         for number in range(1, 7):
-            _write(local, f"big{number}.txt", "b" * 250_000 + "\n")
+            write_repo_file(local, f"big{number}.txt", "b" * 250_000 + "\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5157,14 +5146,14 @@ class TestHistoryAndBodies:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         for index in range(2):
-            _write(local, "hist.txt", _numbered_lines("hist", 10).replace(f"line {index + 1:04d}", f"line edit {index}"))
-            _commit_all(local, f"base-side commit {index}")
+            write_repo_file(local, "hist.txt", _numbered_lines("hist", 10).replace(f"line {index + 1:04d}", f"line edit {index}"))
+            commit_all(local, f"base-side commit {index}")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         _git_out(local, "checkout", "-q", "-b", "feature")
         for index in range(2):
-            _write(local, "hist.txt", _numbered_lines("hist", 10) + f"feature line {index}\n")
-            _commit_all(local, f"feature-side commit {index}")
+            write_repo_file(local, "hist.txt", _numbered_lines("hist", 10) + f"feature line {index}\n")
+            commit_all(local, f"feature-side commit {index}")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, list_only=True))[0]
 
@@ -5179,18 +5168,18 @@ class TestHistoryAndBodies:
     def test_a_merge_commit_touching_the_path_is_not_in_its_history(self, tmp_path):
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "hist.txt", _numbered_lines("hist", 10))
-        _commit_all(local, "history seed")
+        write_repo_file(local, "hist.txt", _numbered_lines("hist", 10))
+        commit_all(local, "history seed")
         _git_out(local, "checkout", "-q", "-b", "side")
-        _write(local, "hist.txt", _numbered_lines("hist", 10).replace("line 0002", "line side edit"))
-        _commit_all(local, "side branch edit")
+        write_repo_file(local, "hist.txt", _numbered_lines("hist", 10).replace("line 0002", "line side edit"))
+        commit_all(local, "side branch edit")
         _git_out(local, "checkout", "-q", "main")
-        _write(local, "other.txt", "main moves on\n")
-        _commit_all(local, "main moves on")
+        write_repo_file(local, "other.txt", "main moves on\n")
+        commit_all(local, "main moves on")
         _git_out(local, "merge", "--no-ff", "-q", "-m", "merge the side branch", "side")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "hist.txt", _numbered_lines("hist", 10) + "staged change\n")
+        write_repo_file(local, "hist.txt", _numbered_lines("hist", 10) + "staged change\n")
         _git_out(local, "add", "-A")
         assert len(_git_out(local, "log", "-1", "--format=%p").stdout.split()) == 2, "the fixture holds a merge commit"
         env = _context_env(tmp_path)
@@ -5210,11 +5199,11 @@ class TestHistoryAndBodies:
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
         for index in range(3):
-            _write(local, "churn.txt", "".join(f"churn {index} line {number:05d}\n" for number in range(20000)))
-            _commit_all(local, f"churn commit {index}")
+            write_repo_file(local, "churn.txt", "".join(f"churn {index} line {number:05d}\n" for number in range(20000)))
+            commit_all(local, f"churn commit {index}")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "churn.txt", "tiny\n")
+        write_repo_file(local, "churn.txt", "tiny\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5239,14 +5228,14 @@ class TestHistoryAndBodies:
         """Both reads exceed the cap, so there is no commit list to show either: the row says over-cap and holds no range."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "long.txt", _numbered_lines("long", 10))
+        write_repo_file(local, "long.txt", _numbered_lines("long", 10))
         message_file = tmp_path / "long-subject.txt"
         message_file.write_text("subject-over-cap-canary " + "s" * (_lib_constant("HISTORY_BYTES_PER_PATH") + 100) + "\n")
         _git_out(local, "add", "-A")
         _git_out(local, "commit", "-q", "-F", str(message_file))
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
-        _write(local, "long.txt", _numbered_lines("long", 10) + "staged\n")
+        write_repo_file(local, "long.txt", _numbered_lines("long", 10) + "staged\n")
         _git_out(local, "add", "-A")
         env = _context_env(tmp_path)
         listing_id = _parse_listing(_run_context(local, env, "--staged", list_only=True))[0]
@@ -5429,18 +5418,18 @@ class TestExpectDiff:
         handed file written from default mode's capture must still compare equal, and one byte off must not."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         local, _bare = _make_repo_with_remote(tmp_path)
-        _write(local, "before.txt", "before\n")
-        _write(local, "nul_late.txt", _numbered_lines("nul-late", 1700))
-        _write(local, "zafter.txt", "after\n")
-        _commit_all(local, "nul base")
+        write_repo_file(local, "before.txt", "before\n")
+        write_repo_file(local, "nul_late.txt", _numbered_lines("nul-late", 1700))
+        write_repo_file(local, "zafter.txt", "after\n")
+        commit_all(local, "nul base")
         _git_out(local, "push", "-q", "origin", "main")
         (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
         _git_out(local, "checkout", "-q", "-b", "feature")
-        _write(local, "before.txt", "before changed\n")
+        write_repo_file(local, "before.txt", "before changed\n")
         with (local / "nul_late.txt").open("ab") as handle:
             handle.write(b"tail\x00more\n")
-        _write(local, "zafter.txt", "after changed\n")
-        _commit_all(local, "nul change")
+        write_repo_file(local, "zafter.txt", "after changed\n")
+        commit_all(local, "nul change")
         env = _context_env(tmp_path)
         diff_text = _default_mode_stdout(local, env)
         assert b"\x00" not in diff_text, "default mode's capture dropped the NUL"
@@ -5735,40 +5724,40 @@ def _build_spawn_repo(root: Path, repetitions: int, *, untracked: bool = False, 
     root.mkdir(parents=True, exist_ok=True)
     local, _bare = _make_repo_with_remote(root)
     for rep in range(repetitions):
-        _write(local, f"a_ren{rep}_old.txt", _numbered_lines(f"ren{rep}", 20))
-        _write(local, f"b_type{rep}.txt", _numbered_lines(f"type{rep}", 4))
+        write_repo_file(local, f"a_ren{rep}_old.txt", _numbered_lines(f"ren{rep}", 20))
+        write_repo_file(local, f"b_type{rep}.txt", _numbered_lines(f"type{rep}", 4))
         (local / f"c_bin{rep}.dat").write_bytes(b"bin\x00base\n")
-        _write(local, f"d_mode{rep}.sh", _numbered_lines(f"mode{rep}", 3))
+        write_repo_file(local, f"d_mode{rep}.sh", _numbered_lines(f"mode{rep}", 3))
         os.symlink("a_target", local / f"e_sym{rep}")
-        _write(local, f"f_noeol{rep}.txt", "no newline at the end")
-        _write(local, f"g_ctrl{rep}\x01.txt", _numbered_lines(f"ctrl{rep}", 3))
-        _write(local, f'"h_quote{rep}.txt', _numbered_lines(f"quote{rep}", 3))
-        _write(local, f"ssh{rep}/{_SSH_DIR}/config", _numbered_lines(f"cfg{rep}", 2))
-        _write(local, f"ssh{rep}/{_SSH_DIR}/known_hosts", _numbered_lines(f"kh{rep}", 2))
-    _write(local, f"keys/{_RSA_KEY}", "withheld base\n")
-    _commit_all(local, "spawn base")
+        write_repo_file(local, f"f_noeol{rep}.txt", "no newline at the end")
+        write_repo_file(local, f"g_ctrl{rep}\x01.txt", _numbered_lines(f"ctrl{rep}", 3))
+        write_repo_file(local, f'"h_quote{rep}.txt', _numbered_lines(f"quote{rep}", 3))
+        write_repo_file(local, f"ssh{rep}/{_SSH_DIR}/config", _numbered_lines(f"cfg{rep}", 2))
+        write_repo_file(local, f"ssh{rep}/{_SSH_DIR}/known_hosts", _numbered_lines(f"kh{rep}", 2))
+    write_repo_file(local, f"keys/{_RSA_KEY}", "withheld base\n")
+    commit_all(local, "spawn base")
     _git_out(local, "push", "-q", "origin", "main")
     (local / ".git" / "info" / "exclude").write_text("agent-reviews/\n")
     for rep in range(repetitions):
         _git_out(local, "mv", f"a_ren{rep}_old.txt", f"a_ren{rep}_new.txt")
-        _write(local, f"a_ren{rep}_new.txt", _numbered_lines(f"ren{rep}", 20).replace("line 0003", "line three"))
+        write_repo_file(local, f"a_ren{rep}_new.txt", _numbered_lines(f"ren{rep}", 20).replace("line 0003", "line three"))
         (local / f"b_type{rep}.txt").unlink()
         os.symlink("a_target", local / f"b_type{rep}.txt")
         (local / f"c_bin{rep}.dat").write_bytes(b"bin\x00changed\n")
         (local / f"d_mode{rep}.sh").chmod(0o755)
-        _write(local, f"f_noeol{rep}.txt", "no newline at the end, edited")
-        _write(local, f"g_ctrl{rep}\x01.txt", _numbered_lines(f"ctrl{rep}", 3) + "more\n")
-        _write(local, f'"h_quote{rep}.txt', _numbered_lines(f"quote{rep}", 3) + "more\n")
-        _write(local, f"ssh{rep}/{_SSH_DIR}/config", _numbered_lines(f"cfg{rep}", 2) + "more\n")
-        _write(local, f"ssh{rep}/{_SSH_DIR}/known_hosts", _numbered_lines(f"kh{rep}", 2) + "more\n")
-        _write(local, f"new{rep}.txt", "added\n")
-    _write(local, f"keys/{_RSA_KEY}", "withheld changed\n")
+        write_repo_file(local, f"f_noeol{rep}.txt", "no newline at the end, edited")
+        write_repo_file(local, f"g_ctrl{rep}\x01.txt", _numbered_lines(f"ctrl{rep}", 3) + "more\n")
+        write_repo_file(local, f'"h_quote{rep}.txt', _numbered_lines(f"quote{rep}", 3) + "more\n")
+        write_repo_file(local, f"ssh{rep}/{_SSH_DIR}/config", _numbered_lines(f"cfg{rep}", 2) + "more\n")
+        write_repo_file(local, f"ssh{rep}/{_SSH_DIR}/known_hosts", _numbered_lines(f"kh{rep}", 2) + "more\n")
+        write_repo_file(local, f"new{rep}.txt", "added\n")
+    write_repo_file(local, f"keys/{_RSA_KEY}", "withheld changed\n")
     if extra_path is not None:
-        _write(local, extra_path, "extra changed\n")
+        write_repo_file(local, extra_path, "extra changed\n")
     _git_out(local, "add", "-A", "-f")
     if untracked:
         for rep in range(repetitions):
-            _write(local, f"untracked{rep}.txt", "untracked\n")
+            write_repo_file(local, f"untracked{rep}.txt", "untracked\n")
     return local
 
 
@@ -6165,7 +6154,7 @@ class TestNamedCases:
     def test_a_path_only_a_user_glob_matches_is_withheld_in_the_listing_and_absent_from_every_lane_file(self, tmp_path):
         """The opt-in credential-file-guard.md is applied to <root>/<path>, so the lane files hold none of a matched path."""
         def add_vault_file(repo: Path) -> None:
-            _write(repo, "vault/token.dat", "vault-glob-canary diff\n")
+            write_repo_file(repo, "vault/token.dat", "vault-glob-canary diff\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_vault_file)
         env = _context_env(tmp_path)
@@ -6181,7 +6170,7 @@ class TestNamedCases:
     def test_a_guard_glob_does_not_match_the_relative_name(self, tmp_path):
         """A glob written against the relative name never matches: the reviewer's Read presents the absolute path."""
         def add_vault_file(repo: Path) -> None:
-            _write(repo, "vault/token.dat", "relative-glob-canary\n")
+            write_repo_file(repo, "vault/token.dat", "relative-glob-canary\n")
 
         repo = _small_repo(tmp_path, extra_changes=add_vault_file)
         env = _context_env(tmp_path)

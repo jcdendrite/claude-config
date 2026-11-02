@@ -152,7 +152,7 @@
 #     The unanchored ignore pattern findings-path-suffix.sh writes ignores every directory of that name in the repository, so the reach is any such directory.
 #     That reach includes an agent-reviews directory anywhere under .claude/, for example under .claude/commands/, .claude/rules/, .claude/agents/ or .claude/plans/.
 #     Claude Code may load a file written there.
-#     The engineer accepted the any-depth reach as debt: "Keep, accept as debt (Recommended)".
+#     The any-depth reach is accepted as debt.
 #     The reach also includes `<repo>/.git/refs/heads/agent-reviews/<agent>-*.md`, because `git check-ignore -q` exits 0 for it.
 #   - A Write path starting with `~` or `:/` passes the case globs and the name predicate unchanged.
 #     `git check-ignore -q` exits 0 for `~/agent-reviews/<agent>-x.md` and `:/agent-reviews/<agent>-x.md`, so the ignore check does not deny them.
@@ -231,8 +231,8 @@
 #     repo, the timeout firing — denies rather than allows (fail-closed
 #     friction on an unusual environment, not a missed mutation).
 #     An exported GIT_LITERAL_PATHSPECS, GIT_GLOB_PATHSPECS, GIT_NOGLOB_PATHSPECS
-#     or GIT_ICASE_PATHSPECS in a reviewer session makes the ignore check exit 128,
-#     so every findings write denies and the reviewer returns inline.
+#     or GIT_ICASE_PATHSPECS in a reviewer session makes the ignore check exit 128.
+#     So every findings write denies and the reviewer returns inline.
 #     A symlinked agent-reviews directory also makes the ignore check exit 128
 #     (test_lib.py pins this on git 2.43.0), so the write denies.
 #   - The /review-pr findings-directory exemption is create-only and Write-only.

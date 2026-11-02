@@ -612,7 +612,7 @@ A `/review-pr` session may stand in the main tree, and `diff-only` mode has no r
 
 `review-pr-reviewer-findings-dir.sh` creates the session's directory and prints its path. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. The session puts that directory in place of `agent-reviews/` in each reviewer's `findings_path`.
 
-The path starts with a literal `/tmp/`, so the create script and `deny-reviewer-tree-mutation.sh` compute the same directory whatever `TMPDIR` each sees. The hook allows a reviewer only a `Write` that creates its own new `<agent>-*.md` file directly inside the current session's directory, and an existing path, an `Edit` or a `MultiEdit` there denies.
+The path starts with a literal `/tmp/`, so the create script and `deny-reviewer-tree-mutation.sh` compute the same directory whatever `TMPDIR` each sees. The header of `deny-reviewer-tree-mutation.sh` states which writes it allows there.
 
 `/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
 

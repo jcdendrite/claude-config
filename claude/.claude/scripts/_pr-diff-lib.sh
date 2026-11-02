@@ -126,7 +126,6 @@ _pr_diff_parse_lane() {
 
 # _pr_diff_lane_row_indices FORM NUMBERS ROW_COUNT
 # Fills PR_DIFF_LANE_ROWS with the 0-based row indices a lane reviews, ascending.
-# A whole-diff or diff-only lane reviews every row; a listed lane reviews the rows its 1-based NUMBERS name.
 _pr_diff_lane_row_indices() {
   local form=$1 numbers=$2 row_count=$3 index number
   local -a member=()
@@ -190,7 +189,7 @@ _pr_diff_git_quote_name() {
 }
 
 # _pr_diff_cunquote TEXT
-# Decodes a git C-quoted name (\\ \" \a \b \f \n \r \t \v \ooo); text that is not wrapped in double quotes comes back unchanged.
+# Decodes a git C-quoted name; text that is not wrapped in double quotes comes back unchanged.
 _pr_diff_cunquote() {
   local LC_ALL=C text=$1 inner decoded='' index char octal backslash=$'\\'
   case $text in
@@ -470,7 +469,6 @@ _pr_diff_parse_raw() {
 }
 
 # _pr_diff_append_untracked FILE
-# Appends one "?" row per NUL-separated path in FILE, with no modes or blobs.
 _pr_diff_append_untracked() {
   local path
   local -a paths=()
@@ -487,7 +485,7 @@ _pr_diff_append_untracked() {
 }
 
 # _pr_diff_check_status_grammar
-# Returns 1, with PR_DIFF_BAD_ROW set to its 0-based index, on the first row whose status is outside A, M, D, T, R<nnn>, C<nnn> and "?".
+# Returns 1, with PR_DIFF_BAD_ROW set to the 0-based index of the first row with an unsupported status.
 _pr_diff_check_status_grammar() {
   local index
   for ((index = 0; index < ${#PR_DIFF_ROW_STATUS[@]}; index++)); do
@@ -543,8 +541,7 @@ _pr_diff_parse_numstat() {
 }
 
 # _pr_diff_classify_rows
-# Joins the raw rows to PR_DIFF_NUMSTAT and fills PR_DIFF_ROW_NOTES, the space-separated classification notes of each row (binary, gitlink, symlink, mode, empty, untracked).
-# Returns 1 with PR_DIFF_PARSE_ERROR set when a tracked row has no numstat entry or the numstat holds an entry for no row.
+# Joins the raw rows to PR_DIFF_NUMSTAT into PR_DIFF_ROW_NOTES. Returns 1 with PR_DIFF_PARSE_ERROR set when the two disagree.
 _pr_diff_classify_rows() {
   local index tracked=0 status old_mode new_mode counts added deleted notes
   PR_DIFF_ROW_NOTES=() PR_DIFF_PARSE_ERROR=''
@@ -705,7 +702,7 @@ _pr_diff_mark_credential_regex_hits() {
 }
 
 # _pr_diff_mark_data_guard_hits ROOT
-# Sets PR_DIFF_SCAN_HIT for each PR_DIFF_SCAN_TEXT entry deny-data-file-reads.sh would deny by name when read as "<ROOT>/<entry>": a data-file extension, a Downloads/ directory, or a guard glob.
+# Sets PR_DIFF_SCAN_HIT for each PR_DIFF_SCAN_TEXT entry deny-data-file-reads.sh would deny by name when read as "<ROOT>/<entry>".
 # The hook's size rule is not copied: it applies to the lane file a reviewer reads, not to the path on disk.
 _pr_diff_mark_data_guard_hits() {
   local root=$1 index text absolute
@@ -733,11 +730,9 @@ _pr_diff_mark_data_guard_hits() {
 
 # _pr_diff_scan_withheld ROOT
 # Marks, in PR_DIFF_SCAN_HIT (parallel to PR_DIFF_SCAN_TEXT), each relative path the Read-side gates would deny.
-# The checks are the built-in credential regex, the unsafe-.ssh-directory predicate, the dotenv basename rule and the opt-in credential guard globs, plus the data-file guard's rules while PR_DIFF_DATA_GUARD_ACTIVE is 1.
-# Every name predicate except the dotenv rule and the data-file extension rule, which the hooks apply to the basename, sees "<ROOT>/<path>", as the Read hooks see an absolute path.
-# Each runs once over the whole list, except that the .ssh predicate re-runs once per entry whose "<ROOT>/<path>" contains .ssh after its whole-list pass hits.
-# The .ssh predicate's extraction grep -oEi is the call that fails open, reading as no match as the hook's own predicates do.
-# A failing per-candidate grep -qEi reads as an unsafe basename, so it withholds.
+# Every name predicate except the dotenv and data-file-extension rules sees "<ROOT>/<path>", as the Read hooks see an absolute path; those two see the basename.
+# The .ssh extraction grep fails open, matching deny-credential-file-reads.sh.
+# Many .ssh-bearing names can only slow this scan; that cost is accepted.
 _pr_diff_scan_withheld() {
   local root=$1 count=${#PR_DIFF_SCAN_TEXT[@]} index text joined
   PR_DIFF_SCAN_HIT=()
@@ -795,7 +790,7 @@ _pr_diff_expected_header() {
 }
 
 # _pr_diff_build_expected_headers
-# Fills PR_DIFF_ROW_HEADER, PR_DIFF_ROW_COPIES (2 for a type change, 0 for an untracked row, else 1) and the PR_DIFF_EXPECTED_COUNT / PR_DIFF_EXPECTED_ROW tables.
+# _pr_diff_check_headers reads the tables this fills, so it must run after this.
 # Sets PR_DIFF_AMBIGUOUS_HEADER to the first header two different rows would both print.
 _pr_diff_build_expected_headers() {
   local row status header copies
@@ -827,7 +822,6 @@ _pr_diff_build_expected_headers() {
 # _pr_diff_check_headers FOUND_FILE SHARED_BYTES
 # Compares the diff --git lines found in the shared diff ("<byte offset>:<line>" records from grep -b) with the expected multiset.
 # On success fills PR_DIFF_HDR_OFFSET and PR_DIFF_HDR_TEXT (file order) and PR_DIFF_ROW_HDRS (the found-header indices each row owns, space-separated).
-# On a mismatch returns 1 with PR_DIFF_HEADER_DETAIL set: the first unexpected header in file order, else the first missing header in row order, else the counts.
 # Table values are read into plain variables before any arithmetic, because an arithmetic context evaluates a subscript.
 _pr_diff_check_headers() {
   local found_file=$1 shared_bytes=$2 record offset text key row index first_index value
