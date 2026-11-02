@@ -15,7 +15,9 @@
 # On the key path, a `gh pr view` that exits non-zero adds a clause to the
 # `using branch.<b>.gh-merge-base` line saying no open-PR base was checked.
 # The script never fetches.
-# An empty diff exits 0 and prints a DIFF_EMPTY: line on stderr: `no staged changes` under --staged, `no changes against base` otherwise.
+# An empty diff exits 0 and prints a DIFF_EMPTY: line on stderr.
+# The line reads `no staged changes` under --staged.
+# The line reads `no changes against base` otherwise.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
