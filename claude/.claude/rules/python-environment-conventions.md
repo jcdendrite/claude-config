@@ -39,9 +39,9 @@ Applies when installing or restoring Python dependencies.
   pinned by construction, so `-m` buys nothing there.
 - **`python3 -m venv` can exit 0 and produce no pip** where the distro
   splits `python3-venv`/`ensurepip` into a separate package. Probe
-  `python3 -c "import ensurepip"` first — the "Guard ensurepip" step of
-  `install-dev.sh` in the claude-config repo, which probes the `python<X.Y>`
-  it builds from, is the worked guard.
+  `python3 -c "import ensurepip"` first. The ensurepip guard in Step 5 of
+  `install-dev.sh` in the claude-config repo is the worked guard. It probes
+  the `python<X.Y>` it builds from.
 - **An "externally managed environment" error (PEP 668) means the command
   is pointed at the system interpreter.** Re-point it at the project
   environment instead of reaching for `--break-system-packages`.

@@ -1838,11 +1838,15 @@ print(json.dumps({"loaded": loaded, "priced": result.total_micro_dollars > 0}))
         assert report["priced"] is True
 
     def test_changed_modules_parse_at_the_python_3_11_grammar(self):
-        """A partial guard: CI runs a single Python minor newer than the 3.11 floor.
+        """A partial guard against syntax newer than the 3.11 floor.
 
-        feature_version=(3, 11) rejects 3.12+ syntax such as `type X = int`, PEP 695 generics, and unparenthesized
-        `except A, B:`, but accepts PEP 701 nested-quote f-strings. It covers only three modules and catches no
-        newer library calls.
+        Rejects:
+        - 3.12+ syntax such as `type X = int`, PEP 695 generics, and unparenthesized `except A, B:`.
+
+        Misses:
+        - PEP 701 nested-quote f-strings, which `feature_version=(3, 11)` accepts.
+        - Every module except the three checked here.
+        - Newer library calls.
         """
         package_dir = Path(session_pricing.__file__).parent
         for module_name in ("session_pricing.py", "pricing.py", "corpus.py"):

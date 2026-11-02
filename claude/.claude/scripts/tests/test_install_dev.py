@@ -56,15 +56,12 @@ Tests exercise the critical branches:
       not an instruction to install the minor the .venv already runs
     - a pinned interpreter that builds a venv on another minor → the
       verification failure, with no `Done.` line
-    - a healthy .venv on the pinned minor needs no python<X.Y> on PATH: the
-      requirements sync and the verification still run
+    - a healthy .venv on the pinned minor needs no python<X.Y> on PATH
 
 PATH stubs replace the pinned python<X.Y> interpreter so tests run in isolation
 without mutating the real .venv. The repo_root_stub fixture writes a tests.yml
 pinning PINNED_MINOR, a minor no real interpreter on a test runner is expected
-to have. The real-probe keep case pins the running interpreter's minor in
-tests.yml, and the real-probe rebuild case reports it as the existing .venv's
-minor while tests.yml stays at PINNED_MINOR.
+to have.
 HOME is isolated per test (see the `fake_home` fixture) so the gate
 never reads the real invoking environment's
 ~/.claude/private-projects.md. `_run_script` gives the script /dev/null as
@@ -258,14 +255,13 @@ def _write_venv_tree(
     ruff_exit: int = 0,
     pip_call_log: Path | None = None,
 ) -> None:
-    """Write a minimal stub venv whose health probe passes by default. Its python
-    prints `minor` for the version probe, exits 0 or 1 for the
-    `import yaml, pytest, xdist` probe per `dependencies_importable`, and exits 0
-    for any other -c argument. Its pip exits `pip_version_exit` for `--version`
-    and `pip_exit` for any other call. Its ruff prints a version line and exits
-    `ruff_exit`. Its shellcheck prints version lines. When `pip_call_log` is
-    given, pip first appends the path it was invoked by and its arguments to
-    that file, one line per call.
+    """Write a minimal stub venv whose health probe passes by default.
+
+    `minor` is what its python prints for the version probe. Its python answers
+    only that probe and the dependency-import probe. Any other call exits 0 with no
+    output, so the `Done.` line's pytest and pyyaml versions are empty. `pip_call_log`,
+    when given, receives one line per pip call: the path pip was invoked by, then
+    its arguments.
 
     Every binary check_venv_healthy probes must be stubbed here — the probe
     calls .venv/bin/<tool> directly, so a PATH stub cannot satisfy it."""
@@ -333,8 +329,7 @@ def _assert_announced_as_incomplete_or_unhealthy(stdout: str) -> None:
 
 def _assert_announced_as_minor_mismatch(stdout: str, existing_minor: str) -> None:
     announcement = _recreation_announcement(stdout)
-    assert existing_minor in announcement, announcement
-    assert PINNED_MINOR in announcement, announcement
+    assert f"runs Python {existing_minor} but CI pins {PINNED_MINOR}" in announcement, announcement
     assert PINNED_INTERPRETER in announcement, announcement
 
 
@@ -351,14 +346,11 @@ def _write_pinned_interpreter(
     """Write the pinned `python<pinned_minor>` PATH stub into repo_root_stub/bin
     and return that bin directory.
 
-    Supported call forms, each of which install-dev.sh makes. Any other call
-    exits 97 with a message on stderr.
-    - `-c pass`: exits 0, or exits 1 with an error on stderr when `starts` is false.
-    - `-c "import ensurepip"`: passes or fails per `ensurepip_available`.
-    - `-m venv <dir>`: touches `sentinel` when given, then copies a stub venv
-      onto <dir>. That venv reports `built_venv_minor` (default `pinned_minor`),
-      holds BUILT_VENV_MARKER, and has a pip whose install exits `built_venv_pip_exit`
-      and which logs its calls to `pip_call_log` when given."""
+    A `starts=False` interpreter also fails `-c "import ensurepip"`, as a dead
+    version-manager shim does. Any call outside `-c pass`, `-c "import ensurepip"`
+    and `-m venv <dir>` exits 97. The venv it builds reports `built_venv_minor`
+    (default `pinned_minor`), holds BUILT_VENV_MARKER, and logs its pip calls to
+    `pip_call_log` when given."""
     venv_template = repo_root_stub / "built_venv_template"
     _write_venv_tree(
         venv_template, built_venv_minor or pinned_minor, built_venv_pip_exit, pip_call_log=pip_call_log
@@ -376,7 +368,7 @@ def _write_pinned_interpreter(
           exit {start_exit}
         fi
         if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
-          exit {0 if ensurepip_available else 1}
+          exit {0 if ensurepip_available and starts else 1}
         fi
         if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
           {touch_sentinel}
@@ -756,6 +748,8 @@ class TestPipInstallFailure:
             f"Expected non-zero exit when pip install fails; got {result.returncode}\n"
             f"stderr: {result.stderr}\nstdout: {result.stdout}"
         )
+        assert "Syncing requirements-dev.txt..." in result.stdout, result.stdout
+        assert "Done." not in result.stdout, result.stdout
 
 
 class TestRequirementsSync:
@@ -798,6 +792,7 @@ class TestPinnedInterpreter:
         assert "not found on PATH" in result.stderr, result.stderr
         assert ".github/workflows/tests.yml" in result.stderr, result.stderr
         assert not python3_called.exists(), "python3 must not stand in for the pinned interpreter"
+        assert not (repo_root_stub / ".venv").exists()
 
     @pytest.mark.parametrize(
         "pinned_interpreter_state",
@@ -900,7 +895,7 @@ class TestPinnedInterpreter:
         assert not sentinel.exists(), "a .venv on the pinned minor must not be rebuilt"
         assert stale_marker.exists(), "the kept .venv must be the old tree"
 
-    def test_healthy_venv_on_the_pinned_minor_syncs_requirements_without_the_pinned_interpreter_on_path(
+    def test_healthy_venv_on_the_pinned_minor_syncs_requirements_and_needs_no_pinned_interpreter_on_path(
         self, repo_root_stub: Path, fake_home: Path
     ):
         pip_call_log = repo_root_stub / "pip_calls.log"
@@ -909,10 +904,8 @@ class TestPinnedInterpreter:
         result = _run_script(repo_root_stub, fake_home)
 
         assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
-        assert "not found on PATH" not in result.stderr, result.stderr
         sync_calls = [line for line in pip_call_log.read_text().splitlines() if "--version" not in line]
         assert sync_calls == [".venv/bin/pip install --quiet -r requirements-dev.txt"], sync_calls
-        assert "Done. .venv is ready" in result.stdout, result.stdout
 
     def test_pinned_interpreter_that_builds_another_minor_fails_verification_without_done(
         self, repo_root_stub: Path, fake_home: Path

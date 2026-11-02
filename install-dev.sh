@@ -3,8 +3,9 @@
 # Creates .venv from the python<X.Y> that .github/workflows/tests.yml pins for CI, and installs requirements-dev.txt (pytest, pytest-xdist, ruff, pyyaml, shellcheck-py).
 # Rebuilds a .venv on another Python minor, and fails if it must build one and python<X.Y> is not on PATH.
 # Then offers to install the pyright-lsp plugin at local scope from an interactive terminal.
-# Run from the main worktree root; the .venv lives there only, and every worktree shares it, so run one install-dev.sh at a time.
-# The pin is read from the tests.yml of the checkout it runs in, so a worktree branch with a different pin stays red on the interpreter-parity test until that branch is updated from main or its pin change lands.
+# Run from the main worktree root; the .venv lives there only, and every worktree shares it.
+# Run one install-dev.sh at a time, because it removes and rebuilds the shared .venv.
+# The pin is read from the tests.yml of the checkout it runs in.
 set -euo pipefail
 
 install_dev_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -54,14 +55,15 @@ if ! ci_python_pin="$(read_ci_python_pin .github/workflows/tests.yml)"; then
 fi
 pinned_python="python${ci_python_pin}"
 
-# Step 4 — Health probe: canonical check used by both the detect step and
-# the final verification. Both sites call this function — one definition.
-# A .venv on a Python minor other than the CI pin is unhealthy.
+# Prints the .venv's Python X.Y, or nothing when it has no executable python.
 venv_python_minor() {
   [ -x .venv/bin/python ] || return 0
   .venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true
 }
 
+# Step 4 — Health probe: canonical check used by both the detect step and
+# the final verification. Both sites call this function — one definition.
+# A .venv on a Python minor other than the CI pin is unhealthy.
 # Running pip, a console script, makes a stale shebang from a moved checkout unhealthy too.
 check_venv_healthy() {
   [ "$(venv_python_minor)" = "$ci_python_pin" ] \
