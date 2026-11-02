@@ -21,12 +21,13 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
-# A plan-architect Agent/Task dispatch whose prompt's first line is anything
-# other than this literal is a consult. This re-expresses
+# plan-architect.md's non-consult modes. A plan-architect Agent/Task dispatch
+# whose prompt's first line is any other value is a consult. This re-expresses
 # log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
-# see docs/design-decisions.md §48 for the cross-runtime duplication rationale.
+# see docs/design-decisions/review-trace-fifth-event-kind.md for the
+# cross-runtime duplication rationale.
 _ARCHITECT_CONSULT_SUBAGENT_TYPE = "plan-architect"
-_ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
+_ARCHITECT_NON_CONSULT_MODE_LINES = frozenset({"MODE=plan-sections", "MODE=challenge"})
 
 # Shared by review-trace's two zero-match termini (default timeline and
 # --deny-summary) so both read identically under the scope header.
@@ -126,13 +127,15 @@ def _print_deny_summary(
 
 def _is_architect_consult_dispatch(tool_input: dict) -> bool:
     """True for a plan-architect Agent/Task dispatch whose prompt is a
-    consult rather than a MODE=plan-sections call — fail-safe toward
-    consult, so a missing `prompt` key or an empty first line both classify
-    as a consult. See docs/design-decisions.md §48 for why this duplicates
-    log-reviewer-round.sh's _maybe_write_consult_latch instead of sharing it."""
+    consult rather than a MODE=plan-sections or MODE=challenge call —
+    fail-safe toward consult, so a missing `prompt` key or an empty first
+    line both classify as a consult. See
+    docs/design-decisions/review-trace-fifth-event-kind.md for why this
+    duplicates log-reviewer-round.sh's _maybe_write_consult_latch instead of
+    sharing it."""
     prompt = tool_input.get("prompt") or ""
     first_line = prompt.split("\n", 1)[0]
-    return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
+    return first_line not in _ARCHITECT_NON_CONSULT_MODE_LINES
 
 
 def _group_start_indices(groups: list[list[dict]]) -> frozenset[int]:
@@ -620,8 +623,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
       reviewer_yield._is_reviewer_subagent_type
     - architect-consult: Agent/Task spawn where subagent_type is
-      plan-architect and the prompt's first line is not the literal
-      MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
+      plan-architect and the prompt's first line is neither MODE=plan-sections
+      nor MODE=challenge, per _is_architect_consult_dispatch. Signals that a
       consult dispatch was initiated, not that it completed — including one
       dispatched from inside a subagent.
 

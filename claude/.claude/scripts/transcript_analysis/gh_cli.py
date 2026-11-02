@@ -1,5 +1,6 @@
-"""gh and git-remote access shared by pr-link, pr-cost, workstream-cost, and period-cost: origin host/owner/repo parsing,
-gh stderr classification, rate-limit backoff, auth preflight, effective-repo pinning, and merged/closed PR discovery.
+"""gh and git-remote access shared by pr-link, pr-cost, workstream-cost, period-cost, and review-cost-by-size: origin
+host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight, effective-repo pinning, and
+merged/closed PR discovery.
 
 Imports pr_cost_ledger and redaction by module (attribute access, not by name) -- see scope.py's own top-of-file comment for
 why."""

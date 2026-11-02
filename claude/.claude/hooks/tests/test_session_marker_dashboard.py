@@ -868,7 +868,7 @@ class TestSessionMarkerDashboardLedgerSummary:
         other_repo = tmp_path / "other-repo"
         other_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=other_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
 
         sid = "sess-payload-cwd-drift"

@@ -56,23 +56,20 @@ _stow_migration_lib_newest_backup() {
   local nullglob_was_set=0
   if shopt -q nullglob; then nullglob_was_set=1; fi
   shopt -s nullglob
-  # Capitalized (unlike this file's other locals) so `${#Candidates[@]}`
-  # doesn't read as a Slack-channel-shaped reference to this repo's own
-  # redaction hook (deny-private-project-refs.sh's `#[a-z...` regex).
-  local Candidates
+  local candidates
   # shellcheck disable=SC2206 # unquoted deliberately -- $_STOW_MIGRATION_LIB_TIMESTAMP_GLOB
   # must stay unquoted for its [0-9] classes to glob-expand; `read -a`
   # (shellcheck's suggested alternative) only splits, it doesn't glob-expand.
-  Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$name".$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB)
+  candidates=("$_STOW_MIGRATION_BACKUP_ROOT/$name".$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB)
   if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
-  [ ${#Candidates[@]} -gt 0 ] || return 1
+  [ ${#candidates[@]} -gt 0 ] || return 1
   local candidate
   while IFS= read -r candidate; do
     [ -d "$candidate" ] || continue
     [ -n "$(ls -A -- "$candidate" 2>/dev/null)" ] || continue
     printf '%s' "$candidate"
     return 0
-  done < <(printf '%s\n' "${Candidates[@]}" | sort -r)
+  done < <(printf '%s\n' "${candidates[@]}" | sort -r)
   return 1
 }
 
@@ -281,16 +278,16 @@ _stow_migration_lib_newest_unadopt_run() {
   # that unquoting from word-splitting a name containing whitespace;
   # $_STOW_MIGRATION_BACKUP_ROOT/ stays quoted since it needs neither
   # escaping nor exposure to word-splitting.
-  local Candidates old_ifs="$IFS"
+  local candidates old_ifs="$IFS"
   IFS=
   # shellcheck disable=SC2206 # unquoted deliberately, per the comment above
   # -- `read -a` (shellcheck's suggested alternative) only splits, it
   # doesn't perform the pathname expansion this glob needs.
-  Candidates=("$_STOW_MIGRATION_BACKUP_ROOT/"$escaped_name.$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB-unadopt)
+  candidates=("$_STOW_MIGRATION_BACKUP_ROOT/"$escaped_name.$_STOW_MIGRATION_LIB_TIMESTAMP_GLOB-unadopt)
   IFS="$old_ifs"
   if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
-  [ ${#Candidates[@]} -gt 0 ] || return 1
-  printf '%s\n' "${Candidates[@]}" | sort -r | head -n 1
+  [ ${#candidates[@]} -gt 0 ] || return 1
+  printf '%s\n' "${candidates[@]}" | sort -r | head -n 1
 }
 
 # stow_unadopt_entry REPO_DIR NAME

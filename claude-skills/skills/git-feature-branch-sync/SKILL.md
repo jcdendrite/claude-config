@@ -12,8 +12,11 @@ user-invocable: false
 
 # Feature-Branch Sync: Rebase, Merge, and Force-Push
 
-Examples below use `main` / `origin/main` as the default-branch
-placeholder. Check with `git symbolic-ref refs/remotes/origin/HEAD`.
+Examples below use `main` / `origin/main` as the placeholder for the base
+the recipe reports: the default branch, the stack base when
+`git config branch.<branch>.gh-merge-base` is set, or, when no key is set, an
+open PR's other base. The recipe's
+`Default branch:` or `Base branch:` line names it.
 
 Pre-creation concerns (branch naming, starting from a fresh default
 tip) live in the `branch-management` skill.
@@ -23,17 +26,23 @@ tip) live in the `branch-management` skill.
 Canonical recipe — used at the SessionStart advisory hook
 (`check-branch-divergence.sh`, which runs this logic directly as a hook script, never through the
 Bash tool) and, via `~/.claude/scripts/branch-divergence-status.sh`, at the `/ready-for-review`
-pre-push gate and the `/respond-pr` precheck. Same detection primitive everywhere so divergence
-reporting is uniform; see `docs/worktree-bash-guard.md` for why the two skill-driven callers go
-through a dedicated script instead of restating the recipe inline.
+pre-push gate and the `/respond-pr` precheck. See `docs/worktree-bash-guard.md` for why the two
+skill-driven callers go through a dedicated script instead of restating the recipe inline.
+
+After the SessionStart advisory, run the recipe and sync to the branch its `Default branch:` or
+`Base branch:` line names, not the advisory's.
+If the recipe exits non-zero, report its stderr and stop.
+Sync nothing against the advisory's branch.
+The hook never reads `git config branch.<branch>.gh-merge-base`, so on a stacked branch its
+advisory counts against the default branch.
 
 ```bash
 ~/.claude/scripts/branch-divergence-status.sh
 ```
 
-Reports the default branch, the behind-count, and the result of a `git merge-tree --write-tree`
+Reports the base branch the preamble lists, the behind-count, and the result of a `git merge-tree --write-tree`
 trial merge (conflict files, if any) in plain text to stdout — always, not only when there's
-something to flag. A non-zero exit means the check could not run, and stderr names why (no default branch, a failed fetch, or a trial merge git could not complete).
+something to flag. A non-zero exit means the check could not run, and stderr names why. The script's header lists its stops.
 
 Behind-count = 0 → in sync, no action. Behind > 0 with a clean trial
 merge → safe fast-forward or rebase candidate; run the [pre-flight
@@ -43,7 +52,7 @@ decision](#the-decision) below.
 
 ## The decision
 
-- **Rebase** — `git fetch origin && git rebase origin/main`. Replays commits on top of the current default-branch tip. Linear history. Rewrites SHAs → force-push required.
+- **Rebase** — `git fetch origin && git rebase origin/main`. Replays commits on top of the current base tip. Linear history. Rewrites SHAs → force-push required.
 - **Merge** — `git merge --no-ff origin/main`. Creates a merge commit. Preserves SHAs. No force-push. (`--no-ff` matters: plain `git merge origin/main` fast-forwards if the feature branch is strictly behind.) `git pull --rebase` is equivalent to `fetch + rebase`; prefer the explicit two-step form.
 
 **Default is rebase on personal feature branches** — common choice, but not universal. Switch to merge when any *merge-required condition* applies. Defer to per-project policy when it contradicts this default.

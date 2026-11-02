@@ -76,6 +76,7 @@ over any paraphrase here.
 | `test_selection_tracking` | bool | `false` | config-dir | no | [README § Tests](../README.md#tests) |
 | `architect_fix_plan_pilot` | bool | `false` | config-dir | no | [architect-authored-fix-plan-pilot.md](design-decisions/architect-authored-fix-plan-pilot.md) |
 | `review_orchestrator_routing` | bool | `false` | config-dir | no | [review-orchestrator-routing-gate.md](design-decisions/review-orchestrator-routing-gate.md) |
+| `architect_disposition_challenge_pilot` | bool | `false` | config-dir | no | [architect-disposition-challenge-pilot.md](design-decisions/architect-disposition-challenge-pilot.md) |
 | `plugin_bootstrap` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) (the `plugin_bootstrap = false` switch and rollback) |
 
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
@@ -143,7 +144,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 20 keys:
+   the 21 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
      names — the resolved config dir alone, or (for the six keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
@@ -175,10 +176,11 @@ It runs two phases, always in this order:
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
      a default row only for a key with no legacy fallback mechanism at all.
-     None exist among today's 20 keys besides `test_selection_tracking`,
-     `architect_fix_plan_pilot`, `review_orchestrator_routing` and
+     None exist among today's 21 keys besides `test_selection_tracking`,
+     `architect_fix_plan_pilot`, `review_orchestrator_routing`,
+     `architect_disposition_challenge_pilot` and
      `plugin_bootstrap`, whose `legacy-filename` and `legacy-polarity` are
-     both empty. Scaffold therefore currently writes all four keys' default
+     both empty. Scaffold therefore currently writes all five keys' default
      rows. A scaffolded explicit row shadows the schema default, so changing
      such a key's `default` column needs a row migration. A key with a
      legacy-polarity (`presence-enables`/`presence-disables`/`content-matches`)
@@ -259,7 +261,7 @@ internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 20
+itself from one Claude account's config dir to another's merges *all 21
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`

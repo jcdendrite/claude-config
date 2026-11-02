@@ -438,7 +438,7 @@ class TestCostLedgerSentinelGate:
         layout, and no other case here exercises it."""
         main_repo = tmp_path / "main-repo"
         subprocess.run(["git", "init", "-q", str(main_repo)], check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=main_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=main_repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=main_repo, check=True)
         (main_repo / "README.md").write_text("x\n")
         subprocess.run(["git", "add", "README.md"], cwd=main_repo, check=True)

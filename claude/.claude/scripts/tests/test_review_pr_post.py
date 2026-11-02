@@ -50,7 +50,10 @@ def git_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    )
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)
     (repo / "file.txt").write_text("first\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)

@@ -1464,6 +1464,176 @@ _lib_default_branch_or_guess() {
   return 1
 }
 
+# _lib_print_unusable_stack_base STDERR_PREFIX BRANCH VALUE REASON
+# Prints the one stderr line every stack-base stop uses, and is the one home of
+# its fix text. The line names the script, the key, its value and REASON,
+# gives the fix, and says the engineer runs it, not the agent.
+# BRANCH and VALUE are %q-quoted so a hostile or empty value cannot break the
+# single line or read as blank.
+# Returns 0 always; the caller owns the exit status.
+_lib_print_unusable_stack_base() {
+  local stderr_prefix="$1" branch="$2" value="$3" reason="$4"
+  local key quoted_value
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  printf -v quoted_value '%q' "$value"
+  printf '%s: %s is %s, which cannot be used as the stack base: %s. The engineer runs the fix, not the agent: correct the value with "git config --replace-all %s <stack-base>"; if the stack base merged, rebase this branch onto the branch it merged into with "git rebase --onto origin/<merged-into> <old stack-base commit>", then run "git config --unset-all %s".\n' \
+    "$stderr_prefix" "$key" "$quoted_value" "$reason" "$key" "$key" >&2
+}
+
+# _lib_stack_base_git STDERR_PREFIX CALL_LABEL REPO_ROOT GIT_ARGS...
+# Runs `git -C REPO_ROOT GIT_ARGS...` capped, discarding git's stderr and passing
+# its stdout through. Returns git's status when it is 0 or 1. Any other status (a
+# cap kill included) prints the one read-failure line every stack-base git call
+# shares, naming CALL_LABEL and the status, and returns 2. CALL_LABEL must not hold
+# the key's value.
+_lib_stack_base_git() {
+  local stderr_prefix="$1" call_label="$2" repo_root="$3"
+  shift 3
+  local git_status=0
+  _lib_capped git -C "$repo_root" "$@" 2>/dev/null || git_status=$?
+  case "$git_status" in
+    0 | 1) return "$git_status" ;;
+  esac
+  printf '%s: %s failed (status %s), so the stack-base key was not checked; retry the command, and if it fails again, run that git call by hand to see its error\n' \
+    "$stderr_prefix" "$call_label" "$git_status" >&2
+  return 2
+}
+
+# _lib_configured_stack_base STDERR_PREFIX REPO_ROOT
+# Reads and validates the stack base the engineer set for REPO_ROOT's current branch with
+# `git config branch.<branch>.gh-merge-base <stack-base>`.
+# gh also reads that key when its PR-create command gets no --base.
+# The read is `git config --get` (every config scope) and never touches the network.
+#
+# Exit status:
+# - 0: stdout is "<branch> <stack-base>" on one line, and the split is unambiguous because a branch name holds no space.
+# - 1, empty stdout: no key is set, or HEAD is detached. The caller runs its no-key path.
+# - 2, empty stdout: the key is set but unusable, or git could not be read.
+#   One stderr line prefixed with STDERR_PREFIX has already been written.
+#   - An unusable value gets _lib_print_unusable_stack_base's line.
+#   - A read failure is any `symbolic-ref`, `config` or `check-ref-format` status other than 0 and 1, a cap kill included.
+#     It gets _lib_stack_base_git's line, which names the failed git call and its status and carries no key value or key fix.
+#     It can stop a branch that has no key set.
+#
+# A value is unusable when it:
+# - is empty
+# - starts with `-` or `origin/`
+# - fails `git check-ref-format "refs/heads/<value>"`
+# - holds a character outside [A-Za-z0-9._/-]
+# - is `HEAD`
+# - names the branch itself
+# The `-`, character-set, `origin/` and `HEAD` tests are _lib_stack_base_name_shape's statuses 1 to 4.
+# Any other nonzero status from that check is also unusable, so a status added there fails closed here.
+#
+# Callers capture with `rc=0; out=$(...) || rc=$?`, which suspends `set -e` inside the function, so every status is tested explicitly.
+# A caller treats every status other than 0 and 1 as a stop.
+_lib_configured_stack_base() {
+  local stderr_prefix="$1" repo_root="$2"
+  local head_ref head_status=0 branch key value config_status=0 ref_format_status=0 name_shape_status=0
+  head_ref=$(_lib_stack_base_git "$stderr_prefix" "git symbolic-ref HEAD" "$repo_root" symbolic-ref -q HEAD) || head_status=$?
+  case "$head_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  case "$head_ref" in
+    refs/heads/?*) branch="${head_ref#refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+  printf -v key 'branch.%q.gh-merge-base' "$branch"
+  value=$(_lib_stack_base_git "$stderr_prefix" "git config $key" "$repo_root" config --get "branch.$branch.gh-merge-base") || config_status=$?
+  case "$config_status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  if [ -z "$value" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is empty"
+    return 2
+  fi
+  _lib_stack_base_name_shape "$value" || name_shape_status=$?
+  if [ "$name_shape_status" -eq 1 ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with '-'"
+    return 2
+  fi
+  _lib_stack_base_git "$stderr_prefix" "git check-ref-format on the value of $key" "$repo_root" check-ref-format "refs/heads/$value" >/dev/null || ref_format_status=$?
+  case "$ref_format_status" in
+    0) ;;
+    1)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is not a valid branch name"
+      return 2
+      ;;
+    *) return 2 ;;
+  esac
+  case "$name_shape_status" in
+    0) ;;
+    2)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value holds a character outside A-Z, a-z, 0-9, '.', '_', '/' and '-'"
+      return 2
+      ;;
+    3)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value starts with 'origin/'; give the branch name without that prefix"
+      return 2
+      ;;
+    4)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is HEAD, not a branch name"
+      return 2
+      ;;
+    *)
+      _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value failed a name check this reader has no message for (status $name_shape_status)"
+      return 2
+      ;;
+  esac
+  if [ "$value" = "$branch" ]; then
+    _lib_print_unusable_stack_base "$stderr_prefix" "$branch" "$value" "the value is this branch itself"
+    return 2
+  fi
+  printf '%s %s\n' "$branch" "$value"
+}
+
+# _lib_stack_base_name_shape NAME
+# Classifies a branch name the caller will pass to git or print in a command the engineer copies. Prints nothing.
+# Exit 0: NAME starts with a character other than `-`, holds only [A-Za-z0-9._/-], does not start with `origin/` and is not `HEAD`.
+# Exit 1: NAME starts with `-`, which git would read as an option.
+# Exit 2: NAME holds a character outside that set.
+# Exit 3: NAME starts with `origin/`, which reads as a remote-tracking ref instead of a branch.
+# Exit 4: NAME is `HEAD`, which a fetch destination would resolve through the `origin/HEAD` symref.
+# The set is narrower than `git check-ref-format`, which accepts shell metacharacters, quotes and bidi controls.
+# The tests run in status order, so the first failing one wins. An empty NAME exits 0, so the caller owns the empty check.
+# The letters are listed out because a bracket range widens past ASCII under a collating locale when `globasciiranges` is off (bash >= 5.0 defaults it on).
+# A caller under `set -e` captures the status with `|| status=$?` or calls it in a conditional context, since statuses 1 to 4 are answers and a bare call aborts the script.
+_lib_stack_base_name_shape() {
+  local name="$1"
+  case "$name" in
+    -*) return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 2 ;;
+    origin/*) return 3 ;;
+    HEAD) return 4 ;;
+  esac
+  return 0
+}
+
+# _lib_open_pr_base REPLY
+# Parses REPLY, the output of `gh pr view --json state,baseRefName --jq '.state, .baseRefName'`.
+# Exit 0 and the base branch on stdout, only for a two-line reply whose first line is
+# `OPEN` and whose second line is non-empty. Exit 1 with empty stdout for every other reply:
+# empty, one line, three or more lines, MERGED, CLOSED, or an empty base.
+_lib_open_pr_base() {
+  local reply="$1"
+  local state base
+  case "$reply" in
+    *$'\n'*) ;;
+    *) return 1 ;;
+  esac
+  state="${reply%%$'\n'*}"
+  base="${reply#*$'\n'}"
+  case "$base" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$state" = "OPEN" ] && [ -n "$base" ] || return 1
+  printf '%s' "$base"
+}
+
 # _lib_git_inprogress_state REPO_ROOT [GITDIR]
 # Detects which git operation, if any, is paused mid-way in REPO_ROOT:
 # rebase, merge, cherry-pick, or revert. Precedence is checked in that
@@ -4196,7 +4366,7 @@ _lib_redact_credential_shaped_strings() {
   printf '%s' "$redacted"
 }
 
-# Six structural-shape detectors for content that can identify a specific
+# Structural-shape detectors for content that can identify a specific
 # machine, person, or private project without naming it directly. Sourced by
 # deny-private-project-refs.sh's always-on structural scan. POSIX ERE, one
 # constant per detector so a match can be reported by label rather than
@@ -4248,72 +4418,6 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 # trick the SSH-key-path detector's own comment above uses -- otherwise this
 # comment would trip the very detector it documents.
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
-
-# A `#`-prefixed lowercase-hyphenated Slack-channel shape.
-# - Excludes a tail that is all digits, or digits followed by one `s` and
-#   then a non-name character or end of line, so a plain GitHub issue
-#   reference (e.g. issue #421) still passes once quote-stripping deletes a
-#   possessive's apostrophe.
-# - The `#` must be reachable from a valid start position, across a run
-#   that excludes parens, braces, and whitespace.
-#   - Valid start positions: line start, whitespace, a close-paren, a
-#     close-brace, or an open-paren not immediately preceded by `]`.
-#   - The run may still contain another `#`.
-# - The single rule underlying every case above: no `{` may appear
-#   between the start position and the channel `#`. This is what excludes
-#   bash parameter-expansion syntax (`${var#<pattern>}`,
-#   `${var##<pattern>}`) and array-length syntax (`${#array[@]}`), since
-#   in both a `{` sits between the run's start and the `#`.
-# - `}` is a valid start position: without it, a real mention immediately
-#   after a closed brace (e.g. `${x}#<slug>`, or a `}#<slug>`-shaped CSS
-#   selector) would be missed, unlike `${var#<pattern>}` where `}` comes
-#   after the `#`.
-# - A bare `#` is not a valid start position: it can't be distinguished
-#   from the `#` inside `${var#<pattern>}`. Allowing `#` inside the run
-#   (above) still catches a "second #<slug> elsewhere in the same match"
-#   without needing a bare `#` as its own start point.
-# - That reachability predicate is what excludes the `#` inside a markdown
-#   inline link's destination (`[text](other-file.md#<anchor-name>)`): the
-#   link's own `(` is immediately preceded by `]`, which disqualifies it as
-#   a valid start for the destination run.
-# - A second `#<slug>` inside the same link destination is still caught
-#   by a dedicated alternative: a `]` immediately followed by `(`, then a
-#   run to a `#`, is itself a valid start for a later `#<slug>` match.
-# - Residual gap: the exemption doesn't require a well-formed `[text]`
-#   before the `]`, and it doesn't restrict what the destination run
-#   contains. A splice like `](x#<slug>)` right after a bare `]` therefore
-#   evades this detector too.
-# - Residual gap: a channel reference wrapped as `{#<slug>}` (e.g. a
-#   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
-#   evades this detector, because its `{` sits directly before the `#`
-#   with nothing rescuing it.
-# - Residual gap: a `#<slug>` inside a compact JSON object with no space
-#   after the colon (e.g. `{"channel":"#<slug>"}`) evades this detector
-#   for the same reason. The spaced form (`{"channel": "#<slug>"}`) still
-#   denies, because the space after the colon is its own valid start
-#   position that reaches the `#` without crossing the `{`.
-# - Residual gap: the `{`-before-`#` exemption is content-blind. It
-#   exempts any `${...}`-shaped span between a start position and the
-#   channel `#` regardless of what occupies the pattern position, so a
-#   real Slack-channel-shaped slug placed there (e.g. `${var#<slug>}`,
-#   `${var##<slug>}`) evades this detector too.
-# - A CommonMark angle-bracket link destination (`[t](<a b.md#<slug>>)`)
-#   stays denied. The space that form permits breaks the destination run,
-#   so the scan reaches the `#` past that break as an unparenthesized
-#   mention.
-# - The link exemption is purely syntactic: it exempts the `#` inside any
-#   well-formed `[text](destination#<slug>)` without verifying that
-#   `destination` resolves to a real file. This is a separate gap from the
-#   smuggled-second-slug residual above, which concerns a second `#`
-#   token rather than the first token's unresolved destination.
-# - Residual gap: a `{` anywhere in the link destination before the first
-#   anchor `#`, with no rescuing whitespace/`)`/`}` before a real second
-#   mention, evades the "second slug is caught" guarantee too. The
-#   second-slug alternative's own internal run excludes `{` the same way
-#   the outer run does, so a `{` there blocks reachability just like it
-#   does in the outer run. Same content-blindness root cause as the
-#   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#([a-z_-]|[0-9]+(s[a-z0-9_-]|[a-rt-z_-]))'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
@@ -4525,13 +4629,11 @@ _lib_is_reviewer_persona() {
   _lib_list_contains "$agent_type" "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"
 }
 
-# Round-state cap shared by require-architect-consult.sh (the read side,
-# which denies once a genuinely new state arrives at the cap) and
-# log-reviewer-round.sh (the write side, which never appends past it) --
-# one constant rather than two literal "2"s that would have to be kept in
-# sync by hand. The case study's own recommendation is to fire at *entry to
-# round 3*, not round 1 -- "firing after round 1 would catch roughly half
-# of all PRs to address a 14% tail"
+# Round-state cap: the number of distinct reviewed states a branch with no
+# consult latch records before the gate demands its first consult.
+# The case study's own recommendation is to fire at *entry to round 3*, not
+# round 1 -- "firing after round 1 would catch roughly half of all PRs to
+# address a 14% tail"
 # (docs/case-studies/opus-frontload-review-rounds.md:260-263) -- so the cap
 # is 2 recorded rounds, with the 3rd distinct state tripping the gate.
 _LIB_REVIEWER_ROUND_STATE_CAP=2
@@ -4539,15 +4641,12 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # docs/design-decisions/round2-consult-trigger-pilot.md.
 
 # _lib_reviewer_round_state_cap
-# Prints the round-state cap shared by require-architect-consult.sh
-# (read side) and log-reviewer-round.sh (write side).
-# Returns 1 when round_consult_round2_pilot resolves enabled per its
-# config-keys.psv schema row (presence-enables legacy polarity), else
-# $_LIB_REVIEWER_ROUND_STATE_CAP.
+# Prints the round-state cap: 1 when round_consult_round2_pilot resolves
+# enabled per its config-keys.psv schema row (presence-enables legacy
+# polarity), else $_LIB_REVIEWER_ROUND_STATE_CAP.
 # Contract: always echoes a valid integer to stdout, including on an
-# unresolvable config dir -- both call sites consume this via `$(...)` into
-# an integer comparison that would error ("integer expression expected") on
-# empty stdout. Unlike _lib_round_consult_gate_disabled's boolean-exit-code
+# unresolvable config dir -- callers compare it as an integer, which errors
+# on empty stdout. Unlike _lib_round_consult_gate_disabled's boolean-exit-code
 # shape below. Zero-arity, same machine-global scope as the kill switch
 # below.
 _lib_reviewer_round_state_cap() {
@@ -4556,6 +4655,47 @@ _lib_reviewer_round_state_cap() {
     printf '1\n'
   else
     printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"
+  fi
+}
+
+# Reviewed states a branch records between consults once its first consult has
+# run, independent of the round-2 pilot.
+_LIB_ARCHITECT_CONSULT_REARM_INTERVAL=3
+
+# _lib_reviewer_round_state_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's round-state file. Returns 1 with no stdout
+# when CONFIG_DIR or STATE_KEY is empty. The gate and the recorder both build
+# the path here, so they cannot disagree on where the state lives.
+_lib_reviewer_round_state_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.reviewer-round-state.d/$state_key"
+}
+
+# _lib_architect_consult_latch_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's consult latch, with the same empty-argument
+# contract and shared-definition role as _lib_reviewer_round_state_file.
+_lib_architect_consult_latch_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.architect-consult-latch.d/$state_key"
+}
+
+# _lib_architect_consult_threshold CONFIG_DIR STATE_KEY
+# Prints the number of distinct reviewed states at which the gate demands the
+# next consult: $_LIB_ARCHITECT_CONSULT_REARM_INTERVAL when this branch's
+# latch is a regular file, else _lib_reviewer_round_state_cap's value.
+# Contract: always echoes a valid integer and returns 0, including for an
+# empty CONFIG_DIR or STATE_KEY (unresolvable config dir, detached HEAD).
+# A latch that is not a regular file (e.g. a directory) reads as no latch,
+# matching the gate's latch-presence test.
+_lib_architect_consult_threshold() {
+  local latch_file
+  if latch_file=$(_lib_architect_consult_latch_file "${1:-}" "${2:-}") \
+    && [ -f "$latch_file" ]; then
+    printf '%s\n' "$_LIB_ARCHITECT_CONSULT_REARM_INTERVAL"
+  else
+    _lib_reviewer_round_state_cap
   fi
 }
 

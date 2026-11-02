@@ -1368,7 +1368,7 @@ def init_git_repo(path: Path, *, branch: str | None = None, env: dict | None = N
     if branch is not None:
         init_args += ["-b", branch]
     subprocess.run(init_args, cwd=path, check=True, env=env)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True, env=env)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=path, check=True, env=env)
     subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True, env=env)
     return path
 
@@ -1534,7 +1534,7 @@ def bare_remote_with_default_branch(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
     subprocess.run(["git", "remote", "set-head", "origin", branch], cwd=clone, check=True)
     return bare, clone
@@ -1554,7 +1554,7 @@ def push_conflicting_edit_to_origin(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / file_name).write_text(content)
     subprocess.run(["git", "add", file_name], cwd=push_clone, check=True)
@@ -1603,7 +1603,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     subprocess.run(
         ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
     )
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / conflict_file).write_text("origin-edit\n")
     (push_clone / skill_rel_path).parent.mkdir(parents=True, exist_ok=True)
@@ -2391,6 +2391,25 @@ def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
     return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
 
 
+def write_architect_consult_latch(config_dir: Path, repo: Path) -> Path:
+    """Create only the branch's consult latch, bypassing the recorder.
+    Unlike a real consult, which deletes the state file first, this leaves the
+    branch's state file untouched."""
+    latch = architect_consult_latch_path(config_dir, repo)
+    latch.parent.mkdir(parents=True, exist_ok=True)
+    latch.touch()
+    return latch
+
+
+def enable_round2_pilot(config_dir: Path) -> Path:
+    """Create the round-2 pilot sentinel, which lowers the no-latch round-state
+    cap from 2 to 1."""
+    sentinel = config_dir / ".round-consult-round2-pilot"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    return sentinel
+
+
 def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
     """Seed the round-state file directly with `values` (each already a
     "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
@@ -2593,6 +2612,51 @@ def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: 
     shim = bin_dir / "git"
     _write_arg_matching_exit_shim(shim, '"$REAL_GIT"', arg_pattern, exit_status)
     return shim
+
+
+def _timeout_binary_present() -> bool:
+    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
+
+
+def _make_git_blocking_on_arg(
+    bin_dir: Path, arg_pattern: str, stdout_before_block: str = "partialline"
+) -> Path:
+    """When an argument matches the shell `case` pattern `arg_pattern`, the shim
+    writes `stdout_before_block` (nothing when empty) and then blocks past the
+    5s cap.
+
+    Callers must set `$REAL_GIT` to a real git binary path.
+
+    The 20s sleep is well past the cap yet bounded, so a cap regression fails
+    the test instead of hanging it.
+
+    `stdout_before_block` is spliced unescaped into a `printf` format string,
+    so pass plain alphanumeric text."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      printf "{stdout_before_block}"\n'
+        '      sleep 20\n'
+        '      exit 0\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    return _make_git_blocking_on_arg(bin_dir, "merge-tree")
+
+
+def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
+    return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 
 def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:
@@ -3372,15 +3436,30 @@ def fresh_reviewer_findings_session() -> Iterator[tuple[str, Path]]:
 
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
-# test_transcript_analysis.py's Python-classifier test. Proves the two
+# test_transcript_review_trace.py's Python-classifier test. Proves the two
 # runtimes agree on classification behaviorally, not that their source text
 # matches byte-for-byte -- a byte-equality assertion across the literal sites
-# would still pass with the Python `!=` comparison inverted to `==`. Each test
-# file wraps these rows in pytest.param(...) at its own
-# @pytest.mark.parametrize call site.
+# would still pass with the Python classifier's membership test inverted. A third
+# consumer, test_skills.py's TestCodeReviewDispositionChallengeRegionPin, reads
+# the rows without parametrizing them. No pytest import here (see module
+# docstring), so each parametrizing test file wraps these rows in
+# pytest.param(...) at its own @pytest.mark.parametrize call site.
 CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
     ("MODE=consult", True, "mode_consult"),
     ("MODE=plan-sections", False, "mode_plan_sections"),
+    ("MODE=challenge", False, "mode_challenge"),
+    (
+        "MODE=challenge\n"
+        "1. Finding: a docstring cites a retired section number.\n"
+        "   Disposition: DEFER (orthogonal scope). Rationale: the file is outside this change.",
+        False,
+        "mode_challenge_with_body",
+    ),
+    ("MODE=challenge ", True, "mode_challenge_trailing_space"),
+    ("MODE=challenge\r\n1. Finding: as above.", True, "mode_challenge_crlf"),
+    ("MODE=chalenge", True, "typo_challenge_value"),
+    ("Some preamble.\nMODE=challenge", True, "mode_challenge_not_first_line"),
+    ("MODE=Challenge", True, "mode_challenge_wrong_case"),
     ("", True, "empty_first_line"),
     ("MODE=plna-sections", True, "typo_mode_value"),
     ("Just look at the plan and tell me if it's sound.", True, "no_mode_line"),

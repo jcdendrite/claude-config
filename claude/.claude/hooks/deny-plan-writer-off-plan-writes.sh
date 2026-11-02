@@ -28,8 +28,8 @@
 #   - Any part of an allowed plan file is writable.
 #     This hook does not detect a change above `## Approach`.
 #     The dispatching /plan-it session does.
-#   - The dispatch mode is invisible to this hook, so it allows a
-#     consult-mode Edit to a plan file.
+#   - The dispatch mode is invisible to this hook, so it allows a plan-file
+#     Edit in any mode, not only `MODE=plan-sections`.
 #   - The target can be swapped between this check and the tool's write.
 #   - A hard link under .claude/plans/ to a file elsewhere, created
 #     beforehand, passes the path check.

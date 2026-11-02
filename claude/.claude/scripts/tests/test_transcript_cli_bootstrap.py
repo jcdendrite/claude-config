@@ -6,7 +6,7 @@ Every other test in this suite loads these scripts via
 A real `python3 transcript-analysis.py ...` invocation has neither of those --
 it resolves the package purely through `sys.path[0]` (the script's own
 directory, which CPython sets for a directly-invoked script). This is the one
-bootstrap path no `_mod.cmd_*`-style test exercises, and the one a later
+bootstrap path no in-process test exercises, and the one a later
 phase's import changes could break silently while every in-process test still
 passes.
 """
@@ -1146,6 +1146,17 @@ def test_transcript_analysis_period_cost_subprocess_refuses_without_since():
 
     assert result.returncode == 2
     assert "--since" in result.stderr
+    assert result.stdout == ""
+
+
+def test_transcript_analysis_review_cost_by_size_subprocess_refuses_without_this_repo():
+    """Proves, in a fresh interpreter, that review_cost_by_size.py resolves through sys.path[0] alone and that
+    real argparse dispatches review-cost-by-size to cmd_review_cost_by_size through set_defaults(func=...).
+    The stderr text is what separates the command's own refusal from an argparse usage error, which also exits 2."""
+    result = _run("transcript-analysis.py", "review-cost-by-size")
+
+    assert result.returncode == 2
+    assert "requires --this-repo" in result.stderr
     assert result.stdout == ""
 
 

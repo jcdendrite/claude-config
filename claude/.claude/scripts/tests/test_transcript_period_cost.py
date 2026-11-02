@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
+from transcript_analysis import corpus, cost, gh_cli, period_cost, pr_cost_ledger, pricing, scope
 
 from .conftest import (
     _TASK_NOTIFICATION_TEXT,
@@ -41,13 +42,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-period_cost = _mod.period_cost
-gh_cli = _mod.gh_cli
-pricing = _mod.pricing
-scope = _mod.scope
-cost_module = _mod.cost
-render_module = _mod.render
 
 # Captured before the hermetic fixture replaces them: subprocess.run for the one test that runs bash, and the clock
 # wrappers for the tests that read the real clocks.
@@ -1414,8 +1408,8 @@ class TestGhKindForStatus:
         [
             pytest.param(gh_cli._GH_CALL_DEGRADED_AUTH, "auth", id="auth"),
             pytest.param(gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH, "host_mismatch", id="host_mismatch"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
-            pytest.param(_mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT, "rate_limit", id="rate_limit"),
+            pytest.param(pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK, "network", id="network"),
             pytest.param(gh_cli._GH_PR_LIST_UNPARSEABLE, "unparseable", id="unparseable"),
         ],
     )
@@ -2476,8 +2470,8 @@ class TestSanitizeTitle:
     def test_flattens_whitespace_replaces_backticks_and_leaves_short_titles_alone(self):
         assert period_cost._sanitize_title("fix `x`\nnow", review=False) == "fix 'x' now"
 
-    @pytest.mark.parametrize("length,expected_length,truncated", [(39, 39, False), (40, 40, False), (41, 40, True)])
-    def test_a_cell_over_40_code_points_keeps_its_first_39_plus_an_ellipsis(self, length, expected_length, truncated):
+    @pytest.mark.parametrize("length,expected_length,truncated", [(31, 31, False), (32, 32, False), (33, 32, True)])
+    def test_a_cell_over_32_code_points_keeps_its_first_31_plus_an_ellipsis(self, length, expected_length, truncated):
         title = "x" * (length - 1) + "y"
 
         cell = period_cost._sanitize_title(title, review=False)
@@ -2485,17 +2479,17 @@ class TestSanitizeTitle:
         assert len(cell) == expected_length
         assert cell.endswith("\u2026") is truncated
         if truncated:
-            assert cell == "x" * 39 + "\u2026"
+            assert cell == "x" * 31 + "\u2026"
         else:
             assert cell == title
 
     def test_a_review_cap_counts_the_review_prefix(self):
-        assert period_cost._sanitize_title("x" * 32, review=True) == "Review: " + "x" * 32
-        assert period_cost._sanitize_title("x" * 33, review=True) == "Review: " + "x" * 31 + "\u2026"
+        assert period_cost._sanitize_title("x" * 24, review=True) == "Review: " + "x" * 24
+        assert period_cost._sanitize_title("x" * 25, review=True) == "Review: " + "x" * 23 + "\u2026"
 
     def test_a_non_bmp_character_counts_as_one_code_point(self):
-        assert period_cost._sanitize_title("\U0001f600" * 40, review=False) == "\U0001f600" * 40
-        assert period_cost._sanitize_title("\U0001f600" * 41, review=False) == "\U0001f600" * 39 + "\u2026"
+        assert period_cost._sanitize_title("\U0001f600" * 32, review=False) == "\U0001f600" * 32
+        assert period_cost._sanitize_title("\U0001f600" * 33, review=False) == "\U0001f600" * 31 + "\u2026"
 
     def test_a_title_holding_a_line_separator_is_one_line(self):
         cell = period_cost._sanitize_title("one\u2028two", review=False)
@@ -2553,7 +2547,7 @@ def _render(groups, *, flags=None, window=None):
     )
 
 
-_CAVEAT_LINE = "_" + cost_module._LIST_PRICE_CAVEAT + "_"
+_CAVEAT_LINE = "_" + cost._LIST_PRICE_CAVEAT + "_"
 _SCOPE_NOTE = (
     "_Counts one Claude Code account's spend across every repository its sessions worked in. Other accounts and other"
     " people's work are not included._"
@@ -2614,16 +2608,18 @@ class TestRenderSlackReport:
     def test_a_maximal_width_table_row_stays_within_the_utf8_byte_bound_the_output_capacity_arithmetic_uses(self, title):
         # The harness cuts output above 30,000 bytes, so the bound is in UTF-8 bytes, not code points.
         # The widest row has a 5-digit review number, the longest status, a $9,999.99 cost, both markers, and a
-        # 40-code-point title at 4 bytes each, which is 195 bytes counting the newline.
-        # A PR number above 99,999 or a cost above $9,999.99 widens every row by one byte.
+        # title of `_TITLE_CELL_CAP` code points at 4 bytes each.
+        # A PR number above 99,999 or a cost above $9,999.99 widens every row in its block by one byte.
         widest_label = len("Rev #99999")
         widest_status = max(len(status) for status in period_cost._SHOWN_PR_STATES)
         widest_cost = len("$9,999.99")
         marker_slot = len("+?")
         widest_title_bytes = period_cost._TITLE_CELL_CAP * 4
         widest_row_bytes_with_newline = (
-            widest_label + 2 + widest_title_bytes + 2 + widest_status + 2 + widest_cost + len(" ") + marker_slot + len("\n")
+            widest_label + 2 + widest_title_bytes + 2 + widest_status + 2 + widest_cost + len("  ") + marker_slot + len("\n")
         )
+        # docs/transcript-analysis.md's Size bullet states the same figure.
+        assert widest_row_bytes_with_newline == 164
         review = _review_row(99999, title, 9999.99, "merged", outside_spend=True, fallback_fed=True)
         pr = _pr_row(99999, title, 9999.99, "closed", outside_spend=True, fallback_fed=True)
 
@@ -2635,7 +2631,22 @@ class TestRenderSlackReport:
         assert "$9,999.99" in rows[0]
         assert max(len(row.encode("utf-8")) for row in rows) + len("\n") <= widest_row_bytes_with_newline
 
-    def test_columns_line_up_across_blocks_and_every_cost_ends_where_the_cost_header_ends(self):
+    def test_a_row_omitted_for_rounding_below_a_cent_does_not_widen_its_block(self):
+        shown_row = _pr_row(1, "x", 1.0)
+        # An Other row's label and title are both wider than the shown row's, so either column would widen if it counted.
+        omitted_other_row = _other_row(0.004)
+
+        with_omitted_row = _render([_group("acme/widgets", shown_row, omitted_other_row)]).splitlines()
+        without_omitted_row = _render([_group("acme/widgets", shown_row)]).splitlines()
+
+        header_with = next(line for line in with_omitted_row if line.startswith("PR "))
+        header_without = next(line for line in without_omitted_row if line.startswith("PR "))
+        assert header_with == header_without == "PR  Title  Status   Cost"
+        block_start = with_omitted_row.index("*acme/widgets*")
+        block_end = with_omitted_row.index("_Subtotal: $1.00_")
+        assert with_omitted_row[block_start : block_end + 1] == without_omitted_row[block_start : block_end + 1]
+
+    def test_each_block_sizes_its_own_columns_and_every_cost_ends_where_its_cost_header_ends(self):
         groups = [
             _group("acme/widgets", _pr_row(7, "wide cost", 1234.5)),
             _group("acme/billing-api", _pr_row(12345, "five digit number", 2.0, outside_spend=True), _other_row(0.5)),
@@ -2645,19 +2656,76 @@ class TestRenderSlackReport:
 
         headers = [line for line in lines if line.startswith("PR ")]
         assert len(headers) == 2
-        assert len({tuple(header.index(word) for word in ("PR", "Title", "Status", "Cost")) for header in headers}) == 1
-        header_end = headers[0].index("Cost") + len("Cost")
-        row_lines = [line for line in lines if re.search(r"\$[\d,]+\.\d\d", line) and not line.startswith(("_", "*"))]
-        assert len(row_lines) == 3
-        for line in row_lines:
-            assert re.search(r"\$[\d,]+\.\d\d", line).end() == header_end
+        assert len({tuple(header.index(word) for word in ("PR", "Title", "Status", "Cost")) for header in headers}) == 2
+        header_end = None
+        checked_rows = 0
+        for line in lines:
+            if line.startswith("PR "):
+                header_end = line.index("Cost") + len("Cost")
+            elif re.search(r"\$[\d,]+\.\d\d", line) and not line.startswith(("_", "*")):
+                assert re.search(r"\$[\d,]+\.\d\d", line).end() == header_end
+                checked_rows += 1
+        assert checked_rows == 3
 
     def test_a_group_line_carries_a_bold_name_an_unbolded_unavailable_suffix_and_an_italic_subtotal(self):
         lines = _render([_group("acme/widgets", _pr_row(1, "x", 1.0), unavailable=True)]).splitlines()
 
-        assert lines[2] == "*acme/widgets* (PR list unavailable)"
-        assert lines[3] == "```"
+        assert lines[2] == ""
+        assert lines[3] == "*acme/widgets* (PR list unavailable)"
+        assert lines[4] == "```"
         assert "_Subtotal: $1.00_" in lines
+
+    def test_a_blank_line_precedes_every_displayed_group_name_and_the_total_and_nowhere_else_before_the_total(self):
+        groups = [
+            _group("acme/widgets", _pr_row(1, "x", 1.0)),
+            _group("zeta/app", _pr_row(2, "tiny", 0.004)),
+            _group("acme/billing-api", _pr_row(3, "y", 2.0)),
+            _undetermined_group(0.5),
+        ]
+
+        lines = _render(groups).splitlines()
+
+        total_index = lines.index("*Total: $3.50*")
+        name_indexes = [
+            index for index, line in enumerate(lines) if line.startswith("*") and not line.startswith(("*Claude", "*Total"))
+        ]
+        assert [lines[index] for index in name_indexes] == [
+            "*acme/billing-api*",
+            "*acme/widgets*",
+            "*Repository not determined*",
+        ]
+        blank_indexes = [index for index, line in enumerate(lines[: total_index + 1]) if line == ""]
+        assert blank_indexes == [index - 1 for index in name_indexes] + [total_index - 1]
+
+    @pytest.mark.parametrize(
+        "groups,group_name,total_line",
+        [
+            pytest.param(
+                [_group("acme/widgets", _pr_row(1, "x", 1.0))],
+                "*acme/widgets*",
+                "*Total: $1.00*",
+                id="one_displayed_repository_group",
+            ),
+            # Zero repositories here catches a blank-line gate keyed on repository count, not displayed-group count.
+            pytest.param(
+                [_undetermined_group(0.5)],
+                "*Repository not determined*",
+                "*Total: $0.50*",
+                id="only_the_undetermined_group",
+            ),
+        ],
+    )
+    def test_a_report_with_one_displayed_group_has_a_blank_line_before_its_name_and_before_the_total(
+        self, groups, group_name, total_line
+    ):
+        lines = _render(groups).splitlines()
+
+        name_index = lines.index(group_name)
+        total_index = lines.index(total_line)
+        assert lines[name_index - 1] == ""
+        assert lines[total_index - 1] == ""
+        blank_indexes = [index for index, line in enumerate(lines[: total_index + 1]) if line == ""]
+        assert blank_indexes == [name_index - 1, total_index - 1]
 
     @pytest.mark.parametrize(
         "groups,phrase",
@@ -2737,9 +2805,9 @@ class TestRenderSlackReport:
     @pytest.mark.parametrize(
         "title,expected_title_cell",
         [
-            pytest.param("x" * 39, "x" * 39, id="39_code_points"),
-            pytest.param("x" * 40, "x" * 40, id="40_code_points"),
-            pytest.param("x" * 41, "x" * 39 + "\u2026", id="41_code_points"),
+            pytest.param("x" * 31, "x" * 31, id="31_code_points"),
+            pytest.param("x" * 32, "x" * 32, id="32_code_points"),
+            pytest.param("x" * 33, "x" * 31 + "\u2026", id="33_code_points"),
             pytest.param("a`b", "a'b", id="backtick"),
             pytest.param("one\u2028two", "one two", id="line_separator"),
             pytest.param("\u200b", "", id="flattens_to_empty"),
@@ -2775,9 +2843,9 @@ class TestRenderSlackReport:
 
         rows = {line.split()[0]: line for line in lines if line.startswith("#")}
         assert rows["#1"].endswith("$1.00")
-        assert rows["#2"].endswith("$1.00 +")
-        assert rows["#3"].endswith("$1.00  ?")
-        assert rows["#4"].endswith("$1.00 +?")
+        assert rows["#2"].endswith("$1.00  +")
+        assert rows["#3"].endswith("$1.00   ?")
+        assert rows["#4"].endswith("$1.00  +?")
         assert all(line == line.rstrip() for line in lines)
 
     def test_the_notes_appear_only_with_their_markers_and_in_the_stated_order(self):
@@ -2937,7 +3005,7 @@ class TestRenderSlackReport:
         assert _render(shuffled) == _render(groups)
 
     def test_the_list_price_caveat_carries_no_character_the_italic_markup_would_break_on(self):
-        assert not set("_*`") & set(cost_module._LIST_PRICE_CAVEAT)
+        assert not set("_*`") & set(cost._LIST_PRICE_CAVEAT)
 
 
 _DOCS_FILE = REPO_ROOT / "docs" / "transcript-analysis.md"
@@ -4766,11 +4834,6 @@ _FAILURE_CASES = [
 ]
 
 
-def _squeezed(block_lines: list[str]) -> list[str]:
-    """Block lines with each whitespace run squeezed to one space, since column widths are shared across groups."""
-    return [re.sub(r"\s+", " ", line) for line in block_lines]
-
-
 class TestGhFailuresMarkOnlyTheirRepository:
     @staticmethod
     def _affected_names(report: str) -> set[str]:
@@ -4799,7 +4862,7 @@ class TestGhFailuresMarkOnlyTheirRepository:
         assert self._affected_names(report) == set(affected)
         baseline_blocks, blocks = _group_blocks(baseline_report), _group_blocks(report)
         for name in set(baseline_blocks) - set(affected):
-            assert _squeezed(blocks[name]) == _squeezed(baseline_blocks[name])
+            assert blocks[name] == baseline_blocks[name]
         for name in affected:
             assert [label for label, *_rest in _parsed_rows(report)[name]] == ["Other"]
         assert (
@@ -5938,7 +6001,7 @@ class TestReviewPrSkillDrift:
         )
 
         substituted = acquire_line.replace("<owner>/<repo>#<number>", "acme/widgets#12")
-        (segment,) = _mod.corpus.split_command_segments(substituted)
+        (segment,) = corpus.split_command_segments(substituted)
 
         assert os.path.basename(segment[0]) == period_cost._ACQUIRE_SCRIPT_NAME
         assert period_cost._acquire_identity(segment) == ("acme/widgets", 12)
@@ -5948,7 +6011,7 @@ class TestReviewPrSkillDrift:
             line.strip() for line in self._skill_lines() if line.strip().startswith("~/.claude/scripts/review-pr-finish.sh")
         )
 
-        (segment,) = _mod.corpus.split_command_segments(finish_line)
+        (segment,) = corpus.split_command_segments(finish_line)
 
         assert period_cost._invokes_finish_script(segment) is True
 

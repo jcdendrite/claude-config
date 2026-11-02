@@ -175,7 +175,7 @@ def round_opened_by_spawn(rec: dict) -> bool:
 
 def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
-    (already deduped, main-thread-only) records.
+    (already deduped) records. A record flagged isSidechain never opens a round.
 
     Re-expresses judgment_pair.cmd_judgment_pair's boundary rule. window_end
     is the index of the next fresh user prompt or the next round-open record,
@@ -336,12 +336,11 @@ def compute_review_round_costs(
     until_ts: float | None = None,
     resolved_roots: Sequence[Path] | None = None,
 ) -> dict:
-    """Single pass over session_iter, main-thread only.
-
-    Rounds are detected on the main thread only. A review skill run inside a
-    dispatched subagent is already priced as that dispatch's own cost, so
-    counting it as its own round would double-count its dollars. That includes
-    a review-orchestrator's own `Skill` call: the dispatch itself opens the
+    """Single pass over session_iter, main-thread only. session_iter must not
+    carry merged subagent-file records. A review skill run inside a dispatched
+    subagent is already priced as that dispatch's own cost, and counting it as
+    its own round would double-count its dollars. That includes a
+    review-orchestrator's own `Skill` call: the dispatch itself opens the
     round, so that call never opens a second one.
 
     Computes every review-skill round window, its main-thread plus
@@ -367,7 +366,8 @@ def compute_review_round_costs(
     merging into one row, mirroring subagent-mix's own (root_idx, branch)
     keying. resolved_roots is only consulted when it has more than one
     entry; caller passes None (or an empty/single-element sequence) under a
-    single root.
+    single root. Passing None over a multi-root iterator keys every round
+    (None, branch), so a branch's rounds merge across those roots.
 
     skill_filter/branch_filter/since_ts/until_ts are applied as a final
     filter over the detected rounds, by the round's own skill / attributed

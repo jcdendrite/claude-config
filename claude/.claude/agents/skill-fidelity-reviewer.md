@@ -100,8 +100,8 @@ completed `code-review` pass(es) in scope:
    fresh from disk.
 2. Form your own independent judgment of which rows this diff matches,
    applying the table's own qualifiers exactly as it states them — e.g. a
-   high-stakes row naming a "declared dev-only... no production-reachable
-   surface" carve-out does not count as matched when the diff genuinely
+   high-stakes row whose carve-out needs `declared: dev-only, cooperative`
+   does not count as matched when the diff genuinely
    meets that carve-out. Do not defer to `code-review`'s own "Spawn
    decisions:" text — you weren't given it; judge independently from the
    diff.

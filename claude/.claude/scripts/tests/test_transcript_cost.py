@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import audit_routing, cost, pricing, redaction, render, scope
 
 from .conftest import (
     _agent_use,
@@ -173,7 +174,7 @@ def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[
     proj_other.mkdir(parents=True)
     _write_jsonl(proj_other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
 
-    monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+    monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
     def fake_run(cmd, *a, **k):
         if cmd[:3] == ["git", "worktree", "list"]:
@@ -212,7 +213,7 @@ class TestCost:
             "claude-sonnet-5",
             input=100_000, cache_read=200_000, ephemeral_1h=10_000, ephemeral_5m=20_000, output=5_000,
         )["message"]["usage"]
-        dollars, context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        dollars, context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert context_at_turn == 100_000 + 200_000 + 10_000 + 20_000
         # Sonnet 5 base $2/MTok: output 5x=$10, cache_write_5m 1.25x=$2.5,
@@ -231,7 +232,7 @@ class TestCost:
             _priced("claude-sonnet-5", input=83_000),
             _priced("claude-sonnet-5", input=83_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "0.50"
@@ -239,7 +240,7 @@ class TestCost:
     def test_nested_cache_creation_priced_separately_1h_and_5m(self):
         """Nested ephemeral_1h/ephemeral_5m tokens are split and never summed together."""
         usage = _priced("claude-sonnet-5", ephemeral_1h=10_000, ephemeral_5m=20_000)["message"]["usage"]
-        assert _mod._cache_write_split(usage) == (10_000, 20_000)
+        assert pricing._cache_write_split(usage) == (10_000, 20_000)
 
     def test_flat_and_nested_both_present_not_double_counted(self):
         """flat cache_creation_input_tokens sums the nested fields on every real
@@ -247,7 +248,7 @@ class TestCost:
         flat on top of it."""
         usage = _priced("claude-sonnet-5", ephemeral_1h=10_000, ephemeral_5m=20_000)["message"]["usage"]
         assert usage["cache_creation_input_tokens"] == 30_000  # flat present too
-        eph_1h, eph_5m = _mod._cache_write_split(usage)
+        eph_1h, eph_5m = pricing._cache_write_split(usage)
         assert eph_1h + eph_5m == 30_000  # not 60,000 (double-counted)
 
     def test_flat_cache_creation_fallback_priced_as_5m_only(self):
@@ -255,8 +256,8 @@ class TestCost:
         total is priced entirely as 5m, at 1.25x — never split into 1h at 2x."""
         usage = _priced("claude-sonnet-5", flat_cache_creation=40_000)["message"]["usage"]
         assert "cache_creation" not in usage
-        assert _mod._cache_write_split(usage) == (0, 40_000)
-        dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-5", usage)
+        assert pricing._cache_write_split(usage) == (0, 40_000)
+        dollars, _context_at_turn, unpriced = pricing._price_turn("claude-sonnet-5", usage)
         assert unpriced == 0
         assert dollars["cache_write_5m"] == pytest.approx(40_000 / 1_000_000 * 2.5)
         assert dollars["cache_write_1h"] == 0.0
@@ -269,7 +270,7 @@ class TestCost:
             "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 40_000, "cache_creation": {},
         }
-        assert _mod._cache_write_split(usage) == (0, 0)
+        assert pricing._cache_write_split(usage) == (0, 0)
 
     def test_per_model_id_selection_sonnet5_vs_sonnet46(self, fake_projects, capsys):
         """Sonnet 5 ($2 base) and Sonnet 4.6 ($3 base) price the same input tokens differently."""
@@ -277,7 +278,7 @@ class TestCost:
             _priced("claude-sonnet-5", input=1_000_000),
             _priced("claude-sonnet-4-6", input=1_000_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         sonnet5 = _table_cols(out, header_contains="Model", row_contains="claude-sonnet-5")
         sonnet46 = _table_cols(out, header_contains="Model", row_contains="claude-sonnet-4-6")
@@ -289,7 +290,7 @@ class TestCost:
         input / $15 output / $3.75 5m-write / $6 1h-write / $0.30 cache-read),
         via the same _model_rates derivation every other model in the table
         uses."""
-        rates = _mod._model_rates("claude-sonnet-4-5")
+        rates = pricing._model_rates("claude-sonnet-4-5")
         assert rates is not None
         assert rates["input"] == pytest.approx(3.00)
         assert rates["output"] == pytest.approx(15.00)
@@ -303,8 +304,8 @@ class TestCost:
         (prefix match) but prices as unpriced (exact-match miss) -- pins the
         asymmetry documented on the pricing-table entry."""
         dated_model = "claude-sonnet-4-5-20260115"
-        assert _mod._model_rates(dated_model) is None
-        assert _mod._context_window_for_model(dated_model) == 200_000
+        assert pricing._model_rates(dated_model) is None
+        assert pricing._context_window_for_model(dated_model) == 200_000
 
     def test_unknown_model_id_surfaced_and_excluded_from_total(self, fake_projects, capsys):
         """Unknown model IDs are named in the model table and their tokens counted
@@ -313,7 +314,7 @@ class TestCost:
             _priced("<synthetic>", input=1_000_000, output=500_000, cache_read=200_000),
             _priced("claude-sonnet-5", input=1_000_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "<synthetic>" in out
         assert "unpriced" in out
@@ -329,16 +330,16 @@ class TestCost:
             _priced("claude-sonnet-5", input=1_000_000),      # $2.00
             _priced("claude-sonnet-4-6", input=1_000_000),    # $3.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Session", row_contains="private-project-1")
         assert cols["$"] == "5.00"
 
     def test_context_bucket_threshold_boundaries(self):
         """199,999 is <200k; exactly 200,000 and 200,001 are >=200k (inclusive edge)."""
-        assert _mod._context_bucket(199_999) == "<200k"
-        assert _mod._context_bucket(200_000) == ">=200k"
-        assert _mod._context_bucket(200_001) == ">=200k"
+        assert pricing._context_bucket(199_999) == "<200k"
+        assert pricing._context_bucket(200_000) == ">=200k"
+        assert pricing._context_bucket(200_001) == ">=200k"
 
     def test_price_turn_rate_independent_of_context_bucket(self):
         """The $/token rate does not change with context size — pins row4 (no
@@ -346,10 +347,10 @@ class TestCost:
         a future regression."""
         usage_small = _priced("claude-sonnet-5", input=199_999)["message"]["usage"]
         usage_large = _priced("claude-sonnet-5", input=200_001)["message"]["usage"]
-        dollars_small, ctx_small, _ = _mod._price_turn("claude-sonnet-5", usage_small)
-        dollars_large, ctx_large, _ = _mod._price_turn("claude-sonnet-5", usage_large)
-        assert _mod._context_bucket(ctx_small) == "<200k"
-        assert _mod._context_bucket(ctx_large) == ">=200k"
+        dollars_small, ctx_small, _ = pricing._price_turn("claude-sonnet-5", usage_small)
+        dollars_large, ctx_large, _ = pricing._price_turn("claude-sonnet-5", usage_large)
+        assert pricing._context_bucket(ctx_small) == "<200k"
+        assert pricing._context_bucket(ctx_large) == ">=200k"
         assert dollars_small["input"] / 199_999 == pytest.approx(dollars_large["input"] / 200_001)
 
     def test_cost_by_context_bucket_section_reflects_boundary(self, fake_projects, capsys):
@@ -358,7 +359,7 @@ class TestCost:
             _priced("claude-sonnet-5", input=100_000),    # <200k, $0.20
             _priced("claude-sonnet-5", input=1_000_000),  # >=200k, $2.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         under = _table_cols(out, header_contains="Bucket", row_contains="<200k")
         over = _table_cols(out, header_contains="Bucket", row_contains=">=200k")
@@ -367,7 +368,7 @@ class TestCost:
 
     def test_empty_corpus_renders_clean_zero_state(self, fake_projects, capsys):
         """No priced turns at all: every share renders 0.0% and there's no traceback."""
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "0.0%" in out
         assert "(no priced turns in range)" in out
@@ -377,7 +378,7 @@ class TestCost:
         fires in the same output block as the dollar tables, not a separate
         log line."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 12, 5))
+        cost._cost_report(_cost_args(), date(2026, 12, 5))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
         assert "claude-sonnet-5" in out.split("## Cost by token class")[0]
@@ -386,7 +387,7 @@ class TestCost:
         """today before expiry: no banner — a one-direction test would pass even
         if the banner always printed."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
 
@@ -396,7 +397,7 @@ class TestCost:
         date) must not fire the banner -- Sonnet 5 uses the same
         _DEFAULT_REVERIFY_BY schedule as every other model now."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 9, 1))
+        cost._cost_report(_cost_args(), date(2026, 9, 1))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
 
@@ -410,7 +411,7 @@ class TestCost:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _priced("claude-sonnet-5", input=1_000_000),  # sidechain: $2.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "4.00"
@@ -428,8 +429,8 @@ class TestCost:
         """
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -449,7 +450,7 @@ class TestCost:
         for rec in recs:
             rec["message"]["usage"] = dict(usage)
         _write_jsonl(projects / "-repo-main" / "sess.jsonl", recs)
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
         # not $6.00 for pricing the group's usage three times over.
@@ -478,7 +479,7 @@ class TestCost:
                         request_id="req-side", sidechain=True)
         side_b["message"]["usage"] = dict(side_usage)
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [side_a, side_b])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         # main $2.00 + sidechain $2.00 (priced once despite 2 content-block records) = $4.00.
@@ -490,22 +491,22 @@ class TestCost:
         two real labels so the map can express "one mapped, one missing"; a
         single-label fixture can't distinguish a miss from an empty map."""
         redact_map = {"project-a": "private-project-1"}  # "project-b" deliberately absent
-        assert _mod._redact_proj_label("project-a", redact_map) == "private-project-1"
-        assert _mod._redact_proj_label("project-b", redact_map) == _mod._REDACT_MAP_MISS_TOKEN
-        assert _mod._REDACT_MAP_MISS_TOKEN != "project-b"
+        assert redaction._redact_proj_label("project-a", redact_map) == "private-project-1"
+        assert redaction._redact_proj_label("project-b", redact_map) == redaction._REDACT_MAP_MISS_TOKEN
+        assert redaction._REDACT_MAP_MISS_TOKEN != "project-b"
 
     def test_redact_session_id_map_miss_returns_opaque_token_not_raw_id(self):
         """Same fail-closed contract as the project-label map, for session IDs:
         a session_id absent from the run-scoped map renders as the fixed
         opaque token, never the raw session ID."""
         session_map = {"sess-real-id": "session-1"}  # "sess-other-id" deliberately absent
-        assert _mod._redact_session_id("sess-real-id", session_map) == "session-1"
-        assert _mod._redact_session_id("sess-other-id", session_map) == _mod.redaction._REDACT_SESSION_MISS_TOKEN
-        assert _mod.redaction._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
+        assert redaction._redact_session_id("sess-real-id", session_map) == "session-1"
+        assert redaction._redact_session_id("sess-other-id", session_map) == redaction._REDACT_SESSION_MISS_TOKEN
+        assert redaction._REDACT_SESSION_MISS_TOKEN != "sess-other-id"
 
     def test_redact_proj_label_claude_config_passthrough_preserved(self):
         """claude-config still passes through unredacted after the fail-closed rewrite."""
-        assert _mod._redact_proj_label("claude-config", {}) == "claude-config"
+        assert redaction._redact_proj_label("claude-config", {}) == "claude-config"
 
     def test_cost_redact_default_hides_project_names_and_session_ids(self, fake_projects, capsys):
         """Default (no --no-redact): raw project labels and raw session IDs are
@@ -515,7 +516,7 @@ class TestCost:
         proj2 = fake_projects.parent / "-home-user-otherrepo"
         proj2.mkdir(parents=True)
         _write_jsonl(proj2 / "sess-two.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "testrepo" not in out
         assert "otherrepo" not in out
@@ -528,7 +529,7 @@ class TestCost:
         """--no-redact emits the real project label and real session ID — proving
         the default redaction didn't silently become the only mode."""
         _write_jsonl(fake_projects / "sess-plain.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "testrepo" in out
         assert "sess-plain" in out
@@ -547,15 +548,15 @@ class TestCost:
             _priced("claude-sonnet-5", input=1_000_000),
         ])
 
-        expected_map = _mod._build_redact_map()
+        expected_map = redaction._build_redact_map()
         assert expected_map["testrepo"] == "private-project-1"
         assert expected_map["zzzlast"] == "private-project-2"
 
-        _mod.cmd_audit_routing(_audit_routing_args(projects="*", redact=True))
+        audit_routing.cmd_audit_routing(_audit_routing_args(projects="*", redact=True))
         audit_out = capsys.readouterr().out
         assert "private-project-2" in audit_out
 
-        _mod._cost_report(_cost_args(projects="-home-user-zzzlast", no_redact=False), date(2026, 8, 2))
+        cost._cost_report(_cost_args(projects="-home-user-zzzlast", no_redact=False), date(2026, 8, 2))
         cost_out = capsys.readouterr().out
         assert "private-project-2" in cost_out
         assert "private-project-1" not in cost_out  # testrepo's session wasn't in this narrowed run
@@ -568,7 +569,7 @@ class TestCost:
             _priced("claude-sonnet-5", input=1_000_000, ts=old_ts),
             _priced("claude-sonnet-5", input=2_000_000, ts=new_ts),
         ])
-        _mod._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert cols["$"] == "4.00"  # only the 2,000,000-input-token turn is in-window
@@ -576,14 +577,14 @@ class TestCost:
     def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, fake_projects, capsys):
         """A malformed --since value fails closed with the cost-specific error prefix."""
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(since="not-a-window"), date(2026, 8, 2))
+            cost._cost_report(_cost_args(since="not-a-window"), date(2026, 8, 2))
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
     def test_top_n_truncates_session_rows(self, fake_projects, capsys):
         """--top N keeps only the N highest-dollar sessions; excluded sessions don't appear."""
         for i in range(5):
             _write_jsonl(fake_projects / f"sess-{i}.jsonl", [_priced("claude-sonnet-5", input=(i + 1) * 1_000_000)])
-        _mod._cost_report(_cost_args(top=2), date(2026, 8, 2))
+        cost._cost_report(_cost_args(top=2), date(2026, 8, 2))
         out = capsys.readouterr().out
         top_section = out.split("## Top 2 sessions by dollars")[1]
         session_lines = [ln for ln in top_section.splitlines() if ln.startswith("session-")]
@@ -601,9 +602,9 @@ class TestCost:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -613,7 +614,7 @@ class TestCost:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert (
             "COST SOURCES (this repo (1 project dirs); "
@@ -630,7 +631,7 @@ class TestCost:
         _build_redact_map. "aardvark" sorts before "main" (this repo's derived
         label), so its mere presence on disk — outside --this-repo scope and
         never printed — bumps "main" from private-project-1 to private-project-2."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -645,8 +646,8 @@ class TestCost:
         mine_solo = solo_projects / "-repo-main"
         mine_solo.mkdir(parents=True)
         _write_jsonl(mine_solo / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", solo_projects)
-        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        monkeypatch.setattr(scope, "PROJECTS_DIR", solo_projects)
+        cost._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         solo_out = capsys.readouterr().out
         assert "private-project-1" in solo_out
 
@@ -660,8 +661,8 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
-        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        monkeypatch.setattr(scope, "PROJECTS_DIR", shared_projects)
+        cost._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         shared_out = capsys.readouterr().out
         assert "private-project-2" in shared_out
         assert "private-project-1" not in shared_out
@@ -675,7 +676,7 @@ class TestCost:
         project's ordinal unchanged, since _build_redact_map assigns ordinals
         in alphabetical order. "zzz-other" sorts after "main", so it must not
         bump "main" off private-project-1."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -692,8 +693,8 @@ class TestCost:
         other.mkdir(parents=True)
         _write_jsonl(mine_shared / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
         _write_jsonl(other / "o.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", shared_projects)
-        _mod._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
+        monkeypatch.setattr(scope, "PROJECTS_DIR", shared_projects)
+        cost._cost_report(_cost_args(this_repo=True, no_redact=False), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "private-project-1" in out
         assert "zzz-other" not in out
@@ -712,36 +713,36 @@ class TestCostResolveRoots:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        roots = _mod._resolve_cost_roots(_cost_args())
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
+        roots = scope._resolve_cost_roots(_cost_args())
         assert roots == [default_dir / "projects"]
 
     def test_single_extra_config_dir_allowed(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
-        roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b)]))
+        roots = scope._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
 
     def test_extra_roots_appended_in_argument_order(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
-        roots = _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b), str(acct_c)]))
+        roots = scope._resolve_cost_roots(_cost_args(extra_config_dirs=[str(acct_b), str(acct_c)]))
         assert roots == [default_dir / "projects", acct_b / "projects", acct_c / "projects"]
 
     def test_duplicate_root_deduped_by_resolve_not_string_equality(self, tmp_path, monkeypatch, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         # Same directory, supplied twice under different (but equal-once-
         # resolved) spellings — the dedup guard is by .resolve(), not string
         # equality.
-        roots = _mod._resolve_cost_roots(
+        roots = scope._resolve_cost_roots(
             _cost_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."])
         )
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -749,21 +750,21 @@ class TestCostResolveRoots:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(missing)]))
+            scope._resolve_cost_roots(_cost_args(extra_config_dirs=[str(missing)]))
         assert exc_info.value.code == 2
         assert str(missing) in capsys.readouterr().err
 
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_args(extra_config_dirs=[str(bogus)]))
+            scope._resolve_cost_roots(_cost_args(extra_config_dirs=[str(bogus)]))
         assert exc_info.value.code == 2
         assert str(bogus) in capsys.readouterr().err
 
@@ -780,18 +781,18 @@ class TestCostResolveRoots:
         _resolve_project_scope."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
-        roots = _mod._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
+        roots = scope._resolve_cost_roots(_cost_args(this_repo=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", acct_b / "projects"]
 
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+            scope._resolve_cost_roots(_cost_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
@@ -799,8 +800,8 @@ class TestCostResolveRoots:
         """--no-redact with no --config-dir (single root) is unaffected."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        roots = _mod._resolve_cost_roots(_cost_args(no_redact=True))
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
+        roots = scope._resolve_cost_roots(_cost_args(no_redact=True))
         assert roots == [default_dir / "projects"]
 
     def test_summary_narrows_to_active_root_only_ignoring_declared_and_config_dir(
@@ -813,10 +814,10 @@ class TestCostResolveRoots:
         forms."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [tmp_path / "declared-account"])
         acct_b = fake_config_dir_factory("acct-b")
-        roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
+        roots = scope._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects"]
 
     def test_share_only_returns_full_multi_root_union_not_narrowed(
@@ -830,12 +831,12 @@ class TestCostResolveRoots:
         added to the summary-only narrowing check above."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         declared = tmp_path / "declared-account"
         (declared / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [declared])
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [declared])
         acct_b = fake_config_dir_factory("acct-b")
-        roots = _mod._resolve_cost_roots(_cost_args(share_only=True, extra_config_dirs=[str(acct_b)]))
+        roots = scope._resolve_cost_roots(_cost_args(share_only=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects", declared / "projects", acct_b / "projects"]
 
     def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
@@ -853,7 +854,7 @@ class TestCostResolveRoots:
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{other}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        roots = _mod._resolve_cost_roots(_context_distribution_args(), subcommand="context-distribution")
+        roots = scope._resolve_cost_roots(_context_distribution_args(), subcommand="context-distribution")
         assert roots == [active / "projects", other / "projects"]
 
 
@@ -866,7 +867,7 @@ class TestCostMultiRootReport:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
         assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
@@ -886,9 +887,9 @@ class TestCostMultiRootReport:
         (root / "-home-user-this-repo").mkdir()
         args = _cost_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-this-repo"]
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: args._this_repo_slugs)
 
-        _mod._cost_report(args, date(2026, 8, 2), roots=[root])
+        cost._cost_report(args, date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
         assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
         assert "WARNING: cost: account-1: no transcripts found for this scope" in out
@@ -911,7 +912,7 @@ class TestCostMultiRootReport:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         os.chmod(root_a, 0o000)
         try:
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         finally:
             os.chmod(root_a, 0o755)  # restore before tmp_path teardown
 
@@ -937,7 +938,7 @@ class TestCostMultiRootReport:
         empty_root.mkdir(parents=True)  # exists, but holds no project dirs at all
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root, root_b])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-2: no transcripts found for this scope" in out
         assert "WARNING: cost: account-1" not in out
@@ -947,7 +948,7 @@ class TestCostMultiRootReport:
         no *.jsonl files at all — same warning predicate as an empty root."""
         root = tmp_path / "acct-a"
         (root / "-home-user-repo").mkdir(parents=True)
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-1: no transcripts found for this scope" in out
 
@@ -956,7 +957,7 @@ class TestCostMultiRootReport:
         existing zero-state line, unchanged, and no scan warning (a
         transcript was found)."""
         _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "(no priced turns in range)" in out
         assert "WARNING: cost:" not in out
@@ -964,7 +965,7 @@ class TestCostMultiRootReport:
     def test_empty_state_priced_spend_is_normal_report(self, fake_projects, capsys):
         """Priced spend: neither the scan warning nor the zero-state line appears."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost:" not in out
         assert "(no priced turns in range)" not in out
@@ -975,15 +976,15 @@ class TestCostMultiRootReport:
         this one."""
         empty_root = tmp_path / "acct-empty"
         empty_root.mkdir(parents=True)
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[empty_root])
         zero_transcripts_out = capsys.readouterr().out
 
         _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         zero_priced_out = capsys.readouterr().out
 
         _write_jsonl(fake_projects / "sess2.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         priced_out = capsys.readouterr().out
 
         assert "WARNING: cost:" in zero_transcripts_out
@@ -1002,7 +1003,7 @@ class TestCostMultiRootReport:
                                    [_priced("claude-sonnet-5", input=1_000_000)])   # $2.00
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo", "sess-b",
                                    [_priced("claude-sonnet-5", input=2_000_000)])   # $4.00
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         # occurrence=1: the global section, not one of the new per-account
         # "## Cost by account" sections this multi-root fixture also emits.
@@ -1018,7 +1019,7 @@ class TestCostMultiRootReport:
                                    [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         nested_alias = root_a / "-home-user-repo" / "nested-alias-back-to-root-a"
         nested_alias.symlink_to(root_a)
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, nested_alias])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, nested_alias])
         out = capsys.readouterr().out
         # occurrence=1: the global section, not the new per-account "## Cost
         # by account" section this multi-root fixture also emits.
@@ -1039,11 +1040,11 @@ class TestCostCorpusCoverageWarning:
         earliest_ts = since_ts + 3 * 86400  # 3 days after window start, well over the 1-day threshold
         earliest_iso = datetime.fromtimestamp(earliest_ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
-        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-1: earliest turn found is" in out
-        assert _mod._fmt_date(earliest_ts) in out
-        assert _mod._fmt_date(since_ts) in out
+        assert render._fmt_date(earliest_ts) in out
+        assert render._fmt_date(since_ts) in out
 
     def test_warning_silent_when_root_fully_covers_window(self, fake_projects, monkeypatch, capsys):
         fixed_now = 1_700_000_000.0
@@ -1051,7 +1052,7 @@ class TestCostCorpusCoverageWarning:
         since_ts = fixed_now - 5 * 86400
         earliest_iso = datetime.fromtimestamp(since_ts - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=earliest_iso)])
-        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost:" not in out
 
@@ -1059,7 +1060,7 @@ class TestCostCorpusCoverageWarning:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000, ts="2020-01-01T00:00:00.000Z"),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost:" not in out
 
@@ -1071,7 +1072,7 @@ class TestCostCorpusCoverageWarning:
         since_ts = fixed_now - 5 * 86400
         boundary_iso = datetime.fromtimestamp(since_ts + 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=boundary_iso)])
-        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost:" not in out
 
@@ -1081,7 +1082,7 @@ class TestCostCorpusCoverageWarning:
         since_ts = fixed_now - 5 * 86400
         over_iso = datetime.fromtimestamp(since_ts + 86400 + 1, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, ts=over_iso)])
-        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-1: earliest turn found is" in out
 
@@ -1098,7 +1099,7 @@ class TestCostCorpusCoverageWarning:
                                          [_priced("claude-sonnet-5", input=1_000, ts=covered_iso)])
         root_short = _write_cost_root(tmp_path, "acct-short", "-home-user-repo-b", "sess-b",
                                        [_priced("claude-sonnet-5", input=1_000, ts=short_iso)])
-        _mod._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[root_covered, root_short])
+        cost._cost_report(_cost_args(since="5d"), date(2026, 8, 2), roots=[root_covered, root_short])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-2: earliest turn found is" in out
         assert "WARNING: cost: account-1:" not in out
@@ -1114,7 +1115,7 @@ class TestCostMultiRootRedaction:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "repo-a" not in out
         assert "repo-b" not in out
@@ -1135,11 +1136,11 @@ class TestCostMultiRootRedaction:
         root = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a", [])
         _write_subagent_jsonl(root / "-home-user-secret-clientname", "sess-a", "agent-1",
                                [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Session", row_contains="session-1")
         assert cols["Proj"] == "private-project-1"
-        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert redaction._REDACT_MAP_MISS_TOKEN not in out
         assert "-home-user-secret-clientname" not in out
 
     def test_multi_root_subagent_only_project_gets_stable_label_not_miss_token(self, tmp_path, capsys):
@@ -1151,17 +1152,17 @@ class TestCostMultiRootRedaction:
                                [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        ordinal_a = _mod._redaction_ordinals([root_a, root_b])[root_a.resolve()]
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        ordinal_a = scope._redaction_ordinals([root_a, root_b])[root_a.resolve()]
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Session", row_contains="session-1")
         assert cols["Proj"] == f"account-{ordinal_a}/private-project-1"
-        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert redaction._REDACT_MAP_MISS_TOKEN not in out
         assert "-home-user-secret-clientname" not in out
 
     def test_corpus_fingerprint_line_present_under_default_redaction(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[fake_projects.parent])
         out = capsys.readouterr().out
         assert "Corpus fingerprint:" in out
 
@@ -1171,26 +1172,26 @@ class TestCostMultiRootRedaction:
         must be equal."""
         flat_map = {"proj-a": "private-project-1", "proj-b": "private-project-2"}
         namespaced_map = {(0, "proj-a"): "account-1/private-project-1", (1, "proj-b"): "account-2/private-project-1"}
-        assert _mod._corpus_fingerprint(flat_map) == _mod._corpus_fingerprint(namespaced_map)
+        assert redaction._corpus_fingerprint(flat_map) == redaction._corpus_fingerprint(namespaced_map)
 
     def test_corpus_fingerprint_differs_for_different_label_set(self):
         map_a = {"proj-a": "private-project-1"}
         map_b = {"proj-a": "private-project-1", "proj-b": "private-project-2"}
-        assert _mod._corpus_fingerprint(map_a) != _mod._corpus_fingerprint(map_b)
+        assert redaction._corpus_fingerprint(map_a) != redaction._corpus_fingerprint(map_b)
 
     def test_no_redact_stamps_do_not_publish_banner_on_stdout_and_stderr(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(no_redact=True), date(2026, 8, 2))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.err
 
     def test_redact_map_miss_raises_instead_of_printing_unmapped_row(self, tmp_path, monkeypatch):
         """A project label absent from the redact map (e.g. built over a
@@ -1199,9 +1200,9 @@ class TestCostMultiRootRedaction:
         AssertionError for cost specifically."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo", "sess-a",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.redaction, "_build_redact_map", lambda roots=None: {})
+        monkeypatch.setattr(redaction, "_build_redact_map", lambda roots=None: {})
         with pytest.raises(AssertionError, match="redact map has no entry"):
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
 
     def test_redact_map_miss_assertion_omits_raw_label(self, tmp_path, monkeypatch):
         """The redact-map-miss hard-fail's own message must not embed the raw
@@ -1211,9 +1212,9 @@ class TestCostMultiRootRedaction:
         review: the original message used {scoped_label!r})."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.redaction, "_build_redact_map", lambda roots=None: {})
+        monkeypatch.setattr(redaction, "_build_redact_map", lambda roots=None: {})
         with pytest.raises(AssertionError) as exc_info:
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
         assert "-home-user-secret-clientname" not in str(exc_info.value)
 
     def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
@@ -1235,7 +1236,7 @@ class TestCostMultiRootRedaction:
         (root_b / "-home-user-escaped").symlink_to(external)
 
         with pytest.raises(AssertionError) as exc_info:
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         assert "external-unrelated-secret-clientname" not in str(exc_info.value)
         assert "-home-user-escaped" not in str(exc_info.value)
 
@@ -1251,18 +1252,18 @@ class TestCostMultiRootRedaction:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])
         assert exc_info.value.code == 2
         assert capsys.readouterr().out == ""
 
     def test_no_redact_refused_at_cmd_cost_when_config_dir_given(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         args = _cost_args(no_redact=True, extra_config_dirs=[str(acct_b)])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cost(args)
+            cost.cmd_cost(args)
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
@@ -1274,7 +1275,7 @@ class TestCostMultiRootRedaction:
         value is proving no path still reaches the report bypassing the
         (now-removed) guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -1285,10 +1286,10 @@ class TestCostMultiRootRedaction:
         proj_b.mkdir(parents=True)
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
 
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        _mod.cmd_cost(args)
+        cost.cmd_cost(args)
 
         out = capsys.readouterr().out
         assert "account-1/private-project-1" in out
@@ -1322,9 +1323,9 @@ class TestCostByProject:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "s.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -1334,7 +1335,7 @@ class TestCostByProject:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(this_repo=True, by_project=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(this_repo=True, by_project=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         data_rows = [ln for ln in section.splitlines() if ln.strip() and not ln.strip().startswith("Project")]
@@ -1351,7 +1352,7 @@ class TestCostByProject:
         ])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b1",
                                    [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         grand_total = _extract_grand_total(out)
@@ -1375,7 +1376,7 @@ class TestCostByProject:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         data_rows = [ln for ln in section.splitlines() if ln.strip().startswith("account-")]
@@ -1395,11 +1396,11 @@ class TestCostByProject:
         proj_b = projects / "-home-user-testrepo--claude-worktrees-branch-b"
         proj_a.mkdir(parents=True)
         proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj_a / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
         _write_jsonl(proj_b / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])    # $1.00
 
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
         out = capsys.readouterr().out
 
         section = out.split("## Cost by project")[1].split("## Top")[0]
@@ -1411,7 +1412,7 @@ class TestCostByProject:
         """No priced turns at all: the per-project section renders the same
         zero-state line as the top-N-sessions section, not a traceback or an
         empty table header with no explanation."""
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         assert "(no priced turns in range)" in section
@@ -1424,7 +1425,7 @@ class TestCostByProject:
         to begin with, so it needs its own assertion of the general rule."""
         root = _write_cost_root(tmp_path, "acct-a", "-home-user-secret-clientname", "sess-a",
                                  [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root])
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         assert "-home-user-secret-clientname" not in section
@@ -1438,7 +1439,7 @@ class TestCostByProject:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-secret-clientname-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         assert "-home-user-secret-clientname-a" not in section
@@ -1450,7 +1451,7 @@ class TestCostByProject:
         guard against a future refactor hoisting the print unconditionally."""
         root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
                                  [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root])
         out = capsys.readouterr().out
         assert "## Cost by project" not in out
 
@@ -1470,11 +1471,11 @@ class TestCostByProject:
         coincidental = projects / "-home-user-shared-family--claude-worktrees-fake"
         unrelated.mkdir(parents=True)
         coincidental.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(unrelated / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(coincidental / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000)])   # $1.00
 
-        _mod._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(by_project=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         section = out.split("## Cost by project")[1].split("## Top")[0]
         data_rows = [ln for ln in section.splitlines() if ln.strip() and not ln.strip().startswith("Project")]
@@ -1501,7 +1502,7 @@ class TestCostByAccount:
         ])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b1",
                                    [_priced("claude-sonnet-5", input=2_000_000)])  # $4.00
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         grand_total = _extract_grand_total(out)
@@ -1522,7 +1523,7 @@ class TestCostByAccount:
                                    [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00, all "input"
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-opus-5", input=500_000)])      # $2.50, all "input"
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         acct1_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=2)
@@ -1546,7 +1547,7 @@ class TestCostByAccount:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
 
-        original = _mod._accumulate_per_account_turn
+        original = cost._accumulate_per_account_turn
         calls = {"n": 0}
 
         def flaky_accumulate(*args, **kwargs):
@@ -1555,10 +1556,10 @@ class TestCostByAccount:
                 return  # drop the first turn's per-account contribution
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(_mod.cost, "_accumulate_per_account_turn", flaky_accumulate)
+        monkeypatch.setattr(cost, "_accumulate_per_account_turn", flaky_accumulate)
 
         with pytest.raises(AssertionError, match="per-account"):
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
 
     def test_per_account_missing_turn_assertion_omits_raw_dollars_under_share_only(self, tmp_path, monkeypatch):
         """Same fault injection as the test above, under --share-only: the
@@ -1569,7 +1570,7 @@ class TestCostByAccount:
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
 
-        original = _mod._accumulate_per_account_turn
+        original = cost._accumulate_per_account_turn
         calls = {"n": 0}
 
         def flaky_accumulate(*args, **kwargs):
@@ -1578,10 +1579,10 @@ class TestCostByAccount:
                 return  # drop the first turn's per-account contribution
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(_mod.cost, "_accumulate_per_account_turn", flaky_accumulate)
+        monkeypatch.setattr(cost, "_accumulate_per_account_turn", flaky_accumulate)
 
         with pytest.raises(AssertionError, match="per-account") as exc:
-            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
         assert not re.search(r"\d", str(exc.value))
 
     def test_cost_by_account_section_absent_at_single_root(self, fake_projects, capsys):
@@ -1589,7 +1590,7 @@ class TestCostByAccount:
         must not appear at all -- promoted from the plan's manual
         verification check into an automated regression pin."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "## Cost by account" not in out
 
@@ -1602,7 +1603,7 @@ class TestCostByAccount:
                                       [_priced("claude-sonnet-5", input=1_000_000)])
         root_zero = tmp_path / "acct-zero"
         (root_zero / "-home-user-repo-b").mkdir(parents=True)  # exists, no *.jsonl
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_full, root_zero])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_full, root_zero])
         out = capsys.readouterr().out
 
         zero_class = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True, occurrence=3)
@@ -1622,7 +1623,7 @@ class TestCostByAccount:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-secret-clientname-b", "sess-b",
                                    [_priced("claude-opus-5", input=500_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "## Cost by account" in out
         assert "### account-1" in out
@@ -1648,7 +1649,7 @@ class TestCostByAccount:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         os.chmod(root_a, 0o000)
         try:
-            _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
         finally:
             os.chmod(root_a, 0o755)  # restore before tmp_path teardown
 
@@ -1675,7 +1676,7 @@ class TestCostThreadSplit:
             _priced("claude-sonnet-5", input=1_000_000),  # main: $2.00
         ])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
 
         grand_total = _extract_grand_total(out)
@@ -1705,7 +1706,7 @@ class TestCostThreadSplit:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
         assert "subagents" not in main_jsonl.parts  # the path a naive check would inspect
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         thread_section = out.split("## Cost by thread")[1].split("## Top")[0]
         subagent_line = next(ln for ln in thread_section.splitlines() if ln.strip().startswith("subagent"))
@@ -1722,7 +1723,7 @@ class TestCostThreadSplit:
             _priced("claude-sonnet-4-5", input=1_000_000),  # main: $3.00
         ])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [subagent_rec])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
 
         grand_total = _extract_grand_total(out)
@@ -1739,7 +1740,7 @@ class TestCostThreadSplit:
         called with known args rather than relying solely on full-report
         integration coverage to catch a wiring bug (wrong argument order,
         wrong _pct_of denominator)."""
-        _mod._print_thread_table(3.00, 1.00, 4.00, markdown=True)
+        cost._print_thread_table(3.00, 1.00, 4.00, markdown=True)
         out = capsys.readouterr().out
         assert out == (
             "\n### Cost by thread\n\n"
@@ -1774,7 +1775,7 @@ class TestCostThreadSplit:
                 self._read.add(key)
                 return super().__getitem__(key)
 
-        original_price_turn = _mod.pricing._price_turn
+        original_price_turn = pricing._price_turn
 
         def faulty_price_turn(model, usage):
             dollars_by_class, context_at_turn, unpriced = original_price_turn(model, usage)
@@ -1782,10 +1783,10 @@ class TestCostThreadSplit:
                 return dollars_by_class, context_at_turn, unpriced
             return _OnceThenZero(dollars_by_class), context_at_turn, unpriced
 
-        monkeypatch.setattr(_mod.pricing, "_price_turn", faulty_price_turn)
+        monkeypatch.setattr(pricing, "_price_turn", faulty_price_turn)
 
         with pytest.raises(AssertionError) as exc:
-            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
         assert "main+subagent" in str(exc.value)
         assert not re.search(r"\d", str(exc.value))
 
@@ -1798,7 +1799,7 @@ class TestCostMarkdownTablePrinters:
     --summary's full _cost_report fixture cost."""
 
     def test_print_scan_coverage_table_omits_unreadable_column_when_zero(self, capsys):
-        _mod.cost._print_scan_coverage_table(3, 0, 2, 5)
+        cost._print_scan_coverage_table(3, 0, 2, 5)
         out = capsys.readouterr().out
         assert "Of those, unreadable" not in out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
@@ -1807,7 +1808,7 @@ class TestCostMarkdownTablePrinters:
         assert coverage_cols["Priced turns"] == "5"
 
     def test_print_scan_coverage_table_includes_unreadable_column_when_nonzero(self, capsys):
-        _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
+        cost._print_scan_coverage_table(3, 1, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
         assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
@@ -1816,13 +1817,13 @@ class TestCostMarkdownTablePrinters:
         assert coverage_cols["Priced turns"] == "5"
 
     def test_print_scan_coverage_table_formats_large_counts_with_commas(self, capsys):
-        _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
+        cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
         assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "1,500,000"
 
     def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
-        _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
+        cost._print_scan_coverage_table(0, 0, 0, 0)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
         assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "0"
@@ -1830,11 +1831,11 @@ class TestCostMarkdownTablePrinters:
         assert coverage_cols["Priced turns"] == "0"
 
     def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
-        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
-        class_token_totals = {cls: 0 for cls in _mod._TOKEN_CLASSES}
+        class_totals = {cls: 0.0 for cls in pricing._TOKEN_CLASSES}
+        class_token_totals = {cls: 0 for cls in pricing._TOKEN_CLASSES}
         class_totals["input"] = 3.00
         class_token_totals["input"] = 1_500_000
-        _mod._print_token_class_table(class_totals, class_token_totals, 3.00, markdown=True)
+        cost._print_token_class_table(class_totals, class_token_totals, 3.00, markdown=True)
         out = capsys.readouterr().out
         assert out == (
             "### Cost by token class\n\n"
@@ -1849,7 +1850,7 @@ class TestCostMarkdownTablePrinters:
         )
 
     def test_print_model_id_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
-        _mod._print_model_id_table({"claude-sonnet-5": 3.00, "claude-opus-5": 1.00}, 4.00, markdown=True)
+        cost._print_model_id_table({"claude-sonnet-5": 3.00, "claude-opus-5": 1.00}, 4.00, markdown=True)
         out = capsys.readouterr().out
         assert out == (
             "\n### Cost by model ID\n\n"
@@ -1869,19 +1870,19 @@ class TestSummaryScopeBranchClause:
     _cost_report's Scope: caption."""
 
     def test_no_branch_filter_renders_all_branches(self):
-        assert _mod.cost._summary_scope_branch_clause(None) == "all branches"
+        assert cost._summary_scope_branch_clause(None) == "all branches"
 
     def test_empty_branch_filter_renders_no_branches(self):
         """--branches "," reaches this state (parsed to an empty set)."""
-        assert _mod.cost._summary_scope_branch_clause(set()) == "no branches"
+        assert cost._summary_scope_branch_clause(set()) == "no branches"
 
     def test_single_branch_renders_singular_clause(self):
-        assert _mod.cost._summary_scope_branch_clause({"GH-1088/pr-cost-scope-header"}) == \
+        assert cost._summary_scope_branch_clause({"GH-1088/pr-cost-scope-header"}) == \
             "branch GH-1088/pr-cost-scope-header"
 
     def test_multiple_branches_render_plural_sorted_clause(self):
         branches = {"feature-d", "feature-a", "feature-c", "feature-b"}
-        assert _mod.cost._summary_scope_branch_clause(branches) == \
+        assert cost._summary_scope_branch_clause(branches) == \
             "branches feature-a, feature-b, feature-c, feature-d"
 
 
@@ -1896,7 +1897,7 @@ class TestBranchFilterParsing:
         (None, None),
     ])
     def test_branches_value_maps_to_filter_set(self, raw, expected):
-        assert _mod.scope._branch_filter(argparse.Namespace(branches=raw)) == expected
+        assert scope._branch_filter(argparse.Namespace(branches=raw)) == expected
 
 
 class TestPrintBranchExclusionDiagnostic:
@@ -1911,14 +1912,14 @@ class TestPrintBranchExclusionDiagnostic:
     --summary drops the diagnostic entirely."""
 
     def test_no_exclusions_is_a_noop(self, capsys):
-        _mod._print_branch_exclusion_diagnostic({}, set(), redact=True)
+        cost._print_branch_exclusion_diagnostic({}, set(), redact=True)
         assert capsys.readouterr().out == ""
 
     def test_non_summary_redact_default_sorts_labels_and_never_labels_sentinel(self, capsys):
         """Mixed named branches plus the "?" sentinel, non-summary redact=True
         (the default): labels are assigned in sorted real-name order, and "?"
         -- carrying no identifying information -- is never assigned one."""
-        _mod._print_branch_exclusion_diagnostic(
+        cost._print_branch_exclusion_diagnostic(
             {"feature-b": 1, "feature-a": 2, "?": 3}, {"t1"}, redact=True
         )
         out = capsys.readouterr().out
@@ -1932,7 +1933,7 @@ class TestPrintBranchExclusionDiagnostic:
         assert cols_q["Turns"] == "3"  # "?" prints literally, never as a branch-N label
 
     def test_non_summary_no_redact_shows_raw_names(self, capsys):
-        _mod._print_branch_exclusion_diagnostic({"feature-a": 5}, {"t1"}, redact=False)
+        cost._print_branch_exclusion_diagnostic({"feature-a": 5}, {"t1"}, redact=False)
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Turns", row_contains="feature-a", row_startswith=True)
         assert cols["Turns"] == "5"
@@ -1942,7 +1943,7 @@ class TestPrintBranchExclusionDiagnostic:
         the diagnostic's own generated label -- the dict-key lookup in the
         print loop always substitutes the generated label for a redacted
         branch, so a same-shaped raw name never passes through unredacted."""
-        _mod._print_branch_exclusion_diagnostic({"branch-1": 1, "aaa-first": 2}, {"t1"}, redact=True)
+        cost._print_branch_exclusion_diagnostic({"branch-1": 1, "aaa-first": 2}, {"t1"}, redact=True)
         out = capsys.readouterr().out
         # sorted(["aaa-first", "branch-1"]) -> aaa-first is branch-1, branch-1 (real) is branch-2
         cols_real_branch1 = _table_cols(
@@ -1967,14 +1968,14 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),  # $2.00
             _priced("claude-sonnet-5", input=500_000, branch="main"),         # $1.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         unfiltered_total = _extract_grand_total(capsys.readouterr().out)
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         feature_total = _extract_grand_total(capsys.readouterr().out)
         assert feature_total == pytest.approx(2.00)
 
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         main_total = _extract_grand_total(capsys.readouterr().out)
         assert main_total == pytest.approx(1.00)
 
@@ -1986,7 +1987,7 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=500_000, branch="feature-b"),    # $1.00
             _priced("claude-sonnet-5", input=250_000, branch="main"),         # $0.50
         ])
-        _mod._cost_report(_cost_args(branches="feature-a,feature-b"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a,feature-b"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(3.00)
 
@@ -2003,10 +2004,10 @@ class TestCostBranchFilter:
             no_branch_rec,
             _priced("claude-sonnet-5", input=500_000, branch="main"),  # $1.00
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.00)
 
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(1.00)
 
     def test_branch_exclusion_diagnostic_counts_excluded_records_not_sessions(self, fake_projects, capsys):
@@ -2020,7 +2021,7 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
             _priced("claude-sonnet-5", input=500_000, branch="main"),
         ])
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Turns", row_contains="branch-1", row_startswith=True)
         assert cols["Turns"] == "1"
@@ -2033,7 +2034,7 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=1_000_000, branch="main"),
             _priced("claude-sonnet-5", input=500_000, branch="main"),
         ])
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "Branch-filter exclusions" not in out
 
@@ -2049,7 +2050,7 @@ class TestCostBranchFilter:
             no_branch_rec,
             _priced("claude-sonnet-5", input=500_000, branch="main"),
         ])
-        _mod._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Turns", row_contains="?", row_startswith=True)
         assert cols["Turns"] == "1"
@@ -2070,7 +2071,7 @@ class TestCostBranchFilter:
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
         _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
         _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2080,7 +2081,7 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
         )
         out = capsys.readouterr().out
@@ -2100,7 +2101,7 @@ class TestCostBranchFilter:
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
         _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
         _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2110,7 +2111,7 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
         )
         out = capsys.readouterr().out
@@ -2128,7 +2129,7 @@ class TestCostBranchFilter:
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
         _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2140,7 +2141,7 @@ class TestCostBranchFilter:
 
         # --since counts back from wall-clock now (scope._parse_since_nd_arg), not the injected `today`.
         # _priced's fixed default timestamp (2026-05-19) predates any 5-day window ending at wall-clock now.
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
         )
         out = capsys.readouterr().out
@@ -2157,7 +2158,7 @@ class TestCostBranchFilter:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2167,11 +2168,11 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
         )
         since_out = capsys.readouterr().out
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         unbounded_out = capsys.readouterr().out
         assert "This account only, last 5d." in since_out
         assert "This account only, all time." in unbounded_out
@@ -2186,7 +2187,7 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=500_000, branch="feature-a"),
             _priced("claude-sonnet-5", input=250_000, branch="main"),
         ])
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         out = capsys.readouterr().out
         diagnostic_block = _diagnostic_section(out)
         assert "feature-a" not in diagnostic_block
@@ -2205,7 +2206,7 @@ class TestCostBranchFilter:
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
             _priced("claude-sonnet-5", input=500_000, branch="main"),
         ])
-        _mod._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Turns", row_contains="feature-a", row_startswith=True)
         assert cols["Turns"] == "1"
@@ -2222,7 +2223,7 @@ class TestCostTokensColumn:
                 input=100_000, cache_read=200_000, ephemeral_1h=10_000, ephemeral_5m=20_000, output=5_000,
             ),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert int(input_cols["Tokens"].replace(",", "")) == 100_000
@@ -2241,7 +2242,7 @@ class TestCostTokensColumn:
             _priced("<synthetic>", input=1_000_000),   # unpriced
             _priced("claude-sonnet-5", input=100_000),  # priced
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
         assert int(input_cols["Tokens"].replace(",", "")) == 100_000  # not 1,100,000
@@ -2257,7 +2258,7 @@ class TestFablePricing:
     def test_fable_5_rates_match_vendor_table_with_standard_cache_read(self):
         """Fable 5: base $10, output 5x=$50, cache_write_5m 1.25x=$12.50,
         cache_write_1h 2x=$20, cache_read 0.1x (standard, unlike 5.1)=$1."""
-        rates = _mod._model_rates("claude-fable-5")
+        rates = pricing._model_rates("claude-fable-5")
         assert rates is not None
         assert rates["input"] == pytest.approx(10.00)
         assert rates["output"] == pytest.approx(50.00)
@@ -2270,7 +2271,7 @@ class TestFablePricing:
         which uses the 0.025x reduced multiplier ($10 * 0.025 = $0.25) --
         the one class the pricing page states a per-generation exception
         for."""
-        rates = _mod._model_rates("claude-fable-5-1")
+        rates = pricing._model_rates("claude-fable-5-1")
         assert rates is not None
         assert rates["input"] == pytest.approx(10.00)
         assert rates["output"] == pytest.approx(50.00)
@@ -2285,7 +2286,7 @@ class TestFablePricing:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-fable-5-1", input=100_000, cache_read=200_000, output=5_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         # $10/MTok input on 100,000 = $1.00; $50/MTok output on 5,000 = $0.25;
         # $0.25/MTok cache_read (0.025x reduced multiplier) on 200,000 = $0.05.
@@ -2306,7 +2307,7 @@ class TestOpus55Pricing:
         """Opus 5.5: base $4, output 5x=$20, cache_write_5m 1.25x=$5,
         cache_write_1h 2x=$8, cache_read 0.05x (its own reduced multiplier,
         distinct from Fable 5.1's 0.025x)=$0.20."""
-        rates = _mod._model_rates("claude-opus-5-5")
+        rates = pricing._model_rates("claude-opus-5-5")
         assert rates is not None
         assert rates["input"] == pytest.approx(4.00)
         assert rates["output"] == pytest.approx(20.00)
@@ -2321,7 +2322,7 @@ class TestOpus55Pricing:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-opus-5-5", input=100_000, cache_read=200_000, output=5_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         # $4/MTok input on 100,000 = $0.40; $20/MTok output on 5,000 = $0.10;
         # $0.20/MTok cache_read (0.05x reduced multiplier) on 200,000 = $0.04.
@@ -2335,7 +2336,7 @@ class TestOpus55Pricing:
         resolves cache_read at the base 0.1x multiplier ($0.50) -- proves the
         new claude-opus-5-5 override entry is scoped to its exact key and
         doesn't leak onto the un-suffixed sibling."""
-        rates = _mod._model_rates("claude-opus-5")
+        rates = pricing._model_rates("claude-opus-5")
         assert rates is not None
         assert rates["cache_read"] == pytest.approx(0.50)
 
@@ -2351,7 +2352,7 @@ class TestSonnet55Pricing:
     def test_sonnet_5_5_rates_match_vendor_table_with_standard_cache_read(self):
         """Cache-read is the standard 0.1x multiplier, so no
         _CACHE_READ_MULTIPLIER_OVERRIDES entry applies."""
-        rates = _mod._model_rates("claude-sonnet-5-5")
+        rates = pricing._model_rates("claude-sonnet-5-5")
         assert rates is not None
         assert rates["input"] == pytest.approx(2.00)
         assert rates["output"] == pytest.approx(10.00)
@@ -2362,7 +2363,7 @@ class TestSonnet55Pricing:
     def test_sonnet_5_5_turn_is_priced_not_excluded_as_unpriced(self):
         """A Sonnet 5.5 turn must price rather than fall into the
         unpriced-token exclusion."""
-        dollars, _context_at_turn, unpriced_tokens = _mod._price_turn(
+        dollars, _context_at_turn, unpriced_tokens = pricing._price_turn(
             "claude-sonnet-5-5", {"input_tokens": 1_000_000},
         )
         assert dollars is not None
@@ -2374,7 +2375,7 @@ class TestCostSummary:
 
     def test_summary_without_this_repo_exits_nonzero(self, fake_projects, capsys):
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(summary=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(summary=True), date(2026, 8, 2))
         assert "--summary requires --this-repo" in capsys.readouterr().err
 
     def test_summary_with_explicit_default_projects_glob_exits_nonzero(self, fake_projects, capsys):
@@ -2382,7 +2383,7 @@ class TestCostSummary:
         when --this-repo is absent — --summary does not accept --projects as
         an alternative scope gate at all, default value or otherwise."""
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(summary=True, projects="*"), date(2026, 8, 2))
+            cost._cost_report(_cost_args(summary=True, projects="*"), date(2026, 8, 2))
 
     def test_summary_with_machine_wide_projects_bypass_glob_exits_nonzero(self, fake_projects, capsys):
         """row23: every _path_to_project_slug-derived project slug begins
@@ -2390,13 +2391,13 @@ class TestCostSummary:
         literal default '*' — pins that this bypass is refused too, not just
         the literal default value."""
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(summary=True, projects="-*"), date(2026, 8, 2))
+            cost._cost_report(_cost_args(summary=True, projects="-*"), date(2026, 8, 2))
 
     def test_summary_refuses_by_project_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2407,13 +2408,13 @@ class TestCostSummary:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(summary=True, this_repo=True, by_project=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(summary=True, this_repo=True, by_project=True), date(2026, 8, 2))
 
     def test_summary_refuses_no_redact_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2424,13 +2425,13 @@ class TestCostSummary:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._cost_report(_cost_args(summary=True, this_repo=True, no_redact=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(summary=True, this_repo=True, no_redact=True), date(2026, 8, 2))
 
     def test_summary_refuses_config_dir_in_combination(self, tmp_path, monkeypatch, capsys):
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2441,7 +2442,7 @@ class TestCostSummary:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
-            _mod._cost_report(
+            cost._cost_report(
                 _cost_args(summary=True, this_repo=True, extra_config_dirs=["/somewhere"]),
                 date(2026, 8, 2),
             )
@@ -2461,10 +2462,10 @@ class TestCostSummary:
         mine.mkdir(parents=True)
         other = projects / "-home-user-otherrepo"
         other.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess-mine.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])    # $2.00
         _write_jsonl(other / "sess-other.jsonl", [_priced("claude-sonnet-5", input=5_000_000)])  # $10.00
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2476,10 +2477,10 @@ class TestCostSummary:
 
         def _must_not_be_called(*a, **k):
             raise AssertionError("must not be called under --summary")
-        monkeypatch.setattr(_mod.redaction, "_redact_proj_label", _must_not_be_called)
-        monkeypatch.setattr(_mod.redaction, "_build_redact_map", _must_not_be_called)
+        monkeypatch.setattr(redaction, "_redact_proj_label", _must_not_be_called)
+        monkeypatch.setattr(redaction, "_build_redact_map", _must_not_be_called)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
 
         assert "repo-main" not in out
@@ -2493,9 +2494,9 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2505,7 +2506,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "## Top" not in out
         assert "## Cost by project" not in out
@@ -2522,12 +2523,12 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [
             _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
             _priced("claude-sonnet-5", input=100_000),                 # priced
         ])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2537,7 +2538,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         unpriced_tokens, unpriced_models = _extract_excluded_spend_summary(out)
         assert unpriced_tokens == 1_000_000 + 500_000
@@ -2549,9 +2550,9 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2561,7 +2562,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 12, 5))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 12, 5))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
 
@@ -2569,9 +2570,9 @@ class TestCostSummary:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2581,7 +2582,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "STALE PRICING" not in out
 
@@ -2597,7 +2598,7 @@ class TestCostSummary:
         unlabeled -- and the per-root scan line is absent entirely
         (--summary prunes it)."""
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
-        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        cost.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
         out = capsys.readouterr().out
         assert _extract_md_grand_total(out) == pytest.approx(2.00)  # not 12.00 -- other account excluded
         assert "cost: account-1: scanned" not in out
@@ -2610,7 +2611,7 @@ class TestCostSummary:
         -- proves mechanism 1's narrowing is --summary-specific, not a
         blanket regression on --this-repo plus a declared root."""
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
-        _mod.cmd_cost(_cost_args(this_repo=True, branches="main"))
+        cost.cmd_cost(_cost_args(this_repo=True, branches="main"))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(12.00)
 
@@ -2628,7 +2629,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2638,7 +2639,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "\nScope: this repository only, all branches. This account only, all time.\n" in out
         assert "different Claude account" not in out
@@ -2655,7 +2656,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2665,7 +2666,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, branches="main"),
             date(2026, 8, 2), roots=[projects],
         )
@@ -2681,7 +2682,7 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2691,7 +2692,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(
+        cost._cost_report(
             _cost_args(summary=True, this_repo=True, branches="feature-b,feature-a"),
             date(2026, 8, 2), roots=[projects],
         )
@@ -2716,7 +2717,7 @@ class TestCostSummary:
             _priced("claude-sonnet-5", input=1_000_000),
             _priced("claude-sonnet-5", input=1_000_000),
         ])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2726,7 +2727,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
         assert coverage_cols["Sessions with priced turns"] == "1"
@@ -2747,8 +2748,8 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "_scan_root_transcripts", lambda *a, **k: (2, 1))
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "_scan_root_transcripts", lambda *a, **k: (2, 1))
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2758,7 +2759,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
 
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
@@ -2781,7 +2782,7 @@ class TestCostSummary:
             [_priced("claude-sonnet-5", input=1_000_000)],
         )
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2791,11 +2792,11 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        cost.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
         single_root_out = capsys.readouterr().out
 
         _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
-        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        cost.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
         two_roots_out = capsys.readouterr().out
 
         def _scope_span(out: str) -> str:
@@ -2826,7 +2827,7 @@ class TestCostSummary:
         root_b = tmp_path / "acct-b" / "projects"
         root_b.mkdir(parents=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_report(
+            cost._cost_report(
                 _cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[root_a, root_b],
             )
         assert exc_info.value.code == 2
@@ -2843,8 +2844,8 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2854,7 +2855,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "/Users/" not in out
         assert "/home/" not in out
@@ -2869,8 +2870,8 @@ class TestCostSummary:
         so this repo's own slug dir is left with zero transcripts."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2880,7 +2881,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "WARNING: cost: account-1: no transcripts found" in out
         assert "/Users/" not in out
@@ -2895,8 +2896,8 @@ class TestCostSummary:
         model ever priced a turn to produce a data row."""
         projects = tmp_path / "projects"
         (projects / "-repo-main").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2906,7 +2907,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         lines = out.splitlines()
         header_idx = next(i for i, ln in enumerate(lines) if ln == "| Model | $ | Share |")
@@ -2925,8 +2926,8 @@ class TestCostSummary:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])  # $2.00
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -2936,7 +2937,7 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         # $2.00 -- claude-sonnet-5's $2/MTok input rate on 1M input tokens, hand-computed.
         assert "| **total** | **2.00** | | |" in out
@@ -2994,25 +2995,25 @@ class TestCostShareOnly:
         regardless of dollar/token content, since --share-only's whole safety
         argument depends on always rendering over a pooled/mixed corpus."""
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, projects="-home-user-repo-a*"), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, projects="-home-user-repo-a*"), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses a non-default --projects glob" in capsys.readouterr().err
 
     def test_refuses_by_project(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, by_project=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, by_project=True), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses --by-project" in capsys.readouterr().err
 
     def test_refuses_no_redact(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, no_redact=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, no_redact=True), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses --no-redact" in capsys.readouterr().err
 
     def test_refuses_summary(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, summary=True, this_repo=True), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, summary=True, this_repo=True), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses --summary" in capsys.readouterr().err
 
@@ -3021,7 +3022,7 @@ class TestCostShareOnly:
         a table that sits entirely after the early return and is never
         rendered under --share-only."""
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, top=5), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, top=5), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses --top" in capsys.readouterr().err
 
@@ -3030,7 +3031,7 @@ class TestCostShareOnly:
         instead of the raw parsed value would silently fold it back to the
         default and let it slip past this refusal."""
         with pytest.raises(SystemExit) as exc:
-            _mod._cost_report(_cost_args(share_only=True, top=0), date(2026, 8, 2))
+            cost._cost_report(_cost_args(share_only=True, top=0), date(2026, 8, 2))
         assert exc.value.code == 2
         assert "--share-only refuses --top" in capsys.readouterr().err
 
@@ -3045,7 +3046,7 @@ class TestCostShareOnly:
             _priced("claude-sonnet-5", input=1_000_000, cache_read=500_000, output=200_000),
             _priced("claude-opus-5", input=250_000, ephemeral_1h=100_000),
         ])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         self._assert_share_table_structure(out, "token class", "Class")
         self._assert_share_table_structure(out, "model ID", "Model")
@@ -3060,12 +3061,12 @@ class TestCostShareOnly:
         swapped grand_total) would still produce a percentage-shaped string
         and pass every structural assertion above, so this pins one row per
         table against an independently hand-computed percentage."""
-        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
+        class_totals = {cls: 0.0 for cls in pricing._TOKEN_CLASSES}
         class_totals["input"] = 3.0
         class_totals["output"] = 1.0
         model_totals = {"claude-sonnet-5": 3.0, "claude-opus-5": 1.0}
-        bucket_totals = {_mod.pricing._CONTEXT_BUCKET_UNDER: 3.0, _mod.pricing._CONTEXT_BUCKET_OVER: 1.0}
-        _mod.cost._print_share_only_tables(class_totals, model_totals, 3.0, 1.0, bucket_totals, 4.0)
+        bucket_totals = {pricing._CONTEXT_BUCKET_UNDER: 3.0, pricing._CONTEXT_BUCKET_OVER: 1.0}
+        cost._print_share_only_tables(class_totals, model_totals, 3.0, 1.0, bucket_totals, 4.0)
         out = capsys.readouterr().out
 
         def _cell(section: str, label: str) -> str:
@@ -3081,8 +3082,8 @@ class TestCostShareOnly:
         assert _cell("model ID", "claude-opus-5") == "25.0%"
         assert _cell("thread", "main") == "75.0%"
         assert _cell("thread", "subagent") == "25.0%"
-        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_UNDER) == "75.0%"
-        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_OVER) == "25.0%"
+        assert _cell("context-at-turn bucket", pricing._CONTEXT_BUCKET_UNDER) == "75.0%"
+        assert _cell("context-at-turn bucket", pricing._CONTEXT_BUCKET_OVER) == "25.0%"
 
     # -- Suppression, not refusal, under multi-root -------------------------
 
@@ -3095,7 +3096,7 @@ class TestCostShareOnly:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-opus-5", input=500_000)])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "## Cost by account" not in out
         assert "## Top" not in out
@@ -3111,7 +3112,7 @@ class TestCostShareOnly:
                                    [_priced("claude-sonnet-5", input=1_000_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
                                    [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
         assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
@@ -3121,7 +3122,7 @@ class TestCostShareOnly:
             _priced("claude-sonnet-5", input=1_000_000, branch="main"),
             _priced("claude-sonnet-5", input=500_000, branch="feature-x"),
         ])
-        _mod._cost_report(_cost_args(share_only=True, branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(share_only=True, branches="main"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "## Branch-filter exclusions" not in out
 
@@ -3134,7 +3135,7 @@ class TestCostShareOnly:
             _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
             _priced("claude-sonnet-5", input=100_000),                 # priced
         ])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         line = self._excluded_spend_line(out)
         assert line == (
@@ -3149,7 +3150,7 @@ class TestCostShareOnly:
         self, fake_projects, capsys
     ):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-example-9", input=1_000_000)])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         line = self._excluded_spend_line(out)
         assert not re.search(r"\d", line)
@@ -3162,7 +3163,7 @@ class TestCostShareOnly:
         bad = _priced("claude-sonnet-5", input=1_000_000)
         bad["message"]["usage"]["output_tokens"] = -1
         _write_jsonl(fake_projects / "sess.jsonl", [bad, _priced("claude-sonnet-5", input=100_000)])
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         line = next(ln for ln in out.splitlines() if ln.startswith("MALFORMED USAGE"))
         assert line == (
@@ -3182,7 +3183,7 @@ class TestCostShareOnly:
         empty_root_a.mkdir(parents=True)
         empty_root_b = tmp_path / "acct-empty-b"
         empty_root_b.mkdir(parents=True)
-        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[empty_root_a, empty_root_b])
+        cost._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[empty_root_a, empty_root_b])
         out = capsys.readouterr().out
         assert "Scope: pooled corpus, all time." in out
         assert out.count("WARNING: cost:") == 2
@@ -3221,7 +3222,7 @@ class TestListPriceCaveat:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3231,11 +3232,11 @@ class TestListPriceCaveat:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         lines = out.splitlines()
         assert lines[0] == "> [!IMPORTANT]"
-        assert lines[1] == f"> {_mod.cost._LIST_PRICE_CAVEAT}"
+        assert lines[1] == f"> {cost._LIST_PRICE_CAVEAT}"
         # The alert's two lines are immediately followed by a blank line in this
         # print sequence. GFM blockquote termination is assumed, not executed
         # against a markdown parser here.
@@ -3246,9 +3247,9 @@ class TestListPriceCaveat:
     def test_full_report_caveat_is_a_plain_sentence_not_an_alert(self, fake_projects, capsys):
         """See the class docstring for why this path stays a plain sentence."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         lines = capsys.readouterr().out.splitlines()
-        assert _mod.cost._LIST_PRICE_CAVEAT in lines
+        assert cost._LIST_PRICE_CAVEAT in lines
 
     def test_summary_firing_banner_is_not_folded_into_the_alert(self, tmp_path, monkeypatch, capsys):
         """STALE PRICING carries its own leading blank line, so it can't abut
@@ -3261,8 +3262,8 @@ class TestListPriceCaveat:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3272,7 +3273,7 @@ class TestListPriceCaveat:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 12, 5))
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 12, 5))
         lines = capsys.readouterr().out.splitlines()
         banner = next(i for i, line in enumerate(lines) if line.startswith("STALE PRICING"))
         assert lines[banner - 1] == ""
@@ -3291,7 +3292,7 @@ class TestExcludedSpendBanner:
             _priced("claude-example-9", input=1_000_000),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "unpriced model IDs: claude-example-9." in out
 
@@ -3305,7 +3306,7 @@ class TestExcludedSpendBanner:
             _priced("claude-example-9", input=500_000),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "unpriced model IDs: (no model field), claude-example-9." in out
 
@@ -3323,7 +3324,7 @@ class TestExcludedSpendBanner:
             _priced("claude-example-9", input=500_000),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3333,11 +3334,11 @@ class TestExcludedSpendBanner:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(this_repo=True), date(2026, 8, 2), roots=[projects])
         full_out = capsys.readouterr().out
         assert "unpriced model IDs: claude-example-8, claude-example-9." in full_out
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         summary_out = capsys.readouterr().out
         assert "across 2 unrecognized model IDs" in summary_out
         assert "claude-example-8" not in summary_out
@@ -3348,7 +3349,7 @@ class TestExcludedSpendBanner:
         stays silent, not present-with-zero-values, when nothing is
         excluded."""
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "EXCLUDED SPEND" not in out
 
@@ -3359,7 +3360,7 @@ class TestExcludedSpendBanner:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3369,7 +3370,7 @@ class TestExcludedSpendBanner:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "EXCLUDED SPEND" not in out
 
@@ -3380,7 +3381,7 @@ class TestExcludedSpendBanner:
             _priced("<synthetic>", input=0, output=0),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "EXCLUDED SPEND" not in out
 
@@ -3394,7 +3395,7 @@ class TestExcludedSpendBanner:
             _priced("<synthetic>", input=1_000_000),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "unpriced model IDs: <synthetic>." in out
 
@@ -3412,7 +3413,7 @@ class TestExcludedSpendBanner:
             _priced("<synthetic>", input=1_000_000),
             _priced("claude-sonnet-5", input=100_000),
         ])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3422,7 +3423,7 @@ class TestExcludedSpendBanner:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "EXCLUDED SPEND" in out
         assert "<synthetic>" not in out
@@ -3441,7 +3442,7 @@ class TestPricingIntegrityBanner:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-backend-engineer")]),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert "PRICING INTEGRITY" in capsys.readouterr().out
 
     def test_fires_on_real_usage_drift_condition_with_subagent_flag_held_false(self, fake_projects, capsys):
@@ -3454,12 +3455,12 @@ class TestPricingIntegrityBanner:
         rec2 = _asst("claude-sonnet-5", content=[{"type": "text", "text": "done"}], request_id="req-1")
         rec2["message"]["usage"] = {"input_tokens": 999, "output_tokens": 50}
         _write_jsonl(fake_projects / "sess.jsonl", [rec1, rec2])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert "PRICING INTEGRITY" in capsys.readouterr().out
 
     def test_silent_on_healthy_corpus(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert "PRICING INTEGRITY" not in capsys.readouterr().out
 
     def test_silent_on_healthy_corpus_summary_mode(self, tmp_path, monkeypatch, capsys):
@@ -3469,7 +3470,7 @@ class TestPricingIntegrityBanner:
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3479,7 +3480,7 @@ class TestPricingIntegrityBanner:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         assert "PRICING INTEGRITY" not in capsys.readouterr().out
 
     def test_fires_on_real_drift_condition_summary_mode(self, tmp_path, monkeypatch, capsys):
@@ -3494,7 +3495,7 @@ class TestPricingIntegrityBanner:
         _write_jsonl(mine / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-backend-engineer")]),
         ])
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -3504,7 +3505,7 @@ class TestPricingIntegrityBanner:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        cost._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "PRICING INTEGRITY — this tool detected a transcript-format change" in out
         assert "req_" not in out
@@ -3518,7 +3519,7 @@ class TestPricingIntegrityBanner:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-backend-engineer")]),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "PRICING INTEGRITY" in out
         assert "requestId" not in out
@@ -3531,7 +3532,7 @@ class TestPricingIntegrityBanner:
             _priced("claude-sonnet-5", input=1_000),
             _priced("claude-example-9", input=500_000),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 12, 5))
+        cost._cost_report(_cost_args(), date(2026, 12, 5))
         out = capsys.readouterr().out
         assert "STALE PRICING" in out
         assert "PRICING INTEGRITY" in out
@@ -3553,7 +3554,7 @@ class TestMalformedUsageBanner:
             bad,
             _priced("claude-sonnet-5", input=100_000),  # $0.20
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "MALFORMED USAGE — 1 usage-bearing turns" in out
         assert _extract_grand_total(out) == pytest.approx(0.20)
@@ -3569,14 +3570,14 @@ class TestMalformedUsageBanner:
             bad,
             _priced("claude-sonnet-5", input=100_000),  # $0.20
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "MALFORMED USAGE — 1 usage-bearing turns" in out
         assert _extract_grand_total(out) == pytest.approx(0.20)
 
     def test_silent_on_clean_corpus(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=100_000)])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert "MALFORMED USAGE" not in capsys.readouterr().out
 
     def test_malformed_usage_outside_the_since_window_does_not_fire_the_banner(self, fake_projects, capsys):
@@ -3591,7 +3592,7 @@ class TestMalformedUsageBanner:
             bad,
             _priced("claude-sonnet-5", input=100_000, ts=new_ts),  # $0.20, in-window
         ])
-        _mod._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(since="1d"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "MALFORMED USAGE" not in out
         assert _extract_grand_total(out) == pytest.approx(0.20)
@@ -3606,7 +3607,7 @@ class TestMalformedUsageBanner:
             bad,
             _priced("claude-sonnet-5", input=100_000, branch="main"),  # $0.20, in-scope
         ])
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "MALFORMED USAGE" not in out
         assert _extract_grand_total(out) == pytest.approx(0.20)
@@ -3632,7 +3633,7 @@ class TestCostWorktreeAgentBranchCarryForward:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(3.00)  # 2.00 + 1.00 folded in
 
@@ -3651,7 +3652,7 @@ class TestCostWorktreeAgentBranchCarryForward:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(3.00)
 
@@ -3678,11 +3679,11 @@ class TestCostWorktreeAgentBranchCarryForward:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [first_main, second_main])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         feature_out = capsys.readouterr().out
         assert _extract_grand_total(feature_out) == pytest.approx(3.00)  # first_main + agent
 
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         main_out = capsys.readouterr().out
         assert _extract_grand_total(main_out) == pytest.approx(2.00)  # second_main only
 
@@ -3700,10 +3701,10 @@ class TestCostWorktreeAgentBranchCarryForward:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(2.00)
 
-        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
 
 
@@ -3727,8 +3728,8 @@ def _pin_this_repo_to_repo_main(monkeypatch, tmp_path) -> Path:
     needs under it."""
     projects = tmp_path / "projects"
     (projects / "-repo-main").mkdir(parents=True)
-    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+    monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
     def fake_run(cmd, *a, **k):
         if cmd[:3] == ["git", "worktree", "list"]:
@@ -3757,9 +3758,9 @@ class TestCostPreBranchAndSubagentAttribution:
             _sidechain(_priced("claude-sonnet-5", input=250_000, branch="main", ts="2026-08-01T10:02:00.000Z")),  # $0.50
         ])
 
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.50)
-        _mod._cost_report(_cost_args(branches="main"), self.TODAY)
+        cost._cost_report(_cost_args(branches="main"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
 
     def test_post_boundary_sidechain_tagged_main_and_foreign_tagged_sidechain_count_toward_the_entered_branch(
@@ -3775,11 +3776,11 @@ class TestCostPreBranchAndSubagentAttribution:
             _sidechain(_priced("claude-sonnet-5", input=50_000, branch="other", ts="2026-08-01T10:06:00.000Z")),  # $0.10
         ])
 
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.30)
-        _mod._cost_report(_cost_args(branches="other"), self.TODAY)
+        cost._cost_report(_cost_args(branches="other"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
-        _mod._cost_report(_cost_args(branches="main"), self.TODAY)
+        cost._cost_report(_cost_args(branches="main"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
 
     def test_main_thread_record_without_a_gitbranch_stays_excluded(self, fake_projects, capsys):
@@ -3791,9 +3792,9 @@ class TestCostPreBranchAndSubagentAttribution:
             _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
         ])
 
-        _mod._cost_report(_cost_args(), self.TODAY)
+        cost._cost_report(_cost_args(), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.40)
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.00)
 
     def test_sidechain_record_in_a_session_with_an_empty_main_file_is_excluded_from_every_branch_total(
@@ -3804,9 +3805,9 @@ class TestCostPreBranchAndSubagentAttribution:
             _sidechain(_priced("claude-sonnet-5", input=1_000_000, branch="feature-x")),  # $2.00
         ])
 
-        _mod._cost_report(_cost_args(), self.TODAY)
+        cost._cost_report(_cost_args(), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(2.00)
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
 
     # -- Cross-repo subagent spend ------------------------------------------
@@ -3832,7 +3833,7 @@ class TestCostPreBranchAndSubagentAttribution:
         projects = _pin_this_repo_to_repo_main(monkeypatch, tmp_path)
         self._write_cross_repo_session(projects / "-repo-main", sidechain_cwd=sidechain_cwd)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
         assert _extract_md_grand_total(capsys.readouterr().out) == pytest.approx(3.50)  # 2.00 + 1.00 + 0.50
 
     def test_this_repo_summary_adds_nothing_from_another_projects_session_on_the_same_branch(
@@ -3854,7 +3855,7 @@ class TestCostPreBranchAndSubagentAttribution:
             ),
         ])
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
         assert _extract_md_grand_total(capsys.readouterr().out) == pytest.approx(3.50)
 
     # -- Pre-branch moved-turns audit line ----------------------------------
@@ -3892,10 +3893,10 @@ class TestCostPreBranchAndSubagentAttribution:
     ):
         self._write_prefix_session(fake_projects)
 
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         out = capsys.readouterr().out
         # Two priced prefix turns ($2.00 and $0.50) and one unpriced turn: three moved turns, $2.50.
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
+        assert cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
 
     def test_moved_line_excludes_post_boundary_and_foreign_tagged_sidechain_records_the_total_includes(
         self, fake_projects, capsys,
@@ -3905,26 +3906,26 @@ class TestCostPreBranchAndSubagentAttribution:
         the audit line keeps only the prefix turns while the total counts both."""
         self._write_prefix_session(fake_projects, with_post_boundary_sidechains=True)
 
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(3.80)  # 2.00 + 0.50 + 1.00 + 0.20 + 0.10
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
+        assert cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
 
     def test_full_report_prints_no_moved_line_when_nothing_moved(self, fake_projects, capsys):
         self._write_prefix_session(fake_projects, with_prefix=False)
 
-        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x"), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(1.50)  # the entered branch's own turn plus its subagent
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+        assert cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
 
     def test_full_report_prints_no_moved_line_without_a_branches_filter(self, fake_projects, capsys):
         self._write_prefix_session(fake_projects)
 
-        _mod._cost_report(_cost_args(), self.TODAY)
+        cost._cost_report(_cost_args(), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(3.50)  # 2.00 + 0.50 + 1.00, the unpriced turn adds nothing
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+        assert cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
 
     @pytest.mark.parametrize(("branches", "expected_total"), [("main", 0.0), ("main,feature-x", 3.50)])
     def test_full_report_prints_no_moved_line_when_the_default_branch_is_in_the_filter(
@@ -3934,27 +3935,27 @@ class TestCostPreBranchAndSubagentAttribution:
         under main,feature-x the prefix turns were already inside it."""
         self._write_prefix_session(fake_projects)
 
-        _mod._cost_report(_cost_args(branches=branches), self.TODAY)
+        cost._cost_report(_cost_args(branches=branches), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(expected_total)
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+        assert cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
 
     def test_summary_prints_no_moved_line(self, tmp_path, monkeypatch, capsys):
         projects = _pin_this_repo_to_repo_main(monkeypatch, tmp_path)
         self._write_prefix_session(projects / "-repo-main")
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_md_grand_total(out) == pytest.approx(3.50)
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+        assert cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
 
     def test_share_only_prints_no_moved_line(self, fake_projects, capsys):
         self._write_prefix_session(fake_projects)
 
-        _mod._cost_report(_cost_args(share_only=True, branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(share_only=True, branches="feature-x"), self.TODAY)
         out = capsys.readouterr().out
         assert "Scope: pooled corpus" in out
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+        assert cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
 
     def test_summary_lines_match_the_prefix_free_fixture_once_numbers_are_masked(
         self, tmp_path, monkeypatch, capsys,
@@ -3966,7 +3967,7 @@ class TestCostPreBranchAndSubagentAttribution:
             projects = _pin_this_repo_to_repo_main(monkeypatch, root)
             # No unpriced turn: it would add an EXCLUDED SPEND banner unrelated to the moved-turns line.
             self._write_prefix_session(projects / "-repo-main", with_prefix=with_prefix, with_unpriced_turn=False)
-            _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+            cost._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
             out = capsys.readouterr().out
             # An empty or no-data report would otherwise compare equal to its twin.
             assert _extract_md_grand_total(out) > 0
@@ -3994,7 +3995,7 @@ class TestCostPreBranchAndSubagentAttribution:
         Deny: neither the prefix record's own tag nor a sidechain-only tag is printed."""
         self._write_labelled_session(fake_projects)
 
-        _mod._cost_report(_cost_args(branches="unrelated-filter"), self.TODAY)
+        cost._cost_report(_cost_args(branches="unrelated-filter"), self.TODAY)
         block = _diagnostic_section(capsys.readouterr().out)
         cols = _table_cols(block, header_contains="Turns", row_contains="branch-1", row_startswith=True)
         assert cols["Turns"] == "3"  # prefix turn, entered-branch turn, and the subagent turn, all on one label
@@ -4007,7 +4008,7 @@ class TestCostPreBranchAndSubagentAttribution:
     ):
         self._write_labelled_session(fake_projects)
 
-        _mod._cost_report(_cost_args(branches="unrelated-filter", no_redact=True), self.TODAY)
+        cost._cost_report(_cost_args(branches="unrelated-filter", no_redact=True), self.TODAY)
         block = _diagnostic_section(capsys.readouterr().out)
         cols = _table_cols(block, header_contains="Turns", row_contains="feature-x", row_startswith=True)
         assert cols["Turns"] == "3"
@@ -4031,9 +4032,9 @@ class TestCostPreBranchAndSubagentAttribution:
             _priced("claude-sonnet-5", input=100_000, branch="feature-y", ts=_days_ago_iso(5, now=now)),  # $0.20
         ])
 
-        _mod._cost_report(_cost_args(branches="main", since="10d"), self.TODAY)
+        cost._cost_report(_cost_args(branches="main", since="10d"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.50)
-        _mod._cost_report(_cost_args(branches="feature-y", since="10d"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-y", since="10d"), self.TODAY)
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.20)
 
     def test_since_window_starting_inside_the_prefix_counts_only_in_window_prefix_turns(
@@ -4047,10 +4048,10 @@ class TestCostPreBranchAndSubagentAttribution:
             _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts=_days_ago_iso(5, now=now)),  # $1.00
         ])
 
-        _mod._cost_report(_cost_args(branches="feature-x", since="15d"), self.TODAY)
+        cost._cost_report(_cost_args(branches="feature-x", since="15d"), self.TODAY)
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(1.50)
-        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=1, dollars=0.50) in out.splitlines()
+        assert cost._PRE_BRANCH_MOVED_LINE.format(turns=1, dollars=0.50) in out.splitlines()
 
 
 class TestCostTrend:
@@ -4061,7 +4062,7 @@ class TestCostTrend:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # ISO 2026-W23
             _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-08T10:00:00.000Z"),  # ISO 2026-W24
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
         out = capsys.readouterr().out
         w23 = _extract_cost_trend_row(out, "2026-W23")
         w24 = _extract_cost_trend_row(out, "2026-W24")
@@ -4077,7 +4078,7 @@ class TestCostTrend:
             _priced("claude-sonnet-5", input=100_000, cache_read=100_000,
                     ts="2026-06-01T12:00:00.000Z"),  # $0.22 total, context 200,000 >=200k (inclusive edge)
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W23")
         assert row is not None
@@ -4092,7 +4093,7 @@ class TestCostTrend:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23, complete
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-08T10:00:00.000Z"),  # 2026-W24, "today"'s week
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2026, 6, 8))  # today falls in 2026-W24
+        cost._cost_trend_report(_cost_trend_args(), date(2026, 6, 8))  # today falls in 2026-W24
         out = capsys.readouterr().out
         assert "2026-W24 (partial)" in out
         assert "2026-W23 (partial)" not in out
@@ -4107,7 +4108,7 @@ class TestCostTrend:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2025-12-31T10:00:00.000Z"),
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2026, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2026, 1, 1))
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W01 (partial)")
         assert row is not None
@@ -4123,7 +4124,7 @@ class TestCostTrend:
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400,
                   ts="2026-06-01T11:00:00.000Z"),  # claude-opus-4-7 is deliberately unpriced
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W23")
         assert row is not None and row["total"] == "2.00"
@@ -4140,7 +4141,7 @@ class TestCostTrend:
             bad,
             _priced("claude-sonnet-5", input=100_000, ts="2026-06-01T11:00:00.000Z"),  # $0.20
         ])
-        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W23")
         assert row is not None and row["total"] == "0.20"
@@ -4162,7 +4163,7 @@ class TestCostTrend:
         for rec in recs:
             rec["message"]["usage"] = dict(usage)
         _write_jsonl(fake_projects / "sess.jsonl", recs)
-        _mod._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
+        cost._cost_trend_report(_cost_trend_args(), date(2099, 1, 1))
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W23")
         # $2.00 (claude-sonnet-5's $2/MTok input rate on 1M input tokens) once,
@@ -4177,8 +4178,8 @@ class TestCostTrendConfigDir:
     def test_default_root_alone_when_no_extra_config_dirs(self, tmp_path, monkeypatch):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        roots = _mod._resolve_cost_roots(_cost_trend_args(), subcommand="cost-trend")
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
+        roots = scope._resolve_cost_roots(_cost_trend_args(), subcommand="cost-trend")
         assert roots == [default_dir / "projects"]
 
     def test_multiple_extra_config_dirs_appended_in_argument_order(
@@ -4186,10 +4187,10 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         acct_c = fake_config_dir_factory("acct-c")
-        roots = _mod._resolve_cost_roots(
+        roots = scope._resolve_cost_roots(
             _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_c)]), subcommand="cost-trend"
         )
         assert roots == [default_dir / "projects", acct_b / "projects", acct_c / "projects"]
@@ -4199,9 +4200,9 @@ class TestCostTrendConfigDir:
     ):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
-        roots = _mod._resolve_cost_roots(
+        roots = scope._resolve_cost_roots(
             _cost_trend_args(extra_config_dirs=[str(acct_b), str(acct_b) + "/."]), subcommand="cost-trend"
         )
         assert roots == [default_dir / "projects", acct_b / "projects"]
@@ -4209,10 +4210,10 @@ class TestCostTrendConfigDir:
     def test_nonexistent_root_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         missing = tmp_path / "does-not-exist"
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(missing)]), subcommand="cost-trend")
+            scope._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(missing)]), subcommand="cost-trend")
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert str(missing) in err
@@ -4223,11 +4224,11 @@ class TestCostTrendConfigDir:
     def test_root_without_projects_subdir_rejected_exit_2(self, tmp_path, monkeypatch, capsys):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(bogus)]), subcommand="cost-trend")
+            scope._resolve_cost_roots(_cost_trend_args(extra_config_dirs=[str(bogus)]), subcommand="cost-trend")
         assert exc_info.value.code == 2
         assert "cost-trend:" in capsys.readouterr().err
 
@@ -4237,7 +4238,7 @@ class TestCostTrendConfigDir:
         """--config-dir + --this-repo end-to-end through cmd_cost_trend,
         mirroring TestCostMultiRootRedaction's own this-repo-composition test."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         slug = "-home-user-this-repo"
         proj_default = default_dir / "projects" / slug
         proj_default.mkdir(parents=True)
@@ -4250,10 +4251,10 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=2_000_000, ts="2026-06-01T10:00:00.000Z"),  # $4.00
         ])
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
+        monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *a, **k: [slug])
 
         args = _cost_trend_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        _mod.cmd_cost_trend(args)
+        cost.cmd_cost_trend(args)
         out = capsys.readouterr().out
         row = _extract_cost_trend_row(out, "2026-W23")
         assert row is not None and row["total"] == "6.00"
@@ -4264,7 +4265,7 @@ class TestCostTrendConfigDir:
         """The new per-root scan diagnostic labels each root account-N (not
         the raw config-dir path), matching cost's own labeling convention."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-repo-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -4276,7 +4277,7 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        cost.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         assert "cost-trend: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
         assert "cost-trend: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
@@ -4289,7 +4290,7 @@ class TestCostTrendConfigDir:
         (Mechanism 2 step 4's new per-root diagnostic, cost-trend's own
         counterpart to cost's own per-root-empty-state coverage)."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)  # exists, holds no project dirs
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -4297,7 +4298,7 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        cost.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         # account-N is assigned by resolved-path sort (_redaction_ordinals),
         # not by scan order -- "acct-b" sorts before "default", so the empty
@@ -4315,7 +4316,7 @@ class TestCostTrendConfigDir:
         pinning the diagnostic's presence ties the absence-of-leak claim to
         the code path it's meant to guard."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         proj_default = default_dir / "projects" / "-home-user-secret-clientname-a"
         proj_default.mkdir(parents=True)
         _write_jsonl(proj_default / "sess-a.jsonl", [
@@ -4327,7 +4328,7 @@ class TestCostTrendConfigDir:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+        cost.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         assert "cost-trend: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
         assert "cost-trend: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
@@ -4350,7 +4351,7 @@ class TestCostTrendConfigDir:
         PermissionError, so the redact-suppression logic here was analyzed
         but never actually exercised."""
         default_dir = tmp_path / "default"
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         (default_dir / "projects").mkdir(parents=True)
         acct_b = fake_config_dir_factory("acct-b")
         proj_b = acct_b / "projects" / "-home-user-repo-b"
@@ -4360,7 +4361,7 @@ class TestCostTrendConfigDir:
         ])
         os.chmod(default_dir / "projects", 0o000)
         try:
-            _mod.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
+            cost.cmd_cost_trend(_cost_trend_args(extra_config_dirs=[str(acct_b)]))
         finally:
             os.chmod(default_dir / "projects", 0o755)  # restore before tmp_path teardown
 
@@ -4402,7 +4403,7 @@ class TestCostFormatDriftCanary:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_no_warning_in_cost_on_healthy_corpus(self, fake_projects, capsys):
@@ -4412,7 +4413,7 @@ class TestCostFormatDriftCanary:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", cache_read=100),
         ])
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cost_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
@@ -4427,7 +4428,7 @@ class TestCostFormatDriftCanary:
         side_rec = _priced("claude-sonnet-5", cache_read=100)
         side_rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         assert "WARNING" not in capsys.readouterr().err
 
     def test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
@@ -4447,5 +4448,5 @@ class TestCostFormatDriftCanary:
         _write_subagent_jsonl(fake_projects, session_id, "a1", [
             _asst("claude-opus-4-7", branch="main", sidechain=True),
         ])
-        _mod.cmd_cost(_cost_args())
+        cost.cmd_cost(_cost_args())
         assert "WARNING" not in capsys.readouterr().err

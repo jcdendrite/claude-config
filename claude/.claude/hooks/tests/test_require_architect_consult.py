@@ -13,16 +13,21 @@ from helpers import (
     architect_consult_latch_path,
     assert_cap_engaged,
     bash_input,
+    enable_round2_pilot,
     init_git_repo_with_commit,
+    reviewer_round_state_path,
     reviewer_round_state_value,
     run_hook,
+    run_hook_advisory,
     run_hook_reason,
     scaled_shim_sleep,
+    write_architect_consult_latch,
     write_reviewer_round_state,
     write_scaled_timeout_shim,
 )
 
 REQUIRE_ARCHITECT_CONSULT_HOOK = HOOKS_DIR / "require-architect-consult.sh"
+LOG_REVIEWER_ROUND_HOOK = HOOKS_DIR / "log-reviewer-round.sh"
 
 REVIEWER_PERSONA = "staff-backend-engineer"
 
@@ -73,6 +78,50 @@ def _repo_at_one_state(isolated_home: Path, tmp_path: Path, name: str) -> tuple[
     return repo, round1
 
 
+def _repo_at_three_states(isolated_home: Path, tmp_path: Path, name: str) -> tuple[Path, list[str]]:
+    """Build a repo with exactly three distinct recorded round states -- a
+    full re-arm window -- and return (repo, [round1, round2, round3]). Repo is
+    left at round3's exact state, so reviewer_round_state_value(repo)
+    reproduces round3 (a repeated state); staging a further change produces a
+    genuinely new fourth state."""
+    repo = tmp_path / name
+    _init_repo(repo)
+    _stage_change(repo, "first\nround-one\n")
+    round1 = reviewer_round_state_value(repo)
+    _commit_staged(repo)
+    round2 = reviewer_round_state_value(repo)
+    _stage_change(repo, "first\nround-one\nround-two\n")
+    round3 = reviewer_round_state_value(repo)
+    write_reviewer_round_state(isolated_home / ".claude", repo, [round1, round2, round3])
+    return repo, [round1, round2, round3]
+
+
+def _gate_decision(repo: Path, session_id: str) -> str:
+    return run_hook(
+        REQUIRE_ARCHITECT_CONSULT_HOOK,
+        agent_input(session_id=session_id, subagent_type=REVIEWER_PERSONA),
+        cwd=repo,
+    )
+
+
+def _write_state_deleting_git_stub(stub_dir: Path, state_file: Path) -> None:
+    """A `git` on PATH that deletes `state_file` when invoked as `git ... diff
+    ...` -- the staged-diff call _lib_reviewer_round_state_value makes after
+    the gate's count read and before its grep -- then runs the real git."""
+    real_git = shutil.which("git")
+    assert real_git, "git not found in PATH"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "git"
+    stub.write_text(
+        "#!/bin/bash\n"
+        'for arg in "$@"; do\n'
+        f'  [ "$arg" = diff ] && rm -f "{state_file}"\n'
+        "done\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    stub.chmod(0o755)
+
+
 class TestRequireArchitectConsult:
     def test_below_cap_allows(self, isolated_home, tmp_path):
         """Fewer than 2 recorded round states: allow regardless of the
@@ -109,22 +158,89 @@ class TestRequireArchitectConsult:
             cwd=repo,
         ) == "deny"
 
-    def test_at_cap_new_state_with_latch_allows(self, isolated_home, tmp_path):
-        """A new third state normally denies (test_at_cap_new_state_denies)
-        -- but with the latch already present (a consult ran recently), it
-        allows instead. Tested at this otherwise-denying state deliberately,
-        not a trivially-allowing one, so a broken latch override wouldn't be
-        caught by a vacuous pass."""
-        repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "at-cap-latch")
+    @pytest.mark.parametrize("pilot_enabled", [False, True], ids=["default", "pilot"])
+    def test_latch_present_two_states_plus_new_state_allows(self, isolated_home, tmp_path, pilot_enabled):
+        """With a latch the threshold is the re-arm interval (3), with or
+        without the round-2 pilot, so a new third state allows where
+        test_at_cap_new_state_denies denies the same shape without one."""
+        repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "latch-two-plus-new")
         _stage_change(repo, "first\nround-one\nround-three\n")
-        latch = architect_consult_latch_path(isolated_home / ".claude", repo)
-        latch.parent.mkdir(parents=True, exist_ok=True)
-        latch.touch()
-        assert run_hook(
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        if pilot_enabled:
+            enable_round2_pilot(isolated_home / ".claude")
+        assert _gate_decision(repo, "s-latch-two-plus-new") == "allow"
+
+    @pytest.mark.parametrize("pilot_enabled", [False, True], ids=["default", "pilot"])
+    def test_latch_present_three_states_plus_new_state_denies(self, isolated_home, tmp_path, pilot_enabled):
+        """A full re-arm window plus a genuinely new state denies even though
+        a latch exists -- the re-arm -- with or without the round-2 pilot."""
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-three-plus-new")
+        _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        if pilot_enabled:
+            enable_round2_pilot(isolated_home / ".claude")
+        assert _gate_decision(repo, "s-latch-three-plus-new") == "deny"
+
+    def test_latch_present_three_states_repeated_state_allows(self, isolated_home, tmp_path):
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-three-repeat")
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        assert _gate_decision(repo, "s-latch-three-repeat") == "allow"
+
+    def test_latch_present_full_window_with_disable_sentinel_allows(self, isolated_home, tmp_path):
+        """Same otherwise-denying shape as
+        test_latch_present_three_states_plus_new_state_denies, with the
+        machine-wide kill switch present."""
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-three-disabled")
+        _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _gate_decision(repo, "s-latch-three-disabled") == "allow"
+
+    @pytest.mark.parametrize(
+        "has_latch,expected_decision", [(True, "allow"), (False, "deny")], ids=["with-latch", "without-latch"]
+    )
+    def test_vanished_state_file_decision_follows_the_latch(
+        self, isolated_home, tmp_path, has_latch, expected_decision
+    ):
+        """A consult's reset can delete the state file between the gate's
+        count read and its grep. grep then exits 2, so the latch decides:
+        allow with one, deny without."""
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "vanish")
+        _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
+        if has_latch:
+            write_architect_consult_latch(isolated_home / ".claude", repo)
+        stub_dir = tmp_path / "stub-bin-vanish"
+        _write_state_deleting_git_stub(stub_dir, reviewer_round_state_path(isolated_home / ".claude", repo))
+        decision = run_hook(
             REQUIRE_ARCHITECT_CONSULT_HOOK,
-            agent_input(session_id="s-latch", subagent_type=REVIEWER_PERSONA),
+            agent_input(session_id="s-vanish", subagent_type=REVIEWER_PERSONA),
             cwd=repo,
-        ) == "allow"
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        assert decision == expected_decision
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file, so the read never fails")
+    @pytest.mark.parametrize(
+        "has_latch,expected_decision", [(True, "allow"), (False, "deny")], ids=["with-latch", "without-latch"]
+    )
+    def test_unreadable_state_file_decision_follows_the_latch(
+        self, isolated_home, tmp_path, has_latch, expected_decision
+    ):
+        """A state file that exists but cannot be read reaches the gate's grep
+        through the failed count read: the empty count falls through to the
+        hash and grep, and grep exits 2. The latch then decides: allow with
+        one, deny without."""
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "unreadable")
+        _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
+        if has_latch:
+            write_architect_consult_latch(isolated_home / ".claude", repo)
+        state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
+        state_file.chmod(0o000)
+        try:
+            decision = _gate_decision(repo, "s-unreadable")
+        finally:
+            state_file.chmod(0o600)
+        assert decision == expected_decision
 
     def test_at_cap_new_state_with_disable_sentinel_allows(self, isolated_home, tmp_path):
         """Same otherwise-denying state as test_at_cap_new_state_denies, but
@@ -215,9 +331,11 @@ class TestRequireArchitectConsult:
             cwd=repo,
         ) == "allow"
 
-    def test_live_ready_for_review_active_marker_allows(self, isolated_home, tmp_path):
-        """Same as test_live_plan_review_active_marker_allows, for the
-        sibling /ready-for-review active marker."""
+    def test_live_ready_for_review_active_marker_denies(self, isolated_home, tmp_path):
+        """A /ready-for-review run's reviews count toward the consult window,
+        so its live active marker does not exempt a spawn that the
+        round-count logic denies (contrast
+        test_live_plan_review_active_marker_allows)."""
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "ready-for-review-active")
         _stage_change(repo, "first\nround-one\nround-three\n")
         sid = "s-ready-for-review-active"
@@ -228,7 +346,7 @@ class TestRequireArchitectConsult:
             REQUIRE_ARCHITECT_CONSULT_HOOK,
             agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA),
             cwd=repo,
-        ) == "allow"
+        ) == "deny"
 
     def test_agent_tool_name_gated(self, isolated_home, tmp_path):
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "tool-name-agent")
@@ -323,7 +441,11 @@ class TestRequireArchitectConsult:
         - tells the agent to escalate to the engineer rather than resolve it
           unilaterally
         - never instructs touching the disable sentinel directly
-        - states the cap threshold as "2 distinct reviewed states"
+        - tells an agent that already dispatched the consult to report to the
+          engineer instead of consulting again, and keeps the do-not-disable
+          clause
+        - states the threshold as "2 distinct reviewed states" and, with no
+          latch, that no architect consult is recorded for this branch
         - mentions "subagent" in the deny message
         """
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "deny-message")
@@ -337,9 +459,77 @@ class TestRequireArchitectConsult:
         assert "plan-architect MODE=consult" in reason
         assert "Round-cap architect consult" in reason
         assert "report this block to the engineer" in reason
+        assert "rather than resolving it unilaterally" in reason
+        assert "already dispatched that consult" in reason
+        assert "instead of consulting again" in reason
+        assert "do not attempt to disable this gate yourself" in reason
         assert ".round-consult-gate-disabled" not in reason
+        assert "round_consult_gate" not in reason
+        assert "claude-config.toml" not in reason
         assert "2 distinct reviewed states " in reason
+        assert "no architect consult is recorded for this branch" in reason
+        assert "since the branch's last architect consult" not in reason
         assert "subagent" in reason
+
+    @pytest.mark.parametrize("pilot_enabled", [False, True], ids=["default", "pilot"])
+    def test_latch_present_deny_message_reports_the_rearm_window(self, isolated_home, tmp_path, pilot_enabled):
+        """A latched branch's deny text reports the re-arm window and the
+        since-last-consult wording under both pilot states."""
+        repo, _rounds = _repo_at_three_states(isolated_home, tmp_path, "latch-deny-message")
+        _stage_change(repo, "first\nround-one\nround-two\nround-four\n")
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        if pilot_enabled:
+            enable_round2_pilot(isolated_home / ".claude")
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-latch-deny-message", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "3 distinct reviewed states " in reason
+        assert "since the branch's last architect consult" in reason
+        assert "no architect consult is recorded for this branch" not in reason
+        assert "Round-cap architect consult" in reason
+        assert "already dispatched that consult" in reason
+        assert "instead of consulting again" in reason
+        assert "rather than resolving it unilaterally" in reason
+        assert "do not attempt to disable this gate yourself" in reason
+        assert ".round-consult-gate-disabled" not in reason
+        assert "round_consult_gate" not in reason
+        assert "claude-config.toml" not in reason
+
+    @pytest.mark.parametrize(
+        "pilot_enabled,expected_denial_states",
+        [(False, [3, 6, 9]), (True, [2, 5, 8])],
+        ids=["default", "pilot"],
+    )
+    def test_gate_demands_a_consult_every_three_reviewed_states(
+        self, isolated_home, tmp_path, pilot_enabled, expected_denial_states
+    ):
+        """The recorder never runs for a denied spawn, since a denied spawn
+        runs no PostToolUse. The expected states are literals, so a changed
+        interval or cap fails here."""
+        repo = tmp_path / "cadence"
+        _init_repo(repo)
+        if pilot_enabled:
+            enable_round2_pilot(isolated_home / ".claude")
+        reviewer_payload = agent_input(session_id="s-cadence", subagent_type=REVIEWER_PERSONA)
+        consult_payload = agent_input(
+            session_id="s-cadence", subagent_type="plan-architect", prompt="MODE=consult\nIs the foundation wrong?"
+        )
+
+        denial_states = []
+        for state_number in range(1, 11):
+            _stage_change(repo, f"first\nstate-{state_number}\n")
+            decision = run_hook(REQUIRE_ARCHITECT_CONSULT_HOOK, reviewer_payload, cwd=repo)
+            if decision == "deny":
+                denial_states.append(state_number)
+                run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, consult_payload, cwd=repo, home=isolated_home)
+                retry_decision = run_hook(REQUIRE_ARCHITECT_CONSULT_HOOK, reviewer_payload, cwd=repo)
+                assert retry_decision == "allow", f"state {state_number} still denied after its consult"
+            run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, reviewer_payload, cwd=repo, home=isolated_home)
+
+        assert denial_states == expected_denial_states
 
 
 class TestRound2PilotCap:
@@ -373,6 +563,19 @@ class TestRound2PilotCap:
         assert run_hook(
             REQUIRE_ARCHITECT_CONSULT_HOOK,
             agent_input(session_id="s-no-pilot-new", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
+    def test_one_recorded_state_repeated_state_allows_under_pilot(self, isolated_home, tmp_path):
+        """At cap=1 under the pilot, a current state equal to the single
+        recorded state (the rest of a parallel reviewer batch, once the first
+        member's recorder has run) allows -- the repeated-state exemption
+        does not depend on the cap."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-one-state-repeat")
+        enable_round2_pilot(isolated_home / ".claude")
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-repeat", subagent_type=REVIEWER_PERSONA),
             cwd=repo,
         ) == "allow"
 
@@ -414,12 +617,12 @@ class TestRound2PilotCap:
             cwd=repo,
         ) == "allow"
 
-    def test_live_ready_for_review_active_marker_allows_under_pilot(self, isolated_home, tmp_path):
-        """Same regression guard as
-        test_live_plan_review_active_marker_allows_under_pilot, for the
-        sibling /ready-for-review active marker."""
+    def test_live_ready_for_review_active_marker_denies_under_pilot(self, isolated_home, tmp_path):
+        """Pilot variant of test_live_ready_for_review_active_marker_denies:
+        under cap=1 the /ready-for-review marker still does not exempt a
+        denied spawn."""
         repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-ready-for-review-active")
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        enable_round2_pilot(isolated_home / ".claude")
         _stage_change(repo, "first\nround-one\nround-two\n")
         sid = "s-pilot-ready-for-review-active"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
@@ -429,14 +632,15 @@ class TestRound2PilotCap:
             REQUIRE_ARCHITECT_CONSULT_HOOK,
             agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA),
             cwd=repo,
-        ) == "allow"
+        ) == "deny"
 
     def test_deny_message_singular_noun_under_pilot(self, isolated_home, tmp_path):
-        """Under the pilot (cap=1), the deny message's STATE_NOUN variable
-        must read "state" (singular) rather than the cap=2 default's
-        "states" (plural), and must name the literal cap value 1."""
+        """Under the pilot with no latch (threshold 1), the deny message's
+        STATE_NOUN variable must read "state" (singular) rather than the
+        default's "states" (plural), name the literal threshold 1, and say
+        no consult is recorded for the branch."""
         repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-deny-message")
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        enable_round2_pilot(isolated_home / ".claude")
         _stage_change(repo, "first\nround-one\nround-two\n")
         reason = run_hook_reason(
             REQUIRE_ARCHITECT_CONSULT_HOOK,
@@ -445,7 +649,25 @@ class TestRound2PilotCap:
         )
         assert reason is not None
         assert "1 distinct reviewed state " in reason
+        assert "no architect consult is recorded for this branch" in reason
         assert "states" not in reason
+
+    def test_directory_at_the_latch_path_denies_with_the_no_consult_wording(self, isolated_home, tmp_path):
+        """A directory at the latch path is not a latch: with two recorded
+        states and a new one the gate denies, and the deny text carries the
+        no-consult clause rather than the since-last-consult one."""
+        repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "latch-is-directory")
+        architect_consult_latch_path(isolated_home / ".claude", repo).mkdir(parents=True)
+        _stage_change(repo, "first\nround-one\nround-three\n")
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-latch-is-directory", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "2 distinct reviewed states " in reason
+        assert "no architect consult is recorded for this branch" in reason
+        assert "since the branch's last architect consult" not in reason
 
     def test_disable_sentinel_wins_even_with_pilot_sentinel_present(self, isolated_home, tmp_path):
         """Precedence: the machine-wide kill switch is checked before any

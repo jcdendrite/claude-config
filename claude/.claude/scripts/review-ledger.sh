@@ -102,7 +102,7 @@ Subcommands:
              authoring_effort, session_id and every field above) already exists.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
-  show [--out <path>]
+  show [--out <path> [--trend]]
              Print this branch's ledger rows (this session's rows on a
              detached HEAD or the default branch) sorted by event_time, each
              tagged with its own source_repo_hash, or an absence message. A
@@ -126,6 +126,17 @@ Subcommands:
              --out, which includes a <path> git does not confirm is ignored.
              After the delete, a read, sort, summary or write failure exits 1
              (see "What a failure under --out leaves at <path>").
+             --trend (accepted once, and only with --out) prints a second
+             stdout line after `changed: <path>`: `trend: <series>`. The series
+             is comma-separated `round <N>: <count>` entries in round order,
+             one for each round that has a row, for example
+             `round 1: clean, round 2: 9, round 7: 11`. <count> is the number
+             of ADDRESS, DEFER and SETTLED rows logged in that round, carries
+             and rows a later --ref retired included. A round with none reads
+             `clean`. Only integer rounds 1 to 9999 count, and a stored 1.0
+             joins round 1. With no counted round, or when the computation
+             fails, no `trend:` line is printed and the exit status is the one
+             without the flag.
   render [--pr-json <file|->] [--out <path>]
              Print the PR-body block built from the live decisions in the
              resolved ledger file (this branch's, or this session's in session
@@ -165,8 +176,9 @@ both sides of the delete:
     subcommand.
   - No non-zero exit writes a new file. A killed write can leave a
     <path>.XXXXXX temporary beside <path>.
-A consumer acts on the stdout line, never on the exit status or on whether
-<path> exists.
+A consumer acts on the `changed: <path>` or `unchanged` stdout line, never on
+the exit status or on whether <path> exists. A `trend:` line is an additional
+line after `changed:`, never a replacement for it.
 
 Exit status: append exits 2 on every refusal, a rejected call and an
 environment failure alike, so its message carries the distinction. show and
@@ -624,6 +636,7 @@ case "$SUBCOMMAND" in
     ;;
   show)
     SHOW_OUT=""
+    SHOW_TREND=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --out)
@@ -634,12 +647,24 @@ case "$SUBCOMMAND" in
           SHOW_OUT="$2"
           shift 2
           ;;
+        --trend)
+          if [ -n "$SHOW_TREND" ]; then
+            usage
+            exit 2
+          fi
+          SHOW_TREND=1
+          shift
+          ;;
         *)
           usage
           exit 2
           ;;
       esac
     done
+    if [ -n "$SHOW_TREND" ] && [ -z "$SHOW_OUT" ]; then
+      usage
+      exit 2
+    fi
     if [ -n "$SHOW_OUT" ]; then
       # A stale --out is deleted, and its directory created, before any later step that can exit.
       # render also deletes before resolving the session, but creates the directory only after the ledger resolves.
@@ -734,6 +759,9 @@ case "$SUBCOMMAND" in
       printf 'unchanged\n'
     else
       printf '%s\n' "$SHOW_OUTPUT" | _review_ledger_write_out "$SHOW_OUT" show || exit 1
+      if [ -n "$SHOW_TREND" ] && SHOW_TREND_SERIES=$(printf '%s\n' "$SHOW_OUTPUT" | _review_ledger_trend) && [ -n "$SHOW_TREND_SERIES" ]; then
+        printf 'trend: %s\n' "$SHOW_TREND_SERIES"
+      fi
     fi
     ;;
   render)

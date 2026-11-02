@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 20 keys in `config-keys.psv`, this table traces the
+For every one of the 21 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -88,7 +88,7 @@ Column legend:
 ### `round_consult_gate`
 
 - Call site: `_lib.sh`'s `_lib_round_consult_gate_disabled` (delegated to by
-  `require-architect-consult.sh:67`). `_config_enabled round_consult_gate`,
+  `require-architect-consult.sh`). `_config_enabled round_consult_gate`,
   with an explicit `case "$?"` distinguishing exit 1 (disabled) from every
   other exit (armed) — no `$HOME` fallback arm exists.
 - Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
@@ -165,7 +165,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining fifteen keys
+## Remaining sixteen keys
 
 ### `permission_prompt_tracking`
 
@@ -370,10 +370,8 @@ Column legend:
 
 ### `round_consult_round2_pilot`
 
-- Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap` (delegated to by
-  `require-architect-consult.sh` and `log-reviewer-round.sh`, both reading
-  the cap it returns). A single `_config_enabled round_consult_round2_pilot`
-  call with no raw probe.
+- Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap`. A single
+  `_config_enabled round_consult_round2_pilot` call with no raw probe.
 - Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
   alone.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path fallback probe
@@ -433,6 +431,20 @@ Column legend:
 - Fail direction: only exit 0 from `_config_enabled` routes. Any other
   exit, including an unresolvable config dir, an unreadable schema or a
   missing row, allows the call, which leaves the round inline.
+
+### `architect_disposition_challenge_pilot`
+
+- Call site: `code-review/SKILL.md`'s `code-review-disposition-challenge`
+  region, which reads the key through `config-get.sh`.
+- Resolution: **config-dir** (per account).
+- Legacy-probe-on-resolution-failure: **false**.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all, so there is no legacy file for
+  `migrate-legacy-config.sh` to import from either location.
+- Fail direction on resolution failure: only an observed exit 0 from
+  `config-get.sh` enables the challenge. Any other outcome, including a call
+  that yields no exit code, leaves it off, which leaves the default
+  disposition procedure unchanged.
 
 ### `plugin_bootstrap`
 

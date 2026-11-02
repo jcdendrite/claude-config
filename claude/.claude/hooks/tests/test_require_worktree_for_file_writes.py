@@ -169,7 +169,7 @@ class TestRequireWorktreeForFileWritesHomeExemption:
         home = tmp_path / "home"
         home.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=home, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=home, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=home, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=home, check=True)
         (home / ".claude").mkdir()
         (home / ".claude" / "worktree-required").write_text("# sentinel\n")
@@ -236,7 +236,7 @@ class TestRequireWorktreeForFileWritesHomeExemption:
         target_repo = tmp_path / "target-repo"
         target_repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=target_repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=target_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=target_repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=target_repo, check=True)
         dot_claude = target_repo / ".claude"
         dot_claude.mkdir()

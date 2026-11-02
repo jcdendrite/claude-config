@@ -209,6 +209,18 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "matcher": "code-writer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/send-back-skipped-self-review.sh",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -507,6 +519,16 @@
             "command": "~/.claude/hooks/require-review-orchestrator-routing.sh",
             "onFailure": "block",
             "statusMessage": "Checking review-orchestrator-routing gate..."
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/send-back-skipped-self-review.sh",
+            "timeout": 20
           }
         ]
       }

@@ -176,3 +176,10 @@ class TestArchitectFixPlanPilotGate:
 
         assert result.returncode == 0
         assert result.stdout == "true\n"
+
+
+class TestArchitectDispositionChallengePilotGate(TestArchitectFixPlanPilotGate):
+    """Extends the sibling key's exit-code coverage to this key mechanically; pins nothing specific to
+    this key beyond its row's shape."""
+
+    _KEY = "architect_disposition_challenge_pilot"

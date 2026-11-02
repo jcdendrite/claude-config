@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from transcript_analysis import cache_rebuild, cache_rebuild_rules
 
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
@@ -52,16 +53,16 @@ class TestClassifyCacheRebuildCauseIdle5mBoundaryOverride:
     --ttl-verdict block's wiring of the sensitivity boundary."""
 
     def test_gap_at_the_overridden_boundary_classifies_idle(self):
-        assert _mod.cache_rebuild_rules._classify_cache_rebuild_cause(
+        assert cache_rebuild_rules._classify_cache_rebuild_cause(
             is_first_call=False, gap_seconds=60, model_changed=False, pure_1h_tier_write=False,
             idle_5m_boundary_seconds=60,
-        ) == _mod.cache_rebuild_rules._CAUSE_IDLE_5M_1H
+        ) == cache_rebuild_rules._CAUSE_IDLE_5M_1H
 
     def test_gap_one_second_under_the_overridden_boundary_does_not_classify_idle(self):
-        assert _mod.cache_rebuild_rules._classify_cache_rebuild_cause(
+        assert cache_rebuild_rules._classify_cache_rebuild_cause(
             is_first_call=False, gap_seconds=59, model_changed=False, pure_1h_tier_write=False,
             idle_5m_boundary_seconds=60,
-        ) == _mod.cache_rebuild_rules._CAUSE_UNEXPLAINED
+        ) == cache_rebuild_rules._CAUSE_UNEXPLAINED
 
 
 class TestCacheRebuildIdle5m1hBandPredicate:
@@ -70,31 +71,31 @@ class TestCacheRebuildIdle5m1hBandPredicate:
     with a parseable gap."""
 
     def test_gap_at_the_default_lower_bound_is_in_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 300) is True
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 300) is True
 
     def test_gap_just_under_the_default_lower_bound_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 299.999) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 299.999) is False
 
     def test_gap_just_under_the_upper_bound_is_in_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3599.99) is True
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3599.99) is True
 
     def test_gap_at_the_upper_bound_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3600) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3600) is False
 
     def test_first_call_with_an_in_band_gap_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(True, 600) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(True, 600) is False
 
     def test_unparseable_gap_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, None) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, None) is False
 
     def test_overridden_lower_bound_is_inclusive(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 60, idle_5m_boundary_seconds=60) is True
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 60, idle_5m_boundary_seconds=60) is True
 
     def test_gap_one_second_under_the_overridden_lower_bound_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 59, idle_5m_boundary_seconds=60) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 59, idle_5m_boundary_seconds=60) is False
 
     def test_overridden_lower_bound_with_gap_at_the_hardcoded_upper_bound_is_out_of_band(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3600, idle_5m_boundary_seconds=60) is False
+        assert cache_rebuild_rules._cache_rebuild_in_idle_5m_1h_band(False, 3600, idle_5m_boundary_seconds=60) is False
 
 
 class TestCacheRebuild1hTo5mDeltaPricing:
@@ -109,7 +110,7 @@ class TestCacheRebuild1hTo5mDeltaPricing:
         1,000,000/1e6*(2.5-0.2) = $2.30 at the default rate; fast mode
         doubles every dollar class, so this call's own delta doubles too."""
         usage = _priced("claude-sonnet-5", cache_read=1_000_000, speed="fast")["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
         )
         assert delta == pytest.approx(4.60)
@@ -119,7 +120,7 @@ class TestCacheRebuild1hTo5mDeltaPricing:
         """Mirrors the sibling's own unpriced-model contract: None, not a
         silently priced $0, so callers can distinguish the two."""
         usage = _priced("claude-unknown-model", ephemeral_1h=1_000_000, input=10, output=5)["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-unknown-model", usage, is_idle_5m_1h_cause=False
         )
         assert delta is None
@@ -132,7 +133,7 @@ class TestCacheRebuild1hTo5mDeltaPricing:
         reduced 0.025x cache-read multiplier (read rate $0.25, expiry
         coefficient 12.5-0.25=12.25), giving $12.25 instead."""
         usage = _priced("claude-fable-5-1", cache_read=1_000_000)["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
         )
         assert delta == pytest.approx(12.25)
@@ -154,10 +155,10 @@ class TestCacheRebuild1hTo5mDeltaArithmetic:
         sum)."""
         base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
         idle_usage = _priced("claude-sonnet-5", cache_read=500_000)["message"]["usage"]
-        base_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        base_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
         )
-        idle_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        idle_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
         )
         assert base_delta + idle_delta == pytest.approx(-0.575)
@@ -167,10 +168,10 @@ class TestCacheRebuild1hTo5mDeltaArithmetic:
         15/23 = 0.75/1.15), not the rounded 0.6522 display figure."""
         base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
         idle_usage = _priced("claude-sonnet-5", cache_read=750_000)["message"]["usage"]
-        base_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        base_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
         )
-        idle_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        idle_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
         )
         assert base_delta + idle_delta == pytest.approx(0.0, abs=1e-9)
@@ -181,10 +182,10 @@ class TestCacheRebuild1hTo5mDeltaArithmetic:
         sum)."""
         base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
         idle_usage = _priced("claude-sonnet-5", cache_read=1_000_000)["message"]["usage"]
-        base_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        base_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
         )
-        idle_delta, _unpriced = _mod.cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
+        idle_delta, _unpriced = cache_rebuild_rules._cache_rebuild_1h_to_5m_delta_dollars(
             "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
         )
         assert base_delta + idle_delta == pytest.approx(0.575)
@@ -196,20 +197,20 @@ class TestCacheRebuildMarginClears:
     10% margin threshold (_CACHE_REBUILD_TTL_MARGIN_FRACTION)."""
 
     def test_exactly_at_the_margin_threshold_clears(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_margin_clears(10.0, 100.0) is True
+        assert cache_rebuild_rules._cache_rebuild_margin_clears(10.0, 100.0) is True
 
     def test_above_the_margin_threshold_clears(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_margin_clears(50.0, 100.0) is True
+        assert cache_rebuild_rules._cache_rebuild_margin_clears(50.0, 100.0) is True
 
     def test_below_the_margin_threshold_does_not_clear(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_margin_clears(5.0, 100.0) is False
+        assert cache_rebuild_rules._cache_rebuild_margin_clears(5.0, 100.0) is False
 
     def test_non_positive_volume_never_clears(self):
         """A root with zero (or, degenerately, negative) dollar-equivalent
         volume never clears, rather than dividing by zero or by a negative
         number."""
-        assert _mod.cache_rebuild_rules._cache_rebuild_margin_clears(0.0, 0.0) is False
-        assert _mod.cache_rebuild_rules._cache_rebuild_margin_clears(5.0, -1.0) is False
+        assert cache_rebuild_rules._cache_rebuild_margin_clears(0.0, 0.0) is False
+        assert cache_rebuild_rules._cache_rebuild_margin_clears(5.0, -1.0) is False
 
 
 class TestCacheRebuildTokenTiebreakerFavors5m:
@@ -218,10 +219,10 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
     independently of any verdict-decision branch test."""
 
     def test_z_below_w1h_favors_dropping_to_5m(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(5, 10) is True
+        assert cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(5, 10) is True
 
     def test_z_above_w1h_disfavors_dropping_to_5m(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(15, 10) is False
+        assert cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(15, 10) is False
 
     def test_z_equal_to_w1h_is_a_disagreement_not_a_favorable_tie(self):
         """Z == W1h counts as a disagreement, never a wash --
@@ -229,8 +230,8 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
         either direction never reaches this function in the report's
         own per-root reduction, but the function itself must not
         special-case zero)."""
-        assert _mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
-        assert _mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
+        assert cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
+        assert cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
 
 
 class TestCacheRebuildDominantTierShare:
@@ -240,27 +241,27 @@ class TestCacheRebuildDominantTierShare:
     the full-pipeline boundary tests below."""
 
     def test_share_exactly_at_the_threshold(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(900_000, 100_000) == pytest.approx(0.9)
+        assert cache_rebuild_rules._cache_rebuild_dominant_tier_share(900_000, 100_000) == pytest.approx(0.9)
 
     def test_share_just_above_the_threshold(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(901_000, 99_000) == pytest.approx(0.901)
+        assert cache_rebuild_rules._cache_rebuild_dominant_tier_share(901_000, 99_000) == pytest.approx(0.901)
 
     def test_share_just_below_the_threshold(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(899_000, 101_000) == pytest.approx(0.899)
+        assert cache_rebuild_rules._cache_rebuild_dominant_tier_share(899_000, 101_000) == pytest.approx(0.899)
 
     def test_share_is_symmetric_in_which_tier_is_dominant(self):
         """max() makes the dominant tier's own identity irrelevant to the
         ratio: swapping which argument is larger yields the same share."""
-        assert _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(
+        assert cache_rebuild_rules._cache_rebuild_dominant_tier_share(
             100_000, 900_000
-        ) == _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(900_000, 100_000)
+        ) == cache_rebuild_rules._cache_rebuild_dominant_tier_share(900_000, 100_000)
 
     def test_no_data_root_raises_instead_of_returning_an_undefined_ratio(self):
         """Pins that the no-data case raises `ZeroDivisionError` rather than
         returning a sentinel. The docstring's `w5m == w1h == 0` exclusion is
         a caller obligation, not a guard inside the function."""
         with pytest.raises(ZeroDivisionError):
-            _mod.cache_rebuild_rules._cache_rebuild_dominant_tier_share(0, 0)
+            cache_rebuild_rules._cache_rebuild_dominant_tier_share(0, 0)
 
 
 class TestCacheRebuildRootIsDominant:
@@ -269,13 +270,13 @@ class TestCacheRebuildRootIsDominant:
     independently of the full-pipeline boundary test below."""
 
     def test_share_exactly_at_the_threshold_counts_as_dominant(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_root_is_dominant(0.900) is True
+        assert cache_rebuild_rules._cache_rebuild_root_is_dominant(0.900) is True
 
     def test_share_just_above_the_threshold_counts_as_dominant(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_root_is_dominant(0.901) is True
+        assert cache_rebuild_rules._cache_rebuild_root_is_dominant(0.901) is True
 
     def test_share_just_below_the_threshold_does_not_count_as_dominant(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_root_is_dominant(0.899) is False
+        assert cache_rebuild_rules._cache_rebuild_root_is_dominant(0.899) is False
 
 
 class TestCacheRebuildRootVerdictInput:
@@ -292,7 +293,7 @@ class TestCacheRebuildRootVerdictInput:
         decided by the margin alone even when tiebreaker_favors_5m is
         passed a value that would disagree with the dollar accounting's
         own sign."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
             apply_tiebreaker=False, tiebreaker_favors_5m=True,
@@ -303,11 +304,11 @@ class TestCacheRebuildRootVerdictInput:
         """A 5m-tier root's most common would-be tiebreaker outcome is
         Z == W1h == 0, a wash -- but apply_tiebreaker is False for it, so
         the wash never gates clears the way it does for a 1h-tier root."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
             apply_tiebreaker=False,
-            tiebreaker_favors_5m=_mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
+            tiebreaker_favors_5m=cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
         )
         assert root_input == {"favors": "1h", "clears": True}
 
@@ -316,7 +317,7 @@ class TestCacheRebuildRootVerdictInput:
         adopting 1h) favors staying at 5m, never clearing -- apply_tiebreaker
         is always False for a 5m-tier root, so the margin failure alone is
         what fails it here."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=-1.0, net_sensitivity=-1.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
             apply_tiebreaker=False,
@@ -327,7 +328,7 @@ class TestCacheRebuildRootVerdictInput:
         """Clears at the primary boundary's own margin but not at the
         sensitivity boundary's -- the two-point AND-gate fails the
         whole root even with a tiebreaker that agrees."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=-1.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
             apply_tiebreaker=True, tiebreaker_favors_5m=True,
@@ -338,7 +339,7 @@ class TestCacheRebuildRootVerdictInput:
         """A dollar margin that clears comfortably at both boundaries
         still declines when the raw-token tiebreaker disagrees with the
         dollar accounting's own sign."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
             apply_tiebreaker=True, tiebreaker_favors_5m=False,
@@ -350,16 +351,16 @@ class TestCacheRebuildRootVerdictInput:
         as a disagreement, never a favorable tie, even when the dollar
         margin clears comfortably -- apply_tiebreaker is True here, unlike
         a 5m-tier root, so the wash still gates clears."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
             apply_tiebreaker=True,
-            tiebreaker_favors_5m=_mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(10, 10),
+            tiebreaker_favors_5m=cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(10, 10),
         )
         assert root_input == {"favors": "5m", "clears": False}
 
     def test_1h_tier_root_adopts_when_margin_clears_and_tiebreaker_agrees(self):
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
             apply_tiebreaker=True, tiebreaker_favors_5m=True,
@@ -371,7 +372,7 @@ class TestCacheRebuildRootVerdictInput:
         exact 0.0 net_primary -- a real dollar-delta accumulation can land
         exactly on zero -- takes the negative_favors branch for a 5m-tier
         root's own orientation."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=0.0, net_sensitivity=0.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
             apply_tiebreaker=False,
@@ -381,7 +382,7 @@ class TestCacheRebuildRootVerdictInput:
     def test_1h_tier_root_favors_1h_at_the_net_primary_zero_sign_boundary(self):
         """The same net_primary == 0.0 sign boundary, at a 1h-tier root's
         own positive_favors/negative_favors orientation."""
-        root_input = _mod.cache_rebuild_rules._cache_rebuild_root_verdict_input(
+        root_input = cache_rebuild_rules._cache_rebuild_root_verdict_input(
             net_primary=0.0, net_sensitivity=0.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
             apply_tiebreaker=True, tiebreaker_favors_5m=False,
@@ -396,44 +397,44 @@ class TestCacheRebuildTierSplitAgreement:
     independently of the full-pipeline tests below."""
 
     def test_positive_net_5m_slice_resolves_to_favors_1h(self):
-        favors_5m_slice, _, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, 0.0)
+        favors_5m_slice, _, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, 0.0)
         assert favors_5m_slice == "1h"
 
     def test_negative_net_5m_slice_resolves_to_favors_5m(self):
-        favors_5m_slice, _, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(-1.0, 0.0)
+        favors_5m_slice, _, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(-1.0, 0.0)
         assert favors_5m_slice == "5m"
 
     def test_exact_zero_net_5m_slice_resolves_to_favors_5m(self):
         """Resolves via net_5m_slice > 0, not >= 0, so an exact wash takes
         the favors-5m branch. This is the same sign convention
         `_cache_rebuild_root_verdict_input` applies."""
-        favors_5m_slice, _, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        favors_5m_slice, _, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
         assert favors_5m_slice == "5m"
 
     def test_positive_net_1h_slice_resolves_to_favors_5m(self):
-        _, favors_1h_slice, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 1.0)
+        _, favors_1h_slice, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 1.0)
         assert favors_1h_slice == "5m"
 
     def test_negative_net_1h_slice_resolves_to_favors_1h(self):
-        _, favors_1h_slice, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, -1.0)
+        _, favors_1h_slice, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, -1.0)
         assert favors_1h_slice == "1h"
 
     def test_exact_zero_net_1h_slice_resolves_to_favors_1h(self):
         """Resolves via net_1h_slice > 0, not >= 0, so an exact wash takes
         the favors-1h branch."""
-        _, favors_1h_slice, _ = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        _, favors_1h_slice, _ = cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
         assert favors_1h_slice == "1h"
 
     def test_both_slices_favoring_5m_agree(self):
-        *_, agreement = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(-1.0, 1.0)
+        *_, agreement = cache_rebuild_rules._cache_rebuild_tier_split_agreement(-1.0, 1.0)
         assert agreement == "agree"
 
     def test_both_slices_favoring_1h_agree(self):
-        *_, agreement = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, -1.0)
+        *_, agreement = cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, -1.0)
         assert agreement == "agree"
 
     def test_slices_favoring_opposite_tiers_disagree(self):
-        *_, agreement = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, 1.0)
+        *_, agreement = cache_rebuild_rules._cache_rebuild_tier_split_agreement(1.0, 1.0)
         assert agreement == "disagree"
 
     def test_exact_zero_wash_on_both_slices_disagrees(self):
@@ -441,7 +442,7 @@ class TestCacheRebuildTierSplitAgreement:
         tiers: favors-5m for the 5m slice, favors-1h for the 1h slice. A
         double wash therefore reports disagree rather than a vacuous
         agree."""
-        *_, agreement = _mod.cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        *_, agreement = cache_rebuild_rules._cache_rebuild_tier_split_agreement(0.0, 0.0)
         assert agreement == "disagree"
 
 
@@ -451,14 +452,14 @@ class TestCacheRebuildTtlVerdictDecision:
     test per branch."""
 
     def test_zero_consistent_roots_is_no_verdict(self):
-        assert _mod.cache_rebuild_rules._cache_rebuild_ttl_verdict([]) == _mod.cache_rebuild_rules._TTL_VERDICT_NO_VERDICT
+        assert cache_rebuild_rules._cache_rebuild_ttl_verdict([]) == cache_rebuild_rules._TTL_VERDICT_NO_VERDICT
 
     def test_single_direction_all_clearing_is_adopt(self):
         root_inputs = [
             {"favors": "1h", "clears": True},
             {"favors": "1h", "clears": True},
         ]
-        assert _mod.cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == _mod.cache_rebuild_rules._TTL_VERDICT_ADOPT
+        assert cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == cache_rebuild_rules._TTL_VERDICT_ADOPT
 
     def test_single_direction_one_not_clearing_is_decline(self):
         """A margin/boundary miss on one otherwise-agreeing root declines
@@ -467,7 +468,7 @@ class TestCacheRebuildTtlVerdictDecision:
             {"favors": "1h", "clears": True},
             {"favors": "1h", "clears": False},
         ]
-        assert _mod.cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == _mod.cache_rebuild_rules._TTL_VERDICT_DECLINE
+        assert cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == cache_rebuild_rules._TTL_VERDICT_DECLINE
 
     def test_dollar_vs_token_tiebreaker_disagreement_declines(self):
         """A root whose dollar accounting and raw-token tiebreaker
@@ -476,11 +477,11 @@ class TestCacheRebuildTtlVerdictDecision:
         as the report's own per-root reduction does, then feeding the
         result into the pure verdict function."""
         dollar_favors_5m = True
-        tiebreaker_favors_5m = _mod.cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(900_000, 100_000)
+        tiebreaker_favors_5m = cache_rebuild_rules._cache_rebuild_token_tiebreaker_favors_5m(900_000, 100_000)
         assert tiebreaker_favors_5m is False  # Z > W1h disfavors 5m
         tiebreaker_agrees = tiebreaker_favors_5m is not None and tiebreaker_favors_5m == dollar_favors_5m
         root_inputs = [{"favors": "5m", "clears": tiebreaker_agrees}]
-        assert _mod.cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == _mod.cache_rebuild_rules._TTL_VERDICT_DECLINE
+        assert cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs) == cache_rebuild_rules._TTL_VERDICT_DECLINE
 
     def test_differing_favored_directions_is_roots_disagree(self):
         root_inputs = [
@@ -488,8 +489,8 @@ class TestCacheRebuildTtlVerdictDecision:
             {"favors": "5m", "clears": True},
         ]
         assert (
-            _mod.cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs)
-            == _mod.cache_rebuild_rules._TTL_VERDICT_ROOTS_DISAGREE
+            cache_rebuild_rules._cache_rebuild_ttl_verdict(root_inputs)
+            == cache_rebuild_rules._TTL_VERDICT_ROOTS_DISAGREE
         )
 
 
@@ -509,7 +510,7 @@ class TestCacheRebuildTtlVerdictDominantTierShareThreshold:
 
     def test_share_exactly_at_threshold_counts_as_consistent(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", self._mixed_root_records(w1h=900_000, w5m=100_000))
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -528,7 +529,7 @@ class TestCacheRebuildTtlVerdictDominantTierShareThreshold:
             rec["isSidechain"] = True
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "subagent")
@@ -565,7 +566,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
         the root, and the summary counts must reflect only the near-tie
         exclusion, unmoved by the cross-check."""
         _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_near_tie_mixed_root_records())
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -603,7 +604,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
                 ts="2026-08-01T10:13:00.000Z", request_id="a3",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -637,7 +638,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", root_a_records)
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", root_b_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         tier_split_1 = _extract_ttl_verdict_tier_split_line(out, "account-1")
@@ -672,7 +673,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
             tmp_path, "acct-c", "-home-user-repo-pure", "sess-pure", _ttl_verdict_5m_tier_adopt_records(),
         )
 
-        _mod.cache_rebuild._cache_rebuild_report(
+        cache_rebuild._cache_rebuild_report(
             _cache_rebuild_args(ttl_verdict=True), roots=[mixed_root, no_data_root, pure_root],
         )
         out = capsys.readouterr().out
@@ -707,7 +708,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
             # unexplained rather than idle.
             _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
@@ -727,7 +728,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
             # unexplained rather than idle.
             _priced("claude-sonnet-5", ephemeral_1h=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
@@ -761,7 +762,7 @@ class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
         _write_jsonl(fake_projects / "sess.jsonl", main_records)
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         main_section = out[out.index("### main"):out.index("### subagent")]
@@ -801,7 +802,7 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
                 ts="2026-08-01T10:07:30.000Z", request_id="w5m-3",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -832,7 +833,7 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
         the primary one would total 1,200,000, a different printed X/Z
         figure than the 800,000 asserted below."""
         _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_1h_tier_non_wash_disagreement_records())
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -870,7 +871,7 @@ class TestCacheRebuildTtlVerdictSensitivityBoundary:
                 ts="2026-08-01T10:01:40.000Z", request_id="b2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")

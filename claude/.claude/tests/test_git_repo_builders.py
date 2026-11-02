@@ -22,7 +22,9 @@ def test_init_git_repo_leaves_head_unborn_on_the_requested_branch(tmp_path: Path
 def test_init_git_repo_sets_a_local_commit_identity(tmp_path: Path) -> None:
     repo = init_git_repo(tmp_path / "repo")
 
-    assert _run_git(repo, "config", "--local", "user.email").strip()
+    # The builder identity must stay on a reserved name (RFC 2606 section 2), not an address someone could own.
+    configured_email = _run_git(repo, "config", "--local", "user.email").strip()
+    assert configured_email.endswith("@example.invalid"), configured_email
     assert _run_git(repo, "config", "--local", "user.name").strip()
 
 

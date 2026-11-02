@@ -150,6 +150,8 @@ claude/.claude/telemetry/
 # holding project-identifying content that must never reach a public repo
 # (see /error-mode-analysis). cache/ has no identified writer in this repo's
 # hooks/skills but is per-machine scratch space regardless of origin.
+claude/.claude/.code-writer-self-review.d/
+claude/.claude/.code-writer-self-review.log
 claude/.claude/.handoff-nudge-fired.d/
 claude/.claude/.handoff-nudge.log
 claude/.claude/.memory-audit-nudge-disabled

@@ -395,9 +395,6 @@ run_check_mode() {
   # entirely, so a session that moved between worktrees still resolves.
   # nullglob is load-bearing: bash's default expands a zero-match pattern to
   # the literal pattern string, which would read as exactly one match.
-  # Positional parameters carry the matches so the count is $#, avoiding the
-  # array-length form that deny-private-project-refs.sh reads as a
-  # Slack-channel reference.
   # noglob is saved and cleared alongside nullglob: --check runs from an
   # arbitrary Bash tool call, and a caller with `set -f` would leave the
   # pattern unexpanded — one match holding the literal pattern, which reads as

@@ -49,7 +49,7 @@ def stow_repo(tmp_path):
     repo = tmp_path / "stow-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     # Pin the settings that change how git prints or pairs paths, so ambient git config
     # cannot flip a non-ASCII or moved-file result.
@@ -213,7 +213,7 @@ class TestRequireStowReminder:
         repo = tmp_path / "other-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         subprocess.run(
             ["git", "remote", "add", "origin", "git@github.com:someone/other-app.git"],
@@ -827,7 +827,7 @@ class TestRequireStowReminder:
         repo = tmp_path / "no-main"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "trunk"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
         subprocess.run(
             ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],

@@ -14,14 +14,14 @@ Intended outcome: a series of PRs on the transcript-analysis precedent (`.claude
 
 ## Approach
 
-Split `test_lib.py` over four sequential PRs into 23 new `test_lib_<family>.py` files plus one shared helper module, `_lib_sh_helpers.py`. Phase 3 waits until open PR #1318 merges or closes, and a merged #1318 adds a 24th file in phase 4 (M10). Each phase copies its sections by line range from a scratch copy of its own base, so no test is retyped. The repo's own `_move_fidelity.py` and a scratch comment-block check verify every move. `test_lib.py` stays as a residual of about 630 lines. It keeps the `_lib_parse_tool_input_or_deny` and `_lib_jq` contract tests, which `_lib.sh` and its four plugin copies cite by this file's name. Two other `_lib.sh` comments cite tests that move, so phases 2 and 3 each reword one of them to name the new file (row 5).
+Split `test_lib.py` over four sequential PRs into 25 new `test_lib_<family>.py` files plus one shared helper module, `_lib_sh_helpers.py`. #1318 has merged, so phase 4 adds `test_lib_trial_merge_verdict.py` (M10). PR #1334 has also merged and appended three stack-base test groups to `test_lib.py`, so phase 4 adds `test_lib_stack_base.py` too. Each phase copies its sections by line range from a scratch copy of its own base, so no test is retyped. The repo's own `_move_fidelity.py` and a scratch comment-block check verify every move. `test_lib.py` stays as a residual of about 630 lines. It keeps the `_lib_parse_tool_input_or_deny` and `_lib_jq` contract tests, which `_lib.sh` and its four plugin copies cite by this file's name. Two other `_lib.sh` comments cite tests that move, so phases 2 and 3 each reword one of them to name the new file (row 5).
 
-Each file holds one `_lib.sh` function family, the seam `.claude/plans/code-file-size-splits.md:193` names for this split. A phase creates each of its files whole. Only `_lib_sh_helpers.py` is created in one phase and extended in a later one.
+Each file holds one `_lib.sh` function family, or the closely coupled functions of one feature (`test_lib_stack_base.py`, rows 38 and 39). That is the seam `.claude/plans/code-file-size-splits.md:193` names for this split. A phase creates each of its files whole. Only `_lib_sh_helpers.py` is created in one phase and extended in a later one.
 
 Alternatives set aside:
-- **One PR.** That would put about 11,000 moved lines in one review (row 2), and the engineer chose a series (row 7).
+- **One PR.** That would put about 11,600 moved lines in one review (row 2), and the engineer chose a series (row 7).
 - **Deleting `test_lib.py`.** After the split, six comment lines still name it: `_lib.sh:399` and `:525`, and one in each of the four plugin copies of `_lib.sh` (row 3). Editing any file under a plugin directory requires that plugin's version bump (`.claude/rules/review-pipeline-dispatch.md`, plugin-directory bullet). Keeping the parse-contract tests in `test_lib.py` keeps all six lines true.
-- **Three PRs.** Each would move about 3,700 lines. Four keep every phase under about 3,000, and they let phase 1 carry both full-suite triggers (M1).
+- **Three PRs.** Each would move about 3,900 lines. Four keep phases 1–3 under about 3,000, and they let phase 1 carry both full-suite triggers (M1). Phase 4 grew to about 3,560 lines (the #1318 section and #1334's stack-base tests). The engineer chose to keep the stack-base move there (row 39). The plan's own reason is that a fifth phase would repeat the whole routine for 398 lines.
 - **Retyping moved code with Write.** See M5.
 - **conftest.py, the residual, or a copy per file as the shared-helper home.** See M4.
 - **Moving sections into existing siblings.** Examples are `TestLibAcquireAppendLockCalledTwice` into `test_lib_append_line_locked.py`, or the worktree-lock tests into `test_lib_worktree_collision_guard.py`. The collision-guard file is already 2,193 lines. An existing destination would also mix moved and pre-existing nodes in one file's fidelity check.
@@ -37,12 +37,12 @@ Alternatives set aside:
 
 **Mechanisms:**
 - **M1: Four sequential phases, each one PR and one `code-writer` dispatch.** `anchors: root, G2, row2, row5, row7, row14, row26`
-  - The phases move about 2,860, 2,850, 2,330 and 2,960 lines (row 2).
+  - The phases move about 2,860, 2,850 and 2,330 lines (row 2), then about 3,560 in phase 4 after #1318 and #1334.
   - Phase 1 carries the two citation edits in `select-tests.py` and `helpers.py`. Both files are global triggers (row 14), so only phase 1 runs the full suite.
   - Phases 2 and 3 each edit one `_lib.sh` comment. `_lib.sh` is not a global trigger, so that edit adds the scripts tests to the phase's selection, not the full suite (row 14).
   - No phase splits into more than one dispatch. Every step edits `test_lib.py`, and all steps share one range manifest and one fidelity procedure.
   - Each later phase branches from the default tip after the previous phase merges. Phase 3 also waits until #1318 merges or closes (M10).
-- **M2: 23 files, one `_lib.sh` function family each, each at most 1,000 lines.** Critical files names each file's ranges. The largest is about 855 lines (row 2). A merged #1318 adds a 24th, `test_lib_trial_merge_verdict.py` (M10). `anchors: root, row1, row2, row18`
+- **M2: 25 files, one `_lib.sh` function family each (a file may hold the closely coupled functions of one feature, rows 38 and 39), each at most 1,000 lines.** Critical files names each file's ranges. The largest is about 855 lines (row 2). Phase 4 includes `test_lib_trial_merge_verdict.py` (M10) and `test_lib_stack_base.py`. `anchors: root, row1, row2, row18, row38, row39`
 - **M3: `test_lib.py` keeps the parse contract, which `_lib.sh` and its four plugin copies cite by this file's name.** `anchors: row1, row3, row4, row5, row9, row22, row23`
   - These base ranges stay. Each is named by its first and last node, with its 041fa346 lines.
     - `_REQUIRE_CODE_REVIEW_HOOK` with its comment (:79–82).
@@ -96,10 +96,12 @@ Alternatives set aside:
   - Phases 1 and 2 start now. None of their ranges holds one of #1318's `test_lib.py` hunks (row 25).
   - Phases 2–4 each re-scan the open PRs that edit `test_lib.py` before they start (Verification 0). The engineer decides whether a phase waits for any PR besides #1318.
   - Phase 3 starts only after #1318 merges or closes. It then re-resolves its own and phase 4's anchors at its new base (M9).
-  - If #1318 merged, phase 4 changes three things at its own base. Critical files marks each one.
+  - #1318 has merged, so phase 4 changes five things at its own base. Critical files marks each one.
     - The fallbacks range starts at the first top-level node after `test_merge_tree_merge_base_flag_changes_computed_tree`, because #1318 deletes `_make_git_rejecting_write_tree`.
     - That file's docstring names the merge-tree-failure class that replaces `TestGateDiffBaseGitVersionFallback`, in place of the git-version fallbacks.
     - The `_lib_trial_merge_verdict` section moves to a new `test_lib_trial_merge_verdict.py`, one family per file (M2). Any of its helpers that another file reads goes to `_lib_sh_helpers.py`, under M4's rule.
+    - The gate-diff-base file's second range starts at `TestGitInprogressStateDetection`, because #1318 removes `_git_supports_sha256_object_format`, which was its old anchor.
+    - The skill-management-plugin file takes two ranges, because the `_lib_trial_merge_verdict` section now sits between them.
   - At each handoff for merge, Verification 10 checks the phase PR against the default tip.
     - A conflict in any file the phase edits rebuilds the phase from step 0 at the new tip. That covers any overlap with #744 or #1292 (row 28). A rebuild takes a new scratch directory, a new base copy and freshly resolved ranges. It never hand-resolves a conflict.
     - A clean result syncs the branch with the tip, and CI's full suite must pass on the synced head (row 32). A failure there that CI on the default tip does not share also rebuilds the phase.
@@ -115,6 +117,7 @@ Alternatives set aside:
   - Phases 2–4 import `_lib_sh_helpers.py`, so phase 1 is revertable only after phases 2–4 are reverted.
   - Every phase prunes `test_lib.py`'s import block, so phases 2 and 3 each revert cleanly only after every later phase.
   - Phase 4 reverts alone, because the `test_lib.py` before it still defines the four helpers it moves.
+  - If a later commit touches a file phase 4 edits, the engineer chooses between a forward fix and a hand-resolved revert.
   - Each PR body carries this rollback statement (Verification 0).
   - A revert's real test is its own PR. CI runs both full-suite passes on every pull request (row 32), at the default tip the revert actually meets.
   - No phase rehearses its revert locally.
@@ -134,7 +137,7 @@ Alternatives set aside:
 
 **Assumption rows:**
 1. Every top-level node after the imports falls in exactly one range that Critical files assigns, or in one of M3's residual ranges. Each range is named by its first banner or node and its last node. Line numbers are guides at the base only. `[verified: this pass's grep of top-level def, class, assignment and "# ---" banner lines at 041fa346; staff-sdet round 1 resolved every range by AST and found one overlap, :85–106, which M3 now leaves out of the residual]`
-2. The phases move about 2,860, 2,850, 2,330 and 2,960 lines. Each new file adds 40 to 60 header lines, so the largest new files are about 855 lines (`test_lib_credentials.py`), 825 (`test_lib_config_gates.py`) and 800 (`test_lib_resume_context.py`). `test_lib_tool_argv.py` is about 660. The residual is about 630. `[verified: arithmetic over row 1's base spans and row 22's two groups; these are estimates, and Verification 6 measures the real sizes]`
+2. Phases 1–3 move about 2,860, 2,850 and 2,330 lines. Phase 4 moves about 3,560, because the ranges sum to 3,558 lines at origin/main 214dc930 (the round-1 estimate of 2,960 is superseded by rows 25 and 37). Each new file adds 40 to 60 header lines, so the largest new files are about 855 lines (`test_lib_credentials.py`), 825 (`test_lib_config_gates.py`) and 800 (`test_lib_resume_context.py`). `test_lib_tool_argv.py` is about 660. The residual is about 630. `[verified: arithmetic over row 1's base spans and row 22's two groups; these are estimates, and Verification 6 measures the real sizes]`
 3. Eight comment lines in five production files name `test_lib.py`. `claude/.claude/hooks/_lib.sh` has four: :399 cites `test_missing_emit_deny_loud_fail`, :525 cites "test_lib.py's OK-path tests", :2348 cites "test_lib.py's traversal-scope guard" (the gh drift guard), and :4960 cites `TestLibResumeContextIndexDir`'s docstring. Each plugin copy cites `test_lib.py::test_valid_bash_payload_returns_ok`: `plugins/lovable-cloud/hooks/_lib.sh:80`, `plugins/plugin-semver/hooks/_lib.sh:82`, `plugins/npm-semver/hooks/_lib.sh:82` and `plugins/skill-management/hooks/_lib.sh:514`. `[verified: grep]`
 4. The split changes tests and does not split `_lib.sh`. `[engineer-verified: "Tests only (Recommended)"]`
 5. The engineer allows two comment edits in `_lib.sh`, at :2348 and :4960. `[engineer-verified: "Allow the 2 edits (Recommended)"]`
@@ -145,7 +148,7 @@ Alternatives set aside:
    - `_run_lib_call` has 75 calls. They fall in the ranges of 11 planned files, and none falls in the residual. `_LIB_SH` has 152 references.
    - `_SKILL_MANAGEMENT_PLUGIN_LIB` is read at :893 (the capped-for range) and :10661–10773 (the skill-management plugin range).
    - Only residual ranges read `_HARNESS_TEMPLATE`, `_run_harness`, `_parse_ok_fields` and `_REQUIRE_CODE_REVIEW_HOOK`. Only the config-gates ranges (:6705–7264) read `_lib_sh_with_unreadable_schema` and `_lib_sh_with_missing_config_sh`.
-   - Code on both sides of the :9986 seam reads `_gate_diff_base`, `_staged_diff_hash`, `_forge_state_marker` and `_assert_valid_tree_oid`. Only code before the seam reads `_git_inprogress_state` and `_git_supports_sha256_object_format`. Only code after it reads `_timeout_binary_present` and the `_make_*` git shims.
+   - Code on both sides of the seam (at 214dc930, the first node after `test_merge_tree_merge_base_flag_changes_computed_tree`) reads `_gate_diff_base`, `_staged_diff_hash`, `_forge_state_marker` and `_assert_valid_tree_oid`. Only code before the seam reads `_git_inprogress_state`. Only code after it reads `_timeout_binary_present` and the `_make_*` git shims.
    - Each of these helper families is read in one planned file only: `_fragment_*`, `_extract_git_subcmd*`, `_command_invokes_*`, `_tool_argv_from_subcmd`, `_words_start_with`, `_list_contains`, the command-words helpers, `_strip_shell_quotes`, `_sed_is_gnu`, `_porcelain_record`, `_resolve_default_branch`, `_commit_sentinel_at_ref`, `_linked_worktree_root`, `_first_live_linked_worktree`, `_valid_session_id_component`, `_cap_fire_path_env`, `_config_lines`, `_length_ratchet_exceeded` and `_missing_plugin_ids`.
    - The helpers not listed here were not grepped, so their placement is `[unverified]`. Ruff's F821 catches any that cross a file boundary (M4).
 10. Precedents for sharing helpers. `[verified: grep and glob this pass; select-tests.py:218–224]`
@@ -178,7 +181,7 @@ Alternatives set aside:
 18. The limit is 1,000 lines for test files, and nothing enforces it yet. `[verified: docs/design-decisions/code-file-line-limit.md:19 and :50–57; grep found no enforcing test]`
 19. Some citing files record past states, so they stay unedited: `docs/reports/2026-08-10-repo-quality-audit/findings.md`, `docs/reports/2026-08-22-discovery-audit/findings.md`, and every other `.claude/plans/*.md` file. The `docs/design-decisions/` lines this plan edits describe where tests live now, so they are descriptions, not records. `[verified: grep; ~/.claude/CLAUDE.md Scope discipline, Axis 3]`
 20. Some citations are already stale, and this split does not make them worse. `[verified: grep]`
-    - `test_require_plan_review.py:47` and `test_require_memory_skill.py:31` credit `_FORCED_FALLBACK_REALPATH_SHIM` to `test_lib.py`, but `helpers.py:2549` defines it.
+    - `test_require_plan_review.py:46` and `test_require_memory_skill.py:31` credit `_FORCED_FALLBACK_REALPATH_SHIM` to `test_lib.py`, but `helpers.py:2549` defines it.
     - `.claude/rules/bash-unit-test-seams.md:18–21` counts "six lib-level test files" and lists four of the eight `test_lib*.py` files.
     - `claude/.claude/scripts/tests/test_autonomous_shipping_active.py:4` cites the range :1204–1344, which does not hold `TestAutonomousShippingActive` (:6946). Phase 3 rewrites this citation anyway, because its file name becomes false.
 21. Critical files assigns every live citation of `test_lib.py` to the phase that makes it false. These sites need no edit, because what they cite stays in `test_lib.py`: `_lib.sh:399` and `:525`, the four plugin copies, `docs/design-decisions/bats-core-adoption-declined.md:14`, `test_hook_alignment.py:3350`, `test_record_session_end.py:281`, `test_consume_durable_continuity_file_on_read.py:384`, `test_require_plugin_version_bump.py:425`, `test_require_npm_version_bump.py:535`, `test_require_skill_review.py:1397`, `test_require_worktree_for_git_writes.py:703` and `test_deny_reviewer_tree_mutation.py:1446`. `[verified: repo-wide grep for "test_lib.py" at 041fa346, rechecked for these sites in this revision]`
@@ -188,11 +191,11 @@ Alternatives set aside:
     - The drift guard's "above" references point at its own banner and tests. The index-dir docstrings cite only `_lib_resume_context_index_dir`.
 23. Three sites outside `test_lib.py` cite the moved groups, and none is a plugin file. `_lib.sh:2348` is the only site naming the "traversal-scope guard". `_lib.sh:4960` and `claude/.claude/scripts/tests/test_find_consumed_continuity_file.py:154` are the only sites naming `TestLibResumeContextIndexDir`. No other file names the drift guard's helpers or tests. Under `plugins/`, the only lines naming `test_lib` are row 3's four. `[verified: grep this revision for "traversal-scope", "TestLibResumeContextIndexDir", the drift guard's top-level names, and "test_lib" under plugins/]`
 24. Each of row 6's sites names `test_lib.py` as the home of something a phase moves, so the split would leave each one false. `[verified: Read of select-tests.py:653–654; grep of docs/design-decisions/ for "test_lib.py" this revision]`
-25. Open PR #1318, "Raise the supported git floor to 2.43", edits `test_lib.py` in four hunks. `[verified: staff-platform-engineer round-1 finding R1, from gh pr list --state open and the PR's diff; not re-read in this revision]`
+25. PR #1318 (now merged, so this row is the round-1 record), "Raise the supported git floor to 2.43", edits `test_lib.py` in four hunks. `[verified: staff-platform-engineer round-1 finding R1, from gh pr list --state open and the PR's diff; not re-read in this revision]`
     - It deletes a test inside phase 3's resume-context range, at about base :6095.
     - It deletes `_make_git_rejecting_write_tree` and `_make_git_rejecting_merge_base_flag` (about :9990). The first is the fallbacks range's start anchor.
     - It replaces `TestGateDiffBaseGitVersionFallback` with `TestGateDiffBaseMergeTreeFailure`.
-    - It adds about 180 lines: a `# --- _lib_trial_merge_verdict` banner, `TestTrialMergeVerdict` and five helpers, between phase 4's skill-management-plugin range and its validate-plugin-id range.
+    - It added about 180 lines (253 at 214dc930): a `# --- _lib_trial_merge_verdict` banner, `TestTrialMergeVerdict` and five helpers, between phase 4's skill-management-plugin range and its validate-plugin-id range.
     - It also edits five locator files the phases edit, plus `_lib.sh` and `plugins/skill-management/hooks/_lib.sh`. Its nearest `_lib.sh` hunk is about 150 lines from phase 3's comment edit.
     - None of these hunks falls in a phase 1 or phase 2 range.
 26. Against #1318, the engineer chose to start now and gate phase 3. `[engineer-verified: "Start now, gate ph. 3 (Recommended)"]`
@@ -201,7 +204,7 @@ Alternatives set aside:
 29. Rollback facts. `[verified: .claude/plans/decompose-transcript-handoff-nudge-a.md:394 records squash-only merges from gh api; this plan's Critical files and row 9; .claude/plans/transcript-analysis-decomposition.md:276–279]`
     - The default branch takes squash merges only, so each phase lands as one commit.
     - Phases 2–4 each create files that import `_lib_sh_helpers.py`, which phase 1 creates.
-    - Every phase edits `test_lib.py`'s import block. Phases 1 and 4 both edit `test_require_skill_review.py` and `test_require_plan_review.py`, and phases 2 and 4 both edit `test_lib_reviewer_round_state.py`.
+    - Every phase edits `test_lib.py`'s import block. Phases 1 and 4 both edit `test_require_skill_review.py`. At 214dc930 phase 4 has no edit left in `test_require_plan_review.py` or `test_lib_reviewer_round_state.py`.
     - The precedent's governing plan rehearses each phase's revert because "a conftest fixture promotion in PR N can leave PR N−1's revert uncollectable". `_lib_sh_helpers.py` has that shape.
 30. The cross-domain-read scanner. `[verified: Read of claude/.claude/scripts/tests/test_select_tests.py:118–162, :199–204 and :345–367; grep of hooks/tests for module-level "_lib.sh" path assignments; select-tests.py:599 and :811]`
     - `TestCrossDomainReadCompleteness` parses only `test_*.py` files and resolves only module-level single-name assignments. For each resolved path, it checks that `select_pytest_targets` covers the file that reads it.
@@ -209,22 +212,27 @@ Alternatives set aside:
     - `test_require_skill_review.py:49` still assigns `plugins/skill-management/hooks/_lib.sh`, and at least 14 other hooks test files assign `claude/.claude/hooks/_lib.sh`, such as `test_config_lib.py:30`.
     - Both paths select the `HOOKS_TESTS_DIR` directory, `select-tests.py:599` for the hooks directory and `:811` for plugin hooks. That target covers every new file.
 31. The harness's worktree Bash guard refuses a `$(...)` assigned to a variable and used in a later statement (Trigger A), and a bare `$(git ...)` (Trigger E). Its documented fallback is one statement with literal arguments. `[verified: docs/worktree-bash-guard.md:21–27 and :112–114]`
-32. Run-length and fail-closed facts. `[verified: Read of .github/workflows/tests.yml:11–14, :34, :141 and :148; Read of _move_fidelity.py; grep of test_lib.py for mark.timing]`
+32. Run-length and fail-closed facts. `[verified: Read of .github/workflows/tests.yml:11–14, :34, :176 and :183 (re-read at 214dc930; they were :141 and :148); Read of _move_fidelity.py; grep of test_lib.py for mark.timing]`
     - CI runs on every pull request and on every push to `main` (:11–14).
     - CI caps its job at 20 minutes, and its two pytest passes are `-m "not timing"` and `-m timing -n0` over `claude/.claude/ claude-skills/ plugins/ evals/`.
     - `test-ids` exits non-zero on a missing or unparseable XML (`_move_fidelity.py:761–764`) and when neither side has a testcase (:798–799). It cannot tell a stale XML from an earlier run, which a fresh scratch directory per build rules out.
     - The residual keeps `test_hung_jq_denied_within_timeout`, a `timing` test (base :605). So every phase's two timing XMLs hold at least one testcase.
 33. The Bash tool's foreground limit is 600 s, so a long foreground pass can be killed before pytest writes its junit XML. `[unverified — relayed from staff-platform-engineer round-1 finding R4]`
-34. `git merge-tree --write-tree` exits 1, not 0, when the merge it computes conflicts. `[verified: claude/.claude/hooks/_lib.sh:1540–1541; git-merge-tree(1) EXIT STATUS, which also gives a status other than 0 or 1 for an error]`
+34. `git merge-tree --write-tree` exits 1, not 0, when the merge it computes conflicts. `[verified: claude/.claude/hooks/_lib.sh:1365–1368 at 214dc930, which adds that a bad ref also exits 1; git-merge-tree(1) EXIT STATUS, which also gives a status other than 0 or 1 for an error]`
 35. A default-branch edit to a line that a phase deletes or edits conflicts with that phase. Every line of a moved range is gone from the phase's `test_lib.py`, so the phase's own diff covers each one. `[unverified — git's three-way merge rule, from git-merge(1); not read this pass]`
 36. `gh pr list --json` serves `files` and `headRefOid`. `[verified: gh pr list --state open --json number,headRefOid,files ran this session and returned both fields]`
+37. #1318 and #1334 have both merged. #1334 appended 400 lines to the end of `test_lib.py`: two blank separators, then 398 lines (nine top-level names, three groups) from the banner `# --- _lib_configured_stack_base / _lib_print_unusable_stack_base` through `TestLibOpenPrBase`. `[verified: git log of claude/.claude/hooks/tests/test_lib.py at origin/main 214dc930, and a diff against the phase 3 merge commit 71e5abb8]`
+38. No helper in the stack-base groups is read outside its own group, none is imported by another file, and the groups call `_lib.sh` functions in one contiguous block (`_lib.sh` lines 1434–1604). `[verified: staff-sdet advisory pass over origin/main 214dc930, by grep over the whole file; the ID count of about 83 is derived from reading, not from --collect-only]`
+39. The stack-base move stays in phase 4. `[engineer-verified: "sure keep in phase 4"]`
+    - The session had asked `staff-sdet` how to split the stack-base tests. Its reason for keeping the move there (a fifth phase would repeat the routine for 398 lines) is the session's own, not the engineer's. `[unverified]`
+40. Phase 4's other range edits (the `TestGitInprogressStateDetection` start, the two skill-management ranges, the named last node of the missing-plugin-ids range) follow `staff-sdet`'s read of `test_lib.py` at origin/main 214dc930. `[verified: staff-sdet advisory pass, which found _git_supports_sha256_object_format absent, the trial-merge section inside the skill-management range, and the open-ended last range]`
 
 ## Critical files
 
 Below, `hooks/tests/` means `claude/.claude/hooks/tests/`.
 - Each range names its first line by a quoted banner prefix or a node name, and its last node by name (M5). The phase greps for both at its own base.
 - `:N` is the 041fa346 line, a guide only (M9).
-- Each locator site in another file is a hit of Verification 7's grep. At a later base, find it by grepping its file for `test_lib.py`, in the order the line numbers give.
+- Each locator site in another file is a hit of Verification 7's grep. At a later base, find it by grepping its file for `test_lib.py` and matching each hit to a listed entry by the test or helper it cites.
 - Each new file's parenthesis names the `_lib.sh` functions its docstring covers.
 
 **Phase 1**, one `code-writer` dispatch. Its select-tests run is the full suite (row 14).
@@ -316,31 +324,36 @@ Below, `hooks/tests/` means `claude/.claude/hooks/tests/`.
   - The banner beginning `# --- _lib_command_concludes_commit / _lib_command_concludes_marker_gated_commit -` (:8804) through `TestFragmentConcludesCommitQuotedDifferential`.
 - Create `hooks/tests/test_lib_gate_diff_base.py` (`_lib_git_inprogress_state`, and `_lib_gate_diff_base`'s anchor and topology tests). It takes two ranges.
   - The banner beginning `# --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash -` (:9310) through `_git_inprogress_state` (:9326).
-  - `_git_supports_sha256_object_format` (:9386) through `test_merge_tree_merge_base_flag_changes_computed_tree` (:9983).
+  - `TestGitInprogressStateDetection` through `test_merge_tree_merge_base_flag_changes_computed_tree`. `_git_supports_sha256_object_format` no longer exists, because #1318 removed it.
   - The four helpers between those ranges go to `_lib_sh_helpers.py` (M4).
-- Create `hooks/tests/test_lib_gate_diff_base_fallbacks.py` (`_lib_gate_diff_base`'s git-version, cap-fault and no-cap fallbacks, its documented origin-forgery behavior, the round-state key during a rebase, `_lib_staged_diff_hash`). It takes `_make_git_rejecting_write_tree` (:9986) through `TestStagedDiffHash`.
-  - If #1318 has merged, the range starts at the first top-level node after `test_merge_tree_merge_base_flag_changes_computed_tree`. The docstring then names the merge-tree-failure tests in place of the git-version fallbacks (M10).
+- Create `hooks/tests/test_lib_gate_diff_base_fallbacks.py` (`_lib_gate_diff_base`'s git-version, cap-fault and no-cap fallbacks, its documented origin-forgery behavior, the round-state key during a rebase, `_lib_staged_diff_hash`). It takes the first top-level node after `test_merge_tree_merge_base_flag_changes_computed_tree` through `TestStagedDiffHash`. #1318 has merged and deleted `_make_git_rejecting_write_tree`. The docstring names the merge-tree-failure tests in place of the git-version fallbacks (M10).
   - In `TestReviewerRoundStateKeyDuringRebase`'s docstring (:10401), "this file's other tests cover" becomes "the other tests here and in test_lib_gate_diff_base.py cover" (row 13).
 - Create `hooks/tests/test_lib_review_ledger.py` (`_lib_acquire_append_lock`, `_ledger_sweep_window_days`). It takes `TestLibAcquireAppendLockCalledTwice` (:10498) through `TestLedgerSweepWindowDays`.
-- Create `hooks/tests/test_lib_skill_management_plugin_lib.py` (`_lib_conflict_marker_deny_paths`, and the parity of the gate-base closure between the stowed and plugin copies). It takes the banner beginning `# --- _lib_conflict_marker_deny_paths -` (:10657) through `test_shared_closure_function_is_identical_across_stowed_and_plugin_lib`.
+- Create `hooks/tests/test_lib_skill_management_plugin_lib.py` (`_lib_conflict_marker_deny_paths`, and the parity of the gate-base closure between the stowed and plugin copies). It takes two ranges, because the `_lib_trial_merge_verdict` section sits between them.
+  - The banner beginning `# --- _lib_conflict_marker_deny_paths -` through `TestConflictMarkerDenyPaths`.
+  - The banner beginning `# --- Cross-copy parity of the shared gate-base closure` through `test_shared_closure_function_is_identical_across_stowed_and_plugin_lib`.
 - Create `hooks/tests/test_lib_validate_plugin_id.py` (`_lib_validate_plugin_id`). It takes the dashed line directly above `# _lib_validate_plugin_id / _lib_missing_plugin_ids -- direct unit coverage` (:10777) through `TestLibValidatePluginId`.
-- Create `hooks/tests/test_lib_missing_plugin_ids.py` (`_lib_missing_plugin_ids`, `_lib_file_exceeds_size_cap`, `_lib_read_guarded_settings`). It takes `_missing_plugin_ids` (:10946) through the end of the file.
-- Only if #1318 has merged, create `hooks/tests/test_lib_trial_merge_verdict.py` (`_lib_trial_merge_verdict`). It takes the banner beginning `# --- _lib_trial_merge_verdict` through the last node before the `_lib_validate_plugin_id` banner block (M10).
+- Create `hooks/tests/test_lib_missing_plugin_ids.py` (`_lib_missing_plugin_ids`, `_lib_file_exceeds_size_cap`, `_lib_read_guarded_settings`). It takes `_missing_plugin_ids` through `TestLibMissingPluginIdsLocalOptOut`. No range ends at "the end of the file", because later PRs append there (see the stack-base file below).
+- Create `hooks/tests/test_lib_trial_merge_verdict.py` (`_lib_trial_merge_verdict`). #1318 has merged. It takes the banner beginning `# --- _lib_trial_merge_verdict` through `TestTrialMergeVerdict`, the last node before the cross-copy parity banner (M10).
+- Create `hooks/tests/test_lib_stack_base.py` (`_lib_configured_stack_base`, `_lib_print_unusable_stack_base`, `_lib_stack_base_name_shape`, `_lib_open_pr_base`). PR #1334 appended these tests to `test_lib.py` after this plan was written. It takes the banner beginning `# --- _lib_configured_stack_base / _lib_print_unusable_stack_base -` through `TestLibOpenPrBase` as one range. It holds nine top-level names (`_STACK_BASE_STDERR_PREFIX`, `_configured_stack_base`, `_repo_on_branch_with_key`, `_assert_stack_base_stop`, `TestLibConfiguredStackBase`, `_stack_base_name_shape`, `TestLibStackBaseNameShape`, `_open_pr_base`, `TestLibOpenPrBase`). No other file reads any of them, so nothing goes to `_lib_sh_helpers.py`. It imports `_locale_that_widens_ascii_ranges` from `.test_config_lib`. Its manifest row names all nine, because the parity check keys by name and cannot see a wrong home.
 - Modify `hooks/tests/_lib_sh_helpers.py`. Append `_gate_diff_base` (:9329) through `_assert_valid_tree_oid` (:9383) as one range. It holds `_gate_diff_base`, `_staged_diff_hash`, `_forge_state_marker` and `_assert_valid_tree_oid`.
 - Modify `hooks/tests/test_lib.py`. Delete the ranges first (M5) and prune imports.
+- Commit `.claude/plans/split-test-lib.md` with this revision, so the plan gate passes on a committed plan (row 17).
 - Modify `docs/design-decisions/git-native-commit-hooks-declined.md:17` to name the same tests in their new homes. Those homes are `test_lib_commit_predicates.py` from `TestCommandConcludesCommit` to the end of the file, `_git_inprogress_state` in `test_lib_gate_diff_base.py`, and the four gate-diff helpers in `_lib_sh_helpers.py`.
 - Modify the locators at:
-  - `hooks/tests/test_require_skill_review.py:3285`, `:3297`, `:3451`, `:3697` and `:3722`;
-  - `hooks/tests/test_lib_reviewer_round_state.py:336` and `:357`;
-  - `hooks/tests/test_require_code_review.py:1200`, `:1221`, `:1243`, `:1558` and `:1584`;
-  - `hooks/tests/test_require_plan_review.py:2479` and `:2499`;
-  - `hooks/tests/test_check_skill_length.py:989` and `:1010`;
-  - `hooks/tests/test_deny_pii_in_commits.py:1825`;
-  - `hooks/tests/test_deny_private_project_refs.py:1788`;
-  - `hooks/tests/test_marker_script.py:1269`;
-  - `hooks/tests/test_review_ledger_script.py:3883`;
-  - `hooks/tests/test_bootstrap_project_plugins.py:520` and `:528`;
-  - `claude/.claude/scripts/tests/test_reconcile_project_plugins.py:9`.
+  - Fourteen live sites, found by `grep -nE 'test_lib([^_a-z]|$)'` over the files below at origin/main 214dc930 and checked against what each cites. #1318 rewrote the other sites this list once named, so no edit remains in `test_lib_reviewer_round_state.py`, `test_check_skill_length.py` or `test_require_plan_review.py` (the stale `:46` there predates the split, row 20). Each entry names the file the cited test or helper moves to.
+  - `hooks/tests/test_require_skill_review.py`:
+    - `:3285` and `:3297`, which cite `TestGateDiffBaseUntrustedAnchor`, `TestGateDiffBaseAnchorNamespaceShadow`, `TestGateDiffBaseTopologyFallback` and "the anchor-rejection matrix": `test_lib_gate_diff_base.py`;
+    - `:3451`, which cites `test_git_diff_cached_against_unresolved_conflict_git_primitive_fact`: `test_lib_gate_diff_base.py`;
+    - `:3697` and `:3722`, which cite `TestConflictMarkerDenyPaths`: `test_lib_skill_management_plugin_lib.py`.
+    - `:1397` cites `test_timeout_absent_fallback_valid_payload_returns_ok`, which stays in `test_lib.py`, so it is not edited.
+  - `hooks/tests/test_require_code_review.py`: `:1199` (`_make_blocking_merge_tree_git`), `:1462` (`_make_blocking_diff_git`) and `:1488` ("`_lib_gate_diff_base`'s merge-tree call and `_lib_staged_diff_hash`'s diff call"), all `test_lib_gate_diff_base_fallbacks.py`.
+  - `hooks/tests/test_deny_pii_in_commits.py:1825` and `hooks/tests/test_deny_private_project_refs.py:1841`, which cite `test_git_diff_cached_against_unresolved_conflict_git_primitive_fact`: `test_lib_gate_diff_base.py`.
+  - `hooks/tests/test_marker_script.py:1270`, which cites `TestStagedDiffHash`: `test_lib_gate_diff_base_fallbacks.py`.
+  - `hooks/tests/test_review_ledger_script.py:3884`, which cites `TestLedgerSweepWindowDays`: `test_lib_review_ledger.py`.
+  - `hooks/tests/test_bootstrap_project_plugins.py:515`, which cites `TestLibValidatePluginId`: `test_lib_validate_plugin_id.py`.
+  - `claude/.claude/scripts/tests/test_reconcile_project_plugins.py:9`, which cites the unit tests of `_lib_missing_plugin_ids` and `_lib_validate_plugin_id`: `test_lib_missing_plugin_ids.py` and `test_lib_validate_plugin_id.py`.
+  - If the implementer's grep at its own base finds a citation of a moved name that this list lacks, or a listed site no longer cites one, that is an M9 stop for a plan revision.
 
 This list names `claude/.claude/hooks/_lib.sh` only for the two comment edits in phases 2 and 3, and it names no file under `plugins/` (rows 5 and 23).
 
@@ -398,15 +411,15 @@ Run these steps from the worktree root, for each phase.
      - Each moved name is defined in exactly the file the map names.
      - The count guard holds (M12). The script prints the base copies' block count and each after file's count. The base count is above 0, the phase's new files' counts sum to more than 0, and all the after counts sum to the base count.
    - Then run the seeded copy (M12).
-     - Pick a new file that takes a banner of two or more lines, and one line of that banner that occurs once in the file. Run `grep -vxF '<that line>' claude/.claude/hooks/tests/<that file> > <scratch>/<that file>`.
+     - Pick a new file that takes a banner of two or more lines, and one line of that banner that occurs once in the file. In phase 4 use the `_lib_length_ratchet_exceeded` banner in `test_lib_commit_predicates.py`, because the stack-base banner is one line. Run `grep -vxF '<that line>' claude/.claude/hooks/tests/<that file> > <scratch>/<that file>`.
      - The dropped line shortens one block and changes no count, so only the per-file comparison can catch it.
      - Rerun the check with the seeded copy's path in place of that file's. The copy keeps the file's name, which the map keys on. The run must exit non-zero and name that file.
    - Step 5 covers the `import-diff` findings.
 5. **Lint.** `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/` reports nothing. F401 and F821 prove that each file imports exactly what it reads.
 6. **Size.** In every phase, `wc -l` shows at most 1,000 lines for `_lib_sh_helpers.py` and each file that phase creates. After phase 4 it also shows at most 1,000 for `test_lib.py`. Phases 1–3 check no size for `test_lib.py`, since its residual reaches the limit only after phase 4.
 7. **Citations.**
-   - Run `git grep -n 'test_lib\.py' -- . ':!docs/reports' ':!.claude/plans'`. Every hit names a test or helper that is still in `test_lib.py`, apart from three stale hits that predate the split (row 20): `test_require_memory_skill.py:31`, `test_require_plan_review.py:47` and `.claude/rules/bash-unit-test-seams.md:19`.
-   - `git diff --name-only <base>` lists only this phase's Critical files.
+   - Run `git grep -n 'test_lib\.py' -- . ':!docs/reports' ':!.claude/plans'`. Every hit names a test or helper that is still in `test_lib.py`, apart from three stale hits that predate the split (row 20): `test_require_memory_skill.py:31`, `test_require_plan_review.py:46` and `.claude/rules/bash-unit-test-seams.md:19`.
+   - `git diff --name-only <base>` lists only this phase's Critical files. Phase 4 commits the plan revision before Verification 0 records `<base>`, so its list omits `.claude/plans/split-test-lib.md`.
 8. **Production files.**
    - `git diff --quiet <base> -- plugins/` exits 0 in every phase.
    - `git diff --quiet <base> -- claude/.claude/hooks/_lib.sh` exits 0 in phases 1 and 4.
@@ -414,10 +427,13 @@ Run these steps from the worktree root, for each phase.
 9. **Residual, phases 3 and 4.**
    - After phase 3, `test_lib.py` defines neither `_lib_sh_with_unreadable_schema` nor `_lib_sh_with_missing_config_sh`, and `test_lib_config_gates.py` defines each once. Either name left in `test_lib.py` fails this step.
    - After phase 4, every top-level name left in `test_lib.py` comes from M3's residual ranges. Any other name stops the series for a plan revision (M9).
+     - Derive the residual name set by the same AST listing as the manifest. At origin/main 214dc930 it is 41 names (lines 60–661), and the phase moves 77, so Verification 3's `compared-nodes` is 77.
+     - A top-level node after `TestLibOpenPrBase` at a later base is also an M9 stop.
 10. **Base check, at each handoff for merge** (M10).
     - Run `git fetch origin main`, then `git merge-tree --write-tree origin/main HEAD` in the phase worktree.
-    - Exit 1 means the default tip conflicts with the phase (row 34), so the phase rebuilds from step 0.
-    - Exit 0 means the phase syncs its branch with the default tip, per the `git-feature-branch-sync` skill. CI's two passes must then pass on the synced head before the engineer merges (row 32). A failure that CI on the default tip does not share also means a rebuild.
+    - Exit 1 with a tree OID on the first stdout line means the default tip conflicts with the phase (row 34), so the phase rebuilds from step 0.
+    - Exit 1 with anything else on the first line stops the phase for the engineer, because a bad ref also exits 1 (`_lib.sh:1365–1368`).
+    - Exit 0 means the phase syncs its branch with the default tip, per the `git-feature-branch-sync` skill. It then re-runs step 9 on the synced head, because a clean merge can still add a top-level node after the last moved range. CI's two passes must then pass on the synced head before the engineer merges (row 32). A failure that CI on the default tip does not share also means a rebuild.
     - Any other exit status stops the phase for the engineer.
 
 ## Out of scope

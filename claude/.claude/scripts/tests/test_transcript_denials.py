@@ -424,7 +424,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         agents_md = repo / "AGENTS.md"
         agents_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
@@ -446,7 +446,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         skill_dir = repo / "claude-skills" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         skill_md = skill_dir / "SKILL.md"
         skill_path = "claude-skills/skills/my-skill/SKILL.md"

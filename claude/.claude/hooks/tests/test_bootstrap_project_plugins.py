@@ -512,7 +512,7 @@ class TestMissingIdDecision:
     def test_only_invalid_ids_missing_is_no_launch(self, sandbox, invalid_id):
         """`leading-dash` proves the launch loop calls `_lib_validate_plugin_id`.
         The newline case proves `_lib_missing_plugin_ids_for_content` drops control-character keys before the loop splits lines.
-        The id-alphabet matrix lives in `test_lib.py::TestLibValidatePluginId`."""
+        The id-alphabet matrix lives in `test_lib_validate_plugin_id.py::TestLibValidatePluginId`."""
         sandbox.write_settings({invalid_id: True})
 
         sandbox.run()

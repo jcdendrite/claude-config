@@ -116,21 +116,21 @@ not landing it.
 Never commit anything that identifies a specific private project,
 engagement, or codebase. Three enforcement tiers apply:
 
-**Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on
-the OSS allowlist (e.g. `CVE-`, `GH-`), plus six
-always-on structural detectors — see `docs/private-project-redaction.md`
-for the full detector list and non-matching illustrative shapes. For
-tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
-`TICKET-<digits>` — both pass the allowlist.
+**Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on the OSS
+allowlist (e.g. `CVE-`, `GH-`), plus five always-on structural detectors — see
+`docs/private-project-redaction.md` for the full detector list and
+non-matching illustrative shapes. For tracker-ID-shaped placeholders in
+examples, use `PROJ-<digits>` or `TICKET-<digits>` — both pass the allowlist.
 
 **Caught by hook when `~/.claude/private-projects.md` is populated:**
-project/org names (including the owner's own private projects),
-codenames, internal URLs/project domains on a TLD other than the
-always-on list above, non-home-rooted filesystem paths embedding
-project names, env var names encoding a project, and person names. The
-blocklist is user-populated with no default entries, so the repo
-owner's own commit-author identity is covered only if deliberately
-added. Default: if in doubt, strip it.
+project/org names (including the owner's own private projects), codenames,
+internal URLs/project domains on a TLD other than the always-on list above,
+non-home-rooted filesystem paths embedding project names, env var names
+encoding a project, person names, and Slack channel names (distinctive ones
+only; see `docs/private-project-redaction.md`). The blocklist is
+user-populated with no default entries, so the repo owner's own
+commit-author identity is covered only if deliberately added. Default: if in
+doubt, strip it.
 
 **Reviewer discipline only — hook doesn't catch these:**
 
