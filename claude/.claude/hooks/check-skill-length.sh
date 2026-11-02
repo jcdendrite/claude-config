@@ -11,8 +11,9 @@
 # Default limit is 200 lines. Structural-dispatcher skills such as
 # plan-review carry item-ownership / routing tables that legitimately run
 # longer and get a higher cap from limit_for().
-# code-review/SKILL.md is the exception, temporarily capped above that
-# (see limit_for()).
+# code-review/SKILL.md is the exception, temporarily capped above the
+# 500-line ceiling (see limit_for()). For the ceiling's source, see:
+# `docs/skills.md` § "Skill architecture notes"
 # plan-review/ROUTING.md shares plan-review/SKILL.md's cap in limit_for(): it
 # holds the item-ownership / spawn-routing table extracted from
 # plan-review/SKILL.md, the same content class the cap was written for.
@@ -42,20 +43,18 @@
 #
 # Fail posture: the gate denies when _lib.sh cannot be sourced, when the
 # tool-input JSON cannot be parsed, or when the commit shape is undetermined.
-# It allows when git is absent or times out.
-# The allow on a git timeout holds only when timeout(1) or gtimeout(1) is on
-# PATH.
+# It allows when git cannot resolve REPO_ROOT, whether git is absent, errors
+# or times out.
 #
-# Known gap: a timeout on the previous-version `git show` can falsely deny a
-# shrinking over-limit file. See _lib_staged_length_gate in _lib.sh.
+# Known gap: some git failures or timeouts inside the length check can
+# falsely deny a commit that stages an over-limit file.
+# _lib_staged_length_gate in _lib.sh owns which ones.
 #
 # The growth-comparison and deny-message logic is shared with
 # check-claude-md-length.sh via _lib_staged_length_gate in _lib.sh — this
 # file supplies only the staged-path pattern and limit_for.
 # The commit-shape check and REPO_ROOT resolution below are duplicated per
 # file, not done inside _lib_staged_length_gate.
-# _lib_staged_length_gate needs REPO_ROOT already resolved as its first
-# argument.
 # For why the commit-shape check stays in the caller, see
 # _lib_staged_length_gate's header comment in _lib.sh.
 
