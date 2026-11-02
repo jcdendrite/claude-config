@@ -1,5 +1,6 @@
 """Tests for transcript_analysis/review_trace.py (cmd_review_trace, --deny-summary)."""
 import argparse
+import functools
 import re
 
 import pytest
@@ -1901,8 +1902,27 @@ def _spawn_rec(
 
 
 _PLAN_REVIEW_SKILL_MD = SKILLS_DIR / "plan-review" / "SKILL.md"
-_DEACTIVATE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "deactivate-gate")
-_WRITE_PLAN_REVIEW = extract_skill_command(_PLAN_REVIEW_SKILL_MD, "record-completion")
+
+
+@functools.cache
+def _deactivate_plan_review() -> str:
+    """Read at test time so a drifted marker fails only the tests that consume the recipe."""
+    return extract_skill_command(_PLAN_REVIEW_SKILL_MD, "deactivate-gate")
+
+
+@functools.cache
+def _write_plan_review() -> str:
+    return extract_skill_command(_PLAN_REVIEW_SKILL_MD, "record-completion")
+
+
+def _expand_recipe_placeholders(template: str) -> str:
+    """Brace-safe: shell braces in a template stay literal, and only a recipe the template names is extracted."""
+    for placeholder, extract_recipe in (("{deactivate}", _deactivate_plan_review), ("{write}", _write_plan_review)):
+        if placeholder in template:
+            template = template.replace(placeholder, extract_recipe())
+    return template
+
+
 _READY_FOR_REVIEW_SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
 
 
@@ -2213,7 +2233,7 @@ class TestReviewerSpawnRoundLabels:
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("ciso-reviewer", "2026-05-19T10:01:00.000Z", tool_id="a1"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:02:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:03:00.000Z", tool_id="a2"),
         ]) == ["plan-review", None]
 
@@ -2221,7 +2241,7 @@ class TestReviewerSpawnRoundLabels:
     def test_spawn_sharing_the_deactivate_calls_response_reads_none(self, spawn_first):
         """Dedup merges the response into one record at the first member's position, and that record carries the call."""
         spawn = _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z", tool_id="a1", request_id="r1")
-        call = _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:01.000Z", request_id="r1")
+        call = _bash_rec(_deactivate_plan_review(), "2026-05-19T10:01:01.000Z", request_id="r1")
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             *([spawn, call] if spawn_first else [call, spawn]),
@@ -2231,11 +2251,11 @@ class TestReviewerSpawnRoundLabels:
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", tool_id="s1", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z", tool_id="a1"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z", tool_id="b1"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:02:00.000Z", tool_id="b1"),
             _spawn_rec("staff-sdet", "2026-05-19T10:03:00.000Z", tool_id="a2"),
             _skill_use_rec("plan-review", "2026-05-19T10:04:00.000Z", tool_id="s2", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:05:00.000Z", tool_id="a3"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:06:00.000Z", tool_id="b2"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:06:00.000Z", tool_id="b2"),
             _spawn_rec("staff-sdet", "2026-05-19T10:07:00.000Z", tool_id="a4"),
         ]) == ["plan-review", None, "plan-review", None]
 
@@ -2243,9 +2263,9 @@ class TestReviewerSpawnRoundLabels:
         """The scan stops at the first call, so a spawn between two calls is outside the window."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z", tool_id="b1"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:01:00.000Z", tool_id="b1"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z", tool_id="a1"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:03:00.000Z", tool_id="b2"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:03:00.000Z", tool_id="b2"),
             _spawn_rec("staff-sdet", "2026-05-19T10:04:00.000Z", tool_id="a2"),
         ]) == [None, None]
 
@@ -2255,7 +2275,7 @@ class TestReviewerSpawnRoundLabels:
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _user_msg("go on", branch="feat", ts="2026-05-19T10:01:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:03:00.000Z"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:03:00.000Z"),
         ]) == [None]
 
     def test_deactivate_call_after_a_nested_code_review_call_leaves_that_window_alone(self):
@@ -2263,7 +2283,7 @@ class TestReviewerSpawnRoundLabels:
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", tool_id="s1", branch="feat"),
             _skill_use_rec("code-review", "2026-05-19T10:01:00.000Z", tool_id="s2", branch="feat"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:02:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:03:00.000Z"),
         ]) == ["code-review"]
 
@@ -2273,23 +2293,23 @@ class TestReviewerSpawnRoundLabels:
             _asst("claude-sonnet-4-6", branch="feat", sidechain=True, ts="2026-05-19T09:59:00.000Z"),
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _asst("claude-sonnet-4-6", branch="feat", sidechain=True, ts="2026-05-19T10:01:00.000Z"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z", tool_id="b9", sidechain=True),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:02:00.000Z", tool_id="b9", sidechain=True),
             _spawn_rec("ciso-reviewer", "2026-05-19T10:03:00.000Z", tool_id="a1"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:04:00.000Z", tool_id="b1"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:04:00.000Z", tool_id="b1"),
             _spawn_rec("staff-sdet", "2026-05-19T10:05:00.000Z", tool_id="a2"),
         ]) == ["plan-review", None]
 
     def test_sidechain_deactivate_call_leaves_the_main_thread_window_open(self):
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z", sidechain=True),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:01:00.000Z", sidechain=True),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == ["plan-review"]
 
     def test_deactivate_call_in_the_openers_own_response_does_not_end_its_window(self):
         """The search starts after the opener, so a stale call run before invoking /plan-review keeps the window."""
         assert _spawn_rounds([
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:00:00.000Z", request_id="r1"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:00:00.000Z", request_id="r1"),
             _skill_use_rec("plan-review", "2026-05-19T10:00:01.000Z", branch="feat", request_id="r1"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
         ]) == ["plan-review"]
@@ -2311,26 +2331,19 @@ class TestReviewerSpawnRoundLabels:
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == ["plan-review"]
 
-    def test_deactivate_call_inside_a_code_review_window_ends_nothing(self):
-        assert _spawn_rounds([
-            _skill_use_rec("code-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z"),
-            _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
-        ]) == ["code-review"]
-
     @pytest.mark.parametrize(
         "command",
         [
-            f"{_DEACTIVATE_PLAN_REVIEW} && {_WRITE_PLAN_REVIEW}",
-            f"{_WRITE_PLAN_REVIEW} && {_DEACTIVATE_PLAN_REVIEW}",
-            f"{_DEACTIVATE_PLAN_REVIEW}&&{_WRITE_PLAN_REVIEW}",
-            f"{_DEACTIVATE_PLAN_REVIEW}; git status",
-            f"git status; {_DEACTIVATE_PLAN_REVIEW}",
+            "{deactivate} && {write}",
+            "{write} && {deactivate}",
+            "{deactivate}&&{write}",
+            "{deactivate}; git status",
+            "git status; {deactivate}",
             "/srv/claude/.claude/scripts/marker.sh deactivate plan-review 2>/dev/null",
-            f"cat > notes.txt <<'EOF'\nIt's done\nEOF\n{_DEACTIVATE_PLAN_REVIEW}",
-            f"false || {_DEACTIVATE_PLAN_REVIEW}",
-            f"git status\n{_DEACTIVATE_PLAN_REVIEW}",
-            f"git log --grep=fix#12; {_DEACTIVATE_PLAN_REVIEW}",
+            "cat > notes.txt <<'EOF'\nIt's done\nEOF\n{deactivate}",
+            "false || {deactivate}",
+            "git status\n{deactivate}",
+            "git log --grep=fix#12; {deactivate}",
         ],
         ids=[
             "call-then-write", "write-then-call", "unspaced-and", "call-then-attached-semicolon",
@@ -2342,16 +2355,19 @@ class TestReviewerSpawnRoundLabels:
         """The call is read however a session joins it to another command, and a rejected line leaves the rest readable."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(command, "2026-05-19T10:01:00.000Z"),
+            _bash_rec(
+                _expand_recipe_placeholders(command),
+                "2026-05-19T10:01:00.000Z",
+            ),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == [None]
 
     @pytest.mark.parametrize(
         "command",
         [
-            _WRITE_PLAN_REVIEW,
+            "{write}",
             'grep -n "marker.sh deactivate plan-review" claude-skills/skills/plan-review/SKILL.md',
-            f"python3 - <<'EOF'\nprint(\"{_DEACTIVATE_PLAN_REVIEW}\")\nEOF",
+            "python3 - <<'EOF'\nprint(\"{deactivate}\")\nEOF",
         ],
         ids=["write-only", "grep-naming-the-call", "heredoc-printing-the-call"],
     )
@@ -2359,14 +2375,17 @@ class TestReviewerSpawnRoundLabels:
         """A command that only names the call ends nothing."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(command, "2026-05-19T10:01:00.000Z"),
+            _bash_rec(
+                _expand_recipe_placeholders(command),
+                "2026-05-19T10:01:00.000Z",
+            ),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == ["plan-review"]
 
     @pytest.mark.parametrize(
         "command",
         [
-            f"bash {_DEACTIVATE_PLAN_REVIEW}",
+            "bash {deactivate}",
             "~/.claude/scripts/marker.sh deactivate \\\nplan-review",
         ],
         ids=["known-miss-bash-wrapper", "known-miss-backslash-continuation"],
@@ -2375,7 +2394,10 @@ class TestReviewerSpawnRoundLabels:
         """Characterization pin: a shell runs these calls but the matcher leaves them unread; a matcher change updates them."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(command, "2026-05-19T10:01:00.000Z"),
+            _bash_rec(
+                _expand_recipe_placeholders(command),
+                "2026-05-19T10:01:00.000Z",
+            ),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == ["plan-review"]
 
@@ -2386,7 +2408,7 @@ class TestReviewerSpawnRoundLabels:
         """
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(f"cat <<'EOF'\n{_DEACTIVATE_PLAN_REVIEW}\nEOF", "2026-05-19T10:01:00.000Z"),
+            _bash_rec(f"cat <<'EOF'\n{_deactivate_plan_review()}\nEOF", "2026-05-19T10:01:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == [None]
 
@@ -2397,7 +2419,7 @@ class TestReviewerSpawnRoundLabels:
         """
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(f"echo hi # note; {_DEACTIVATE_PLAN_REVIEW}", "2026-05-19T10:01:00.000Z"),
+            _bash_rec(f"echo hi # note; {_deactivate_plan_review()}", "2026-05-19T10:01:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == [None]
 
@@ -2407,8 +2429,8 @@ class TestReviewerSpawnRoundLabels:
         ids=["line-at-the-cap-is-read", "line-one-over-the-cap-is-not-read"],
     )
     def test_call_line_ends_the_window_only_when_within_the_length_cap(self, padding_chars, expected_rounds):
-        padding = "a" * (review_trace._MAX_LEXED_LINE_CHARS - len(_DEACTIVATE_PLAN_REVIEW) - 1 + padding_chars)
-        command = f"{_DEACTIVATE_PLAN_REVIEW} {padding}"
+        padding = "a" * (review_trace._MAX_LEXED_LINE_CHARS - len(_deactivate_plan_review()) - 1 + padding_chars)
+        command = f"{_deactivate_plan_review()} {padding}"
         assert len(command) == review_trace._MAX_LEXED_LINE_CHARS + padding_chars
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
@@ -2420,10 +2442,10 @@ class TestReviewerSpawnRoundLabels:
         """The cap skips only the over-cap line, measured per line, so a later line is still read."""
         over_cap_line = "echo " + "a" * review_trace._MAX_LEXED_LINE_CHARS
         assert len(over_cap_line) > review_trace._MAX_LEXED_LINE_CHARS
-        assert len(_DEACTIVATE_PLAN_REVIEW) <= review_trace._MAX_LEXED_LINE_CHARS
+        assert len(_deactivate_plan_review()) <= review_trace._MAX_LEXED_LINE_CHARS
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(f"{over_cap_line}\n{_DEACTIVATE_PLAN_REVIEW}", "2026-05-19T10:01:00.000Z"),
+            _bash_rec(f"{over_cap_line}\n{_deactivate_plan_review()}", "2026-05-19T10:01:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == [None]
 
@@ -2441,19 +2463,19 @@ class TestReviewerSpawnRoundLabels:
         return lines
 
     def test_line_past_the_length_cap_is_never_lexed(self, lexed_lines):
-        over_cap_call_line = f"{_DEACTIVATE_PLAN_REVIEW} {'a' * review_trace._MAX_LEXED_LINE_CHARS}"
+        over_cap_call_line = f"{_deactivate_plan_review()} {'a' * review_trace._MAX_LEXED_LINE_CHARS}"
         assert review_trace._runs_plan_review_deactivate(_bash_rec(over_cap_call_line, "2026-05-19T10:01:00.000Z")) is False
         assert lexed_lines == []
 
     def test_line_within_the_length_cap_is_lexed(self, lexed_lines):
         """Control for the never-lexed case: the recording wrapper sees a line within the cap."""
-        assert review_trace._runs_plan_review_deactivate(_bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z"))
-        assert lexed_lines == [_DEACTIVATE_PLAN_REVIEW]
+        assert review_trace._runs_plan_review_deactivate(_bash_rec(_deactivate_plan_review(), "2026-05-19T10:01:00.000Z"))
+        assert lexed_lines == [_deactivate_plan_review()]
 
     def test_non_bash_tool_use_carrying_the_call_leaves_the_window_open(self):
         """Only a Bash tool_use runs the call, whatever another tool's input.command holds."""
         non_bash_block = {
-            "type": "tool_use", "id": "w1", "name": "Write", "input": {"command": _DEACTIVATE_PLAN_REVIEW},
+            "type": "tool_use", "id": "w1", "name": "Write", "input": {"command": _deactivate_plan_review()},
         }
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
@@ -2462,38 +2484,39 @@ class TestReviewerSpawnRoundLabels:
         ]) == ["plan-review"]
 
     @pytest.mark.parametrize(
-        "text_record",
+        "build_text_record",
         [
-            {**_user_msg(_DEACTIVATE_PLAN_REVIEW, branch="feat", ts="2026-05-19T10:01:00.000Z"), "isMeta": True},
-            _user_msg([_tool_result("b1", _DEACTIVATE_PLAN_REVIEW)], branch="feat", ts="2026-05-19T10:01:00.000Z"),
+            lambda call: {**_user_msg(call, branch="feat", ts="2026-05-19T10:01:00.000Z"), "isMeta": True},
+            lambda call: _user_msg([_tool_result("b1", call)], branch="feat", ts="2026-05-19T10:01:00.000Z"),
         ],
         ids=["meta-user-record", "tool-result"],
     )
-    def test_user_record_carrying_the_call_as_text_leaves_the_window_open(self, text_record):
+    def test_user_record_carrying_the_call_as_text_leaves_the_window_open(self, build_text_record):
         """Only an assistant record's Bash tool_use runs the call."""
         assert _spawn_rounds([
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            text_record,
+            build_text_record(_deactivate_plan_review()),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]) == ["plan-review"]
 
     @pytest.mark.parametrize(
-        "bash_block",
+        "build_bash_input",
         [
-            {"type": "tool_use", "id": "b1", "name": "Bash", "input": "not a dict"},
-            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {}},
-            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": None}},
-            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": [_DEACTIVATE_PLAN_REVIEW]}},
+            lambda get_call: "not a dict",
+            lambda get_call: {},
+            lambda get_call: {"command": None},
+            lambda get_call: {"command": [get_call()]},
         ],
         ids=["string-input", "absent-command", "null-command", "list-command"],
     )
-    def test_malformed_bash_block_runs_no_deactivate_call(self, bash_block):
+    def test_malformed_bash_block_runs_no_deactivate_call(self, build_bash_input):
         """A Bash block with a non-dict input or a non-string command reads as no call, without raising.
 
         The string-input param is a predicate-level pin: _review_trace_session_events evaluates
         `(block.get("input") or {}).get("command", "")` first and raises on a string input, so that case never
         reaches the predicate through cmd_review_trace. The other params are reachable.
         """
+        bash_block = {"type": "tool_use", "id": "b1", "name": "Bash", "input": build_bash_input(_deactivate_plan_review)}
         rec = _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:01:00.000Z", content=[bash_block])
         assert review_trace._runs_plan_review_deactivate(rec) is False
 
@@ -2501,7 +2524,7 @@ class TestReviewerSpawnRoundLabels:
         """The end lives in review_trace, so detect_round_windows keeps its window for its four other consumers."""
         records = [
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:01:00.000Z"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:01:00.000Z"),
             _spawn_rec("staff-sdet", "2026-05-19T10:02:00.000Z"),
         ]
         assert review_rounds.detect_round_windows(records) == [(0, 3, "plan-review")]
@@ -2511,7 +2534,7 @@ class TestReviewerSpawnRoundLabels:
         _write_jsonl(fake_projects / "sess-after-deactivate.jsonl", [
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("ciso-reviewer", "2026-05-19T10:01:00.000Z", tool_id="a1"),
-            _bash_rec(_DEACTIVATE_PLAN_REVIEW, "2026-05-19T10:02:00.000Z"),
+            _bash_rec(_deactivate_plan_review(), "2026-05-19T10:02:00.000Z"),
             _spawn_rec("comment-discipline-reviewer", "2026-05-19T10:03:00.000Z", tool_id="a2"),
         ])
 

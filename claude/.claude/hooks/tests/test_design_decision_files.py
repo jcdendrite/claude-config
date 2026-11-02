@@ -48,8 +48,9 @@ pure-function violations idiom the check needs.
 
 Assertion 8 checks that each name in `_SCOPE_CITED_ANGLE_NAMES` appears in
 comment-discipline-reviewer.md's Scope section and resolves to a
-core-review-angle header. It lives here because it reuses assertion 7's
-angle-header parser.
+core-review-angle header. It also checks the reverse: a core-review-angle
+header the Scope section cites must be in the tuple. It lives here because it
+reuses assertion 7's angle-header parser.
 
 Assertion 9 checks that the committed regression fixture
 claude/.claude/hooks/tests/fixtures/paragraph-readability.json still names a
@@ -685,11 +686,14 @@ def _scope_cited_angle_violations(
     return violations
 
 
-def test_scope_cited_angle_names_resolve_to_angle_headers() -> None:
-    """Guards each angle name in _SCOPE_CITED_ANGLE_NAMES.
-    An angle rename would otherwise leave the Scope section citing a name
-    that no longer exists.
-    The item 12a lockstep test cannot see that, because it parses only
+def test_scope_section_and_scope_cited_angle_names_agree_both_ways() -> None:
+    """Guards the Scope section and _SCOPE_CITED_ANGLE_NAMES against drifting apart.
+    Forward: each tuple name must appear in the Scope text and resolve to a
+    core-review-angle header, so an angle rename cannot leave the Scope
+    section citing a name that no longer exists.
+    Reverse: each core-review-angle header the Scope text cites must be in the
+    tuple, so a newly cited angle cannot go unguarded.
+    The item 12a lockstep test sees neither, because it parses only
     'Core review angles'.
     A name counts as cited when it appears anywhere in the Scope text, in any
     clause."""

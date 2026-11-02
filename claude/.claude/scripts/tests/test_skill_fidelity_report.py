@@ -24,10 +24,7 @@ def _fake_transcript_analysis_source(
     *, skill_invocation_exit: int = 0, review_trace_exit: int = 0,
 ) -> str:
     """Source for a transcript-analysis.py stand-in that dispatches on its
-    first positional argument, printing one fixed stdout line naming the
-    resolved --branches value and exiting with the configured code. The
-    review-trace arm also echoes whether its argv carried
-    --omit-plan-review-spawns."""
+    first positional argument."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import sys
