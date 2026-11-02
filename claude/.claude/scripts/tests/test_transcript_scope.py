@@ -230,6 +230,39 @@ class TestRepoScopedProjectSlugsGuard:
         assert "duration:" in capsys.readouterr().err
 
 
+class TestRepoScopedProjectSlugsContainmentGuard:
+    @pytest.mark.parametrize("cwd", ["/somewhere/else", "/repo-fork/nested", "/"])
+    def test_cwd_outside_worktrees_is_rejected_by_containment_check(self, monkeypatch, capsys, cwd):
+        """The stubbed rev-parse passes the identity check, so only the containment check can reject."""
+        monkeypatch.setattr(os, "getcwd", lambda: cwd)
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            scope._repo_scoped_project_slugs("duration")
+        assert exc_info.value.code == 1
+        assert "not within the resolved repo worktrees" in capsys.readouterr().err
+
+    def test_cwd_under_non_first_worktree_is_accepted_and_returns_all_slugs(self, monkeypatch):
+        """Containment is satisfied by any listed worktree, not only the first."""
+        monkeypatch.setattr(os, "getcwd", lambda: "/other/wt/nested")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo", "/other/wt"), "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/other/wt\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        slugs = scope._repo_scoped_project_slugs("duration")
+        assert slugs == [scope._path_to_project_slug("/repo"), scope._path_to_project_slug("/other/wt")]
+
+
 class TestResolveProjectScope:
     """The scope-dispatch helper behind --projects/--this-repo on the 16
     non-skill-invocation subcommands."""
