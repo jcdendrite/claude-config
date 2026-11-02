@@ -364,8 +364,8 @@ class TestCheckSkillLength:
         )
         assert reason is not None
         assert cr_path in reason
-        assert "551" in reason
-        assert "550" in reason
+        assert "551 lines" in reason
+        assert "limit 550" in reason
 
     def test_plan_review_uses_override(self, isolated_home, tmp_path):
         """plan-review/SKILL.md gets the 500-line cap."""
