@@ -54,34 +54,28 @@ def make_skill_content(n: int, prefix: str = "line") -> str:
     return "\n".join(f"{prefix} {i + 1}" for i in range(n)) + "\n"
 
 
-def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
-    """Git repo with SKILL.md committed at `head_lines` lines."""
+def make_repo_with_skill_at(tmp_path: Path, skill_path: str, head_lines: int) -> Path:
+    """Git repo with a SKILL.md at repo-relative `skill_path` committed at `head_lines` lines."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
-    skill_dir.mkdir(parents=True)
-    (repo / SKILL_PATH).write_text(make_skill_content(head_lines))
-    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    (repo / skill_path).parent.mkdir(parents=True)
+    (repo / skill_path).write_text(make_skill_content(head_lines))
+    subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     return repo
+
+
+def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
+    """Git repo with SKILL.md committed at `head_lines` lines."""
+    return make_repo_with_skill_at(tmp_path, SKILL_PATH, head_lines)
 
 
 def make_repo_with_project_layer_skill(tmp_path: Path, head_lines: int) -> Path:
     """Git repo with a project-layer SKILL.md (.claude/skills/**/SKILL.md) committed at `head_lines` lines."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    skill_dir = repo / ".claude" / "skills" / "my-skill"
-    skill_dir.mkdir(parents=True)
-    (repo / PROJECT_LAYER_SKILL_PATH).write_text(make_skill_content(head_lines))
-    subprocess.run(["git", "add", PROJECT_LAYER_SKILL_PATH], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
+    return make_repo_with_skill_at(tmp_path, PROJECT_LAYER_SKILL_PATH, head_lines)
 
 
 @pytest.fixture
@@ -128,6 +122,28 @@ class TestCheckSkillLength:
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
                 cwd=non_repo,
+            )
+            == "allow"
+        )
+
+    def test_git_absent_from_path_allows(self, isolated_home, skill_repo, tmp_path):
+        """With git unresolvable, REPO_ROOT resolution yields nothing and the
+        gate allows. The same over-limit staged commit denies on the real PATH,
+        so the allow cannot come from a file that was never over the limit."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=skill_repo)
+            == "deny"
+        )
+        farm_dir = tmp_path / "path-without-git"
+        farm_dir.mkdir()
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env={"PATH": build_path_without("git", farm_dir)},
             )
             == "allow"
         )
@@ -366,6 +382,40 @@ class TestCheckSkillLength:
         assert cr_path in reason
         assert "551 lines" in reason
         assert "limit 550" in reason
+
+    @pytest.mark.parametrize(
+        "sibling_path",
+        [
+            "plugins/example-plugin/skills/code-review/SKILL.md",
+            ".claude/skills/code-review-example/SKILL.md",
+            "plugins/example-plugin/skills/plan-review/SKILL.md",
+            "plugins/example-plugin/skills/pr-description/SKILL.md",
+            "claude-skills/skills/code-review-example/SKILL.md",
+            "claude-skills/skills/plan-review-example/SKILL.md",
+            "claude-skills/skills/pr-description-example/SKILL.md",
+            "vendor/claude-skills/skills/code-review/SKILL.md",
+            "vendor/claude-skills/skills/plan-review/SKILL.md",
+            "vendor/claude-skills/skills/pr-description/SKILL.md",
+        ],
+    )
+    def test_override_caps_do_not_apply_to_sibling_paths(
+        self, isolated_home, tmp_path, sibling_path
+    ):
+        """limit_for() matches the override arms by exact repo-root-relative
+        path: a same-named skill under another root, or a skill with a
+        similar name, keeps the 200-line default."""
+        repo = make_repo_with_skill_at(tmp_path, sibling_path, 190)
+        (repo / sibling_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", sibling_path], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_SKILL_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert sibling_path in reason
+        assert "201 lines" in reason
+        assert "limit 200" in reason
 
     def test_plan_review_uses_override(self, isolated_home, tmp_path):
         """plan-review/SKILL.md gets the 500-line cap."""
@@ -958,11 +1008,37 @@ class TestCheckSkillLength:
         capped call is caller-invariant, running identically for both hooks
         before either caller's own logic. The predicate matches on both
         subcommand and operand so it targets only this call, not the
-        earlier, uncapped `rev-parse --show-toplevel` REPO_ROOT-resolution
-        call each hook makes before _lib_staged_length_gate runs."""
+        earlier `rev-parse --show-toplevel` REPO_ROOT-resolution call each
+        hook makes before _lib_staged_length_gate runs, which is also
+        capped."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--is-inside-work-tree" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    # The test below pins the hook's own `git -C "$CWD" rev-parse
+    # --show-toplevel` call in check-skill-length.sh, which runs outside
+    # _lib_staged_length_gate. Each gate hook duplicates that call
+    # (check-claude-md-length.sh has its own), so this pin covers
+    # check-skill-length.sh's copy only.
+    @pytest.mark.timing
+    def test_repo_root_resolution_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
+    ):
+        """`git rev-parse --show-toplevel`'s _lib_capped wrap (the hook's own
+        REPO_ROOT resolution) must engage its 5s cap rather than hang. A
+        capped, empty result leaves REPO_ROOT unset, so the hook allows
+        without reaching the length check."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--show-toplevel" ]')
         with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -1054,6 +1130,35 @@ class TestCheckSkillLength:
             )
         assert reason is not None
         assert "was 0" in reason
+
+    @pytest.mark.parametrize("missing_tool", ["awk", "grep"])
+    def test_missing_awk_or_grep_allows_growing_over_limit_file(
+        self, isolated_home, skill_repo, tmp_path, missing_tool
+    ):
+        """KNOWN-BUG PIN, not a spec: with awk or grep unresolvable, the length
+        check cannot count lines or filter staged paths, so a commit that grows
+        SKILL.md from 190 to 201 lines (limit 200) is silently allowed instead
+        of denied. The same commit denies on the real PATH, so the allow comes
+        from the missing tool. A fix that fails closed shows up as a visible,
+        intentional edit to this assertion rather than a silent behavior
+        flip."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=skill_repo)
+            == "deny"
+        )
+        farm_dir = tmp_path / f"path-without-{missing_tool}"
+        farm_dir.mkdir()
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env={"PATH": build_path_without(missing_tool, farm_dir)},
+            )
+            == "allow"
+        )
 
 
 def _build_clean_merge_growing_skill(tmp_path: Path) -> Path:
