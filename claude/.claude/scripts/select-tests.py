@@ -95,6 +95,7 @@ _REVIEW_BENCH_SCRIPTS_DEPENDENCIES: frozenset[str] = frozenset({
     "claude/.claude/scripts/transcript_analysis/review_rounds.py",
     "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
     "claude/.claude/scripts/transcript_analysis/scope.py",
+    "claude/.claude/scripts/transcript_analysis/session_pricing.py",
 })
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,

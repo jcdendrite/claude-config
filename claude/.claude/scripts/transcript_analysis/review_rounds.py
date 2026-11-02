@@ -9,8 +9,8 @@ shapes: the `Skill` tool_use, the `/slash` tag, and an `Agent`/`Task` spawn of
 an agent type in _ROUND_OPEN_AGENT_SKILLS. It attributes each round's dollars
 recursively, via corpus._index_subagent_dispatches' toolUseId join.
 
-Imports corpus, pricing, redaction, render, and scope by module (attribute
-access, not by name) — see scope.py's own top-of-file comment for why.
+Imports corpus, pricing, redaction, render, scope, and session_pricing by
+module (attribute access, not by name) — see scope.py's own top-of-file comment for why.
 
 This module never imports cost.py. A round's own branch is the opening
 record's own gitBranch, carried forward when absent, then passed through
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import io
 import random
 import re
@@ -35,12 +36,16 @@ from pathlib import Path
 from typing import NamedTuple
 
 from _config_dir import declared_roots_file_is_overridden
-from transcript_analysis import corpus, pricing, redaction, render, scope
+from transcript_analysis import corpus, pricing, redaction, render, scope, session_pricing
 
 # The three review-loop skills a round opens on.
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
 _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
+
+# Stamped into pr-cost ledger review_rounds cells; bump it with any change to which records open a round, where a
+# window ends, which branch a round goes to, or which turns and dispatches it prices.
+REVIEW_ROUND_RULE: int = 1
 
 
 # Captures only the skill name from a /slash invocation's <command-name> tag, never its <command-args>.
@@ -250,13 +255,48 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
     return branches
 
 
+@dataclasses.dataclass
+class _DispatchTally:
+    """Accumulator one top-level spawn's recursive _price_dispatch walk adds into.
+
+    `tokens` is {model: {variant: {class: int}}} over priced turns only. The caller binds it to a
+    round's agent_tokens, or to a throwaway dict when the spawn is outside every round window.
+    """
+    tokens: dict[str, dict[str, dict[str, int]]]
+    dollars: float = 0.0
+    unpriced_turns: int = 0
+    unpriced_tokens: int = 0
+    invalid_usage_records: int = 0
+    dangling: int = 0
+    resolved: int = 0
+
+
+def _turn_model(rec: dict) -> str:
+    """The record's model ID, or "" when it is not a string, so an unhashable value never reaches the rate lookup.
+    Mirrors session_pricing._price_session's normalization."""
+    model = (rec.get("message") or {}).get("model", "")
+    return model if isinstance(model, str) else ""
+
+
+def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
+    """Add one priced turn's per-class token counts to `tokens` under its model and pricing variant."""
+    variants = tokens.setdefault(model, {})
+    variant = pricing._pricing_variant(usage)
+    if variant not in variants:
+        variants[variant] = dict.fromkeys(pricing._TOKEN_CLASSES, 0)
+    group = variants[variant]
+    for token_class, count in pricing._token_counts(usage).items():
+        group[token_class] += count
+
+
 def _price_dispatch(
     tool_use_id: str,
     dispatch_index: dict[str, tuple[Path, str | None]],
     visited: set[str],
-) -> tuple[float, int, int, int]:
-    """Price one subagent dispatch and recurse into every Agent/Task spawn
-    inside its own transcript.
+    tally: _DispatchTally,
+) -> None:
+    """Price one subagent dispatch into `tally` and recurse into every Agent/Task
+    spawn inside its own transcript, passing the same tally.
 
     Recursion reuses the session's own dispatch_index (see
     corpus._index_subagent_dispatches for why one index covers nested
@@ -273,41 +313,50 @@ def _price_dispatch(
     dedup-then-price sequence, so these dollars are derived the same way
     cost's and pr-cost's are.
 
-    Returns (dollars, unpriced_turns, dangling, resolved_dispatches).
-    dangling counts both a dispatch_index lookup miss and an
+    A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid
+    adds to tally.invalid_usage_records and is excluded from dollars, tokens
+    and unpriced counts; its spawn blocks are still followed. That gate has no
+    upper bound, so an integer too large for float arithmetic raises from
+    pricing._price_turn or prices to a non-finite total. A non-string model
+    is priced as unpriced.
+
+    tally.dangling counts both a dispatch_index lookup miss and an
     unreadable/missing sibling .jsonl as one bucket, mirroring subagent-mix's
-    own Dangling column. resolved_dispatches is this dispatch plus every
-    nested one successfully priced — review-round-cost's own "agents"
-    column.
+    own Dangling column. tally.resolved is this dispatch plus every nested one
+    successfully priced — review-round-cost's own "agents" column.
     """
     if tool_use_id in visited:
-        return 0.0, 0, 0, 0
+        return
     visited.add(tool_use_id)
 
     paired = dispatch_index.get(tool_use_id)
     if paired is None:
-        return 0.0, 0, 1, 0
+        tally.dangling += 1
+        return
     jsonl_path, _requested_model = paired
     records = corpus._parse_jsonl_records(jsonl_path)
     if records is None:
-        return 0.0, 0, 1, 0
+        tally.dangling += 1
+        return
     records = pricing.dedup_turns_by_request_id(records)
 
-    dollars = 0.0
-    unpriced_turns = 0
-    dangling = 0
-    resolved = 1
+    tally.resolved += 1
     for rec in records:
         if rec.get("type") != "assistant":
             continue
         usage = (rec.get("message") or {}).get("usage")
         if usage:
-            model = (rec.get("message") or {}).get("model", "")
-            dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
-            if dollars_by_class is None:
-                unpriced_turns += 1
+            if session_pricing._usage_is_invalid(usage):
+                tally.invalid_usage_records += 1
             else:
-                dollars += sum(dollars_by_class.values())
+                model = _turn_model(rec)
+                dollars_by_class, _context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
+                if dollars_by_class is None:
+                    tally.unpriced_turns += 1
+                    tally.unpriced_tokens += unpriced_tokens
+                else:
+                    tally.dollars += sum(dollars_by_class.values())
+                    _add_turn_tokens(tally.tokens, model, usage)
         for block in (rec.get("message") or {}).get("content") or []:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
@@ -316,15 +365,7 @@ def _price_dispatch(
             nested_tool_use_id = block.get("id") or ""
             if not nested_tool_use_id:
                 continue
-            n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(
-                nested_tool_use_id, dispatch_index, visited,
-            )
-            dollars += n_dollars
-            unpriced_turns += n_unpriced
-            dangling += n_dangling
-            resolved += n_resolved
-
-    return dollars, unpriced_turns, dangling, resolved
+            _price_dispatch(nested_tool_use_id, dispatch_index, visited, tally)
 
 
 def compute_review_round_costs(
@@ -335,6 +376,7 @@ def compute_review_round_costs(
     since_ts: float | None = None,
     until_ts: float | None = None,
     resolved_roots: Sequence[Path] | None = None,
+    rounds_only: bool = False,
 ) -> dict:
     """Single pass over session_iter, main-thread only. session_iter must not
     carry merged subagent-file records. A review skill run inside a dispatched
@@ -377,12 +419,29 @@ def compute_review_round_costs(
     activity and a round's own main_dollars/agent_dollars/agents are
     invariant to skill_filter.
 
+    A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid
+    is excluded from dollars, tokens, unpriced counts and branch_totals
+    instead of raising or pricing negative. Inside a round window it adds to
+    that round's invalid_usage_records. Its spawn blocks are still followed.
+    That gate has no upper bound, so an integer too large for float arithmetic
+    raises from pricing._price_turn or prices to a non-finite total. A
+    non-string model is priced as unpriced.
+
+    rounds_only skips a session that opens no round before its branch
+    attribution and dispatch indexing, and drops "branch_totals" from the
+    return so a caller cannot read partial totals. Every returned round is
+    the same as without it, because dispatch_index and visited never cross
+    sessions.
+
     Returns {"rounds": [...], "branch_totals": {(root_idx, branch): dollars}}.
     Each round dict holds branch_key, skill, ts (raw timestamp string or
     None), main_dollars, agent_dollars, agents, unpriced_turns, dangling,
-    and sort_key. sort_key is (opening-timestamp-or-+inf, session path
-    string, opening record index) — the ordering rule sessions written in
-    reverse file-path order need.
+    main_tokens and agent_tokens ({model: {variant: {class: int}}} over
+    priced turns, every token class per group), unpriced_tokens (the token
+    total of unpriced turns, both threads), invalid_usage_records (both
+    threads), and sort_key. sort_key is (opening-timestamp-or-+inf, session
+    path string, opening record index) — the ordering rule sessions written
+    in reverse file-path order need.
     """
     multi_root = bool(resolved_roots) and len(resolved_roots) > 1
     all_rounds: list[dict] = []
@@ -392,6 +451,8 @@ def compute_review_round_costs(
         records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing — see pricing.py
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
         windows = detect_round_windows(records)
+        if rounds_only and not windows:
+            continue
         record_branches = _session_record_branches(records, windows)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         visited: set[str] = set()
@@ -401,7 +462,9 @@ def compute_review_round_costs(
                 "branch_key": (root_idx, record_branches[open_idx]), "skill": skill,
                 "ts": records[open_idx].get("timestamp"),
                 "main_dollars": 0.0, "agent_dollars": 0.0, "agents": 0,
-                "unpriced_turns": 0, "dangling": 0, "open_idx": open_idx,
+                "unpriced_turns": 0, "dangling": 0,
+                "main_tokens": {}, "agent_tokens": {}, "unpriced_tokens": 0, "invalid_usage_records": 0,
+                "open_idx": open_idx,
             }
             for open_idx, _window_end, skill in windows
         ]
@@ -418,16 +481,22 @@ def compute_review_round_costs(
 
             usage = (rec.get("message") or {}).get("usage")
             if usage:
-                model = (rec.get("message") or {}).get("model", "")
-                dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
-                if dollars_by_class is None:
+                if session_pricing._usage_is_invalid(usage):
                     if round_entry is not None:
-                        round_entry["unpriced_turns"] += 1
+                        round_entry["invalid_usage_records"] += 1
                 else:
-                    turn_dollars = sum(dollars_by_class.values())
-                    branch_totals[(root_idx, record_branches[idx])] += turn_dollars
-                    if round_entry is not None:
-                        round_entry["main_dollars"] += turn_dollars
+                    model = _turn_model(rec)
+                    dollars_by_class, _context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
+                    if dollars_by_class is None:
+                        if round_entry is not None:
+                            round_entry["unpriced_turns"] += 1
+                            round_entry["unpriced_tokens"] += unpriced_tokens
+                    else:
+                        turn_dollars = sum(dollars_by_class.values())
+                        branch_totals[(root_idx, record_branches[idx])] += turn_dollars
+                        if round_entry is not None:
+                            round_entry["main_dollars"] += turn_dollars
+                            _add_turn_tokens(round_entry["main_tokens"], model, usage)
 
             for block in (rec.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
@@ -437,15 +506,16 @@ def compute_review_round_costs(
                 tool_use_id = block.get("id") or ""
                 if not tool_use_id:
                     continue
-                dollars, unpriced, dangling, resolved = _price_dispatch(
-                    tool_use_id, dispatch_index, visited,
-                )
-                branch_totals[(root_idx, record_branches[idx])] += dollars
+                tally = _DispatchTally(tokens=round_entry["agent_tokens"] if round_entry is not None else {})
+                _price_dispatch(tool_use_id, dispatch_index, visited, tally)
+                branch_totals[(root_idx, record_branches[idx])] += tally.dollars
                 if round_entry is not None:
-                    round_entry["agent_dollars"] += dollars
-                    round_entry["unpriced_turns"] += unpriced
-                    round_entry["dangling"] += dangling
-                    round_entry["agents"] += resolved
+                    round_entry["agent_dollars"] += tally.dollars
+                    round_entry["unpriced_turns"] += tally.unpriced_turns
+                    round_entry["unpriced_tokens"] += tally.unpriced_tokens
+                    round_entry["invalid_usage_records"] += tally.invalid_usage_records
+                    round_entry["dangling"] += tally.dangling
+                    round_entry["agents"] += tally.resolved
 
         for entry in round_entries:
             open_idx = entry.pop("open_idx")
@@ -466,6 +536,8 @@ def compute_review_round_costs(
             continue
         filtered_rounds.append(entry)
 
+    if rounds_only:
+        return {"rounds": filtered_rounds}
     return {"rounds": filtered_rounds, "branch_totals": dict(branch_totals)}
 
 
@@ -1355,6 +1427,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         "total_agent_dollars": 0.0,
         "total_unpriced_turns": 0,
         "total_dangling": 0,
+        "total_invalid_usage_records": 0,
     })
 
     print()
@@ -1398,6 +1471,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             root_totals["skill_dollar_totals"][e["skill"]] += e["main_dollars"] + e["agent_dollars"]
             root_totals["total_unpriced_turns"] += e["unpriced_turns"]
             root_totals["total_dangling"] += e["dangling"]
+            root_totals["total_invalid_usage_records"] += e["invalid_usage_records"]
         root_totals["total_round_dollars"] += branch_round_dollars
         root_totals["total_branch_dollars"] += branch_dollars
         root_totals["total_agent_dollars"] += sum(e["agent_dollars"] for e in branch_rounds)
@@ -1426,6 +1500,11 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
         print(f"{prefix}Unpriced turns inside round windows: {totals['total_unpriced_turns']}")
+        if totals["total_invalid_usage_records"]:
+            print(
+                f"{prefix}MALFORMED USAGE — {totals['total_invalid_usage_records']:,} usage-bearing turns inside round windows"
+                " had non-numeric or negative token fields and were excluded from this report's dollars"
+            )
 
     if multi_root:
         # One footer block per root, ordered by the same resolved-path-sorted

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import gh_cli, review_cost_by_size, scope
+from transcript_analysis import corpus, gh_cli, review_cost_by_size, review_rounds, scope
 
 from ._pr_cost_helpers import _fake_pr_cost_subprocess_run, _merged_pr
 from .conftest import (
@@ -79,13 +79,16 @@ def _merged_pr_sized(number: int, branch: str, *, additions: int, deletions: int
 
 def _round_entry(
     branch: str, *, main_dollars: float, agent_dollars: float = 0.0, sort_ts: float,
-    unpriced_turns: int = 0, dangling: int = 0,
+    unpriced_turns: int = 0, dangling: int = 0, invalid_usage_records: int = 0,
 ) -> dict:
-    """A round dict as compute_review_round_costs returns it, with only the fields the join reads."""
+    """A round dict as compute_review_round_costs returns it. The join reads only the counts and dollars
+    set here. The token fields stay empty, and TestRoundEntryStubFidelity pins the key set."""
     return {
         "branch_key": (None, branch), "skill": "code-review", "ts": None,
         "main_dollars": main_dollars, "agent_dollars": agent_dollars, "agents": 0,
-        "unpriced_turns": unpriced_turns, "dangling": dangling, "sort_key": (sort_ts, "session.jsonl", 0),
+        "unpriced_turns": unpriced_turns, "dangling": dangling, "invalid_usage_records": invalid_usage_records,
+        "main_tokens": {}, "agent_tokens": {}, "unpriced_tokens": 0,
+        "sort_key": (sort_ts, "session.jsonl", 0),
     }
 
 
@@ -408,7 +411,7 @@ class TestPrintedReport:
     def test_join_diagnostics_print_each_count_under_its_own_label(self, capsys):
         counts = review_cost_by_size._JoinCounts(
             merged_pr_count=11, unmatched_branch_count=22, ambiguous_branch_count=33,
-            unpriced_turns=44, dangling_dispatches=55,
+            unpriced_turns=44, dangling_dispatches=55, invalid_usage_records=1_234,
         )
         review_cost_by_size._print_join_diagnostics(66, counts, 77)
         assert capsys.readouterr().out.splitlines() == [
@@ -420,21 +423,43 @@ class TestPrintedReport:
             "  Ambiguous branches (excluded): 33",
             "  Unpriced turns inside joined rounds: 44",
             "  Dangling dispatches inside joined rounds: 55",
+            "  MALFORMED USAGE — 1,234 usage-bearing turns inside joined rounds had non-numeric or negative"
+            " token fields and were excluded from this report's dollars",
             "  Unreadable sources skipped: 77",
         ]
+
+    def test_join_diagnostics_print_no_malformed_usage_line_when_no_turn_was_excluded(self, capsys):
+        counts = review_cost_by_size._JoinCounts(
+            merged_pr_count=11, unmatched_branch_count=22, ambiguous_branch_count=33,
+            unpriced_turns=44, dangling_dispatches=55, invalid_usage_records=0,
+        )
+        review_cost_by_size._print_join_diagnostics(66, counts, 77)
+        assert "MALFORMED USAGE" not in capsys.readouterr().out
 
 
 class TestJoinRoundsToPrs:
     def test_every_join_outcome(self):
         rounds = [
             # Arrive out of sort_key order: sorted order is the second, third, first.
-            _round_entry("feat-joined", main_dollars=1.0, agent_dollars=0.5, sort_ts=3.0, unpriced_turns=1, dangling=0),
-            _round_entry("feat-joined", main_dollars=2.0, agent_dollars=0.25, sort_ts=1.0, unpriced_turns=2, dangling=1),
-            _round_entry("feat-joined", main_dollars=4.0, agent_dollars=0.0, sort_ts=2.0, unpriced_turns=0, dangling=3),
-            _round_entry("feat-unmerged", main_dollars=9.0, sort_ts=1.0, unpriced_turns=5, dangling=7),
-            _round_entry("feat-reused", main_dollars=1.0, sort_ts=1.0, unpriced_turns=11, dangling=13),
-            _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=17, dangling=19),
-            _round_entry("worktree-agent-abc", main_dollars=1.0, sort_ts=1.0, unpriced_turns=23, dangling=29),
+            _round_entry(
+                "feat-joined", main_dollars=1.0, agent_dollars=0.5, sort_ts=3.0,
+                unpriced_turns=1, dangling=0, invalid_usage_records=31,
+            ),
+            _round_entry(
+                "feat-joined", main_dollars=2.0, agent_dollars=0.25, sort_ts=1.0,
+                unpriced_turns=2, dangling=1, invalid_usage_records=37,
+            ),
+            _round_entry(
+                "feat-joined", main_dollars=4.0, agent_dollars=0.0, sort_ts=2.0,
+                unpriced_turns=0, dangling=3, invalid_usage_records=41,
+            ),
+            _round_entry("feat-unmerged", main_dollars=9.0, sort_ts=1.0, unpriced_turns=5, dangling=7, invalid_usage_records=43),
+            _round_entry("feat-reused", main_dollars=1.0, sort_ts=1.0, unpriced_turns=11, dangling=13, invalid_usage_records=47),
+            _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=17, dangling=19, invalid_usage_records=53),
+            _round_entry(
+                "worktree-agent-abc", main_dollars=1.0, sort_ts=1.0,
+                unpriced_turns=23, dangling=29, invalid_usage_records=59,
+            ),
         ]
         merged_prs = [
             _merged_pr_sized(101, "feat-joined", additions=100, deletions=49),
@@ -462,20 +487,29 @@ class TestJoinRoundsToPrs:
             ambiguous_branch_count=1,  # feat-reused
             unpriced_turns=3,
             dangling_dispatches=4,
+            invalid_usage_records=109,  # 31 + 37 + 41, joined rounds only
         )
 
     def test_a_multi_round_unmatched_or_ambiguous_branch_counts_once_and_adds_no_unpriced_or_dangling(self):
         rounds = [
-            _round_entry("feat-joined", main_dollars=1.0, sort_ts=1.0, unpriced_turns=1, dangling=2),
-            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=1.0, unpriced_turns=5, dangling=13),
-            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=17),
-            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=3.0, unpriced_turns=11, dangling=19),
-            _round_entry("feat-reused", main_dollars=1.0, sort_ts=1.0, unpriced_turns=23, dangling=31),
-            _round_entry("feat-reused", main_dollars=1.0, sort_ts=2.0, unpriced_turns=29, dangling=37),
-            _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=41, dangling=43),
-            _round_entry("main", main_dollars=1.0, sort_ts=2.0, unpriced_turns=47, dangling=53),
-            _round_entry("worktree-agent-abc", main_dollars=1.0, sort_ts=1.0, unpriced_turns=59, dangling=61),
-            _round_entry("worktree-agent-abc", main_dollars=1.0, sort_ts=2.0, unpriced_turns=67, dangling=71),
+            _round_entry("feat-joined", main_dollars=1.0, sort_ts=1.0, unpriced_turns=1, dangling=2, invalid_usage_records=73),
+            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=1.0, unpriced_turns=5, dangling=13, invalid_usage_records=79),
+            _round_entry("feat-unmerged", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=17, invalid_usage_records=83),
+            _round_entry(
+                "feat-unmerged", main_dollars=1.0, sort_ts=3.0, unpriced_turns=11, dangling=19, invalid_usage_records=89,
+            ),
+            _round_entry("feat-reused", main_dollars=1.0, sort_ts=1.0, unpriced_turns=23, dangling=31, invalid_usage_records=97),
+            _round_entry("feat-reused", main_dollars=1.0, sort_ts=2.0, unpriced_turns=29, dangling=37, invalid_usage_records=101),
+            _round_entry("main", main_dollars=1.0, sort_ts=1.0, unpriced_turns=41, dangling=43, invalid_usage_records=103),
+            _round_entry("main", main_dollars=1.0, sort_ts=2.0, unpriced_turns=47, dangling=53, invalid_usage_records=107),
+            _round_entry(
+                "worktree-agent-abc", main_dollars=1.0, sort_ts=1.0,
+                unpriced_turns=59, dangling=61, invalid_usage_records=109,
+            ),
+            _round_entry(
+                "worktree-agent-abc", main_dollars=1.0, sort_ts=2.0,
+                unpriced_turns=67, dangling=71, invalid_usage_records=113,
+            ),
         ]
         merged_prs = [
             _merged_pr_sized(101, "feat-joined", additions=1, deletions=1),
@@ -491,6 +525,7 @@ class TestJoinRoundsToPrs:
             ambiguous_branch_count=1,
             unpriced_turns=1,
             dangling_dispatches=2,
+            invalid_usage_records=73,
         )
 
     def test_a_branch_joins_only_the_pr_whose_head_name_equals_it_exactly(self):
@@ -532,9 +567,9 @@ class TestJoinRoundsToPrs:
         """A round with no attributable gitBranch carries the empty string, so rounds from separate sessions
         share one unmatched branch."""
         rounds = [
-            _round_entry("", main_dollars=1.0, sort_ts=1.0, unpriced_turns=3, dangling=5),
-            _round_entry("", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=11),
-            _round_entry("", main_dollars=1.0, sort_ts=3.0, unpriced_turns=13, dangling=17),
+            _round_entry("", main_dollars=1.0, sort_ts=1.0, unpriced_turns=3, dangling=5, invalid_usage_records=19),
+            _round_entry("", main_dollars=1.0, sort_ts=2.0, unpriced_turns=7, dangling=11, invalid_usage_records=23),
+            _round_entry("", main_dollars=1.0, sort_ts=3.0, unpriced_turns=13, dangling=17, invalid_usage_records=29),
         ]
         records, counts = review_cost_by_size._join_rounds_to_prs(
             rounds, [_merged_pr_sized(101, "feat-other", additions=1, deletions=1)],
@@ -542,7 +577,7 @@ class TestJoinRoundsToPrs:
         assert records == []
         assert counts == review_cost_by_size._JoinCounts(
             merged_pr_count=1, unmatched_branch_count=1, ambiguous_branch_count=0, unpriced_turns=0,
-            dangling_dispatches=0,
+            dangling_dispatches=0, invalid_usage_records=0,
         )
 
     @pytest.mark.parametrize("missing_field", ["additions", "deletions", "number", "headRefName"])
@@ -553,6 +588,17 @@ class TestJoinRoundsToPrs:
             review_cost_by_size._join_rounds_to_prs(
                 [_round_entry("feat-joined", main_dollars=1.0, sort_ts=1.0)], [merged_pr],
             )
+
+
+class TestRoundEntryStubFidelity:
+    def test_round_entry_key_set_equals_a_real_rounds_key_set(self, fake_projects):
+        """The join's tests build rounds with _round_entry, so a key a real round gains or loses must
+        change the stub too."""
+        _write_code_review_session(fake_projects / "sess-1.jsonl", "feat", 1)
+        data = review_rounds.compute_review_round_costs(corpus.iter_sessions(fake_projects.parent, "*"))
+
+        assert len(data["rounds"]) == 1
+        assert set(_round_entry("feat", main_dollars=1.0, sort_ts=1.0)) == set(data["rounds"][0])
 
 
 class TestScanCodeReviewRounds:

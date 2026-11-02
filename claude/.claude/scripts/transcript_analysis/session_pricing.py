@@ -139,6 +139,17 @@ def _validate_usage_token_fields(usage: object) -> None:
     _require_token_counts(cache_creation, _CACHE_CREATION_TOKEN_KEYS, "cache_creation.")
 
 
+def _usage_is_invalid(usage: object) -> bool:
+    """True when usage's token fields fail _validate_usage_token_fields -- the caller must
+    skip this turn instead of handing an untrusted negative or non-numeric field to pricing._price_turn's
+    arithmetic."""
+    try:
+        _validate_usage_token_fields(usage)
+    except ValueError:
+        return True
+    return False
+
+
 def _exact_dollars(amount: float) -> Fraction:
     return Fraction(repr(amount))
 

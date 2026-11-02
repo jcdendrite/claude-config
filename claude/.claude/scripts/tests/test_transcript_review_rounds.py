@@ -14,6 +14,19 @@ import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
 from transcript_analysis import corpus, pricing, render, review_rounds, scope, subagent_mix
 
+from ._review_round_corpus_helpers import (
+    _LEAK_SENTINEL_PREFIX,
+    _NON_STRING_TIMESTAMP_RECORD,
+    _ORCHESTRATOR_AGENT_TYPE,
+    _as_sidechain,
+    _malformed_usage_turn,
+    _orchestrator_return_record,
+    _orchestrator_spawn_record,
+    _priced_with_classes,
+    _token_classes,
+    _write_orchestrator_free_text_corpus,
+    _write_orchestrator_subagent_tree,
+)
 from .conftest import (
     _agent_use,
     _priced,
@@ -89,91 +102,6 @@ def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     roots_file.write_text(f"{acct_b}\n")
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
     return [acct_a / "projects", acct_b / "projects"]
-
-
-_ORCHESTRATOR_AGENT_TYPE = "review-orchestrator"
-
-# Plain-ASCII prefix on every free-text value a review-orchestrator dispatch
-# carries that no round-consuming subcommand extracts. A prefix that appears in
-# any output means a subcommand surfaced a field it must not.
-_LEAK_SENTINEL_PREFIX = "LEAKSENTINEL-"
-
-
-def _leak_sentinel(field_name: str) -> str:
-    return f"{_LEAK_SENTINEL_PREFIX}{field_name}"
-
-
-def _dispatch_block_with_free_text(tool_use_id: str, subagent_type: str, *, tool_name: str = "Agent") -> dict:
-    """An Agent/Task tool_use block whose every input key except
-    subagent_type carries a sentinel."""
-    block = _agent_use(tool_use_id, subagent_type, tool_name=tool_name)
-    block["input"].update({
-        "description": _leak_sentinel(f"{tool_use_id}-description"),
-        "prompt": _leak_sentinel(f"{tool_use_id}-prompt"),
-        "name": _leak_sentinel(f"{tool_use_id}-name"),
-    })
-    return block
-
-
-def _orchestrator_spawn_record(
-    tool_use_id: str, *, ts: str, branch: str = "feat", tool_name: str = "Agent", extra_blocks: tuple = (),
-) -> dict:
-    """A main-thread priced assistant record ($0.20) that dispatches a
-    review-orchestrator."""
-    return _priced(
-        "claude-sonnet-5", input=100_000, branch=branch, ts=ts,
-        content=[
-            *extra_blocks,
-            {"type": "text", "text": _leak_sentinel(f"{tool_use_id}-assistant-text")},
-            _dispatch_block_with_free_text(tool_use_id, _ORCHESTRATOR_AGENT_TYPE, tool_name=tool_name),
-        ],
-    )
-
-
-def _orchestrator_return_record(tool_use_id: str, *, ts: str, branch: str = "feat") -> dict:
-    return _user_msg(
-        [_tool_result(tool_use_id, _leak_sentinel(f"{tool_use_id}-result"))], branch=branch, ts=ts,
-    )
-
-
-def _as_sidechain(record: dict) -> dict:
-    record["isSidechain"] = True
-    return record
-
-
-def _write_orchestrator_subagent_tree(
-    proj: Path, session_id: str, *, orchestrator_tool_use_id: str = "o1", branch: str = "feat",
-) -> None:
-    """The orchestrator's own transcript ($0.20: its Skill call plus a nested
-    reviewer dispatch) and that reviewer's depth-2 transcript ($1.00), both in
-    the session's flat subagents/ directory with isSidechain on every record."""
-    orchestrator_records = [
-        _as_sidechain(_priced(
-            "claude-sonnet-5", input=100_000, branch=branch, ts="2026-08-01T10:00:10.000Z",
-            content=[
-                {"type": "text", "text": _leak_sentinel("orchestrator-text")},
-                {
-                    "type": "tool_use", "id": "inner-skill", "name": "Skill",
-                    "input": {"skill": "code-review", "args": _leak_sentinel("skill-args")},
-                },
-                _dispatch_block_with_free_text("n1", "staff-sdet"),
-            ],
-        )),
-    ]
-    reviewer_records = [
-        _as_sidechain(_priced(
-            "claude-sonnet-5", input=500_000, branch=branch, ts="2026-08-01T10:00:20.000Z",
-            content=[{"type": "text", "text": _leak_sentinel("reviewer-text")}],
-        )),
-    ]
-    _write_subagent_dispatch(
-        proj, session_id, "agent-o", orchestrator_tool_use_id, orchestrator_records,
-        agent_type=_ORCHESTRATOR_AGENT_TYPE, description=_leak_sentinel("orchestrator-meta-description"),
-    )
-    _write_subagent_dispatch(
-        proj, session_id, "agent-n", "n1", reviewer_records,
-        agent_type="staff-sdet", description=_leak_sentinel("reviewer-meta-description"), spawn_depth=2,
-    )
 
 
 class TestComputeReviewRoundCosts:
@@ -1034,6 +962,78 @@ def _corpus_orchestrator_dispatch(fake_projects) -> None:
     _write_orchestrator_subagent_tree(fake_projects, session_id)
 
 
+def _corpus_prefix_default_branch(fake_projects) -> None:
+    """A round opened on the default branch before the session enters feat-x, so the round is keyed to feat-x."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(  # round open on the default branch, before the session enters feat-x: $0.20
+            "claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _priced("claude-sonnet-5", input=200_000, branch="feat-x", ts="2026-08-01T10:02:00.000Z"),  # $0.40, in window
+        _user_msg("thanks", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),  # closes the window
+    ])
+
+
+def _corpus_ready_for_review(fake_projects) -> None:
+    """A `Skill`-shape ready-for-review round closed by a fresh user prompt."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "ready-for-review")],
+        ),
+        _user_msg("done", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
+def _corpus_token_and_variant_mix(fake_projects) -> None:
+    """One round holding every counted shape: two priced models across the main thread and a dispatch, a
+    fast-variant turn, an unpriced-model turn on each thread, a malformed-usage turn, a dangling dispatch and a
+    duplicate-requestId pair inside the dispatch."""
+    malformed_main_turn = _malformed_usage_turn({"input_tokens": -1}, ts="2026-08-01T10:03:00.000Z")
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced_with_classes(
+            "claude-sonnet-5", 10, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[
+                _skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet"), _agent_use("a-missing", "staff-sdet"),
+            ],
+        ),
+        _priced_with_classes("claude-sonnet-5", 20, speed="fast", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        _priced("claude-test-unpriced", input=777, branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        malformed_main_turn,
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    _write_subagent_dispatch(
+        fake_projects, "sess-1", "agent-1", "a1",
+        [
+            _priced_with_classes(
+                "claude-opus-5", 30, request_id="req-dup", branch="feat", ts="2026-08-01T10:00:10.000Z",
+            ),
+            _priced_with_classes(
+                "claude-opus-5", 30, request_id="req-dup", branch="feat", ts="2026-08-01T10:00:10.000Z",
+            ),
+            _priced("claude-test-unpriced", input=100, branch="feat", ts="2026-08-01T10:00:20.000Z"),
+        ],
+    )
+
+
+def _corpus_adjacent_assistant_opened_rounds(fake_projects) -> None:
+    """Two rounds opened by assistant records back to back (Skill then Skill), each holding its own priced turn
+    with distinct token counts; the second opener closes the first window."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced_with_classes(
+            "claude-sonnet-5", 10, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _priced_with_classes("claude-sonnet-5", 20, branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        _priced_with_classes(
+            "claude-sonnet-5", 30, branch="feat", ts="2026-08-01T10:02:00.000Z",
+            content=[_skill_block("s2", "plan-review")],
+        ),
+        _priced_with_classes("claude-sonnet-5", 40, branch="feat", ts="2026-08-01T10:03:00.000Z"),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:04:00.000Z"),
+    ])
+
+
 # Every distinct round shape TestComputeReviewRoundCosts already exercises
 # elsewhere in this file, reused for the bidirectional agreement guard below
 # rather than one new hand-picked corpus.
@@ -1045,6 +1045,10 @@ _ROUND_SHAPE_CORPUS_BUILDERS = [
     pytest.param(_corpus_branch_carry_forward_mid_window, id="branch_carry_forward_mid_window"),
     pytest.param(_corpus_non_round_dollar_interleaving, id="non_round_dollar_interleaving"),
     pytest.param(_corpus_orchestrator_dispatch, id="orchestrator_dispatch"),
+    pytest.param(_corpus_prefix_default_branch, id="prefix_default_branch"),
+    pytest.param(_corpus_ready_for_review, id="ready_for_review"),
+    pytest.param(_corpus_token_and_variant_mix, id="token_and_variant_mix"),
+    pytest.param(_corpus_adjacent_assistant_opened_rounds, id="adjacent_assistant_opened_rounds"),
 ]
 
 
@@ -1053,14 +1057,7 @@ class TestPreBranchRoundAttribution:
     branch it enters, for round keys, round counts and branch totals alike."""
 
     def _write_prefix_round_session(self, fake_projects) -> None:
-        _write_jsonl(fake_projects / "sess-1.jsonl", [
-            _priced(  # round open on the default branch, before the session enters feat-x: $0.20
-                "claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
-            ),
-            _priced("claude-sonnet-5", input=200_000, branch="feat-x", ts="2026-08-01T10:02:00.000Z"),  # $0.40, in window
-            _user_msg("thanks", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),  # closes the window
-        ])
+        _corpus_prefix_default_branch(fake_projects)
 
     def test_prefix_round_is_keyed_to_the_entered_branch_and_its_window_stays_there(self, fake_projects):
         self._write_prefix_round_session(fake_projects)
@@ -1188,6 +1185,626 @@ class TestReviewRoundCountsAgreesWithComputeReviewRoundCosts:
         costs_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         expected = Counter(r["skill"] for r in costs_data["rounds"])
         assert counts == {skill: expected.get(skill, 0) for skill in review_rounds.REVIEW_SKILLS}
+
+
+class TestRoundTokensAndMalformedUsage:
+    """compute_review_round_costs: per-round token splits, unpriced-token totals, and the malformed-usage
+    skip-and-count at both pricing sites."""
+
+    def test_tokens_split_by_thread_model_variant_and_class_including_a_nested_dispatch(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced_with_classes(
+                "claude-sonnet-5", 100, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _priced_with_classes("claude-sonnet-5", 200, speed="fast", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_with_classes(
+                "claude-opus-5", 300, branch="feat", ts="2026-08-01T10:00:10.000Z",
+                content=[_agent_use("n1", "staff-sdet")],
+            )],
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "n1",
+            [_priced_with_classes(
+                "claude-haiku-4-5-20251001", 400, inference_geo="us", branch="feat", ts="2026-08-01T10:00:20.000Z",
+            )],
+            spawn_depth=2,
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["main_tokens"] == {
+            "claude-sonnet-5": {"standard": _token_classes(100), "fast": _token_classes(200)},
+        }
+        assert round_entry["agent_tokens"] == {
+            "claude-opus-5": {"standard": _token_classes(300)},
+            "claude-haiku-4-5-20251001": {"us_geo": _token_classes(400)},
+        }
+
+    @pytest.mark.parametrize(("speed", "inference_geo", "variant"), [
+        (None, None, "standard"),
+        ("fast", None, "fast"),
+        (None, "us", "us_geo"),
+        ("fast", "us", "fast_us_geo"),
+    ])
+    def test_each_speed_and_geo_combination_files_main_and_dispatch_tokens_under_its_variant(
+        self, fake_projects, speed, inference_geo, variant,
+    ):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced_with_classes(
+                "claude-sonnet-5", 100, speed=speed, inference_geo=inference_geo, branch="feat",
+                ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [_priced_with_classes(
+                "claude-opus-5", 300, speed=speed, inference_geo=inference_geo, branch="feat",
+                ts="2026-08-01T10:00:10.000Z",
+            )],
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["main_tokens"] == {"claude-sonnet-5": {variant: _token_classes(100)}}
+        assert round_entry["agent_tokens"] == {"claude-opus-5": {variant: _token_classes(300)}}
+
+    def test_a_dispatch_outside_every_window_prices_only_its_valid_turn_into_branch_totals_and_no_round(
+        self, fake_projects,
+    ):
+        malformed_main_turn_outside_window = _malformed_usage_turn(
+            {"input_tokens": "abc"}, ts="2026-08-01T11:00:00.000Z",
+        )
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(  # outside every window: $0.20, spawns a1
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T09:00:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _priced(  # opens the only round: $0.20
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),  # closes the window
+            malformed_main_turn_outside_window,
+        ])
+        malformed_dispatch_turn = _malformed_usage_turn({"output_tokens": -7}, ts="2026-08-01T09:00:20.000Z")
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [
+                _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T09:00:10.000Z"),  # $1.00
+                malformed_dispatch_turn,
+            ],
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["agents"] == 0
+        assert round_entry["agent_dollars"] == 0.0
+        assert round_entry["agent_tokens"] == {}
+        assert round_entry["invalid_usage_records"] == 0
+        assert data["branch_totals"] == {(None, "feat"): pytest.approx(0.20 + 0.20 + 1.00)}
+
+    def test_unpriced_main_and_dispatch_turns_add_their_token_totals_to_unpriced_tokens(self, fake_projects):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _priced("claude-test-unpriced", input=777, output=3, branch="feat", ts="2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [_priced("claude-test-unpriced", input=111, cache_read=5, branch="feat", ts="2026-08-01T10:00:10.000Z")],
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["unpriced_turns"] == 2
+        assert round_entry["unpriced_tokens"] == (777 + 3) + (111 + 5)
+        assert round_entry["agent_tokens"] == {}
+        assert round_entry["main_tokens"] == {"claude-sonnet-5": {"standard": {
+            "input": 100_000, "output": 0, "cache_read": 0, "cache_write_1h": 0, "cache_write_5m": 0,
+        }}}
+
+    def test_malformed_main_and_dispatch_usage_are_counted_and_excluded_and_the_spawn_block_is_still_priced(
+        self, fake_projects,
+    ):
+        malformed_main_spawner = _malformed_usage_turn(
+            {"input_tokens": "abc", "output_tokens": 5}, ts="2026-08-01T10:01:00.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        )
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(  # opens the round: $0.20
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            malformed_main_spawner,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        malformed_dispatch_turn = _malformed_usage_turn({"input_tokens": -5}, ts="2026-08-01T10:01:20.000Z")
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [
+                _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:01:10.000Z"),  # $1.00
+                malformed_dispatch_turn,
+            ],
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["invalid_usage_records"] == 2
+        assert round_entry["main_dollars"] == pytest.approx(0.20)
+        assert round_entry["agent_dollars"] == pytest.approx(1.00)
+        assert round_entry["agents"] == 1
+        assert round_entry["unpriced_turns"] == 0
+        assert round_entry["unpriced_tokens"] == 0
+        assert round_entry["main_tokens"] == {"claude-sonnet-5": {"standard": {
+            "input": 100_000, "output": 0, "cache_read": 0, "cache_write_1h": 0, "cache_write_5m": 0,
+        }}}
+        assert round_entry["agent_tokens"] == {"claude-sonnet-5": {"standard": {
+            "input": 500_000, "output": 0, "cache_read": 0, "cache_write_1h": 0, "cache_write_5m": 0,
+        }}}
+        assert data["branch_totals"] == {(None, "feat"): pytest.approx(1.20)}
+
+    @pytest.mark.parametrize("malformed_usage", [
+        {"input_tokens": "abc"},
+        {"output_tokens": -1},
+        {"input_tokens": 1.5},
+        "not-an-object",
+    ], ids=["non_numeric_string", "negative", "float", "non_object"])
+    def test_each_malformed_usage_shape_in_a_window_raises_nothing_and_counts_once(
+        self, fake_projects, malformed_usage,
+    ):
+        malformed_turn = _malformed_usage_turn(malformed_usage, ts="2026-08-01T10:01:00.000Z")
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            malformed_turn,
+        ])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["invalid_usage_records"] == 1
+        assert round_entry["main_dollars"] == pytest.approx(0.20)
+
+    @staticmethod
+    def _write_same_request_id_run_of_malformed_usage(session_path: Path, malformed_usage) -> None:
+        """A priced round opener, then three contiguous records of one API call sharing one malformed usage."""
+        _write_jsonl(session_path, [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            *[
+                _malformed_usage_turn(
+                    malformed_usage, ts=f"2026-08-01T10:01:0{block_index}.000Z", request_id="req-split",
+                )
+                for block_index in range(3)
+            ],
+        ])
+
+    def test_a_same_request_id_run_of_malformed_usage_records_counts_one_turn_and_prices_nothing(self, fake_projects):
+        self._write_same_request_id_run_of_malformed_usage(fake_projects / "sess-1.jsonl", {"input_tokens": "abc"})
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["invalid_usage_records"] == 1
+        assert round_entry["main_dollars"] == pytest.approx(0.20)
+        assert round_entry["unpriced_turns"] == 0
+        assert round_entry["unpriced_tokens"] == 0
+
+    def test_a_truthy_non_dict_usage_inside_a_same_request_id_run_raises_attribute_error_in_dedup(self, fake_projects):
+        self._write_same_request_id_run_of_malformed_usage(fake_projects / "sess-1.jsonl", "not-an-object")
+
+        # Pins the current decode contract for out-of-format records; a change to that policy re-baselines this case.
+        with pytest.raises(AttributeError):
+            review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+    @pytest.mark.parametrize("non_string_model", [["claude-sonnet-5"], {"name": "claude-sonnet-5"}], ids=["list", "dict"])
+    def test_a_non_string_model_on_a_main_thread_and_a_dispatch_turn_is_priced_as_unpriced_not_a_crash(
+        self, fake_projects, non_string_model,
+    ):
+        main_turn_with_non_string_model = _priced(
+            "claude-sonnet-5", input=1_000, branch="feat", ts="2026-08-01T10:01:00.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        )
+        main_turn_with_non_string_model["message"]["model"] = non_string_model
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(  # opens the round: $0.20
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            main_turn_with_non_string_model,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        dispatch_turn_with_non_string_model = _priced(
+            "claude-sonnet-5", input=500, branch="feat", ts="2026-08-01T10:01:10.000Z",
+        )
+        dispatch_turn_with_non_string_model["message"]["model"] = non_string_model
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [
+                _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:01:05.000Z"),  # $1.00
+                dispatch_turn_with_non_string_model,
+            ],
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["unpriced_turns"] == 2
+        assert round_entry["unpriced_tokens"] == 1_000 + 500
+        assert round_entry["invalid_usage_records"] == 0
+        assert round_entry["main_dollars"] == pytest.approx(0.20)
+        assert round_entry["agent_dollars"] == pytest.approx(1.00)
+        assert data["branch_totals"] == {(None, "feat"): pytest.approx(1.20)}
+
+    def test_a_malformed_dispatch_turn_that_also_spawns_a_nested_dispatch_still_prices_the_nested_one(
+        self, fake_projects,
+    ):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-1", "a1",
+            [
+                _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z"),  # $1.00
+                _malformed_usage_turn(
+                    {"input_tokens": -5}, ts="2026-08-01T10:00:20.000Z", content=[_agent_use("n1", "staff-sdet")],
+                ),
+            ],
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", "agent-2", "n1",
+            [_priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $0.40
+            spawn_depth=2,
+        )
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["invalid_usage_records"] == 1
+        assert round_entry["agents"] == 2
+        assert round_entry["agent_dollars"] == pytest.approx(1.40)
+        assert round_entry["agent_tokens"] == {"claude-sonnet-5": {"standard": {
+            "input": 700_000, "output": 0, "cache_read": 0, "cache_write_1h": 0, "cache_write_5m": 0,
+        }}}
+        assert data["branch_totals"] == {(None, "feat"): pytest.approx(0.20 + 1.40)}
+
+
+def _standard_input(model: str, input_tokens: int) -> dict:
+    return {model: {"standard": {"input": input_tokens}}}
+
+
+def _golden_round(
+    skill: str, *, branch: str = "feat", agents: int = 0, dangling: int = 0, unpriced_turns: int = 0,
+    unpriced_tokens: int = 0, invalid_usage_records: int = 0, main_tokens: dict | None = None,
+    agent_tokens: dict | None = None,
+) -> dict:
+    """One recorded round projection."""
+    return {
+        "skill": skill, "branch": branch, "agents": agents, "dangling": dangling, "unpriced_turns": unpriced_turns,
+        "unpriced_tokens": unpriced_tokens, "invalid_usage_records": invalid_usage_records,
+        "main_tokens": main_tokens or {}, "agent_tokens": agent_tokens or {},
+    }
+
+
+class TestGoldenRoundProjections:
+    """compute_review_round_costs' rate-independent output for every round shape, pinned per REVIEW_ROUND_RULE.
+    A tripwire for a behavior change in round detection, branch attribution or pricing that forgot to bump the
+    rule: it does not stop an in-place rewrite of a recorded projection."""
+
+    # Append-only: never change a recorded projection; a behavior change records new projections under a new rule
+    # and bumps REVIEW_ROUND_RULE.
+    _GOLDEN_ROUND_PROJECTIONS_BY_RULE: dict[int, dict[str, list]] = {
+        1: {
+            "multi_window_skill_then_slash": [
+                _golden_round("code-review", main_tokens=_standard_input("claude-sonnet-5", 100_000)),
+                _golden_round("plan-review", main_tokens=_standard_input("claude-sonnet-5", 100_000)),
+            ],
+            "nested_dispatch": [
+                _golden_round(
+                    "code-review", agents=2, main_tokens=_standard_input("claude-sonnet-5", 100_000),
+                    agent_tokens=_standard_input("claude-sonnet-5", 600_000),
+                ),
+            ],
+            "slash_path_open": [_golden_round("code-review")],
+            "dedup_affecting_requestid_run": [
+                _golden_round("code-review", main_tokens=_standard_input("claude-sonnet-5", 50_000)),
+            ],
+            "branch_carry_forward_mid_window": [
+                _golden_round(
+                    "code-review", branch="feat-a", agents=1, main_tokens=_standard_input("claude-sonnet-5", 300_000),
+                    agent_tokens=_standard_input("claude-sonnet-5", 500_000),
+                ),
+            ],
+            "non_round_dollar_interleaving": [
+                _golden_round(
+                    "code-review", agents=1, main_tokens=_standard_input("claude-sonnet-5", 100_000),
+                    agent_tokens=_standard_input("claude-sonnet-5", 500_000),
+                ),
+            ],
+            "orchestrator_dispatch": [
+                _golden_round(
+                    "code-review", agents=2, main_tokens=_standard_input("claude-sonnet-5", 100_000),
+                    agent_tokens=_standard_input("claude-sonnet-5", 600_000),
+                ),
+            ],
+            "prefix_default_branch": [
+                _golden_round(
+                    "code-review", branch="feat-x", main_tokens=_standard_input("claude-sonnet-5", 300_000),
+                ),
+            ],
+            "ready_for_review": [
+                _golden_round("ready-for-review", main_tokens=_standard_input("claude-sonnet-5", 100_000)),
+            ],
+            "token_and_variant_mix": [
+                _golden_round(
+                    "code-review", agents=1, dangling=1, unpriced_turns=2, unpriced_tokens=877, invalid_usage_records=1,
+                    main_tokens={"claude-sonnet-5": {"standard": _token_classes(10), "fast": _token_classes(20)}},
+                    agent_tokens={"claude-opus-5": {"standard": _token_classes(30)}},
+                ),
+            ],
+            "adjacent_assistant_opened_rounds": [
+                # Each round holds two turns: classes (11..15) + (21..25), then (31..35) + (41..45).
+                _golden_round("code-review", main_tokens={"claude-sonnet-5": {"standard": {
+                    "input": 32, "output": 34, "cache_read": 36, "cache_write_1h": 38, "cache_write_5m": 40,
+                }}}),
+                _golden_round("plan-review", main_tokens={"claude-sonnet-5": {"standard": {
+                    "input": 72, "output": 74, "cache_read": 76, "cache_write_1h": 78, "cache_write_5m": 80,
+                }}}),
+            ],
+        },
+    }
+
+    @staticmethod
+    def _nonzero_token_classes(tokens: dict) -> dict:
+        return {
+            model: {
+                variant: {token_class: count for token_class, count in classes.items() if count}
+                for variant, classes in variants.items()
+            }
+            for model, variants in tokens.items()
+        }
+
+    def _project(self, rounds: list[dict]) -> list[dict]:
+        return [
+            {
+                "skill": round_entry["skill"],
+                "branch": round_entry["branch_key"][1],
+                "agents": round_entry["agents"],
+                "dangling": round_entry["dangling"],
+                "unpriced_turns": round_entry["unpriced_turns"],
+                "unpriced_tokens": round_entry["unpriced_tokens"],
+                "invalid_usage_records": round_entry["invalid_usage_records"],
+                "main_tokens": self._nonzero_token_classes(round_entry["main_tokens"]),
+                "agent_tokens": self._nonzero_token_classes(round_entry["agent_tokens"]),
+            }
+            for round_entry in sorted(rounds, key=lambda entry: entry["sort_key"])
+        ]
+
+    # Hand-written, so a regenerated projection cannot pass on a corpus that collapsed to fewer rounds.
+    _EXPECTED_SKILLS_BY_SHAPE: dict[str, list[str]] = {
+        "multi_window_skill_then_slash": ["code-review", "plan-review"],
+        "nested_dispatch": ["code-review"],
+        "slash_path_open": ["code-review"],
+        "dedup_affecting_requestid_run": ["code-review"],
+        "branch_carry_forward_mid_window": ["code-review"],
+        "non_round_dollar_interleaving": ["code-review"],
+        "orchestrator_dispatch": ["code-review"],
+        "prefix_default_branch": ["code-review"],
+        "ready_for_review": ["ready-for-review"],
+        "token_and_variant_mix": ["code-review"],
+        "adjacent_assistant_opened_rounds": ["code-review", "plan-review"],
+    }
+
+    def test_every_shape_has_a_hand_written_skill_sequence(self):
+        assert {param.id for param in _ROUND_SHAPE_CORPUS_BUILDERS} == set(self._EXPECTED_SKILLS_BY_SHAPE)
+
+    @pytest.mark.parametrize("build_corpus", _ROUND_SHAPE_CORPUS_BUILDERS)
+    def test_projection_matches_the_recorded_one_for_the_current_rule(self, fake_projects, request, build_corpus):
+        shape_id = request.node.callspec.id
+        build_corpus(fake_projects)
+
+        rounds = review_rounds.compute_review_round_costs(_session_iter(fake_projects))["rounds"]
+
+        projection = self._project(rounds)
+        assert [entry["skill"] for entry in projection] == self._EXPECTED_SKILLS_BY_SHAPE[shape_id]
+        assert max(self._GOLDEN_ROUND_PROJECTIONS_BY_RULE) == review_rounds.REVIEW_ROUND_RULE
+        assert projection == self._GOLDEN_ROUND_PROJECTIONS_BY_RULE[review_rounds.REVIEW_ROUND_RULE][shape_id]
+
+
+class TestRoundsOnly:
+    """compute_review_round_costs(rounds_only=True): the same rounds, without scanning sessions that open none."""
+
+    @staticmethod
+    def _add_session_that_opens_no_round_but_dispatches(fake_projects) -> None:
+        _write_jsonl(fake_projects / "sess-no-round.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T12:00:00.000Z",
+                content=[_agent_use("x1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T12:01:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess-no-round", "agent-x", "x1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T12:00:10.000Z")],
+        )
+
+    @pytest.mark.parametrize("build_corpus", _ROUND_SHAPE_CORPUS_BUILDERS)
+    def test_rounds_equal_the_default_calls_rounds_and_no_branch_totals_key_is_returned(
+        self, fake_projects, build_corpus,
+    ):
+        build_corpus(fake_projects)
+        self._add_session_that_opens_no_round_but_dispatches(fake_projects)
+
+        default_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        rounds_only_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects), rounds_only=True)
+
+        assert rounds_only_data["rounds"] == default_data["rounds"]
+        assert "branch_totals" not in rounds_only_data
+        assert "branch_totals" in default_data
+
+    def test_only_sessions_that_open_a_round_reach_dispatch_indexing(self, fake_projects, monkeypatch):
+        _corpus_nested_dispatch(fake_projects)
+        self._add_session_that_opens_no_round_but_dispatches(fake_projects)
+        sessions_indexed: list[str] = []
+        real_index_subagent_dispatches = corpus._index_subagent_dispatches
+
+        def _recording_index_subagent_dispatches(jsonl):
+            sessions_indexed.append(Path(jsonl).name)
+            return real_index_subagent_dispatches(jsonl)
+
+        monkeypatch.setattr(corpus, "_index_subagent_dispatches", _recording_index_subagent_dispatches)
+
+        review_rounds.compute_review_round_costs(_session_iter(fake_projects), rounds_only=True)
+        assert sessions_indexed == ["sess-1.jsonl"]
+
+        sessions_indexed.clear()
+        review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert sorted(sessions_indexed) == ["sess-1.jsonl", "sess-no-round.jsonl"]
+
+    def test_a_record_outside_the_transcript_format_in_a_session_with_no_round_raises_only_without_rounds_only(
+        self, fake_projects,
+    ):
+        _corpus_slash_path_open(fake_projects)
+        _write_jsonl(fake_projects / "sess-no-round.jsonl", [_NON_STRING_TIMESTAMP_RECORD])
+
+        # Pins the current decode contract for out-of-format records; a change to that policy re-baselines this case.
+        with pytest.raises(AttributeError):
+            review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects), rounds_only=True)
+        assert [round_entry["skill"] for round_entry in data["rounds"]] == ["code-review"]
+
+
+def _malformed_usage_line(malformed_turn_count: int) -> str:
+    return (
+        f"MALFORMED USAGE — {malformed_turn_count:,} usage-bearing turns inside round windows had non-numeric"
+        " or negative token fields and were excluded from this report's dollars"
+    )
+
+
+class TestMalformedUsageFooter:
+    """review-round-cost prints one MALFORMED USAGE line per root block when a turn inside a round window was
+    excluded, and none otherwise."""
+
+    _LINE = _malformed_usage_line(1)
+
+    @staticmethod
+    def _write_round_session_with_malformed_turns(session_path: Path, branch: str, malformed_turn_count: int) -> None:
+        records = [_priced(
+            "claude-sonnet-5", input=100_000, branch=branch, ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        )]
+        records += [
+            _malformed_usage_turn({"input_tokens": "abc"}, ts=f"2026-08-01T10:01:{second:02d}.000Z", branch=branch)
+            for second in range(malformed_turn_count)
+        ]
+        records.append(_user_msg("thanks", branch=branch, ts="2026-08-01T10:02:00.000Z"))
+        _write_jsonl(session_path, records)
+
+    @classmethod
+    def _write_round_session(cls, session_path: Path, branch: str, *, with_malformed_turn: bool) -> None:
+        cls._write_round_session_with_malformed_turns(session_path, branch, int(with_malformed_turn))
+
+    def test_one_malformed_in_window_turn_prints_the_line_once_with_count_one(self, fake_projects, capsys):
+        self._write_round_session(fake_projects / "sess-1.jsonl", "feat", with_malformed_turn=True)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+
+        lines = capsys.readouterr().out.splitlines()
+        assert lines.count(self._LINE) == 1
+        assert lines.index(self._LINE) == lines.index("Unpriced turns inside round windows: 0") + 1
+
+    def test_no_malformed_turn_prints_no_such_line(self, fake_projects, capsys):
+        self._write_round_session(fake_projects / "sess-1.jsonl", "feat", with_malformed_turn=False)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+
+        assert "MALFORMED USAGE" not in capsys.readouterr().out
+
+    def test_under_multiple_roots_the_line_prints_in_the_affected_roots_block_only(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root, branch, with_malformed_turn in ((roots[0], "feat-a", True), (roots[1], "feat-b", False)):
+            project = root / "-home-user-repo"
+            project.mkdir(parents=True)
+            self._write_round_session(project / "sess-1.jsonl", branch, with_malformed_turn=with_malformed_turn)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+
+        lines = capsys.readouterr().out.splitlines()
+        assert [line for line in lines if "MALFORMED USAGE" in line] == [f"account-1 {self._LINE}"]
+        assert "account-2 Unpriced turns inside round windows: 0" in lines
+
+    def test_a_roots_count_sums_its_branches_rounds_and_a_second_root_prints_its_own_total(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        malformed_turn_counts = (
+            (roots[0], "sess-a.jsonl", "feat-a", 2),
+            (roots[0], "sess-b.jsonl", "feat-b", 3),
+            (roots[1], "sess-c.jsonl", "feat-c", 4),
+        )
+        for root, session_name, branch, malformed_turn_count in malformed_turn_counts:
+            project = root / "-home-user-repo"
+            project.mkdir(parents=True, exist_ok=True)
+            self._write_round_session_with_malformed_turns(project / session_name, branch, malformed_turn_count)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+
+        lines = capsys.readouterr().out.splitlines()
+        assert [line for line in lines if "MALFORMED USAGE" in line] == [
+            f"account-1 {_malformed_usage_line(2 + 3)}", f"account-2 {_malformed_usage_line(4)}",
+        ]
+
+    def test_a_count_of_a_thousand_or_more_prints_comma_grouped_digits(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        project = roots[0] / "-home-user-repo"
+        project.mkdir(parents=True, exist_ok=True)
+        self._write_round_session_with_malformed_turns(project / "sess-a.jsonl", "feat-a", 1_000)
+        self._write_round_session_with_malformed_turns(project / "sess-b.jsonl", "feat-b", 234)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+
+        lines = capsys.readouterr().out.splitlines()
+        assert [line for line in lines if "MALFORMED USAGE" in line] == [f"account-1 {_malformed_usage_line(1_234)}"]
+
+    def test_pooled_output_prints_no_such_line_though_the_unpooled_output_does(self, tmp_path, monkeypatch, capsys):
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        self._write_round_session(
+            roots[0] / "-home-user-repo-a" / "sess-a3.jsonl", "feat-a3", with_malformed_turn=True,
+        )
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        pooled_out = capsys.readouterr().out
+        assert pooled_out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
+        assert "MALFORMED USAGE" not in pooled_out
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args())
+        assert "MALFORMED USAGE" in capsys.readouterr().out
 
 
 class TestRoundOpenAgentSkills:
@@ -1448,29 +2065,12 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
     own tripwire lives in test_author_outcome.py."""
 
     @staticmethod
-    def _write_corpus(proj: Path, session_id: str = "sess-1", branch: str = "feat") -> None:
-        """A main-thread code-writer dispatch, then an orchestrator round, then a fresh prompt."""
-        _write_jsonl(proj / f"{session_id}.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch=branch, ts="2026-08-01T09:59:00.000Z",
-                content=[_dispatch_block_with_free_text("w1", "code-writer")],
-            ),
-            _user_msg(
-                [_tool_result("w1", _leak_sentinel("w1-result"))], branch=branch, ts="2026-08-01T09:59:30.000Z",
-            ),
-            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z", branch=branch),
-            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z", branch=branch),
-            _user_msg(_leak_sentinel("user-prompt"), branch=branch, ts="2026-08-01T10:05:00.000Z"),
-        ])
-        _write_orchestrator_subagent_tree(proj, session_id, branch=branch)
-
-    @staticmethod
     def _assert_prefix_absent(*surfaces: str) -> None:
         for surface in surfaces:
             assert _LEAK_SENTINEL_PREFIX not in surface
 
     def test_review_round_cost_never_prints_or_returns_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
-        self._write_corpus(fake_projects)
+        _write_orchestrator_free_text_corpus(fake_projects)
         costs_seen_by_command: list[dict] = []
         real_compute_review_round_costs = review_rounds.compute_review_round_costs
 
@@ -1491,11 +2091,27 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
         assert costs["rounds"][0]["agents"] == 2
         self._assert_prefix_absent(captured.out, captured.err, repr(costs))
 
+    def test_the_slash_round_and_unpriced_marker_variant_opens_a_plan_review_round_holding_the_marker_turn(
+        self, fake_projects,
+    ):
+        _write_orchestrator_free_text_corpus(fake_projects, with_slash_round_and_unpriced_marker_model=True)
+
+        rounds = review_rounds.compute_review_round_costs(_session_iter(fake_projects))["rounds"]
+
+        assert [round_entry["skill"] for round_entry in sorted(rounds, key=lambda entry: entry["sort_key"])] == [
+            "code-review", "plan-review",
+        ]
+        plan_review_round = next(round_entry for round_entry in rounds if round_entry["skill"] == "plan-review")
+        assert plan_review_round["unpriced_turns"] == 1
+        assert plan_review_round["unpriced_tokens"] == 1_000
+
     def test_pooled_review_round_cost_never_prints_dispatch_free_text(self, tmp_path, monkeypatch, capsys):
         """--show-withheld prints the figures plain --pooled withholds, so it is
         the only pooled render path with anything to leak."""
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        self._write_corpus(roots[0] / "-home-user-repo-a", session_id="sess-orchestrator", branch="feat-orchestrator")
+        _write_orchestrator_free_text_corpus(
+            roots[0] / "-home-user-repo-a", session_id="sess-orchestrator", branch="feat-orchestrator",
+        )
         costs_seen_by_command: list[dict] = []
         real_compute_review_round_costs = review_rounds.compute_review_round_costs
 
@@ -1521,7 +2137,7 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
         self._assert_prefix_absent(captured.out, captured.err)
 
     def test_cost_counts_never_prints_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
-        self._write_corpus(fake_projects)
+        _write_orchestrator_free_text_corpus(fake_projects)
         round_counts_seen_by_command: list[dict] = []
         real_compute_review_round_counts = review_rounds.compute_review_round_counts
 
