@@ -46,8 +46,8 @@ READER_DOC = REPO_ROOT / "docs/session-config-keys-log.md"
 
 LOG_FILENAME = ".session-config-keys-log.jsonl"
 SESSION_ID = "0b6b0f5e-3c58-4a3d-9f2e-7d4a1c8e5b21"
-# A POSIX zone string with a non-whole-hour offset: it needs no tz database, and a hook that
-# formatted local time instead of UTC would fail the logged_at window.
+# A POSIX zone string with a non-whole-hour offset needs no tz database.
+# A hook that formatted local time instead of UTC would fail the logged_at window.
 TZ_NON_WHOLE_HOUR = "<+0530>-05:30"
 # Same bound run_reconciler (helpers.py) gives its subprocess, so a hook that blocks fails its case.
 HOOK_TIMEOUT_SECONDS = 30
@@ -629,8 +629,8 @@ class TestHookWrittenStateStaysOutOfGit:
 
 NON_ASCII_VALUE = "café"
 SYNTHETIC_KEY = "synthetic_added_key"
-# Every member must be legal inside a pipe-delimited schema default column (no `|`, no newline); the newline cases live in the
-# `source` parametrization's embedded-newline case and in the embedded-newline value test.
+# Every member must be legal inside a pipe-delimited schema default column, so no `|` and no newline.
+# The newline cases live in the `source` parametrization's embedded-newline case and in the embedded-newline value test.
 NON_TOKEN_STRINGS_BY_ID = {
     "path": "/tmp/x",
     "free-text": "two words",
@@ -668,6 +668,7 @@ class TestRowContent:
         row_line = sandbox.log_path.read_text().strip("\n")
         assert row_line == json.dumps(row, separators=(",", ":"))
         # Worst case: source and every value unreadable, with the harness-shaped 36-character session id.
+        # This is the worst case only while no schema default or enum literal is longer than "unreadable".
         worst_case = {**row, "source": UNREADABLE, "keys": dict.fromkeys(row["keys"], UNREADABLE)}
         worst_case_bytes = json.dumps(worst_case, separators=(",", ":")).encode()
         assert len(worst_case_bytes) + 2 < ROW_SIZE_BOUND_BYTES
