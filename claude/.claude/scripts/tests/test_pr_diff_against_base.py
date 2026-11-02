@@ -462,9 +462,13 @@ class TestNormalPathAgainstMain:
     ):
         """A two-commit feature branch landed on main by each merge method, with the feature
         branch checked out either as-is or after a rebase or merge of origin/main.
-        Unsynced, only the methods that keep the feature tip in origin/main's
-        history give an empty cumulative diff. Synced, every method does; fast-forward is covered
-        only unsynced, since a sync leaves its HEAD where it was."""
+        Unsynced, only methods that keep the feature tip in origin/main's history leave an
+        empty cumulative diff, and a completed sync makes every method empty.
+        The cells pin the git sync semantics that ready-for-review step 3's prose relies on,
+        not extra script branches.
+        Cells sharing a repo topology are intentional: their sync moves HEAD.
+        The fixtures assume the sync completes cleanly (add-only, non-conflicting files),
+        so the cells pin the script's reading of a completed sync, not that every merged branch syncs cleanly."""
         feature_branch = "feat/two-commits"
         local, _bare = _make_repo_with_remote(tmp_path)
         subprocess.run(["git", "checkout", "-q", "-b", feature_branch], cwd=local, check=True)

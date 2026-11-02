@@ -688,7 +688,7 @@ case "$SUBCOMMAND" in
         fi
         if [ -z "$SUBJECT_TEXT" ]; then
           # shellcheck disable=SC2016 # same literal-display-text reasoning as above.
-          printf 'marker.sh: the recorded cumulative-review subject for %s is empty. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          printf 'marker.sh: the recorded cumulative-review subject for %s is empty. If the record was truncated or failed, re-run `~/.claude/scripts/pr-diff-against-base.sh --record`. If the cumulative diff is itself empty, that script reports `DIFF_EMPTY:` on stderr: there is nothing to review, so halt as ready-for-review step 3 says. Abort without writing a marker.\n' "$REPO_ROOT" >&2
           exit 2
         fi
         # Compute before redirecting -- same shape as every other write arm

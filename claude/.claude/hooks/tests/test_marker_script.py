@@ -3900,7 +3900,7 @@ class TestMarkerScriptCumulativeReview:
             ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home
         )
         assert result.returncode == 2
-        assert "empty" in result.stderr.lower()
+        assert "is empty" in result.stderr.lower()
         marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"an empty subject must not write a marker: {stray}"
@@ -3921,7 +3921,7 @@ class TestMarkerScriptCumulativeReview:
             ["write", "cumulative-review"], cwd=cumulative_diff_repo, home=isolated_home
         )
         assert result.returncode == 2
-        assert "empty" in result.stderr.lower()
+        assert "is empty" in result.stderr.lower()
         marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a lone-trailing-newline subject must not write a marker: {stray}"
@@ -3947,7 +3947,12 @@ class TestMarkerScriptCumulativeReview:
             extra_env=env,
         )
         assert result.returncode == 2
-        assert "empty" in result.stderr.lower()
+        assert "is empty" in result.stderr.lower()
+        # marker.sh's refusal points engineers at DIFF_EMPTY:, which the real --record run prints;
+        # asserting both ends keeps the hint from going stale if the producer renames the token.
+        token = "DIFF_EMPTY:"
+        assert token in record_result.stderr
+        assert token in result.stderr
         marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"an empty subject must not write a marker: {stray}"
