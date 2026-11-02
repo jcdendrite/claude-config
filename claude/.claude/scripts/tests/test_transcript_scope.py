@@ -181,8 +181,7 @@ class TestRepoScopedProjectSlugsGuard:
 
     def test_sibling_repo_sharing_string_prefix_is_rejected(self, monkeypatch, capsys):
         """cwd inside a sibling path sharing the same string prefix (<repo>-fork)
-        must exit 1 — the case bare str.startswith containment would wrongly
-        accept."""
+        must be rejected."""
         monkeypatch.setattr(os, "getcwd", lambda: "/repo-fork/nested")
 
         def fake_run(cmd, *a, **k):
@@ -261,6 +260,62 @@ class TestRepoScopedProjectSlugsContainmentGuard:
 
         slugs = scope._repo_scoped_project_slugs("duration")
         assert slugs == [scope._path_to_project_slug("/repo"), scope._path_to_project_slug("/other/wt")]
+
+
+class TestRepoScopedProjectSlugsGitCallFailureModes:
+    @pytest.mark.parametrize(
+        ("failing_command", "failure_kind", "expected_stderr"),
+        [
+            pytest.param(
+                ["git", "worktree", "list", "--porcelain"],
+                "timeout",
+                "duration: cannot determine repo scope",
+                id="worktree-list-timeout",
+            ),
+            pytest.param(
+                ["git", "worktree", "list", "--porcelain"],
+                "nonzero-exit",
+                "duration: cannot determine repo scope",
+                id="worktree-list-nonzero-exit",
+            ),
+            pytest.param(
+                ["git", "rev-parse", "--show-toplevel"],
+                "nonzero-exit",
+                "duration: cannot determine repo identity",
+                id="rev-parse-nonzero-exit",
+            ),
+            pytest.param(
+                ["git", "rev-parse", "--show-toplevel"],
+                "timeout",
+                "duration: cannot determine repo identity",
+                id="rev-parse-timeout",
+            ),
+        ],
+    )
+    def test_git_call_timeout_or_nonzero_exit_fails_closed_with_that_calls_message(
+        self, monkeypatch, capsys, failing_command, failure_kind, expected_stderr
+    ):
+        """The fake fails only when the call passes check=True or a timeout; the CLI must then exit 1 with that call's message."""
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/nested")
+
+        def fake_run(cmd, *a, **k):
+            if cmd == failing_command:
+                if failure_kind == "nonzero-exit":
+                    result = subprocess.CompletedProcess(cmd, 128, "", "fatal: not a git repository\n")
+                    if k.get("check"):
+                        raise subprocess.CalledProcessError(128, cmd)
+                    return result
+                if k.get("timeout") is not None:
+                    raise subprocess.TimeoutExpired(cmd, k["timeout"])
+                pytest.fail("git call passed no timeout")
+            assert cmd == ["git", "worktree", "list", "--porcelain"]
+            return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            scope._repo_scoped_project_slugs("duration")
+        assert exc_info.value.code == 1
+        assert expected_stderr in capsys.readouterr().err
 
 
 class TestResolveProjectScope:
