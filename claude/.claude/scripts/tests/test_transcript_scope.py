@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from transcript_analysis import buckets, corpus, cost, scope, skill_invocation
 
-from .conftest import _asst, _cost_args, _priced, _write_cost_root, _write_jsonl
+from .conftest import _asst, _cost_args, _priced, _worktree_porcelain, _write_cost_root, _write_jsonl
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
@@ -138,9 +138,6 @@ class TestRepoScopedProjectSlugsGuard:
     row-20 containment-plus-identity cwd guard, exercised via a non-
     skill-invocation caller label to cover the newly-generic path."""
 
-    def _worktree_porcelain(self, *paths):
-        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
-
     def test_fails_closed_when_worktree_list_command_fails(self, monkeypatch, capsys):
         def boom(cmd, *a, **k):
             raise FileNotFoundError("git")
@@ -161,7 +158,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(os, "getcwd", lambda: "/somewhere/else")
 
         def fake_run(cmd, *a, **k):
-            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+            return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
             scope._repo_scoped_project_slugs("duration")
@@ -174,7 +171,7 @@ class TestRepoScopedProjectSlugsGuard:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             return subprocess.CompletedProcess(cmd, 0, "/repo\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -189,7 +186,7 @@ class TestRepoScopedProjectSlugsGuard:
         monkeypatch.setattr(os, "getcwd", lambda: "/repo-fork/nested")
 
         def fake_run(cmd, *a, **k):
-            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+            return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         with pytest.raises(SystemExit):
@@ -207,7 +204,7 @@ class TestRepoScopedProjectSlugsGuard:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             return subprocess.CompletedProcess(cmd, 0, "/outer\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -223,7 +220,7 @@ class TestRepoScopedProjectSlugsGuard:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo"), "")
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -236,9 +233,6 @@ class TestRepoScopedProjectSlugsGuard:
 class TestResolveProjectScope:
     """The scope-dispatch helper behind --projects/--this-repo on the 16
     non-skill-invocation subcommands."""
-
-    def _worktree_porcelain(self, *paths):
-        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
 
     def test_this_repo_unset_raises_rather_than_defaulting_to_machine_wide(self, fake_projects):
         """A subparser wired without _add_project_scope_args (missing this_repo
@@ -260,7 +254,7 @@ class TestResolveProjectScope:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo/main"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -287,7 +281,7 @@ class TestResolveProjectScope:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
+                return subprocess.CompletedProcess(cmd, 0, _worktree_porcelain("/repo/main"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -436,7 +430,7 @@ class TestThisRepoUnionsAcrossRoots:
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                porcelain = _worktree_porcelain("/repo/main")
                 return subprocess.CompletedProcess(cmd, 0, porcelain, "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")

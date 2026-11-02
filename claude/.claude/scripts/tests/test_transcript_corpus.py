@@ -4,7 +4,15 @@ import os
 import pytest
 from transcript_analysis import corpus
 
-from .conftest import _asst, _opus, _user_msg, _write_jsonl, _write_subagent_dispatch, _write_subagent_jsonl
+from .conftest import (
+    _asst,
+    _opus,
+    _read_use,
+    _user_msg,
+    _write_jsonl,
+    _write_subagent_dispatch,
+    _write_subagent_jsonl,
+)
 
 
 class TestParseTs:
@@ -17,15 +25,6 @@ class TestParseTs:
 
     def test_parse_ts_invalid_string(self):
         assert corpus._parse_ts("not-a-date") is None
-
-
-def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
-    tool_input: dict = {"file_path": file_path}
-    if offset is not None:
-        tool_input["offset"] = offset
-    if limit is not None:
-        tool_input["limit"] = limit
-    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
 
 
 def _text_marker_assistant(marker: str, *, sidechain: bool = True) -> dict:
@@ -45,8 +44,8 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         `_read_session_file_partitioned` must treat that the same as an
         absent directory, not crash. The only observable difference from a
         readable-empty directory is that no subagent records are merged."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r2", file_path="/b.py")])])
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_use("r1", file_path="/a.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_use("r2", file_path="/b.py")])])
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
         try:
@@ -54,7 +53,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         finally:
             os.chmod(session_dir, 0o755)
 
-        expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
+        expected = [[_opus([_read_use("r1", file_path="/a.py")])]]
         assert result == expected
 
     def test_read_session_file_merges_direct_subagents_but_not_workflow_nested_ones(self, fake_projects):
@@ -115,10 +114,10 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         session reads as dangling. Mirrors
         test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent's
         chmod-based direct-call pattern for the sibling function."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_use("r1", file_path="/a.py")])])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a", "toolu_1",
-            [_opus([_read_tool_use("r2", file_path="/b.py")])],
+            [_opus([_read_use("r2", file_path="/b.py")])],
         )
         session_dir = fake_projects / "sess"
         os.chmod(session_dir, 0o000)
@@ -137,7 +136,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
         UnicodeDecodeError uncaught and abort the whole run. Uses the same
         non-UTF-8 bytes as
         test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_use("r1", file_path="/a.py")])])
         subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
@@ -207,7 +206,7 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
     def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
         """A meta.json written as raw UTF-8 with non-ASCII text next to a
         valid toolUseId is indexed, not counted under meta_read_errors."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_use("r1", file_path="/a.py")])])
         subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
