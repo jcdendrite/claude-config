@@ -26,8 +26,9 @@ A command-group module may import another by module (attribute access). Among th
 `reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
 is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
 `judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
-`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`), and
-`review_cost_by_size.py` (for `compute_review_round_costs`). `review_trace.py` imports `reviewer_yield.py` (for
+`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`),
+`review_cost_by_size.py` (for `compute_review_round_costs`), `pr_cost.py` (for `compute_review_round_costs`, `REVIEW_SKILLS` and
+`REVIEW_ROUND_RULE`), and `pr_cost_export.py` (for `REVIEW_SKILLS`). `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
 `review_rounds.py` for the reads listed in the `review_trace.py` section below.
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
@@ -247,7 +248,7 @@ The cost command family: `cmd_cost`, `cmd_cost_trend`, and every helper used onl
 corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 (`_cost_report`), and per-ISO-week cost-trend accumulation (`compute_cost_trend_data`,
 `_cost_trend_report`). The first command-group module in the package, not a leaf: it imports
-`corpus`, `scope`, `redaction`, `pricing`, and `render` all by module (attribute access), matching
+`corpus`, `scope`, `redaction`, `pricing`, `render`, and `session_pricing` all by module (attribute access), matching
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
 is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'s own
 `_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read, not
@@ -275,17 +276,17 @@ subagent dollar attribution via `corpus._index_subagent_dispatches`' toolUseId j
 count-only sibling reusing the same detection helpers to produce per-skill round counts with no
 pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_counts` calls it as
 `review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
-and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
+`scope`, and `session_pricing` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
-main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RULE`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
 `spawn_round_skill`, and `round_opened_by_spawn` are the public names here. `compute_review_round_costs`
-is read by `review_cost_by_size.py`. `spawn_round_skill` maps a spawn block to the
+is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
 miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
-judgment-pair's `--skills` default, and by the shim's `build_parser()`, for review-round-cost's
+judgment-pair's `--skills` default, by `pr_cost.py` and `pr_cost_export.py`, for the skills a `review_rounds` cell holds, and by the shim's `build_parser()`, for review-round-cost's
 `--skill` choices. `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
 `_round_skill_name` for its `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison, and
 `_SLASH_COMMAND_RE` to extract a `/slash`-invoked skill name before `_round_skill_name` normalizes it.
@@ -442,7 +443,7 @@ The pr-cost command family: `cmd_pr_cost` and every helper used only by it — t
 join, per-PR gh enrichment, mechanical review-surface proxies, and the read/`--record` report. Every
 stdout/stderr path routes branch and repo values through `redaction._assign_root_scoped_redact_label`,
 never raw. Imports `corpus`, `cost`, `gh_cli`, `ledger_common`, `pr_cost_ledger`, `pricing`,
-`redaction`, `render`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
+`redaction`, `render`, `review_rounds`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
 `_compute_pr_cost_branch_totals` and `_new_pr_cost_agg` — the pr-cost command group depending on the
 cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`, and
 `_DEFAULT_PR_COST_PLAN_FILE_GLOB` are the three names reached bare from the shim.
@@ -452,7 +453,7 @@ cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_D
 The pr-cost-export command family: `cmd_pr_cost_export` and every helper used only by it —
 collapsing every declared account's pr-cost ledger to current rows, redacting them, and publishing
 one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common`, `pr_cost_ledger`,
-`redaction`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
+`pricing`, `redaction`, `review_rounds`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
 shim.
 
 ### `cache_rebuild_rules.py`
@@ -621,7 +622,7 @@ repository resolver, the per-repository PR join, the Slack report renderer, and 
 The stream assignment runs the PR-cost attribution and pricing primitives per record
 (`pricing.dedup_turns_by_request_id`, `scope._attributed_branch`, `pricing._price_turn`) instead of
 calling `cost._compute_pr_cost_branch_totals`, which takes no time window. Imports `corpus`, `cost`,
-`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, and `scope` all by module (attribute
+`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, `scope`, and `session_pricing` all by module (attribute
 access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_PRICE_CAVEAT` and
 `_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS`. It reads its one root, `scope.config_dir() / "projects"`,
 as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
