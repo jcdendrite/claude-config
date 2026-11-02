@@ -48,8 +48,9 @@ pure-function violations idiom the check needs.
 
 Assertion 8 checks that each name in `_SCOPE_CITED_ANGLE_NAMES` appears in
 comment-discipline-reviewer.md's Scope section and resolves to a
-core-review-angle header. It lives here because it reuses assertion 7's
-angle-header parser.
+core-review-angle header. It also checks the reverse: a core-review-angle
+header the Scope section cites must be in the tuple. It lives here because it
+reuses assertion 7's angle-header parser.
 
 Assertion 9 checks that the committed regression fixture
 claude/.claude/hooks/tests/fixtures/paragraph-readability.json still names a
@@ -634,10 +635,11 @@ _SCOPE_SECTION_RE = re.compile(r"^## Scope$\n(.*?)(?=^## |\Z)", re.DOTALL | re.M
 # The angle names the agent's Scope section cites.
 # This tuple is maintained by hand.
 # Update it whenever the Scope section cites a new angle.
-# The check runs only from the tuple to the file, so an angle the Scope section cites but the tuple omits goes unchecked.
 _SCOPE_CITED_ANGLE_NAMES = (
+    "Comment verbosity",
     "Multi-fact comment structure",
     "PR-defined terminology",
+    "Paragraph readability",
     "Prose at the wrong altitude",
     "Restated canonical rule",
 )
@@ -673,14 +675,25 @@ def _scope_cited_angle_violations(
                 f"cite angle '{angle_name}' -- restore the reference or drop "
                 "the name from _SCOPE_CITED_ANGLE_NAMES."
             )
+    for header in headers:
+        if header in scope_text and header not in cited_angle_names:
+            violations.append(
+                f"comment-discipline-reviewer.md's Scope section cites angle "
+                f"'{header}', which is missing from _SCOPE_CITED_ANGLE_NAMES -- "
+                "add it to the tuple, or reword the Scope section so it no "
+                "longer names the angle."
+            )
     return violations
 
 
-def test_scope_cited_angle_names_resolve_to_angle_headers() -> None:
-    """Guards each angle name in _SCOPE_CITED_ANGLE_NAMES.
-    An angle rename would otherwise leave the Scope section citing a name
-    that no longer exists.
-    The item 12a lockstep test cannot see that, because it parses only
+def test_scope_section_and_scope_cited_angle_names_agree_both_ways() -> None:
+    """Guards the Scope section and _SCOPE_CITED_ANGLE_NAMES against drifting apart.
+    Forward: each tuple name must appear in the Scope text and resolve to a
+    core-review-angle header, so an angle rename cannot leave the Scope
+    section citing a name that no longer exists.
+    Reverse: each core-review-angle header the Scope text cites must be in the
+    tuple, so a newly cited angle cannot go unguarded.
+    The item 12a lockstep test sees neither, because it parses only
     'Core review angles'.
     A name counts as cited when it appears anywhere in the Scope text, in any
     clause."""
@@ -1766,6 +1779,24 @@ class TestFaultInjection:
         )
         assert len(violations) == 1
         assert "'Core review angles' section not found" in violations[0]
+
+    def test_scope_cited_angles_rejects_scope_citation_missing_from_the_names_tuple(self) -> None:
+        """An angle header whose name the Scope section cites, but the tuple omits, fails."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact comment structure only;\n"
+            "PR-defined terminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure",),
+        )
+        assert len(violations) == 1
+        assert "cites angle 'PR-defined terminology', which is missing from _SCOPE_CITED_ANGLE_NAMES" in violations[0]
 
     def test_scope_cited_angles_rejects_name_missing_from_headers_and_scope(self) -> None:
         """A cited name absent from both the angle headers and the Scope text

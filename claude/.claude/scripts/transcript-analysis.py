@@ -353,6 +353,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
         help="Restrict skill-invocation matching to one skill name.",
     )
+    p_review_trace.add_argument(
+        "--omit-plan-review-spawns", action="store_true",
+        help=(
+            "Leave out reviewer spawns made inside a /plan-review round, and print reviewer rows without round=. "
+            "Applies to the default timeline only; --deny-summary ignores it."
+        ),
+    )
     p_review_trace.set_defaults(func=cmd_review_trace)
 
     _add_judgment_pair_subparser(sub)

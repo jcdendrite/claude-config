@@ -110,6 +110,8 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 
 **Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar; that fix stays inline, prose only. A finding needing an actual code change follows step 3's `code-writer` route, not a separate dispatch. Fix it in a new commit (staged-diff `/code-review` + marker gate), return to step 2, and do not re-run this step on its own output.
 
+**Spawn-dispatch `[SILENT-SKIP]`.** Before acting on one, rerun `python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch>` without `--omit-plan-review-spawns`. `<branch>` is the current branch name. Report to the human any row there of the missing reviewer type that reads `round=plan-review`, since the fidelity view dropped it.
+
 ## 5. PR description (unconditional; warn + fix)
 
 Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass. Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and reports its path on a `BODY_FILE: <path>` line. Neither outcome is this gate's stopping point — continue to the next step in the same turn.
@@ -173,9 +175,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-Steps 6 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
-
-**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
+**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The CI watch is not a gate step, and it can resolve hours after the gate finishes. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
 | Terminal line | Do this |
 |---|---|

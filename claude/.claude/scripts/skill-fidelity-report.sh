@@ -19,7 +19,8 @@ if ! "$SCRIPT_DIR/transcript-analysis.py" skill-invocation --branches "$BRANCH" 
 fi
 
 echo "=== review-trace ==="
-if ! "$SCRIPT_DIR/transcript-analysis.py" review-trace --this-repo --branches "$BRANCH"; then
+# A spawn /plan-review made never satisfies one of code-review's dispatch rows.
+if ! "$SCRIPT_DIR/transcript-analysis.py" review-trace --this-repo --branches "$BRANCH" --omit-plan-review-spawns; then
   REVIEW_TRACE_OK=0
   echo "skill-fidelity-report.sh: review-trace report failed" >&2
 fi

@@ -1148,6 +1148,12 @@ class TestBuildParser:
         assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
         assert without_flag.all_accounts is False
 
+    def test_review_trace_parses_omit_plan_review_spawns(self):
+        """The flag is registered, and the default timeline keeps every row without it."""
+        parser = _mod.build_parser()
+        assert parser.parse_args(["review-trace", "--omit-plan-review-spawns"]).omit_plan_review_spawns is True
+        assert parser.parse_args(["review-trace"]).omit_plan_review_spawns is False
+
     def test_pr_link_without_repo_flag_defaults_to_none(self):
         parser = _mod.build_parser()
         parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])

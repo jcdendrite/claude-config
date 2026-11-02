@@ -2134,16 +2134,21 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
 })
 
-# Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
-# test, plus the settings.json read from test_claude_enable_tool.py
-# (SCRIPTS_TESTS_DIR). Each pair was hand-checked against its citing test's
-# own read call. This list is not derived from SKILL_FILES_READ_BY_HOOK_TESTS
-# or the CLAUDE_SETTINGS_JSON row, so it is DAMP test data (CLAUDE.md's named
-# exception) rather than a DRY violation. Add a newly-mapped read here only
-# when it fits that scope. A HOOKS_TESTS_DIR entry whose read path is not a
-# SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
+# Add a pair only for a SKILL.md path read from a HOOKS_TESTS_DIR test, a
+# SKILL.md path read from a SCRIPTS_TESTS_DIR test, or the settings.json read
+# from test_claude_enable_tool.py. Each pair was hand-checked against its
+# citing test's own read call. The list is not derived from
+# SKILL_FILES_READ_BY_HOOK_TESTS or the CLAUDE_SETTINGS_JSON row, so it is DAMP
+# test data (CLAUDE.md's named exception) rather than a DRY violation.
+# - HOOKS_TESTS_DIR entries are complete; an entry whose read path is not a
+#   SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
+# - SCRIPTS_TESTS_DIR SKILL.md entries are not exhaustive.
+# - Nothing checks that a listed reader still reads its pair's file.
+# - TestCrossDomainReadCompleteness is the enforced read check and does not
+#   consult this list.
 _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
      "claude-skills/skills/code-review/SKILL.md"),
@@ -2179,6 +2184,10 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
      "claude-skills/skills/resume-context/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+     "claude-skills/skills/plan-review/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+     "claude-skills/skills/ready-for-review/SKILL.md"),
 )
 
 

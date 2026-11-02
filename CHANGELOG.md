@@ -29,6 +29,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Two spaces now precede the `+`/`?` marker slot.
   - The change is live on `git pull`.
 - **`deny-private-project-refs.sh` no longer detects the Slack-channel shape (a hash-prefixed channel name).** A channel name is now caught only by the `~/.claude/private-projects.md` blocklist when it is populated, and only if distinctive enough to list as a bare word (see `docs/private-project-redaction.md`). The change is live on `git pull`.
+- **`/plan-review` now spawns `comment-discipline-reviewer` on every round to review the plan's prose before approval.**
+  - It reviews the plan file and checks only Comment verbosity, Multi-fact comment structure, and Paragraph readability.
+  - Its findings never by themselves make the verdict Request changes, and they are applied with the round's other changes.
+  - It no longer reviews a plan file inside a `/code-review` or `/ready-for-review` diff.
+  - The change is live on `git pull`.
+- **`review-trace` now prints `round=` on each reviewer row, naming the review round a main-thread spawn ran in, or `?`.**
+  - The new `--omit-plan-review-spawns` flag leaves out `/plan-review`'s spawns.
+  - `/ready-for-review`'s skill-fidelity check passes it, so a `/plan-review` spawn no longer counts toward a `/code-review` dispatch row.
+  - The change is live on `git pull`.
 - **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
   - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
   - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.
