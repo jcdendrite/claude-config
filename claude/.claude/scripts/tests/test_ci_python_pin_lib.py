@@ -44,6 +44,14 @@ def _workflow(tmp_path: Path, text: str) -> Path:
         pytest.param("python-version: '3.14'\n", "3.14", id="unindented"),
         pytest.param("          python-version:   '3.14'   # CI pin\n", "3.14", id="spacing-and-trailing-comment"),
         pytest.param(
+            "          python-version: '3.14'  # CI's pin\n", "3.14",
+            id="single-quoted-pin-with-apostrophe-in-trailing-comment",
+        ),
+        pytest.param(
+            '          python-version: "3.14"  # CI\'s pin\n', "3.14",
+            id="double-quoted-pin-with-apostrophe-in-trailing-comment",
+        ),
+        pytest.param(
             "  a:\n    python-version: '3.14'\n  b:\n    python-version: '3.14'\n", "3.14",
             id="same-pin-repeated-is-one-distinct-value",
         ),
