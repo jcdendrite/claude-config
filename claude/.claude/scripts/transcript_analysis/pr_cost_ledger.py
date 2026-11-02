@@ -48,9 +48,15 @@ _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS: tuple[str, ...] = (
     # Empty cell: not recorded. `{}`: recorded, no priced turns.
     "model_breakdown",
 )
-_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
+# Exact column order of pre-review_rounds ledgers; never edit, and never revert to code that lacks it.
+_PR_COST_LEDGER_PRE_REVIEW_ROUNDS_COLUMNS: tuple[str, ...] = (
     *_PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS,
     "invalid_usage_records",
+)
+_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
+    *_PR_COST_LEDGER_PRE_REVIEW_ROUNDS_COLUMNS,
+    # Empty cell: not recorded. Every skill an empty list: recorded, no rounds.
+    "review_rounds",
 )
 _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
 
@@ -70,7 +76,7 @@ _PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
 _PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE: dict[str, tuple[str, ...]] = {
     "\t".join(columns): columns
     for columns in (
-        _PR_COST_LEDGER_COLUMNS, _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS,
+        _PR_COST_LEDGER_COLUMNS, _PR_COST_LEDGER_PRE_REVIEW_ROUNDS_COLUMNS, _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS,
         _PR_COST_LEDGER_PRE_MODEL_COLUMNS, _PR_COST_LEDGER_LEGACY_COLUMNS,
     )
 }
@@ -82,6 +88,7 @@ _PR_COST_LEDGER_COLUMN_DEFAULTS: dict[str, str] = {
     # and wasn't counted), not verified to have carried zero -- "0" is this column's least-wrong
     # default, the same reasoning _PR_COST_LEDGER_LEGACY_HOST_DEFAULT already applies to "host".
     "invalid_usage_records": "0",
+    "review_rounds": "",
 }
 
 _PR_COST_FLOAT_COLUMNS = (
@@ -96,7 +103,6 @@ _PR_COST_INT_COLUMNS = (
     "distinct_top_level_dirs", "distinct_file_extensions", "invalid_usage_records",
 )
 _PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
-_PR_COST_JSON_COLUMNS = ("model_breakdown",)
 
 # status is a fixed enum carrying no embedded gh diagnostic text --
 # _GH_CALL_DEGRADED_AUTH and _GH_CALL_DEGRADED_HOST_MISMATCH from
@@ -191,9 +197,28 @@ def _model_breakdown_cell_violation(decoded: object) -> str | None:
     return None
 
 
-def _encode_model_breakdown_cell(value: dict) -> str:
-    """The one canonical encoding of a decoded model_breakdown value."""
+def _encode_json_cell(value: dict) -> str:
+    """The one canonical encoding of a decoded JSON-cell value (model_breakdown or review_rounds)."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+_JSON_CELL_RULE_DUPLICATE_KEY = "duplicate key"
+_JSON_CELL_RULE_NESTING = "nesting too deep"
+_JSON_CELL_RULE_INVALID = "not valid JSON"
+
+
+def _load_json_cell(cell: str) -> tuple[object, str | None]:
+    """(decoded, None) for a JSON cell that parses with no duplicate key, else (None, the fixed rule text for the
+    failure). Returns the rule instead of raising so the caller raises outside these except clauses, and no cell
+    text reaches __context__."""
+    try:
+        return json.loads(cell, object_pairs_hook=_reject_duplicate_json_keys), None
+    except _DuplicateJsonKeyError:
+        return None, _JSON_CELL_RULE_DUPLICATE_KEY
+    except RecursionError:
+        return None, _JSON_CELL_RULE_NESTING
+    except ValueError:
+        return None, _JSON_CELL_RULE_INVALID
 
 
 def _decode_model_breakdown_cell(cell: str, line_no: int) -> dict | None:
@@ -202,24 +227,151 @@ def _decode_model_breakdown_cell(cell: str, line_no: int) -> dict | None:
     Preserves values, accepting whitespace and key-order variants -- the
     formatter re-encodes canonically on the next write. Every message names a
     fixed rule, never cell text, and is raised outside the except clauses
-    below so no cell text reaches __context__."""
+    in _load_json_cell so no cell text reaches __context__."""
     if cell == "":
         return None
-    decoded: object = None
-    rule: str | None = None
-    try:
-        decoded = json.loads(cell, object_pairs_hook=_reject_duplicate_json_keys)
-    except _DuplicateJsonKeyError:
-        rule = "duplicate key"
-    except RecursionError:
-        rule = "nesting too deep"
-    except ValueError:
-        rule = "not valid JSON"
+    decoded, rule = _load_json_cell(cell)
     if rule is None:
         rule = _model_breakdown_cell_violation(decoded)
     if rule is not None:
         raise _PrCostLedgerParseError(f"line {line_no}: malformed model_breakdown ({rule})")
     return decoded
+
+
+# Persisted contract: a round may gain a key only as a key-shaped name holding an integer from 0 to 2**63 - 1; any other
+# shape change is a new appended column under a new frozen header.
+_REVIEW_ROUND_COUNT_FIELDS: tuple[str, ...] = (
+    "main_usd_micros", "agent_usd_micros", "agents", "dangling", "unpriced_turns", "unpriced_tokens",
+    "invalid_usage_records",
+)
+_REVIEW_ROUND_TOKEN_FIELDS: tuple[str, ...] = ("main_tokens", "agent_tokens")
+_REVIEW_ROUND_FLAG_FIELDS: tuple[str, ...] = ("after_merge",)
+
+# Admits at least 1000 representative rounds; it may rise only up to the lowest value _REVIEW_ROUNDS_CELL_READ_MAX_CHARS
+# has shipped with.
+_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS = 1_048_576
+# Persisted contract: never lower it, because a checkout refuses any cell longer than the value it shipped with.
+_REVIEW_ROUNDS_CELL_READ_MAX_CHARS = 8_388_608
+if _REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS > _REVIEW_ROUNDS_CELL_READ_MAX_CHARS:  # `assert` would vanish under python -O
+    raise RuntimeError("_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS must not exceed _REVIEW_ROUNDS_CELL_READ_MAX_CHARS")
+
+# One fixed message per defect class, so no cell text ever reaches an error.
+_REVIEW_ROUNDS_RULE_OVERSIZED = "cell too long"
+_REVIEW_ROUNDS_RULE_TOP_LEVEL = "top level must be an object with exactly rule and rounds"
+_REVIEW_ROUNDS_RULE_RULE_VALUE = "rule must be an integer from 0 to 2**63 - 1"
+_REVIEW_ROUNDS_RULE_KEY_SHAPE = "key outside the allowed key shape"
+_REVIEW_ROUNDS_RULE_ROUNDS_SHAPE = "rounds must be an object of lists"
+_REVIEW_ROUNDS_RULE_ROUND_SHAPE = "round must be an object"
+_REVIEW_ROUNDS_RULE_MISSING_FIELD = "round missing a required field"
+_REVIEW_ROUNDS_RULE_INTEGER_RANGE = "integer outside 0 to 2**63 - 1"
+_REVIEW_ROUNDS_RULE_AFTER_MERGE = "after_merge must be 0 or 1"
+_REVIEW_ROUNDS_RULE_TOKEN_OBJECT = "token object must nest non-empty objects"
+# Closed set of decode rules, including the three _load_json_cell can return.
+_REVIEW_ROUNDS_DECODE_RULES: tuple[str, ...] = (
+    _JSON_CELL_RULE_INVALID, _JSON_CELL_RULE_DUPLICATE_KEY, _JSON_CELL_RULE_NESTING, _REVIEW_ROUNDS_RULE_OVERSIZED,
+    _REVIEW_ROUNDS_RULE_TOP_LEVEL,
+    _REVIEW_ROUNDS_RULE_RULE_VALUE, _REVIEW_ROUNDS_RULE_KEY_SHAPE, _REVIEW_ROUNDS_RULE_ROUNDS_SHAPE,
+    _REVIEW_ROUNDS_RULE_ROUND_SHAPE, _REVIEW_ROUNDS_RULE_MISSING_FIELD, _REVIEW_ROUNDS_RULE_INTEGER_RANGE,
+    _REVIEW_ROUNDS_RULE_AFTER_MERGE, _REVIEW_ROUNDS_RULE_TOKEN_OBJECT,
+)
+
+
+def _is_leaf_integer(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= _MODEL_BREAKDOWN_LEAF_VALUE_MAX
+
+
+def _review_round_token_object_violation(token_object: object) -> str | None:
+    if not isinstance(token_object, dict):
+        return _REVIEW_ROUNDS_RULE_TOKEN_OBJECT
+    for model, variants in token_object.items():
+        if not _MODEL_BREAKDOWN_KEY_RE.fullmatch(model):
+            return _REVIEW_ROUNDS_RULE_KEY_SHAPE
+        if not isinstance(variants, dict) or not variants:
+            return _REVIEW_ROUNDS_RULE_TOKEN_OBJECT
+        for variant, classes in variants.items():
+            if not _MODEL_BREAKDOWN_KEY_RE.fullmatch(variant):
+                return _REVIEW_ROUNDS_RULE_KEY_SHAPE
+            if not isinstance(classes, dict) or not classes:
+                return _REVIEW_ROUNDS_RULE_TOKEN_OBJECT
+            for token_class, count in classes.items():
+                if not _MODEL_BREAKDOWN_KEY_RE.fullmatch(token_class):
+                    return _REVIEW_ROUNDS_RULE_KEY_SHAPE
+                if not _is_leaf_integer(count):
+                    return _REVIEW_ROUNDS_RULE_INTEGER_RANGE
+    return None
+
+
+def _review_round_violation(review_round: object) -> str | None:
+    if not isinstance(review_round, dict):
+        return _REVIEW_ROUNDS_RULE_ROUND_SHAPE
+    required_fields = (*_REVIEW_ROUND_COUNT_FIELDS, *_REVIEW_ROUND_TOKEN_FIELDS)
+    if any(field not in review_round for field in required_fields):
+        return _REVIEW_ROUNDS_RULE_MISSING_FIELD
+    for field, value in review_round.items():
+        if field in _REVIEW_ROUND_TOKEN_FIELDS:
+            violation = _review_round_token_object_violation(value)
+            if violation is not None:
+                return violation
+        elif field in _REVIEW_ROUND_FLAG_FIELDS:
+            if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+                return _REVIEW_ROUNDS_RULE_AFTER_MERGE
+        else:
+            # A count field or an additive field from a newer writer: both are key-shaped names holding an integer.
+            if not _MODEL_BREAKDOWN_KEY_RE.fullmatch(field):
+                return _REVIEW_ROUNDS_RULE_KEY_SHAPE
+            if not _is_leaf_integer(value):
+                return _REVIEW_ROUNDS_RULE_INTEGER_RANGE
+    return None
+
+
+def _review_rounds_cell_violation(decoded: object) -> str | None:
+    """The fixed rule text for the first structural violation in a decoded review_rounds value, else None.
+    Structure only: no membership, skill-set or rule-value check runs here, so a label, skill or rule a newer
+    writer added never makes this checkout refuse the ledger."""
+    if not isinstance(decoded, dict) or set(decoded) != {"rule", "rounds"}:
+        return _REVIEW_ROUNDS_RULE_TOP_LEVEL
+    rule_value = decoded["rule"]
+    if isinstance(rule_value, bool) or not isinstance(rule_value, int) or not 0 <= rule_value <= _MODEL_BREAKDOWN_LEAF_VALUE_MAX:
+        return _REVIEW_ROUNDS_RULE_RULE_VALUE
+    rounds_by_skill = decoded["rounds"]
+    if not isinstance(rounds_by_skill, dict):
+        return _REVIEW_ROUNDS_RULE_ROUNDS_SHAPE
+    for skill, review_rounds in rounds_by_skill.items():
+        if not _MODEL_BREAKDOWN_KEY_RE.fullmatch(skill):
+            return _REVIEW_ROUNDS_RULE_KEY_SHAPE
+        if not isinstance(review_rounds, list):
+            return _REVIEW_ROUNDS_RULE_ROUNDS_SHAPE
+        for review_round in review_rounds:
+            violation = _review_round_violation(review_round)
+            if violation is not None:
+                return violation
+    return None
+
+
+def _decode_review_rounds_cell(cell: str, line_no: int) -> dict | None:
+    """Decode one review_rounds cell: "" is None (not captured); a longer cell than
+    _REVIEW_ROUNDS_CELL_READ_MAX_CHARS is refused before parsing; anything else must be structurally valid
+    (see _review_rounds_cell_violation). Returns the whole object, unknown round keys included. Every message
+    names a fixed rule, never cell text."""
+    if cell == "":
+        return None
+    if len(cell) > _REVIEW_ROUNDS_CELL_READ_MAX_CHARS:
+        rule: str | None = _REVIEW_ROUNDS_RULE_OVERSIZED
+        decoded: object = None
+    else:
+        decoded, rule = _load_json_cell(cell)
+        if rule is None:
+            rule = _review_rounds_cell_violation(decoded)
+    if rule is not None:
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed review_rounds ({rule})")
+    return decoded
+
+
+# JSON column -> the decoder that names it in its errors.
+_PR_COST_JSON_COLUMN_DECODERS = {
+    "model_breakdown": _decode_model_breakdown_cell,
+    "review_rounds": _decode_review_rounds_cell,
+}
 
 
 def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
@@ -283,7 +435,8 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
             raise _PrCostLedgerParseError(f"line {line_no}: malformed {bool_col} (expected true/false)")
         row[bool_col] = row[bool_col] == "true"
 
-    row["model_breakdown"] = _decode_model_breakdown_cell(row["model_breakdown"], line_no)
+    for json_col, decode_cell in _PR_COST_JSON_COLUMN_DECODERS.items():
+        row[json_col] = decode_cell(row[json_col], line_no)
     return row
 
 
@@ -294,9 +447,10 @@ def _current_cells_from_file_row(cells: list[str], file_columns: tuple[str, ...]
     if len(cells) != len(file_columns):
         message = f"line {line_no}: expected {len(file_columns)} columns, got {len(cells)}"
         if len(cells) == len(file_columns) - 1:
-            if file_columns == _PR_COST_LEDGER_PRE_INVALID_USAGE_COLUMNS:
+            last_column = file_columns[-1]
+            if last_column in _PR_COST_JSON_COLUMN_DECODERS:
                 message += " (if an editor trimmed trailing whitespace, append a tab to this line)"
-            elif file_columns == _PR_COST_LEDGER_COLUMNS:
+            elif _PR_COST_LEDGER_COLUMN_DEFAULTS.get(last_column, ""):
                 message += " (restore the column's correct value instead of a bare tab)"
         raise _PrCostLedgerParseError(message)
     cell_by_column = dict(zip(file_columns, cells, strict=True))
@@ -374,8 +528,8 @@ def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_L
             cell = "true" if value else "false"
         elif col in _PR_COST_FLOAT_COLUMNS:
             cell = f"{value:.6f}"
-        elif col in _PR_COST_JSON_COLUMNS:
-            cell = "" if value is None else _encode_model_breakdown_cell(value)
+        elif col in _PR_COST_JSON_COLUMN_DECODERS:
+            cell = "" if value is None else _encode_json_cell(value)
         else:
             cell = str(value)
         if "\t" in cell or "\n" in cell or "\r" in cell:
@@ -433,8 +587,8 @@ def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already
 
 def _pr_cost_ledger_value_for_comparison(column: str, value):
     """A parsed cell value as the write postcondition compares it: floats at
-    the ledger's own six-decimal precision, everything else (model_breakdown
-    included, as its decoded value) as-is."""
+    the ledger's own six-decimal precision, everything else (the JSON cells
+    included, as their decoded values) as-is."""
     if column in _PR_COST_FLOAT_COLUMNS:
         return round(value, 6)
     return value

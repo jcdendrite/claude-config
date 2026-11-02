@@ -14,15 +14,22 @@ import pytest
 from transcript_analysis import pr_cost_export, pr_cost_ledger
 
 from ._pr_cost_helpers import (
+    _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL,
     _PRE_MODEL_HEADER_LINE,
+    _cell_with,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
+    _first_round,
     _parse_pr_cost_export_provenance_line,
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
     _pre_model_row_line,
+    _review_rounds_cell_dropping,
     _sample_model_breakdown,
     _sample_pr_cost_row,
+    _sample_review_round,
+    _sample_review_rounds,
+    _tokens,
 )
 from .conftest import _two_declared_roots
 
@@ -198,9 +205,10 @@ class TestRedactPrCostRowForExportColumnShape:
             "distinct_top_level_dirs", "distinct_file_extensions",
             "tests_changed", "plan_file_added", "risk_surface_flag",
         }
-        # Documentation only: it passes through un-tokenized, and TestPrCostExportModelBreakdown pins that
-        # decision. It stays DO-NOT-PUBLISH because it rides an export row.
-        model_bearing_row_level = {"model_breakdown"}
+        # Documentation only: model_breakdown passes through un-tokenized (TestPrCostExportModelBreakdown pins that
+        # decision) and review_rounds passes through vocabulary-filtered (TestPrCostExportReviewRounds). Both stay
+        # DO-NOT-PUBLISH because they ride an export row.
+        model_bearing_row_level = {"model_breakdown", "review_rounds"}
         triaged = (
             tokenized | date_truncated | renamed_to_correction_count | approved_passthrough | model_bearing_row_level
         )
@@ -258,6 +266,178 @@ class TestPrCostExportModelBreakdown:
             _parse_pr_cost_export_provenance_line(before_lines[0])["corpus"]
             == _parse_pr_cost_export_provenance_line(after_lines[0])["corpus"]
         )
+
+
+_VOCABULARY_SENTINEL = "zzsentinelzz"  # passes the cell key rule, so it can stand in any key position
+_DROPPED_LINE_PREFIX = "pr-cost-export: dropped "
+
+
+def _dropped_keys_line(count: int) -> str:
+    return (
+        f"pr-cost-export: dropped {count} review_rounds key(s) this checkout does not know -- some rows lack fields,"
+        " skills or models a newer checkout recorded, so their token splits can under-sum their dollars; re-export"
+        " from an updated checkout before summing rounds (see docs/pr-cost.md)"
+    )
+
+
+def _export_one_row(tmp_path, monkeypatch, cell) -> tuple[dict, dict, str]:
+    """Exports a one-row ledger holding `cell`. Returns (the exported row's cells, the provenance key=value dict,
+    the file's text)."""
+    return _export_ledger_rows(tmp_path, monkeypatch, [_sample_pr_cost_row(review_rounds=cell)])
+
+
+def _export_ledger_rows(tmp_path, monkeypatch, ledger_rows: list[dict]) -> tuple[dict, dict, str]:
+    """Exports a ledger holding `ledger_rows`. Returns (the first exported row's cells, the provenance key=value
+    dict, the file's text)."""
+    _enable_pr_cost(tmp_path)
+    ledger_path = tmp_path / "pr-cost-ledger.tsv"
+    monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+    pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, ledger_rows)
+    monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+    out_path = tmp_path / "export.tsv"
+    pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+    text = out_path.read_text()
+    lines = text.splitlines()
+    return _parse_pr_cost_export_row(lines[2]), _parse_pr_cost_export_provenance_line(lines[0]), text
+
+
+def _plant_sentinel_at(position: str, token_field: str):
+    """A cell mutation planting _VOCABULARY_SENTINEL as a model, variant or class key under `token_field` of the first
+    round, beside the keys already there."""
+    planted_value = {"model": {"standard": _tokens()}, "variant": _tokens(), "class": 1}[position]
+
+    def plant(cell: dict) -> None:
+        models = _first_round(cell)[token_field]
+        variants = next(iter(models.values()))
+        classes = next(iter(variants.values()))
+        {"model": models, "variant": variants, "class": classes}[position][_VOCABULARY_SENTINEL] = planted_value
+
+    return plant
+
+
+class TestPrCostExportReviewRounds:
+    def test_a_known_vocabulary_cell_exports_value_identical_in_canonical_encoding_with_a_zero_count_and_no_stderr_line(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        row, provenance, _text = _export_one_row(tmp_path, monkeypatch, _sample_review_rounds())
+
+        assert row["review_rounds"] == _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL
+        assert provenance["review_rounds_dropped_keys"] == "0"
+        assert _DROPPED_LINE_PREFIX not in capsys.readouterr().err
+
+    def test_a_not_captured_cell_exports_empty_with_a_zero_count(self, tmp_path, fake_projects, monkeypatch, capsys):
+        row, provenance, _text = _export_one_row(tmp_path, monkeypatch, None)
+
+        assert row["review_rounds"] == ""
+        assert provenance["review_rounds_dropped_keys"] == "0"
+        assert _DROPPED_LINE_PREFIX not in capsys.readouterr().err
+
+    def test_the_provenance_key_follows_legacy_machine_value_rows(self, tmp_path, fake_projects, monkeypatch):
+        _row, provenance, _text = _export_one_row(tmp_path, monkeypatch, _sample_review_rounds())
+
+        provenance_keys = list(provenance)
+        assert provenance_keys[provenance_keys.index("legacy_machine_value_rows") + 1] == "review_rounds_dropped_keys"
+
+    @pytest.mark.parametrize(
+        "mutate,expected_dropped,expected_survivor_mutate",
+        [
+            pytest.param(
+                lambda cell: cell["rounds"].update({"future-review": [_sample_review_round(), _sample_review_round()]}),
+                1, lambda cell: None, id="unknown-skill-holding-two-rounds",
+            ),
+            pytest.param(
+                lambda cell: cell["rounds"].update({"code-review": [
+                    {**_sample_review_round(), "future-count": 1}, {**_sample_review_round(), "future-count": 2},
+                ]}),
+                2, lambda cell: cell["rounds"].update({"code-review": [_sample_review_round(), _sample_review_round()]}),
+                id="unknown-round-key-on-each-of-two-rounds",
+            ),
+            pytest.param(
+                lambda cell: _first_round(cell)["main_tokens"].update(
+                    {"claude-future-9": {"standard": _tokens(input=1), "fast": _tokens(input=2)}}
+                ),
+                1, lambda cell: None, id="unknown-model-holding-two-variants-of-five-classes",
+            ),
+            pytest.param(
+                lambda cell: _first_round(cell).update({"main_tokens": {"claude-sonnet-5": {"warp": _tokens(input=1)}}}),
+                1, lambda cell: _first_round(cell).update({"main_tokens": {}}), id="known-model-with-only-an-unknown-variant",
+            ),
+            pytest.param(
+                lambda cell: _first_round(cell).update(
+                    {"main_tokens": {"claude-sonnet-5": {"standard": {"future_a": 1, "future_b": 2}}}}
+                ),
+                2, lambda cell: _first_round(cell).update({"main_tokens": {}}),
+                id="known-model-and-variant-with-only-unknown-classes",
+            ),
+            pytest.param(
+                lambda cell: cell["rounds"].update({"claude-sonnet-5": [_sample_review_round()]}),
+                1, lambda cell: None, id="rate-table-model-id-at-the-skill-position",
+            ),
+            pytest.param(
+                lambda cell: _first_round(cell).update({"main_tokens": {"code-review": {"standard": _tokens(input=1)}}}),
+                1, lambda cell: _first_round(cell).update({"main_tokens": {}}), id="skill-name-at-the-model-position",
+            ),
+        ],
+    )
+    def test_unknown_vocabulary_is_dropped_by_position_counted_by_hand_and_the_exported_cell_still_decodes(
+        self, tmp_path, fake_projects, monkeypatch, capsys, mutate, expected_dropped, expected_survivor_mutate,
+    ):
+        row, provenance, _text = _export_one_row(tmp_path, monkeypatch, _cell_with(mutate))
+
+        assert provenance["review_rounds_dropped_keys"] == str(expected_dropped)
+        decoded = pr_cost_ledger._decode_review_rounds_cell(row["review_rounds"], 2)
+        assert decoded == _cell_with(expected_survivor_mutate)
+        assert row["review_rounds"] == pr_cost_ledger._encode_json_cell(decoded)
+        assert _dropped_keys_line(expected_dropped) in capsys.readouterr().err.splitlines()
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            pytest.param(lambda cell: cell["rounds"].update({_VOCABULARY_SENTINEL: []}), id="skill"),
+            pytest.param(lambda cell: _first_round(cell).update({_VOCABULARY_SENTINEL: 1}), id="round-key"),
+            *[
+                pytest.param(_plant_sentinel_at(position, token_field), id=f"{position}-in-{token_field}")
+                for token_field in ("main_tokens", "agent_tokens")
+                for position in ("model", "variant", "class")
+            ],
+        ],
+    )
+    def test_a_key_shaped_sentinel_at_each_key_position_never_reaches_the_export_or_any_console_output(
+        self, tmp_path, fake_projects, monkeypatch, capsys, mutate,
+    ):
+        _row, provenance, text = _export_one_row(tmp_path, monkeypatch, _cell_with(mutate))
+
+        captured = capsys.readouterr()
+        assert _VOCABULARY_SENTINEL not in text + captured.out + captured.err
+        assert provenance["review_rounds_dropped_keys"] == "1"
+        assert _dropped_keys_line(1) in captured.err.splitlines()
+
+    def test_unknown_keys_in_a_superseded_row_are_not_counted_because_only_the_current_row_is_exported(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        superseded_row = _sample_pr_cost_row(
+            captured_at="2026-01-01T00:00:00Z", review_rounds=_review_rounds_cell_dropping(3),
+        )
+        current_row = _sample_pr_cost_row(
+            captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z", review_rounds=_sample_review_rounds(),
+        )
+
+        row, provenance, text = _export_ledger_rows(tmp_path, monkeypatch, [superseded_row, current_row])
+
+        assert row["review_rounds"] == _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL
+        assert len(text.splitlines()) == 3
+        assert provenance["review_rounds_dropped_keys"] == "0"
+        assert _DROPPED_LINE_PREFIX not in capsys.readouterr().err
+
+    def test_a_drop_prints_the_wrote_line_on_stdout_and_the_counted_dropped_keys_line_on_stderr(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        _export_one_row(tmp_path, monkeypatch, _review_rounds_cell_dropping(2))
+
+        captured = capsys.readouterr()
+        assert "pr-cost-export: wrote 1 row(s)" in captured.out
+        assert _dropped_keys_line(2) in captured.err.splitlines()
+        assert _DROPPED_LINE_PREFIX not in captured.out
 
 
 class TestCollapsePrCostRowsToCurrent:

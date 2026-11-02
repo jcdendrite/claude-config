@@ -15,7 +15,7 @@ from pathlib import Path
 
 import _config
 from _config_dir import declared_roots_file_is_overridden
-from transcript_analysis import ledger_common, pr_cost_ledger, redaction, scope
+from transcript_analysis import ledger_common, pr_cost_ledger, pricing, redaction, review_rounds, scope
 
 # pr_cost_ledger._PR_COST_LEDGER_COLUMNS with a leading account column.
 # head_branch is renamed head_branch_label: a stored label is per-run, not a
@@ -60,6 +60,64 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
     return collapsed
 
 
+def _tokens_for_export(token_object: dict) -> tuple[dict, int]:
+    """A round's {model: {variant: {class: int}}} with every key outside the rate table, the pricing variants or the
+    token classes removed, and the number of keys removed. A model or variant object the removal empties is
+    removed too and not counted, because the keys that emptied it were."""
+    kept_models: dict = {}
+    dropped = 0
+    for model, variants in token_object.items():
+        if model not in pricing._MODEL_BASE_INPUT_RATES:
+            dropped += 1
+            continue
+        kept_variants: dict = {}
+        for variant, classes in variants.items():
+            if variant not in pricing._PRICING_VARIANTS:
+                dropped += 1
+                continue
+            kept_classes = {token_class: count for token_class, count in classes.items() if token_class in pricing._TOKEN_CLASSES}
+            dropped += len(classes) - len(kept_classes)
+            if kept_classes:
+                kept_variants[variant] = kept_classes
+        if kept_variants:
+            kept_models[model] = kept_variants
+    return kept_models, dropped
+
+
+def _review_rounds_cell_for_export(cell: dict | None) -> tuple[dict | None, int]:
+    """The review_rounds cell with every key this checkout's vocabulary does not know removed, and the number of keys
+    removed. Each key position is checked against its own vocabulary only, so a name known at one position is
+    unknown at every other. The top level passes through, because the decoder already fixes it to `rule` and `rounds`.
+    The count adds one per key removed at the highest level that removes it, and nothing inside a removed key's
+    value."""
+    if cell is None:
+        return None, 0
+    known_round_keys = {
+        *pr_cost_ledger._REVIEW_ROUND_COUNT_FIELDS, *pr_cost_ledger._REVIEW_ROUND_TOKEN_FIELDS,
+        *pr_cost_ledger._REVIEW_ROUND_FLAG_FIELDS,
+    }
+    kept_rounds_by_skill: dict = {}
+    dropped = 0
+    for skill, rounds in cell["rounds"].items():
+        if skill not in review_rounds.REVIEW_SKILLS:
+            dropped += 1
+            continue
+        kept_rounds = []
+        for review_round in rounds:
+            kept_round = {}
+            for key, value in review_round.items():
+                if key not in known_round_keys:
+                    dropped += 1
+                elif key in pr_cost_ledger._REVIEW_ROUND_TOKEN_FIELDS:
+                    kept_round[key], dropped_in_tokens = _tokens_for_export(value)
+                    dropped += dropped_in_tokens
+                else:
+                    kept_round[key] = value
+            kept_rounds.append(kept_round)
+        kept_rounds_by_skill[skill] = kept_rounds
+    return {"rule": cell["rule"], "rounds": kept_rounds_by_skill}, dropped
+
+
 def _redact_pr_cost_row_for_export(
     row: dict, ordinal: int, correction_count: int,
     host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict, machine_map: dict,
@@ -99,10 +157,11 @@ def _redact_pr_cost_row_for_export(
     return exported
 
 
-def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, list[str]]:
+def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, int, list[str]]:
     """Read every resolved root's own pr-cost ledger. Returns
     (formatted_rows, declared, opted_in, skipped_not_opted_in,
-    legacy_header_accounts, legacy_machine_value_rows, corpus_identities),
+    legacy_header_accounts, legacy_machine_value_rows,
+    review_rounds_dropped_keys, corpus_identities),
     fully materialized, with no filesystem writes of its own. See
     docs/pr-cost.md's "Redacted cross-account export" section for account
     iteration order and corpus_identities' construction.
@@ -111,6 +170,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
     root_by_resolved = {root.resolve(): root for root in roots}
     declared = len(roots)
     opted_in = skipped_not_opted_in = legacy_header_accounts = legacy_machine_value_rows = 0
+    review_rounds_dropped_keys = 0
     formatted_rows: list[str] = []
     corpus_identities: list[str] = []
     host_map: dict[tuple[int, str], str] = {}
@@ -224,8 +284,11 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
             # one legacy machine value is counted once here, not once per raw capture.
             if not ledger_common._MACHINE_IDENTITY_RE.match(row["machine"]):
                 legacy_machine_value_rows += 1
+            filtered_review_rounds, dropped_in_row = _review_rounds_cell_for_export(row["review_rounds"])
+            review_rounds_dropped_keys += dropped_in_row
             exported = _redact_pr_cost_row_for_export(
-                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map, machine_map
+                {**row, "review_rounds": filtered_review_rounds}, ordinal, correction_count,
+                host_map, repo_map, pr_map, branch_map, machine_map,
             )
             try:
                 formatted_rows.append(pr_cost_ledger._format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
@@ -235,14 +298,14 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
 
     return (
         formatted_rows, declared, opted_in, skipped_not_opted_in,
-        legacy_header_accounts, legacy_machine_value_rows, corpus_identities,
+        legacy_header_accounts, legacy_machine_value_rows, review_rounds_dropped_keys, corpus_identities,
     )
 
 
 def _pr_cost_export_provenance_line(
     *, exported_at: datetime, declared: int, opted_in: int, skipped_not_opted_in: int,
-    legacy_header_accounts: int, legacy_machine_value_rows: int, corpus_identities: Sequence[str],
-    corpus_override: bool,
+    legacy_header_accounts: int, legacy_machine_value_rows: int, review_rounds_dropped_keys: int,
+    corpus_identities: Sequence[str], corpus_override: bool,
 ) -> str:
     """Builds the provenance line. corpus= is a same-corpus indicator only,
     never a security boundary -- see docs/pr-cost.md's "Redacted
@@ -256,6 +319,7 @@ def _pr_cost_export_provenance_line(
         f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
         f" skipped_not_opted_in={skipped_not_opted_in} legacy_header_accounts={legacy_header_accounts}"
         f" legacy_machine_value_rows={legacy_machine_value_rows}"
+        f" review_rounds_dropped_keys={review_rounds_dropped_keys}"
         f" corpus={digest} corpus_override={int(corpus_override)}"
     )
 
@@ -334,14 +398,14 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
 
     (
         formatted_rows, declared, opted_in, skipped_not_opted_in, legacy_header_accounts,
-        legacy_machine_value_rows, corpus_identities,
+        legacy_machine_value_rows, review_rounds_dropped_keys, corpus_identities,
     ) = _pr_cost_export_rows(roots)
 
     provenance_line = _pr_cost_export_provenance_line(
         exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
         skipped_not_opted_in=skipped_not_opted_in, legacy_header_accounts=legacy_header_accounts,
-        legacy_machine_value_rows=legacy_machine_value_rows, corpus_identities=corpus_identities,
-        corpus_override=declared_roots_file_is_overridden(),
+        legacy_machine_value_rows=legacy_machine_value_rows, review_rounds_dropped_keys=review_rounds_dropped_keys,
+        corpus_identities=corpus_identities, corpus_override=declared_roots_file_is_overridden(),
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
@@ -401,6 +465,13 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
         f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"
         f" account(s) to {out}"
     )
+    if review_rounds_dropped_keys:
+        print(
+            f"pr-cost-export: dropped {review_rounds_dropped_keys} review_rounds key(s) this checkout does not know --"
+            " some rows lack fields, skills or models a newer checkout recorded, so their token splits can under-sum"
+            " their dollars; re-export from an updated checkout before summing rounds (see docs/pr-cost.md)",
+            file=sys.stderr,
+        )
     print(
         "pr-cost-export: inspect this file outside a Claude Code session (e.g. in a separate"
         " terminal) -- reading it back with the Read tool, or catting it in-session, copies its"

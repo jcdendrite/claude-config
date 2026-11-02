@@ -8,6 +8,7 @@ why."""
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import fnmatch
 import json
@@ -21,7 +22,18 @@ from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
 import _config
-from transcript_analysis import corpus, cost, gh_cli, ledger_common, pr_cost_ledger, pricing, redaction, render, scope
+from transcript_analysis import (
+    corpus,
+    cost,
+    gh_cli,
+    ledger_common,
+    pr_cost_ledger,
+    pricing,
+    redaction,
+    render,
+    review_rounds,
+    scope,
+)
 
 # Provisional placeholder ("As-of rule"): a merged PR's branch keeps
 # accruing local transcript activity for a while after merge, so
@@ -239,6 +251,20 @@ def _build_model_breakdown_cell(by_model: dict) -> dict:
     }
 
 
+def _token_membership_rule(tokens_by_model: dict) -> str | None:
+    """The first membership rule a {model: {variant: {class: ...}}} value breaks, else None: every model is a rate-table
+    key (`model-membership`), every variant a pricing variant and every group's classes exactly the token classes
+    (`label-membership`). Shared by the model_breakdown and review_rounds checks."""
+    if any(model not in pricing._MODEL_BASE_INPUT_RATES for model in tokens_by_model):
+        return "model-membership"
+    for variants in tokens_by_model.values():
+        if any(variant not in pricing._PRICING_VARIANTS for variant in variants):
+            return "label-membership"
+        if any(set(classes) != set(pricing._TOKEN_CLASSES) for classes in variants.values()):
+            return "label-membership"
+    return None
+
+
 # Closed set of check rules, in check order, each with the cause its per-PR line prints.
 _MODEL_BREAKDOWN_CHECK_CAUSES: dict[str, str] = {
     "shape": "malformed transcript data or a claude-config defect",
@@ -268,21 +294,18 @@ def _check_model_breakdown_cell(cell: dict | None, row: dict) -> None:
         return
 
     try:
-        decoded_back = pr_cost_ledger._decode_model_breakdown_cell(pr_cost_ledger._encode_model_breakdown_cell(cell), 0)
+        decoded_back = pr_cost_ledger._decode_model_breakdown_cell(pr_cost_ledger._encode_json_cell(cell), 0)
         is_shape_valid = decoded_back == cell
     except pr_cost_ledger._PrCostLedgerParseError:
         is_shape_valid = False
     if not is_shape_valid:
         raise _ModelBreakdownCheckError("shape")
 
-    if any(model not in pricing._MODEL_BASE_INPUT_RATES for model in cell):
-        raise _ModelBreakdownCheckError("model-membership")
+    membership_rule = _token_membership_rule(cell)
+    if membership_rule is not None:
+        raise _ModelBreakdownCheckError(membership_rule)
 
     groups = [leaves_by_class for leaves_by_variant in cell.values() for leaves_by_class in leaves_by_variant.values()]
-    if any(variant not in pricing._PRICING_VARIANTS for leaves_by_variant in cell.values() for variant in leaves_by_variant):
-        raise _ModelBreakdownCheckError("label-membership")
-    if any(set(leaves_by_class) != set(pricing._TOKEN_CLASSES) for leaves_by_class in groups):
-        raise _ModelBreakdownCheckError("label-membership")
 
     if any(
         sum(leaves_by_class[token_class]["tokens"] for leaves_by_class in groups) != row[f"{token_class}_tokens"]
@@ -305,10 +328,200 @@ def _check_model_breakdown_cell(cell: dict | None, row: dict) -> None:
         raise _ModelBreakdownCheckError("dollars")
 
 
+def _review_round_cell(review_round: dict, merged_ts: float | None) -> dict:
+    """One round dict from review_rounds.compute_review_round_costs as its review_rounds cell value."""
+    cell = {
+        "main_usd_micros": _usd_to_micros(review_round["main_dollars"]),
+        "agent_usd_micros": _usd_to_micros(review_round["agent_dollars"]),
+        "agents": review_round["agents"], "dangling": review_round["dangling"],
+        "unpriced_turns": review_round["unpriced_turns"], "unpriced_tokens": review_round["unpriced_tokens"],
+        "invalid_usage_records": review_round["invalid_usage_records"],
+        "main_tokens": copy.deepcopy(review_round["main_tokens"]),
+        "agent_tokens": copy.deepcopy(review_round["agent_tokens"]),
+    }
+    opening_ts = corpus._parse_ts(review_round["ts"])
+    if opening_ts is not None and merged_ts is not None:
+        cell["after_merge"] = int(opening_ts >= merged_ts)
+    return cell
+
+
+def _build_review_rounds_cell(rounds: Sequence[dict], merged_at: str) -> dict | None:
+    """The review_rounds cell value for one branch's round dicts: every review skill a key, each list in sort_key
+    order. Returning None records the row with an empty cell and no degrade line."""
+    merged_ts = corpus._parse_ts(merged_at)
+    ordered_rounds = sorted(rounds, key=lambda review_round: review_round["sort_key"])
+    return {
+        "rule": review_rounds.REVIEW_ROUND_RULE,
+        "rounds": {
+            skill: [_review_round_cell(r, merged_ts) for r in ordered_rounds if r["skill"] == skill]
+            for skill in review_rounds.REVIEW_SKILLS
+        },
+    }
+
+
+# Closed set of review_rounds check rules, in check order, each with the cause its per-PR line prints. `build` is
+# the containment's rule for a builder exception, not a check of the cell.
+_REVIEW_ROUNDS_CHECK_CAUSES: dict[str, str] = {
+    "size": "more rounds than the cell admits",
+    "shape": "malformed transcript data or a claude-config defect",
+    "model-membership": "a claude-config defect",
+    "label-membership": "a claude-config defect",
+    "build": "a claude-config defect",
+}
+_REVIEW_ROUNDS_CHECK_RULES: tuple[str, ...] = tuple(_REVIEW_ROUNDS_CHECK_CAUSES)
+
+
+class _ReviewRoundsCheckError(Exception):
+    """A review_rounds cell failed one _REVIEW_ROUNDS_CHECK_RULES rule. The exception's text is the rule alone, never
+    a key or value. An unknown rule raises KeyError here, inside the check and before any write."""
+
+    def __init__(self, rule: str) -> None:
+        super().__init__(rule)
+        self.rule = rule
+        self.cause = _REVIEW_ROUNDS_CHECK_CAUSES[rule]
+
+
+def _check_review_rounds_cell(cell: dict | None) -> None:
+    """Raises _ReviewRoundsCheckError on the first failing rule, so the tool never writes a cell it would refuse to
+    read or that its own contract bounds. Checks size, shape and membership only. A None cell skips every check."""
+    if cell is None:
+        return
+
+    encoded = pr_cost_ledger._encode_json_cell(cell)
+    if len(encoded) > pr_cost_ledger._REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS:
+        raise _ReviewRoundsCheckError("size")
+
+    try:
+        is_shape_valid = pr_cost_ledger._decode_review_rounds_cell(encoded, 0) == cell
+    except pr_cost_ledger._PrCostLedgerParseError:
+        is_shape_valid = False
+    if not is_shape_valid:
+        raise _ReviewRoundsCheckError("shape")
+
+    token_objects = [
+        review_round[token_field]
+        for rounds in cell["rounds"].values() for review_round in rounds
+        for token_field in pr_cost_ledger._REVIEW_ROUND_TOKEN_FIELDS
+    ]
+    for token_object in token_objects:
+        membership_rule = _token_membership_rule(token_object)
+        if membership_rule is not None:
+            raise _ReviewRoundsCheckError(membership_rule)
+
+
+def _review_rounds_cell_outcome(
+    rounds: Sequence[dict] | None, absence: str | None, merged_at: str,
+) -> tuple[dict | None, str | None]:
+    """(cell, absence) for one row. `absence` is None for a recorded cell, else why the cell is empty: `pass-failed`,
+    `no-local-activity`, `not-built`, or a _REVIEW_ROUNDS_CHECK_RULES rule. An absence passed in builds nothing.
+    The one containment boundary: a builder or check failure costs only this cell. SystemExit and other
+    BaseException pass through."""
+    if absence is not None:
+        return None, absence
+    try:
+        cell = _build_review_rounds_cell(rounds, merged_at)
+        if cell is None:
+            return None, "not-built"
+        _check_review_rounds_cell(cell)
+    except _ReviewRoundsCheckError as exc:
+        return None, exc.rule
+    except Exception:
+        return None, "build"
+    return cell, None
+
+
+_FORCE_REFUSAL_REASON_BY_ABSENCE: dict[str, str] = {
+    "pass-failed": "the review-round pass failed",
+    "no-local-activity": "this branch has no local transcript activity",
+    "not-built": "this checkout does not record review rounds",
+}
+
+
+def _review_rounds_force_refusal(prior_cell: dict | None, new_cell: dict | None, new_absence: str | None) -> str | None:
+    """Why a --force re-capture must not replace the prior row's review_rounds cell, or None when it may. The first
+    matching case decides: a prior cell never captured is allowed; an empty new cell refuses; a lower round rule
+    refuses; under one rule, a skill with fewer rounds or a lower summed `agents` refuses; otherwise allowed."""
+    if prior_cell is None:
+        return None
+    if new_cell is None:
+        if new_absence in _REVIEW_ROUNDS_CHECK_CAUSES:
+            return f"the new cell failed its {new_absence} check"
+        return _FORCE_REFUSAL_REASON_BY_ABSENCE.get(new_absence, _FORCE_REFUSAL_REASON_BY_ABSENCE["not-built"])
+    if new_cell["rule"] < prior_cell["rule"]:
+        return "this checkout's round rule is older than the captured row's"
+    if new_cell["rule"] == prior_cell["rule"]:
+        for skill, prior_rounds in prior_cell["rounds"].items():
+            new_rounds = new_cell["rounds"].get(skill, [])
+            if len(prior_rounds) > len(new_rounds) or (
+                sum(r["agents"] for r in prior_rounds) > sum(r["agents"] for r in new_rounds)
+            ):
+                return "the re-capture is less complete under the same round rule"
+    return None
+
+
+def _review_rounds_degrade_reason(absence: str | None) -> str | None:
+    """The per-PR line's reason for an empty cell, or None when the absence is not a failure to report
+    (`no-local-activity`, `not-built`, or a recorded cell)."""
+    if absence == "pass-failed":
+        return "were not captured (the review-round pass failed)"
+    if absence in _REVIEW_ROUNDS_CHECK_CAUSES:
+        return f"failed their {absence} check ({_REVIEW_ROUNDS_CHECK_CAUSES[absence]})"
+    return None
+
+
+def _failed_cells_count_entry(pr_number: int, failed_columns: Sequence[str], account_ordinal: int | None) -> str:
+    """One count-line entry: `PR #N (cells)`, prefixed `account-K ` when account_ordinal is given."""
+    prefix = "" if account_ordinal is None else f"account-{account_ordinal} "
+    return f"{prefix}PR #{pr_number} ({' and '.join(failed_columns)})"
+
+
+def _scan_review_rounds_by_branch(args: argparse.Namespace, root: Path) -> dict[str, list[dict]]:
+    """Every review round in one account's main-thread transcripts, grouped by raw branch name. Prices only sessions
+    that open a round. Prints no scope line."""
+    session_iter, _scope_label = scope._resolve_project_scope(args, "pr-cost", include_subagents=False, roots=[root])
+    result = review_rounds.compute_review_round_costs(session_iter, resolved_roots=None, rounds_only=True)
+    rounds_by_branch: dict[str, list[dict]] = {}
+    for review_round in result["rounds"]:
+        rounds_by_branch.setdefault(review_round["branch_key"][1], []).append(review_round)
+    return rounds_by_branch
+
+
+class _AccountReviewRoundScan:
+    """One account's review-round pass, run at most once and only when first asked for. A failure is memoized and
+    printed once as its class name, never its message, which can embed a filesystem path or transcript text."""
+
+    def __init__(self, args: argparse.Namespace, root: Path, account_ordinal: int | None) -> None:
+        self._args = args
+        self._root = root
+        self._account_ordinal = account_ordinal
+        self._attempted = False
+        self.failed = False
+        # None until the pass succeeds, so reading it for a branch before ensure_run fails loudly instead of
+        # reading as "zero rounds".
+        self.rounds_by_branch: dict[str, list[dict]] | None = None
+
+    def ensure_run(self) -> None:
+        if self._attempted:
+            return
+        self._attempted = True
+        owner = "" if self._account_ordinal is None else f"account-{self._account_ordinal}'s "
+        for_account = "" if self._account_ordinal is None else f" for account-{self._account_ordinal}"
+        print(f"pr-cost: scanning {owner}transcripts for review rounds...", file=sys.stderr)
+        try:
+            self.rounds_by_branch = _scan_review_rounds_by_branch(self._args, self._root)
+        except Exception as exc:
+            self.failed = True
+            print(
+                f"pr-cost: the review-round pass failed ({type(exc).__name__}) -- any row this run records{for_account}"
+                " carries no review rounds; see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+
+
 def _new_pr_cost_row(
     *, host: str, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
     join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
-    plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict,
+    plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict, review_rounds_cell: dict | None,
 ) -> dict:
     """Assemble one ledger row dict from every piece the main loop resolved.
     head_branch is the SCRUBBED form (_assign_root_scoped_redact_label) --
@@ -362,6 +575,7 @@ def _new_pr_cost_row(
         "tests_changed": proxies["tests_changed"], "plan_file_added": proxies["plan_file_added"],
         "risk_surface_flag": proxies["risk_surface_flag"],
         "model_breakdown": _build_model_breakdown_cell(agg["by_model"]),
+        "review_rounds": review_rounds_cell,
     }
 
 
@@ -410,6 +624,14 @@ def _print_pr_cost_uncaptured(
         print("  (none)")
 
 
+def _print_already_captured(pr_number: int, machine_identity: str) -> None:
+    print(
+        f"pr-cost:   PR #{pr_number} for machine={machine_identity} is already"
+        " captured -- pass --force (with --pr) to append a correcting row",
+        file=sys.stderr,
+    )
+
+
 def cmd_pr_cost(args: argparse.Namespace) -> None:
     """CLI entry point for the pr-cost subcommand.
 
@@ -436,10 +658,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
     A --record row whose model_breakdown fails _check_model_breakdown_cell is
     still written, with an empty cell.
-    After that row's write, the loop prints a per-PR line for it.
+    A --record run that may write a row for a branch with local activity also
+    makes one review-round pass per account (_AccountReviewRoundScan), before
+    the per-branch lock and at most once. A row whose review_rounds cell is
+    empty because that pass failed, or because the cell failed its build or
+    _check_review_rounds_cell, is still written, with the empty cell.
+    After that row's write, the loop prints a per-PR line for each degraded
+    cell.
     A ledger rewritten from an older header prints one upgrade notice.
     A run that finished every branch with such a row prints a count line and
     exits 1.
+    A --force re-capture that would replace captured review rounds with none,
+    fewer or less complete ones (_review_rounds_force_refusal) is refused
+    before any write: a single-account --pr run exits 1 at once, and
+    --all-accounts skips that account and exits 1 after its summary.
     A refused write exits 1 at once.
     It suppresses that row's per-PR line, any upgrade notice, and the count
     line. Earlier branches' lines have already printed.
@@ -521,7 +753,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     branch_map: dict[tuple[int, str], str] = {}  # shared across accounts; key already includes ordinal
 
     recorded = skipped_no_sentinel = skipped_other = 0
-    rows_without_breakdown: list[str] = []
+    rows_with_failed_cells: list[str] = []
+    force_refused = False
     for root in roots:
         account_config_dir = root.parent
         ordinal = redact_ordinals[root.resolve()]
@@ -720,6 +953,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             target_branches = sorted(branch_totals)
 
         account_recorded_a_row = False
+        round_scan = _AccountReviewRoundScan(args, root, ordinal if all_accounts else None)
         for branch in target_branches:
             branch_label = redaction._assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
             print(f"pr-cost: resolving branch {branch_label}...", file=sys.stderr)
@@ -767,6 +1001,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 print(f"{message} -- skipped", file=sys.stderr)
                 continue
 
+            # This lookup is a hint: existing_rows is read under the account lock and replaced after every write.
+            # A row it finds is also in the locked read below. A row a concurrent --record appended since is caught
+            # by the locked check.
+            if not force and pr_cost_ledger._latest_pr_cost_row(
+                existing_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
+            ) is not None:
+                _print_already_captured(resolved_pr["number"], machine_identity)
+                if target_pr is not None and not all_accounts:
+                    sys.exit(1)
+                continue
+            # The round pass can outlast the ledger lock timeout, so it runs here, before the per-branch lock.
+            if branch in branch_totals:
+                round_scan.ensure_run()
+
             ledger_path.parent.mkdir(parents=True, exist_ok=True)
             lock_path = ledger_path.with_name(ledger_path.name + ".lock")
             with open(lock_path, "w") as lock_f:
@@ -784,11 +1032,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
                     )
                     if already is not None and not force:
-                        print(
-                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_identity} is already"
-                            " captured -- pass --force (with --pr) to append a correcting row",
-                            file=sys.stderr,
-                        )
+                        _print_already_captured(resolved_pr["number"], machine_identity)
                         if target_pr is not None and not all_accounts:
                             sys.exit(1)
                         continue
@@ -822,12 +1066,23 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         )
                     agg = branch_totals.get(branch) or cost._new_pr_cost_agg()
                     captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+                    if branch not in branch_totals:
+                        rounds_absence: str | None = "no-local-activity"
+                    elif round_scan.failed:
+                        rounds_absence = "pass-failed"
+                    else:
+                        rounds_absence = None
+                    review_rounds_cell, rounds_absence = _review_rounds_cell_outcome(
+                        None if rounds_absence else round_scan.rounds_by_branch.get(branch, []),
+                        rounds_absence, resolved_pr["mergedAt"],
+                    )
                     new_row = _new_pr_cost_row(
                         host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
                         enrichment=enrichment, join_confidence=join_confidence, status=row_status,
                         machine=machine_identity, captured_at=captured_at,
                         supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
+                        review_rounds_cell=review_rounds_cell,
                     )
                     # A failed check degrades this row to an empty cell instead of costing its scalars or the run's
                     # remaining branches; the loop reports it after the write.
@@ -837,6 +1092,21 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     except _ModelBreakdownCheckError as exc:
                         failed_breakdown_check = exc
                         new_row["model_breakdown"] = None
+                    if force and already is not None:
+                        refusal_reason = _review_rounds_force_refusal(
+                            already["review_rounds"], review_rounds_cell, rounds_absence,
+                        )
+                        if refusal_reason is not None:
+                            print(
+                                f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_identity}: refusing --force"
+                                f" -- the new row would lose captured review rounds ({refusal_reason});"
+                                " see docs/pr-cost.md",
+                                file=sys.stderr,
+                            )
+                            if target_pr is not None and not all_accounts:
+                                sys.exit(1)
+                            force_refused = True
+                            continue
                     try:
                         updated_rows = pr_cost_ledger._append_pr_cost_ledger_row(current_rows, new_row, already, force)
                     except ValueError as exc:
@@ -860,6 +1130,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     " docs/pr-cost.md in the claude-config repo",
                     file=sys.stderr,
                 )
+            failed_columns: list[str] = []
             if failed_breakdown_check is not None:
                 print(
                     f"pr-cost:   PR #{resolved_pr['number']}: per-model breakdown failed its {failed_breakdown_check.rule}"
@@ -867,8 +1138,18 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     " see docs/pr-cost.md",
                     file=sys.stderr,
                 )
-                rows_without_breakdown.append(
-                    f"{f'account-{ordinal} ' if all_accounts else ''}PR #{resolved_pr['number']}"
+                failed_columns.append("model_breakdown")
+            rounds_degrade_reason = _review_rounds_degrade_reason(rounds_absence)
+            if rounds_degrade_reason is not None:
+                print(
+                    f"pr-cost:   PR #{resolved_pr['number']}: review rounds {rounds_degrade_reason}"
+                    " -- recorded the row without them; see docs/pr-cost.md",
+                    file=sys.stderr,
+                )
+                failed_columns.append("review_rounds")
+            if failed_columns:
+                rows_with_failed_cells.append(
+                    _failed_cells_count_entry(resolved_pr["number"], failed_columns, ordinal if all_accounts else None)
                 )
 
         if account_recorded_a_row:
@@ -885,12 +1166,13 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
-    if rows_without_breakdown:
+    if rows_with_failed_cells:
         print(
-            f"pr-cost: {len(rows_without_breakdown)} row(s) recorded without a per-model breakdown"
-            f" ({', '.join(rows_without_breakdown)}); those rows are valid -- once the cause is fixed, re-capture each"
+            f"pr-cost: {len(rows_with_failed_cells)} row(s) recorded with failed cells"
+            f" ({', '.join(rows_with_failed_cells)}); those rows are valid -- once the cause is fixed, re-capture each"
             " with --record --force --pr N and this run's account flags, only while every session of that PR is still"
             " inside cleanupPeriodDays (see docs/pr-cost.md)",
             file=sys.stderr,
         )
+    if rows_with_failed_cells or force_refused:
         sys.exit(1)

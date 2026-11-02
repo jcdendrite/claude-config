@@ -1,6 +1,7 @@
 """Tests for transcript_analysis/pr_cost.py (cmd_pr_cost) -- local-mechanics coverage only
 (attribution, ledger I/O, correction contract, mechanical proxies, join logic that doesn't
 require faking gh). gh-integration scenarios live in test_transcript_pr_cost_gh.py."""
+import fcntl
 import json
 import os
 import random
@@ -19,27 +20,64 @@ from transcript_analysis import (
     pr_cost_export,
     pr_cost_ledger,
     pricing,
+    review_rounds,
     scope,
 )
 
 from ._pr_cost_helpers import (
     _COUNT_LINE_STEM,
+    _FORCE_REFUSAL_STEM,
     _LEDGER_DIR_MARKER,
     _PER_PR_DEGRADE_STEM,
     _PRE_MODEL_HEADER_LINE,
+    _PRE_REVIEW_ROUNDS_HEADER_LINE,
     _PRIOR_ROW_MARKER,
+    _ROUNDS_PASS_FAILURE_STEM,
+    _ROUNDS_PER_PR_STEM,
     _UPGRADE_NOTICE_STEM,
+    _cell_with,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
+    _first_round,
+    _force_refusal_line,
     _make_mkstemp_create_0644,
     _merged_pr,
+    _parse_pr_cost_export_row,
     _pr_cost_args,
     _pr_cost_export_args,
     _pre_model_row_line,
+    _pre_review_rounds_row_line,
+    _round_dict,
+    _rounds_pass_failure_line,
+    _rounds_per_pr_line,
+    _rounds_scan_start_line,
     _sample_model_breakdown,
     _sample_pr_cost_row,
+    _sample_review_round,
+    _sample_review_rounds,
+    _tokens,
+    _upgrade_notice_line,
 )
-from .conftest import _cost_args, _extract_grand_total, _priced, _two_declared_roots, _write_jsonl, _write_subagent_jsonl
+from ._review_round_corpus_helpers import (
+    _LEAK_SENTINEL_PREFIX,
+    _NON_STRING_TIMESTAMP_RECORD,
+    _leak_sentinel,
+    _malformed_usage_turn,
+    _write_orchestrator_free_text_corpus,
+)
+from .conftest import (
+    _agent_use,
+    _cost_args,
+    _extract_grand_total,
+    _priced,
+    _skill_block,
+    _slash_user,
+    _two_declared_roots,
+    _user_msg,
+    _write_jsonl,
+    _write_subagent_dispatch,
+    _write_subagent_jsonl,
+)
 
 
 class TestComputePrCostBranchTotals:
@@ -496,7 +534,7 @@ class TestPrCostBranchRedactionJoinIntegrity:
             enrichment=None, join_confidence="medium", status=pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1",
             captured_at="2026-01-01T00:00:00Z", supersedes="",
             plan_glob=pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
-            ordinal=1, branch_map={},
+            ordinal=1, branch_map={}, review_rounds_cell=None,
         )
         assert row["head_branch"] != self._HEXISH_BRANCH
         assert row["head_branch"] == "account-1/branch-1"
@@ -726,44 +764,6 @@ class TestPrCostReportOrchestration:
         err = capsys.readouterr().err
         assert str(fake_projects.parent) not in err
         assert str(other_root) not in err
-
-    def test_resolves_project_scope_exactly_once_across_multi_pr_run(
-        self, fake_projects, tmp_path, monkeypatch,
-    ):
-        """The local corpus is scanned exactly once per invocation
-        regardless of how many PRs end up in scope -- wraps (not replaces)
-        _resolve_project_scope with a counting closure, matching
-        TestRootsThreadingSpy's own spy-wrap pattern."""
-        _enable_pr_cost(tmp_path)
-        ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
-        ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
-            _priced("claude-sonnet-5", input=500_000, branch="feature-b"),
-        ])
-        merged_prs = [
-            {"number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
-             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
-            {"number": 2, "headRefName": "feature-b", "additions": 1, "deletions": 1,
-             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z"},
-        ]
-        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
-
-        calls: list[object] = []
-        real_resolve = scope._resolve_project_scope
-
-        def counting_resolve(*a, **kw):
-            calls.append(1)
-            return real_resolve(*a, **kw)
-
-        monkeypatch.setattr(scope, "_resolve_project_scope", counting_resolve)
-
-        args = _pr_cost_args(record=True)
-        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
-
-        assert len(calls) == 1
 
 
 class TestPrCostRecordingConfigDirUnresolvable:
@@ -1097,7 +1097,7 @@ def _row_from_agg(agg: dict) -> dict:
         branch="feature-a", agg=agg, enrichment=None, join_confidence="medium",
         status=pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1", captured_at="2026-01-01T00:00:00Z", supersedes="",
         plan_glob=pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
-        ordinal=1, branch_map={},
+        ordinal=1, branch_map={}, review_rounds_cell=None,
     )
 
 
@@ -1680,7 +1680,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         captured = capsys.readouterr()
         err_lines = captured.err.splitlines()
         assert _per_pr_degrade_line(1) in err_lines
-        assert _count_line(1, "PR #1") in err_lines
+        assert _count_line(1, "PR #1 (model_breakdown)") in err_lines
         assert not any("usd_micros" in line for line in err_lines)
         _assert_no_markers(captured)
 
@@ -1708,7 +1708,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
     ):
         """A negative cache_read token count never reaches
         _build_model_breakdown_cell at all. cost._compute_pr_cost_branch_totals's
-        own validate-before-price gate (cost._usage_is_invalid) excludes it
+        own validate-before-price gate (session_pricing._usage_is_invalid) excludes it
         upstream. feature-a's branch ends up with no corpus activity. Its cell
         is the same "{}" shape that TestPrCostRecordWritesAndReportsTheBreakdown's
         own test_unpriced_only_branch_records_an_empty_object_cell_distinct_from_not_recorded
@@ -1775,7 +1775,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         assert second_account_rows[0]["model_breakdown"] is not None
         captured = capsys.readouterr()
         assert "recorded 2 of 2 declared accounts" in captured.out
-        assert captured.err.strip().splitlines()[-1] == _count_line(1, "account-1 PR #1")
+        assert captured.err.strip().splitlines()[-1] == _count_line(1, "account-1 PR #1 (model_breakdown)")
 
     def test_forced_recapture_that_fails_its_check_appends_an_empty_cell_row_over_a_populated_one(
         self, fake_projects, tmp_path, monkeypatch,
@@ -1903,7 +1903,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
             pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         err_lines = capsys.readouterr().err.splitlines()
-        assert _count_line(2, "PR #1, PR #2") in err_lines
+        assert _count_line(2, "PR #1 (model_breakdown), PR #2 (model_breakdown)") in err_lines
 
     def test_all_accounts_degrades_in_both_accounts_are_listed_with_their_account_prefixes(
         self, tmp_path, monkeypatch, capsys,
@@ -1923,7 +1923,9 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         with pytest.raises(SystemExit):
             pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
 
-        assert capsys.readouterr().err.strip().splitlines()[-1] == _count_line(2, "account-1 PR #1, account-2 PR #2")
+        assert capsys.readouterr().err.strip().splitlines()[-1] == _count_line(
+            2, "account-1 PR #1 (model_breakdown), account-2 PR #2 (model_breakdown)"
+        )
 
     def test_disabled_producer_records_an_empty_cell_beside_populated_prior_rows_and_exits_0(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -2069,29 +2071,35 @@ class TestPrCostPrescribedHandEdits:
         return "\t".join(cells)
 
     @pytest.mark.parametrize(
-        "broken_cell_or_tail,expected_fragments",
+        "broken_column,broken_cell_or_tail,expected_fragments",
         [
-            pytest.param(f"{_REJECTED_MARKER} not json", ("line 2", "model_breakdown"), id="corrupt-populated-cell"),
             pytest.param(
-                None, ("line 2", "restore the column's correct value instead of a bare tab"),
+                "model_breakdown", f"{_REJECTED_MARKER} not json", ("line 2", "malformed model_breakdown"),
+                id="corrupt-populated-model-breakdown-cell",
+            ),
+            pytest.param(
+                "review_rounds", f"{_REJECTED_MARKER} not json", ("line 2", "malformed review_rounds"),
+                id="corrupt-populated-review-rounds-cell",
+            ),
+            pytest.param(
+                "review_rounds", None, ("line 2", "if an editor trimmed trailing whitespace, append a tab to this line"),
                 id="editor-stripped-trailing-tab",
             ),
         ],
     )
     def test_each_mode_refuses_the_broken_ledger_unchanged_and_accepts_it_after_the_prescribed_edit(
-        self, fake_projects, tmp_path, monkeypatch, capsys, broken_cell_or_tail, expected_fragments,
+        self, fake_projects, tmp_path, monkeypatch, capsys, broken_column, broken_cell_or_tail, expected_fragments,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         header = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         if broken_cell_or_tail is None:
-            # invalid_usage_records (the current header's own trailing column) has no legitimate blank
-            # state, unlike model_breakdown -- blanked here purely as the mechanical vehicle to reproduce
-            # "one cell short", then fixed with its real default rather than a bare restored tab.
-            broken_line = self._current_line_with_cell("invalid_usage_records", "")[:-1]
-            fixed_line = self._current_line_with_cell("invalid_usage_records", "0")
+            # review_rounds is the current header's trailing column and may legitimately be blank, so a
+            # blank cell followed by a stripped tab is one cell short; restoring the tab is the fix.
+            broken_line = self._current_line_with_cell("review_rounds", "")[:-1]
+            fixed_line = self._current_line_with_cell("review_rounds", "")
         else:
-            broken_line = self._current_line_with_cell("model_breakdown", broken_cell_or_tail)
-            fixed_line = self._current_line_with_cell("model_breakdown", "")  # blank the cell, keeping its tab
+            broken_line = self._current_line_with_cell(broken_column, broken_cell_or_tail)
+            fixed_line = self._current_line_with_cell(broken_column, "")  # blank the cell, keeping its tab
         ledger_path.write_text(header + "\n" + broken_line + "\n")
         before_bytes = ledger_path.read_bytes()
 
@@ -2216,3 +2224,1176 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
             assert "missing or mismatched pr-cost ledger header row" in err, mode
         assert ledger_path.read_bytes() == before_bytes
         assert ledger_path.stat().st_mtime_ns == before_mtime_ns
+
+
+# --- review_rounds capture -------------------------------------------------------------------------------------
+
+_PRE_MERGE_TS = "2025-12-31T23:00:00.000Z"  # before _merged_pr's mergedAt of 2026-01-01
+_SKILL_SENTINEL = _leak_sentinel("non-review-skill")
+
+
+class _RoundPassDefect(Exception):
+    """Stands in for any unanticipated defect inside the review-round pass."""
+
+
+def _expected_round(
+    main_usd_micros: int, main_tokens: dict, *, after_merge: int, agent_usd_micros: int = 0, agent_tokens: dict | None = None,
+    agents: int = 0,
+) -> dict:
+    return {
+        "main_usd_micros": main_usd_micros, "agent_usd_micros": agent_usd_micros, "agents": agents, "dangling": 0,
+        "unpriced_turns": 0, "unpriced_tokens": 0, "invalid_usage_records": 0, "after_merge": after_merge,
+        "main_tokens": main_tokens, "agent_tokens": agent_tokens or {},
+    }
+
+
+def _write_four_round_corpus(proj: Path, branch: str = "feature-a") -> None:
+    """Two code-review rounds (the second dispatching one opus subagent), a plan-review round and a
+    ready-for-review round, each priced by hand: sonnet-5 input $2 and output $10 per million tokens, opus-5 output
+    $25 per million."""
+    _write_jsonl(proj / "sess-rounds.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=1_000_000, branch=branch, ts=_PRE_MERGE_TS, content=[_skill_block("s1", "code-review")],
+        ),
+        _user_msg("next", branch=branch, ts="2026-01-02T09:00:00.000Z"),
+        _priced(
+            "claude-sonnet-5", output=100_000, branch=branch, ts="2026-01-02T10:00:00.000Z",
+            content=[_skill_block("s2", "code-review"), _agent_use("d1", "staff-sdet")],
+        ),
+        _user_msg("next", branch=branch, ts="2026-01-02T10:30:00.000Z"),
+        _slash_user("plan-review", branch=branch, ts="2026-01-02T11:00:00.000Z"),
+        _priced("claude-sonnet-5", input=500_000, branch=branch, ts="2026-01-02T11:01:00.000Z"),
+        _user_msg("next", branch=branch, ts="2026-01-02T11:30:00.000Z"),
+        _priced(
+            "claude-sonnet-5", input=250_000, branch=branch, ts="2026-01-02T12:00:00.000Z",
+            content=[_skill_block("s3", "ready-for-review")],
+        ),
+    ])
+    subagent_turn = _priced("claude-opus-5", output=100_000, branch=branch, ts="2026-01-02T10:00:30.000Z")
+    subagent_turn["isSidechain"] = True
+    _write_subagent_dispatch(proj, "sess-rounds", "agent-1", "d1", [subagent_turn])
+
+
+_FOUR_ROUND_CELL = {
+    "rule": 1,
+    "rounds": {
+        "code-review": [
+            _expected_round(2_000_000, {"claude-sonnet-5": {"standard": _tokens(input=1_000_000)}}, after_merge=0),
+            _expected_round(
+                1_000_000, {"claude-sonnet-5": {"standard": _tokens(output=100_000)}}, after_merge=1,
+                agent_usd_micros=2_500_000, agent_tokens={"claude-opus-5": {"standard": _tokens(output=100_000)}}, agents=1,
+            ),
+        ],
+        "plan-review": [
+            _expected_round(1_000_000, {"claude-sonnet-5": {"standard": _tokens(input=500_000)}}, after_merge=1),
+        ],
+        "ready-for-review": [
+            _expected_round(500_000, {"claude-sonnet-5": {"standard": _tokens(input=250_000)}}, after_merge=1),
+        ],
+    },
+}
+
+
+def _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=_write_four_round_corpus, branch="feature-a") -> Path:
+    """Opt in, write a round corpus onto `branch`, give it one merged PR #1, and fake git/gh. Returns the (not yet
+    existing) ledger path."""
+    _enable_pr_cost(tmp_path)
+    ledger_path = tmp_path / "pr-cost-ledger.tsv"
+    monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+    write_corpus(fake_projects, branch)
+    monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, branch)]))
+    return ledger_path
+
+
+class _ScanSpy:
+    """Wraps (does not replace) the two calls a --record run's transcript passes make."""
+
+    def __init__(self) -> None:
+        self.scope_calls: list[dict] = []
+        self.round_calls: list[dict] = []
+
+    @property
+    def scalar_scans(self) -> list[dict]:
+        return [call for call in self.scope_calls if call["include_subagents"] is True]
+
+    @property
+    def round_scans(self) -> list[dict]:
+        return [call for call in self.scope_calls if call["include_subagents"] is False]
+
+
+def _spy_on_scans(monkeypatch) -> _ScanSpy:
+    spy = _ScanSpy()
+    real_resolve = scope._resolve_project_scope
+    real_compute = review_rounds.compute_review_round_costs
+
+    def resolving(args, command, **kwargs):
+        spy.scope_calls.append(kwargs)
+        return real_resolve(args, command, **kwargs)
+
+    def computing(session_iter, **kwargs):
+        spy.round_calls.append(kwargs)
+        return real_compute(session_iter, **kwargs)
+
+    monkeypatch.setattr(scope, "_resolve_project_scope", resolving)
+    monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
+    return spy
+
+
+def _write_account_session(root: Path, branch: str = "feature-a") -> None:
+    """One small priced session under an --all-accounts root's test project."""
+    (root / "-home-user-testrepo").mkdir(parents=True, exist_ok=True)
+    _write_jsonl(root / "-home-user-testrepo" / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, branch=branch)])
+
+
+def _run_record(fake_projects, **arg_overrides) -> None:
+    pr_cost._pr_cost_report(_pr_cost_args(record=True, **arg_overrides), _NOW, [fake_projects.parent])
+
+
+class TestReviewRoundsCellCapture:
+    @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
+    def test_two_code_review_rounds_a_plan_review_a_ready_for_review_and_a_dispatch_record_the_hand_computed_cell(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch)
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects)
+
+        assert _ledger_rows(ledger_path)[0]["review_rounds"] == _FOUR_ROUND_CELL
+        assert [call["roots"] for call in spy.scope_calls] == [[fake_projects.parent]] * 2
+        assert len(spy.scalar_scans) == 1
+        assert len(spy.round_scans) == 1
+        assert spy.round_calls == [{"resolved_roots": None, "rounds_only": True}]
+
+    @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
+    def test_the_dispatchs_tokens_and_dollars_reach_the_round_once_not_again_through_the_scalar_pass_merge(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch)
+
+        _run_record(fake_projects)
+
+        row = _ledger_rows(ledger_path)[0]
+        second_code_review_round = row["review_rounds"]["rounds"]["code-review"][1]
+        assert second_code_review_round["agent_tokens"]["claude-opus-5"]["standard"]["output"] == 100_000
+        assert second_code_review_round["agent_usd_micros"] == 2_500_000
+        assert row["output_tokens"] == 200_000, "the scalar pass sees the subagent turn too"
+
+    def test_builder_round_keys_are_the_three_field_tuples_and_rounds_keys_are_the_review_skills(self):
+        cell = pr_cost._build_review_rounds_cell([_round_dict(), _round_dict("plan-review")], "2026-01-01T00:00:00Z")
+
+        assert set(cell["rounds"]) == set(review_rounds.REVIEW_SKILLS)
+        assert cell["rule"] == review_rounds.REVIEW_ROUND_RULE
+        expected_keys = {
+            *pr_cost_ledger._REVIEW_ROUND_COUNT_FIELDS, *pr_cost_ledger._REVIEW_ROUND_TOKEN_FIELDS,
+            *pr_cost_ledger._REVIEW_ROUND_FLAG_FIELDS,
+        }
+        assert {key for rounds in cell["rounds"].values() for round_ in rounds for key in round_} == expected_keys
+        assert all(set(round_) == expected_keys for rounds in cell["rounds"].values() for round_ in rounds)
+
+    def test_zero_rounds_give_every_skill_an_empty_list(self):
+        cell = pr_cost._build_review_rounds_cell([], "2026-01-01T00:00:00Z")
+
+        assert cell == {"rule": review_rounds.REVIEW_ROUND_RULE, "rounds": {skill: [] for skill in review_rounds.REVIEW_SKILLS}}
+
+    def test_each_skills_list_is_in_sort_key_order_whatever_order_the_pass_returned_them(self):
+        later = _round_dict(sort_key=(2.0, "sess", 0), main_dollars=2.0)
+        earlier = _round_dict(sort_key=(1.0, "sess", 0), main_dollars=1.0)
+
+        cell = pr_cost._build_review_rounds_cell([later, earlier], "2026-01-01T00:00:00Z")
+
+        assert [round_["main_usd_micros"] for round_ in cell["rounds"]["code-review"]] == [1_000_000, 2_000_000]
+
+    def test_round_dict_stub_has_the_key_set_of_a_real_round(self, fake_projects):
+        _write_four_round_corpus(fake_projects)
+        session_iter, _scope_label = scope._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=False, roots=[fake_projects.parent],
+        )
+        real_round = review_rounds.compute_review_round_costs(session_iter, rounds_only=True)["rounds"][0]
+
+        assert set(_round_dict()) == set(real_round)
+
+    @pytest.mark.parametrize(
+        "opening_ts,merged_at,expected_after_merge",
+        [
+            pytest.param("2026-01-01T00:00:01Z", "2026-01-01T00:00:00Z", 1, id="after"),
+            pytest.param("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 1, id="at-equality"),
+            pytest.param("2025-12-31T23:59:59Z", "2026-01-01T00:00:00Z", 0, id="before"),
+            pytest.param("not-a-timestamp", "2026-01-01T00:00:00Z", None, id="unparseable-opening-timestamp"),
+            pytest.param(None, "2026-01-01T00:00:00Z", None, id="absent-opening-timestamp"),
+            pytest.param("2026-01-01T00:00:01Z", "not-a-timestamp", None, id="unparseable-merged-at"),
+        ],
+    )
+    def test_after_merge_compares_the_opening_timestamp_to_merged_at_and_is_absent_when_either_does_not_parse(
+        self, opening_ts, merged_at, expected_after_merge,
+    ):
+        cell = pr_cost._build_review_rounds_cell([_round_dict(ts=opening_ts)], merged_at)
+
+        round_ = cell["rounds"]["code-review"][0]
+        if expected_after_merge is None:
+            assert "after_merge" not in round_
+        else:
+            assert round_["after_merge"] == expected_after_merge
+        pr_cost._check_review_rounds_cell(cell)  # an absent flag is still a valid cell
+
+    def test_single_account_pr_with_no_local_activity_records_an_empty_cell_exits_0_and_prints_no_count_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=lambda proj, branch: None)
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects, pr=1)
+
+        assert _ledger_rows(ledger_path)[0]["review_rounds"] is None
+        err = capsys.readouterr().err
+        assert _COUNT_LINE_STEM not in err
+        assert _ROUNDS_PER_PR_STEM not in err
+        assert spy.round_scans == []
+
+    def test_renamed_branch_zero_activity_row_records_an_empty_cell_and_prints_no_count_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, branch="old-name")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "new-name")]))
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects, pr=1)
+
+        assert _ledger_rows(ledger_path)[0]["review_rounds"] is None
+        err = capsys.readouterr().err
+        assert "has no matching local corpus activity" in err
+        assert _COUNT_LINE_STEM not in err
+        assert spy.round_scans == []
+
+    def test_unpriced_dangling_and_malformed_usage_inside_a_round_record_as_is_with_exit_0_and_no_degrade_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        def write_partial_corpus(proj: Path, branch: str) -> None:
+            _write_jsonl(proj / "sess-partial.jsonl", [
+                _slash_user("plan-review", branch=branch, ts="2026-01-02T11:00:00.000Z"),
+                _priced(
+                    "claude-test-unpriced", input=777, branch=branch, ts="2026-01-02T11:01:00.000Z",
+                    content=[_agent_use("dangling-dispatch", "staff-sdet")],
+                ),
+                _malformed_usage_turn({"input_tokens": "not-a-number"}, ts="2026-01-02T11:02:00.000Z", branch=branch),
+            ])
+
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=write_partial_corpus)
+
+        _run_record(fake_projects)
+
+        (plan_review_round,) = _ledger_rows(ledger_path)[0]["review_rounds"]["rounds"]["plan-review"]
+        assert (
+            plan_review_round["unpriced_turns"], plan_review_round["unpriced_tokens"], plan_review_round["dangling"],
+            plan_review_round["invalid_usage_records"], plan_review_round["main_tokens"],
+        ) == (1, 777, 1, 1, {})
+        err = capsys.readouterr().err
+        assert _ROUNDS_PER_PR_STEM not in err
+        assert _COUNT_LINE_STEM not in err
+
+
+class TestReviewRoundScanLaziness:
+    """Counts the transcript passes a --record run makes. The scalar pass runs once per account; the round pass
+    runs at most once per account, and only when a row may be written for a branch with local activity."""
+
+    @staticmethod
+    def _seed_captured(ledger_path: Path, *pr_numbers: int) -> None:
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=number, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT)
+            for number in pr_numbers
+        ])
+
+    def test_every_pr_already_captured_runs_no_round_scan(self, fake_projects, tmp_path, monkeypatch):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        self._seed_captured(ledger_path, 1, 2)
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 0)
+
+    def test_asof_skip_runs_no_round_scan(self, fake_projects, tmp_path, monkeypatch):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(
+            merged_prs=[{**_merged_pr(1, "feature-a"), "mergedAt": "2026-08-09T00:00:00Z"}],
+        ))
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 0)
+        assert not ledger_path.exists()
+
+    def test_branch_with_no_local_activity_runs_no_round_scan(self, fake_projects, tmp_path, monkeypatch):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(9, "ghost-branch")]))
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects, pr=9)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 0)
+
+    def test_all_accounts_pr_run_skips_an_account_without_activity_and_scans_only_the_account_that_has_it(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+        _write_account_session(roots[0])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+        spy = _spy_on_scans(monkeypatch)
+
+        pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True, pr=1), _NOW, roots)
+
+        assert len(spy.scalar_scans) == 2
+        assert [call["roots"] for call in spy.round_scans] == [[roots[0]]]
+        assert "account-2 has no local corpus activity for this branch -- skipped" in capsys.readouterr().err
+
+    def test_unforced_uncaptured_pr_runs_one_round_scan_and_prints_one_start_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 1)
+        assert capsys.readouterr().err.splitlines().count(_rounds_scan_start_line()) == 1
+
+    def test_force_over_a_captured_row_runs_one_round_scan(self, fake_projects, tmp_path, monkeypatch):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        self._seed_captured(ledger_path, 1)
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects, pr=1, force=True)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 1)
+
+    def test_two_uncaptured_prs_share_one_round_scan(self, fake_projects, tmp_path, monkeypatch, capsys):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        spy = _spy_on_scans(monkeypatch)
+
+        _run_record(fake_projects)
+
+        assert (len(spy.scalar_scans), len(spy.round_scans)) == (1, 1)
+        assert capsys.readouterr().err.splitlines().count(_rounds_scan_start_line()) == 1
+
+    def test_all_accounts_prints_one_start_line_per_scanned_account_naming_it(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_account_session(root)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+
+        pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        err_lines = capsys.readouterr().err.splitlines()
+        assert err_lines.count(_rounds_scan_start_line(1)) == 1
+        assert err_lines.count(_rounds_scan_start_line(2)) == 1
+
+    @pytest.mark.parametrize("extra_args", [{}, {"pr": 1}], ids=["sweep", "single-pr"])
+    def test_the_round_scan_runs_while_the_ledger_lock_is_free(self, fake_projects, tmp_path, monkeypatch, extra_args):
+        """Both --record lock acquisitions use <ledger>.lock. A scan that outlasts the lock timeout would make a
+        concurrent --record exit 1 (_COST_LEDGER_LOCK_TIMEOUT_S), so the scan must run with the lock released."""
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        lock_was_free: list[bool] = []
+        real_resolve = scope._resolve_project_scope
+
+        def resolving_and_probing_the_lock(args, command, **kwargs):
+            if kwargs["include_subagents"] is False:
+                with open(lock_path, "w") as probe:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock_was_free.append(True)
+                        fcntl.flock(probe, fcntl.LOCK_UN)
+                    except OSError:
+                        lock_was_free.append(False)
+            return real_resolve(args, command, **kwargs)
+
+        monkeypatch.setattr(scope, "_resolve_project_scope", resolving_and_probing_the_lock)
+
+        _run_record(fake_projects, **extra_args)
+
+        assert lock_was_free == [True]
+
+
+class TestReviewRoundsPreLockSkip:
+    def test_pr_the_pre_lock_read_finds_captured_prints_the_already_captured_line_scans_nothing_and_exits_1(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        pr_cost_ledger._write_pr_cost_ledger_file(
+            ledger_path, [_sample_pr_cost_row(pr_number=1, machine=_SEEDED_MACHINE_IDENTITY)],
+        )
+        spy = _spy_on_scans(monkeypatch)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects, pr=1)
+
+        assert exc_info.value.code == 1
+        assert _already_captured_line(1) in capsys.readouterr().err.splitlines()
+        assert spy.round_scans == []
+
+    def test_row_a_concurrent_record_appends_after_the_pre_lock_read_gives_the_same_line_from_the_locked_check(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        real_acquire = pr_cost_ledger._acquire_pr_cost_ledger_lock
+        acquire_count = 0
+
+        def acquiring_after_a_concurrent_record(lock_f):
+            nonlocal acquire_count
+            acquire_count += 1
+            if acquire_count == 2:  # the per-branch lock: the account read above was the first
+                pr_cost_ledger._write_pr_cost_ledger_file(
+                    ledger_path, [_sample_pr_cost_row(pr_number=1, machine=_SEEDED_MACHINE_IDENTITY)],
+                )
+            real_acquire(lock_f)
+
+        monkeypatch.setattr(pr_cost_ledger, "_acquire_pr_cost_ledger_lock", acquiring_after_a_concurrent_record)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects, pr=1)
+
+        assert exc_info.value.code == 1
+        assert _already_captured_line(1) in capsys.readouterr().err.splitlines()
+        assert len(_ledger_rows(ledger_path)) == 1
+
+
+def _already_captured_line(pr_number: int) -> str:
+    return (
+        f"pr-cost:   PR #{pr_number} for machine={_SEEDED_MACHINE_IDENTITY} is already captured --"
+        " pass --force (with --pr) to append a correcting row"
+    )
+
+
+class TestReviewRoundPassFailure:
+    @staticmethod
+    def _fail_the_pass(monkeypatch, failing_call_numbers: set[int] | None = None) -> None:
+        real_compute = review_rounds.compute_review_round_costs
+        call_count = 0
+
+        def computing(session_iter, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if failing_call_numbers is None or call_count in failing_call_numbers:
+                raise _RoundPassDefect(f"message carrying {_REJECTED_MARKER}")
+            return real_compute(session_iter, **kwargs)
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
+
+    def test_a_failing_pass_prints_one_line_with_the_class_name_only_scans_once_and_empties_both_rows_cells(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        self._fail_the_pass(monkeypatch)
+        spy = _spy_on_scans(monkeypatch)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        assert err_lines.count(_rounds_pass_failure_line("_RoundPassDefect")) == 1
+        assert _REJECTED_MARKER not in captured.err + captured.out
+        assert len(spy.round_scans) == 1
+        rows = _ledger_rows(ledger_path)
+        assert [(r["pr_number"], r["model_breakdown"] is not None, r["review_rounds"]) for r in rows] == [
+            (1, True, None), (2, True, None),
+        ]
+        reason = "were not captured (the review-round pass failed)"
+        assert _rounds_per_pr_line(1, reason) in err_lines
+        assert _rounds_per_pr_line(2, reason) in err_lines
+        assert _count_line(2, "PR #1 (review_rounds), PR #2 (review_rounds)") in err_lines
+
+    def test_under_all_accounts_only_the_failing_accounts_rows_lose_the_cell(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_account_session(root)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+        self._fail_the_pass(monkeypatch, failing_call_numbers={1})
+
+        with pytest.raises(SystemExit) as exc_info:
+            pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        assert exc_info.value.code == 1
+        assert _ledger_rows(roots[0].parent / "pr-cost-ledger.tsv")[0]["review_rounds"] is None
+        assert _ledger_rows(roots[1].parent / "pr-cost-ledger.tsv")[0]["review_rounds"] is not None
+        err_lines = capsys.readouterr().err.splitlines()
+        assert _rounds_pass_failure_line("_RoundPassDefect", account_ordinal=1) in err_lines
+        assert not any(_ROUNDS_PASS_FAILURE_STEM in line and "account-2" in line for line in err_lines)
+        assert err_lines[-1] == _count_line(1, "account-1 PR #1 (review_rounds)")
+
+    def test_a_record_outside_the_transcript_format_empties_the_cell_and_names_only_the_exception_class(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """No patching: the scalar pass parses a timestamp only on a usage-bearing assistant record, while the
+        round pass parses every record's, so a non-string timestamp fails the second pass alone."""
+        def write_corpus(proj: Path, branch: str) -> None:
+            _write_jsonl(proj / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch=branch, content=[_skill_block("s1", "code-review")]),
+                _NON_STRING_TIMESTAMP_RECORD,
+            ])
+
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=write_corpus)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        row = _ledger_rows(ledger_path)[0]
+        assert row["review_rounds"] is None
+        assert row["input_tokens"] == 1_000_000
+        err = capsys.readouterr().err
+        assert err.splitlines().count(_rounds_pass_failure_line("AttributeError")) == 1
+        assert "no attribute" not in err
+
+    def test_keyboard_interrupt_from_the_pass_propagates_and_writes_no_row(self, fake_projects, tmp_path, monkeypatch):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+
+        def interrupted(session_iter, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            _run_record(fake_projects)
+
+        assert not ledger_path.exists()
+
+    def test_system_exit_from_the_cell_builder_propagates_and_writes_no_row_for_that_pr(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+
+        def exiting(rounds, merged_at):
+            raise SystemExit(5)
+
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", exiting)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 5
+        assert not ledger_path.exists()
+
+
+def _minimal_cell_failing(rule: str) -> dict:
+    """The smallest cell that violates `rule` alone (`size` also needs the write bound patched small)."""
+    round_ = _sample_review_round()
+    if rule == "shape":
+        round_[_REJECTED_MARKER.upper()] = 1  # outside the decoder's key rule
+    elif rule == "model-membership":
+        round_["main_tokens"] = {_REJECTED_MARKER: {"standard": _tokens()}}
+    elif rule == "label-membership-variant":
+        round_["main_tokens"] = {"claude-sonnet-5": {_REJECTED_MARKER: _tokens()}}
+    elif rule == "label-membership-class":
+        round_["main_tokens"] = {"claude-sonnet-5": {"standard": {_REJECTED_MARKER: 1}}}
+    return {"rule": 1, "rounds": {"code-review": [round_], "plan-review": [], "ready-for-review": []}}
+
+
+_REVIEW_ROUNDS_CAUSE_BY_RULE = {
+    "size": "more rounds than the cell admits",
+    "shape": _TRANSCRIPT_OR_DEFECT,
+    "model-membership": "a claude-config defect",
+    "label-membership": "a claude-config defect",
+    "build": "a claude-config defect",
+}
+
+
+class TestCheckReviewRoundsCell:
+    def test_rule_tuple_and_cause_table_are_closed_and_match_the_hand_written_causes(self):
+        assert pr_cost._REVIEW_ROUNDS_CHECK_RULES == ("size", "shape", "model-membership", "label-membership", "build")
+        assert pr_cost._REVIEW_ROUNDS_CHECK_CAUSES == _REVIEW_ROUNDS_CAUSE_BY_RULE
+
+    @pytest.mark.parametrize("rule", sorted(_REVIEW_ROUNDS_CAUSE_BY_RULE))
+    def test_check_error_carries_the_cause_for_its_rule(self, rule):
+        error = pr_cost._ReviewRoundsCheckError(rule)
+
+        assert (error.rule, error.cause) == (rule, _REVIEW_ROUNDS_CAUSE_BY_RULE[rule])
+
+    def test_unknown_rule_fails_when_the_error_is_constructed(self):
+        with pytest.raises(KeyError):
+            pr_cost._ReviewRoundsCheckError("no-such-rule")
+
+    @pytest.mark.parametrize(
+        "violation,expected_rule",
+        [
+            pytest.param("shape", "shape", id="shape"),
+            pytest.param("model-membership", "model-membership", id="model-key-outside-the-rate-table"),
+            pytest.param("label-membership-variant", "label-membership", id="variant-key-outside-the-variants"),
+            pytest.param("label-membership-class", "label-membership", id="class-keys-unequal-to-the-token-classes"),
+        ],
+    )
+    def test_a_planted_key_fires_its_rule_without_appearing_in_the_exception_text(self, violation, expected_rule):
+        with pytest.raises(pr_cost._ReviewRoundsCheckError) as exc_info:
+            pr_cost._check_review_rounds_cell(_minimal_cell_failing(violation))
+
+        assert exc_info.value.rule == expected_rule
+        assert _REJECTED_MARKER not in str(exc_info.value).lower()
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+
+    def test_size_fires_when_the_canonical_encoding_exceeds_the_write_bound(self, monkeypatch):
+        cell = pr_cost._build_review_rounds_cell([_round_dict()], "2026-01-01T00:00:00Z")
+        pr_cost._check_review_rounds_cell(cell)
+        monkeypatch.setattr(
+            pr_cost_ledger, "_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS", len(pr_cost_ledger._encode_json_cell(cell)) - 1,
+        )
+
+        with pytest.raises(pr_cost._ReviewRoundsCheckError) as exc_info:
+            pr_cost._check_review_rounds_cell(cell)
+
+        assert exc_info.value.rule == "size"
+
+    def test_size_admits_a_cell_whose_canonical_encoding_is_exactly_the_write_bound(self, monkeypatch):
+        cell = pr_cost._build_review_rounds_cell([_round_dict()], "2026-01-01T00:00:00Z")
+        monkeypatch.setattr(
+            pr_cost_ledger, "_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS", len(pr_cost_ledger._encode_json_cell(cell)),
+        )
+
+        pr_cost._check_review_rounds_cell(cell)
+
+    def test_agent_token_models_are_checked_as_well_as_main_token_models(self):
+        cell = _minimal_cell_failing("model-membership")
+        round_ = cell["rounds"]["code-review"][0]
+        round_["agent_tokens"], round_["main_tokens"] = round_["main_tokens"], {}
+
+        with pytest.raises(pr_cost._ReviewRoundsCheckError) as exc_info:
+            pr_cost._check_review_rounds_cell(cell)
+
+        assert exc_info.value.rule == "model-membership"
+
+    def test_empty_token_objects_and_a_none_cell_pass(self):
+        cell = {"rule": 1, "rounds": {"code-review": [{**_sample_review_round(), "main_tokens": {}, "agent_tokens": {}}]}}
+        pr_cost._check_review_rounds_cell(cell)
+        pr_cost._check_review_rounds_cell(None)
+
+    def test_the_sample_cell_and_a_zero_round_cell_pass(self):
+        pr_cost._check_review_rounds_cell(_sample_review_rounds())
+        pr_cost._check_review_rounds_cell(pr_cost._build_review_rounds_cell([], "2026-01-01T00:00:00Z"))
+
+    def test_model_breakdown_membership_still_fires_through_the_shared_helper(self):
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell({_REJECTED_MARKER: {"standard": _zero_group()}}, _zero_scalar_row())
+        assert exc_info.value.rule == "model-membership"
+
+
+class TestReviewRoundsCellContainment:
+    @staticmethod
+    def _build_failing_on_first_call(monkeypatch, make_cell) -> None:
+        real_build = pr_cost._build_review_rounds_cell
+        call_count = 0
+
+        def building(rounds, merged_at):
+            nonlocal call_count
+            call_count += 1
+            return make_cell() if call_count == 1 else real_build(rounds, merged_at)
+
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", building)
+
+    @pytest.mark.parametrize(
+        "violation,rule",
+        [
+            pytest.param("shape", "shape", id="shape"),
+            pytest.param("model-membership", "model-membership", id="model-membership"),
+            pytest.param("label-membership-variant", "label-membership", id="label-membership-variant"),
+            pytest.param("label-membership-class", "label-membership", id="label-membership-class"),
+        ],
+    )
+    def test_a_cell_failing_a_check_is_nulled_reported_with_its_rule_and_cause_and_the_other_branch_still_records(
+        self, fake_projects, tmp_path, monkeypatch, capsys, violation, rule,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        self._build_failing_on_first_call(monkeypatch, lambda: _minimal_cell_failing(violation))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        assert [(r["pr_number"], r["review_rounds"] is None) for r in _ledger_rows(ledger_path)] == [(1, True), (2, False)]
+        captured = capsys.readouterr()
+        reason = f"failed their {rule} check ({_REVIEW_ROUNDS_CAUSE_BY_RULE[rule]})"
+        assert _rounds_per_pr_line(1, reason) in captured.err.splitlines()
+        assert _count_line(1, "PR #1 (review_rounds)") in captured.err.splitlines()
+        assert _REJECTED_MARKER not in (captured.err + captured.out).lower()
+
+    def test_a_cell_over_the_write_bound_is_nulled_with_the_size_rule(self, fake_projects, tmp_path, monkeypatch, capsys):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch)
+        monkeypatch.setattr(pr_cost_ledger, "_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS", 10)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        assert _ledger_rows(ledger_path)[0]["review_rounds"] is None
+        reason = f"failed their size check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['size']})"
+        assert _rounds_per_pr_line(1, reason) in capsys.readouterr().err.splitlines()
+
+    def test_a_builder_exception_is_contained_as_the_build_rule_without_printing_its_message(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+
+        def raising_on_first_call(rounds, merged_at):
+            raise RuntimeError(f"message carrying {_REJECTED_MARKER}")
+
+        real_build = pr_cost._build_review_rounds_cell
+        calls = []
+
+        def building(rounds, merged_at):
+            calls.append(1)
+            return raising_on_first_call(rounds, merged_at) if len(calls) == 1 else real_build(rounds, merged_at)
+
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", building)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        assert [(r["pr_number"], r["review_rounds"] is None) for r in _ledger_rows(ledger_path)] == [(1, True), (2, False)]
+        captured = capsys.readouterr()
+        reason = f"failed their build check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['build']})"
+        assert _rounds_per_pr_line(1, reason) in captured.err.splitlines()
+        assert _REJECTED_MARKER not in captured.err + captured.out
+
+    def test_a_planted_model_key_never_reaches_stderr(self, fake_projects, tmp_path, monkeypatch, capsys):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        monkeypatch.setattr(
+            pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: _minimal_cell_failing("model-membership"),
+        )
+
+        with pytest.raises(SystemExit):
+            _run_record(fake_projects)
+
+        captured = capsys.readouterr()
+        assert _REJECTED_MARKER not in (captured.err + captured.out).lower()
+
+    def test_a_builder_returning_none_records_an_empty_cell_prints_no_line_and_leaves_prior_rows_untouched(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """A builder that returns None means this checkout records no rounds, and it says nothing about it."""
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=50, review_rounds=_sample_review_rounds()),
+        ])
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: None)
+
+        _run_record(fake_projects)
+
+        rows = _ledger_rows(ledger_path)
+        assert rows[0]["review_rounds"] == _sample_review_rounds()
+        assert (rows[1]["pr_number"], rows[1]["review_rounds"]) == (1, None)
+        err = capsys.readouterr().err
+        assert _ROUNDS_PER_PR_STEM not in err
+        assert _COUNT_LINE_STEM not in err
+
+    def test_the_lever_makes_a_force_recapture_over_a_captured_cell_refuse_naming_the_checkout(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+            pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT,
+            review_rounds=_sample_review_rounds(),
+        )])
+        before_bytes = ledger_path.read_bytes()
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects, pr=1, force=True)
+
+        assert exc_info.value.code == 1
+        assert ledger_path.read_bytes() == before_bytes
+        assert _force_refusal_line(1, _SEEDED_MACHINE_IDENTITY, "this checkout does not record review rounds") in (
+            capsys.readouterr().err.splitlines()
+        )
+
+
+class TestFailedCellsCountEntry:
+    @pytest.mark.parametrize(
+        "failed_columns,account_ordinal,expected_entry",
+        [
+            pytest.param(("model_breakdown",), None, "PR #7 (model_breakdown)", id="breakdown-only"),
+            pytest.param(("review_rounds",), None, "PR #7 (review_rounds)", id="rounds-only"),
+            pytest.param(("model_breakdown", "review_rounds"), None, "PR #7 (model_breakdown and review_rounds)", id="both"),
+            pytest.param(("model_breakdown",), 2, "account-2 PR #7 (model_breakdown)", id="breakdown-only-with-account"),
+            pytest.param(("review_rounds",), 2, "account-2 PR #7 (review_rounds)", id="rounds-only-with-account"),
+            pytest.param(
+                ("model_breakdown", "review_rounds"), 2, "account-2 PR #7 (model_breakdown and review_rounds)",
+                id="both-with-account",
+            ),
+        ],
+    )
+    def test_entry_names_the_failed_cells_with_the_account_prefix_only_when_given(
+        self, failed_columns, account_ordinal, expected_entry,
+    ):
+        assert pr_cost._failed_cells_count_entry(7, failed_columns, account_ordinal) == expected_entry
+
+    def test_one_run_with_both_cells_degraded_prints_one_entry_naming_both(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _fail_check_on_calls(monkeypatch, {1})
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: _minimal_cell_failing("shape"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        assert _count_line(1, "PR #1 (model_breakdown and review_rounds)") in capsys.readouterr().err.splitlines()
+
+
+def _cell_of(rule: int, **agents_by_skill: list[int]) -> dict:
+    """A review_rounds cell whose skill holds one round per listed `agents` value (`code_review` is the skill
+    code-review)."""
+    return {
+        "rule": rule,
+        "rounds": {
+            skill.replace("_", "-"): [{**_sample_review_round(), "agents": agents} for agents in agents_list]
+            for skill, agents_list in agents_by_skill.items()
+        },
+    }
+
+
+_REASON_PASS_FAILED = "the review-round pass failed"
+_REASON_OLDER_RULE = "this checkout's round rule is older than the captured row's"
+_REASON_LESS_COMPLETE = "the re-capture is less complete under the same round rule"
+
+
+class TestReviewRoundsForceRefusal:
+    @pytest.mark.parametrize("new_cell,new_absence", [
+        pytest.param(_cell_of(1, code_review=[1]), None, id="new-cell-present"),
+        pytest.param(None, "pass-failed", id="pass-failed"),
+        pytest.param(None, "no-local-activity", id="no-local-activity"),
+        pytest.param(None, "not-built", id="not-built"),
+        pytest.param(None, "size", id="check-rule"),
+    ])
+    def test_a_prior_cell_that_was_never_captured_allows_every_new_cell(self, new_cell, new_absence):
+        assert pr_cost._review_rounds_force_refusal(None, new_cell, new_absence) is None
+
+    @pytest.mark.parametrize("prior_cell", [
+        pytest.param(_cell_of(1, code_review=[1]), id="populated-prior"),
+        pytest.param(_cell_of(1, code_review=[], plan_review=[], ready_for_review=[]), id="all-empty-lists-prior"),
+    ])
+    @pytest.mark.parametrize("new_absence,expected_reason", [
+        pytest.param("pass-failed", _REASON_PASS_FAILED, id="pass-failed"),
+        pytest.param("size", "the new cell failed its size check", id="size"),
+        pytest.param("build", "the new cell failed its build check", id="build"),
+        pytest.param("no-local-activity", "this branch has no local transcript activity", id="no-local-activity"),
+        pytest.param("not-built", "this checkout does not record review rounds", id="not-built"),
+    ])
+    def test_an_empty_new_cell_refuses_with_the_reason_its_absence_gives(self, prior_cell, new_absence, expected_reason):
+        assert pr_cost._review_rounds_force_refusal(prior_cell, None, new_absence) == expected_reason
+
+    @pytest.mark.parametrize("prior_cell,new_cell", [
+        pytest.param(_cell_of(1, code_review=[], plan_review=[]), _cell_of(1, code_review=[], plan_review=[]), id="same-rule"),
+        pytest.param(_cell_of(1, code_review=[]), _cell_of(2, code_review=[]), id="higher-rule"),
+        pytest.param(
+            _cell_of(1, code_review=[], plan_review=[]), _cell_of(1, code_review=[]),
+            id="prior-skill-with-an-empty-list-new-lacks",
+        ),
+        pytest.param(_cell_of(1, code_review=[1]), _cell_of(1, code_review=[1], plan_review=[3]), id="skill-only-new-holds"),
+        pytest.param(_cell_of(1, code_review=[1]), _cell_of(1, code_review=[1, 1]), id="more-rounds"),
+        pytest.param(_cell_of(1, code_review=[1, 2]), _cell_of(1, code_review=[1, 2]), id="identical"),
+        pytest.param(_cell_of(1, code_review=[1]), _cell_of(1, code_review=[4]), id="higher-agents"),
+        pytest.param(_cell_of(1, code_review=[1, 1, 1]), _cell_of(2, code_review=[1]), id="fewer-rounds-under-a-higher-rule"),
+        pytest.param(_cell_of(1, code_review=[1]), _cell_of(2, code_review=[]), id="all-empty-lists-under-a-higher-rule"),
+    ])
+    def test_a_cell_at_least_as_complete_or_under_a_higher_rule_is_allowed(self, prior_cell, new_cell):
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) is None
+
+    def test_more_dangling_alone_is_allowed(self):
+        prior_cell = _cell_of(1, code_review=[1])
+        new_cell = _cell_of(1, code_review=[1])
+        new_cell["rounds"]["code-review"][0]["dangling"] += 5
+
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) is None
+
+    @pytest.mark.parametrize("prior_cell,new_cell,expected_reason", [
+        pytest.param(_cell_of(2, code_review=[1]), _cell_of(1, code_review=[1]), _REASON_OLDER_RULE, id="lower-rule"),
+        pytest.param(_cell_of(2, code_review=[]), _cell_of(1, code_review=[]), _REASON_OLDER_RULE, id="lower-rule-all-empty"),
+        pytest.param(_cell_of(1, code_review=[1, 1]), _cell_of(1, code_review=[1]), _REASON_LESS_COMPLETE, id="shorter-list"),
+        pytest.param(
+            _cell_of(1, code_review=[1]), _cell_of(1, plan_review=[1]), _REASON_LESS_COMPLETE,
+            id="skill-prior-holds-new-lacks",
+        ),
+        pytest.param(
+            _cell_of(1, code_review=[1, 1], plan_review=[1]), _cell_of(1, code_review=[1], plan_review=[1, 1]),
+            _REASON_LESS_COMPLETE, id="one-skill-longer-while-another-is-shorter",
+        ),
+        pytest.param(_cell_of(1, code_review=[3]), _cell_of(1, code_review=[2]), _REASON_LESS_COMPLETE, id="lower-summed-agents"),
+        # The next two lose a round while the summed `agents` stays equal, so only the length arm can refuse.
+        pytest.param(
+            _cell_of(1, code_review=[0, 0]), _cell_of(1, code_review=[0]), _REASON_LESS_COMPLETE,
+            id="shorter-list-with-zero-agent-rounds-and-equal-summed-agents",
+        ),
+        pytest.param(
+            _cell_of(1, code_review=[1, 1]), _cell_of(1, code_review=[2]), _REASON_LESS_COMPLETE,
+            id="shorter-list-with-equal-summed-agents-in-fewer-rounds",
+        ),
+        pytest.param(
+            _cell_of(1, code_review=[1]), _cell_of(1, code_review=[]), _REASON_LESS_COMPLETE,
+            id="all-empty-new-under-the-same-rule",
+        ),
+    ])
+    def test_an_older_rule_or_a_less_complete_cell_under_the_same_rule_is_refused(self, prior_cell, new_cell, expected_reason):
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) == expected_reason
+
+
+class TestReviewRoundsForceGuardIntegration:
+    @staticmethod
+    def _seed_captured_rounds(ledger_path: Path, cell: dict) -> None:
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+            pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT, review_rounds=cell,
+        )])
+
+    def test_a_refusal_exits_1_prints_the_refusal_line_and_leaves_the_ledger_bytes_unchanged(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        self._seed_captured_rounds(ledger_path, _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1, 1]))
+        before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects, pr=1, force=True)
+
+        assert exc_info.value.code == 1
+        assert _force_refusal_line(1, _SEEDED_MACHINE_IDENTITY, _REASON_LESS_COMPLETE) in capsys.readouterr().err.splitlines()
+        assert ledger_path.read_bytes() == before_bytes
+        assert ledger_path.stat().st_mtime_ns == before_mtime_ns
+
+    @pytest.mark.parametrize("cause,expected_reason", [
+        pytest.param("pass-failed", _REASON_PASS_FAILED, id="pass-failed"),
+        pytest.param("no-local-activity", "this branch has no local transcript activity", id="no-local-activity"),
+        pytest.param("check-failed", "the new cell failed its shape check", id="builder-cell-failing-a-check-rule"),
+    ])
+    def test_a_forced_recapture_that_would_empty_captured_rounds_is_refused_with_the_reason_of_its_cause(
+        self, fake_projects, tmp_path, monkeypatch, capsys, cause, expected_reason,
+    ):
+        write_corpus = (lambda proj, branch: None) if cause == "no-local-activity" else _write_four_round_corpus
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=write_corpus)
+        if cause == "pass-failed":
+            TestReviewRoundPassFailure._fail_the_pass(monkeypatch)
+        elif cause == "check-failed":
+            monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: _minimal_cell_failing("shape"))
+        self._seed_captured_rounds(ledger_path, _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1, 1]))
+        before_bytes = ledger_path.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects, pr=1, force=True)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        assert err_lines.count(_force_refusal_line(1, _SEEDED_MACHINE_IDENTITY, expected_reason)) == 1
+        assert err_lines.count(_rounds_pass_failure_line("_RoundPassDefect")) == (1 if cause == "pass-failed" else 0)
+        assert "recorded PR" not in captured.out
+        assert ledger_path.read_bytes() == before_bytes
+
+    def test_a_refusal_under_all_accounts_skips_that_account_records_the_other_and_exits_1_after_the_summary(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_account_session(root)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+        refused_ledger = roots[0].parent / "pr-cost-ledger.tsv"
+        self._seed_captured_rounds(refused_ledger, _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1, 1]))
+        before_bytes = refused_ledger.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True, pr=1, force=True), _NOW, roots)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+        assert _force_refusal_line(1, _SEEDED_MACHINE_IDENTITY, _REASON_LESS_COMPLETE) in captured.err.splitlines()
+        assert _COUNT_LINE_STEM not in captured.err
+        assert refused_ledger.read_bytes() == before_bytes
+        assert len(_ledger_rows(roots[1].parent / "pr-cost-ledger.tsv")) == 1
+
+    @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
+    @pytest.mark.parametrize("prior_cell", [
+        pytest.param(None, id="prior-never-captured"),
+        pytest.param(_cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[]), id="prior-at-most-as-complete"),
+    ])
+    def test_an_allowed_forced_recapture_appends_a_superseding_row_and_exits_0(
+        self, fake_projects, tmp_path, monkeypatch, prior_cell,
+    ):
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch)
+        self._seed_captured_rounds(ledger_path, prior_cell)
+
+        _run_record(fake_projects, pr=1, force=True)
+
+        prior_row, recaptured_row = _ledger_rows(ledger_path)
+        assert prior_row["review_rounds"] == prior_cell
+        assert recaptured_row["review_rounds"] == _FOUR_ROUND_CELL
+        assert recaptured_row["supersedes"] == _EARLIER_CAPTURED_AT
+
+
+class TestReviewRoundsCrossAccountCapture:
+    def test_two_accounts_with_one_raw_branch_name_and_different_rounds_each_record_only_their_own(
+        self, tmp_path, monkeypatch,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root, skill_record in zip(roots, (
+            _priced("claude-sonnet-5", input=1_000, branch="feature-a", content=[_skill_block("s1", "code-review")]),
+            _priced("claude-sonnet-5", input=2_000, branch="feature-a", content=[_skill_block("s1", "plan-review")]),
+        ), strict=True):
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_jsonl(root / "-home-user-testrepo" / "sess.jsonl", [skill_record])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+
+        pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        first, second = (_ledger_rows(root.parent / "pr-cost-ledger.tsv")[0]["review_rounds"]["rounds"] for root in roots)
+        assert {skill: len(rounds) for skill, rounds in first.items()} == {
+            "code-review": 1, "plan-review": 0, "ready-for-review": 0,
+        }
+        assert {skill: len(rounds) for skill, rounds in second.items()} == {
+            "code-review": 0, "plan-review": 1, "ready-for-review": 0,
+        }
+
+
+class TestReviewRoundsUpgradeNotice:
+    def test_a_pre_review_rounds_ledger_prints_the_upgrade_notice_once_and_gains_the_trailing_cell(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        ledger_path.write_text(
+            _PRE_REVIEW_ROUNDS_HEADER_LINE + "\n" + _pre_review_rounds_row_line(pr_number=50) + "\n"
+        )
+
+        _run_record(fake_projects)
+
+        err = capsys.readouterr().err
+        assert err.count(_UPGRADE_NOTICE_STEM) == 1
+        assert _upgrade_notice_line("the ledger") in err
+        assert ledger_path.read_text().splitlines()[0] == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        assert [r["review_rounds"] is None for r in _ledger_rows(ledger_path)] == [True, False, False]
+
+
+class TestReviewRoundsCellBoundsAdmitRepresentativeRounds:
+    def test_the_write_bound_admits_at_least_1000_representative_rounds(self):
+        """Main thread on one model in the standard and fast variants, a dispatch on a second model, every class at a
+        nine-digit count, every count field nonzero, after_merge present, and the longest model ID in the rate table."""
+        nine_digit_group = dict.fromkeys(_TOKEN_CLASS_NAMES, 987_654_321)
+        longest_model = max(pricing._MODEL_BASE_INPUT_RATES, key=len)
+        representative_round = {
+            **dict.fromkeys(pr_cost_ledger._REVIEW_ROUND_COUNT_FIELDS, 123_456_789),
+            "after_merge": 1,
+            "main_tokens": {longest_model: {"standard": nine_digit_group, "fast": nine_digit_group}},
+            "agent_tokens": {"claude-sonnet-5": {"standard": nine_digit_group}},
+        }
+        cell = {"rule": 1, "rounds": {"code-review": [representative_round] * 1000, "plan-review": [], "ready-for-review": []}}
+
+        encoded_length = len(pr_cost_ledger._encode_json_cell(cell))
+
+        assert encoded_length <= pr_cost_ledger._REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS
+        pr_cost._check_review_rounds_cell(cell)
+
+
+class TestReviewRoundsLeakTripwire:
+    """No free text a round-consuming path must not extract -- orchestrator prompts and descriptions, Skill and
+    /slash args, a non-review skill name, a branch name, an unpriced model ID -- reaches the ledger, the export, or
+    either command's console output."""
+
+    @staticmethod
+    def _write_leak_corpus(proj: Path, branch: str) -> None:
+        _write_orchestrator_free_text_corpus(proj, branch=branch, with_slash_round_and_unpriced_marker_model=True)
+        _write_jsonl(proj / "sess-other.jsonl", [
+            _priced("claude-sonnet-5", input=1_000, branch=branch, content=[_skill_block("k1", _SKILL_SENTINEL)]),
+        ])
+
+    @pytest.mark.parametrize("outcome", ["success", "pass-failure", "degraded-cell", "guard-refusal"])
+    def test_no_sentinel_reaches_the_ledger_the_export_or_any_console_output(
+        self, fake_projects, tmp_path, monkeypatch, capsys, outcome,
+    ):
+        sentinel_branch = _leak_sentinel("branch")
+        ledger_path = _arrange_round_run(
+            fake_projects, tmp_path, monkeypatch, write_corpus=self._write_leak_corpus, branch=sentinel_branch,
+        )
+        extra_args: dict = {}
+        prior_cell = _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1] * 5)
+        if outcome == "pass-failure":
+            TestReviewRoundPassFailure._fail_the_pass(monkeypatch)
+        elif outcome == "degraded-cell":
+            monkeypatch.setattr(
+                pr_cost, "_build_review_rounds_cell",
+                lambda rounds, merged_at: _minimal_cell_failing("shape") | {"unknown": _leak_sentinel("planted")},
+            )
+        elif outcome == "guard-refusal":
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+                pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT, review_rounds=prior_cell,
+            )])
+            extra_args = {"pr": 1, "force": True}
+
+        record_exit = None
+        try:
+            _run_record(fake_projects, **extra_args)
+        except SystemExit as exc:
+            record_exit = exc.code
+        record_output = capsys.readouterr()
+        export_path = tmp_path / "leak-export.tsv"
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(export_path)))
+        export_output = capsys.readouterr()
+
+        row = _ledger_rows(ledger_path)[-1]
+        stderr_lines = record_output.err.splitlines()
+        export_lines = export_path.read_text().splitlines()  # provenance line, header line, then the one row
+        assert len(export_lines) == 3
+        exported_cell = _parse_pr_cost_export_row(export_lines[2])["review_rounds"]
+        if outcome == "success":
+            assert record_exit is None
+            round_counts = {skill: len(rounds) for skill, rounds in row["review_rounds"]["rounds"].items()}
+            assert round_counts == {"code-review": 1, "plan-review": 1, "ready-for-review": 0}
+            (plan_review_round,) = row["review_rounds"]["rounds"]["plan-review"]
+            assert plan_review_round["main_tokens"] == {}
+            assert plan_review_round["unpriced_tokens"] == 1_000
+            assert json.loads(exported_cell) == row["review_rounds"]
+        elif outcome == "pass-failure":
+            assert _rounds_pass_failure_line("_RoundPassDefect") in stderr_lines
+            assert row["review_rounds"] is None
+            assert exported_cell == ""
+        elif outcome == "degraded-cell":
+            assert any(_ROUNDS_PER_PR_STEM in line and "failed their" in line for line in stderr_lines)
+            assert row["review_rounds"] is None
+            assert exported_cell == ""
+        else:
+            assert record_exit == 1
+            assert any(_FORCE_REFUSAL_STEM in line for line in stderr_lines)
+            assert row["review_rounds"] == prior_cell
+            assert json.loads(exported_cell) == prior_cell
+        for surface in (
+            ledger_path.read_text(), export_path.read_text(), record_output.out, record_output.err,
+            export_output.out, export_output.err,
+        ):
+            assert _LEAK_SENTINEL_PREFIX not in surface
+
+    def test_read_mode_and_export_console_output_never_contain_the_cells_model_keys(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        distinctive_model_key = "claude-test-keymarkzz"
+        cell = _sample_review_rounds()
+        cell["rounds"]["code-review"][0]["main_tokens"] = {distinctive_model_key: {"standard": _tokens()}}
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(review_rounds=cell)])
+        out_path = tmp_path / "export.tsv"
+
+        pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        captured = capsys.readouterr()
+        assert distinctive_model_key not in captured.out + captured.err
+        # The export's vocabulary filter removes the unknown model and leaves the rest of the round.
+        exported_cell = _parse_pr_cost_export_row(out_path.read_text().splitlines()[2])["review_rounds"]
+        assert json.loads(exported_cell) == _cell_with(lambda value: _first_round(value).update({"main_tokens": {}}))
