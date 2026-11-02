@@ -1032,10 +1032,9 @@ class TestCheckSkillLength:
     def test_repo_root_resolution_git_timeout_engages_cap(
         self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
-        """`git rev-parse --show-toplevel`'s _lib_capped wrap (the hook's own
-        REPO_ROOT resolution) must engage its 5s cap rather than hang. A
-        capped, empty result leaves REPO_ROOT unset, so the hook allows
-        without reaching the length check."""
+        """`git rev-parse --show-toplevel`'s _lib_capped wrap must engage its
+        5s cap rather than hang. A capped, empty result leaves REPO_ROOT
+        unset, so the hook allows without reaching the length check."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--show-toplevel" ]')
