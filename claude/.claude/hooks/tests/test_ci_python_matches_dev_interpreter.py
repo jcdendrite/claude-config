@@ -83,9 +83,8 @@ def test_a_mismatched_pin_names_the_pin_the_running_interpreter_and_the_installe
         )
 
     message = str(failure.value)
-    assert "3.14" in message
-    assert "3.12" in message
-    assert running_executable in message
+    assert f"pins Python 3.14 but this suite runs under 3.12 ({running_executable})" in message
+    assert "`python3.14`" in message
     assert "install-dev.sh" in message
 
 

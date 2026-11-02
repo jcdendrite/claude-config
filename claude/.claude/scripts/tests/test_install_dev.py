@@ -392,9 +392,8 @@ def _make_claude_shim(
     call_log: Path,
     install_exit: int = 0,
 ) -> Path:
-    """Write a bash `claude` stub. A python shebang would resolve to this
-    test file's own fake pinned-interpreter PATH stub rather than the real
-    interpreter. It handles `plugin marketplace list --json`, `plugin list
+    """Write a bash `claude` stub, so it depends on no interpreter on PATH.
+    It handles `plugin marketplace list --json`, `plugin list
     --json`, and `plugin install`. It logs every invocation's arguments, as
     `$*`, one line per call, to call_log. It exits 1 on anything unhandled.
 
@@ -685,7 +684,8 @@ class TestIdempotency:
 
     def test_healthy_venv_not_recreated(self, repo_root_stub: Path, fake_home: Path):
         """A second run when .venv is already healthy must exit 0 and skip
-        the pinned interpreter's -m venv creation step."""
+        the pinned interpreter's -m venv creation step, while still syncing
+        requirements-dev.txt on the kept venv."""
         _make_healthy_venv_stub(repo_root_stub)
 
         # Sentinel: touched by the stub if the pinned interpreter's -m venv is called.
@@ -707,6 +707,7 @@ class TestIdempotency:
             f"install-dev.sh's `awk '/^version:/ {{print $2}}'`; got stdout: "
             f"{result.stdout!r}"
         )
+        assert "Syncing requirements-dev.txt..." in result.stdout, result.stdout
 
     def test_venv_missing_shellcheck_is_recreated(self, repo_root_stub: Path, fake_home: Path):
         """A .venv missing only shellcheck must be treated unhealthy, or the
@@ -895,17 +896,14 @@ class TestPinnedInterpreter:
         assert not sentinel.exists(), "a .venv on the pinned minor must not be rebuilt"
         assert stale_marker.exists(), "the kept .venv must be the old tree"
 
-    def test_healthy_venv_on_the_pinned_minor_syncs_requirements_and_needs_no_pinned_interpreter_on_path(
+    def test_healthy_venv_on_the_pinned_minor_needs_no_pinned_interpreter_on_path(
         self, repo_root_stub: Path, fake_home: Path
     ):
-        pip_call_log = repo_root_stub / "pip_calls.log"
-        _write_venv_tree(repo_root_stub / ".venv", PINNED_MINOR, pip_call_log=pip_call_log)
+        _write_venv_tree(repo_root_stub / ".venv", PINNED_MINOR)
 
         result = _run_script(repo_root_stub, fake_home)
 
         assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
-        sync_calls = [line for line in pip_call_log.read_text().splitlines() if "--version" not in line]
-        assert sync_calls == [".venv/bin/pip install --quiet -r requirements-dev.txt"], sync_calls
 
     def test_pinned_interpreter_that_builds_another_minor_fails_verification_without_done(
         self, repo_root_stub: Path, fake_home: Path

@@ -94,7 +94,8 @@ _EXPECTED_FREEZE_CONDITIONS_FIELDS: frozenset[str] = frozenset({
 _STUBBED_ENVIRONMENT = runner.EnvironmentRecord("2.0.0", "deadbeef")
 
 # Canary that CPython raises RecursionError for deeply nested JSON rather than crashing the process.
-# Measured on a macOS main-thread C stack (16 MB), where 100_000 overflowed on Python 3.12 but not on 3.14.
+# Overflow depth varies with interpreter version and C stack size.
+# This value overflowed a 16 MB macOS main-thread stack on Python 3.14.
 _JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT = 2_000_000
 # The wrapper in run_review_bench._load_answers_file puts the interpreter's own error text inside these parentheses.
 _JSON_READ_ERROR_WRAPPER_PREFIX = "could not be read as JSON ("

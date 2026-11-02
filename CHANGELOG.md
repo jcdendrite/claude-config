@@ -9,7 +9,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
-  - Tests that check the error path for too-deeply-nested input now inject a `RecursionError` instead of building input deep enough to overflow, because the overflow depth differs between 3.12 and 3.14 and with the host's stack size.
+  - Most tests that check the error path for too-deeply-nested input now inject a `RecursionError` instead of building input deep enough to overflow, because the overflow depth differs between 3.12 and 3.14 and with the host's stack size.
+  - A canary in `evals/test_review_bench_cli.py` still builds input deep enough to overflow, to confirm CPython raises `RecursionError` instead of crashing.
   - The README's Python floor for stow users stays 3.11, and CI exercises only 3.14. Code that needs a newer stdlib API or newer behavior than 3.11 passes CI and can fail on a stow user's Python.
 - **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
   - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
