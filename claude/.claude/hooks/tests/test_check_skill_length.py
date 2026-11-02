@@ -321,10 +321,7 @@ class TestCheckSkillLength:
     def test_code_review_at_override_cap_allows(
         self, isolated_home, tmp_path
     ):
-        """code-review/SKILL.md gets a 550-line cap; 550 lines (exactly at the cap, over the 500 ceiling) and growing → allow.
-
-        The 550 cap is a temporary exception until #1351 restructures the skill and reverts it.
-        """
+        """code-review/SKILL.md gets a 550-line cap; 550 lines (exactly at the cap, over the 500 ceiling) and growing → allow."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -347,10 +344,7 @@ class TestCheckSkillLength:
         )
 
     def test_code_review_over_override_denies(self, isolated_home, tmp_path):
-        """code-review/SKILL.md over the 550-line override and growing → deny.
-
-        The 550 cap is a temporary exception until #1351 restructures the skill and reverts it.
-        """
+        """code-review/SKILL.md over the 550-line override and growing → deny."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
