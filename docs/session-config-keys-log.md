@@ -114,7 +114,7 @@ The notice prints at every event until its cause is fixed. Until then, the engin
 
 To record the session that showed the notice, the engineer gives it a new event after the fix, because the hook writes a row for the session only at its next event:
 
-- A fix to `bash`, `jq`, `timeout`, `HOME` or `CLAUDE_CONFIG_DIR` changes the shell's environment, which reaches only a Claude Code process launched from that shell. The engineer restarts the session from the fixed shell with `claude --continue` or `claude --resume`.
+- After a fix to `bash`, `jq`, `timeout`, `HOME` or `CLAUDE_CONFIG_DIR`, the engineer restarts the session from the fixed shell with `claude --continue` or `claude --resume`, because the fix changes the shell's environment and reaches only a Claude Code process launched from that shell.
 - After any other fix, `/compact` in the running session records it.
 - `/clear` and a plain restart start a new session and leave the one that showed the notice without a row.
 

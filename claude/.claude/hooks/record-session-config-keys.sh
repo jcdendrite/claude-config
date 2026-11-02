@@ -23,7 +23,6 @@
 # No config key turns this hook off, because the record has to exist where every key is off too.
 # A hung config-dir filesystem stalls the hook until the harness hook timeout, because the registration sets no timeout.
 # The hook knowingly exceeds the 100 ms per-fire budget in plugins/claude-hook-review/skills/claude-hook-review/SKILL.md § "7. Performance budget", because it fires once per session event.
-# Each $(_config_value) call runs in a subshell that discards _config.sh's memo, so every key rescans the whole schema and the per-key cost scales with schema size.
 set -uo pipefail
 exec 2>/dev/null
 

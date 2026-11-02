@@ -1,10 +1,5 @@
 """Tests for record-session-config-keys.sh.
 
-SessionStart hook that appends one row per event, holding the resolved value of every
-config-keys.psv key, to <config-dir>/.session-config-keys-log.jsonl, and prints nothing when it
-does. When it cannot append a row it prints one fixed notice line. Every path exits 0 with empty
-stderr.
-
 Expected key values are built from the schema text a case runs against and the state the case
 writes, never through `_config_value` or any other resolver.
 """
@@ -19,7 +14,7 @@ import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -148,7 +143,6 @@ def shipped_keys() -> list[str]:
 
 
 def one_row_schema_text() -> str:
-    """The shipped header and only the first key row."""
     kept = []
     for line in SHIPPED_SCHEMA_TEXT.splitlines():
         kept.append(line)
@@ -369,9 +363,7 @@ JQ_ENCODE_FAILURE_BODIES = {
 
 
 def install_stubs(bin_dir: Path, *, jq_encode: str = "passthrough", chmod: str | None = None) -> Stubs:
-    """A jq spy and, when `chmod` is given, a chmod stub, both first on PATH.
-
-    The spy logs each call and runs the real jq, except that the row encode call, recognized by
+    """The spy logs each call and runs the real jq, except that the row encode call, recognized by
     the argument `key_names` after `--arg`, follows `jq_encode`. That couples the spy to the
     hook's binding name, so renaming the binding fails the cases that look for the encode call.
     """
@@ -809,8 +801,8 @@ class TestRowContent:
         )
 
     def test_a_value_printed_before_the_library_reports_failure_records_unreadable(self, tmp_path):
-        """Pins the hook's own guard against a library state today's library cannot produce:
-        one that prints a token-valid value and then fails."""
+        """Pins the hook's guard against a library that prints a token-valid value and then fails.
+        The shipped library never does."""
         sandbox = make_sandbox(tmp_path)
         hook = one_row_hook(tmp_path)
         [(key, no_state_value)] = one_row_expected_keys().items()
@@ -830,8 +822,8 @@ class TestRowContent:
         )
 
     def test_an_empty_value_with_exit_status_zero_records_unreadable(self, tmp_path):
-        """Pins the hook's own guard against a library state today's library cannot produce:
-        one that succeeds with an empty print."""
+        """Pins the hook's guard against a library that succeeds with an empty print.
+        The shipped library never does."""
         sandbox = make_sandbox(tmp_path)
         hook = one_row_hook(tmp_path)
         [key] = one_row_expected_keys()
@@ -848,8 +840,8 @@ class TestRowContent:
         )
 
     def test_an_embedded_newline_value_records_unreadable_without_shifting_the_other_keys(self, tmp_path):
-        """Pins the hook's own guard against a library state today's library cannot produce:
-        one that prints a newline-bearing value, which fails a check that matches line by line."""
+        """Pins the hook's guard against a library that prints a newline-bearing value.
+        Such a value fails a check that matches line by line. The shipped library never does."""
         sandbox = make_sandbox(tmp_path)
         newline_key = f"{SYNTHETIC_KEY}_middle"
         token_value_by_key = {f"{SYNTHETIC_KEY}_first": "first-value", f"{SYNTHETIC_KEY}_last": "last-value"}
@@ -1761,6 +1753,26 @@ class TestReaderDocTrimRecipe:
         assert trim.returncode == 0, trim.stderr
         assert sandbox.log_path.read_bytes() == b""
         assert stat.S_IMODE(sandbox.log_path.stat().st_mode) == 0o600
+
+    def test_a_row_twenty_days_old_survives_a_thirty_day_window_and_is_dropped_by_a_ten_day_window(self, tmp_path):
+        """A twenty-day-old row bounds the seconds-per-day multiplier between 57,600 and 172,800, so a wrong unit fails."""
+        sandbox, written_bytes = self._log_after_one_hook_run(tmp_path)
+        written_row = json.loads(non_blank_lines(written_bytes.decode())[0])
+        twenty_days_ago = datetime.now(UTC) - timedelta(days=20)
+        aged_bytes = written_bytes.replace(
+            written_row["logged_at"].encode(), twenty_days_ago.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+        )
+        sandbox.log_path.write_bytes(aged_bytes)
+
+        trim_at_thirty_days = run_trim_recipe(sandbox, 30)
+
+        assert trim_at_thirty_days.returncode == 0, trim_at_thirty_days.stderr
+        assert sandbox.log_path.read_bytes() == aged_bytes.lstrip(b"\n")
+
+        trim_at_ten_days = run_trim_recipe(sandbox, 10)
+
+        assert trim_at_ten_days.returncode == 0, trim_at_ten_days.stderr
+        assert sandbox.log_path.read_bytes() == b""
 
     def test_a_failing_jq_leaves_the_original_log_in_place(self, tmp_path):
         sandbox, written_bytes = self._log_after_one_hook_run(tmp_path)
