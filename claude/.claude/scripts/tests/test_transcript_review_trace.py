@@ -2219,14 +2219,18 @@ class TestReviewerSpawnRoundLabels:
         assert "opus" not in out
 
     def test_omit_flag_with_every_event_dropped_prints_no_session_header(self, fake_projects, capsys):
+        """The skill filter removes the plan-review skill event and the omit flag removes the spawn, leaving no events."""
         _write_jsonl(fake_projects / "sess-empty.jsonl", [
             _skill_use_rec("plan-review", "2026-05-19T10:00:00.000Z", branch="feat"),
             _spawn_rec("staff-sdet", "2026-05-19T10:01:00.000Z"),
         ])
 
+        review_trace.cmd_review_trace(_review_trace_args(skill="code-review"))
+        out_without_flag = capsys.readouterr().out
         review_trace.cmd_review_trace(_review_trace_args(omit_plan_review_spawns=True, skill="code-review"))
         out = capsys.readouterr().out
 
+        assert "### " in out_without_flag
         assert "###" not in out
 
     def test_spawn_after_the_deactivate_call_reads_none(self):
