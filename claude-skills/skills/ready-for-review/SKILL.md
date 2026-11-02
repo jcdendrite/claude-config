@@ -18,7 +18,7 @@ A halt on step 2, 3, or 4 triggers the fix loop above first; only once that roun
 
 When `require-architect-consult.sh` denies a reviewer spawn in this run, step 4's included:
 - Dispatch the consult per `code-review/SKILL.md` § "Round-cap architect consult" and retry the spawn unless the verdict is re-plan, which ends that round with no further spawns.
-- When a retried spawn is denied again after the consult, stop and report to the engineer instead of consulting again.
+- When the retry of a denied spawn is denied again with no new reviewed state since that consult, stop and report to the engineer instead of consulting again. A denial after the gate re-arms is a new denial and takes a new consult.
 - A re-plan verdict's fix is not a `code-writer` dispatch: revise the plan by that section's route, run `/plan-review`, then implement the revision and commit it through the staged-diff `/code-review`.
 - That commit carries any fix staged when the verdict arrived, or follows discarding that fix.
 - A revision that changes no code ends the run with a report to the engineer.
