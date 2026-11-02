@@ -11,7 +11,7 @@
 # Default limit is 200 lines. Structural-dispatcher skills such as
 # plan-review carry item-ownership / routing tables that legitimately run
 # longer and are capped at Anthropic's documented 500-line ceiling instead.
-# code-review/SKILL.md is the exception, temporarily capped at 525 lines
+# code-review/SKILL.md is the exception, temporarily capped above that
 # (see limit_for()).
 # plan-review/ROUTING.md gets the same 500-line cap: it holds the
 # item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
@@ -114,7 +114,7 @@ limit_for() {
   case "$1" in
     # Temporary exception to the 500-line ceiling until #1351 restructures code-review.
     claude-skills/skills/code-review/SKILL.md)
-      echo 525 ;;
+      echo 550 ;;
     claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)

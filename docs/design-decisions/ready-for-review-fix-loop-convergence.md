@@ -2,6 +2,8 @@
 
 *2026-09-17.*
 
+**Superseded in part:** the claim that `code-review/SKILL.md` sits at a 500-line cap with zero headroom no longer holds. The per-file cap lives in `check-skill-length.sh`'s `limit_for()`.
+
 **Partially superseded by [branch-scoped-review-ledger.md](branch-scoped-review-ledger.md) (2026-09-30):** the ledger's rejection for the disposition record no longer holds for its session keying or for a keep verdict's missing slot, because the ledger is branch-keyed and logs a keep as `SETTLED` with a range-form `--source`. The `agent-reviews/` record stays, canonical only for the Cap's pass accounting. Everything else here stands, except that a `SETTLED` or `DEFER` ledger row can no longer omit `--source`: `review-ledger.sh` now rejects it, so the "prose-only" claim below no longer holds for those two dispositions.
 
 **Superseded in part by [cumulative-review-marker-keyed-on-normalized-diff.md](cumulative-review-marker-keyed-on-normalized-diff.md) (2026-10-22):** the sentence "The byte-exact cumulative guarantee stays intact" now describes a normalized-text key, and that note also qualifies the earlier note's "Everything else here stands" for this guarantee.
