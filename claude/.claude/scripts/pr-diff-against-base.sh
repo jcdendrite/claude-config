@@ -15,6 +15,7 @@
 # On the key path, a `gh pr view` that exits non-zero adds a clause to the
 # `using branch.<b>.gh-merge-base` line saying no open-PR base was checked.
 # The script never fetches.
+# An empty diff exits 0 and prints a DIFF_EMPTY: line on stderr: `no staged changes` under --staged, `no changes against base` otherwise.
 # Usage: pr-diff-against-base.sh [--staged] [--record] [--diff-file]
 # --staged prints `git diff --cached` instead of the merge-base diff,
 # skipping the gh pr view/merge-base resolution entirely.
@@ -158,6 +159,12 @@ fi
 # Command substitution strips trailing newlines; the printf below restores exactly one.
 # Stdout matches git's own output apart from trailing newlines and NUL bytes, which command substitution drops.
 printf '%s\n' "$DIFF_TEXT"
+
+# The lone newline above is stdout for an empty diff, so callers key on this stderr line instead.
+# The --staged arm prints its own DIFF_EMPTY: line and exits earlier, so only the cumulative arm reaches here empty.
+if [ -z "$DIFF_TEXT" ]; then
+  printf 'DIFF_EMPTY: no changes against base\n' >&2
+fi
 
 # Everything below writes optional artifacts (--record, --diff-file). Both
 # always run after the diff has already reached stdout, so a

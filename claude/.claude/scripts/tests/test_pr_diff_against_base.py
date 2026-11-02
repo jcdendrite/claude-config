@@ -21,6 +21,7 @@ from helpers import (
     GITLINK_AFTER,
     GITLINK_BEFORE,
     HOOKS_DIR,
+    SKILLS_DIR,
     cumulative_review_value,
     isolated_git_diff,
     isolated_git_env,
@@ -40,6 +41,8 @@ from .conftest import (
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-diff-against-base.sh"
 _LIB_SH = HOOKS_DIR / "_lib.sh"
+_READY_FOR_REVIEW_SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
+_READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
 
 
 def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str:
@@ -308,6 +311,82 @@ class TestNormalPathAgainstMain:
         assert result.returncode == 0
         assert "diff --git a/file.txt b/file.txt" in result.stdout
         assert "+work on feat/add-thing" in result.stdout
+
+    def test_empty_cumulative_diff_reports_diff_empty_on_stderr(self, tmp_path):
+        """A bare invocation takes the cumulative arm, not --staged's, whose
+        own line reads `no staged changes`, so the full-line assertion pins
+        the cumulative arm's text."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_branch_ahead_of_base_whose_commits_cancel_out_reports_diff_empty(self, tmp_path):
+        """A branch with commits ahead of origin/main whose tree equals the base's tree
+        (a change and its revert) still reports DIFF_EMPTY:, so the empty-diff signal
+        keys on the diff and not on the branch having no commits of its own."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/change-and-revert"], cwd=local, check=True)
+        _commit(local, "change that is reverted")
+        subprocess.run(["git", "revert", "--no-edit", "HEAD"], cwd=local, check=True, capture_output=True)
+        commits_ahead_of_base = subprocess.run(
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            cwd=local, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert commits_ahead_of_base == "2", "control: the empty diff is not a no-commits-ahead case"
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_head_merged_into_a_strictly_ahead_base_reports_diff_empty(self, tmp_path):
+        """A feature branch merged into main by a merge commit leaves origin/main
+        strictly ahead of HEAD with HEAD as its ancestor. The merge-base is then
+        HEAD itself, so the cumulative diff is empty and the signal must still print."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/merged-by-merge-commit")
+        subprocess.run(
+            ["git", "merge", "--no-ff", "-q", "-m", "merge feature", "feat/merged-by-merge-commit"],
+            cwd=local, check=True,
+        )
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/merged-by-merge-commit"], cwd=local, check=True)
+        head_is_ancestor_of_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
+            cwd=local, check=False,
+        ).returncode
+        head, base = (
+            subprocess.run(
+                ["git", "rev-parse", ref], cwd=local, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            for ref in ("HEAD", "refs/remotes/origin/main")
+        )
+        assert head_is_ancestor_of_base == 0, "control: HEAD is an ancestor of origin/main"
+        assert head != base, "control: origin/main is strictly ahead of HEAD"
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_non_empty_cumulative_diff_does_not_report_diff_empty(self, tmp_path):
+        """Guards against the DIFF_EMPTY: line being emitted unconditionally
+        or on an inverted condition."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/non-empty-diff")
+        subprocess.run(["git", "checkout", "-q", "feat/non-empty-diff"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() != ""
+        assert "DIFF_EMPTY:" not in result.stderr
 
     def test_merge_base_diff_ignores_color_and_external_diff_config(self, tmp_path):
         """Repo-local `color.ui=always` and `diff.external` must not reach the cumulative diff:
@@ -789,6 +868,32 @@ class TestStackBaseKeyPath:
         assert f"branch.{_STACKED_BRANCH}.gh-merge-base = {stack_base}" in result.stderr
         assert "defaulting base to" not in result.stderr
 
+    def test_key_set_to_a_ref_containing_head_reports_diff_empty_alongside_the_using_line(self, tmp_path):
+        """A stack base that already holds the branch's commits leaves an empty cumulative diff,
+        so DIFF_EMPTY: appears once, after the `using` line that names the key."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/contains-head"], cwd=local, check=True)
+        subprocess.run(
+            ["git", "config", f"branch.{_STACKED_BRANCH}.gh-merge-base", "contains-head"], cwd=local, check=True
+        )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        stderr_lines = result.stderr.splitlines()
+        diff_empty_indexes = [
+            index for index, line in enumerate(stderr_lines) if line == "DIFF_EMPTY: no changes against base"
+        ]
+        using_indexes = [
+            index
+            for index, line in enumerate(stderr_lines)
+            if f"using branch.{_STACKED_BRANCH}.gh-merge-base = contains-head" in line
+        ]
+        assert len(diff_empty_indexes) == 1, result.stderr
+        assert len(using_indexes) == 1, result.stderr
+        assert using_indexes[0] < diff_empty_indexes[0], result.stderr
+
     def test_no_key_control_on_the_same_fixture_diffs_the_stack_bases_commits_too(self, tmp_path):
         local, _bare = _make_stacked_repo(tmp_path)
         subprocess.run(
@@ -1268,6 +1373,46 @@ class TestDiffFileFlag:
 
         artifact = _diff_artifact_path(env, local, self.SID)
         assert artifact.read_bytes() == b"\n"
+
+    def test_record_and_diff_file_on_empty_cumulative_diff_announce_diff_empty_before_diff_file(self, tmp_path):
+        """The DIFF_EMPTY: line precedes DIFF_FILE: on stderr, so a caller
+        reading stderr in order sees the halt signal before the artifact path.
+        The recorded subject is still the 0-byte artifact of a genuinely empty diff."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env, record=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        stderr_lines = result.stderr.splitlines()
+        diff_empty_indexes = [
+            index for index, line in enumerate(stderr_lines) if line == "DIFF_EMPTY: no changes against base"
+        ]
+        diff_file_indexes = [index for index, line in enumerate(stderr_lines) if line.startswith("DIFF_FILE: ")]
+        assert len(diff_empty_indexes) == 1, result.stderr
+        assert len(diff_file_indexes) == 1, result.stderr
+        assert diff_empty_indexes[0] < diff_file_indexes[0], result.stderr
+        assert _subject_path(env, local, self.SID).stat().st_size == 0
+
+    def test_diff_empty_line_starts_with_the_token_ready_for_review_step_3_keys_its_halt_on(self, tmp_path):
+        """The empty-diff halt in ready-for-review step 3 is keyed on a `DIFF_EMPTY:` stderr
+        line, so a real empty cumulative run must print a line starting with that token."""
+        token = "DIFF_EMPTY:"
+        skill_lines = _READY_FOR_REVIEW_SKILL_MD.read_text().splitlines(keepends=True)
+        step3_start = skill_lines.index(_READY_FOR_REVIEW_STEP3_HEADING + "\n")
+        step3_end = next(
+            (i for i in range(step3_start + 1, len(skill_lines)) if skill_lines[i].startswith("## ")),
+            len(skill_lines),
+        )
+        assert token in "".join(skill_lines[step3_start:step3_end]), (
+            "ready-for-review/SKILL.md step 3 no longer keys its empty-diff halt on the DIFF_EMPTY: line"
+        )
+        local, _bare = _make_repo_with_remote(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"), record=True, diff_file=True)
+
+        assert result.returncode == 0, result.stderr
+        assert any(line.startswith(token) for line in result.stderr.splitlines()), result.stderr
 
     def test_diff_file_rerun_supersedes_prior_artifact_at_same_path(self, tmp_path):
         """Two runs with different diff content leave one file at one path
