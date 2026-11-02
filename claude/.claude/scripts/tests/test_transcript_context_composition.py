@@ -308,7 +308,7 @@ class TestCompaction:
 class TestRequestIdMerge:
     def test_consecutive_same_request_id_assistant_records_merge_into_one_turn(self):
         """Mirrors the run-merge shape _dedup_turns_by_request_id relies on (see
-        test_transcript_analysis.py's representative usage record at TestPriceTurnArity): two
+        test_transcript_pricing.py's representative usage record at TestPriceTurnArity): two
         consecutive assistant records sharing one requestId are one API call, not two turns.
         Without the merge, turns_scanned would be 2 and only the first record's own content
         block would drive the residency/weighting math."""
@@ -413,7 +413,7 @@ class TestRateWeighting:
 
     def test_mixed_class_turn_prices_per_item_not_one_blended_rate(self):
         """Item A (user text, 10 tok) is introduced at turn0 (cache-write, both TTL tiers present
-        at once -- mirrors test_transcript_analysis.py's own 'representative usage record'
+        at once -- mirrors test_transcript_pricing.py's own 'representative usage record'
         shape), then read at turns 1 and 2. Item B (a tool_result, 20 tok) is introduced at turn1
         -- the turn that ALSO carries item A's cache-read, genuinely mixing read and write
         classes on one turn's usage. Asserting each item's own weighted total separately (not
