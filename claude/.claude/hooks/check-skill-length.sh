@@ -49,6 +49,11 @@
 # Known gap: some git failures or timeouts inside the length check can
 # falsely deny a commit that stages an over-limit file.
 # A missing awk or grep makes the check silently allow a commit that grows a file past its limit.
+# A commit aimed at another tree with `git -C` or `cd` is length-checked
+# against the session's index, so growth in the target tree is silently
+# allowed.
+# A staged path that git quote-escapes, such as one with non-ASCII
+# characters, is silently allowed.
 # _lib_staged_length_gate in _lib.sh owns the failure handling.
 #
 # The growth-comparison and deny-message logic is shared with

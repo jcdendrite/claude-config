@@ -1007,10 +1007,10 @@ class TestCheckSkillLength:
         for both check-skill-length.sh and check-claude-md-length.sh: the
         capped call is caller-invariant, running identically for both hooks
         before either caller's own logic. The predicate matches on both
-        subcommand and operand so it targets only this call, not the
-        earlier `rev-parse --show-toplevel` REPO_ROOT-resolution call each
-        hook makes before _lib_staged_length_gate runs, which is also
-        capped."""
+        subcommand and operand, so it targets only this call and not the
+        `rev-parse --show-toplevel` REPO_ROOT-resolution call each hook
+        makes earlier. That call's cap is pinned by
+        `test_repo_root_resolution_git_timeout_engages_cap`."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--is-inside-work-tree" ]')
