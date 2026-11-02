@@ -3890,8 +3890,9 @@ class TestMarkerScriptCumulativeReview:
     def test_write_refuses_when_subject_is_empty(
         self, isolated_home, cumulative_diff_repo
     ):
-        """A recorded-but-empty subject (e.g. a truncated write) must refuse
-        with a message distinct from the no-subject-at-all case above."""
+        """A recorded-but-empty subject (e.g. an empty diff recorded as a
+        0-byte subject) must refuse with a message distinct from the
+        no-subject-at-all case above."""
         _seed_session(isolated_home, self.SID)
         subject_path = _cumulative_review_subject_path(isolated_home, cumulative_diff_repo, self.SID)
         subject_path.parent.mkdir(parents=True, exist_ok=True)
