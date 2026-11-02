@@ -88,8 +88,7 @@ def _review_rounds_cell_for_export(cell: dict | None) -> tuple[dict | None, int]
     """The review_rounds cell with every key this checkout's vocabulary does not know removed, and the number of keys
     removed. Each key position is checked against its own vocabulary only, so a name known at one position is
     unknown at every other. The top level passes through, because the decoder already fixes it to `rule` and `rounds`.
-    The count adds one per key removed at the highest level that removes it, and nothing inside a removed key's
-    value."""
+    How the count is taken is in docs/pr-cost.md."""
     if cell is None:
         return None, 0
     known_round_keys = {

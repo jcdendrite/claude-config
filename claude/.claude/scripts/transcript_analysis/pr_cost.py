@@ -252,9 +252,7 @@ def _build_model_breakdown_cell(by_model: dict) -> dict:
 
 
 def _token_membership_rule(tokens_by_model: dict) -> str | None:
-    """The first membership rule a {model: {variant: {class: ...}}} value breaks, else None: every model is a rate-table
-    key (`model-membership`), every variant a pricing variant and every group's classes exactly the token classes
-    (`label-membership`). Shared by the model_breakdown and review_rounds checks."""
+    """Shared by the model_breakdown and review_rounds checks."""
     if any(model not in pricing._MODEL_BASE_INPUT_RATES for model in tokens_by_model):
         return "model-membership"
     for variants in tokens_by_model.values():
@@ -346,8 +344,8 @@ def _review_round_cell(review_round: dict, merged_ts: float | None) -> dict:
 
 
 def _build_review_rounds_cell(rounds: Sequence[dict], merged_at: str) -> dict | None:
-    """The review_rounds cell value for one branch's round dicts: every review skill a key, each list in sort_key
-    order. Returning None records the row with an empty cell and no degrade line."""
+    """The review_rounds cell value for one branch's round dicts. Returning None records the row with an empty cell
+    and no degrade line."""
     merged_ts = corpus._parse_ts(merged_at)
     ordered_rounds = sorted(rounds, key=lambda review_round: review_round["sort_key"])
     return {
@@ -359,16 +357,27 @@ def _build_review_rounds_cell(rounds: Sequence[dict], merged_at: str) -> dict | 
     }
 
 
-# Closed set of review_rounds check rules, in check order, each with the cause its per-PR line prints. `build` is
-# the containment's rule for a builder exception, not a check of the cell.
+# Closed set of review_rounds check rules, in check order, each with the cause its per-PR line prints. `build` is the
+# containment's rule for any non-_ReviewRoundsCheckError exception raised building or checking the cell; no check raises it.
+_BUILD_RULE = "build"
 _REVIEW_ROUNDS_CHECK_CAUSES: dict[str, str] = {
     "size": "more rounds than the cell admits",
     "shape": "malformed transcript data or a claude-config defect",
     "model-membership": "a claude-config defect",
     "label-membership": "a claude-config defect",
-    "build": "a claude-config defect",
+    _BUILD_RULE: "a claude-config defect",
 }
 _REVIEW_ROUNDS_CHECK_RULES: tuple[str, ...] = tuple(_REVIEW_ROUNDS_CHECK_CAUSES)
+
+# The closed set of reasons a row's review_rounds cell is empty. Only the two quiet states print no per-PR line and
+# leave the exit code alone; every other state is reported and exits 1.
+_ABSENCE_PASS_FAILED = "pass-failed"
+_ABSENCE_NO_LOCAL_ACTIVITY = "no-local-activity"
+_ABSENCE_NOT_BUILT = "not-built"
+_QUIET_ROUNDS_ABSENCES: tuple[str, ...] = (_ABSENCE_NO_LOCAL_ACTIVITY, _ABSENCE_NOT_BUILT)
+_ROUNDS_ABSENCES: frozenset[str] = frozenset(
+    (_ABSENCE_PASS_FAILED, *_QUIET_ROUNDS_ABSENCES, *_REVIEW_ROUNDS_CHECK_RULES),
+)
 
 
 class _ReviewRoundsCheckError(Exception):
@@ -411,44 +420,59 @@ def _check_review_rounds_cell(cell: dict | None) -> None:
 
 def _review_rounds_cell_outcome(
     rounds: Sequence[dict] | None, absence: str | None, merged_at: str,
-) -> tuple[dict | None, str | None]:
-    """(cell, absence) for one row. `absence` is None for a recorded cell, else why the cell is empty: `pass-failed`,
-    `no-local-activity`, `not-built`, or a _REVIEW_ROUNDS_CHECK_RULES rule. An absence passed in builds nothing.
+) -> tuple[dict | None, str | None, str | None]:
+    """(cell, absence, build_error_class) for one row. `absence` is None for a recorded cell, else one of
+    _ROUNDS_ABSENCES, and an absence passed in builds nothing. `build_error_class` is the exception class name
+    behind a `build` absence, never its message, and None otherwise.
     The one containment boundary: a builder or check failure costs only this cell. SystemExit and other
     BaseException pass through."""
     if absence is not None:
-        return None, absence
+        if absence not in _ROUNDS_ABSENCES:
+            raise ValueError(f"unknown review_rounds absence {absence!r}")
+        return None, absence, None
     try:
         cell = _build_review_rounds_cell(rounds, merged_at)
         if cell is None:
-            return None, "not-built"
+            return None, _ABSENCE_NOT_BUILT, None
         _check_review_rounds_cell(cell)
     except _ReviewRoundsCheckError as exc:
-        return None, exc.rule
-    except Exception:
-        return None, "build"
-    return cell, None
+        return None, exc.rule, None
+    except Exception as exc:
+        return None, _BUILD_RULE, type(exc).__name__
+    return cell, None, None
 
 
 _FORCE_REFUSAL_REASON_BY_ABSENCE: dict[str, str] = {
-    "pass-failed": "the review-round pass failed",
-    "no-local-activity": "this branch has no local transcript activity",
-    "not-built": "this checkout does not record review rounds",
+    _ABSENCE_PASS_FAILED: "the review-round pass failed",
+    _ABSENCE_NO_LOCAL_ACTIVITY: "this branch has no local transcript activity",
+    _ABSENCE_NOT_BUILT: "this checkout does not record review rounds",
 }
 
 
-def _review_rounds_force_refusal(prior_cell: dict | None, new_cell: dict | None, new_absence: str | None) -> str | None:
-    """Why a --force re-capture must not replace the prior row's review_rounds cell, or None when it may. The first
-    matching case decides: a prior cell never captured is allowed; an empty new cell refuses; a lower round rule
-    refuses; under one rule, a skill with fewer rounds or a lower summed `agents` refuses; otherwise allowed."""
+def _review_rounds_check_cause(rule: str, build_error_class: str | None) -> str:
+    """The cause a failed `rule` prints. A `build` failure appends the exception class name, never its message."""
+    cause = _REVIEW_ROUNDS_CHECK_CAUSES[rule]
+    if rule == _BUILD_RULE:
+        cause = f"{cause}: {build_error_class}"
+    return cause
+
+
+def _review_rounds_force_refusal(
+    prior_cell: dict | None, new_cell: dict | None, new_absence: str | None, build_error_class: str | None,
+) -> str | None:
+    """Why a --force re-capture must not replace the prior row's review_rounds cell, or None when it may."""
     if prior_cell is None:
         return None
     if new_cell is None:
+        if new_absence == _BUILD_RULE:
+            return f"the new cell failed its {new_absence} check ({_review_rounds_check_cause(new_absence, build_error_class)})"
         if new_absence in _REVIEW_ROUNDS_CHECK_CAUSES:
             return f"the new cell failed its {new_absence} check"
-        return _FORCE_REFUSAL_REASON_BY_ABSENCE.get(new_absence, _FORCE_REFUSAL_REASON_BY_ABSENCE["not-built"])
+        return _FORCE_REFUSAL_REASON_BY_ABSENCE[new_absence]
     if new_cell["rule"] < prior_cell["rule"]:
         return "this checkout's round rule is older than the captured row's"
+    # A higher-rule --force re-record over partly aged transcripts can shrink the captured series and is not guarded,
+    # because REVIEW_ROUND_RULE is currently 1.
     if new_cell["rule"] == prior_cell["rule"]:
         for skill, prior_rounds in prior_cell["rounds"].items():
             new_rounds = new_cell["rounds"].get(skill, [])
@@ -459,18 +483,16 @@ def _review_rounds_force_refusal(prior_cell: dict | None, new_cell: dict | None,
     return None
 
 
-def _review_rounds_degrade_reason(absence: str | None) -> str | None:
-    """The per-PR line's reason for an empty cell, or None when the absence is not a failure to report
-    (`no-local-activity`, `not-built`, or a recorded cell)."""
-    if absence == "pass-failed":
+def _review_rounds_degrade_reason(absence: str | None, build_error_class: str | None) -> str | None:
+    """The per-PR line's reason for an empty cell, or None for a recorded cell or a quiet absence."""
+    if absence is None or absence in _QUIET_ROUNDS_ABSENCES:
+        return None
+    if absence == _ABSENCE_PASS_FAILED:
         return "were not captured (the review-round pass failed)"
-    if absence in _REVIEW_ROUNDS_CHECK_CAUSES:
-        return f"failed their {absence} check ({_REVIEW_ROUNDS_CHECK_CAUSES[absence]})"
-    return None
+    return f"failed their {absence} check ({_review_rounds_check_cause(absence, build_error_class)})"
 
 
 def _failed_cells_count_entry(pr_number: int, failed_columns: Sequence[str], account_ordinal: int | None) -> str:
-    """One count-line entry: `PR #N (cells)`, prefixed `account-K ` when account_ordinal is given."""
     prefix = "" if account_ordinal is None else f"account-{account_ordinal} "
     return f"{prefix}PR #{pr_number} ({' and '.join(failed_columns)})"
 
@@ -1067,12 +1089,12 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     agg = branch_totals.get(branch) or cost._new_pr_cost_agg()
                     captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
                     if branch not in branch_totals:
-                        rounds_absence: str | None = "no-local-activity"
+                        rounds_absence: str | None = _ABSENCE_NO_LOCAL_ACTIVITY
                     elif round_scan.failed:
-                        rounds_absence = "pass-failed"
+                        rounds_absence = _ABSENCE_PASS_FAILED
                     else:
                         rounds_absence = None
-                    review_rounds_cell, rounds_absence = _review_rounds_cell_outcome(
+                    review_rounds_cell, rounds_absence, rounds_build_error_class = _review_rounds_cell_outcome(
                         None if rounds_absence else round_scan.rounds_by_branch.get(branch, []),
                         rounds_absence, resolved_pr["mergedAt"],
                     )
@@ -1094,7 +1116,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         new_row["model_breakdown"] = None
                     if force and already is not None:
                         refusal_reason = _review_rounds_force_refusal(
-                            already["review_rounds"], review_rounds_cell, rounds_absence,
+                            already["review_rounds"], review_rounds_cell, rounds_absence, rounds_build_error_class,
                         )
                         if refusal_reason is not None:
                             print(
@@ -1139,7 +1161,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     file=sys.stderr,
                 )
                 failed_columns.append("model_breakdown")
-            rounds_degrade_reason = _review_rounds_degrade_reason(rounds_absence)
+            rounds_degrade_reason = _review_rounds_degrade_reason(rounds_absence, rounds_build_error_class)
             if rounds_degrade_reason is not None:
                 print(
                     f"pr-cost:   PR #{resolved_pr['number']}: review rounds {rounds_degrade_reason}"

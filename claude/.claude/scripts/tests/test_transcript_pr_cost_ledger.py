@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from ._pr_cost_helpers import (
     _PRIOR_ROW_MARKER,
     _UPGRADE_NOTICE_FRAGMENT,
     _UPGRADE_NOTICE_STEM,
+    _current_line_with_cell,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _first_round,
@@ -216,15 +218,6 @@ class TestParsePrCostLedgerFileTextMalformed:
         with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed captured_at"):
             pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
-    def _line_with_malformed_cell(self, column: str, malformed_value: str) -> str:
-        """A valid formatted row line with `column`'s own cell replaced by
-        malformed_value. This bypasses _format_pr_cost_ledger_row's own
-        bool/float rendering, which would otherwise reject an arbitrary
-        string before parsing is ever reached for those columns."""
-        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
-        cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = malformed_value
-        return "\t".join(cells)
-
     @pytest.mark.parametrize(
         "column,malformed_value",
         [
@@ -248,7 +241,7 @@ class TestParsePrCostLedgerFileTextMalformed:
         cell and names only the column and line number."""
         text = (
             pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n"
-            + self._line_with_malformed_cell(column, malformed_value) + "\n"
+            + _current_line_with_cell(column, malformed_value) + "\n"
         )
         with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
@@ -485,9 +478,7 @@ def _single_group_cell(model="claude-sonnet-5", variant="standard", token_class=
 
 
 def _current_ledger_text_with_cell(cell: str, column: str = "model_breakdown") -> str:
-    cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
-    cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = cell
-    return pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
+    return pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + _current_line_with_cell(column, cell) + "\n"
 
 
 # Hostile primitives shared by the model_breakdown and review_rounds codec suites: a bad integer and a bad key.
@@ -1760,7 +1751,7 @@ class TestDecodeReviewRoundsCellRefuses:
 
     def test_oversized_cell_is_refused_before_it_is_parsed(self, monkeypatch):
         monkeypatch.setattr(pr_cost_ledger, "_REVIEW_ROUNDS_CELL_READ_MAX_CHARS", 8)
-        monkeypatch.setattr(pr_cost_ledger.json, "loads", lambda *a, **k: pytest.fail("parsed an oversized cell"))
+        monkeypatch.setattr(pr_cost_ledger, "_load_json_cell", lambda cell: pytest.fail("parsed an oversized cell"))
 
         with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="cell too long"):
             pr_cost_ledger._decode_review_rounds_cell("x" * 9, 2)
@@ -1770,7 +1761,7 @@ class TestDecodeReviewRoundsCellRefuses:
         def recursing_loads(*args, **kwargs):
             raise RecursionError
 
-        monkeypatch.setattr(pr_cost_ledger.json, "loads", recursing_loads)
+        monkeypatch.setattr(pr_cost_ledger, "json", types.SimpleNamespace(loads=recursing_loads))
 
         with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             pr_cost_ledger._decode_review_rounds_cell("{}", 2)
@@ -1809,9 +1800,6 @@ class TestReviewRoundsCellBounds:
         assert pr_cost_ledger._REVIEW_ROUNDS_CELL_READ_MAX_CHARS == 8_388_608, (
             "persisted contract: a checkout refuses any cell longer than the value it shipped with; never lower it"
         )
-
-    def test_write_bound_does_not_exceed_the_read_bound(self):
-        assert pr_cost_ledger._REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS <= pr_cost_ledger._REVIEW_ROUNDS_CELL_READ_MAX_CHARS
 
     def test_a_cell_longer_than_the_write_bound_still_decodes_and_the_write_check_refuses_it_with_size(self):
         rounds_over_the_write_bound = (

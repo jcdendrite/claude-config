@@ -428,6 +428,15 @@ def _sample_pr_cost_row(**overrides) -> dict:
     return row
 
 
+def _current_line_with_cell(column: str, cell: str, **row_overrides) -> str:
+    """A _sample_pr_cost_row(**row_overrides) data line under the current header with `column`'s cell text replaced.
+    The replacement bypasses _format_pr_cost_ledger_row's bool/float rendering, which would reject an arbitrary string
+    for those columns."""
+    cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**row_overrides)).split("\t")
+    cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = cell
+    return "\t".join(cells)
+
+
 def _legacy_row_line(**overrides) -> str:
     """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-host
     header's columns -- no host cell, no model_breakdown cell, no invalid_usage_records cell."""
@@ -531,24 +540,20 @@ _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL = (
 
 
 def _first_round(cell: dict) -> dict:
-    """The first code-review round of a review_rounds cell value."""
     return cell["rounds"]["code-review"][0]
 
 
 def _cell_with(mutate) -> dict:
-    """The sample review_rounds cell after `mutate(cell)` edits a fresh copy in place."""
     cell = _sample_review_rounds()
     mutate(cell)
     return cell
 
 
 def _mutated_review_rounds_cell(mutate) -> str:
-    """`_cell_with(mutate)` serialized as the cell text a hand edit would leave in the ledger."""
     return json.dumps(_cell_with(mutate))
 
 
 def _tokens(**non_zero_counts: int) -> dict[str, int]:
-    """All five token classes, zero unless named."""
     return {token_class: non_zero_counts.get(token_class, 0) for token_class in pricing._TOKEN_CLASSES}
 
 

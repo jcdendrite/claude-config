@@ -279,7 +279,6 @@ def _turn_model(rec: dict) -> str:
 
 
 def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
-    """Add one priced turn's per-class token counts to `tokens` under its model and pricing variant."""
     variants = tokens.setdefault(model, {})
     variant = pricing._pricing_variant(usage)
     if variant not in variants:
@@ -314,11 +313,8 @@ def _price_dispatch(
     cost's and pr-cost's are.
 
     A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid
-    adds to tally.invalid_usage_records and is excluded from dollars, tokens
-    and unpriced counts; its spawn blocks are still followed. That gate has no
-    upper bound, so an integer too large for float arithmetic raises from
-    pricing._price_turn or prices to a non-finite total. A non-string model
-    is priced as unpriced.
+    adds to tally.invalid_usage_records and is excluded; its spawn blocks are
+    still followed. See compute_review_round_costs for the gate's limits.
 
     tally.dangling counts both a dispatch_index lookup miss and an
     unreadable/missing sibling .jsonl as one bucket, mirroring subagent-mix's
@@ -421,11 +417,14 @@ def compute_review_round_costs(
 
     A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid
     is excluded from dollars, tokens, unpriced counts and branch_totals
-    instead of raising or pricing negative. Inside a round window it adds to
+    rather than priced negative. Inside a round window it adds to
     that round's invalid_usage_records. Its spawn blocks are still followed.
-    That gate has no upper bound, so an integer too large for float arithmetic
-    raises from pricing._price_turn or prices to a non-finite total. A
-    non-string model is priced as unpriced.
+    A truthy non-object `usage` in a run of records sharing one requestId
+    raises AttributeError from pricing.dedup_turns_by_request_id, before
+    the gate runs, when it sits where pricing._warn_if_run_usage_drift
+    documents (the first record, or one before the first drifting record).
+    The gate has no upper bound on token counts. A non-string model is
+    priced as unpriced.
 
     rounds_only skips a session that opens no round before its branch
     attribution and dispatch indexing, and drops "branch_totals" from the

@@ -36,6 +36,7 @@ from ._pr_cost_helpers import (
     _ROUNDS_PER_PR_STEM,
     _UPGRADE_NOTICE_STEM,
     _cell_with,
+    _current_line_with_cell,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _first_round,
@@ -2064,12 +2065,6 @@ def _run_read_record_and_export(fake_projects, tmp_path, capsys, export_name: st
 
 
 class TestPrCostPrescribedHandEdits:
-    @staticmethod
-    def _current_line_with_cell(column: str, cell: str) -> str:
-        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number=50)).split("\t")
-        cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = cell
-        return "\t".join(cells)
-
     @pytest.mark.parametrize(
         "broken_column,broken_cell_or_tail,expected_fragments",
         [
@@ -2095,11 +2090,11 @@ class TestPrCostPrescribedHandEdits:
         if broken_cell_or_tail is None:
             # review_rounds is the current header's trailing column and may legitimately be blank, so a
             # blank cell followed by a stripped tab is one cell short; restoring the tab is the fix.
-            broken_line = self._current_line_with_cell("review_rounds", "")[:-1]
-            fixed_line = self._current_line_with_cell("review_rounds", "")
+            broken_line = _current_line_with_cell("review_rounds", "", pr_number=50)[:-1]
+            fixed_line = _current_line_with_cell("review_rounds", "", pr_number=50)
         else:
-            broken_line = self._current_line_with_cell(broken_column, broken_cell_or_tail)
-            fixed_line = self._current_line_with_cell(broken_column, "")  # blank the cell, keeping its tab
+            broken_line = _current_line_with_cell(broken_column, broken_cell_or_tail, pr_number=50)
+            fixed_line = _current_line_with_cell(broken_column, "", pr_number=50)  # blank the cell, keeping its tab
         ledger_path.write_text(header + "\n" + broken_line + "\n")
         before_bytes = ledger_path.read_bytes()
 
@@ -2670,26 +2665,26 @@ def _already_captured_line(pr_number: int) -> str:
     )
 
 
+def _fail_the_pass(monkeypatch, failing_call_numbers: set[int] | None = None) -> None:
+    real_compute = review_rounds.compute_review_round_costs
+    call_count = 0
+
+    def computing(session_iter, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if failing_call_numbers is None or call_count in failing_call_numbers:
+            raise _RoundPassDefect(f"message carrying {_REJECTED_MARKER}")
+        return real_compute(session_iter, **kwargs)
+
+    monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
+
+
 class TestReviewRoundPassFailure:
-    @staticmethod
-    def _fail_the_pass(monkeypatch, failing_call_numbers: set[int] | None = None) -> None:
-        real_compute = review_rounds.compute_review_round_costs
-        call_count = 0
-
-        def computing(session_iter, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if failing_call_numbers is None or call_count in failing_call_numbers:
-                raise _RoundPassDefect(f"message carrying {_REJECTED_MARKER}")
-            return real_compute(session_iter, **kwargs)
-
-        monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
-
     def test_a_failing_pass_prints_one_line_with_the_class_name_only_scans_once_and_empties_both_rows_cells(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
-        self._fail_the_pass(monkeypatch)
+        _fail_the_pass(monkeypatch)
         spy = _spy_on_scans(monkeypatch)
 
         with pytest.raises(SystemExit) as exc_info:
@@ -2717,7 +2712,7 @@ class TestReviewRoundPassFailure:
             (root / "-home-user-testrepo").mkdir(parents=True)
             _write_account_session(root)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
-        self._fail_the_pass(monkeypatch, failing_call_numbers={1})
+        _fail_the_pass(monkeypatch, failing_call_numbers={1})
 
         with pytest.raises(SystemExit) as exc_info:
             pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
@@ -2870,6 +2865,16 @@ class TestCheckReviewRoundsCell:
 
         assert exc_info.value.rule == "model-membership"
 
+    def test_a_count_leaf_at_int64_max_passes_and_one_above_fails_the_shape_rule(self):
+        cell_at_the_bound = _cell_with(lambda cell: _first_round(cell).update(unpriced_tokens=_INT64_MAX))
+        pr_cost._check_review_rounds_cell(cell_at_the_bound)
+
+        cell_above_the_bound = _cell_with(lambda cell: _first_round(cell).update(unpriced_tokens=_INT64_MAX + 1))
+        with pytest.raises(pr_cost._ReviewRoundsCheckError) as exc_info:
+            pr_cost._check_review_rounds_cell(cell_above_the_bound)
+
+        assert exc_info.value.rule == "shape"
+
     def test_empty_token_objects_and_a_none_cell_pass(self):
         cell = {"rule": 1, "rounds": {"code-review": [{**_sample_review_round(), "main_tokens": {}, "agent_tokens": {}}]}}
         pr_cost._check_review_rounds_cell(cell)
@@ -2936,22 +2941,15 @@ class TestReviewRoundsCellContainment:
         reason = f"failed their size check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['size']})"
         assert _rounds_per_pr_line(1, reason) in capsys.readouterr().err.splitlines()
 
-    def test_a_builder_exception_is_contained_as_the_build_rule_without_printing_its_message(
+    def test_a_builder_exception_is_contained_as_the_build_rule_naming_only_its_class(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
 
-        def raising_on_first_call(rounds, merged_at):
+        def raising_builder() -> dict:
             raise RuntimeError(f"message carrying {_REJECTED_MARKER}")
 
-        real_build = pr_cost._build_review_rounds_cell
-        calls = []
-
-        def building(rounds, merged_at):
-            calls.append(1)
-            return raising_on_first_call(rounds, merged_at) if len(calls) == 1 else real_build(rounds, merged_at)
-
-        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", building)
+        self._build_failing_on_first_call(monkeypatch, raising_builder)
 
         with pytest.raises(SystemExit) as exc_info:
             _run_record(fake_projects)
@@ -2959,9 +2957,35 @@ class TestReviewRoundsCellContainment:
         assert exc_info.value.code == 1
         assert [(r["pr_number"], r["review_rounds"] is None) for r in _ledger_rows(ledger_path)] == [(1, True), (2, False)]
         captured = capsys.readouterr()
-        reason = f"failed their build check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['build']})"
+        reason = f"failed their build check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['build']}: RuntimeError)"
         assert _rounds_per_pr_line(1, reason) in captured.err.splitlines()
         assert _REJECTED_MARKER not in captured.err + captured.out
+
+    def test_a_token_count_above_int64_in_a_real_round_is_nulled_with_the_shape_rule_without_printing_the_count(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """No patching: the usage gate has no upper bound, so a count above int64 on an unpriced model reaches the
+        cell's unpriced_tokens and fails the decode-back comparison."""
+        def write_corpus(proj: Path, branch: str) -> None:
+            _write_jsonl(proj / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch=branch, content=[_skill_block("s1", "code-review")]),
+                _priced("claude-test-unpriced", input=_INT64_MAX + 1, branch=branch),
+            ])
+
+        ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=write_corpus)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_record(fake_projects)
+
+        assert exc_info.value.code == 1
+        (row,) = _ledger_rows(ledger_path)
+        assert (row["pr_number"], row["review_rounds"]) == (1, None)
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        reason = f"failed their shape check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['shape']})"
+        assert _rounds_per_pr_line(1, reason) in err_lines
+        assert _count_line(1, "PR #1 (review_rounds)") in err_lines
+        assert str(_INT64_MAX + 1) not in captured.err + captured.out
 
     def test_a_planted_model_key_never_reaches_stderr(self, fake_projects, tmp_path, monkeypatch, capsys):
         _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
@@ -3066,6 +3090,82 @@ _REASON_OLDER_RULE = "this checkout's round rule is older than the captured row'
 _REASON_LESS_COMPLETE = "the re-capture is less complete under the same round rule"
 
 
+class TestReviewRoundsCellOutcome:
+    _MERGED_AT = "2026-01-01T00:00:00Z"
+
+    def test_a_builder_exception_other_than_a_check_failure_is_a_build_absence_naming_its_class(self, monkeypatch):
+        def raising_builder(rounds, merged_at) -> dict:
+            raise RuntimeError(f"message carrying {_REJECTED_MARKER}")
+
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", raising_builder)
+
+        assert pr_cost._review_rounds_cell_outcome([], None, self._MERGED_AT) == (None, "build", "RuntimeError")
+
+    def test_a_check_raising_for_a_rule_outside_the_closed_set_is_a_build_absence_naming_key_error(self, monkeypatch):
+        def check_raising_with_a_mistyped_rule(cell) -> None:
+            raise pr_cost._ReviewRoundsCheckError("no-such-rule")
+
+        monkeypatch.setattr(pr_cost, "_check_review_rounds_cell", check_raising_with_a_mistyped_rule)
+
+        assert pr_cost._review_rounds_cell_outcome([], None, self._MERGED_AT) == (None, "build", "KeyError")
+
+    def test_a_cell_failing_a_check_is_an_absence_named_by_that_rule_with_no_error_class(self, monkeypatch):
+        monkeypatch.setattr(
+            pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: _minimal_cell_failing("shape"),
+        )
+
+        assert pr_cost._review_rounds_cell_outcome([], None, self._MERGED_AT) == (None, "shape", None)
+
+    def test_a_valid_cell_is_returned_with_no_absence_and_no_error_class(self):
+        expected_cell = pr_cost._build_review_rounds_cell([], self._MERGED_AT)
+
+        assert pr_cost._review_rounds_cell_outcome([], None, self._MERGED_AT) == (expected_cell, None, None)
+
+
+class TestReviewRoundsAbsenceClosedSet:
+    def test_the_absence_set_is_the_pass_failure_the_two_quiet_states_and_the_check_rules(self):
+        expected_absences = {"pass-failed", "no-local-activity", "not-built", *pr_cost._REVIEW_ROUNDS_CHECK_RULES}
+        assert set(pr_cost._ROUNDS_ABSENCES) == expected_absences
+        assert pr_cost._QUIET_ROUNDS_ABSENCES == ("no-local-activity", "not-built")
+
+    @pytest.mark.parametrize("quiet_absence", ["no-local-activity", "not-built"])
+    def test_a_quiet_absence_has_no_degrade_reason(self, quiet_absence):
+        assert pr_cost._review_rounds_degrade_reason(quiet_absence, None) is None
+
+    def test_a_recorded_cell_has_no_degrade_reason(self):
+        assert pr_cost._review_rounds_degrade_reason(None, None) is None
+
+    @pytest.mark.parametrize(
+        "consume_absence,expected_error",
+        [
+            pytest.param(
+                lambda absence: pr_cost._review_rounds_cell_outcome([], absence, "2026-01-01T00:00:00Z"),
+                ValueError, id="cell-outcome",
+            ),
+            pytest.param(
+                lambda absence: pr_cost._review_rounds_degrade_reason(absence, None), KeyError, id="degrade-reason",
+            ),
+            pytest.param(
+                lambda absence: pr_cost._review_rounds_force_refusal(_cell_of(1, code_review=[1]), None, absence, None),
+                KeyError, id="force-refusal",
+            ),
+        ],
+    )
+    def test_an_unknown_absence_is_refused_by_every_consumer(self, consume_absence, expected_error):
+        with pytest.raises(expected_error, match="no-such-absence"):
+            consume_absence("no-such-absence")
+
+    @pytest.mark.parametrize("absence", sorted(pr_cost._ROUNDS_ABSENCES))
+    def test_every_member_of_the_absence_set_is_accepted_by_every_consumer(self, absence):
+        """A member added to _ROUNDS_ABSENCES without a matching entry in a consumer's own table raises here."""
+        merged_at = "2026-01-01T00:00:00Z"
+        assert pr_cost._review_rounds_cell_outcome([], absence, merged_at) == (None, absence, None)
+        assert pr_cost._review_rounds_cell_outcome(None, absence, merged_at) == (None, absence, None)
+        degrade_reason = pr_cost._review_rounds_degrade_reason(absence, None)
+        assert (degrade_reason is None) == (absence in pr_cost._QUIET_ROUNDS_ABSENCES)
+        assert pr_cost._review_rounds_force_refusal(_cell_of(1, code_review=[1]), None, absence, None)
+
+
 class TestReviewRoundsForceRefusal:
     @pytest.mark.parametrize("new_cell,new_absence", [
         pytest.param(_cell_of(1, code_review=[1]), None, id="new-cell-present"),
@@ -3075,7 +3175,7 @@ class TestReviewRoundsForceRefusal:
         pytest.param(None, "size", id="check-rule"),
     ])
     def test_a_prior_cell_that_was_never_captured_allows_every_new_cell(self, new_cell, new_absence):
-        assert pr_cost._review_rounds_force_refusal(None, new_cell, new_absence) is None
+        assert pr_cost._review_rounds_force_refusal(None, new_cell, new_absence, None) is None
 
     @pytest.mark.parametrize("prior_cell", [
         pytest.param(_cell_of(1, code_review=[1]), id="populated-prior"),
@@ -3084,12 +3184,27 @@ class TestReviewRoundsForceRefusal:
     @pytest.mark.parametrize("new_absence,expected_reason", [
         pytest.param("pass-failed", _REASON_PASS_FAILED, id="pass-failed"),
         pytest.param("size", "the new cell failed its size check", id="size"),
-        pytest.param("build", "the new cell failed its build check", id="build"),
         pytest.param("no-local-activity", "this branch has no local transcript activity", id="no-local-activity"),
         pytest.param("not-built", "this checkout does not record review rounds", id="not-built"),
     ])
     def test_an_empty_new_cell_refuses_with_the_reason_its_absence_gives(self, prior_cell, new_absence, expected_reason):
-        assert pr_cost._review_rounds_force_refusal(prior_cell, None, new_absence) == expected_reason
+        assert pr_cost._review_rounds_force_refusal(prior_cell, None, new_absence, None) == expected_reason
+
+    def test_a_build_absence_refuses_with_its_exception_class_name_and_never_a_message(self, monkeypatch):
+        def raising_builder(rounds, merged_at) -> dict:
+            raise RuntimeError(f"message carrying {_REJECTED_MARKER}")
+
+        monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", raising_builder)
+        new_cell, new_absence, build_error_class = pr_cost._review_rounds_cell_outcome(
+            [], None, "2026-01-01T00:00:00Z",
+        )
+
+        reason = pr_cost._review_rounds_force_refusal(
+            _cell_of(1, code_review=[1]), new_cell, new_absence, build_error_class,
+        )
+
+        assert reason == f"the new cell failed its build check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['build']}: RuntimeError)"
+        assert _REJECTED_MARKER not in reason
 
     @pytest.mark.parametrize("prior_cell,new_cell", [
         pytest.param(_cell_of(1, code_review=[], plan_review=[]), _cell_of(1, code_review=[], plan_review=[]), id="same-rule"),
@@ -3106,14 +3221,14 @@ class TestReviewRoundsForceRefusal:
         pytest.param(_cell_of(1, code_review=[1]), _cell_of(2, code_review=[]), id="all-empty-lists-under-a-higher-rule"),
     ])
     def test_a_cell_at_least_as_complete_or_under_a_higher_rule_is_allowed(self, prior_cell, new_cell):
-        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) is None
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None, None) is None
 
     def test_more_dangling_alone_is_allowed(self):
         prior_cell = _cell_of(1, code_review=[1])
         new_cell = _cell_of(1, code_review=[1])
         new_cell["rounds"]["code-review"][0]["dangling"] += 5
 
-        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) is None
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None, None) is None
 
     @pytest.mark.parametrize("prior_cell,new_cell,expected_reason", [
         pytest.param(_cell_of(2, code_review=[1]), _cell_of(1, code_review=[1]), _REASON_OLDER_RULE, id="lower-rule"),
@@ -3143,7 +3258,7 @@ class TestReviewRoundsForceRefusal:
         ),
     ])
     def test_an_older_rule_or_a_less_complete_cell_under_the_same_rule_is_refused(self, prior_cell, new_cell, expected_reason):
-        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None) == expected_reason
+        assert pr_cost._review_rounds_force_refusal(prior_cell, new_cell, None, None) == expected_reason
 
 
 class TestReviewRoundsForceGuardIntegration:
@@ -3172,6 +3287,10 @@ class TestReviewRoundsForceGuardIntegration:
         pytest.param("pass-failed", _REASON_PASS_FAILED, id="pass-failed"),
         pytest.param("no-local-activity", "this branch has no local transcript activity", id="no-local-activity"),
         pytest.param("check-failed", "the new cell failed its shape check", id="builder-cell-failing-a-check-rule"),
+        pytest.param(
+            "build", f"the new cell failed its build check ({_REVIEW_ROUNDS_CAUSE_BY_RULE['build']}: RuntimeError)",
+            id="builder-raising-an-exception",
+        ),
     ])
     def test_a_forced_recapture_that_would_empty_captured_rounds_is_refused_with_the_reason_of_its_cause(
         self, fake_projects, tmp_path, monkeypatch, capsys, cause, expected_reason,
@@ -3179,9 +3298,14 @@ class TestReviewRoundsForceGuardIntegration:
         write_corpus = (lambda proj, branch: None) if cause == "no-local-activity" else _write_four_round_corpus
         ledger_path = _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=write_corpus)
         if cause == "pass-failed":
-            TestReviewRoundPassFailure._fail_the_pass(monkeypatch)
+            _fail_the_pass(monkeypatch)
         elif cause == "check-failed":
             monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", lambda rounds, merged_at: _minimal_cell_failing("shape"))
+        elif cause == "build":
+            def raising_builder(rounds, merged_at) -> dict:
+                raise RuntimeError(f"message carrying {_REJECTED_MARKER}")
+
+            monkeypatch.setattr(pr_cost, "_build_review_rounds_cell", raising_builder)
         self._seed_captured_rounds(ledger_path, _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1, 1]))
         before_bytes = ledger_path.read_bytes()
 
@@ -3194,6 +3318,7 @@ class TestReviewRoundsForceGuardIntegration:
         assert err_lines.count(_force_refusal_line(1, _SEEDED_MACHINE_IDENTITY, expected_reason)) == 1
         assert err_lines.count(_rounds_pass_failure_line("_RoundPassDefect")) == (1 if cause == "pass-failed" else 0)
         assert "recorded PR" not in captured.out
+        assert _REJECTED_MARKER not in (captured.err + captured.out).lower()
         assert ledger_path.read_bytes() == before_bytes
 
     def test_a_refusal_under_all_accounts_skips_that_account_records_the_other_and_exits_1_after_the_summary(
@@ -3325,7 +3450,7 @@ class TestReviewRoundsLeakTripwire:
         extra_args: dict = {}
         prior_cell = _cell_of(review_rounds.REVIEW_ROUND_RULE, code_review=[1] * 5)
         if outcome == "pass-failure":
-            TestReviewRoundPassFailure._fail_the_pass(monkeypatch)
+            _fail_the_pass(monkeypatch)
         elif outcome == "degraded-cell":
             monkeypatch.setattr(
                 pr_cost, "_build_review_rounds_cell",
