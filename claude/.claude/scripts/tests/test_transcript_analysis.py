@@ -101,17 +101,9 @@ _spec.loader.exec_module(_mod)
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
-    """scope.PROJECTS_DIR is computed at import time from config_dir(); a fresh
-    import of transcript_analysis.scope with CLAUDE_CONFIG_DIR set resolves
-    under that directory instead of ~/.claude.
-
-    Loaded by path (not a plain `import transcript_analysis.scope`, which
-    would hit sys.modules' already-imported copy) for the same reason _mod
-    above is: the module-level PROJECTS_DIR assignment only re-runs on a
-    genuinely fresh exec.
-    """
+    """Execs a fresh copy of scope.py because the imported module caches PROJECTS_DIR on first access."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    scope_path = Path(scope.__file__)
     spec = importlib.util.spec_from_file_location("transcript_analysis_scope_config_dir_case", scope_path)
     scope_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scope_mod)
@@ -126,7 +118,7 @@ def test_scope_import_does_not_crash_when_home_unset(monkeypatch):
     pays for a $HOME-unset resolution failure it doesn't need to hit."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HOME", "")
-    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    scope_path = Path(scope.__file__)
     spec = importlib.util.spec_from_file_location(
         "transcript_analysis_scope_home_unset_case", scope_path
     )
@@ -146,7 +138,7 @@ def test_resolve_scan_roots_default_root_when_home_unset(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", "")
     config_dir = tmp_path / "active-account"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    scope_path = Path(scope.__file__)
     spec = importlib.util.spec_from_file_location(
         "transcript_analysis_scope_resolve_roots_home_unset_case", scope_path
     )
@@ -2678,37 +2670,6 @@ class TestSingleLevelProjectsGlob:
         with pytest.raises(argparse.ArgumentTypeError):
             scope._single_level_projects_glob(value)
 
-    @pytest.mark.parametrize(
-        "cli_args",
-        [["buckets", "--projects", "a/b"], ["skill-invocation", "--projects", "a/b"]],
-        ids=["buckets", "skill-invocation"],
-    )
-    def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
-        """No subcommand's --projects carries an argparse type=, so
-        parsing alone never rejects a nested-directory value -- rejection, when
-        it applies, happens later, only under multi-root scope."""
-        parser = _mod.build_parser()
-        args = parser.parse_args(cli_args)
-        assert args.projects == "a/b"
-
-    def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
-        """Walks every subparser build_parser() registers: --projects's
-        one-level restriction must stay runtime-validated, since whether it
-        applies depends on how many roots this invocation resolves, not on
-        the flag's syntax alone."""
-        parser = _mod.build_parser()
-        subparsers_action = next(
-            action for action in parser._actions
-            if isinstance(action, argparse._SubParsersAction)
-        )
-        typed = [
-            subcommand
-            for subcommand, subparser in subparsers_action.choices.items()
-            for action in subparser._actions
-            if action.dest == "projects" and action.type is not None
-        ]
-        assert typed == []
-
     def test_multi_root_scope_rejects_a_multi_segment_projects_value_at_runtime(self, tmp_path):
         """The one-level `--projects` restriction applies in
         `_resolve_project_scope`'s multi-root branch: a nested-directory value
@@ -2819,6 +2780,39 @@ class TestSingleLevelProjectsGlob:
             skill_invocation.cmd_skill_invocation(args)
         assert exc.value.code == 2
         assert "--projects" in capsys.readouterr().err
+
+
+class TestProjectsFlagHasNoArgparseType:
+    @pytest.mark.parametrize(
+        "cli_args",
+        [["buckets", "--projects", "a/b"], ["skill-invocation", "--projects", "a/b"]],
+        ids=["buckets", "skill-invocation"],
+    )
+    def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
+        """No subcommand's --projects carries an argparse type=, so
+        parsing alone never rejects a nested-directory value -- rejection, when
+        it applies, happens later, only under multi-root scope."""
+        parser = _mod.build_parser()
+        args = parser.parse_args(cli_args)
+        assert args.projects == "a/b"
+
+    def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
+        """Walks every subparser build_parser() registers: --projects's
+        one-level restriction must stay runtime-validated, since whether it
+        applies depends on how many roots this invocation resolves, not on
+        the flag's syntax alone."""
+        parser = _mod.build_parser()
+        subparsers_action = next(
+            action for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        typed = [
+            subcommand
+            for subcommand, subparser in subparsers_action.choices.items()
+            for action in subparser._actions
+            if action.dest == "projects" and action.type is not None
+        ]
+        assert typed == []
 
 
 class TestPoisonedProjectsDirGlobal:
@@ -3096,6 +3090,8 @@ class TestRootCountDescDirectUnit:
         assert scope._root_count_desc(roots) == "2 roots"
         assert "transcript-config-dirs" not in scope._root_count_desc(roots)
 
+
+class TestSkillFilesQuoteRootCountDescLiteral:
     def test_absent_state_literal_appears_in_both_skill_files(self, tmp_path, monkeypatch):
         """Contract test, a tripwire not a full guarantee: derives
         _root_count_desc()'s absent-state literal and asserts it appears in
