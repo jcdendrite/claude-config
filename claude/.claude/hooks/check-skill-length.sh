@@ -48,7 +48,8 @@
 #
 # Known gap: some git failures or timeouts inside the length check can
 # falsely deny a commit that stages an over-limit file.
-# _lib_staged_length_gate in _lib.sh owns which ones.
+# A missing awk or grep makes the check silently allow a commit that grows a file past its limit.
+# _lib_staged_length_gate in _lib.sh owns the failure handling.
 #
 # The growth-comparison and deny-message logic is shared with
 # check-claude-md-length.sh via _lib_staged_length_gate in _lib.sh — this
