@@ -5913,7 +5913,7 @@ def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
 def test_routing_hands_reviewers_their_inputs_and_halts_on_an_unreadable_one() -> None:
     routing_text = _ROUTING_MD_PATH.read_text()
     for sentence in (
-        "pass the plan itself (the absolute path Step 1 resolved, or for a plan that exists only in the "
+        "The plan itself (the absolute path Step 1 resolved, or for a plan that exists only in the "
         'conversation its text, relayed per `claude/.claude/CLAUDE.md` § "Agent Briefing"), the repository root, ',
         "A reviewer whose return says it was handed no readable input did not review: "
         "quote that return, halt the review, and tell the engineer to re-run it.",
@@ -7379,7 +7379,6 @@ _CODE_REVIEW_DISPOSITION_CHALLENGE_ANCHOR = "DISPOSITION_RULE:code-review-dispos
 _CODE_REVIEW_REVIEW_NARRATIVE_LEDGER_HEADING = "## Review-narrative ledger"
 _CODE_REVIEW_THREE_PLUS_DEFER_LEAD = "If you find yourself tagging 3+ findings DEFER"
 _CODE_REVIEW_PROJECT_LAYER_HEADING = "## Step 0.5 — Load project-specific layer"
-_CODE_REVIEW_DIFF_ARTIFACT_LEAD = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
 _DISPOSITION_CHALLENGE_RECORD_PATH = (
     REPO_ROOT / "docs" / "design-decisions" / "architect-disposition-challenge-pilot.md"
 )
@@ -7409,8 +7408,9 @@ _PINNED_DISPOSITION_CHALLENGE_CLAUSE = (
     "whose first line is exactly `MODE=challenge` and nothing else. The prompt "
     "carries the numbered rows, each with its finding, disposition and rationale; "
     "this file's path, naming this section as the rules a row must meet; this "
-    "round's findings-file paths; the diff artifact resolved as for "
-    "`comment-discipline-reviewer`; the plan file's path when one exists; and the "
+    "round's findings-file paths; the diff each spawn was handed (the lane index "
+    "paths of this round's spawns, else the invoker's diff-file path or diff text); "
+    "the plan file's path when one exists; and the "
     "project layer's path when Step 0.5 loaded one. Take a verdict line only from "
     "the opening run: the consecutive verdict-shaped lines from the return's "
     "first line, none when that line is not one. A row with a verdict-shaped line "
@@ -7541,7 +7541,6 @@ class TestCodeReviewDispositionChallengeRegionPin:
         skill_text = " ".join(skill_md_path.read_text().split())
         for skill_phrase in (
             "mandatory **Fix route:** line",
-            _CODE_REVIEW_DIFF_ARTIFACT_LEAD,
             _CODE_REVIEW_PROJECT_LAYER_HEADING,
             _CODE_REVIEW_DEFER_CRITERIA_HEADING,
             _CODE_REVIEW_INVALID_DEFER_HEADING,
