@@ -1194,15 +1194,24 @@ class TestErrors:
         assert raised.value.session_index == 1
         assert isinstance(raised.value.__cause__, RuntimeError)
 
-    def test_line_that_json_loads_aborts_on_beside_a_priced_turn_raises_with_its_index(self, tmp_path):
+    def test_recursion_error_from_json_decoding_beside_a_priced_turn_raises_with_its_index(self, tmp_path, monkeypatch):
         valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
-        deeply_nested = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z")])
-        with deeply_nested.open("a") as handle:
-            # json.loads overflows the C stack between 116_000 and 120_000 `[` on Python 3.14.7 (macOS main thread).
-            handle.write("[" * 1_000_000 + "\n")
+        overflowing = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z")])
+        recursion_overflow_line = "RECURSION-OVERFLOW-LINE"
+        with overflowing.open("a") as handle:
+            handle.write(recursion_overflow_line + "\n")
+        real_json_loads = json.loads
+
+        # json.loads is process-wide, so unmarked input passes through to the real function.
+        def json_loads_overflowing_on_the_marked_line(text, *args, **kwargs):
+            if recursion_overflow_line in text:
+                raise RecursionError("maximum recursion depth exceeded")
+            return real_json_loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(corpus.json, "loads", json_loads_overflowing_on_the_marked_line)
 
         with pytest.raises(session_pricing.SessionPricingError) as raised:
-            _price([valid, deeply_nested])
+            _price([valid, overflowing])
 
         assert raised.value.session_index == 1
         assert isinstance(raised.value.__cause__, RecursionError)
@@ -1831,7 +1840,9 @@ print(json.dumps({"loaded": loaded, "priced": result.total_micro_dollars > 0}))
     def test_changed_modules_parse_at_the_python_3_11_grammar(self):
         """A partial guard: CI runs a single Python minor newer than the 3.11 floor.
 
-        It catches newer syntax but not newer library calls.
+        feature_version=(3, 11) rejects 3.12+ syntax such as `type X = int`, PEP 695 generics, and unparenthesized
+        `except A, B:`, but accepts PEP 701 nested-quote f-strings. It covers only three modules and catches no
+        newer library calls.
         """
         package_dir = Path(session_pricing.__file__).parent
         for module_name in ("session_pricing.py", "pricing.py", "corpus.py"):

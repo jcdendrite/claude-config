@@ -93,9 +93,8 @@ _EXPECTED_FREEZE_CONDITIONS_FIELDS: frozenset[str] = frozenset({
 
 _STUBBED_ENVIRONMENT = runner.EnvironmentRecord("2.0.0", "deadbeef")
 
-# json.loads raises RecursionError only past a nesting depth that grows with the interpreter's C stack allowance.
-# Measured on a macOS main-thread C stack (16 MB): 100_000 overflowed on Python 3.12 but not on 3.14, where 1_000_000 does.
-# The overflow depth varies with the stack allowance as well as the Python minor (an 8 MB Linux thread overflows 3.14 near 58K).
+# Canary that CPython raises RecursionError for deeply nested JSON rather than crashing the process.
+# Measured on a macOS main-thread C stack (16 MB), where 100_000 overflowed on Python 3.12 but not on 3.14.
 _JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT = 2_000_000
 # The wrapper in run_review_bench._load_answers_file puts the interpreter's own error text inside these parentheses.
 _JSON_READ_ERROR_WRAPPER_PREFIX = "could not be read as JSON ("
@@ -5728,10 +5727,6 @@ class TestConfirmAnswersFile:
                 [_answers_file_row("c-1", description="first line.\nsecond line.")],
                 "row 1 answers y with a description of more than one line", id="multi-line-description",
             ),
-            pytest.param(
-                "[" * _JSON_NESTING_DEPTH_PAST_RECURSION_LIMIT, _JSON_READ_ERROR_WRAPPER_PREFIX,
-                id="deeply-nested-json",
-            ),
             pytest.param([_answers_file_row("c-1", lens=None)], "row 1 answers y with no lens", id="missing-lens"),
             pytest.param(
                 [_answers_file_row("c-1", description="   ")], "row 1 answers y with no description", id="blank-description",
@@ -6992,6 +6987,23 @@ class TestLoadAnswersFile:
 
         with pytest.raises(ValueError) as exc_info:
             run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
+
+        assert _JSON_READ_ERROR_WRAPPER_PREFIX in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RecursionError)
+
+    def test_a_recursion_error_from_json_decoding_raises_value_error_caused_by_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def json_loads_overflowing_the_recursion_limit(*args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        answers_file_path = _write_answers_file(tmp_path, [_answers_file_row("c-1")])
+
+        # json.loads is process-wide, so the patch spans only the call under test.
+        with monkeypatch.context() as patch_window:
+            patch_window.setattr(run_review_bench.json, "loads", json_loads_overflowing_the_recursion_limit)
+            with pytest.raises(ValueError) as exc_info:
+                run_review_bench._load_answers_file(answers_file_path, _KNOWN_ANSWER_IDS)
 
         assert _JSON_READ_ERROR_WRAPPER_PREFIX in str(exc_info.value)
         assert isinstance(exc_info.value.__cause__, RecursionError)

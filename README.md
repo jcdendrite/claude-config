@@ -535,7 +535,7 @@ scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/  #
 scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck          # shell
 ```
 
-Build `.venv` from a `python3` whose minor version equals the `python-version` pin in `.github/workflows/tests.yml`: `./install-dev.sh` uses the first `python3` on PATH and keeps a healthy existing `.venv` of any minor, so remove a mismatched `.venv` before rerunning it. `claude/.claude/hooks/tests/test_ci_python_matches_dev_interpreter.py` fails when the interpreter running the suite, which is the `.venv` under `scripts/venv-run.sh`, differs from the pin.
+`./install-dev.sh` builds `.venv` from the `python<X.Y>` that the `python-version` pin in `.github/workflows/tests.yml` names, and rebuilds a `.venv` on another minor. When it has to create or rebuild `.venv`, it fails with a clear error if that interpreter is not on PATH, because it installs no Python for you. A healthy `.venv` on the pinned minor needs no such interpreter. `claude/.claude/hooks/tests/test_ci_python_matches_dev_interpreter.py` fails when the interpreter running the suite differs from the pin. The script reads the pin from the `tests.yml` of the checkout it runs in, so a worktree branch whose pin differs from main stays red on that test locally until the branch is updated from main or its pin change lands. A pin bump is verified by CI's run on the new minor, or by a `.venv` you build by hand.
 
 ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.

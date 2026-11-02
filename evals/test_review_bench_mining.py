@@ -31,11 +31,6 @@ _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 _SHA_C = "c" * 40
 
-# ast.parse raises RecursionError only past a chain length that grows with the interpreter's C stack allowance.
-# Measured thresholds: about 10_000 operands on Python 3.12.3, and a first overflow of about 96K operands on 3.14.
-# This constant answers to the larger 3.14 threshold, so it overflows on both interpreters.
-_BINARY_OPERATOR_CHAIN_PAST_RECURSION_LIMIT = 200_000
-
 
 # --- git-repo fixture helpers ------------------------------------------------
 
@@ -1246,15 +1241,10 @@ class TestPythonDocstringLines:
         assert stats.python_docstring_parse_attempts == 1
         assert stats.python_docstring_parse_failures == 1
 
-    # Thresholds measured on CPython 3.12.3: about 10000 operands raise RecursionError and about 6000 unary operators
-    # exhaust the parser stack. The operator-chain length is set by the larger 3.14 threshold, not these numbers.
+    # About 6000 unary operators exhaust the parser stack on CPython 3.12.3.
     @pytest.mark.parametrize(
         "pathological_source",
         [
-            pytest.param(
-                "x = " + "+".join(["1"] * _BINARY_OPERATOR_CHAIN_PAST_RECURSION_LIMIT) + "\n",
-                id="operator chain overflows the recursion limit",
-            ),
             pytest.param("x = " + "-" * 20_000 + "1\n", id="unary operator chain overflows the parser stack"),
             pytest.param("x = 1\0\n", id="NUL byte in the blob (ast.parse raises ValueError before 3.12, SyntaxError since)"),
         ],

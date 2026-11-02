@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # install-dev.sh — contributor dev-environment setup (not for end users)
-# Creates .venv and installs requirements-dev.txt (pytest, pytest-xdist, ruff, pyyaml, shellcheck-py),
-# then offers to install the pyright-lsp plugin at local scope from an interactive terminal.
-# Run from the main worktree root; the .venv lives there only.
+# Creates .venv from the python<X.Y> that .github/workflows/tests.yml pins for CI, and installs requirements-dev.txt (pytest, pytest-xdist, ruff, pyyaml, shellcheck-py).
+# Rebuilds a .venv on another Python minor, and fails if it must build one and python<X.Y> is not on PATH.
+# Then offers to install the pyright-lsp plugin at local scope from an interactive terminal.
+# Run from the main worktree root; the .venv lives there only, and every worktree shares it, so run one install-dev.sh at a time.
+# The pin is read from the tests.yml of the checkout it runs in, so a worktree branch with a different pin stays red on the interpreter-parity test until that branch is updated from main or its pin change lands.
 set -euo pipefail
+
+install_dev_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # Step 1 — Anchor CWD: requirements-dev.txt proves we are at the repo root
 # and is required for pip install. Refuse on a symlinked .venv to avoid
@@ -42,59 +46,102 @@ if [ ! -f "$_private_projects_file" ] || [ ! -r "$_private_projects_file" ]; the
   exit 1
 fi
 
-# Step 3 — Guard ensurepip BEFORE creating venv. On Debian/Ubuntu without
-# python3-venv, `python3 -m venv` exits 0 but produces no pip, so the pip
-# install step fails with a confusing error. Catch this up front with
-# actionable guidance. Use `if !` so set -e does not swallow the exit path.
-if ! python3 -c "import ensurepip" 2>/dev/null; then
-  # _INSTALL_DEV_IS_DEBIAN: test-only override for Debian detection. On a
-  # real system, apt-get on PATH or /etc/debian_version determines the branch.
-  # Tests set this to "true" or "false" to exercise both branches in isolation.
-  _is_debian="${_INSTALL_DEV_IS_DEBIAN:-auto}"
-  if [ "${_is_debian}" = "auto" ]; then
-    if command -v apt-get >/dev/null 2>&1 || [ -f /etc/debian_version ]; then
-      _is_debian="true"
-    else
-      _is_debian="false"
-    fi
-  fi
-  if [ "${_is_debian}" = "true" ]; then
-    py_ver="$(python3 --version 2>&1 | grep -oE '3\.[0-9]+' || true)"
-    if [ -z "${py_ver}" ]; then
-      echo "ERROR: could not parse python3 version from 'python3 --version'" >&2
-      exit 1
-    fi
-    echo "ERROR: python3 lacks ensurepip — venv creation will produce no pip." >&2
-    echo "  Fix: sudo apt install python${py_ver}-venv" >&2
-    echo "  Then delete .venv (if it exists) and re-run ./install-dev.sh" >&2
-  else
-    echo "ERROR: python3 lacks ensurepip — venv creation will produce no pip." >&2
-    echo "  Fix: install your platform's Python venv support" >&2
-    echo "  (e.g. python3-venv on Debian/Ubuntu, or use python.org / Homebrew on macOS)" >&2
-  fi
+# Step 3 — Read the interpreter minor CI pins; the interpreter itself is resolved in Step 5, only when .venv must be built.
+# shellcheck source=claude/.claude/scripts/_ci-python-pin-lib.sh
+. "$install_dev_dir/claude/.claude/scripts/_ci-python-pin-lib.sh"
+if ! ci_python_pin="$(read_ci_python_pin .github/workflows/tests.yml)"; then
   exit 1
 fi
+pinned_python="python${ci_python_pin}"
 
 # Step 4 — Health probe: canonical check used by both the detect step and
 # the final verification. Both sites call this function — one definition.
+# A .venv on a Python minor other than the CI pin is unhealthy.
+venv_python_minor() {
+  [ -x .venv/bin/python ] || return 0
+  .venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true
+}
+
+# Running pip, a console script, makes a stale shebang from a moved checkout unhealthy too.
 check_venv_healthy() {
-  [ -x .venv/bin/python ] \
+  [ "$(venv_python_minor)" = "$ci_python_pin" ] \
     && .venv/bin/python -c "import yaml, pytest, xdist" 2>/dev/null \
+    && .venv/bin/pip --version >/dev/null 2>&1 \
     && .venv/bin/ruff --version >/dev/null 2>&1 \
     && .venv/bin/shellcheck --version >/dev/null 2>&1
 }
 
-# Step 5 — Heal or create venv. If .venv exists but the health probe fails
-# (partial install, deps missing, or interpreter mismatch), remove and
-# recreate. If absent, create fresh.
-if [ -d .venv ] && ! check_venv_healthy; then
-  echo "Existing .venv is incomplete or unhealthy — recreating..."
-  rm -rf .venv
+# Step 5 — Create .venv if absent, or remove and recreate it if the health
+# probe fails (partial install, deps missing, or a Python minor other than the
+# CI pin). A healthy .venv needs no pinned interpreter, so none is required.
+if [ -d .venv ] && check_venv_healthy; then
+  venv_needs_build=false
+else
+  venv_needs_build=true
 fi
 
-if [ ! -d .venv ]; then
-  echo "Creating .venv..."
-  python3 -m venv .venv
+if [ "$venv_needs_build" = true ]; then
+  existing_venv_minor="$(venv_python_minor)"
+
+  # Refuse rather than fall back to another python3, because a venv on another minor is what this script prevents.
+  if ! pinned_python_path="$(command -v "$pinned_python")"; then
+    if [ "$existing_venv_minor" = "$ci_python_pin" ]; then
+      echo "ERROR: .venv failed its health probe, and rebuilding it needs $pinned_python, which is not on PATH." >&2
+      echo "  Put $pinned_python on PATH, then re-run ./install-dev.sh." >&2
+    else
+      echo "ERROR: $pinned_python not found on PATH." >&2
+      echo "  .github/workflows/tests.yml pins Python $ci_python_pin for CI, and .venv must run the same minor." >&2
+      echo "  Install Python $ci_python_pin yourself, then re-run ./install-dev.sh." >&2
+    fi
+    exit 1
+  fi
+
+  # A version-manager shim can be on PATH yet fail to start.
+  # Report that apart from a missing ensurepip, and show the interpreter's own error.
+  if ! pinned_python_startup_error="$("$pinned_python_path" -c "pass" 2>&1)"; then
+    echo "ERROR: $pinned_python is on PATH but failed to start:" >&2
+    printf '  %s\n' "$pinned_python_startup_error" >&2
+    exit 1
+  fi
+
+  # Guard ensurepip BEFORE creating venv. On Debian/Ubuntu without
+  # python3-venv, `python -m venv` exits 0 but produces no pip, so the pip
+  # install step fails with a confusing error. Catch this up front with
+  # actionable guidance. Use `if !` so set -e does not swallow the exit path.
+  if ! "$pinned_python_path" -c "import ensurepip" 2>/dev/null; then
+    # _INSTALL_DEV_IS_DEBIAN: test-only override for Debian detection. On a
+    # real system, apt-get on PATH or /etc/debian_version determines the branch.
+    # Tests set this to "true" or "false" to exercise both branches in isolation.
+    _is_debian="${_INSTALL_DEV_IS_DEBIAN:-auto}"
+    if [ "${_is_debian}" = "auto" ]; then
+      if command -v apt-get >/dev/null 2>&1 || [ -f /etc/debian_version ]; then
+        _is_debian="true"
+      else
+        _is_debian="false"
+      fi
+    fi
+    echo "ERROR: $pinned_python lacks ensurepip — venv creation will produce no pip." >&2
+    if [ "${_is_debian}" = "true" ]; then
+      echo "  Fix: sudo apt install python${ci_python_pin}-venv" >&2
+      echo "  Then re-run ./install-dev.sh" >&2
+    else
+      echo "  Fix: install venv support for $pinned_python, meaning a build that ships its ensurepip module" >&2
+      echo "  (python.org and Homebrew builds do), then re-run ./install-dev.sh" >&2
+    fi
+    exit 1
+  fi
+
+  if [ -d .venv ]; then
+    if [ -n "$existing_venv_minor" ] && [ "$existing_venv_minor" != "$ci_python_pin" ]; then
+      echo "Existing .venv runs Python $existing_venv_minor but CI pins $ci_python_pin — recreating with $pinned_python..."
+    else
+      echo "Existing .venv is incomplete or unhealthy — recreating..."
+    fi
+    rm -rf .venv
+  fi
+
+  echo "Creating .venv with $pinned_python..."
+  "$pinned_python_path" -m venv .venv
 fi
 
 # Sync pins on every run — pip is a no-op when packages are up to date, so
@@ -126,7 +173,7 @@ pyright_lsp_plugin="pyright-lsp@claude-plugins-official"
 pyright_lsp_marketplace="${pyright_lsp_plugin##*@}"
 
 # shellcheck source=claude/.claude/scripts/_plugin-install-lib.sh
-. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/claude/.claude/scripts/_plugin-install-lib.sh"
+. "$install_dev_dir/claude/.claude/scripts/_plugin-install-lib.sh"
 
 echo ""
 echo "=== pyright-lsp plugin (local scope) ==="

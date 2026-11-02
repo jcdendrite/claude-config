@@ -49,10 +49,6 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _priced, _two_declared_roots, _write_jsonl
 
-# json.loads of `{"a":` repeated overflows between 116_000 and 120_000 repetitions on Python 3.14.7 (macOS main thread);
-# this depth is about 8x that, so a smaller C stack still overflows.
-_OBJECT_NESTING_DEPTH_PAST_RECURSION_LIMIT = 1_000_000
-
 
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):
@@ -608,11 +604,15 @@ class TestDecodeModelBreakdownCell:
             pr_cost_ledger._decode_model_breakdown_cell("not json", 5)
         assert str(exc_info.value) == "line 5: malformed model_breakdown (not valid JSON)"
 
-    def test_deeply_nested_input_maps_recursion_error_to_a_parse_error(self):
-        deeply_nested_cell = '{"a":' * _OBJECT_NESTING_DEPTH_PAST_RECURSION_LIMIT
+    def test_recursion_error_from_json_decoding_maps_to_a_parse_error(self, monkeypatch):
+        def json_loads_overflowing_the_recursion_limit(*args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
 
-        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match=r"\(nesting too deep\)") as exc_info:
-            pr_cost_ledger._decode_model_breakdown_cell(deeply_nested_cell, 2)
+        # json.loads is process-wide, so the patch spans only the call under test.
+        with monkeypatch.context() as patch_window:
+            patch_window.setattr(pr_cost_ledger.json, "loads", json_loads_overflowing_the_recursion_limit)
+            with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match=r"\(nesting too deep\)") as exc_info:
+                pr_cost_ledger._decode_model_breakdown_cell("{}", 2)
 
         assert exc_info.value.__cause__ is None
         assert exc_info.value.__context__ is None

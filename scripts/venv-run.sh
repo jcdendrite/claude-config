@@ -5,7 +5,7 @@
 # A missing exec target or interpreter, e.g. a stale console-script shebang,
 # fails in bash's own exec, which sets the exit status.
 # On bash 5.x, bash reports that failure with a `scripts/venv-run.sh: line N:` prefix instead of this script's `venv-run.sh:` prefix.
-# Stale-venv recovery, in the main checkout: `rm -rf .venv`, then `./install-dev.sh`.
+# Stale-venv recovery, in the main checkout: rerun `./install-dev.sh`, which rebuilds a venv that is unhealthy or on another Python minor than CI's pin.
 set -euo pipefail
 
 fail() {
