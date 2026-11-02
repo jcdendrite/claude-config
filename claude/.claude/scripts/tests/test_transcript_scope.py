@@ -449,7 +449,7 @@ class TestThisRepoUnionsAcrossRoots:
         assert "2 roots" in out
 
     def test_this_repo_fail_closed_across_all_roots(self, tmp_path):
-        """The :2061-equivalent deny case: zero slug matches under EVERY
+        """The fail-closed deny case: zero slug matches under EVERY
         resolved root still exits 1 — direct unit coverage of `any(...
         for root in roots for slug in slugs)` iterating every root, not just
         roots[0]. Calls _resolve_project_scope directly with a hand-built
@@ -642,8 +642,8 @@ class TestResolveScanRoots:
     """scope.resolve_scan_roots as a directly callable, unit-testable function --
     the explicit top-level --config-dir precedence over a populated
     declared-roots file, and getattr-based tolerance of a hand-built `args`
-    Namespace that predates the config_dir attribute entirely (this file's
-    many such fixtures)."""
+    Namespace that lacks the config_dir attribute entirely (e.g. the ad-hoc
+    `type("A", (), {...})()` args the cmd_buckets tests pass)."""
 
     def test_no_config_dir_no_declared_roots_returns_projects_dir_alone(self, monkeypatch, tmp_path):
         monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
@@ -681,9 +681,9 @@ class TestResolveScanRoots:
         assert scope.resolve_scan_roots(args) == [override_dir / "projects"]
 
     def test_config_dir_attribute_absent_from_parsed_does_not_raise(self, monkeypatch, tmp_path):
-        """A hand-built test `args` Namespace that predates the top-level
-        --config-dir flag (this file's many such fixtures) must not raise
-        AttributeError -- its absence means "not passed," the real default."""
+        """A hand-built test `args` object with no config_dir attribute (the
+        shape the cmd_buckets tests pass) must not raise AttributeError -- its
+        absence means "not passed," the real default."""
         monkeypatch.setattr(scope, "PROJECTS_DIR", tmp_path / "active" / "projects")
         args = type("A", (), {})()  # no config_dir attribute at all
         assert scope.resolve_scan_roots(args) == [tmp_path / "active" / "projects"]

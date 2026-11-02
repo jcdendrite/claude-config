@@ -95,10 +95,13 @@ _spec.loader.exec_module(_mod)
 
 class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
-    distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
-    test_projects_dir_honors_claude_config_dir covers above. Every test here
-    registers scope.PROJECTS_DIR with monkeypatch before calling main()
-    (even when just re-setting it to its current value) so main()'s direct
+    distinct from the CLAUDE_CONFIG_DIR read when PROJECTS_DIR first resolves
+    in a fresh module copy, which
+    test_projects_dir_honors_claude_config_dir in test_transcript_scope.py
+    covers. Every test here that reaches main()'s reassignment registers
+    scope.PROJECTS_DIR with monkeypatch before calling main() (even when just
+    re-setting it to its current value; the refusal tests exit first and need
+    no registration) so main()'s direct
     `scope.PROJECTS_DIR = ...` reassignment — which bypasses monkeypatch — is
     still restored to its pre-test value at teardown, protecting the rest of
     this shared, once-imported module from leaking state across tests."""
@@ -130,9 +133,11 @@ class TestConfigDirFlag:
 
     def test_no_flag_leaves_projects_dir_unchanged_after_parsing(self, monkeypatch, tmp_path):
         """Without --config-dir, main()'s post-parse reassignment must not
-        run at all. test_projects_dir_honors_claude_config_dir only covers
-        import time; the regression risk this guards is in the reassignment
-        main() performs after parsing, e.g. an unguarded `Path(None)`."""
+        run at all. test_projects_dir_honors_claude_config_dir in
+        test_transcript_scope.py only covers the CLAUDE_CONFIG_DIR read when
+        PROJECTS_DIR first resolves in a fresh module copy; the regression risk
+        this guards is in the reassignment main() performs after parsing,
+        e.g. an unguarded `Path(None)`."""
         fixture_projects_dir = tmp_path / "projects"
         fixture_projects_dir.mkdir()
         monkeypatch.setattr(scope, "PROJECTS_DIR", fixture_projects_dir)
@@ -1038,11 +1043,18 @@ class TestProjectsFlagHasNoArgparseType:
             action for action in parser._actions
             if isinstance(action, argparse._SubParsersAction)
         )
-        typed = [
-            subcommand
+        projects_registrations = [
+            (subcommand, action)
             for subcommand, subparser in subparsers_action.choices.items()
             for action in subparser._actions
-            if action.dest == "projects" and action.type is not None
+            if action.dest == "projects"
+        ]
+        registered_subcommands = {subcommand for subcommand, _ in projects_registrations}
+        assert {"buckets", "skill-invocation"} <= registered_subcommands
+        typed = [
+            subcommand
+            for subcommand, action in projects_registrations
+            if action.type is not None
         ]
         assert typed == []
 

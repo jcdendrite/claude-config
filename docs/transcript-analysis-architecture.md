@@ -909,8 +909,8 @@ only helpers used by more than one file, or by `tests/test_transcript_analysis.p
 family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
 family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` lives
-in `tests/test_transcript_corpus.py`: it pins `corpus.py`'s on-disk subagent-file contract and reads
-no name from the family.
+in `tests/test_transcript_corpus.py`: it checks the subagent record shape `corpus.iter_sessions`
+reads back from fixture files and reads no name from the family.
 
 The handoff-nudge command family splits at module seams, and handoff-signal-response's tests split
 again at its detection/reporting seam:

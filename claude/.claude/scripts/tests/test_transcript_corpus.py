@@ -333,15 +333,25 @@ class TestIterSessionsSubagentMerge:
 
 
 class TestSubagentFormatContract:
-    """Pin the on-disk subagent transcript format the reader depends on.
+    """Subagent transcript record shape as read back through corpus.iter_sessions.
 
-    These assertions describe what the code EXPECTS from the JSONL on disk.
-    If any of these fail on a real corpus run (not in CI), the transcript format
-    has drifted — update the reader (and iter_sessions) before trusting metric output.
+    None of these tests can detect drift in the real on-disk transcript format.
+    The field assertions in test_subagent_assistant_record_carries_required_fields
+    read back values the fixture helpers wrote. Only its sidechain-record count
+    depends on production code, the subagent-file merge in iter_sessions.
+    The other two tests check the fixture helpers against corpus.SUBAGENT_SUBDIR
+    and the record shape the helpers emit.
+    The literal "subagents" directory name is pinned independently by
+    test_transcript_analysis_subagents_subprocess_finds_seeded_sidechain and
+    test_transcript_analysis_git_and_sessions_subprocess_finds_seeded_session
+    in test_transcript_cli_bootstrap.py.
     """
 
     def test_subagent_dir_path_convention(self, fake_projects):
-        """Subagent files live at <session_id>/subagents/*.jsonl relative to project dir."""
+        """_write_subagent_jsonl places files at <session_id>/corpus.SUBAGENT_SUBDIR/*.jsonl.
+
+        Checks the fixture helper against the constant, so it catches the two
+        diverging, not a change in the real on-disk layout."""
         session_id = "abc123"
         agent_id = "agent-xyz"
         _write_subagent_jsonl(
@@ -376,10 +386,9 @@ class TestSubagentFormatContract:
         assert (rec.get("message") or {}).get("model") == "claude-sonnet-4-6"
 
     def test_user_msg_helper_has_no_message_model(self):
-        """User-type records from _user_msg() have no message.model.
+        """User-type records from the _user_msg() test helper have no message.model.
 
-        This documents the helper's shape, not an iter_sessions invariant — user
-        records in subagent files are not relied on by the script's analysis paths.
+        Tests the helper's shape only, not iter_sessions or any production code.
         """
         rec = _user_msg("some content", branch="feat")
         # isSidechain may be absent on user records; message.model must not be asserted on them
