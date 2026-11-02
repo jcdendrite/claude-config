@@ -48,9 +48,12 @@ _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 REVIEW_ROUND_RULE: int = 1
 
 
+# Opens a /slash invocation's <command-name> tag; also the cheap substring pre-check before the pattern below runs.
+_SLASH_COMMAND_PREFIX = "<command-name>/"
+
 # Captures only the skill name from a /slash invocation's <command-name> tag, never its <command-args>.
-# skill_invocation.py and review_trace.py read this pattern too.
-_SLASH_COMMAND_RE = re.compile(r"<command-name>/([^<]+)</command-name>")
+# skill_invocation.py, review_trace.py and period_cost.py read this pattern too.
+_SLASH_COMMAND_RE = re.compile(re.escape(_SLASH_COMMAND_PREFIX) + r"([^<]+)</command-name>")
 
 
 def _round_skill_name(raw: str) -> str:
@@ -112,7 +115,12 @@ def _skill_block_round_skill(blocks: list) -> str | None:
             continue
         if block.get("name") != "Skill":
             continue
-        raw_skill = (block.get("input") or {}).get("skill") or ""
+        block_input = block.get("input")
+        if not isinstance(block_input, dict):
+            continue
+        raw_skill = block_input.get("skill")
+        if not isinstance(raw_skill, str):
+            continue
         matched = _round_skill_name(raw_skill)
         if matched in _REVIEW_SKILL_SET:
             return matched
@@ -155,9 +163,12 @@ def _round_open_skill(rec: dict) -> str | None:
         blocks = _assistant_content_blocks(rec)
         return _skill_block_round_skill(blocks) or _spawn_block_round_skill(blocks)
     if rtype == "user":
+        # The substring test runs first: the envelope regex is quadratic in unterminated openers.
         content_raw = (rec.get("message") or {}).get("content", "")
         content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
-        for m in _SLASH_COMMAND_RE.finditer(content_str):
+        if _SLASH_COMMAND_PREFIX not in content_str or not render._is_fresh_user_prompt(rec):
+            return None
+        for m in _SLASH_COMMAND_RE.finditer(render._strip_task_notifications(content_str)):
             matched = _round_skill_name(m.group(1))
             if matched in _REVIEW_SKILL_SET:
                 return matched
@@ -257,11 +268,7 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
 
 @dataclasses.dataclass
 class _DispatchTally:
-    """Accumulator one top-level spawn's recursive _price_dispatch walk adds into.
-
-    `tokens` is {model: {variant: {class: int}}} over priced turns only. The caller binds it to a
-    round's agent_tokens, or to a throwaway dict when the spawn is outside every round window.
-    """
+    """`tokens` covers priced turns only."""
     tokens: dict[str, dict[str, dict[str, int]]]
     dollars: float = 0.0
     unpriced_turns: int = 0
@@ -416,18 +423,18 @@ def compute_review_round_costs(
     invariant to skill_filter.
 
     A malformed-usage turn is excluded and counted in invalid_usage_records; its spawn blocks are still followed.
-    A truthy non-object `usage` at the head of a requestId run (pricing._warn_if_run_usage_drift gives the exact
-    position) raises AttributeError before that gate. See docs/pr-cost.md, "The `review_rounds` cell", for the limit.
+    A truthy non-object `usage` at the head of a requestId run raises AttributeError; see docs/pr-cost.md,
+    "The `review_rounds` cell", for the limit.
 
-    rounds_only skips a session that opens no round before its branch
-    attribution and dispatch indexing, and drops "branch_totals" from the
-    return so a caller cannot read partial totals. Every returned round is
-    the same as without it, because dispatch_index and visited never cross
-    sessions.
+    rounds_only skips a session that opens no round.
+    It drops "branch_totals" from the return, because the skipped sessions would leave partial totals.
+    Every returned round is the same as without it, because dispatch_index and visited never cross sessions.
 
     Returns {"rounds": [...], "branch_totals": {(root_idx, branch): dollars}}.
-    unpriced_tokens and invalid_usage_records span both threads. main_tokens and agent_tokens are
-    {model: {variant: {class: int}}} over priced turns, every token class per group.
+    unpriced_tokens and invalid_usage_records span both threads.
+    main_tokens and agent_tokens are {model: {variant: {class: int}}} over priced turns, every token class per group.
+    sort_key is (opening-timestamp-or-+inf, session path string, opening record index).
+    It exists because sessions can be written in reverse file-path order.
     """
     multi_root = bool(resolved_roots) and len(resolved_roots) > 1
     all_rounds: list[dict] = []

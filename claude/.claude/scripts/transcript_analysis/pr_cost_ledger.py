@@ -208,9 +208,8 @@ _JSON_CELL_RULE_INVALID = "not valid JSON"
 
 
 def _load_json_cell(cell: str) -> tuple[object, str | None]:
-    """(decoded, None) for a JSON cell that parses with no duplicate key, else (None, the fixed rule text for the
-    failure). Returns the rule instead of raising so the caller raises outside these except clauses, and no cell
-    text reaches __context__."""
+    """Returns the rule instead of raising so the caller raises outside these except clauses, and no cell text
+    reaches __context__."""
     try:
         return json.loads(cell, object_pairs_hook=_reject_duplicate_json_keys), None
     except _DuplicateJsonKeyError:
@@ -325,9 +324,6 @@ def _review_round_violation(review_round: object) -> str | None:
 
 
 def _review_rounds_cell_violation(decoded: object) -> str | None:
-    """The fixed rule text for the first structural violation in a decoded review_rounds value, else None.
-    Structure only: no membership, skill-set or rule-value check runs here, so a label, skill or rule a newer
-    writer added never makes this checkout refuse the ledger."""
     if not isinstance(decoded, dict) or set(decoded) != {"rule", "rounds"}:
         return _REVIEW_ROUNDS_RULE_TOP_LEVEL
     rule_value = decoded["rule"]

@@ -1879,6 +1879,177 @@ class TestSpawnRoundSkill:
         assert review_rounds.spawn_round_skill(block) == expected
 
 
+def _assistant_record_with_blocks(*blocks: dict) -> dict:
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+class TestSkillBlockRoundOpen:
+    """A `Skill` tool_use block is model output: a shape outside {"input": {"skill": str}} opens no round and does
+    not abort detection, as spawn_round_skill treats its own blocks."""
+
+    @pytest.mark.parametrize("malformed_input", [
+        pytest.param(["code-review"], id="list_input"),
+        pytest.param("code-review", id="string_input"),
+        pytest.param(None, id="none_input"),
+        pytest.param({"skill": 7}, id="int_skill"),
+        pytest.param({"skill": ["code-review"]}, id="list_skill"),
+        pytest.param({"skill": {"name": "code-review"}}, id="object_skill"),
+        pytest.param({"skill": None}, id="none_skill"),
+        pytest.param({}, id="absent_skill"),
+    ])
+    def test_a_malformed_skill_block_opens_no_round_and_does_not_raise(self, malformed_input):
+        malformed_block = {"type": "tool_use", "id": "s1", "name": "Skill", "input": malformed_input}
+
+        windows = review_rounds.detect_round_windows([_assistant_record_with_blocks(malformed_block)])
+
+        assert windows == []
+
+    def test_a_valid_skill_block_after_a_malformed_one_in_the_same_record_still_opens_its_round(self):
+        malformed_block = {"type": "tool_use", "id": "s1", "name": "Skill", "input": ["code-review"]}
+
+        windows = review_rounds.detect_round_windows([
+            _assistant_record_with_blocks(malformed_block, _skill_block("s2", "plan-review")),
+        ])
+
+        assert windows == [(0, 1, "plan-review")]
+
+    def test_a_malformed_skill_block_beside_an_orchestrator_spawn_still_opens_the_spawn_round(self):
+        malformed_block = {"type": "tool_use", "id": "s1", "name": "Skill", "input": ["code-review"]}
+        malformed_beside_spawn = _orchestrator_spawn_record(
+            "o1", ts="2026-08-01T10:00:00.000Z", extra_blocks=(malformed_block,),
+        )
+
+        windows = review_rounds.detect_round_windows([malformed_beside_spawn])
+
+        assert windows == [(0, 1, "code-review")]
+        assert review_rounds.round_opened_by_spawn(malformed_beside_spawn) is True
+
+
+class TestSlashRoundOpenRecordClass:
+    """A /slash tag opens a round only in a record window close would treat as a fresh user prompt."""
+
+    def test_a_plain_slash_record_opens_a_round(self):
+        assert review_rounds.detect_round_windows([_slash_user("code-review")]) == [(0, 1, "code-review")]
+
+    def test_a_slash_tag_in_an_ismeta_record_opens_no_round(self):
+        meta_record = {**_slash_user("code-review"), "isMeta": True}
+
+        assert review_rounds.detect_round_windows([meta_record]) == []
+
+    def test_a_slash_tag_in_a_sidechain_record_opens_no_round(self):
+        # Parity with window close; the early sidechain return rejects this record, so the isMeta, compact-summary
+        # and tool_result cases are the ones that isolate the fresh-prompt clause.
+        sidechain_record = {**_slash_user("code-review"), "isSidechain": True}
+
+        assert review_rounds.detect_round_windows([sidechain_record]) == []
+
+    def test_a_slash_tag_in_a_compaction_summary_opens_no_round(self):
+        compaction_summary = {**_slash_user("code-review"), "isCompactSummary": True}
+
+        assert review_rounds.detect_round_windows([compaction_summary]) == []
+
+    def test_a_slash_tag_in_a_text_block_beside_a_tool_result_opens_no_round(self):
+        tool_result_record = _user_msg([
+            _tool_result("t1", "ok"),
+            {"type": "text", "text": "<command-name>/code-review</command-name>"},
+        ])
+
+        assert review_rounds.detect_round_windows([tool_result_record]) == []
+
+    def test_a_slash_tag_inside_a_task_notification_opens_no_round(self):
+        notification_with_tag = {
+            **_user_msg(
+                "<task-notification><summary><command-name>/code-review</command-name></summary></task-notification>",
+            ),
+            "origin": {"kind": "task-notification"},
+        }
+
+        assert review_rounds.detect_round_windows([notification_with_tag]) == []
+
+    def test_a_typed_command_beside_an_unrelated_task_notification_opens_a_round(self):
+        typed_command_beside_notification = _user_msg(
+            "<task-notification><summary>build done</summary></task-notification>\n"
+            "<command-name>/code-review</command-name>",
+        )
+
+        assert review_rounds.detect_round_windows([typed_command_beside_notification]) == [(0, 1, "code-review")]
+
+    def test_a_slash_tag_in_a_task_notification_beside_human_text_opens_no_round(self):
+        notification_beside_human_text = _user_msg(
+            "<task-notification><summary><command-name>/code-review</command-name></summary></task-notification>\n"
+            "please continue",
+        )
+
+        assert review_rounds.detect_round_windows([notification_beside_human_text]) == []
+
+    def test_a_slash_tag_in_a_task_notification_that_quotes_a_closing_tag_opens_no_round(self):
+        self_quoting_notification = _user_msg(
+            "<task-notification><summary><command-name>/code-review</command-name> "
+            "quoted: </task-notification></summary></task-notification>",
+        )
+
+        assert review_rounds.detect_round_windows([self_quoting_notification]) == []
+
+    def test_an_ismeta_slash_record_does_not_close_or_split_a_skill_opened_window(self):
+        records = [
+            _priced("claude-sonnet-5", input=1, branch="feat", content=[_skill_block("s1", "code-review")]),
+            {**_slash_user("code-review", branch="feat"), "isMeta": True},
+            _user_msg("thanks", branch="feat"),
+        ]
+
+        assert review_rounds.detect_round_windows(records) == [(0, 2, "code-review")]
+
+    def test_a_typed_command_envelope_opens_a_round(self):
+        typed_command = _user_msg(
+            "<command-message>code-review</command-message>\n"
+            "<command-name>/code-review</command-name>\n"
+            "<command-args></command-args>",
+        )
+
+        assert review_rounds.detect_round_windows([typed_command]) == [(0, 1, "code-review")]
+
+    def test_a_typed_command_beside_a_task_notification_quoting_another_skill_opens_the_typed_skill(self):
+        typed_command_beside_quoted_tag = _user_msg(
+            "<task-notification><summary><command-name>/plan-review</command-name></summary></task-notification>\n"
+            "<command-name>/code-review</command-name>",
+        )
+
+        assert review_rounds.detect_round_windows([typed_command_beside_quoted_tag]) == [(0, 1, "code-review")]
+
+    def test_a_slash_tag_split_across_two_text_blocks_opens_no_round(self):
+        split_tag_record = _user_msg([
+            {"type": "text", "text": "<command-name>"},
+            {"type": "text", "text": "/code-review</command-name>"},
+        ])
+
+        assert review_rounds.detect_round_windows([split_tag_record]) == []
+
+    def test_a_task_notification_between_the_tag_opener_and_the_skill_name_opens_no_round(self):
+        # The unrelated /handoff tag keeps the raw text past the substring pre-check, so only the strip's
+        # separator stands between the tag opener and the skill name.
+        envelope_inside_tag = _user_msg(
+            "<command-name>/handoff</command-name> "
+            "<command-name><task-notification>x</task-notification>/code-review</command-name>",
+        )
+
+        assert review_rounds.detect_round_windows([envelope_inside_tag]) == []
+
+    @pytest.mark.parametrize("variant_tag", [
+        pytest.param("<Command-Name>/code-review</Command-Name>", id="mixed_case_tag"),
+        pytest.param("<command-name> /code-review</command-name>", id="space_before_slash"),
+    ])
+    def test_a_case_or_whitespace_variant_of_the_slash_tag_opens_no_round(self, variant_tag):
+        assert review_rounds.detect_round_windows([_user_msg(variant_tag)]) == []
+
+    def test_accepted_residual_a_slash_tag_after_a_literal_closing_tag_inside_an_envelope_opens_a_round(self):
+        tag_after_quoted_closing_tag = _user_msg(
+            "<task-notification><summary>quoted: </task-notification> "
+            "<command-name>/code-review</command-name></summary></task-notification>",
+        )
+
+        assert review_rounds.detect_round_windows([tag_after_quoted_closing_tag]) == [(0, 1, "code-review")]
+
+
 class TestRoundOpenedBySpawn:
     """round_opened_by_spawn: whether a record's round comes from a spawn
     block rather than a Skill block, the same per-record order

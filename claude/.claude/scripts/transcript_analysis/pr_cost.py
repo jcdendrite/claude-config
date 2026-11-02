@@ -491,8 +491,7 @@ def _failed_cells_count_entry(pr_number: int, failed_columns: Sequence[str], acc
 
 
 def _scan_review_rounds_by_branch(args: argparse.Namespace, root: Path) -> dict[str, list[dict]]:
-    """Every review round in one account's main-thread transcripts. Prices only sessions that open a round. Prints no
-    scope line."""
+    """Every review round in one account's main-thread transcripts. Prints no scope line."""
     session_iter, _scope_label = scope._resolve_project_scope(args, "pr-cost", include_subagents=False, roots=[root])
     result = review_rounds.compute_review_round_costs(session_iter, resolved_roots=None, rounds_only=True)
     rounds_by_branch: dict[str, list[dict]] = {}
@@ -502,8 +501,8 @@ def _scan_review_rounds_by_branch(args: argparse.Namespace, root: Path) -> dict[
 
 
 class _AccountReviewRoundScan:
-    """One account's review-round pass, run at most once and only when first asked for. A failure is memoized and
-    printed once as its class name, never its message, which can embed a filesystem path or transcript text."""
+    """A failure prints the exception's class name, never its message, which can embed a filesystem path or
+    transcript text."""
 
     def __init__(self, args: argparse.Namespace, root: Path, account_ordinal: int | None) -> None:
         self._args = args
@@ -1013,9 +1012,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 print(f"{message} -- skipped", file=sys.stderr)
                 continue
 
-            # This lookup is a hint: existing_rows is read under the account lock and replaced after every write.
-            # A row it finds is also in the locked read below. A row a concurrent --record appended since is caught
-            # by the locked check.
+            # A hint only: the locked check below stays authoritative, so a row a concurrent --record appended since is
+            # still caught.
             if not force and pr_cost_ledger._latest_pr_cost_row(
                 existing_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
             ) is not None:

@@ -15,8 +15,10 @@ from transcript_analysis import pr_cost_export, pr_cost_ledger
 
 from ._pr_cost_helpers import (
     _CANONICAL_SAMPLE_REVIEW_ROUNDS_CELL,
+    _DROPPED_LINE_PREFIX,
     _PRE_MODEL_HEADER_LINE,
     _cell_with,
+    _dropped_keys_line,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _first_round,
@@ -269,15 +271,6 @@ class TestPrCostExportModelBreakdown:
 
 
 _VOCABULARY_SENTINEL = "zzsentinelzz"  # passes the cell key rule, so it can stand in any key position
-_DROPPED_LINE_PREFIX = "pr-cost-export: dropped "
-
-
-def _dropped_keys_line(count: int) -> str:
-    return (
-        f"pr-cost-export: dropped {count} review_rounds key(s) this checkout does not know -- some rows lack fields,"
-        " skills or models a newer checkout recorded, so their token splits can under-sum their dollars; re-export"
-        " from an updated checkout before summing rounds (see docs/pr-cost.md)"
-    )
 
 
 def _export_one_row(tmp_path, monkeypatch, cell) -> tuple[dict, dict, str]:

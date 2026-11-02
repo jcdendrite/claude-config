@@ -13,8 +13,10 @@ from transcript_analysis import (
 )
 
 from ._pr_cost_helpers import (
+    _DROPPED_LINE_PREFIX,
     _PRE_HOST_HEADER_LINE,
     _PRE_MODEL_HEADER_LINE,
+    _dropped_keys_line,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _legacy_row_line,
@@ -546,7 +548,7 @@ class TestPrCostExportReviewRoundsDroppedKeysAcrossAccounts:
 
         assert provenance["review_rounds_dropped_keys"] == "5"
         err = capsys.readouterr().err
-        assert "pr-cost-export: dropped 5 review_rounds key(s) this checkout does not know" in err
+        assert _dropped_keys_line(5) in err.splitlines()
         assert "future-count" not in err
 
     def test_only_the_first_account_dropping_still_counts_it_when_the_second_drops_zero(
@@ -556,13 +558,13 @@ class TestPrCostExportReviewRoundsDroppedKeysAcrossAccounts:
         provenance = self._export_two_accounts(tmp_path, monkeypatch, first_unknown_keys=4, second_unknown_keys=0)
 
         assert provenance["review_rounds_dropped_keys"] == "4"
-        assert "pr-cost-export: dropped 4 review_rounds key(s)" in capsys.readouterr().err
+        assert _dropped_keys_line(4) in capsys.readouterr().err.splitlines()
 
     def test_neither_account_dropping_prints_no_stderr_line(self, tmp_path, monkeypatch, capsys):
         provenance = self._export_two_accounts(tmp_path, monkeypatch, first_unknown_keys=0, second_unknown_keys=0)
 
         assert provenance["review_rounds_dropped_keys"] == "0"
-        assert "pr-cost-export: dropped" not in capsys.readouterr().err
+        assert _DROPPED_LINE_PREFIX not in capsys.readouterr().err
 
 
 class TestPrCostExportProvenanceLine:

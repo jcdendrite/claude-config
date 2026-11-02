@@ -578,6 +578,17 @@ def _review_rounds_cell_dropping(unknown_key_count: int) -> dict:
     return cell
 
 
+_DROPPED_LINE_PREFIX = "pr-cost-export: dropped "
+
+
+def _dropped_keys_line(count: int) -> str:
+    return (
+        f"{_DROPPED_LINE_PREFIX}{count} review_rounds key(s) this checkout does not know -- some rows lack fields,"
+        " skills or models a newer checkout recorded, so their token splits can under-sum their dollars; re-export"
+        " from an updated checkout before summing rounds (see docs/pr-cost.md)"
+    )
+
+
 def _sample_model_breakdown(model: str = "claude-sonnet-5") -> dict:
     """A model_breakdown cell value for one model, one standard-variant group, consistent with
     _sample_pr_cost_row's per-class scalars. Written as a literal, not computed through

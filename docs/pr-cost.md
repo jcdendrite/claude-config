@@ -67,6 +67,7 @@ A later column follows the same shape: freeze the outgoing header and document t
 
 ### The `review_rounds` cell
 
+- **Recorded only.** No report reads the cell yet: read mode and `review-cost-by-size` do not print it. It is reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
 - **Shape.** `{"rule": int, "rounds": {skill: [round, ...]}}`, in the same canonical encoding as `model_breakdown`. `rounds` has one key per review skill the writer tracked (`code-review`, `plan-review`, `ready-for-review`), and each list holds that skill's rounds in round order.
 - **Absence.** An empty cell means not captured. That covers a row recorded before the column existed, a failed review-round pass, a cell that failed its write-time check, a branch with no local transcript activity, and a checkout that does not record rounds. A cell whose every skill list is empty means captured with zero rounds, and a skill key absent from `rounds` was not tracked by the writer. "Captured" and "recorded zero" mean among the records the pass could parse: an unreadable main transcript, or a non-UTF-8 or non-JSON line, is dropped without a count, so the cell does not claim completeness. A literal `null` cell is malformed.
 - **Trailing cell.** `review_rounds` is the current header's last column, so a row with an empty cell ends in a tab. Readers must not whitespace-strip lines.
@@ -149,7 +150,7 @@ The command re-raises the exception with its raw traceback and prices every sess
 
 - A traceback that ends in record parsing in `corpus.py` or `scope.py`, such as `_parse_iso_datetime` or `_index_subagent_dispatches`, points at a record outside the transcript format. The traceback does not name the record. Report it on claude-config's GitHub Issues (linked from README.md) with the class name and the last frame's function name, and no paths.
 - Every `--record` that writes a row for that account records it without rounds and exits 1, until the offending session ages out of `cleanupPeriodDays`. The only supported way to stop it is the `pr_cost_recording` off switch (see the "Off switch" and "Scheduled callers" bullets under "Upgrading an existing ledger"), at the cost that scalar capture stops too. A single-account `--record` still exits 1 while the key is off, so pause that caller.
-- Any other traceback: update claude-config, then re-capture each listed PR with `--record --force --pr N` inside `cleanupPeriodDays`. A repeat on a current checkout is a defect to report.
+- Any other traceback: update claude-config, then re-capture each listed PR with `--record --force --pr N` inside `cleanupPeriodDays`. If it repeats on a current checkout, report the class name and the last frame's function name, as in the first bullet above.
 - A row recorded during a failed pass counts as captured, so a scheduled rerun without `--pr` skips it. Only `--record --force --pr N`, inside `cleanupPeriodDays`, refills its rounds. A scheduled caller that ignores exit 1 loses those rounds, and rows recorded meanwhile stay without them.
 
 After an exit 1 for a row without its breakdown:
@@ -277,7 +278,7 @@ The guard has no override, so it also blocks a re-capture meant to heal a degrad
 
 Each `<reason>` has a next step, and none is a hand edit (see "Data"):
 - `the review-round pass failed`: follow the remedy under "Write-time check failures". The captured row stays current, so repeat the same `--force --pr N` once the cause is fixed, inside `cleanupPeriodDays`.
-- `the new cell failed its <rule> check`: the captured row stays current. For `build`, the reason ends with the exception's class name, as the per-PR line does, and never its message. A repeat on an updated claude-config is a defect to report for `model-membership`, `label-membership` and `build`, except that a `build` ending in `OverflowError` is likely transcript-caused, and a `build` ending in `ValueError` is also likely transcript-caused when a token count has more digits than the interpreter's integer-to-string limit allows. A repeat for `size` is expected, because the transcript is the cause. A repeat of `shape` on an updated checkout is likewise expected, because the transcript is the likely cause.
+- `the new cell failed its <rule> check`: the captured row stays current. For `build`, the reason ends with the exception's class name, as the per-PR line does, and never its message. Repeat the re-record once the cause is fixed. The "After an exit 1 for a `review_rounds` check failure" bullets under "Write-time check failures" say which rules are transcript-caused and which are defects to report.
 - `this branch has no local transcript activity`: either the sessions aged out or ran on another machine, so a re-capture here would understate the scalars too and the captured row should stay, or this run's `--projects` or `--this-repo` scope is narrower than the original capture's, so repeat the original scope flags.
 - `this checkout does not record review rounds`: update to a checkout that does.
 - `this checkout's round rule is older than the captured row's`: update this checkout.
@@ -396,7 +397,11 @@ Every other column is byte-identical to the source ledger's own cell, except `mo
 - Variant keys against `_PRICING_VARIANTS`.
 - Class keys against `_TOKEN_CLASSES`.
 
-A name known at one position is unknown at every other. The export removes every other key, so a model gone from the exporting checkout's rate table drops with a count. A model or variant object that the removal empties is removed too, and a token object it empties stays `{}`. The count adds one per key removed at the highest level that removes it, and nothing inside a removed key's value, so it says nothing about a dropped subtree's size. The provenance line's `review_rounds_dropped_keys` sums the count over every exported row. When it is nonzero, the export prints this to stderr after its `wrote` line, with no key text:
+A name known at one position is unknown at every other. For what the export drops:
+- Removed keys: every key not known at its position, so a model gone from the exporting checkout's rate table drops with a count.
+- Emptied objects: a model or variant object that the removal empties is removed too, and a token object it empties stays `{}`.
+- The count: one per key removed at the highest level that removes it, and nothing inside a removed key's value. It is a lower bound and says nothing about a dropped subtree's size.
+- Where it is reported: the provenance line's `review_rounds_dropped_keys` sums the count over every exported row. When it is nonzero, the export prints this to stderr after its `wrote` line, with no key text:
 
 ```text
 pr-cost-export: dropped <n> review_rounds key(s) this checkout does not know -- some rows lack fields, skills or models a newer checkout recorded, so their token splits can under-sum their dollars; re-export from an updated checkout before summing rounds (see docs/pr-cost.md)

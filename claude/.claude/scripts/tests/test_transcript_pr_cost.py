@@ -27,6 +27,7 @@ from transcript_analysis import (
 from ._pr_cost_helpers import (
     _COUNT_LINE_STEM,
     _FORCE_REFUSAL_STEM,
+    _FROZEN_HEADER_CASES,
     _LEDGER_DIR_MARKER,
     _PER_PR_DEGRADE_STEM,
     _PRE_MODEL_HEADER_LINE,
@@ -41,6 +42,7 @@ from ._pr_cost_helpers import (
     _fake_pr_cost_subprocess_run,
     _first_round,
     _force_refusal_line,
+    _FrozenHeaderCase,
     _make_mkstemp_create_0644,
     _merged_pr,
     _parse_pr_cost_export_row,
@@ -2114,11 +2116,11 @@ class TestPrCostPrescribedHandEdits:
 
 
 class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
-    """Six runs that must leave a pre-model ledger's bytes unchanged, plus an unrecognized-header ledger."""
+    """Six runs that must leave a ledger under any frozen older header unchanged, plus an unrecognized-header ledger."""
 
     @staticmethod
-    def _seed_pre_model_ledger(ledger_path: Path, **row_overrides) -> bytes:
-        ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(**row_overrides) + "\n")
+    def _seed_older_ledger(case: _FrozenHeaderCase, ledger_path: Path, **row_overrides) -> bytes:
+        ledger_path.write_text(case.header_line + "\n" + case.make_row_line(**row_overrides) + "\n")
         return ledger_path.read_bytes()
 
     @staticmethod
@@ -2127,21 +2129,23 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert list(ledger_path.parent.glob(".pr-cost-ledger-*.tmp")) == []
         assert _UPGRADE_NOTICE_STEM not in captured.err
 
-    def test_unconsented_record_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
+    def test_unconsented_record_leaves_the_file_unchanged(self, case, fake_projects, tmp_path, monkeypatch, capsys):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         (tmp_path / ".pr-cost-enabled").unlink()
-        before_bytes = self._seed_pre_model_ledger(ledger_path)
+        before_bytes = self._seed_older_ledger(case, ledger_path)
 
         with pytest.raises(SystemExit):
             pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
 
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
     def test_consented_record_that_only_skips_an_already_captured_pr_leaves_the_file_unchanged(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
+        self, case, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=1, machine="c0ffee01")
+        before_bytes = self._seed_older_ledger(case, ledger_path, pr_number=1, machine="c0ffee01")
 
         pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
@@ -2149,11 +2153,12 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert "is already captured" in captured.err
         self._assert_untouched(ledger_path, before_bytes, captured)
 
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
     def test_read_mode_leaves_the_file_unchanged_and_prints_the_seeded_row(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
+        self, case, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=4217)
+        before_bytes = self._seed_older_ledger(case, ledger_path, pr_number=4217)
 
         pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
 
@@ -2162,19 +2167,21 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert "4217" in captured.out
         assert "No rows recorded yet" not in captured.out
 
-    def test_export_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
+    def test_export_leaves_the_file_unchanged(self, case, fake_projects, tmp_path, monkeypatch, capsys):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        before_bytes = self._seed_pre_model_ledger(ledger_path)
+        before_bytes = self._seed_older_ledger(case, ledger_path)
 
         pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / "export.tsv")))
 
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
 
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
     def test_record_refused_by_the_git_tracked_path_check_leaves_the_file_unchanged(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
+        self, case, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        before_bytes = self._seed_pre_model_ledger(ledger_path)
+        before_bytes = self._seed_older_ledger(case, ledger_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(
             merged_prs=[_merged_pr(1, "feature-a")], git_tracked=True,
         ))
@@ -2185,8 +2192,9 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert exc_info.value.code == 2
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
 
+    @pytest.mark.parametrize("case", _FROZEN_HEADER_CASES, ids=lambda case: case.case_id)
     def test_all_accounts_run_leaves_the_account_that_is_not_opted_in_unchanged(
-        self, tmp_path, monkeypatch, capsys,
+        self, case, tmp_path, monkeypatch, capsys,
     ):
         roots = _two_declared_roots(tmp_path, monkeypatch)
         opted_in_root, not_opted_in_root = roots
@@ -2197,7 +2205,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
         not_opted_in_ledger = not_opted_in_root.parent / "pr-cost-ledger.tsv"
-        before_bytes = self._seed_pre_model_ledger(not_opted_in_ledger)
+        before_bytes = self._seed_older_ledger(case, not_opted_in_ledger)
 
         pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
 
@@ -2591,28 +2599,95 @@ class TestReviewRoundScanLaziness:
     @pytest.mark.parametrize("extra_args", [{}, {"pr": 1}], ids=["sweep", "single-pr"])
     def test_the_round_scan_runs_while_the_ledger_lock_is_free(self, fake_projects, tmp_path, monkeypatch, extra_args):
         """Both --record lock acquisitions use <ledger>.lock. A scan that outlasts the lock timeout would make a
-        concurrent --record exit 1 (_COST_LEDGER_LOCK_TIMEOUT_S), so the scan must run with the lock released."""
+        concurrent --record exit 1 (_COST_LEDGER_LOCK_TIMEOUT_S), so the scan must run with the lock released. The
+        scope resolver returns a lazy iterator, so the lock is probed again where the round pass consumes it."""
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         lock_path = ledger_path.with_name(ledger_path.name + ".lock")
-        lock_was_free: list[bool] = []
+        lock_was_free_at: dict[str, bool] = {}
         real_resolve = scope._resolve_project_scope
+        real_compute = review_rounds.compute_review_round_costs
+
+        free_after_acquire: list[bool] = []
+        real_acquire = pr_cost_ledger._acquire_pr_cost_ledger_lock
+
+        def lock_is_free() -> bool:
+            with open(lock_path, "w") as probe:
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    return True
+                except OSError:
+                    return False
+
+        def probe_the_lock(point: str) -> None:
+            lock_was_free_at[point] = lock_was_free_at.get(point, True) and lock_is_free()
+
+        def acquiring_and_probing_the_held_lock(lock_f) -> None:
+            real_acquire(lock_f)
+            free_after_acquire.append(lock_is_free())
 
         def resolving_and_probing_the_lock(args, command, **kwargs):
             if kwargs["include_subagents"] is False:
-                with open(lock_path, "w") as probe:
-                    try:
-                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        lock_was_free.append(True)
-                        fcntl.flock(probe, fcntl.LOCK_UN)
-                    except OSError:
-                        lock_was_free.append(False)
+                probe_the_lock("scope resolution")
             return real_resolve(args, command, **kwargs)
 
+        def computing_and_probing_the_lock(session_iter, **kwargs):
+            probe_the_lock("round pass call")
+
+            def probing_on_each_session():
+                for session in session_iter:
+                    probe_the_lock("round pass each session")
+                    yield session
+
+            return real_compute(probing_on_each_session(), **kwargs)
+
         monkeypatch.setattr(scope, "_resolve_project_scope", resolving_and_probing_the_lock)
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing_and_probing_the_lock)
+        monkeypatch.setattr(pr_cost_ledger, "_acquire_pr_cost_ledger_lock", acquiring_and_probing_the_held_lock)
 
         _run_record(fake_projects, **extra_args)
 
-        assert lock_was_free == [True]
+        assert lock_was_free_at == {
+            "scope resolution": True, "round pass call": True, "round pass each session": True,
+        }
+        # Positive control: the same probe reports a lock held inside the real acquire, so "free" above is meaningful.
+        assert free_after_acquire and not any(free_after_acquire)
+
+    @pytest.mark.parametrize(
+        ("narrow_to_in_scope_project", "expected_round_count"),
+        [(True, 1), (False, 3)],
+        ids=["scoped-to-one-project", "unscoped-reads-every-project"],
+    )
+    def test_the_round_pass_honors_a_projects_scope_narrower_than_the_machine(
+        self, fake_projects, tmp_path, monkeypatch, narrow_to_in_scope_project, expected_round_count,
+    ):
+        """A same-named branch in a project directory outside --projects must not put that directory's rounds in
+        the PR's cell: the round pass takes the run's own scope, as the scalar pass does."""
+
+        def write_one_round_in_scope_and_two_outside(in_scope_dir: Path, branch: str) -> None:
+            _write_jsonl(in_scope_dir / "sess-in-scope.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch=branch, content=[_skill_block("s1", "code-review")]),
+            ])
+            out_of_scope_dir = in_scope_dir.parent / "-home-user-other-repo"
+            out_of_scope_dir.mkdir()
+            _write_jsonl(out_of_scope_dir / "sess-out-of-scope.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch=branch, content=[_skill_block("s2", "code-review")]),
+                _user_msg("next", branch=branch, ts="2026-01-02T09:00:00.000Z"),
+                _priced(
+                    "claude-sonnet-5", input=1_000_000, branch=branch, ts="2026-01-02T10:00:00.000Z",
+                    content=[_skill_block("s3", "code-review")],
+                ),
+            ])
+
+        ledger_path = _arrange_round_run(
+            fake_projects, tmp_path, monkeypatch, write_corpus=write_one_round_in_scope_and_two_outside,
+        )
+
+        scope_args = {"projects": fake_projects.name} if narrow_to_in_scope_project else {}
+        _run_record(fake_projects, **scope_args)
+
+        recorded_rounds = _ledger_rows(ledger_path)[0]["review_rounds"]["rounds"]
+        assert len(recorded_rounds["code-review"]) == expected_round_count
 
 
 class TestReviewRoundsPreLockSkip:
