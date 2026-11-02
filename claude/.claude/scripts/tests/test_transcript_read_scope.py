@@ -9,10 +9,13 @@ from transcript_analysis import (
 )
 
 from .conftest import (
+    _api_request_blob_rec,
     _asst,
     _bash_use,
     _compact_boundary_rec,
     _opus,
+    _read_result,
+    _read_tool_use,
     _tool_result,
     _user_msg,
     _write_cost_root,
@@ -40,23 +43,6 @@ def _read_scope_args(
         "extra_config_dirs": extra_config_dirs,
         "since": since,
     })()
-
-
-def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
-    tool_input: dict = {"file_path": file_path}
-    if offset is not None:
-        tool_input["offset"] = offset
-    if limit is not None:
-        tool_input["limit"] = limit
-    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
-
-
-def _read_result(tool_id: str, content, *, is_error: bool = False) -> dict:
-    """A user-record tool_result for a Read call. `content` is either a plain
-    string (a real Read's text output) or a content-block list (e.g. an
-    image result) — read-scope's own classification depends on telling the
-    two apart, mirroring _tool_result's role for edit-format's tests."""
-    return _user_msg([{"type": "tool_result", "tool_use_id": tool_id, "content": content, "is_error": is_error}])
 
 
 def _growth_asst(*, ts: str, context: int, session_id: str | None = None) -> dict:
@@ -464,6 +450,54 @@ class TestScanReadScopeSession:
         stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["repeat_whole_file_reads"] == 1
         assert stats["repeat_whole_file_output_log_reads"] == 0
+
+    def test_api_request_blob_copy_of_subagent_read_is_not_counted_or_filed_as_main(self):
+        """An api-request-blob record copies a subagent's Read and its result but carries no
+        isSidechain key. Walking it would double the Read count and file the copy under main scope."""
+        subagent_read = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r1", file_path="/sub.py")],
+        )
+        subagent_result = _read_result("r1", "w" * 4000)
+        records = [
+            subagent_read,
+            subagent_result,
+            _api_request_blob_rec([_read_tool_use("r1", file_path="/sub.py")], agent_id="agent-a"),
+            _api_request_blob_rec([_tool_result("r1", "w" * 4000)], agent_id="agent-a"),
+        ]
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["read_total"] == 1
+        assert stats["cohort_scope_count"][
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_SUBAGENT)
+        ] == 1
+        assert stats["cohort_scope_count"][
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
+        ] == 0
+        assert stats["read_result_tokens_total"] == 1000
+
+    def test_api_request_blob_tool_results_and_locate_calls_excluded_from_denominators(self):
+        records = [
+            _opus([{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}]),
+            _user_msg([_tool_result("g1", "x" * 80)]),  # 20 tokens
+            _api_request_blob_rec(
+                [{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}],
+            ),
+            _api_request_blob_rec([_tool_result("g1", "x" * 80)]),
+        ]
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["locate_call_n"] == 1
+        assert stats["locate_result_tokens_total"] == 20
+        assert stats["all_tool_result_tokens_total"] == 20
+
+    def test_api_request_blob_copy_of_read_is_not_a_repeat_whole_file_read(self):
+        records = [
+            _opus([_read_tool_use("r1", file_path="/shared.py")]),
+            _read_result("r1", "x" * 4000),
+            _api_request_blob_rec([_read_tool_use("r1", file_path="/shared.py")]),
+            _api_request_blob_rec([_tool_result("r1", "x" * 4000)]),
+        ]
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["repeat_whole_file_reads"] == 0
+        assert stats["repeat_whole_file_tokens"] == 0
 
     def test_non_read_tool_with_offset_limit_shaped_input_not_counted(self):
         records = [

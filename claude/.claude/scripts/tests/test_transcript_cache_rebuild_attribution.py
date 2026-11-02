@@ -14,6 +14,7 @@ from ._cache_rebuild_helpers import (
     _extract_cache_rebuild_row,
 )
 from .conftest import (
+    _api_request_blob_rec,
     _asst,
     _bash_use,
     _edit_use,
@@ -62,6 +63,21 @@ class TestAttributeIdleGapCause:
         )
         assert cause == cache_rebuild_rules._ATTR_OWN_BASH
         assert covered_share == pytest.approx(350 / 360)
+
+    def test_api_request_blob_copy_of_bash_result_does_not_move_the_own_bash_marker(self):
+        """A later request-content copy of the Bash tool_result must not displace the real result
+        record as the last marker, which would inflate the covered share."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            _api_request_blob_rec([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:00.000Z"),
+        ]
+        gap_start_ts = corpus._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share, _bash_shape = cache_rebuild_rules._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == cache_rebuild_rules._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(60 / 360)
 
     def test_background_task_marker_attributes_to_waiting_on_background_task(self):
         prior_turn = _asst("claude-sonnet-5", content=[])

@@ -9,6 +9,7 @@ import pytest
 from transcript_analysis import edit_format, scope
 
 from .conftest import (
+    _api_request_blob_rec,
     _bash_use,
     _hook_deny_current,
     _opus,
@@ -443,6 +444,19 @@ class TestScanEditFormatSession:
         assert stats["calls"] == {"Edit": 2, "Write": 1}
         assert stats["known_failures"][("Edit", "not_found")] == 1
         assert stats["known_failures"][("Write", "unread")] == 1
+
+    def test_api_request_blob_copies_of_edit_call_and_failure_are_not_counted(self):
+        """A request-content copy of an Edit call and its error result must not double the call
+        census or the known-failure count."""
+        records = [
+            _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
+            _error_result("e1", "String to replace not found in file."),
+            _api_request_blob_rec([_edit_tool_use("e1", old_string="a", new_string="b")]),
+            _api_request_blob_rec(_error_result("e1", "String to replace not found in file.")["message"]["content"]),
+        ]
+        stats = edit_format._scan_edit_format_session(records)
+        assert stats["calls"] == {"Edit": 1}
+        assert stats["known_failures"][("Edit", "not_found")] == 1
 
     def test_unpaired_and_unclassified_and_governance_counted_directly(self):
         records = [

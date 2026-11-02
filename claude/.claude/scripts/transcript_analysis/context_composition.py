@@ -75,7 +75,11 @@ def _classify_content_item(record_type: str, item, *, is_compact_summary: bool =
 
 
 def _split_context_sequences(records: list[dict]) -> list[list[dict]]:
-    """Splits at a compact_boundary record or an isSidechain toggle between consecutive records."""
+    """Splits at a compact_boundary record or an isSidechain toggle between consecutive conversation records.
+
+    Records outside corpus.CONVERSATION_RECORD_TYPES are skipped: an api-request-blob record has no isSidechain
+    key and would read as a toggle.
+    """
     sequences: list[list[dict]] = []
     current: list[dict] = []
     current_sidechain: bool | None = None
@@ -85,6 +89,8 @@ def _split_context_sequences(records: list[dict]) -> list[list[dict]]:
                 sequences.append(current)
             current = []
             current_sidechain = None
+            continue
+        if rec.get("type") not in corpus.CONVERSATION_RECORD_TYPES:
             continue
         rec_sidechain = bool(rec.get("isSidechain"))
         if current and rec_sidechain != current_sidechain:

@@ -18,7 +18,7 @@ circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
 `user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
 `sessions.py`, `context_distribution.py`, `context_composition.py`, `cache_efficiency.py`,
-`edit_format.py`, `instrument_authoring.py`, and `review_cost_by_size.py` are the only
+`edit_format.py`, `instrument_authoring.py`, `review_cost_by_size.py`, and `read_cost.py` are the only
 modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
@@ -52,7 +52,7 @@ from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
 turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
-instrument-authoring, and review-cost-by-size by calling each owning
+instrument-authoring, review-cost-by-size, and read-cost by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -63,7 +63,8 @@ handler reads at call time, not the shim.
 ### `corpus.py`
 
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
-`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
+`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention),
+`CONVERSATION_RECORD_TYPES` (the record types a walk over `message.content` must filter to), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
 join). The harness writes every nested dispatch's `.meta.json` into the session's own flat
 `subagents/` directory. One session's index therefore also resolves a dispatch spawned from inside
@@ -137,6 +138,8 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 it deduplicates one session's records and returns its subagent-spawn count, its sidechain
 assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
 the re-verify-by staleness rule both apply.
+`_cache_read_equivalent_weights` turns the base multipliers into per-class weights relative to one
+cache-read token, for `read_cost.py`.
 
 ### `session_pricing.py`
 
@@ -375,6 +378,17 @@ per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render
 by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` is the one name
 reached bare from the shim — see the exception noted above. `context_composition.py` reads
 `_READ_SCOPE_CHARS_PER_TOKEN` as `read_scope._READ_SCOPE_CHARS_PER_TOKEN`.
+
+### `read_cost.py`
+
+The read-cost command: `cmd_read_cost`, its `_add_read_cost_subparser` registration, and every helper
+used only by it. `_scan_window` turns one transcript file into Read events, turn ids and usage;
+`_accumulate_session` folds a session's main-thread window and subagent windows into the totals;
+`_refuse_wider_scope` is the single-account, `--this-repo` refusal. Imports `corpus`, `cost`, `pricing`,
+`redaction`, `render`, `scope`, and `subagent_mix` all by module (attribute access). The shim reads
+`_add_read_cost_subparser` bare. It reads `pricing._cache_read_equivalent_weights` for the price ratios,
+`cost._usage_is_invalid` for usage validation, `redaction._repo_tracked_agent_type_names` for the
+agent-type allowlist, and `subagent_mix._WITHHELD_AGENT_TYPE_LABEL` for the folded row's label.
 
 ### `ledger_common.py`
 

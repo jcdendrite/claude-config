@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from transcript_analysis import context_composition, corpus, read_scope, scope, subagents
 
-from .conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
+from .conftest import _agent_use, _api_request_blob_rec, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
 
 
 def _context_composition_args(
@@ -303,6 +303,20 @@ class TestCompaction:
         assert not any(bool(rec.get("isSidechain")) for rec in sequences[0])
         assert all(bool(rec.get("isSidechain")) for rec in sequences[1])
         assert not any(bool(rec.get("isSidechain")) for rec in sequences[2])
+
+    def test_api_request_blob_between_sidechain_records_does_not_split_the_sequence(self):
+        """A blob record carries no isSidechain key, so reading it as a toggle would cut one subagent
+        context into fragments."""
+        sidechain_user = _user_msg("b")
+        sidechain_user["isSidechain"] = True
+        sidechain_asst = _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:10.000Z")
+        sidechain_asst["isSidechain"] = True
+        sidechain_asst["message"]["usage"] = {"input_tokens": 5}
+        blob = _api_request_blob_rec([{"type": "text", "text": "request copy"}], agent_id="agent-a")
+
+        sequences = context_composition._split_context_sequences([sidechain_user, blob, sidechain_asst])
+
+        assert sequences == [[sidechain_user, sidechain_asst]]
 
 
 class TestRequestIdMerge:

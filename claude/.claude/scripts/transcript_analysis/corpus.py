@@ -12,6 +12,11 @@ from pathlib import Path
 # Subdirectory name where Claude Code writes split subagent transcripts.
 SUBAGENT_SUBDIR = "subagents"
 
+# Record types that carry the conversation itself. Other types (e.g. api-request-blob) hold copies of
+# request content and carry no isSidechain key, so a walk over message.content must filter on this.
+# "human" is the legacy name for a user record.
+CONVERSATION_RECORD_TYPES = frozenset({"assistant", "user", "human"})
+
 
 def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str | None]], int]:
     """Map each subagent dispatch's toolUseId to (its paired .jsonl path,

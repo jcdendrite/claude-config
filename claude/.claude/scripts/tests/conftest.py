@@ -882,6 +882,34 @@ def _compact_boundary_rec() -> dict:
     return {"type": "system", "subtype": "compact_boundary"}
 
 
+def _api_request_blob_rec(content: list, *, agent_id: str | None = None, ts: str | None = None) -> dict:
+    """A request-content copy record: carries message.content blocks but, unlike a real
+    assistant/user record, has no isSidechain key."""
+    rec: dict = {"type": "api-request-blob", "message": {"content": content}}
+    if agent_id is not None:
+        rec["agentId"] = agent_id
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
+    tool_input: dict = {"file_path": file_path}
+    if offset is not None:
+        tool_input["offset"] = offset
+    if limit is not None:
+        tool_input["limit"] = limit
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
+
+
+def _read_result(tool_id: str, content, *, is_error: bool = False) -> dict:
+    """A user-record tool_result for a Read call. `content` is either a plain
+    string (a real Read's text output) or a content-block list (e.g. an
+    image result) — read-scope's own classification depends on telling the
+    two apart, mirroring _tool_result's role for edit-format's tests."""
+    return _user_msg([{"type": "tool_result", "tool_use_id": tool_id, "content": content, "is_error": is_error}])
+
+
 def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
     return {
         "type": "tool_use",

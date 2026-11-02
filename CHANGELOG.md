@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`read-scope`, `edit-format`, `cache-rebuild` and `context-composition` now skip `api-request-blob` records, and a new `read-cost` subcommand prices reads across their context windows.**
+  - `read-scope` main-thread read figures drop sharply where these records exist, because each blob copied a tool call that was already counted.
+  - `context-composition` no longer reads such a record as an `isSidechain` toggle, so a subagent context it split into several sequences stays whole.
+  - `read-cost` reads the active account alone, refuses `--projects` and a top-level `--config-dir`, and requires `--this-repo`, which meets the scope half of the publishing bar in `docs/private-project-redaction.md`; each new figure still takes that doc's per-figure check.
 - **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**
   - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
   - The wrapper exits 127 when the main checkout's path contains `:`.

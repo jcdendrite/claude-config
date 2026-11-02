@@ -34,6 +34,7 @@ from transcript_analysis import (
     plan_boundary,
     pr_link,
     pricing,
+    read_cost,
     read_scope,
     rearm_backtest,
     redaction,
@@ -80,6 +81,7 @@ from .conftest import (
     _extract_grand_total,
     _opus,
     _priced,
+    _read_tool_use,
     _read_use,
     _review_trace_args,
     _reviewer_yield_args,
@@ -342,6 +344,31 @@ def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypat
     out, err = capsys.readouterr()
     assert out == ""
     assert "review-cost-by-size: requires --this-repo" in err
+
+
+def test_read_cost_without_this_repo_is_refused_through_main(monkeypatch, capsys):
+    """main() reaches cmd_read_cost, which refuses a scope without --this-repo before any scan."""
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost"])
+    with pytest.raises(SystemExit) as exc_info:
+        _mod.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "read-cost: requires --this-repo" in err
+
+
+def test_read_cost_this_repo_runs_to_a_report_through_main(fake_projects, monkeypatch, capsys):
+    """The real argparse Namespace reaches cmd_read_cost, _refuse_wider_scope and _resolve_project_scope."""
+    monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])
+    _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6")])
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost", "--this-repo"])
+
+    _mod.main()
+
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].startswith("READ COST SOURCES (this repo (1 project dirs);")
+    assert "sessions=1 " in out
 
 
 # ---------------------------------------------------------------------------
@@ -1569,15 +1596,6 @@ class TestDedupTurnsByRequestId:
         ]
 
 
-def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
-    tool_input: dict = {"file_path": file_path}
-    if offset is not None:
-        tool_input["offset"] = offset
-    if limit is not None:
-        tool_input["limit"] = limit
-    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
-
-
 def _text_marker_assistant(marker: str, *, sidechain: bool = True) -> dict:
     return _asst("claude-opus-4-7", sidechain=sidechain, content=[{"type": "text", "text": marker}])
 
@@ -2074,6 +2092,11 @@ class TestBuildParser:
         assert with_flag.all_accounts is True
         assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
         assert without_flag.all_accounts is False
+
+    def test_read_cost_wires_to_cmd_read_cost_with_this_repo(self):
+        parsed = _mod.build_parser().parse_args(["read-cost", "--this-repo"])
+        assert parsed.func is read_cost.cmd_read_cost
+        assert parsed.this_repo is True
 
     def test_pr_link_without_repo_flag_defaults_to_none(self):
         parser = _mod.build_parser()

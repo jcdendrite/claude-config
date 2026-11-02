@@ -127,6 +127,12 @@ re-run and check.
   figure from it still takes the check under "New figures against the
   grandfathered set" below. Its `--all-accounts` output is never
   proposed for publication — see the next section.
+- `transcript-analysis.py read-cost --this-repo`, run from this
+  repository's checkout, refuses `--projects` and a top-level
+  `--config-dir` and reads the active config directory alone, without
+  consulting `~/.claude/transcript-config-dirs`. It prints aggregates
+  only. A new figure from it still takes the check under "New figures
+  against the grandfathered set" below.
 - A subcommand with no scope refusal of its own is not a publication
   instrument. Route it through the next section instead.
 

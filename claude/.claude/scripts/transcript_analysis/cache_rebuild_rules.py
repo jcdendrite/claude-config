@@ -245,6 +245,8 @@ def _attribute_idle_gap_cause(
     last_marker_ts: float | None = None
     last_command: str | None = None
     for rec in window:
+        if rec.get("type") not in corpus.CONVERSATION_RECORD_TYPES:
+            continue
         content = (rec.get("message") or {}).get("content")
         marker_cause: str | None = None
         marker_command: str | None = None

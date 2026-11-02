@@ -696,7 +696,7 @@ _DO_NOT_PUBLISH_BANNER = (
 # the subcommand itself resolves. Most members resolve their own multi-root
 # scan via their own subcommand-level --config-dir (_resolve_cost_roots).
 # The exceptions register no --config-dir flag of their own:
-# - cost-counts and period-cost build their own single root.
+# - cost-counts, period-cost and read-cost build their own single root.
 # - review-cost-by-size builds its own single root by default and calls
 #   resolve_scan_roots under --all-accounts.
 _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
@@ -704,7 +704,7 @@ _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
     "instrument-authoring", "pr-cost", "cost-counts", "rearm-backtest",
-    "pr-cost-export", "period-cost", "review-cost-by-size",
+    "pr-cost-export", "period-cost", "review-cost-by-size", "read-cost",
 )
 
 
@@ -748,8 +748,8 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     try:
         resolved_config_dir = config_dir()
     except ValueError as exc:
-        # Every one of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR's ~15 cmd_* handlers
-        # reaches this transitively with no try/except of its own -- catch
+        # Every _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member that does not build its
+        # own root reaches this transitively with no try/except of its own -- catch
         # here, once, matching this function's own --config-dir-extra
         # refusals' stderr+exit(2) convention above.
         print(f"{subcommand}: {exc}", file=sys.stderr)

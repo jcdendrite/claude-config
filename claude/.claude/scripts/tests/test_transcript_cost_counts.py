@@ -4,13 +4,14 @@ nested-spawn counting and attribution, disclosure allowlist, charset pin.
 One exception: test_top_level_config_dir_message_omits_flag_recommendation drives the shim's main(),
 so it pins the CLI layer's shared top-level --config-dir refusal rather than cmd_cost_counts.
 """
+import argparse
 import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from transcript_analysis import redaction, subagent_mix
+from transcript_analysis import redaction, scope, subagent_mix
 
 from .conftest import (
     _agent_use,
@@ -32,6 +33,22 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
+
+
+_REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG = (
+    "cost-counts", "period-cost", "review-cost-by-size", "read-cost",
+)
+
+
+def _subcommands_refusing_top_level_config_dir_without_their_own_flag() -> list[str]:
+    """The refusing-tuple members whose own parser registers no --config-dir flag."""
+    subparsers_action = next(
+        action for action in _mod.build_parser()._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    return [
+        name for name in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        if "--config-dir" not in subparsers_action.choices[name]._option_string_actions
+    ]
 
 
 def _cost_counts_args(
@@ -860,7 +877,12 @@ class TestCostCounts:
         out = capsys.readouterr().out
         assert "| staff-sdet | 1 |" in out
 
-    @pytest.mark.parametrize("subcommand", ["cost-counts", "period-cost", "review-cost-by-size"])
+    def test_refusing_subcommands_without_their_own_config_dir_flag_are_exactly_the_expected_set(self):
+        assert set(_subcommands_refusing_top_level_config_dir_without_their_own_flag()) == set(
+            _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG
+        )
+
+    @pytest.mark.parametrize("subcommand", _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG)
     def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
         """The members named in the comment above
         scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR register no

@@ -173,6 +173,22 @@ def _model_rates(model: str) -> dict[str, float] | None:
     }
 
 
+def _cache_read_equivalent_weights() -> dict[str, float]:
+    """Each _TOKEN_CLASSES entry's price as a multiple of one cache-read token's price.
+
+    Derived from the base multipliers alone, so one ratio holds for every model:
+    _CACHE_READ_MULTIPLIER_OVERRIDES' per-model cache-read exceptions are not applied.
+    """
+    class_multipliers = {
+        "cache_read": _CACHE_READ_MULTIPLIER,
+        "cache_write_5m": _CACHE_WRITE_5M_MULTIPLIER,
+        "cache_write_1h": _CACHE_WRITE_1H_MULTIPLIER,
+        "output": _OUTPUT_RATE_MULTIPLIER,
+        "input": 1,
+    }
+    return {cls: multiplier / _CACHE_READ_MULTIPLIER for cls, multiplier in class_multipliers.items()}
+
+
 # The model-ID key _price_turn's unpriced path (cost.py's unpriced_tokens
 # dict) uses for a turn whose real model was never recorded, e.g. a
 # synthesized/error record with no message.model of its own.

@@ -771,3 +771,9 @@ evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.j
 ```
 
 The fixture's own `pinned_commit` field names the exact commit to check out; the checkout must be clean (`git status --porcelain` empty) at that commit before any run.
+
+## From a 2026-11-01 measurement — "Gate large reads and redirect them to a cheaper worker"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Hook-deny large whole-file reads and redirect them to a worker model | Rejected (measured) | See [`design-decisions/large-read-gate-declined.md`](design-decisions/large-read-gate-declined.md). |
