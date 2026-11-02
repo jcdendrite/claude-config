@@ -341,7 +341,7 @@ Triangulated against a second, independent first-tier origin per
   They do not state, in these terms, that `python3 -m venv` can exit 0 and
   produce no pip on a distro that splits `python3-venv`/`ensurepip` into a
   separate package — the rule body grounds that specific mechanic in this
-  repo's own working guard, `install-dev.sh:44-75`, not in these docs.
+  repo's own working guard, the ensurepip guard in Step 5 of `install-dev.sh`, not in these docs.
 
 - **Recommends a virtual environment over a system-wide install** — [PyPA
   Python Packaging User Guide, "Installing packages using pip and virtual
