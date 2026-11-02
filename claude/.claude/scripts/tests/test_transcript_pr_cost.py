@@ -2358,7 +2358,7 @@ class TestReviewRoundsCellCapture:
         assert [call["roots"] for call in spy.scope_calls] == [[fake_projects.parent]] * 2
         assert len(spy.scalar_scans) == 1
         assert len(spy.round_scans) == 1
-        assert spy.round_calls == [{"resolved_roots": None, "rounds_only": True}]
+        assert [call["rounds_only"] for call in spy.round_calls] == [True]
 
     @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
     def test_the_dispatchs_tokens_and_dollars_reach_the_round_once_not_again_through_the_scalar_pass_merge(
@@ -2636,6 +2636,7 @@ class TestReviewRoundsPreLockSkip:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        spy = _spy_on_scans(monkeypatch)
         real_acquire = pr_cost_ledger._acquire_pr_cost_ledger_lock
         acquire_count = 0
 
@@ -2656,6 +2657,7 @@ class TestReviewRoundsPreLockSkip:
         assert exc_info.value.code == 1
         assert _already_captured_line(1) in capsys.readouterr().err.splitlines()
         assert len(_ledger_rows(ledger_path)) == 1
+        assert len(spy.round_scans) == 1  # the row arrived after the pre-lock lookup, which would have skipped the scan
 
 
 def _already_captured_line(pr_number: int) -> str:

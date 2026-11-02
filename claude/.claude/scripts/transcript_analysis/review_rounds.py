@@ -415,16 +415,9 @@ def compute_review_round_costs(
     activity and a round's own main_dollars/agent_dollars/agents are
     invariant to skill_filter.
 
-    A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid
-    is excluded from dollars, tokens, unpriced counts and branch_totals
-    rather than priced negative. Inside a round window it adds to
-    that round's invalid_usage_records. Its spawn blocks are still followed.
-    A truthy non-object `usage` in a run of records sharing one requestId
-    raises AttributeError from pricing.dedup_turns_by_request_id, before
-    the gate runs, when it sits where pricing._warn_if_run_usage_drift
-    documents (the first record, or one before the first drifting record).
-    The gate has no upper bound on token counts. A non-string model is
-    priced as unpriced.
+    A malformed-usage turn is excluded and counted in invalid_usage_records; its spawn blocks are still followed.
+    A truthy non-object `usage` at the head of a requestId run (pricing._warn_if_run_usage_drift gives the exact
+    position) raises AttributeError before that gate. See docs/pr-cost.md, "The `review_rounds` cell", for the limit.
 
     rounds_only skips a session that opens no round before its branch
     attribution and dispatch indexing, and drops "branch_totals" from the
@@ -433,14 +426,8 @@ def compute_review_round_costs(
     sessions.
 
     Returns {"rounds": [...], "branch_totals": {(root_idx, branch): dollars}}.
-    Each round dict holds branch_key, skill, ts (raw timestamp string or
-    None), main_dollars, agent_dollars, agents, unpriced_turns, dangling,
-    main_tokens and agent_tokens ({model: {variant: {class: int}}} over
-    priced turns, every token class per group), unpriced_tokens (the token
-    total of unpriced turns, both threads), invalid_usage_records (both
-    threads), and sort_key. sort_key is (opening-timestamp-or-+inf, session
-    path string, opening record index) — the ordering rule sessions written
-    in reverse file-path order need.
+    unpriced_tokens and invalid_usage_records span both threads. main_tokens and agent_tokens are
+    {model: {variant: {class: int}}} over priced turns, every token class per group.
     """
     multi_root = bool(resolved_roots) and len(resolved_roots) > 1
     all_rounds: list[dict] = []

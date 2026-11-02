@@ -55,7 +55,7 @@ _PR_COST_LEDGER_PRE_REVIEW_ROUNDS_COLUMNS: tuple[str, ...] = (
 )
 _PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
     *_PR_COST_LEDGER_PRE_REVIEW_ROUNDS_COLUMNS,
-    # Empty cell: not recorded. Every skill an empty list: recorded, no rounds.
+    # Empty cell: not recorded. Every skill list empty: recorded, no rounds.
     "review_rounds",
 )
 _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
@@ -247,8 +247,8 @@ _REVIEW_ROUND_COUNT_FIELDS: tuple[str, ...] = (
 _REVIEW_ROUND_TOKEN_FIELDS: tuple[str, ...] = ("main_tokens", "agent_tokens")
 _REVIEW_ROUND_FLAG_FIELDS: tuple[str, ...] = ("after_merge",)
 
-# Admits at least 1000 representative rounds; it may rise only up to the lowest value _REVIEW_ROUNDS_CELL_READ_MAX_CHARS
-# has shipped with.
+# Admits at least 1000 representative rounds.
+# It may rise only up to the lowest value _REVIEW_ROUNDS_CELL_READ_MAX_CHARS has shipped with.
 _REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS = 1_048_576
 # Persisted contract: never lower it, because a checkout refuses any cell longer than the value it shipped with.
 _REVIEW_ROUNDS_CELL_READ_MAX_CHARS = 8_388_608
@@ -349,10 +349,7 @@ def _review_rounds_cell_violation(decoded: object) -> str | None:
 
 
 def _decode_review_rounds_cell(cell: str, line_no: int) -> dict | None:
-    """Decode one review_rounds cell: "" is None (not captured); a longer cell than
-    _REVIEW_ROUNDS_CELL_READ_MAX_CHARS is refused before parsing; anything else must be structurally valid
-    (see _review_rounds_cell_violation). Returns the whole object, unknown round keys included. Every message
-    names a fixed rule, never cell text."""
+    """Returns the whole object, unknown round keys included. Every message names a fixed rule, never cell text."""
     if cell == "":
         return None
     if len(cell) > _REVIEW_ROUNDS_CELL_READ_MAX_CHARS:

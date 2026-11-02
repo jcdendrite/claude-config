@@ -327,7 +327,6 @@ def _check_model_breakdown_cell(cell: dict | None, row: dict) -> None:
 
 
 def _review_round_cell(review_round: dict, merged_ts: float | None) -> dict:
-    """One round dict from review_rounds.compute_review_round_costs as its review_rounds cell value."""
     cell = {
         "main_usd_micros": _usd_to_micros(review_round["main_dollars"]),
         "agent_usd_micros": _usd_to_micros(review_round["agent_dollars"]),
@@ -344,8 +343,7 @@ def _review_round_cell(review_round: dict, merged_ts: float | None) -> dict:
 
 
 def _build_review_rounds_cell(rounds: Sequence[dict], merged_at: str) -> dict | None:
-    """The review_rounds cell value for one branch's round dicts. Returning None records the row with an empty cell
-    and no degrade line."""
+    """The review_rounds cell value for one branch's round dicts."""
     merged_ts = corpus._parse_ts(merged_at)
     ordered_rounds = sorted(rounds, key=lambda review_round: review_round["sort_key"])
     return {
@@ -382,7 +380,7 @@ _ROUNDS_ABSENCES: frozenset[str] = frozenset(
 
 class _ReviewRoundsCheckError(Exception):
     """A review_rounds cell failed one _REVIEW_ROUNDS_CHECK_RULES rule. The exception's text is the rule alone, never
-    a key or value. An unknown rule raises KeyError here, inside the check and before any write."""
+    a key or value."""
 
     def __init__(self, rule: str) -> None:
         super().__init__(rule)
@@ -392,7 +390,7 @@ class _ReviewRoundsCheckError(Exception):
 
 def _check_review_rounds_cell(cell: dict | None) -> None:
     """Raises _ReviewRoundsCheckError on the first failing rule, so the tool never writes a cell it would refuse to
-    read or that its own contract bounds. Checks size, shape and membership only. A None cell skips every check."""
+    read or that its own contract bounds."""
     if cell is None:
         return
 
@@ -421,11 +419,7 @@ def _check_review_rounds_cell(cell: dict | None) -> None:
 def _review_rounds_cell_outcome(
     rounds: Sequence[dict] | None, absence: str | None, merged_at: str,
 ) -> tuple[dict | None, str | None, str | None]:
-    """(cell, absence, build_error_class) for one row. `absence` is None for a recorded cell, else one of
-    _ROUNDS_ABSENCES, and an absence passed in builds nothing. `build_error_class` is the exception class name
-    behind a `build` absence, never its message, and None otherwise.
-    The one containment boundary: a builder or check failure costs only this cell. SystemExit and other
-    BaseException pass through."""
+    """The one containment boundary: a builder or check failure costs only this cell."""
     if absence is not None:
         if absence not in _ROUNDS_ABSENCES:
             raise ValueError(f"unknown review_rounds absence {absence!r}")
@@ -450,7 +444,7 @@ _FORCE_REFUSAL_REASON_BY_ABSENCE: dict[str, str] = {
 
 
 def _review_rounds_check_cause(rule: str, build_error_class: str | None) -> str:
-    """The cause a failed `rule` prints. A `build` failure appends the exception class name, never its message."""
+    """Never includes the exception's message, which can embed a path or transcript text."""
     cause = _REVIEW_ROUNDS_CHECK_CAUSES[rule]
     if rule == _BUILD_RULE:
         cause = f"{cause}: {build_error_class}"
@@ -471,8 +465,8 @@ def _review_rounds_force_refusal(
         return _FORCE_REFUSAL_REASON_BY_ABSENCE[new_absence]
     if new_cell["rule"] < prior_cell["rule"]:
         return "this checkout's round rule is older than the captured row's"
-    # A higher-rule --force re-record over partly aged transcripts can shrink the captured series and is not guarded,
-    # because REVIEW_ROUND_RULE is currently 1.
+    # A higher-rule --force re-record over partly aged transcripts can shrink the captured series. That is deliberately
+    # unguarded; see docs/pr-cost.md.
     if new_cell["rule"] == prior_cell["rule"]:
         for skill, prior_rounds in prior_cell["rounds"].items():
             new_rounds = new_cell["rounds"].get(skill, [])
@@ -484,7 +478,6 @@ def _review_rounds_force_refusal(
 
 
 def _review_rounds_degrade_reason(absence: str | None, build_error_class: str | None) -> str | None:
-    """The per-PR line's reason for an empty cell, or None for a recorded cell or a quiet absence."""
     if absence is None or absence in _QUIET_ROUNDS_ABSENCES:
         return None
     if absence == _ABSENCE_PASS_FAILED:
@@ -498,8 +491,8 @@ def _failed_cells_count_entry(pr_number: int, failed_columns: Sequence[str], acc
 
 
 def _scan_review_rounds_by_branch(args: argparse.Namespace, root: Path) -> dict[str, list[dict]]:
-    """Every review round in one account's main-thread transcripts, grouped by raw branch name. Prices only sessions
-    that open a round. Prints no scope line."""
+    """Every review round in one account's main-thread transcripts. Prices only sessions that open a round. Prints no
+    scope line."""
     session_iter, _scope_label = scope._resolve_project_scope(args, "pr-cost", include_subagents=False, roots=[root])
     result = review_rounds.compute_review_round_costs(session_iter, resolved_roots=None, rounds_only=True)
     rounds_by_branch: dict[str, list[dict]] = {}
@@ -680,20 +673,17 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
     A --record row whose model_breakdown fails _check_model_breakdown_cell is
     still written, with an empty cell.
-    A --record run that may write a row for a branch with local activity also
-    makes one review-round pass per account (_AccountReviewRoundScan), before
-    the per-branch lock and at most once. A row whose review_rounds cell is
-    empty because that pass failed, or because the cell failed its build or
-    _check_review_rounds_cell, is still written, with the empty cell.
+    A row whose review_rounds cell is empty because the round pass or the
+    cell's check failed is likewise still written, with the empty cell.
     After that row's write, the loop prints a per-PR line for each degraded
     cell.
     A ledger rewritten from an older header prints one upgrade notice.
     A run that finished every branch with such a row prints a count line and
     exits 1.
     A --force re-capture that would replace captured review rounds with none,
-    fewer or less complete ones (_review_rounds_force_refusal) is refused
-    before any write: a single-account --pr run exits 1 at once, and
-    --all-accounts skips that account and exits 1 after its summary.
+    fewer or less complete ones is refused before any write: a single-account
+    --pr run exits 1 at once, and --all-accounts skips that account and exits
+    1 after its summary.
     A refused write exits 1 at once.
     It suppresses that row's per-PR line, any upgrade notice, and the count
     line. Earlier branches' lines have already printed.

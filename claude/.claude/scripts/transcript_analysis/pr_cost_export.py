@@ -61,9 +61,8 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
 
 
 def _tokens_for_export(token_object: dict) -> tuple[dict, int]:
-    """A round's {model: {variant: {class: int}}} with every key outside the rate table, the pricing variants or the
-    token classes removed, and the number of keys removed. A model or variant object the removal empties is
-    removed too and not counted, because the keys that emptied it were."""
+    """A model or variant object that removal empties is dropped without its own count, because the keys that emptied
+    it were counted."""
     kept_models: dict = {}
     dropped = 0
     for model, variants in token_object.items():
@@ -85,10 +84,8 @@ def _tokens_for_export(token_object: dict) -> tuple[dict, int]:
 
 
 def _review_rounds_cell_for_export(cell: dict | None) -> tuple[dict | None, int]:
-    """The review_rounds cell with every key this checkout's vocabulary does not know removed, and the number of keys
-    removed. Each key position is checked against its own vocabulary only, so a name known at one position is
-    unknown at every other. The top level passes through, because the decoder already fixes it to `rule` and `rounds`.
-    How the count is taken is in docs/pr-cost.md."""
+    """The cell with every key this checkout's vocabulary does not know removed, and the count removed; see
+    docs/pr-cost.md for how the count is taken."""
     if cell is None:
         return None, 0
     known_round_keys = {
