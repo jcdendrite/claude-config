@@ -175,7 +175,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately: it is not a gate step and can resolve hours after the gate finishes, so never wait on it. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
+**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The CI watch is not a gate step, and it can resolve hours after the gate finishes. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
 | Terminal line | Do this |
 |---|---|
