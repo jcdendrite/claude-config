@@ -422,6 +422,15 @@ class TestCrossDomainReadCompleteness:
         )
 
 
+# Each pair is (select-tests.py attribute of a hand-audited AGENTS_DIR target,
+# name of the test in that target that reads the real agents directory).
+_HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
+    ("TRANSCRIPT_COST_COUNTS_TEST_PATH", "test_every_tracked_agent_stem_matches_the_charset"),
+    ("TRANSCRIPT_REDACTION_TEST_PATH", "test_real_agents_directory_allowlists_code_writer"),
+    ("MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST", "test_staff_backend_engineer_declared_model_is_sonnet"),
+)
+
+
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
         """TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also selected: this is a
@@ -736,18 +745,21 @@ class TestSelectPytestTargets:
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
-    def test_measure_subagent_model_resolution_test_change_selects_its_own_test(self):
-        """The test file selects itself rather than falling through to the full suite."""
+    def test_measure_subagent_model_resolution_test_change_also_selects_test_select_tests(self):
+        """An edit to evals/test_measure_subagent_model_resolution.py also
+        selects test_select_tests.py, because the hand-audited-reader test
+        reads that file by path."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+            _mod.SELECT_TESTS_TEST_PATH,
         }
 
     def test_measure_explore_recall_test_change_selects_its_own_test(self):
-        """The recall scorer's own test file selects itself rather than
-        falling through to the full suite -- same shape as the sibling
-        pair's own test above."""
+        """The recall scorer's own test file selects itself, the review_bench
+        tests and the sibling measure_subagent test rather than falling
+        through to the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1065,16 +1077,50 @@ class TestSelectPytestTargets:
     def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
         """Tests that read claude/.claude/agents/*.md by path, not by import,
         are selected by the cross-domain exception; without it a change there
-        falls open to the full suite. The AGENTS_DIR comment on
-        CROSS_DOMAIN_EXCEPTIONS carries the hand-audited list."""
+        falls open to the full suite. _HAND_AUDITED_AGENTS_DIR_READERS carries
+        the hand-audited targets."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
-            _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+        } | {
+            getattr(_mod, target_attribute)
+            for target_attribute, _ in _HAND_AUDITED_AGENTS_DIR_READERS
         }
+
+    @pytest.mark.parametrize(
+        ("target_attribute", "reader_test_name"), _HAND_AUDITED_AGENTS_DIR_READERS,
+    )
+    def test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self(
+        self, target_attribute, reader_test_name,
+    ):
+        """A read through a production constant is invisible to
+        TestCrossDomainReadCompleteness, so whether each target's reader hits
+        the real agents directory stays a hand audit."""
+        target_relative_path = getattr(_mod, target_attribute)
+        tree = ast.parse((_REPO_ROOT / target_relative_path).read_text())
+        reader_definitions = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == reader_test_name
+        ]
+        assert len(reader_definitions) == 1, (
+            f"{target_relative_path} defines {len(reader_definitions)} functions "
+            f"named {reader_test_name}; expected exactly one"
+        )
+        arguments = reader_definitions[0].args
+        parameter_names = [
+            parameter.arg
+            for parameter in (
+                *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                *filter(None, (arguments.vararg, arguments.kwarg)),
+            )
+        ]
+        assert parameter_names == ["self"], (
+            f"{target_relative_path}: {reader_test_name} takes {parameter_names}; "
+            f"expected only self"
+        )
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
         """test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
@@ -2076,6 +2122,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
     _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
+    _mod.TRANSCRIPT_REDACTION_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
@@ -2087,16 +2134,21 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
 })
 
-# Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
-# test, plus the settings.json read from test_claude_enable_tool.py
-# (SCRIPTS_TESTS_DIR). Each pair was hand-checked against its citing test's
-# own read call. This list is not derived from SKILL_FILES_READ_BY_HOOK_TESTS
-# or the CLAUDE_SETTINGS_JSON row, so it is DAMP test data (CLAUDE.md's named
-# exception) rather than a DRY violation. Add a newly-mapped read here only
-# when it fits that scope. A HOOKS_TESTS_DIR entry whose read path is not a
-# SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
+# Add a pair only for a SKILL.md path read from a HOOKS_TESTS_DIR test, a
+# SKILL.md path read from a SCRIPTS_TESTS_DIR test, or the settings.json read
+# from test_claude_enable_tool.py. Each pair was hand-checked against its
+# citing test's own read call. The list is not derived from
+# SKILL_FILES_READ_BY_HOOK_TESTS or the CLAUDE_SETTINGS_JSON row, so it is DAMP
+# test data (CLAUDE.md's named exception) rather than a DRY violation.
+# - HOOKS_TESTS_DIR entries are complete; an entry whose read path is not a
+#   SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
+# - SCRIPTS_TESTS_DIR SKILL.md entries are not exhaustive.
+# - Nothing checks that a listed reader still reads its pair's file.
+# - TestCrossDomainReadCompleteness is the enforced read check and does not
+#   consult this list.
 _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
      "claude-skills/skills/code-review/SKILL.md"),
@@ -2132,6 +2184,10 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_resume_context_same_session.py",
      "claude-skills/skills/resume-context/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+     "claude-skills/skills/plan-review/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_transcript_review_trace.py",
+     "claude-skills/skills/ready-for-review/SKILL.md"),
 )
 
 

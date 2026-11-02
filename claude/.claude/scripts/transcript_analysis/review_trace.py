@@ -2,24 +2,39 @@
 only by it -- --deny-summary's grouped denial/friction accumulation and
 report, and the per-session event-timeline detector shared by both.
 
-Imports corpus, denials, render, review_rounds, reviewer_yield, scope, and
-skill_invocation by module (attribute access, not by name) -- see scope.py's
-own top-of-file comment for why. Calls reviewer_yield._is_reviewer_subagent_type,
-review_rounds._round_skill_name, and skill_invocation._normalize_skill_name,
-each owned by another command-group module.
+Imports corpus, denials, pricing, render, review_rounds, reviewer_yield,
+scope, and skill_invocation by module (attribute access, not by name) -- see
+scope.py's own top-of-file comment for why.
 """
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope, skill_invocation
+from transcript_analysis import (
+    corpus,
+    denials,
+    pricing,
+    render,
+    review_rounds,
+    reviewer_yield,
+    scope,
+    skill_invocation,
+)
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
+
+_PLAN_REVIEW_SKILL = "plan-review"
+
+# shlex's cost grows with the square of one token's length, so the deactivate scan skips a longer line instead of lexing it.
+# A `marker.sh deactivate plan-review` call line is a few dozen characters, and this cap is over 100 times that length.
+_MAX_LEXED_LINE_CHARS = 8192
 
 # plan-architect.md's non-consult modes. A plan-architect Agent/Task dispatch
 # whose prompt's first line is any other value is a consult. This re-expresses
@@ -483,6 +498,117 @@ def _review_trace_session_events(
     return events, tool_use_commands, pre_regime_tool_result_count
 
 
+def _deduped_position_of_each_record(records: list[dict], deduped: list[dict]) -> list[int]:
+    """For each record, the index in deduped of the record that holds it.
+
+    Built from dedup_turns_by_request_id's output rather than by re-deriving
+    its merge decision: a requestId merged when fewer deduped records carry it
+    than input assistant records do. A merged run sits at its first member's
+    position, so a later member maps there and takes no position of its own.
+    For a non-contiguous merged run that means a later member reads its first
+    member's position, the residual dedup itself accepts for two API calls
+    that share a requestId and carry identical usage."""
+    def request_id_of(rec: dict) -> str | None:
+        return (rec.get("requestId") or None) if rec.get("type") == "assistant" else None
+
+    input_counts = Counter(rid for rid in map(request_id_of, records) if rid)
+    deduped_counts = Counter(rid for rid in map(request_id_of, deduped) if rid)
+    merged_request_ids = {rid for rid, count in input_counts.items() if count > deduped_counts[rid]}
+    position_of_merged_run: dict[str, int] = {}
+    positions: list[int] = []
+    next_deduped_position = 0
+    for rec in records:
+        request_id = request_id_of(rec)
+        if request_id in merged_request_ids and request_id in position_of_merged_run:
+            positions.append(position_of_merged_run[request_id])
+            continue
+        positions.append(next_deduped_position)
+        if request_id in merged_request_ids:
+            position_of_merged_run[request_id] = next_deduped_position
+        next_deduped_position += 1
+    return positions
+
+
+def _command_segments_by_line(command: str) -> list[list[str]]:
+    segments: list[list[str]] = []
+    # The lexer reads a newline as whitespace, so a call on its own line would otherwise join the previous command's segment.
+    for line in command.splitlines():
+        if len(line) > _MAX_LEXED_LINE_CHARS:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        current: list[str] = []
+        for token in tokens:
+            if token and all(char in ";&|" for char in token):
+                if current:
+                    segments.append(current)
+                current = []
+            else:
+                current.append(token)
+        if current:
+            segments.append(current)
+    return segments
+
+
+def _runs_plan_review_deactivate(rec: dict) -> bool:
+    """True iff an assistant record's Bash tool_use has a line with a segment that opens as `marker.sh deactivate plan-review`.
+
+    Each line of the command is lexed on its own, and a call counts only when it opens a segment of a line;
+    the known-miss tests in test_transcript_review_trace.py pin which shapes that misses or over-reads.
+    Every line up to _MAX_LEXED_LINE_CHARS is lexed, and a call on a longer line is not read, so that window stays open.
+    """
+    if rec.get("type") != "assistant":
+        return False
+    for block in review_rounds._assistant_content_blocks(rec):
+        if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "Bash":
+            continue
+        tool_input = block.get("input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str):
+            continue
+        for segment in _command_segments_by_line(command):
+            if (
+                len(segment) >= 3
+                and os.path.basename(segment[0]) == "marker.sh"
+                and segment[1] == "deactivate"
+                and segment[2] == _PLAN_REVIEW_SKILL
+            ):
+                return True
+    return False
+
+
+def _attach_reviewer_spawn_rounds(events: list[dict], records: list[dict]) -> None:
+    """Set round_skill on each reviewer-spawn event to the review skill whose main-thread round window holds it, else None."""
+    main_indices = [idx for idx, rec in enumerate(records) if not bool(rec.get("isSidechain"))]
+    main_records = [records[idx] for idx in main_indices]
+    deduped = pricing.dedup_turns_by_request_id(main_records)
+    round_skill_at = [None] * len(deduped)
+    for open_idx, window_end, skill in review_rounds.detect_round_windows(deduped):
+        if skill == _PLAN_REVIEW_SKILL:
+            # /plan-review runs this call as its last step, so a spawn after it is not one /plan-review made.
+            for scan_idx in range(open_idx + 1, window_end):
+                if _runs_plan_review_deactivate(deduped[scan_idx]):
+                    window_end = scan_idx
+                    break
+        for idx in range(open_idx, window_end):
+            round_skill_at[idx] = skill
+    deduped_position_of_main = _deduped_position_of_each_record(main_records, deduped)
+    main_position_of_record = {record_idx: pos for pos, record_idx in enumerate(main_indices)}
+    for evt in events:
+        if evt["kind"] != "reviewer-spawn":
+            continue
+        if evt["thread"] != "main":
+            evt["round_skill"] = None
+            continue
+        main_position = main_position_of_record[evt["line_no"] - 1]
+        evt["round_skill"] = round_skill_at[deduped_position_of_main[main_position]]
+
+
 def _fresh_records_and_group_boundaries(
     jsonl: Path, records: list[dict], *, include_subagents: bool,
 ) -> tuple[list[dict], frozenset[int] | None]:
@@ -621,7 +747,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       automode-unavailable, interrupted) — see denials._is_nongate_friction_kind.
       Deduped by tool_use_id in its own set, independent of denial dedup.
     - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
-      reviewer_yield._is_reviewer_subagent_type
+      reviewer_yield._is_reviewer_subagent_type. Its row prints round=<skill>
+      or round=?. A main-thread spawn takes the review skill whose round window
+      holds it, per _attach_reviewer_spawn_rounds. A sidechain spawn, or one
+      outside every window, reads ?. --omit-plan-review-spawns drops the
+      round=plan-review rows and prints the rest without round=.
     - architect-consult: Agent/Task spawn where subagent_type is
       plan-architect and the prompt's first line is neither MODE=plan-sections
       nor MODE=challenge, per _is_architect_consult_dispatch. Signals that a
@@ -658,6 +788,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     deny_only: bool = bool(getattr(args, "deny_only", False))
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
+    omit_plan_review_spawns: bool = bool(getattr(args, "omit_plan_review_spawns", False))
     roots = scope.resolve_scan_roots(args)
     session_iter, scope_label = scope._resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
 
@@ -702,6 +833,13 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             records, since_ts, until_epoch, branch_filter,
             skill_filter=skill_filter, group_boundaries=group_boundaries,
         )
+        # Reads the unfiltered records, so --since, --until, --branches, and
+        # --skill never change a spawn's round. Its dedup also exposes this
+        # command to review-round-cost's malformed-usage failures and stderr notices.
+        if any(e["kind"] == "reviewer-spawn" for e in events):
+            _attach_reviewer_spawn_rounds(events, records)
+        if omit_plan_review_spawns:
+            events = [e for e in events if not (e["kind"] == "reviewer-spawn" and e["round_skill"] == _PLAN_REVIEW_SKILL)]
         if not events:
             continue
 
@@ -752,7 +890,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 msg = evt['message']
                 print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+                round_field = "" if omit_plan_review_spawns else f"  round={evt['round_skill'] or '?'}"
+                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{round_field}{suffix}")
             elif kind == "architect-consult":
                 print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
 

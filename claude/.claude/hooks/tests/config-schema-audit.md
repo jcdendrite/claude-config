@@ -88,7 +88,7 @@ Column legend:
 ### `round_consult_gate`
 
 - Call site: `_lib.sh`'s `_lib_round_consult_gate_disabled` (delegated to by
-  `require-architect-consult.sh:67`). `_config_enabled round_consult_gate`,
+  `require-architect-consult.sh`). `_config_enabled round_consult_gate`,
   with an explicit `case "$?"` distinguishing exit 1 (disabled) from every
   other exit (armed) — no `$HOME` fallback arm exists.
 - Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
@@ -370,10 +370,8 @@ Column legend:
 
 ### `round_consult_round2_pilot`
 
-- Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap` (delegated to by
-  `require-architect-consult.sh` and `log-reviewer-round.sh`, both reading
-  the cap it returns). A single `_config_enabled round_consult_round2_pilot`
-  call with no raw probe.
+- Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap`. A single
+  `_config_enabled round_consult_round2_pilot` call with no raw probe.
 - Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
   alone.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path fallback probe

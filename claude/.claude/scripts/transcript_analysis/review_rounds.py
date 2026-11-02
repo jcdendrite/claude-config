@@ -185,9 +185,9 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     _round_open_skill's per-record order, so a record holding both a `Skill`
     block and a spawn block is one round. A /slash tag lives on a user record.
 
-    Public (no leading underscore): author_outcome.py and the review-bench
-    miner (evals/review_bench/mine_review_rounds.py, which also calls
-    round_opened_by_spawn) are further consumers. author_outcome.py reads only
+    Public (no leading underscore): author_outcome.py, review_trace.py, and the
+    review-bench miner (evals/review_bench/mine_review_rounds.py, which also
+    calls round_opened_by_spawn) are further consumers. author_outcome.py reads only
     each window's own open_idx/skill (its own outcome-span definition is not
     this function's window_end -- see docs/transcript-analysis.md's
     author-outcome section).

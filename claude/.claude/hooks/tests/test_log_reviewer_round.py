@@ -18,16 +18,20 @@ from helpers import (
     agent_input,
     architect_consult_latch_path,
     bash_input,
+    enable_round2_pilot,
     init_git_repo_with_commit,
     reviewer_round_state_path,
     reviewer_round_state_value,
     run_hook_advisory,
+    run_hook_reason,
+    write_architect_consult_latch,
     write_reviewer_round_state,
 )
 
 from .conftest import _dead_pid
 
 LOG_REVIEWER_ROUND_HOOK = HOOKS_DIR / "log-reviewer-round.sh"
+REQUIRE_ARCHITECT_CONSULT_HOOK = HOOKS_DIR / "require-architect-consult.sh"
 PLAN_ARCHITECT_AGENT = CLAUDE_DIR / "agents" / "plan-architect.md"
 
 REVIEWER_PERSONA = "staff-backend-engineer"
@@ -262,25 +266,28 @@ class TestLogReviewerRoundStateAppend:
 
         assert state_file.read_text().splitlines() == [value1, value2]
 
-    def test_latch_short_circuits_further_appends(self, isolated_home, tmp_path):
-        """Once the latch exists for this branch, the recorder skips round
-        tracking entirely -- even below the cap, where a broken
-        short-circuit would otherwise show up as an ordinary append."""
-        repo = tmp_path / "latch-shortcircuit"
+    @pytest.mark.parametrize("pilot_enabled", [False, True], ids=["default", "pilot"])
+    def test_latch_present_file_grows_to_three_states_and_no_further(self, isolated_home, tmp_path, pilot_enabled):
+        """With a latch the recorder's cap is the re-arm window (3), not the
+        no-latch cap (2, or 1 under the round-2 pilot): a third state appends,
+        a fourth does not."""
+        repo = tmp_path / "latch-window"
         _init_repo(repo)
         _stage_change(repo, "first\nround-one\n")
         value1 = reviewer_round_state_value(repo)
         state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
+        if pilot_enabled:
+            enable_round2_pilot(isolated_home / ".claude")
+        write_architect_consult_latch(isolated_home / ".claude", repo)
+        payload = agent_input(session_id="s-latch-window", subagent_type=REVIEWER_PERSONA)
 
-        latch = architect_consult_latch_path(isolated_home / ".claude", repo)
-        latch.parent.mkdir(parents=True, exist_ok=True)
-        latch.touch()
+        recorded = [value1]
+        for round_content in ("first\nround-two\n", "first\nround-three\n", "first\nround-four\n"):
+            _stage_change(repo, round_content)
+            recorded.append(reviewer_round_state_value(repo))
+            run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
 
-        _stage_change(repo, "first\nround-one\nround-two\n")
-        payload = agent_input(session_id="s-shortcircuit", subagent_type=REVIEWER_PERSONA)
-        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
-
-        assert state_file.read_text().splitlines() == [value1]
+        assert state_file.read_text().splitlines() == recorded[:3]
 
     def test_live_plan_review_active_marker_skips_recording(self, isolated_home, tmp_path):
         """A live /plan-review fan-out must not consume a round-counting
@@ -297,10 +304,14 @@ class TestLogReviewerRoundStateAppend:
         state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
         assert not state_file.exists()
 
-    def test_live_ready_for_review_active_marker_skips_recording(self, isolated_home, tmp_path):
-        repo = tmp_path / "ready-for-review-active-skip"
+    def test_live_ready_for_review_active_marker_records_the_round(self, isolated_home, tmp_path):
+        """/ready-for-review reviews count toward the consult window, so a
+        live run's marker does not skip recording (contrast
+        test_live_plan_review_active_marker_skips_recording)."""
+        repo = tmp_path / "ready-for-review-active-record"
         _init_repo(repo)
         _stage_change(repo, "first\nround-one\n")
+        value = reviewer_round_state_value(repo)
         sid = "s-ready-for-review-active"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
@@ -308,7 +319,7 @@ class TestLogReviewerRoundStateAppend:
         payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
         run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
         state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
-        assert not state_file.exists()
+        assert state_file.read_text().splitlines() == [value]
 
     def test_non_reviewer_subagent_type_is_noop(self, isolated_home, tmp_path):
         repo = tmp_path / "non-reviewer"
@@ -355,28 +366,6 @@ class TestLogReviewerRoundPilotCap:
 
         assert state_file.read_text().splitlines() == [value1]
 
-    def test_latch_short_circuit_unchanged_under_pilot(self, isolated_home, tmp_path):
-        """The latch short-circuit fires identically regardless of which cap
-        is in effect -- once a consult has run for this branch, further
-        round tracking stays skipped under cap=1 exactly as it does under
-        the default cap=2."""
-        repo = tmp_path / "pilot-latch-shortcircuit"
-        _init_repo(repo)
-        _stage_change(repo, "first\nround-one\n")
-        value1 = reviewer_round_state_value(repo)
-        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
-
-        latch = architect_consult_latch_path(isolated_home / ".claude", repo)
-        latch.parent.mkdir(parents=True, exist_ok=True)
-        latch.touch()
-
-        _stage_change(repo, "first\nround-one\nround-two\n")
-        payload = agent_input(session_id="s-pilot-latch-shortcircuit", subagent_type=REVIEWER_PERSONA)
-        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
-
-        assert state_file.read_text().splitlines() == [value1]
-
     def test_live_plan_review_active_marker_preserves_state_file_under_pilot(self, isolated_home, tmp_path):
         """Under cap=1, a live /plan-review fan-out for this session leaves
         a pre-seeded, already-at-cap state file byte-identical to what it
@@ -399,30 +388,6 @@ class TestLogReviewerRoundPilotCap:
         _stage_change(repo, "first\nround-one\nround-two\n")
         sid = "s-pilot-plan-review-preserve"
         marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
-        payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
-        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
-
-        assert state_file.read_bytes() == pre_seeded_content
-
-    def test_live_ready_for_review_active_marker_preserves_state_file_under_pilot(self, isolated_home, tmp_path):
-        """Same at-cap preservation check as
-        test_live_plan_review_active_marker_preserves_state_file_under_pilot,
-        for the sibling /ready-for-review active marker --
-        test_live_ready_for_review_active_marker_skips_recording_below_pilot_cap
-        is the one that guards the ordering regression."""
-        repo = tmp_path / "pilot-ready-for-review-preserve"
-        _init_repo(repo)
-        _stage_change(repo, "first\nround-one\n")
-        value1 = reviewer_round_state_value(repo)
-        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
-        pre_seeded_content = state_file.read_bytes()
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
-
-        _stage_change(repo, "first\nround-one\nround-two\n")
-        sid = "s-pilot-ready-for-review-preserve"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
         (marker_dir / sid).write_text(str(os.getpid()))
         payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
@@ -453,22 +418,24 @@ class TestLogReviewerRoundPilotCap:
         state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
         assert not state_file.exists()
 
-    def test_live_ready_for_review_active_marker_skips_recording_below_pilot_cap(self, isolated_home, tmp_path):
-        """Sibling of
-        test_live_plan_review_active_marker_skips_recording_below_pilot_cap
-        for the /ready-for-review active marker."""
-        repo = tmp_path / "pilot-ready-for-review-skip-below-cap"
+    def test_live_ready_for_review_active_marker_records_the_round_below_pilot_cap(self, isolated_home, tmp_path):
+        """Pilot variant of
+        test_live_ready_for_review_active_marker_records_the_round: with zero
+        states recorded, a live /ready-for-review run's review still
+        records."""
+        repo = tmp_path / "pilot-ready-for-review-record-below-cap"
         _init_repo(repo)
         _stage_change(repo, "first\nround-one\n")
-        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
-        sid = "s-pilot-ready-for-review-skip-below-cap"
+        value = reviewer_round_state_value(repo)
+        enable_round2_pilot(isolated_home / ".claude")
+        sid = "s-pilot-ready-for-review-record-below-cap"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
         (marker_dir / sid).write_text(str(os.getpid()))
         payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
         run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
         state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
-        assert not state_file.exists()
+        assert state_file.read_text().splitlines() == [value]
 
 
 class TestLogReviewerRoundPayloadCwd:
@@ -563,6 +530,7 @@ class TestLogReviewerRoundConsultLatch:
     ):
         repo = tmp_path / "latch-parity"
         _init_repo(repo)
+        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, ["seeded-head seeded-diff"])
         payload = agent_input(
             session_id="s-latch-parity",
             subagent_type="plan-architect",
@@ -571,6 +539,171 @@ class TestLogReviewerRoundConsultLatch:
         run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
         latch_exists = architect_consult_latch_path(isolated_home / ".claude", repo).exists()
         assert latch_exists is expect_consult
+        # The count restarts exactly when the dispatch is a consult.
+        assert state_file.exists() is not expect_consult
+
+
+class TestLogReviewerRoundConsultReset:
+    """A consult restarts the gate's count by deleting its own branch's state
+    file, then writes the latch."""
+
+    def _consult_payload(self, session_id: str) -> dict:
+        return agent_input(
+            session_id=session_id, subagent_type="plan-architect", prompt="MODE=consult\nIs the foundation wrong?"
+        )
+
+    def test_consult_leaves_another_branchs_state_file_byte_identical(self, isolated_home, tmp_path):
+        repo = tmp_path / "reset-other-branch"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        other_branch_state = write_reviewer_round_state(config_dir, repo, ["head-c diff-c", "head-d diff-d"])
+        other_branch_bytes = other_branch_state.read_bytes()
+        subprocess.run(["git", "checkout", "-q", "-b", "consulted-branch"], cwd=repo, check=True)
+        consulted_state = write_reviewer_round_state(config_dir, repo, ["head-a diff-a", "head-b diff-b"])
+        assert consulted_state != other_branch_state
+
+        run_hook_advisory(
+            LOG_REVIEWER_ROUND_HOOK, self._consult_payload("s-reset-other"), cwd=repo, home=isolated_home
+        )
+
+        assert not consulted_state.exists()
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert other_branch_state.read_bytes() == other_branch_bytes
+
+    @pytest.mark.parametrize("non_architect_subagent_type", ["code-writer", "general-purpose", "Explore"])
+    def test_non_architect_dispatch_leaves_state_file_byte_identical_and_writes_no_latch(
+        self, isolated_home, tmp_path, non_architect_subagent_type
+    ):
+        """Only a `plan-architect` dispatch is a consult: any other
+        non-reviewer type, whose prompt's first line is not a MODE= line,
+        must not reset the count."""
+        repo = tmp_path / "reset-non-architect"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        state_file = write_reviewer_round_state(
+            config_dir, repo, ["head-a diff-a", "head-b diff-b", "head-c diff-c"]
+        )
+        seeded_bytes = state_file.read_bytes()
+        payload = agent_input(
+            session_id="s-reset-non-architect",
+            subagent_type=non_architect_subagent_type,
+            prompt="Implement the change described in the plan.",
+        )
+
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_bytes() == seeded_bytes
+        assert not architect_consult_latch_path(config_dir, repo).exists()
+
+    def test_second_consult_in_a_row_exits_zero_and_keeps_the_latch(self, isolated_home, tmp_path):
+        repo = tmp_path / "reset-twice"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        write_reviewer_round_state(config_dir, repo, ["head-a diff-a"])
+        payload = self._consult_payload("s-reset-twice")
+
+        first = _run_hook_raw(payload, repo, isolated_home)
+        second = _run_hook_raw(payload, repo, isolated_home)
+
+        assert (first.returncode, second.returncode) == (0, 0)
+        assert second.stderr == ""
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert not reviewer_round_state_path(config_dir, repo).exists()
+
+    def test_consult_with_no_state_file_writes_latch_silently(self, isolated_home, tmp_path):
+        repo = tmp_path / "reset-no-state-file"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        (config_dir / ".reviewer-round-state.d").mkdir()
+
+        result = _run_hook_raw(self._consult_payload("s-reset-no-file"), repo, isolated_home)
+
+        assert result.returncode == 0
+        assert (result.stdout, result.stderr) == ("", "")
+        assert architect_consult_latch_path(config_dir, repo).exists()
+
+    def test_consult_with_no_state_directory_writes_latch_and_creates_no_state_directory(
+        self, isolated_home, tmp_path
+    ):
+        repo = tmp_path / "reset-no-state-dir"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+
+        result = _run_hook_raw(self._consult_payload("s-reset-no-dir"), repo, isolated_home)
+
+        assert result.returncode == 0
+        assert (result.stdout, result.stderr) == ("", "")
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert not (config_dir / ".reviewer-round-state.d").exists()
+
+    def test_consult_with_undeletable_state_path_exits_zero_silently_and_writes_latch(
+        self, isolated_home, tmp_path
+    ):
+        """A state path `rm -f --` cannot remove (a non-empty directory) is
+        tolerated."""
+        repo = tmp_path / "reset-undeletable"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        undeletable_state_path = reviewer_round_state_path(config_dir, repo)
+        occupant = undeletable_state_path / "occupant"
+        occupant.mkdir(parents=True)
+
+        result = _run_hook_raw(self._consult_payload("s-reset-undeletable"), repo, isolated_home)
+
+        assert result.returncode == 0
+        assert (result.stdout, result.stderr) == ("", "")
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert occupant.is_dir()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root deletes from a mode-0555 directory, so the removal never fails")
+    def test_consult_that_cannot_delete_a_regular_state_file_keeps_the_gate_denying(
+        self, isolated_home, tmp_path
+    ):
+        """A consult whose `rm -f --` fails on a regular three-line state file
+        (its directory is not writable) leaves the window full, so the gate
+        keeps denying a new reviewer state instead of treating the consult as
+        the reset."""
+        repo = tmp_path / "reset-undeletable-regular-file"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        state_file = write_reviewer_round_state(config_dir, repo, ["head-a diff-a", "head-b diff-b", "head-c diff-c"])
+        _stage_change(repo, "first\nnew-reviewed-state\n")
+        state_directory = state_file.parent
+        state_directory.chmod(0o555)
+        try:
+            result = _run_hook_raw(self._consult_payload("s-reset-undeletable-file"), repo, isolated_home)
+        finally:
+            state_directory.chmod(0o755)
+
+        assert result.returncode == 0
+        assert (result.stdout, result.stderr) == ("", "")
+        assert architect_consult_latch_path(config_dir, repo).exists()
+        assert len(state_file.read_text().splitlines()) == 3
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-gate-after-wedge", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "since the branch's last architect consult" in reason
+
+    def test_consult_on_detached_head_deletes_nothing(self, isolated_home, tmp_path):
+        repo = tmp_path / "reset-detached"
+        _init_repo(repo)
+        config_dir = isolated_home / ".claude"
+        branch_state = write_reviewer_round_state(config_dir, repo, ["head-a diff-a"])
+        branch_state_bytes = branch_state.read_bytes()
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", head_sha], cwd=repo, check=True)
+
+        result = _run_hook_raw(self._consult_payload("s-reset-detached"), repo, isolated_home)
+
+        assert result.returncode == 0
+        assert branch_state.read_bytes() == branch_state_bytes
+        assert not (config_dir / ".architect-consult-latch.d").exists()
 
 
 class TestPlanArchitectModeLiteralTripwire:

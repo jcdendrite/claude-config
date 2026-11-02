@@ -1437,6 +1437,7 @@ def _review_trace_args(
     deny_only: bool = False,
     deny_summary: bool = False,
     skill: str | None = None,
+    omit_plan_review_spawns: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -1447,6 +1448,7 @@ def _review_trace_args(
         "deny_only": deny_only,
         "deny_summary": deny_summary,
         "skill": skill,
+        "omit_plan_review_spawns": omit_plan_review_spawns,
     })()
 
 
@@ -1454,13 +1456,14 @@ def _skill_use(tool_id: str, skill: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
 
 
-def _skill_use_rec(skill: str, ts: str, branch: str = "main", tool_id: str = "s1") -> dict:
+def _skill_use_rec(skill: str, ts: str, branch: str = "main", tool_id: str = "s1", **asst_kwargs) -> dict:
     """Main-thread assistant record containing a Skill tool_use.
 
     Pass distinct tool_id values when two invocations appear in the same session
     to match production transcript invariants (tool_use ids are unique per block).
+    Extra keyword arguments (e.g. request_id, sidechain) forward to _asst.
     """
-    return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[_skill_use(tool_id, skill)])
+    return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[_skill_use(tool_id, skill)], **asst_kwargs)
 
 
 def _attr_ts(minute: int) -> str:

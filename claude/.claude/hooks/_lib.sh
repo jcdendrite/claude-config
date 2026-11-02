@@ -4584,13 +4584,11 @@ _lib_is_reviewer_persona() {
   _lib_list_contains "$agent_type" "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"
 }
 
-# Round-state cap shared by require-architect-consult.sh (the read side,
-# which denies once a genuinely new state arrives at the cap) and
-# log-reviewer-round.sh (the write side, which never appends past it) --
-# one constant rather than two literal "2"s that would have to be kept in
-# sync by hand. The case study's own recommendation is to fire at *entry to
-# round 3*, not round 1 -- "firing after round 1 would catch roughly half
-# of all PRs to address a 14% tail"
+# Round-state cap: the number of distinct reviewed states a branch with no
+# consult latch records before the gate demands its first consult.
+# The case study's own recommendation is to fire at *entry to round 3*, not
+# round 1 -- "firing after round 1 would catch roughly half of all PRs to
+# address a 14% tail"
 # (docs/case-studies/opus-frontload-review-rounds.md:260-263) -- so the cap
 # is 2 recorded rounds, with the 3rd distinct state tripping the gate.
 _LIB_REVIEWER_ROUND_STATE_CAP=2
@@ -4598,15 +4596,12 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # docs/design-decisions/round2-consult-trigger-pilot.md.
 
 # _lib_reviewer_round_state_cap
-# Prints the round-state cap shared by require-architect-consult.sh
-# (read side) and log-reviewer-round.sh (write side).
-# Returns 1 when round_consult_round2_pilot resolves enabled per its
-# config-keys.psv schema row (presence-enables legacy polarity), else
-# $_LIB_REVIEWER_ROUND_STATE_CAP.
+# Prints the round-state cap: 1 when round_consult_round2_pilot resolves
+# enabled per its config-keys.psv schema row (presence-enables legacy
+# polarity), else $_LIB_REVIEWER_ROUND_STATE_CAP.
 # Contract: always echoes a valid integer to stdout, including on an
-# unresolvable config dir -- both call sites consume this via `$(...)` into
-# an integer comparison that would error ("integer expression expected") on
-# empty stdout. Unlike _lib_round_consult_gate_disabled's boolean-exit-code
+# unresolvable config dir -- callers compare it as an integer, which errors
+# on empty stdout. Unlike _lib_round_consult_gate_disabled's boolean-exit-code
 # shape below. Zero-arity, same machine-global scope as the kill switch
 # below.
 _lib_reviewer_round_state_cap() {
@@ -4615,6 +4610,47 @@ _lib_reviewer_round_state_cap() {
     printf '1\n'
   else
     printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"
+  fi
+}
+
+# Reviewed states a branch records between consults once its first consult has
+# run, independent of the round-2 pilot.
+_LIB_ARCHITECT_CONSULT_REARM_INTERVAL=3
+
+# _lib_reviewer_round_state_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's round-state file. Returns 1 with no stdout
+# when CONFIG_DIR or STATE_KEY is empty. The gate and the recorder both build
+# the path here, so they cannot disagree on where the state lives.
+_lib_reviewer_round_state_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.reviewer-round-state.d/$state_key"
+}
+
+# _lib_architect_consult_latch_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's consult latch, with the same empty-argument
+# contract and shared-definition role as _lib_reviewer_round_state_file.
+_lib_architect_consult_latch_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.architect-consult-latch.d/$state_key"
+}
+
+# _lib_architect_consult_threshold CONFIG_DIR STATE_KEY
+# Prints the number of distinct reviewed states at which the gate demands the
+# next consult: $_LIB_ARCHITECT_CONSULT_REARM_INTERVAL when this branch's
+# latch is a regular file, else _lib_reviewer_round_state_cap's value.
+# Contract: always echoes a valid integer and returns 0, including for an
+# empty CONFIG_DIR or STATE_KEY (unresolvable config dir, detached HEAD).
+# A latch that is not a regular file (e.g. a directory) reads as no latch,
+# matching the gate's latch-presence test.
+_lib_architect_consult_threshold() {
+  local latch_file
+  if latch_file=$(_lib_architect_consult_latch_file "${1:-}" "${2:-}") \
+    && [ -f "$latch_file" ]; then
+    printf '%s\n' "$_LIB_ARCHITECT_CONSULT_REARM_INTERVAL"
+  else
+    _lib_reviewer_round_state_cap
   fi
 }
 

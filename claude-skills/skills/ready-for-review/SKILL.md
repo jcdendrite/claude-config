@@ -16,6 +16,15 @@ Run steps in order. Halt on failures unless the step is marked **warn only**. Af
 
 A halt on step 2, 3, or 4 triggers the fix loop above first; only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 6 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
+When `require-architect-consult.sh` denies a reviewer spawn in this run, step 4's included:
+- Dispatch the consult per `code-review/SKILL.md` § "Round-cap architect consult" and retry the spawn unless the verdict is re-plan, which ends that round with no further spawns.
+- When a retried spawn is denied again after the consult, stop and report to the engineer instead of consulting again.
+- A re-plan verdict's fix is not a `code-writer` dispatch: revise the plan by that section's route, run `/plan-review`, then implement the revision and commit it through the staged-diff `/code-review`.
+- That commit carries any fix staged when the verdict arrived, or follows discarding that fix.
+- A revision that changes no code ends the run with a report to the engineer.
+
+A step-4 spawn the gate denied reviewed nothing, so step 4 runs again after the fix loop. A re-plan verdict is an ADDRESS row in the disposition record of the step-3 pass under review or whose fix is under review, or a step-4 finding, and the fix loop takes it like any other finding.
+
 ## 0. Activate gate session
 
 Write the active-session marker so this skill's own pushes (step 6, reached after every fix loop) are not self-blocked by the `require-ready-for-review.sh` hook:
@@ -52,10 +61,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 Before selecting any commands, run `~/.claude/scripts/marker.sh check verification`. `match` means this exact tree already passed a clean verification pass inside the freshness window. On a match: skip the commands below, report the cache hit in the Completion summary, and continue to step 3. On `no-match`, run the step normally, then write `~/.claude/scripts/marker.sh write verification` only after every selected command has run and passed. Do not write it after the scope-exception skip below — that path runs no commands, so nothing has passed.
 <!-- CACHE_RULE:ready-for-review-verification-cache end -->
 
-If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
-those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
-`go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
-test, lint, and typecheck commands. Do not invent — skip undefined steps.
+If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4. The read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
@@ -82,11 +88,9 @@ On a cache miss, compute the **cumulative** PR-vs-base diff — not staged chang
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Run `/code-review` against that diff, invoking the skill with args "unrouted <path>" without the quotation marks, where `<path>` is the path the `DIFF_FILE:` line named (`unrouted` keeps this pass in this session). If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes, within the cap below.
+Run `/code-review` against that diff, invoking the skill with args "unrouted <path>" without the quotation marks, where `<path>` is the path the `DIFF_FILE:` line named (`unrouted` keeps this pass in this session). If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes.
 
-**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned; a pass with no findings records one row whose finding cell reads `none`. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, DEFER criterion, `SETTLED <id>` (the new row's id, read from the Id column of `review-ledger.sh render`) or `carry <id>` (the decision's id, as the carry line prints it), and amend a cell if the landed fix departs from that row's suggested fix. The branch ledger holds each disposition canonically; this record is canonical only for the Cap's pass accounting. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it (a `none` row counts as resolved), and dirty otherwise. No record grants a review skip and the `cumulative-review` marker stays the sole authorization, but the Cap counts records, so a record's clean or dirty status can relax the Cap; later reviews otherwise read it only as context.
-
-**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse, or that has no rows, as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict, or `no verdict` when the dispatch fails, returns nothing, or returns text that reads as neither verdict. A *stop*, any `no verdict` row, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human.
+**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned; a pass with no findings records one row whose finding cell reads `none`. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, DEFER criterion, `SETTLED <id>` (the new row's id, read from the Id column of `review-ledger.sh render`) or `carry <id>` (the decision's id, as the carry line prints it), and amend a cell if the landed fix departs from that row's suggested fix. The branch ledger holds each disposition canonically; this record is canonical for the pass kind, reviewer and Outcome the ledger has no column for. The pass is clean when every reviewer its *Spawn decisions:* line lists as spawned has returned and every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it (a `none` row counts as resolved), and dirty otherwise. No record grants a review skip and the `cumulative-review` marker stays the sole authorization; later reviews read it only as context.
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -106,10 +110,11 @@ Name the pipeline's own skills **out of scope** in the prompt (the agent body al
 
 **Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar; that fix stays inline, prose only. A finding needing an actual code change follows step 3's `code-writer` route, not a separate dispatch. Fix it in a new commit (staged-diff `/code-review` + marker gate), return to step 2, and do not re-run this step on its own output.
 
+**Spawn-dispatch `[SILENT-SKIP]`.** Before acting on one, rerun `python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch>` without `--omit-plan-review-spawns`. `<branch>` is the current branch name. Report to the human any row there of the missing reviewer type that reads `round=plan-review`, since the fidelity view dropped it.
+
 ## 5. PR description (unconditional; warn + fix)
 
-Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and reports its path on a `BODY_FILE: <path>` line. Neither outcome is this gate's stopping point — continue to the next step in the same turn.
+Invoke the `pr-description` skill via the Skill tool. It owns body content in both directions and runs the same checks either way; the standard lives there, not here — don't restate it. Never skipped — markdown, skill, and config diffs benefit from the same pass. Pass it this run's `$ARGUMENTS` and step 1's derived `<TICKET-ID>` (if any). With a PR open it applies the fix itself via `gh pr edit --body-file`; with none, it writes the body to a temp file and reports its path on a `BODY_FILE: <path>` line. Neither outcome is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Final hygiene recheck (halt on fail)
 
@@ -126,8 +131,7 @@ With a PR open, launch the CI watch now (see "CI watch (out-of-band)" below), wh
 
 **Do NOT write the completion marker if:**
 
-- Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session
-  (a DEFERred or SETTLED finding counts as resolved).
+- Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session (a DEFERred or SETTLED finding counts as resolved).
 - Any of steps 1–6 did not run, or ended in an outcome its own text does not define as complete. Only these outcomes count as complete without full execution: step 2's scope-exception skip, step 2's skip of undefined commands, step 2's reported cache hit, step 3's reported cache hit, step 4's empty-list no-op, and step 5's already-in-sync report (see Completion). With no PR open, step 5 is also incomplete unless it reported a `BODY_FILE:` path whose file exists and is non-empty; that file check applies only to a reported path when no PR is open.
 - A dispatched subagent never writes this marker; it reports to its caller.
 - The user asked you to present findings without finishing the gate.
@@ -171,9 +175,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-Steps 6 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
-
-**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
+**Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The CI watch is not a gate step, and it can resolve hours after the gate finishes. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
 | Terminal line | Do this |
 |---|---|

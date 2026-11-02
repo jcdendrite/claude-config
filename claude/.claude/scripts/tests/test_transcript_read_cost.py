@@ -1019,6 +1019,7 @@ class TestScopeRefusal:
         assert raised.value.code == 2
         assert "refuses any --projects scope" in capsys.readouterr().err
 
+    @pytest.mark.usefixtures("only_the_built_in_agent_types_are_tracked")
     def test_cmd_scans_the_active_account_alone_even_when_other_roots_are_declared(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
@@ -1035,6 +1036,7 @@ class TestScopeRefusal:
         out = capsys.readouterr().out
         assert "sessions=1 " in out
 
+    @pytest.mark.usefixtures("only_the_built_in_agent_types_are_tracked")
     def test_header_states_the_active_account_this_repository_and_the_unconsulted_roots_file(
         self, fake_projects, capsys,
     ):
@@ -1060,8 +1062,14 @@ class TestScopeRefusal:
 
 
 @pytest.fixture()
+def only_the_built_in_agent_types_are_tracked(monkeypatch):
+    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: redaction._BUILT_IN_AGENT_TYPES)
+
+
+@pytest.fixture()
 def only_the_tracked_agent_type_is_tracked(monkeypatch):
-    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: frozenset({_TRACKED_AGENT_TYPE}))
+    tracked = frozenset({_TRACKED_AGENT_TYPE}) | redaction._BUILT_IN_AGENT_TYPES
+    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: tracked)
 
 
 _SKIPPED_INPUT_KEYS = (

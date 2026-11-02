@@ -118,6 +118,9 @@ TEST_FILES = (
     "test_transcript_pr_cost_export.py",
     "test_transcript_cache_rebuild.py",
     "test_transcript_review_cost_by_size.py",
+    "test_transcript_pricing.py",
+    "test_transcript_redaction.py",
+    "test_transcript_render.py",
     "test_transcript_read_cost.py",
 )
 

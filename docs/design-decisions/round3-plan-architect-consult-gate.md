@@ -4,7 +4,9 @@
 
 **Partially superseded by [branch-scoped-review-ledger.md](branch-scoped-review-ledger.md) (2026-09-30):** the ledger's rejection as a round counter no longer holds for its session keying or its disable-ability, because the ledger is branch-keyed and its kill-switch sentinel is no longer honored. The `(HEAD, staged-diff)` counter stays, and everything else here stands.
 
-**Partially superseded by [architect-disposition-challenge-pilot.md](architect-disposition-challenge-pilot.md) (2026-10-29):** a `MODE=challenge` dispatch, like a `MODE=plan-sections` one, writes no latch, because `plan-architect` does not run it as a consult. The latch's meaning, its content-free shape and its once-per-branch firing stand.
+**Partially superseded by [architect-disposition-challenge-pilot.md](architect-disposition-challenge-pilot.md) (2026-10-29):** a `MODE=challenge` dispatch, like a `MODE=plan-sections` one, writes no latch, because `plan-architect` does not run it as a consult. The latch's content-free shape stands.
+
+**Partially superseded by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the gate re-arms after every consult, so the single firing and the paragraph on the latch's meaning, which says the gate fires once per branch and does not re-arm, no longer hold.
 
 A PR entering a third `/code-review` round is a non-converging review loop,
 not a quality gradient: mean `commit_count` across a 213-PR sample moves

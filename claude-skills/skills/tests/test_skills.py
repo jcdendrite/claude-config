@@ -5509,6 +5509,80 @@ def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
         )
 
 
+def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
+    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip."""
+    routing_roles_text = _heading_section_text(_ROUTING_MD_PATH, "## Reviewer roles")
+    agent_input_contract_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Input contract"
+    )
+    for literal in (
+        "`plan_path:`",
+        "on every round that reaches Step 5 with a plan file",
+        "Skip it under `/review-pr`'s standing override",
+    ):
+        assert literal in routing_roles_text, (
+            f"{_ROUTING_MD_PATH}: Reviewer roles no longer carries {literal!r}"
+        )
+    assert "`plan_path:`" in agent_input_contract_text, (
+        "comment-discipline-reviewer.md: Input contract no longer names `plan_path:`"
+    )
+
+
+def test_plan_prose_findings_never_block_and_plan_diffs_stay_out_of_lane() -> None:
+    """These sentences keep plan prose non-blocking and reviewed once, before approval.
+
+    The plan rule is pinned because a plan may cite its own review rounds without being flagged.
+    """
+    plan_review_skill_path = _skill_file("plan-review")
+    output_format_text = _heading_section_text(plan_review_skill_path, "## Output format")
+    agent_scope_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Scope"
+    )
+    rerun_note = (
+        "Re-run the cells in docs/design-decisions/plan-prose-reviewed-inside-plan-review.md "
+        "by hand after this edit."
+    )
+    non_blocking_literal = (
+        "A plan prose finding never makes the verdict **Request changes**, "
+        "whatever severity the reviewer gave it, so plan prose alone never adds a review round."
+    )
+    approve_with_changes_literal = (
+        "A round whose only findings are plan prose ends **Approve with changes** "
+        "when you accept any of them. It ends **Approve** otherwise."
+    )
+    diff_exclusion_literal = (
+        "A plan file under `.claude/plans/` that appears in a diff is out of scope"
+    )
+    review_rounds_literal = "references to its own review rounds and findings"
+    assert non_blocking_literal in output_format_text, (
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{non_blocking_literal!r}. {rerun_note}"
+    )
+    assert approve_with_changes_literal in output_format_text, (
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{approve_with_changes_literal!r}. {rerun_note}"
+    )
+    assert diff_exclusion_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer carries {diff_exclusion_literal!r}. "
+        f"{rerun_note}"
+    )
+    assert review_rounds_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer lists {review_rounds_literal!r}. "
+        f"{rerun_note}"
+    )
+
+
+def test_ready_for_review_step_4_has_the_rerun_that_recovers_omitted_plan_review_rows() -> None:
+    """Step 4 must name the rerun that recovers the plan-review rows the omit flag drops."""
+    step_4_text = _heading_section_text(
+        _skill_file("ready-for-review"), "## 4. Skill-procedural-fidelity review (halt on findings)"
+    )
+    for literal in ("without `--omit-plan-review-spawns`", "`round=plan-review`"):
+        assert literal in step_4_text, (
+            f"ready-for-review step 4 no longer carries {literal!r}"
+        )
+
+
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
 
 
@@ -6351,43 +6425,30 @@ class TestReadyForReviewFixLoopRule:
         )
 
 
-# Step 3's loop cap: each clause binds a condition to its outcome.
-_PINNED_STEP3_CAP_CLAUSE = (
-    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
-    "records newer than its newest clean one, in suffix-timestamp order, "
-    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
-    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
-    "number two or more, first dispatch `plan-architect` with "
-    "`MODE=consult`, carrying the records' paths and the plan path if one "
-    "exists, to judge whether the loop is converging (*proceed*) or its "
-    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
-    "table row whose finding cell reads `cap` and whose Outcome is the "
-    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
-    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
-    "row, or an orchestrator disagreement with the return, is a blocking "
-    "stop-and-ask to the human."
+# Pinned as one contiguous clause so a sentence inserted between them fails.
+_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE = (
+    "A step-4 spawn the gate denied reviewed nothing, so step 4 runs again "
+    "after the fix loop. "
+    "A re-plan verdict is an ADDRESS row in the disposition record of the "
+    "step-3 pass under review or whose fix is under review, or a step-4 "
+    "finding, and the fix loop takes it like any other finding."
 )
 
-# Step 3's clean/dirty definition for a disposition record: the Cap counts
-# records newer than the newest clean one, and the closing sentence keeps the
-# record from granting a review skip while disclosing that it can relax the Cap.
+# Step 3's clean/dirty definition.
 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
-    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
-    '§ "Step — Record review completion" counts it (a `none` row counts as '
-    "resolved), and dirty otherwise. No record grants a review skip and the "
-    "`cumulative-review` marker stays the sole authorization, but the Cap "
-    "counts records, so a record's clean or dirty status can relax the Cap; "
-    "later reviews otherwise read it only as context."
+    "The pass is clean when every reviewer its *Spawn decisions:* line lists "
+    "as spawned has returned and every row is resolved as "
+    '`code-review/SKILL.md` § "Step — Record review completion" counts it (a '
+    "`none` row counts as resolved), and dirty otherwise. No record grants a "
+    "review skip and the `cumulative-review` marker stays the sole "
+    "authorization; later reviews read it only as context."
 )
 
-# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
-# gate, then the Overview's fix-loop rule returns the loop to a full pass of
-# step 3 over the fixed bytes, bounded by the Cap.
+# Step 3's loop-back sentence.
 _PINNED_STEP3_LOOP_BACK_CLAUSE = (
     "Its fix commit goes through the standard staged-diff `/code-review` + "
     "marker gate, and the Overview's fix-loop rule then brings the loop back "
-    "through step 2 to a full pass of this step over the fixed bytes, within "
-    "the cap below."
+    "through step 2 to a full pass of this step over the fixed bytes."
 )
 
 # Step 3 must re-review a fix's own output in full. This phrase is the tail of
@@ -6396,19 +6457,30 @@ _PINNED_STEP3_LOOP_BACK_CLAUSE = (
 _STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
 
 
-class TestReadyForReviewStep3LoopCapPins:
-    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
-    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
-    rule, the cap consult, the statement that a record grants no review skip,
-    or the fix-loop return to a full pass fails a test instead of drifting
-    silently. One test also asserts step 3 carries no sentence forbidding a
-    re-review of a fix's own output.
+class TestReadyForReviewRunExitAndStep3Pins:
+    """Pin the Overview's run-exit sentences and step 3's clean/dirty and
+    loop-back sentences verbatim, so dropping one fails a test instead of
+    drifting silently.
     """
+
+    def test_overview_denied_step4_rerun_and_re_plan_address_clause_match_live_text(
+        self,
+    ) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        _assert_pinned_clause_right_bounded(
+            " ".join(_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE.split()),
+            raw_section,
+            context=(
+                "ready-for-review/SKILL.md: Overview's denied-step-4 re-run and "
+                "re-plan ADDRESS-finding sentences no longer match."
+            ),
+        )
 
     @pytest.mark.parametrize(
         ("pinned_clause", "site"),
         [
-            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
             pytest.param(
                 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
                 "step 3's clean/dirty definition",

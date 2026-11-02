@@ -123,10 +123,15 @@ TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_den
 # SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
 # selecting that whole domain from an agent-file edit.
 TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_rounds.py"
-# test_transcript_cost_counts.py reads claude/.claude/agents/ through
-# redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
-# TestCrossDomainReadCompleteness's scan cannot see.
+# test_transcript_cost_counts.py and test_transcript_redaction.py read
+# claude/.claude/agents/ through redaction._REPO_AGENT_DEFINITIONS_DIR, a
+# production constant TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
+TRANSCRIPT_REDACTION_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_redaction.py"
+# test_transcript_review_trace.py reads SKILL.md files by path. It is a
+# SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
+# selecting that whole domain from a SKILL.md edit.
+TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -142,6 +147,10 @@ SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 # CLAUDE_TESTS_DIR, and plugins/*/tests/ for module-level repo-path
 # constants, so a change to any of those files can introduce a read this
 # table hasn't declared yet.
+# Its test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self
+# also reads the test files listed in _HAND_AUDITED_AGENTS_DIR_READERS by path,
+# so a change to a listed file under those directories selects this
+# file through _is_test_source_change.
 SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
 # check-handoff.py hardcodes this path.
@@ -695,8 +704,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. test_pr_create_preflight.py
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
-# 1 and 8 name to the script's. Same standalone-row rationale as
+# 1 and 8 name to the script's. test_transcript_review_trace.py
+# (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
+# step names. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
+# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
+# (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate
+# and completion recipes. Standalone row for the same reason as
+# CODE_REVIEW_SKILL_MD's second row; it names the one reading file rather
+# than all of SCRIPTS_TESTS_DIR.
 # RESUME_CONTEXT_SKILL_MD: test_resume_context_same_session.py
 # (SCRIPTS_TESTS_DIR) reads resume-context/SKILL.md by path, to tie the keys and
 # the argument character set the skill names to the script's.
@@ -733,15 +749,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
-# TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
-# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. Each has a test
-# that reads the real agents directory unpatched, through a production constant:
-# redaction._REPO_AGENT_DEFINITIONS_DIR for the first two,
-# measure_subagent_model_resolution's AGENTS_DIR for the third.
-# The glob matches several files and is selected for the one of them that
-# reads it.
-# TestCrossDomainReadCompleteness cannot see a read through a production
-# constant, so these three are hand-audited.
+# Some further targets read the real agents directory through a production
+# constant, which TestCrossDomainReadCompleteness cannot see.
+# test_select_tests.py's _HAND_AUDITED_AGENTS_DIR_READERS lists them.
 # TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target. Its test file reads
 # the directory through a module-level _AGENTS_DIR constant, so
 # TestCrossDomainReadCompleteness verifies it.
@@ -795,6 +805,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # EVALS_README_MD: test_skills.py (SKILLS_TESTS_DIR) reads evals/README.md by
 # path in its function-local doc-path scan, which the constant scanner cannot
 # see.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (standalone row): SELECT_TESTS_TEST_PATH's
+# test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self
+# reads this file by path from a function body, which
+# TestCrossDomainReadCompleteness cannot see.
+# The row is standalone because the review_bench predicate already includes this
+# file, and folding this target in would run test_select_tests.py on every
+# review_bench edit.
+# The other files in _HAND_AUDITED_AGENTS_DIR_READERS are covered by the
+# SELECT_TESTS_TEST_PATH comment.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
     (
@@ -806,6 +825,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
     ),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
+    (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (
@@ -838,6 +858,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_TEST_PATH,)),
     (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PLAN_IT_SKILL_MD, (PLAN_SHAPE_TEST_PATH,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
@@ -851,7 +872,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         lambda p: _is_under(p, AGENTS_DIR),
         (
             HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
-            TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_REDACTION_TEST_PATH, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
         ),
     ),

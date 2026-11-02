@@ -6,6 +6,14 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
+  - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
+  - `/ready-for-review` reviews now count and can trip the gate. A consult interrupts a run at a denied reviewer spawn. It routinely does so once the run needs a fix. It can also land on a pass that would have come out clean.
+  - Every `plan-architect` dispatch now receives the findings raised in each review round, as `round <N>: <count>` entries. A round with no findings reads `clean`. Carries count as findings. `review-ledger.sh show --out <path> --trend` prints that series as a second stdout line, and `announce-branch-review-history.sh` appends it to its history line. The consult is also told to judge the foundation from the series, the plan's `Ask:` line and the branch's SETTLED and DEFER rows.
+  - `/ready-for-review`'s Cap is retired, and a run loses two stops. A foundation-wrong verdict inside a run is an ADDRESS finding whose fix revises the plan inside the run's fix loop. A dirty streak reaches the human only when a consult sends it there, and no rule sends a long one there by its length.
+  - The `round_consult_gate` kill switch now silences the consult inside `/ready-for-review` runs too. The Cap ignored it.
+  - A branch already latched at pull time meets its first re-armed consult two states early, one under the round-2 pilot. Its deny text counts its earlier states as recorded since the last consult.
+  - A `/ready-for-review` run already under way at pull time keeps the old Cap text while the hooks already count its reviews, so it can run both consults until it ends.
 - **`read-scope`, `edit-format`, `cache-rebuild` and `context-composition` now skip `api-request-blob` records, and a new `read-cost` subcommand prices reads across their context windows.**
   - `read-scope` main-thread read figures drop sharply where these records exist, because each blob copied a tool call that was already counted.
   - `context-composition` no longer reads such a record as an `isSidechain` toggle, so a subagent context it split into several sequences stays whole.
@@ -25,6 +33,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Two spaces now precede the `+`/`?` marker slot.
   - The change is live on `git pull`.
 - **`deny-private-project-refs.sh` no longer detects the Slack-channel shape (a hash-prefixed channel name).** A channel name is now caught only by the `~/.claude/private-projects.md` blocklist when it is populated, and only if distinctive enough to list as a bare word (see `docs/private-project-redaction.md`). The change is live on `git pull`.
+- **`/plan-review` now spawns `comment-discipline-reviewer` on every round to review the plan's prose before approval.**
+  - It reviews the plan file and checks only Comment verbosity, Multi-fact comment structure, and Paragraph readability.
+  - Its findings never by themselves make the verdict Request changes, and they are applied with the round's other changes.
+  - It no longer reviews a plan file inside a `/code-review` or `/ready-for-review` diff.
+  - The change is live on `git pull`.
+- **`review-trace` now prints `round=` on each reviewer row, naming the review round a main-thread spawn ran in, or `?`.**
+  - The new `--omit-plan-review-spawns` flag leaves out `/plan-review`'s spawns.
+  - `/ready-for-review`'s skill-fidelity check passes it, so a `/plan-review` spawn no longer counts toward a `/code-review` dispatch row.
+  - The change is live on `git pull`.
 - **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
   - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
   - `/code-review` output item 5 now names the lines to delete as the suggested fix for such prose, and item 12a lists it as its own bullet.

@@ -8,6 +8,15 @@
 
 **Superseded in part by [code-writer-self-review-send-back.md](code-writer-self-review-send-back.md) (2026-10-26):** every added or rewritten prose line now gets the prose-row read, because `code-writer.md` step 5 no longer exempts a whitespace or typo fix.
 
+**Superseded in part by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** `/ready-for-review` has no Cap consult, and both hooks now record and gate its reviews. That retires these sections:
+- "The cap".
+- The hook's blindness inside a run.
+- The mutually exclusive trigger windows.
+- The Cap's stops under "How often the new stops interrupt a run".
+- "The keep/cap interaction".
+
+The disposition record and the contradiction route stand.
+
 `/ready-for-review` (RFR) step 3 runs a mandatory, fully-unnarrowed `/code-review` over the cumulative PR-vs-base diff after every fix, per the Overview's loop rule: a fix produced by step 2, 3, or 4 returns the gate to step 2, and step 3 then re-reviews the fixed cumulative diff in full because its cache marker misses on the changed bytes. The byte-exact cumulative guarantee stays intact: a fix commit's staged-diff review alone does not suffice to re-push. Step 4 is the one step that does not re-run on its own output, so a skill-procedural-fidelity finding's own fix does not trigger a second step-4 pass. Nothing in this decision narrows the cumulative pass itself; the four changes below only shorten how many times it has to run before it comes back clean.
 
 ## Why RFR's prose is the only enforcement during a run
@@ -103,10 +112,10 @@ A *keep* verdict counts as resolved, so a pass whose only open finding resolves 
 
 ## Sources
 
-- `claude-skills/skills/ready-for-review/SKILL.md` — the Overview's fix-loop rule, step 3's record and cap, and the CI watch's "Land the fix" arm.
+- `claude-skills/skills/ready-for-review/SKILL.md` — the Overview's fix-loop rule, step 3's record, and the CI watch's "Land the fix" arm.
 - `claude-skills/skills/code-review/SKILL.md` — "Ripple effect triage"'s carry-forward rules and the `code-review-contradiction-route` and `code-review-round-cap-consult-verdict` regions.
 - `claude/.claude/agents/code-writer.md` — the prose self-review row and Step 5 scaling guidance.
-- `claude/.claude/hooks/require-architect-consult.sh`, `claude/.claude/hooks/log-reviewer-round.sh` — the round-3 gate and recorder, and their RFR-active-marker early return.
+- `claude/.claude/hooks/require-architect-consult.sh`, `claude/.claude/hooks/log-reviewer-round.sh` — the round-3 gate and recorder.
 - `docs/design-decisions.md` [§45](round3-plan-architect-consult-gate.md) — the round-3 gate's cap number, its latch semantics, and the population it was measured on.
 - `docs/design-decisions.md` [§44](ready-for-review-cumulative-diff-cache.md) — the self-attestation residual this decision's disposition record shares.
 - `docs/cost-levers-considered.md` — prior rejection of a `SendMessage` reviewer continuation as a carry-forward mechanism.
