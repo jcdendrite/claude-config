@@ -14,11 +14,11 @@ Each row is one line holding a JSON object. Skip blank lines, and skip a line th
 - `source` is the SessionStart source the harness sent, such as `startup`, `resume`, `clear` or `compact`. `unreadable` means the hook could not read it.
 - `keys` maps every schema key at that event to a string value.
 
-A reader must not use a row to excuse or allow an action. A reader re-validates key names, value tokens and the `logged_at` shape. Rows are advisory and unauthenticated, because any process running as the account can append, forge or trim them.
+A reader must not use a row to excuse or allow an action. A reader re-validates key names, value tokens (the class [Values](#values) defines), `source` (held to that same class) and the `logged_at` shape. Rows are advisory and unauthenticated, because any process running as the account can append, forge or trim them.
 
 ## Values
 
-A value is the key's resolved value at that event. A key nobody set shows its schema default, so a row cannot tell a default from an explicit setting.
+A value is the key's resolved value at that event. A key nobody set shows its schema default, so a row cannot tell a default from an explicit setting. Each value in `keys` is a non-empty string made only of lowercase ASCII letters, digits, hyphen and underscore. A reader checks a value token against that class.
 
 - `false` means off.
 - `unreadable` means the hook could not read the key, so its state is unknown.

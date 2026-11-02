@@ -232,6 +232,18 @@ def one_row_hook(tmp_path: Path) -> Path:
     return isolated_hook(tmp_path, ONE_ROW_SCHEMA_TEXT)
 
 
+def append_stub_to_isolated_library(hook_dir: Path, shell_stub: str) -> None:
+    """Replace the isolated `_config.sh` symlink with a regular file: a write through it would edit the tracked library."""
+    library_copy = hook_dir / "_config.sh"
+    real_library_bytes = (HOOKS_DIR / "_config.sh").read_bytes()
+    assert library_copy.is_symlink(), "isolated _config.sh must be a symlink before it is replaced"
+    library_text = library_copy.read_text()
+    library_copy.unlink()
+    with library_copy.open("x") as stubbed_library:
+        stubbed_library.write(library_text + shell_stub)
+    assert (HOOKS_DIR / "_config.sh").read_bytes() == real_library_bytes
+
+
 def payload_json(*, source: str | None = "startup", **overrides: object) -> str:
     payload: dict[str, object] = {"hook_event_name": "SessionStart", "session_id": SESSION_ID}
     if source is not None:
@@ -514,31 +526,100 @@ class TestNoticeConstant:
         assert (REPO_ROOT / "docs/session-config-keys-log.md").is_file()
 
 
+LOG_BASENAME = LOG_FILENAME.removesuffix(".jsonl")
+
+
+def trim_recipe_from_reader_doc(days: int) -> str:
+    """Fills `<days>` so the case runs the text an engineer would copy."""
+    fenced_bash_blocks = re.findall(r"```bash\n(.*?)\n```", READER_DOC.read_text(), flags=re.DOTALL)
+    recipes = [block for block in fenced_bash_blocks if "jq -cR" in block]
+    assert len(recipes) == 1, f"{READER_DOC} must hold exactly one fenced bash block containing `jq -cR`, found {len(recipes)}"
+    [recipe] = recipes
+    assert "<days>" in recipe
+    return recipe.replace("<days>", str(days))
+
+
+@pytest.fixture
+def trim_leftover_filename(tmp_path):
+    """The name the doc's own `mktemp` template yields, so the doc and the ignore rule cannot drift from this test."""
+    templates = re.findall(r"\$\(mktemp ([^\s)]+)\)", trim_recipe_from_reader_doc(days=1))
+    assert len(templates) == 1, f"{READER_DOC} trim recipe must hold exactly one `$(mktemp <template>)`, found {len(templates)}"
+    [template] = templates
+    assert re.search(r"X+$", template), template
+    made = subprocess.run(["mktemp", template], capture_output=True, text=True, cwd=tmp_path, check=True)
+    leftover = tmp_path / made.stdout.strip()
+    leftover.unlink()
+    assert leftover.name != template
+    return leftover.name
+
+
+@pytest.fixture
+def git_work_tree_env(tmp_path):
+    return {**os.environ, **git_isolation_env(tmp_path)}
+
+
+def check_ignore(env: dict[str, str], repo_relative_path: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", repo_relative_path],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def assert_ignored_by_repo_gitignore(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, repr(result)
+    # `-v` prints `<source>:<line>:<pattern><TAB><path>`; the source must be the repo's own .gitignore.
+    matched_rule, _, _ = result.stdout.partition("\t")
+    assert matched_rule.split(":")[0] == ".gitignore", repr(result)
+
+
 class TestLogStaysOutOfGit:
-    def test_a_log_written_into_the_checkout_is_gitignored(self, tmp_path):
-        if shutil.which("git") is None:
-            pytest.skip("git not found in PATH")
-        inside_work_tree = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if inside_work_tree.returncode != 0:
-            pytest.skip("the repo root is not inside a git work tree")
+    def test_the_log_written_into_the_checkout_is_gitignored(self, git_work_tree_env):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/{LOG_FILENAME}")
 
-        check_ignore = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", f"claude/.claude/{LOG_FILENAME}"],
-            capture_output=True,
-            text=True,
-            env={**os.environ, **git_isolation_env(tmp_path)},
-            check=False,
-        )
+        assert_ignored_by_repo_gitignore(result)
 
-        assert check_ignore.returncode == 0, "git check-ignore exits 1 when the path is not ignored"
-        # `-v` prints `<source>:<line>:<pattern><TAB><path>`; the source must be the repo's own .gitignore.
-        matched_rule, _, _ = check_ignore.stdout.partition("\t")
-        assert matched_rule.split(":")[0] == ".gitignore", check_ignore.stdout
+    def test_a_trim_leftover_written_into_the_checkout_is_gitignored(self, git_work_tree_env, trim_leftover_filename):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/{trim_leftover_filename}")
+
+        assert_ignored_by_repo_gitignore(result)
+
+    def test_the_ignore_rule_does_not_reach_a_bare_name(self, git_work_tree_env):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/{LOG_BASENAME}")
+
+        assert result.returncode == 1, repr(result)
+
+    def test_the_ignore_rule_does_not_reach_a_trim_leftover_in_another_directory(
+        self, git_work_tree_env, trim_leftover_filename
+    ):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/hooks/{trim_leftover_filename}")
+
+        assert result.returncode == 1, repr(result)
+
+
+class TestHookWrittenStateStaysOutOfGit:
+    """Pins the listed ignore lines, not every name a hook writes under the config dir."""
+
+    @pytest.mark.parametrize(
+        "representative_path",
+        [
+            pytest.param("session-end-records/123", id="session-end-records"),
+            pytest.param("review-narrative-ledger/abc.session.jsonl", id="review-narrative-ledger"),
+            pytest.param(".architect-consult-latch.d/state-key", id="architect-consult-latch"),
+            pytest.param(".plan-review-pending-read.d/session-id", id="plan-review-pending-read"),
+            pytest.param(".reviewer-round-state.d/state-key", id="reviewer-round-state"),
+            pytest.param(".activate-handoff-bypass.log", id="activate-handoff-bypass-log"),
+            pytest.param(".review-ledger-compliance.log", id="review-ledger-compliance-log"),
+        ],
+    )
+    def test_state_written_into_the_checkout_by_a_folded_install_is_gitignored(
+        self, git_work_tree_env, representative_path
+    ):
+        result = check_ignore(git_work_tree_env, f"claude/.claude/{representative_path}")
+
+        assert_ignored_by_repo_gitignore(result)
 
 
 # --------------------------------------------------------------------------- #
@@ -548,6 +629,20 @@ class TestLogStaysOutOfGit:
 
 NON_ASCII_VALUE = "café"
 SYNTHETIC_KEY = "synthetic_added_key"
+# Every member must be legal inside a pipe-delimited schema default column (no `|`, no newline); the newline cases live in the
+# `source` parametrization's embedded-newline case and in the embedded-newline value test.
+NON_TOKEN_STRINGS_BY_ID = {
+    "path": "/tmp/x",
+    "free-text": "two words",
+    "uppercase": "ABC",
+    "non-ascii": NON_ASCII_VALUE,
+    "dot": "a.b",
+    "colon": "a:b",
+    "dollar": "a$b",
+    "double-quote": 'a"b',
+    "plus": "a+b",
+    "equals": "a=b",
+}
 
 
 @requires_jq
@@ -668,6 +763,8 @@ class TestRowContent:
         run = run_hook(sandbox, hook=hook)
 
         assert str(hook.parent / "config-keys.psv") in control.stderr
+        assert control.returncode == 4
+        assert control.stdout == ""
         assert_row_appended(
             sandbox, run, b"", expected_source="startup", expected_keys=expected_keys, expected_non_blank_lines=1
         )
@@ -711,16 +808,16 @@ class TestRowContent:
         )
 
     def test_a_value_printed_before_the_library_reports_failure_records_unreadable(self, tmp_path):
-        """The printed value passes the token check, so only the exit status of `_config_value` can mark it unreadable."""
+        """Pins the hook's own guard against a library state today's library cannot produce:
+        one that prints a token-valid value and then fails."""
         sandbox = make_sandbox(tmp_path)
         hook = one_row_hook(tmp_path)
-        library_text = (HOOKS_DIR / "_config.sh").read_text()
-        printing_success = "  printf '%s' \"$_CONFIG_LOOKUP_VALUE\"\n  return 0\n"
-        assert library_text.count(printing_success) == 1, "_config_value no longer ends in print-then-return-0"
-        library_copy = hook.parent / "_config.sh"
-        library_copy.unlink()
-        library_copy.write_text(library_text.replace(printing_success, printing_success.replace("return 0", "return 4")))
         [(key, no_state_value)] = one_row_expected_keys().items()
+        assert VALUE_TOKEN.fullmatch(no_state_value), (
+            f"printed value {no_state_value!r} must be token-valid so only the exit status can mark it unreadable"
+        )
+        printing_then_failing = f"\n_config_value() {{ printf '%s' '{no_state_value}'; return 4; }}\n"
+        append_stub_to_isolated_library(hook.parent, printing_then_failing)
         control = run_bare(sandbox, hook.parent, f"_config_value {key}")
 
         run = run_hook(sandbox, hook=hook)
@@ -731,13 +828,57 @@ class TestRowContent:
             sandbox, run, b"", expected_source="startup", expected_keys={key: UNREADABLE}, expected_non_blank_lines=1
         )
 
+    def test_an_empty_value_with_exit_status_zero_records_unreadable(self, tmp_path):
+        """Pins the hook's own guard against a library state today's library cannot produce:
+        one that succeeds with an empty print."""
+        sandbox = make_sandbox(tmp_path)
+        hook = one_row_hook(tmp_path)
+        [key] = one_row_expected_keys()
+        printing_empty_and_succeeding = "\n_config_value() { printf ''; return 0; }\n"
+        append_stub_to_isolated_library(hook.parent, printing_empty_and_succeeding)
+        control = run_bare(sandbox, hook.parent, f"_config_value {key}")
+
+        run = run_hook(sandbox, hook=hook)
+
+        assert control.returncode == 0
+        assert control.stdout == ""
+        assert_row_appended(
+            sandbox, run, b"", expected_source="startup", expected_keys={key: UNREADABLE}, expected_non_blank_lines=1
+        )
+
+    def test_an_embedded_newline_value_records_unreadable_without_shifting_the_other_keys(self, tmp_path):
+        """Pins the hook's own guard against a library state today's library cannot produce:
+        one that prints a newline-bearing value, which fails a check that matches line by line."""
+        sandbox = make_sandbox(tmp_path)
+        newline_key = f"{SYNTHETIC_KEY}_middle"
+        token_value_by_key = {f"{SYNTHETIC_KEY}_first": "first-value", f"{SYNTHETIC_KEY}_last": "last-value"}
+        first_key, last_key = token_value_by_key
+        schema_text = synthetic_one_row_schema_text(first_key, "true") + "".join(
+            f"{synthetic_bool_row(key, 'true')}\n" for key in (newline_key, last_key)
+        )
+        hook = isolated_hook(tmp_path, schema_text)
+        token_cases = "".join(f"{key}) printf '%s' '{value}';; " for key, value in token_value_by_key.items())
+        newline_stub = f"\n_config_value() {{ case \"$1\" in {token_cases}{newline_key}) printf 'a\\nb';; esac; return 0; }}\n"
+        append_stub_to_isolated_library(hook.parent, newline_stub)
+        control = run_bare(sandbox, hook.parent, f"_config_value {newline_key}")
+
+        run = run_hook(sandbox, hook=hook)
+
+        assert control.returncode == 0
+        assert control.stdout == "a\nb"
+        assert_row_appended(
+            sandbox,
+            run,
+            b"",
+            expected_source="startup",
+            expected_keys={**token_value_by_key, newline_key: UNREADABLE},
+            expected_non_blank_lines=1,
+        )
+
     @pytest.mark.parametrize(
         ("default_value", "expected_value"),
         [
-            pytest.param("/tmp/x", UNREADABLE, id="path"),
-            pytest.param("two words", UNREADABLE, id="free-text"),
-            pytest.param("ABC", UNREADABLE, id="uppercase"),
-            pytest.param("café", UNREADABLE, id="non-ascii"),
+            *(pytest.param(value, UNREADABLE, id=case_id) for case_id, value in NON_TOKEN_STRINGS_BY_ID.items()),
             pytest.param("a-b_9", "a-b_9", id="positive-control-token"),
         ],
     )
@@ -747,9 +888,12 @@ class TestRowContent:
         """An empty-polarity key with no state returns its raw schema default, so the token check is the only guard."""
         sandbox = make_sandbox(tmp_path)
         hook = isolated_hook(tmp_path, synthetic_one_row_schema_text(SYNTHETIC_KEY, default_value))
+        control = run_bare(sandbox, hook.parent, f"_config_value {SYNTHETIC_KEY}")
 
         run = run_hook(sandbox, hook=hook)
 
+        assert control.returncode == 0
+        assert control.stdout == default_value
         assert_row_appended(
             sandbox,
             run,
@@ -760,7 +904,7 @@ class TestRowContent:
         )
 
     def test_non_ascii_source_and_value_record_unreadable_where_a_range_class_would_accept_them(self, tmp_path):
-        """The hook spells out the token class so no locale's collation widens it; an absent widening locale fails under CI."""
+        """The hook spells out the token class so no locale's collation widens it. An absent widening locale fails under CI."""
         widening_locale = installed_locale_where(
             '[[ "$1" =~ ^[a-z]+$ ]]',
             NON_ASCII_VALUE,
@@ -793,7 +937,7 @@ class TestRowContent:
         )
 
     def test_a_duplicated_schema_row_yields_one_pair_holding_the_first_rows_value(self, tmp_path):
-        """Pins the library's first-row resolution and the encode's object shape; the hook has no dedup code."""
+        """Pins the library's first-row resolution and the encode's object shape. The hook has no dedup code."""
         sandbox = make_sandbox(tmp_path)
         duplicated = first_row(SHIPPED_SCHEMA_TEXT, legacy_polarity="")
         flipped_default = "true" if duplicated["default"] == "false" else "false"
@@ -862,10 +1006,7 @@ class TestSourceAndAppend:
         "payload_source",
         [
             pytest.param(None, id="absent"),
-            pytest.param("two words", id="free-text"),
-            pytest.param("/tmp/x", id="path"),
-            pytest.param("ABC", id="uppercase"),
-            pytest.param("café", id="non-ascii"),
+            *(pytest.param(value, id=case_id) for case_id, value in NON_TOKEN_STRINGS_BY_ID.items()),
             pytest.param("a\nb", id="embedded-newline"),
         ],
     )
@@ -880,6 +1021,21 @@ class TestSourceAndAppend:
             run,
             b"",
             expected_source=UNREADABLE,
+            expected_keys=one_row_expected_keys(),
+            expected_non_blank_lines=1,
+        )
+
+    def test_a_source_token_outside_the_lowercase_letters_is_recorded_verbatim(self, tmp_path):
+        """The allow-path control for the rejection cases above: digits, hyphen and underscore are in the token class."""
+        sandbox = make_sandbox(tmp_path)
+
+        run = run_hook(sandbox, payload_json(source="a-b_9"), hook=one_row_hook(tmp_path))
+
+        assert_row_appended(
+            sandbox,
+            run,
+            b"",
+            expected_source="a-b_9",
             expected_keys=one_row_expected_keys(),
             expected_non_blank_lines=1,
         )
@@ -1384,7 +1540,7 @@ class TestWriteGuard:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_a_refused_append_and_its_retry_write_no_row_and_print_the_notice(self, tmp_path, sandbox, hook):
-        """The proof against a real refused write; the every-attempt retry case pins the same outcome on any uid."""
+        """The proof against a real refused write. The every-attempt retry case pins the same outcome on any uid."""
         seed = b'{"seeded": "line"}\n'
         sandbox.log_path.write_bytes(seed)
         sandbox.log_path.chmod(0o400)
@@ -1552,14 +1708,6 @@ class TestRowReachesTheLogInOneWrite:
         row_line = log_bytes[1:-1].decode()
         row_and_newline_as_traced = row_line.replace('"', '\\"') + "\\n"
         assert any(write["data"].endswith(row_and_newline_as_traced) for write in log_writes)
-
-
-def trim_recipe_from_reader_doc(days: int) -> str:
-    """Fills `<days>` so the case runs the text an engineer would copy."""
-    fenced_bash_blocks = re.findall(r"```bash\n(.*?)\n```", READER_DOC.read_text(), flags=re.DOTALL)
-    [recipe] = [block for block in fenced_bash_blocks if "jq -cR" in block]
-    assert "<days>" in recipe
-    return recipe.replace("<days>", str(days))
 
 
 def run_trim_recipe(

@@ -150,6 +150,8 @@ claude/.claude/telemetry/
 # holding project-identifying content that must never reach a public repo
 # (see /error-mode-analysis). cache/ has no identified writer in this repo's
 # hooks/skills but is per-machine scratch space regardless of origin.
+claude/.claude/.activate-handoff-bypass.log
+claude/.claude/.architect-consult-latch.d/
 claude/.claude/.code-writer-self-review.d/
 claude/.claude/.code-writer-self-review.log
 claude/.claude/.handoff-nudge-fired.d/
@@ -159,8 +161,11 @@ claude/.claude/.memory-audit-nudge-fired
 claude/.claude/.memory-audit-nudge.log
 claude/.claude/.memory-audit-quarantine/
 claude/.claude/.permission-prompt-log.jsonl
+claude/.claude/.plan-review-pending-read.d/
 claude/.claude/.plan-review-routing-read.d/
-claude/.claude/.session-config-keys-log.jsonl
+claude/.claude/.review-ledger-compliance.log
+claude/.claude/.reviewer-round-state.d/
+claude/.claude/.session-config-keys-log.*
 claude/.claude/.test-selection-log.jsonl
 claude/.claude/.worktree-anchor-nudge.d/
 claude/.claude/briefs/
@@ -168,6 +173,8 @@ claude/.claude/cache/
 claude/.claude/error-mode-reports/
 claude/.claude/handoffs/
 claude/.claude/issue-triage/
+claude/.claude/review-narrative-ledger/
+claude/.claude/session-end-records/
 
 # Per-machine exclusive-lock file cost-ledger --record holds for its
 # read-check-write window (never the ledger file itself, since renaming it
