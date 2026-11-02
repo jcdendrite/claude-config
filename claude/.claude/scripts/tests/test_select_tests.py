@@ -748,9 +748,7 @@ class TestSelectPytestTargets:
     def test_measure_subagent_model_resolution_test_change_also_selects_test_select_tests(self):
         """An edit to evals/test_measure_subagent_model_resolution.py also
         selects test_select_tests.py, because the hand-audited-reader test
-        reads that file by path. The review_bench and recall-scorer tests are
-        selected as well, and the change does not fall through to the full
-        suite."""
+        reads that file by path."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {

@@ -143,8 +143,9 @@ SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 # CLAUDE_TESTS_DIR, and plugins/*/tests/ for module-level repo-path
 # constants, so a change to any of those files can introduce a read this
 # table hasn't declared yet.
-# Its pin test also reads the test files listed in _HAND_AUDITED_AGENTS_DIR_READERS
-# by path, so a change to a listed file under those directories selects this
+# Its test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self
+# also reads the test files listed in _HAND_AUDITED_AGENTS_DIR_READERS by path,
+# so a change to a listed file under those directories selects this
 # file through _is_test_source_change.
 SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
@@ -794,7 +795,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # path in its function-local doc-path scan, which the constant scanner cannot
 # see.
 # MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (standalone row): SELECT_TESTS_TEST_PATH's
-# pin test reads this file by path from a function body, which
+# test_hand_audited_agents_dir_target_defines_one_reader_taking_only_self
+# reads this file by path from a function body, which
 # TestCrossDomainReadCompleteness cannot see.
 # The row is standalone because the review_bench predicate already includes this
 # file, and folding this target in would run test_select_tests.py on every
