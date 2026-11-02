@@ -16,6 +16,7 @@ class TestScanRootTranscripts:
     behavior nor its per-file skipped-counting was exercised at this layer
     before review; every prior assertion on 'skipped' asserted 0."""
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_root_raises_permission_error(self, tmp_path):
         """os.access is an explicit probe, not reliance on Path.glob to raise
         — glob silently swallows OSError while walking an unreadable
@@ -35,6 +36,7 @@ class TestScanRootTranscripts:
         root.mkdir()
         assert scope._scan_root_transcripts(root, "*") == (0, 0)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_skipped_counts_unreadable_file_separately_from_scanned(self, tmp_path):
         proj = tmp_path / "-home-user-repo"
         proj.mkdir()
