@@ -5236,6 +5236,37 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
     )
 
 
+def test_ready_for_review_step3_discards_the_diff_stdout() -> None:
+    """GH-1296: step 3 hands the diff on by its `DIFF_FILE:` path, so printing
+    it to stdout only adds its bytes to the session's context. The command
+    must end at `> /dev/null` with no further redirect, because an appended
+    `2>&1` would discard the `DIFF_EMPTY:` and `DIFF_FILE:` stderr signals
+    step 3 acts on. Step 3 must contain no other invocation line, since a
+    bare second one would print the diff again.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --record --diff-file > /dev/null"
+    invocation_lines = [
+        line
+        for line in section_text.splitlines()
+        if line.startswith("~/.claude/scripts/pr-diff-against-base.sh")
+    ]
+    assert invocation_lines == [discarding_command], (
+        f"{skill_md_path}: step 3's only pr-diff-against-base.sh invocation line must be "
+        f"exactly {discarding_command!r}, ending at '> /dev/null' with no further "
+        "redirect, so the diff stays out of the session and stderr still reaches it; "
+        f"found {invocation_lines!r}"
+    )
+    assert "read the diff only from the file at that path" in section_text, (
+        f"{skill_md_path}: step 3 no longer tells the session to read the diff "
+        "from the DIFF_FILE: path now that stdout is discarded"
+    )
+
+
 _READY_FOR_REVIEW_STEP4_HEADING = "## 4. Skill-procedural-fidelity review (halt on findings)"
 
 
@@ -5410,7 +5441,10 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     inside the row itself and not in Step 0. A file-wide `in` check would
     pass just as well if a later edit moved the instruction back into the
     row or into Step 0, so this locates the note's own text before also
-    checking the file-wide occurrence count.
+    checking the file-wide occurrence count. It also pins the note's
+    `> /dev/null` redirect, with no further redirect after it, so the staged
+    diff stays out of the session's context while the script's stderr signals
+    still reach it.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
@@ -5437,6 +5471,13 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert text.count(staged_diff_literal) == 1, (
         f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
         "the resolution note only -- not duplicated into Step 0 or the row"
+    )
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --staged --diff-file > /dev/null"
+    assert discarding_command + "`" in note_text, (
+        f"{skill_md_path}: the resolution note must run {discarding_command!r} "
+        "as a code span that ends right after the redirect, so the diff stays "
+        "out of the session and stderr still reaches it"
     )
 
     for literal in (
