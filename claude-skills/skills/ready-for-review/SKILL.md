@@ -18,7 +18,7 @@ A halt on step 2, 3, or 4 triggers the fix loop above first; only once that roun
 
 When `require-architect-consult.sh` denies a reviewer spawn in this run, step 4's included:
 - Dispatch the consult per `code-review/SKILL.md` § "Round-cap architect consult" and retry the spawn unless the verdict is re-plan, which ends that round with no further spawns.
-- When a retried spawn is denied again after the consult, stop and report to the engineer instead of consulting again.
+- When the retry of a denied spawn is denied again with no new reviewed state since that consult, stop and report to the engineer instead of consulting again. A denial after the gate re-arms is a new denial and takes a new consult.
 - A re-plan verdict's fix is not a `code-writer` dispatch: revise the plan by that section's route, run `/plan-review`, then implement the revision and commit it through the staged-diff `/code-review`.
 - That commit carries any fix staged when the verdict arrived, or follows discarding that fix.
 - A revision that changes no code ends the run with a report to the engineer.
@@ -83,7 +83,7 @@ On a cache miss, compute the **cumulative** PR-vs-base diff — not staged chang
 ~/.claude/scripts/pr-diff-against-base.sh --record --diff-file
 ```
 
-**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first. Exit 0 with no output means the branch's cumulative diff against its base is empty. That is usually because this branch's PR is already merged. When the script printed a `using branch.<b>.gh-merge-base` line, the cause can instead be that the stack base already holds this branch's commits. Halt `/ready-for-review` and report the empty diff and its cause.
+**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first. A `DIFF_EMPTY:` stderr line on exit 0 means the branch's cumulative diff against its base is empty: HEAD's tree matches its merge-base with the local `origin/<base>`, as last fetched. Either the branch's work is already in that base, or the branch never had a net change. The first includes a PR already merged by any method, since step 1's sync brought the merge into the branch. It also includes a stack base that already holds the branch's changes. The second includes a branch never committed to, and commits that are empty or cancel out, such as a change and its revert. Halt `/ready-for-review` and report the empty diff with the cause your evidence supports, or name the candidates you could not tell apart.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->

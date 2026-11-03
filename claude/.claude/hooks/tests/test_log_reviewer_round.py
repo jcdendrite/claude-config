@@ -161,7 +161,7 @@ def _launch_hook_with_path_prefix(
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
     env["PATH"] = f"{path_prefix}:{env['PATH']}"
-    # TemporaryFile, not PIPE: on CPython 3.12 (CI's pinned version), closed-PIPE
+    # TemporaryFile, not PIPE: on CPython 3.12, closed-PIPE
     # stdin makes Popen.communicate() raise ValueError, and file-backed stdin
     # avoids it by leaving Popen.stdin None.
     payload_stdin = tempfile.TemporaryFile("w+")

@@ -706,7 +706,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
 # 1 and 8 name to the script's. test_transcript_review_trace.py
 # (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
-# step names. Same standalone-row rationale as
+# step names. test_pr_diff_against_base.py (SCRIPTS_TESTS_DIR) reads it for the
+# DIFF_EMPTY: token step 3 keys its halt on. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
 # PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
 # (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate

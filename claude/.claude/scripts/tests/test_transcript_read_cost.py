@@ -17,7 +17,7 @@ from .conftest import (
     _compact_boundary_rec,
     _edit_use,
     _read_result,
-    _read_tool_use,
+    _read_use,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
@@ -64,7 +64,7 @@ def _scan(records: list[dict], seen_tool_use_ids: set[str] | None = None) -> rea
 
 
 def _read_exchange(message_id: str, tool_id: str, path: str, *, text: str = _HUNDRED_TOKEN_TEXT) -> list[dict]:
-    return [_turn(message_id, [_read_tool_use(tool_id, file_path=path)]), _read_result(tool_id, text)]
+    return [_turn(message_id, [_read_use(tool_id, file_path=path)]), _read_result(tool_id, text)]
 
 
 def _event_for(scan: read_cost._WindowScan, path: str) -> read_cost._ReadEvent:
@@ -105,12 +105,12 @@ class TestScanWindow:
 
     def test_compaction_boundary_ends_the_window_a_read_is_resent_in(self):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
-            _turn("m2", [_read_tool_use("r2", file_path="/b.py")]),
+            _turn("m2", [_read_use("r2", file_path="/b.py")]),
             _read_result("r2", _HUNDRED_TOKEN_TEXT),
             _compact_boundary_rec(),
-            _turn("m3", [_read_tool_use("r3", file_path="/c.py")]),
+            _turn("m3", [_read_use("r3", file_path="/c.py")]),
             _read_result("r3", _HUNDRED_TOKEN_TEXT),
             _turn("m4"),
         ])
@@ -123,7 +123,7 @@ class TestScanWindow:
 
     def test_read_with_no_boundary_after_it_runs_to_the_end_of_the_window(self):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
             _turn("m2"),
             _turn("m3"),
@@ -133,10 +133,10 @@ class TestScanWindow:
     @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
     def test_api_request_blob_adds_no_event_and_is_not_a_repeated_read(self, record_type):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
-            _api_request_blob_rec([_read_tool_use("r1", file_path="/a.py")], agent_id="agent-a", record_type=record_type),
-            _api_request_blob_rec([_read_tool_use("r2", file_path="/b.py")], agent_id="agent-a", record_type=record_type),
+            _api_request_blob_rec([_read_use("r1", file_path="/a.py")], agent_id="agent-a", record_type=record_type),
+            _api_request_blob_rec([_read_use("r2", file_path="/b.py")], agent_id="agent-a", record_type=record_type),
             _api_request_blob_rec(
                 [{"type": "tool_result", "tool_use_id": "r2", "content": _HUNDRED_TOKEN_TEXT}], record_type=record_type,
             ),
@@ -174,7 +174,7 @@ class TestScanWindow:
     def test_read_with_an_empty_or_non_string_id_produces_no_event_and_leaves_no_id_seen(self, unusable_tool_id):
         seen: set[str] = set()
         scan = _scan([
-            _turn("m1", [_read_tool_use(unusable_tool_id, file_path="/a.py")]),
+            _turn("m1", [_read_use(unusable_tool_id, file_path="/a.py")]),
             _read_result(unusable_tool_id, _HUNDRED_TOKEN_TEXT),
         ], seen)
         assert scan.events == []
@@ -190,7 +190,7 @@ class TestScanWindow:
             {"type": "tool_result", "tool_use_id": unusable_result_id, "content": _HUNDRED_TOKEN_TEXT},
         ])
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             stray_result,
             _read_result("r1", "x" * 800),
         ], seen)
@@ -207,7 +207,7 @@ class TestScanWindow:
         assert [event.path for event in scan.events] == ["/a.py"]
 
     def test_id_less_assistant_record_is_no_turn_and_its_read_sits_at_the_previous_turns_index(self):
-        id_less_turn = _asst("claude-sonnet-5", content=[_read_tool_use("r1", file_path="/a.py")])
+        id_less_turn = _asst("claude-sonnet-5", content=[_read_use("r1", file_path="/a.py")])
         id_less_turn_after_the_read = _asst("claude-sonnet-5", content=[])
         scan = _scan([
             _turn("m1"), id_less_turn, _read_result("r1", _HUNDRED_TOKEN_TEXT), id_less_turn_after_the_read,
@@ -218,19 +218,19 @@ class TestScanWindow:
 
     def test_read_result_without_an_is_error_key_is_counted(self):
         successful_result = _user_msg([{"type": "tool_result", "tool_use_id": "r1", "content": _HUNDRED_TOKEN_TEXT}])
-        scan = _scan([_turn("m1", [_read_tool_use("r1", file_path="/a.py")]), successful_result])
+        scan = _scan([_turn("m1", [_read_use("r1", file_path="/a.py")]), successful_result])
         assert _event_for(scan, "/a.py").tokens == 100
 
     def test_non_dict_content_block_is_skipped_beside_a_valid_read(self):
         scan = _scan([
-            _turn("m1", ["stray text", None, _read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", ["stray text", None, _read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ])
         assert [event.path for event in scan.events] == ["/a.py"]
 
     def test_edit_after_the_read_marks_the_read_edited_later(self):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
             _turn("m2", [_edit_use("e1", path="/a.py")]),
         ])
@@ -238,7 +238,7 @@ class TestScanWindow:
 
     def test_edit_in_the_same_turn_as_the_read_marks_the_read_edited_later(self):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py"), _edit_use("e1", path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py"), _edit_use("e1", path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ])
         assert _event_for(scan, "/a.py").edited_later is True
@@ -246,7 +246,7 @@ class TestScanWindow:
     def test_edit_only_before_the_read_or_of_another_path_leaves_the_read_unedited(self):
         scan = _scan([
             _turn("m1", [_edit_use("e1", path="/a.py")]),
-            _turn("m2", [_read_tool_use("r1", file_path="/a.py"), _edit_use("e2", path="/other.py")]),
+            _turn("m2", [_read_use("r1", file_path="/a.py"), _edit_use("e2", path="/other.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ])
         assert _event_for(scan, "/a.py").edited_later is False
@@ -258,9 +258,9 @@ class TestScanWindow:
     def test_read_with_offset_or_limit_is_not_whole_file(self):
         scan = _scan([
             _turn("m1", [
-                _read_tool_use("r1", file_path="/a.py", limit=10),
-                _read_tool_use("r2", file_path="/b.py", offset=0),
-                _read_tool_use("r3", file_path="/c.py"),
+                _read_use("r1", file_path="/a.py", limit=10),
+                _read_use("r2", file_path="/b.py", offset=0),
+                _read_use("r3", file_path="/c.py"),
             ]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
             _read_result("r2", _HUNDRED_TOKEN_TEXT),
@@ -271,7 +271,7 @@ class TestScanWindow:
         }
 
     def test_read_with_only_pages_set_is_whole_file(self):
-        pages_only_read = _read_tool_use("r1", file_path="/a.pdf")
+        pages_only_read = _read_use("r1", file_path="/a.pdf")
         pages_only_read["input"]["pages"] = "1-5"
         scan = _scan([_turn("m1", [pages_only_read]), _read_result("r1", _HUNDRED_TOKEN_TEXT)])
         assert _event_for(scan, "/a.pdf").whole_file is True
@@ -279,8 +279,8 @@ class TestScanWindow:
     def test_error_and_non_text_results_produce_no_event(self):
         scan = _scan([
             _turn("m1", [
-                _read_tool_use("r1", file_path="/a.py"),
-                _read_tool_use("r2", file_path="/b.py"),
+                _read_use("r1", file_path="/a.py"),
+                _read_use("r2", file_path="/b.py"),
             ]),
             _read_result("r1", "boom", is_error=True),
             _read_result("r2", [{"type": "image"}]),
@@ -290,7 +290,7 @@ class TestScanWindow:
     def test_text_block_list_result_is_dropped_like_any_non_string_result(self):
         # docs/transcript-analysis.md's read-cost Known limits: a result that is not plain text is left out.
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", [{"type": "text", "text": _HUNDRED_TOKEN_TEXT}]),
         ])
         assert scan.events == []
@@ -298,7 +298,7 @@ class TestScanWindow:
     def test_tool_use_id_already_seen_in_another_window_is_not_counted_again(self):
         seen: set[str] = set()
         records = [
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ]
         assert len(_scan(records, seen).events) == 1
@@ -306,7 +306,7 @@ class TestScanWindow:
 
     def test_event_tokens_and_lines_come_from_the_result_text(self):
         scan = _scan([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "ab\n" * 8),
         ])
         event = _event_for(scan, "/a.py")
@@ -315,7 +315,7 @@ class TestScanWindow:
     def test_tool_result_of_a_legacy_human_record_is_kept(self):
         human_result = _read_result("r1", _HUNDRED_TOKEN_TEXT)
         human_result["type"] = "human"
-        scan = _scan([_turn("m1", [_read_tool_use("r1", file_path="/a.py")]), human_result])
+        scan = _scan([_turn("m1", [_read_use("r1", file_path="/a.py")]), human_result])
         assert [event.path for event in scan.events] == ["/a.py"]
 
     @pytest.mark.parametrize(("tool_name", "path_key"), [
@@ -413,7 +413,7 @@ class TestScanWindow:
 
     def test_copy_cut_off_before_the_result_does_not_hide_the_read_in_a_later_copy(self):
         seen: set[str] = set()
-        cut_off = [_turn("m1", [_read_tool_use("r1", file_path="/a.py")])]
+        cut_off = [_turn("m1", [_read_use("r1", file_path="/a.py")])]
         assert _scan(cut_off, seen).events == []
         assert seen == set()
         full_copy = _scan([*cut_off, _read_result("r1", _HUNDRED_TOKEN_TEXT)], seen)
@@ -422,7 +422,7 @@ class TestScanWindow:
 
     def test_read_with_an_error_result_leaves_its_id_unseen(self):
         seen: set[str] = set()
-        _scan([_turn("m1", [_read_tool_use("r1", file_path="/a.py")]), _read_result("r1", "boom", is_error=True)], seen)
+        _scan([_turn("m1", [_read_use("r1", file_path="/a.py")]), _read_result("r1", "boom", is_error=True)], seen)
         assert seen == set()
 
 
@@ -455,9 +455,9 @@ class TestAgentTypeRow:
 
     def test_second_whole_file_read_of_a_path_in_the_same_window_is_a_repeat(self):
         row, read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
-            _turn("m2", [_read_tool_use("r2", file_path="/a.py")]),
+            _turn("m2", [_read_use("r2", file_path="/a.py")]),
             _read_result("r2", _HUNDRED_TOKEN_TEXT),
         ], set())
         assert row.repeat_in_agent_weight == pytest.approx(100 * 12.5)
@@ -466,7 +466,7 @@ class TestAgentTypeRow:
 
     def test_path_in_the_session_set_is_seen_elsewhere_not_a_repeat(self):
         row, _read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ], {"/a.py"})
         assert row.seen_elsewhere_weight == pytest.approx(100 * 12.5)
@@ -474,14 +474,14 @@ class TestAgentTypeRow:
 
     def test_large_unedited_read_counts_as_large_and_large_unedited(self):
         row, _read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
         assert row.large_weight == row.large_unedited_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * 12.5)
 
     def test_large_edited_read_counts_as_large_but_not_large_unedited(self):
         row, _read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py"), _edit_use("e1", path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py"), _edit_use("e1", path="/a.py")]),
             _read_result("r1", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
         assert row.large_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * 12.5)
@@ -489,7 +489,7 @@ class TestAgentTypeRow:
 
     def test_partial_read_counts_toward_all_reads_but_not_whole_file(self):
         row, read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py", limit=5)]),
+            _turn("m1", [_read_use("r1", file_path="/a.py", limit=5)]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ], set())
         assert row.all_read_weight == pytest.approx(100 * 12.5)
@@ -498,7 +498,7 @@ class TestAgentTypeRow:
 
     def test_remaining_turns_add_one_cache_read_each_to_the_weight(self):
         row, _read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
             _turn("m2"),
             _turn("m3"),
@@ -546,7 +546,7 @@ class TestAgentTypeRow:
 
     def test_large_weight_carries_only_the_read_at_the_threshold_when_a_read_just_under_it_precedes(self):
         row, _read_paths = self._row([
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py"), _read_tool_use("r2", file_path="/b.py")]),
+            _turn("m1", [_read_use("r1", file_path="/a.py"), _read_use("r2", file_path="/b.py")]),
             _read_result("r1", "x" * (4 * (read_cost._LARGE_READ_TOKENS - 1))),
             _read_result("r2", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
@@ -556,10 +556,10 @@ class TestAgentTypeRow:
     def test_kind_weight_sums_whole_file_read_weight_per_kind_and_ignores_partial_reads(self):
         row, _read_paths = self._row([
             _turn("m1", [
-                _read_tool_use("r1", file_path="/repo/CLAUDE.md"),
-                _read_tool_use("r2", file_path="/repo/docs/guide.md"),
-                _read_tool_use("r3", file_path="/repo/src/app.py"),
-                _read_tool_use("r4", file_path="/repo/.claude/rules/style.md", limit=5),
+                _read_use("r1", file_path="/repo/CLAUDE.md"),
+                _read_use("r2", file_path="/repo/docs/guide.md"),
+                _read_use("r3", file_path="/repo/src/app.py"),
+                _read_use("r4", file_path="/repo/.claude/rules/style.md", limit=5),
             ]),
             _read_result("r1", "x" * (4 * 100)),
             _read_result("r2", "x" * (4 * 200)),
@@ -623,7 +623,7 @@ class TestSizeBucket:
 
 class TestAccumulateSession:
     def test_main_file_sidechain_records_are_left_to_the_subagent_windows(self):
-        sidechain_turn = _turn("m-side", [_read_tool_use("r1", file_path="/a.py")])
+        sidechain_turn = _turn("m-side", [_read_use("r1", file_path="/a.py")])
         sidechain_turn["isSidechain"] = True
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
@@ -639,7 +639,7 @@ class TestAccumulateSession:
             totals, read_cost._SeenIds(),
             [_turn("m1", usage={"output_tokens": 2})],
             [(_TRACKED_AGENT_TYPE, _sidechain_copies([
-                _turn("s1", [_read_tool_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
+                _turn("s1", [_read_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
                 _read_result("r1", _HUNDRED_TOKEN_TEXT),
                 _turn("s2", usage={"output_tokens": 1}),
             ]))],
@@ -666,11 +666,11 @@ class TestAccumulateSession:
         read_cost._accumulate_session(
             totals, read_cost._SeenIds(),
             [
-                _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
+                _turn("m1", [_read_use("r1", file_path="/a.py")]),
                 _read_result("r1", "x" * 4 * 100),
             ],
             [(_TRACKED_AGENT_TYPE, [
-                _turn("s1", [_read_tool_use("r2", file_path="/b.py")]),
+                _turn("s1", [_read_use("r2", file_path="/b.py")]),
                 _read_result("r2", "x" * 4 * 6000),
             ])],
             _weights(),
@@ -707,9 +707,9 @@ class TestAccumulateSession:
             [_turn("m1", usage={"output_tokens": 2})],
             [(_TRACKED_AGENT_TYPE, [
                 _turn("s1", [
-                    _read_tool_use("r1", file_path="/a.py"),
-                    _read_tool_use("r2", file_path="/b.py"),
-                    _read_tool_use("r3", file_path="/c.py", limit=5),
+                    _read_use("r1", file_path="/a.py"),
+                    _read_use("r2", file_path="/b.py"),
+                    _read_use("r3", file_path="/c.py", limit=5),
                 ], usage={"output_tokens": 1}),
                 _read_result("r1", _HUNDRED_TOKEN_TEXT),
                 _read_result("r2", "x" * 1000),
@@ -723,7 +723,7 @@ class TestAccumulateSession:
 
     def test_session_resent_in_a_second_file_is_counted_once(self):
         records = [
-            _turn("m1", [_read_tool_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
+            _turn("m1", [_read_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ]
         totals = read_cost._ReadCostTotals()
@@ -739,9 +739,9 @@ class TestAccumulateSession:
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
             totals, read_cost._SeenIds(),
-            [_turn("m1", [_read_tool_use("r1", file_path="/a.py")]), _read_result("r1", _HUNDRED_TOKEN_TEXT)],
+            [_turn("m1", [_read_use("r1", file_path="/a.py")]), _read_result("r1", _HUNDRED_TOKEN_TEXT)],
             [(_TRACKED_AGENT_TYPE, [
-                _turn("s1", [_read_tool_use("r2", file_path="/a.py")]),
+                _turn("s1", [_read_use("r2", file_path="/a.py")]),
                 _read_result("r2", _HUNDRED_TOKEN_TEXT),
             ])],
             _weights(),
@@ -753,7 +753,7 @@ class TestAccumulateSession:
         read_cost._accumulate_session(
             totals, read_cost._SeenIds(),
             [
-                _turn("m1", [_read_tool_use("r1", file_path="/a.py", limit=10)]),
+                _turn("m1", [_read_use("r1", file_path="/a.py", limit=10)]),
                 _read_result("r1", _HUNDRED_TOKEN_TEXT),
             ],
             [(_TRACKED_AGENT_TYPE, _read_exchange("s1", "r2", "/a.py"))],
@@ -768,9 +768,9 @@ class TestAccumulateSession:
         read_cost._accumulate_session(totals, seen, _read_exchange("a-m1", "a-r1", "/a.py"), [], _weights())
         both_paths_in_one_turn = [
             _turn("b-s2", [
-                _read_tool_use("b-r3", file_path="/a.py"),
-                _read_tool_use("b-r4", file_path="/b.py"),
-                _read_tool_use("b-r5", file_path="/c.py"),
+                _read_use("b-r3", file_path="/a.py"),
+                _read_use("b-r4", file_path="/b.py"),
+                _read_use("b-r5", file_path="/c.py"),
             ]),
             _read_result("b-r3", _HUNDRED_TOKEN_TEXT),
             _read_result("b-r4", _HUNDRED_TOKEN_TEXT),
@@ -808,7 +808,7 @@ class TestAccumulateSession:
 
     def test_subagent_transcript_repeated_in_a_second_file_is_billed_and_read_once(self):
         window_records = [
-            _turn("s1", [_read_tool_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
+            _turn("s1", [_read_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ]
         totals = read_cost._ReadCostTotals()
@@ -1271,7 +1271,7 @@ class TestSkippedInput:
 class TestReport:
     def _write_corpus(self, fake_projects) -> None:
         main_records = [
-            _turn("m1", [_read_tool_use("r1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
+            _turn("m1", [_read_use("r1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
             _read_result("r1", "line\n" * 1000),
             _turn("m2", [_edit_use("e1", path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
         ]
@@ -1279,7 +1279,7 @@ class TestReport:
         _write_subagent_dispatch(
             fake_projects, "sentinel-session-id", "agent-tracked", "tool-1",
             _sidechain_copies([
-                _turn("s1", [_read_tool_use("a1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
+                _turn("s1", [_read_use("a1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
                 _read_result("a1", "line\n" * 1000),
             ]),
             agent_type=_TRACKED_AGENT_TYPE,
@@ -1287,7 +1287,7 @@ class TestReport:
         _write_subagent_dispatch(
             fake_projects, "sentinel-session-id", "agent-untracked", "tool-2",
             _sidechain_copies([
-                _turn("s2", [_read_tool_use("a2", file_path="/sentinel/dir/other.py")], usage={"output_tokens": 10}),
+                _turn("s2", [_read_use("a2", file_path="/sentinel/dir/other.py")], usage={"output_tokens": 10}),
                 _read_result("a2", "line\n" * 1000),
             ]),
             agent_type=_UNTRACKED_AGENT_TYPE,

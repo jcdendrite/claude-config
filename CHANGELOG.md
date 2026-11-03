@@ -6,6 +6,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
+  - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
+  - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
+  - Most tests that check the error path for too-deeply-nested input now inject a `RecursionError` instead of building input deep enough to overflow, because the overflow depth differs between 3.12 and 3.14 and with the host's stack size.
+  - A canary in `evals/test_review_bench_cli.py` still builds input deep enough to overflow, to confirm CPython raises `RecursionError` instead of crashing.
+  - The README's Python floor for stow users stays 3.11, and CI exercises only 3.14. Code that needs a newer stdlib API or newer behavior than 3.11 passes CI and can fail on a stow user's Python.
 - **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
   - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
   - `/ready-for-review` reviews now count and can trip the gate. A consult interrupts a run at a denied reviewer spawn. It routinely does so once the run needs a fix. It can also land on a pass that would have come out clean.
@@ -50,7 +56,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are no longer exempt from `comment-discipline-reviewer`'s "Prose at the wrong altitude" angle.
   - `ai-instruction-and-memory-files` gains a placement row for content that isn't a rule.
   - The change is live on `git pull`.
-- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 525.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
+- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 550.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
 - **`cost-counts` "Subagent spawns" now counts reviewer agents spawned inside a `review-orchestrator` transcript, and any other subagent's, not only main-thread dispatches.** Figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure.
 - **`/code-review` Step 1 and `/plan-review` Step 4 now declare each change's user surface and threat tier from a closed list, and every reviewer they spawn receives it whenever a value is declared.**
   - The tag reads `declared: <surface>, <tier>`, with surface `dev-only` or `production` and tier `cooperative`, `untrusted-input` or `adversarial`, or `declared: undeclared`. Code, config, the engineer's words, loaded instruction files and project layers settle it. A comment, doc, plan, PR body or ticket the change's author wrote, or an instruction-file line added or edited anywhere since the merge base, can only raise it.
@@ -108,6 +114,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - It passes `--no-color --no-ext-diff`, `--ignore-submodules=none` and a context width pinned to 3 lines by an inline `GIT_DIFF_OPTS=-u3`.
     - A `.gitmodules` `ignore` setting no longer drops a gitlink change from the text.
     - `textconv` no longer applies: a text file with a `textconv` driver now prints its raw diff, unconverted, and a binary file with one prints `Binary files ... differ`.
+- **`pr-diff-against-base.sh` now prints `DIFF_EMPTY: no changes against base` on stderr when the cumulative diff is empty, and `/ready-for-review` step 3 halts on that line instead of on "exit 0 with no output".** The exit status stays 0 and stdout is unchanged, so a script that tests the exit status or reads stdout sees no difference. A script that treated an empty stdout as the empty-diff signal can match the stderr line instead.
+  - `marker.sh write cumulative-review` now answers an empty recorded subject by telling the caller to halt as step 3 says and naming the `DIFF_EMPTY:` line. It keeps the advice to re-run `pr-diff-against-base.sh --record` for a stale empty subject only.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
@@ -498,6 +506,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - It joins each branch's rounds to its merged PR by exact head-branch name, then prints rank correlations, log-log elasticities, size-bucket medians, a within-PR round-cost trend, join diagnostics and per-PR rows.
   - It requires `--this-repo` and `gh`, and reads the active account only by default.
   - `--all-accounts` reads every declared account as one scan. That output is a private view that prints DO NOT PUBLISH and is never proposed for publication.
+- **A new SessionStart hook, `record-session-config-keys.sh`, records every config key's value for each session, always on.** At each startup, `/clear`, compaction and resume, it appends one row to `<config-dir>/.session-config-keys-log.jsonl`. Each row carries the session id, so a later analysis can tell which keys were on for a session. `docs/session-config-keys-log.md` says how to read and trim the log.
+  - It prints nothing when it writes the row.
+  - When it runs and cannot write the row, it prints a short notice and asks the agent to tell the engineer, unless the harness kills the hook first. The notice repeats at every event until the cause is fixed.
+  - In a `claude -p` run, the agent's report can land in the run's output.
+  - The log holds a session id and time for every session on the account.
+  - Nothing trims the log, and it outlives transcript cleanup.
+  - The hook has no config key and no off switch other than removing its `settings.json` entry. `docs/session-config-keys-log.md` § "Notice" says what removal costs.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then a real hooks directory leaves the new hook unlinked while `settings.json` already registers it.
+  - Whether IDE and desktop sessions record a row is untested.
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.

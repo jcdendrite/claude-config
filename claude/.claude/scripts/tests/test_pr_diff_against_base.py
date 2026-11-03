@@ -21,6 +21,7 @@ from helpers import (
     GITLINK_AFTER,
     GITLINK_BEFORE,
     HOOKS_DIR,
+    SKILLS_DIR,
     cumulative_review_value,
     isolated_git_diff,
     isolated_git_env,
@@ -31,6 +32,7 @@ from helpers import (
 from .conftest import (
     _STACKED_BRANCH,
     _commit,
+    _commit_new_file,
     _init_repo,
     _make_feature_branch,
     _make_repo_with_remote,
@@ -40,6 +42,8 @@ from .conftest import (
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-diff-against-base.sh"
 _LIB_SH = HOOKS_DIR / "_lib.sh"
+_READY_FOR_REVIEW_SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
+_READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
 
 
 def _gh_shim_source(base_ref: str | None, state_reply: str | None = None) -> str:
@@ -290,6 +294,38 @@ def _isolated_porcelain_diff(directory: Path, isolated_env: dict, *args: str) ->
     ).stdout
 
 
+_MERGE_METHODS = ("merge-commit", "squash", "rebase-merge", "fast-forward")
+_MERGE_METHODS_KEEPING_HEAD_IN_BASE_HISTORY = ("merge-commit", "fast-forward")
+_SYNC_STATES = ("unsynced", "synced-by-rebase", "synced-by-merge")
+
+
+def _run_git_expecting_success(repo: Path, *args: str) -> None:
+    """Run git in repo and fail with its stderr, so a conflicting or refused step is visible."""
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"git {' '.join(args)} failed: {result.stdout}{result.stderr}"
+
+
+def _land_feature_branch_on_main(repo: Path, feature_branch: str, merge_method: str) -> None:
+    """Land feature_branch on the checked-out main.
+
+    Merge-commit, squash and rebase-merge mirror the methods GitHub offers; fast-forward is a
+    local landing only. The rebase merge first moves main on with an unrelated commit, so the replayed commits get
+    different parents and therefore different SHAs from the feature's own.
+    """
+    if merge_method == "merge-commit":
+        _run_git_expecting_success(repo, "merge", "--no-ff", "-q", "-m", "merge feature", feature_branch)
+    elif merge_method == "squash":
+        _run_git_expecting_success(repo, "merge", "--squash", "-q", feature_branch)
+        _run_git_expecting_success(repo, "commit", "-q", "-m", "squash feature")
+    elif merge_method == "rebase-merge":
+        _commit_new_file(repo, "unrelated.txt")
+        _run_git_expecting_success(repo, "cherry-pick", f"main..{feature_branch}")
+    elif merge_method == "fast-forward":
+        _run_git_expecting_success(repo, "merge", "--ff-only", "-q", feature_branch)
+    else:
+        raise ValueError(f"unknown merge method: {merge_method}")
+
+
 class TestNormalPathAgainstMain:
     def test_diverged_feature_branch_diff_mentions_changed_file(self, tmp_path):
         """The simplest regression guard against an EXIT trap whose last
@@ -308,6 +344,185 @@ class TestNormalPathAgainstMain:
         assert result.returncode == 0
         assert "diff --git a/file.txt b/file.txt" in result.stdout
         assert "+work on feat/add-thing" in result.stdout
+
+    def test_empty_cumulative_diff_reports_diff_empty_on_stderr(self, tmp_path):
+        """A bare invocation takes the cumulative arm, not the --staged arm.
+        The --staged arm's own line reads `no staged changes`, so the
+        full-line assertion pins the cumulative arm's text."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_branch_ahead_of_base_whose_commits_cancel_out_reports_diff_empty(self, tmp_path):
+        """A branch with commits ahead of origin/main whose tree equals the base's tree
+        (a change and its revert) still reports DIFF_EMPTY:, so the empty-diff signal
+        keys on the diff and not on the branch having no commits of its own."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/change-and-revert"], cwd=local, check=True)
+        _commit(local, "change that is reverted")
+        subprocess.run(["git", "revert", "--no-edit", "HEAD"], cwd=local, check=True, capture_output=True)
+        commits_ahead_of_base = subprocess.run(
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            cwd=local, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert commits_ahead_of_base == "2", "control: the empty diff is not a no-commits-ahead case"
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_head_merged_into_a_strictly_ahead_base_reports_diff_empty(self, tmp_path):
+        """A feature branch merged into main by a merge commit leaves origin/main
+        strictly ahead of HEAD with HEAD as its ancestor. The merge-base is then
+        HEAD itself, so the cumulative diff is empty and the signal must still print."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/merged-by-merge-commit")
+        subprocess.run(
+            ["git", "merge", "--no-ff", "-q", "-m", "merge feature", "feat/merged-by-merge-commit"],
+            cwd=local, check=True,
+        )
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/merged-by-merge-commit"], cwd=local, check=True)
+        head_is_ancestor_of_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
+            cwd=local, check=False,
+        ).returncode
+        head, base = (
+            subprocess.run(
+                ["git", "rev-parse", ref], cwd=local, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            for ref in ("HEAD", "refs/remotes/origin/main")
+        )
+        assert head_is_ancestor_of_base == 0, "control: HEAD is an ancestor of origin/main"
+        assert head != base, "control: origin/main is strictly ahead of HEAD"
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        assert result.stderr == "DIFF_EMPTY: no changes against base\n"
+
+    def test_head_squash_merged_into_base_leaves_a_non_empty_diff_without_diff_empty(self, tmp_path):
+        """A feature branch squash-merged into main leaves HEAD outside origin/main's
+        history, so the merge-base is the pre-feature commit and the cumulative diff
+        is non-empty even though the trees match. The script must not print the
+        signal while a squash-merged branch is unsynced."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/merged-by-squash")
+        subprocess.run(["git", "merge", "--squash", "-q", "feat/merged-by-squash"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "squash feature"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/merged-by-squash"], cwd=local, check=True)
+        head_is_ancestor_of_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
+            cwd=local, check=False,
+        ).returncode
+        base_tree, head_tree = (
+            subprocess.run(
+                ["git", "rev-parse", f"{ref}^{{tree}}"], cwd=local, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            for ref in ("refs/remotes/origin/main", "HEAD")
+        )
+        # Exit 1 is "not an ancestor"; exit 128 is a git error and must fail the control.
+        assert head_is_ancestor_of_base == 1, "control: HEAD is not an ancestor of origin/main"
+        assert base_tree == head_tree, (
+            "control: the squash commit carries the feature tip's tree while HEAD is outside origin/main's history"
+        )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/file.txt b/file.txt" in result.stdout
+        assert "+work on feat/merged-by-squash" in result.stdout
+        assert "DIFF_EMPTY:" not in result.stderr
+
+    @pytest.mark.parametrize(
+        ("merge_method", "sync_state", "expect_diff_empty"),
+        [
+            pytest.param(
+                merge_method,
+                sync_state,
+                sync_state != "unsynced" or merge_method in _MERGE_METHODS_KEEPING_HEAD_IN_BASE_HISTORY,
+                id=f"{merge_method}-{sync_state}",
+            )
+            for merge_method in _MERGE_METHODS
+            for sync_state in _SYNC_STATES
+            # A synced fast-forward leaves HEAD at origin/main, the same state as unsynced.
+            if sync_state == "unsynced" or merge_method != "fast-forward"
+        ],
+    )
+    def test_merged_feature_branch_reports_diff_empty_by_merge_method_and_sync_state(
+        self, tmp_path, merge_method, sync_state, expect_diff_empty
+    ):
+        """A two-commit feature branch landed on main by each merge method, with the feature
+        branch checked out either as-is or after a rebase or merge of origin/main.
+        Unsynced, only methods that keep the feature tip in origin/main's history leave an
+        empty cumulative diff, and a completed sync makes every method empty.
+        The cells pin the git sync semantics that ready-for-review step 3's prose relies on,
+        not extra script branches.
+        Cells sharing a repo topology are intentional: their sync moves HEAD.
+        The fixtures assume the sync completes cleanly (add-only, non-conflicting files),
+        so the cells pin the script's reading of a completed sync, not that every merged branch syncs cleanly."""
+        feature_branch = "feat/two-commits"
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", feature_branch], cwd=local, check=True)
+        _commit_new_file(local, "first.txt")
+        _commit_new_file(local, "second.txt")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+
+        _land_feature_branch_on_main(local, feature_branch, merge_method)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", feature_branch], cwd=local, check=True)
+        head_is_ancestor_of_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"],
+            cwd=local, check=False,
+        ).returncode
+        # Exit 1 is "not an ancestor"; exit 128 is a git error and must fail the control.
+        assert head_is_ancestor_of_base == (
+            0 if merge_method in _MERGE_METHODS_KEEPING_HEAD_IN_BASE_HISTORY else 1
+        ), "control: the merge method leaves the feature tip in or out of origin/main's history"
+
+        if sync_state == "synced-by-rebase":
+            _run_git_expecting_success(local, "rebase", "-q", "origin/main")
+        elif sync_state == "synced-by-merge":
+            _run_git_expecting_success(local, "merge", "--no-ff", "-q", "-m", "sync with main", "origin/main")
+        if sync_state != "unsynced":
+            origin_main_is_ancestor_of_head = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"],
+                cwd=local, check=False,
+            ).returncode
+            assert origin_main_is_ancestor_of_head == 0, (
+                "control: the sync must put origin/main into HEAD's history"
+            )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"))
+
+        assert result.returncode == 0, result.stderr
+        if expect_diff_empty:
+            assert result.stdout == "\n"
+            assert result.stderr.splitlines().count("DIFF_EMPTY: no changes against base") == 1, result.stderr
+        else:
+            assert result.stdout.strip() != ""
+            assert "DIFF_EMPTY:" not in result.stderr
+
+    def test_non_empty_cumulative_diff_does_not_report_diff_empty(self, tmp_path):
+        """Guards against the DIFF_EMPTY: line being emitted unconditionally
+        or on an inverted condition."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/non-empty-diff")
+        subprocess.run(["git", "checkout", "-q", "feat/non-empty-diff"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() != ""
+        assert "DIFF_EMPTY:" not in result.stderr
 
     def test_merge_base_diff_ignores_color_and_external_diff_config(self, tmp_path):
         """Repo-local `color.ui=always` and `diff.external` must not reach the cumulative diff:
@@ -789,6 +1004,32 @@ class TestStackBaseKeyPath:
         assert f"branch.{_STACKED_BRANCH}.gh-merge-base = {stack_base}" in result.stderr
         assert "defaulting base to" not in result.stderr
 
+    def test_key_set_to_a_ref_containing_head_reports_diff_empty_alongside_the_using_line(self, tmp_path):
+        """A stack base that already holds the branch's commits leaves an empty cumulative diff,
+        so DIFF_EMPTY: appears once, after the `using` line that names the key."""
+        local, _bare = _make_stacked_repo(tmp_path)
+        subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/contains-head"], cwd=local, check=True)
+        subprocess.run(
+            ["git", "config", f"branch.{_STACKED_BRANCH}.gh-merge-base", "contains-head"], cwd=local, check=True
+        )
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, None))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        stderr_lines = result.stderr.splitlines()
+        diff_empty_indexes = [
+            index for index, line in enumerate(stderr_lines) if line == "DIFF_EMPTY: no changes against base"
+        ]
+        using_indexes = [
+            index
+            for index, line in enumerate(stderr_lines)
+            if f"using branch.{_STACKED_BRANCH}.gh-merge-base = contains-head" in line
+        ]
+        assert len(diff_empty_indexes) == 1, result.stderr
+        assert len(using_indexes) == 1, result.stderr
+        assert using_indexes[0] < diff_empty_indexes[0], result.stderr
+
     def test_no_key_control_on_the_same_fixture_diffs_the_stack_bases_commits_too(self, tmp_path):
         local, _bare = _make_stacked_repo(tmp_path)
         subprocess.run(
@@ -1269,6 +1510,46 @@ class TestDiffFileFlag:
         artifact = _diff_artifact_path(env, local, self.SID)
         assert artifact.read_bytes() == b"\n"
 
+    def test_record_and_diff_file_on_empty_cumulative_diff_announce_diff_empty_before_diff_file(self, tmp_path):
+        """The DIFF_EMPTY: line precedes DIFF_FILE: on stderr, so a caller
+        reading stderr in order sees the halt signal before the artifact path.
+        The recorded subject is still the 0-byte artifact of a genuinely empty diff."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env, record=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        stderr_lines = result.stderr.splitlines()
+        diff_empty_indexes = [
+            index for index, line in enumerate(stderr_lines) if line == "DIFF_EMPTY: no changes against base"
+        ]
+        diff_file_indexes = [index for index, line in enumerate(stderr_lines) if line.startswith("DIFF_FILE: ")]
+        assert len(diff_empty_indexes) == 1, result.stderr
+        assert len(diff_file_indexes) == 1, result.stderr
+        assert diff_empty_indexes[0] < diff_file_indexes[0], result.stderr
+        assert _subject_path(env, local, self.SID).stat().st_size == 0
+
+    def test_diff_empty_line_starts_with_the_token_ready_for_review_step_3_keys_its_halt_on(self, tmp_path):
+        """The empty-diff halt in ready-for-review step 3 is keyed on a `DIFF_EMPTY:` stderr
+        line, so a real empty cumulative run must print a line starting with that token."""
+        token = "DIFF_EMPTY:"
+        skill_lines = _READY_FOR_REVIEW_SKILL_MD.read_text().splitlines(keepends=True)
+        step3_start = skill_lines.index(_READY_FOR_REVIEW_STEP3_HEADING + "\n")
+        step3_end = next(
+            (i for i in range(step3_start + 1, len(skill_lines)) if skill_lines[i].startswith("## ")),
+            len(skill_lines),
+        )
+        assert token in "".join(skill_lines[step3_start:step3_end]), (
+            "ready-for-review/SKILL.md step 3 no longer keys its empty-diff halt on the DIFF_EMPTY: line"
+        )
+        local, _bare = _make_repo_with_remote(tmp_path)
+
+        result = _run_script(local, _env_with_gh_shim(tmp_path, "main"), record=True, diff_file=True)
+
+        assert result.returncode == 0, result.stderr
+        assert any(line.startswith(token) for line in result.stderr.splitlines()), result.stderr
+
     def test_diff_file_rerun_supersedes_prior_artifact_at_same_path(self, tmp_path):
         """Two runs with different diff content leave one file at one path
         holding the second run's bytes, and the directory holds exactly one
@@ -1555,6 +1836,27 @@ class TestDiffFileFlagWithoutASession:
         assert "DIFF_FILE:" not in result.stderr
         diff_dir = Path(env["CLAUDE_CONFIG_DIR"]) / "cumulative-review-diff-markers"
         assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
+
+    def test_empty_diff_reports_diff_empty_once_and_skips_both_artifacts_without_a_session(self, tmp_path):
+        """An empty cumulative diff with no live session still prints exactly
+        one DIFF_EMPTY: line, and both --record and --diff-file report their
+        resolution failure without announcing a DIFF_FILE: path."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env, record=True, diff_file=True)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "\n"
+        stderr_lines = result.stderr.splitlines()
+        diff_empty_lines = [line for line in stderr_lines if line.startswith("DIFF_EMPTY:")]
+        assert diff_empty_lines == ["DIFF_EMPTY: no changes against base"]
+        assert not any(line.startswith("DIFF_FILE:") for line in stderr_lines)
+        assert "--record could not resolve the repo root, config directory, or session id" in result.stderr
+        assert "--diff-file could not resolve the repo root, config directory, or session id" in result.stderr
+        for artifact_dir_name in ("cumulative-review-subject-markers", "cumulative-review-diff-markers"):
+            artifact_dir = Path(env["CLAUDE_CONFIG_DIR"]) / artifact_dir_name
+            assert not artifact_dir.exists() or list(artifact_dir.iterdir()) == []
 
 
 def _lib_staged_diff_hash_of_repo(repo_root: str, env: dict) -> str:

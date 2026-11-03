@@ -1241,12 +1241,10 @@ class TestPythonDocstringLines:
         assert stats.python_docstring_parse_attempts == 1
         assert stats.python_docstring_parse_failures == 1
 
-    # On CPython 3.12.3, about 10000 operands raise RecursionError and about 6000 unary operators
-    # exhaust the parser stack.
+    # About 6000 unary operators exhaust the parser stack on CPython 3.12.3.
     @pytest.mark.parametrize(
         "pathological_source",
         [
-            pytest.param("x = " + "+".join(["1"] * 20_000) + "\n", id="operator chain overflows the recursion limit"),
             pytest.param("x = " + "-" * 20_000 + "1\n", id="unary operator chain overflows the parser stack"),
             pytest.param("x = 1\0\n", id="NUL byte in the blob (ast.parse raises ValueError before 3.12, SyntaxError since)"),
         ],

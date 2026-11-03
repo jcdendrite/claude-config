@@ -2376,6 +2376,19 @@ def extract_ci_detect_step_run_block() -> str:
     return detect_steps[0]["run"]
 
 
+SETUP_PYTHON_ACTION = "actions/setup-python"
+
+
+def setup_python_steps(workflow: dict) -> list[tuple[str, dict]]:
+    """Return each `actions/setup-python` step of a parsed workflow with a label naming its job and position."""
+    labelled_steps = []
+    for job_id, job in (workflow.get("jobs") or {}).items():
+        for position, step in enumerate(job.get("steps") or [], start=1):
+            if isinstance(step, dict) and str(step.get("uses", "")).split("@")[0] == SETUP_PYTHON_ACTION:
+                labelled_steps.append((f"job {job_id!r} step {position} ({step['uses']})", step))
+    return labelled_steps
+
+
 def substitute_ci_detect_step_expressions(script: str, base_sha: str, head_sha: str) -> str:
     """Replace GitHub Actions `${{ }}` expressions with literal values.
 
