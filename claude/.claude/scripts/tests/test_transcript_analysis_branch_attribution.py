@@ -2,26 +2,50 @@
 (_session_branch_context, _attributed_branch, _attribute_carried_branch): the pre-branch step that credits a session's leading
 default-branch records to the first branch it enters, and the timeline step
 that resolves every sidechain record against its dispatching main thread."""
+import json
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 from helpers import REPO_ROOT
-from transcript_analysis import buckets, corpus, cost, period_cost, review_rounds, review_trace, scope, subagent_mix
+from transcript_analysis import (
+    buckets,
+    corpus,
+    cost,
+    duration,
+    judgment_pair,
+    period_cost,
+    pr_link,
+    review_rounds,
+    review_trace,
+    scope,
+    skill_invocation,
+    skill_pair,
+    struggle,
+    subagent_mix,
+    user_input,
+)
 
+from ._session_signal_helpers import _SONNET, _branch_args, _ui_user, _user_input_args
+from ._skill_helpers import _judgment_pair_args, _review_asst, _skill_inv_args, _skill_pair_args, _user_reply
 from .conftest import (
     _agent_use,
+    _asst,
+    _attr_ts,
     _cost_args,
     _record_ids_in,
     _record_ids_in_dollars,
     _signed_priced_turn,
     _skill_use,
+    _skill_use_rec,
     _table_cols,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
+    _write_subagent_jsonl,
 )
 
 
@@ -634,3 +658,245 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
                 f"{consumer} counted {observation.count_under_branch} under the branch, "
                 f"the cost family puts {expected_count} of its observed records there"
             )
+
+
+class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
+    """A session that opens on the default branch and then enters a feature branch:
+    each shim subcommand credits the leading default-branch records to that branch
+    (docs/transcript-analysis.md, "Pre-branch default-branch attribution")."""
+
+    def test_buckets_date_range_starts_at_prefix_and_main_row_counts_drop(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts="2026-06-01T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:05:00.000Z"),
+            _asst(_SONNET, branch="main", ts="2026-06-03T10:00:00.000Z"),
+        ])
+        # Never returns to main, so its main row membership moves entirely to the branch.
+        _write_jsonl(fake_projects / "sess-no-return.jsonl", [
+            _asst(_SONNET, branch="main", ts="2026-06-01T11:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T11:00:00.000Z"),
+        ])
+        buckets.cmd_buckets(_branch_args())
+        out = capsys.readouterr().out
+        feature_cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
+        main_cols = _table_cols(out, header_contains="Branch", row_contains="main", max_labels=8)
+        assert feature_cols["Total"] == "5"  # each session's prefix turn plus its turns on the branch
+        assert feature_cols["Sess"] == "2"
+        assert main_cols["Total"] == "1"  # only the turn after the boundary stays
+        assert main_cols["Sess"] == "1"
+        assert "2026-06-01..2026-06-02" in out
+        assert "2026-06-03..2026-06-03" in out
+
+    def test_buckets_branch_filter_keeps_the_prefix_turn(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        buckets.cmd_buckets(_branch_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        assert _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)["Total"] == "2"
+
+    def test_duration_span_includes_the_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(0)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(10)),
+        ])
+        duration.cmd_duration(_branch_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
+        assert cols["Span(min)"] == "10"  # 12:00 to 12:10, not 12:05 to 12:10
+        assert cols["Active(min)"] == "10"
+
+    def test_struggle_counts_a_prefix_correction_under_the_branch_entered(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _user_msg([{"type": "text", "text": "this is the wrong approach"}], branch="main", ts=_attr_ts(2)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        struggle.cmd_struggle(_branch_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
+        assert cols["Opus"] == "1"
+
+    def test_user_input_unfiltered_branchless_prompt_keeps_an_empty_label(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("a prompt recorded with no branch", branch="", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="", ts=_attr_ts(2)),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "a prompt recorded with no branch" in out
+        assert "None" not in out
+        assert re.search(r"^### \S+ ·  · \d{4}-\d{2}-\d{2}$", out, re.MULTILINE)
+
+    def test_user_input_branch_filter_counts_the_prefix_first_prompt_as_the_initial_prompt(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prefix planning prompt", branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="main", ts=_attr_ts(2)),
+            _ui_user("prompt after entering the branch", branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(6)),
+        ])
+        user_input.cmd_user_input(_user_input_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        assert re.search(r"INITIAL · \w+\]\*\*\n~~~text\nprefix planning prompt\n~~~", out)
+        assert re.search(r"FOLLOWUP · \w+\]\*\*\n~~~text\nprompt after entering the branch\n~~~", out)
+
+    def test_judgment_pair_prints_the_attributed_branch_of_a_prefix_invocation(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", _attr_ts(1), branch="main"),
+            _review_asst("Review text recorded before the branch existed.", _attr_ts(2), branch="main"),
+            _user_reply("Acknowledged.", branch="main"),
+            _review_asst("Work on the branch.", _attr_ts(5), branch="feature-x"),
+        ])
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        assert "Skill: code-review  branch=feature-x" in out
+
+    def test_user_input_since_window_leaves_a_later_default_branch_prompt_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main. The session
+        context is built before the window filter; one built from in-window prompts would
+        see the second main as the leading run and credit its prompt to Y."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prefix prompt", branch="main", ts="2026-06-01T10:00:00.000Z"),
+            _ui_user("prompt on branch x", branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _ui_user("later prompt on the default branch", branch="main", ts="2026-06-04T10:00:00.000Z"),
+            _ui_user("prompt on branch y", branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
+        ])
+
+        user_input.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "later prompt on the default branch" in main_out
+        user_input.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
+        feature_y_out = capsys.readouterr().out
+        assert "prompt on branch y" in feature_y_out
+        assert "later prompt on the default branch" not in feature_y_out
+
+    def test_judgment_pair_since_window_leaves_a_later_default_branch_invocation_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main: the second
+        main's invocation stays on main, as a context built from in-window records would
+        not keep it."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-06-01T10:00:00.000Z", branch="main", tool_id="s1"),
+            _review_asst("Review recorded before the branch existed.", "2026-06-01T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _skill_use_rec("code-review", "2026-06-04T10:00:00.000Z", branch="main", tool_id="s2"),
+            _review_asst("Review recorded on the default branch later.", "2026-06-04T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
+        ])
+
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "Skill: code-review  branch=main" in main_out
+        assert "Review recorded on the default branch later." in main_out
+        judgment_pair.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
+        assert "Review recorded on the default branch later." not in capsys.readouterr().out
+
+    def test_pr_link_counts_the_prefix_turn_toward_the_branch_model_split(self, fake_projects, monkeypatch, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+
+        def fake_run(cmd, *_, **__):
+            class Completed:
+                stdout = json.dumps([{"number": 77}]) if "list" in cmd else ""
+                returncode = 0
+
+            return Completed()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        pr_link.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
+        assert (cols["Opus"], cols["Sonnet"]) == ("1", "1")
+
+
+class TestSubagentRecordsFollowTheDispatchingBranch:
+    """skill-invocation --include-subagents and skill-pair attribute every subagent
+    record to the branch its dispatching main thread was on at the record's time."""
+
+    @staticmethod
+    def _run_skill_invocation(capsys, **kw) -> str:
+        skill_invocation.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
+        return capsys.readouterr().out
+
+    def test_prefix_late_and_isolated_sidechain_invocations_count_under_the_branch_entered(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-prefix"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst(_SONNET, branch="main", sidechain=True, ts=_attr_ts(2),
+                  content=[_skill_use("p1", "plan-it")]),
+            _asst(_SONNET, branch="main", sidechain=True, ts=_attr_ts(8),
+                  content=[_skill_use("p2", "plan-review")]),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(9),
+                  content=[_skill_use("p3", "code-review")]),
+        ])
+        out = self._run_skill_invocation(capsys, branches="feature-x")
+        for skill in ("plan-it", "plan-review", "code-review"):
+            assert re.search(rf"^{skill}\s+sidechain", out, re.MULTILINE), f"{skill} missing: {out}"
+
+    def test_sidechain_invocation_in_a_later_branch_stretch_counts_under_that_branch_whatever_its_tag(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-switch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-y", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst(_SONNET, branch="feature-x", sidechain=True, ts=_attr_ts(8),
+                  content=[_skill_use("s1", "code-review")]),
+        ])
+        under_y = self._run_skill_invocation(capsys, branches="feature-y")
+        under_x = self._run_skill_invocation(capsys, branches="feature-x")
+        assert "code-review" in under_y
+        assert "No skill invocations found." in under_x
+
+    def test_skill_pair_counts_isolated_and_foreign_tagged_sidechain_followers_under_the_branch_entered(
+        self, fake_projects, capsys
+    ):
+        leader_use = [_skill_use("l1", "plan-it")]
+        for session_id, follower_tag in (("sess-a", "worktree-agent-abc123"), ("sess-b", "unrelated-branch")):
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _asst(_SONNET, branch="main", ts=_attr_ts(1), content=leader_use),
+                _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            ])
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+                _asst(_SONNET, branch=follower_tag, sidechain=True, ts=_attr_ts(8),
+                      content=[_skill_use("f1", "plan-review")]),
+            ])
+        skill_pair.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert (cols["Lead"], cols["Main"], cols["Side"]) == ("2", "0", "2")
+
+    def test_foreign_cwd_sidechain_skill_name_counts_under_the_dispatching_branch(
+        self, fake_projects, capsys
+    ):
+        """Pins a disclosed flow: a subagent dispatched into another repo has its skill
+        names counted under the dispatching branch, so --branches X --include-subagents
+        prints them whatever the subagent's own cwd (docs/transcript-analysis.md, Limits)."""
+        session_id = "sess-cross-repo"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        foreign_record = _asst(_SONNET, branch="other-repo-branch", sidechain=True, ts=_attr_ts(3),
+                               content=[_skill_use("f1", "privateco-plugin:internal-runbook")])
+        foreign_record["cwd"] = "/elsewhere/other-repo"
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [foreign_record])
+        out = self._run_skill_invocation(capsys, branches="feature-x")
+        assert re.search(r"^privateco-plugin:internal-runbook\s+sidechain", out, re.MULTILINE), out
