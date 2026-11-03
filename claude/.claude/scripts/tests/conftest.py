@@ -882,10 +882,19 @@ def _compact_boundary_rec() -> dict:
     return {"type": "system", "subtype": "compact_boundary"}
 
 
-def _api_request_blob_rec(content: list, *, agent_id: str | None = None, ts: str | None = None) -> dict:
+# Record types outside corpus.CONVERSATION_RECORD_TYPES. "attachment" is a hypothetical future content-carrying type
+# (real attachment records have no message.content); it keeps message.content so a blacklist rewrite of the filter
+# stays detectable.
+_NON_CONVERSATION_CONTENT_RECORD_TYPES = ("api-request-blob", "attachment")
+
+
+def _api_request_blob_rec(
+    content: list, *, agent_id: str | None = None, ts: str | None = None, record_type: str = "api-request-blob",
+) -> dict:
     """A request-content copy record: carries message.content blocks but, unlike a real
-    assistant/user record, has no isSidechain key."""
-    rec: dict = {"type": "api-request-blob", "message": {"content": content}}
+    assistant/user record, has no isSidechain key. `record_type` stands in for any other non-conversation
+    record type that carries message.content."""
+    rec: dict = {"type": record_type, "message": {"content": content}}
     if agent_id is not None:
         rec["agentId"] = agent_id
     if ts:

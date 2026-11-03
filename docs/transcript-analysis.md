@@ -1528,12 +1528,12 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 - Tool ids and `message.id` usage are counted once across all files, so a resumed or forked session that repeats earlier records does not count twice. A tool id counts as seen only once its result is kept.
 
 **Output.** Aggregates only: no path, session id or project name prints.
-- A scope header naming the scope label, the active account and this repository, and stating that `~/.claude/transcript-config-dirs` was not consulted.
+- A scope header naming the scope label, the active account and the working directory's repository, and stating that `~/.claude/transcript-config-dirs` was not consulted.
 - Sessions, API calls, and the billed share of main thread versus subagents.
 - A `skipped input:` line with the count of each unreadable input and of invalid-usage turns. A missing sidecar is not counted.
 - The count of main-thread whole-file reads scanned.
 - `repeated_reads_skipped`, on the `sessions=` line: Read calls skipped because their tool id was already seen. A re-read of a path is a new call, so it never counts here.
-- Main-thread whole-file reads over 350 and over 800 lines, each split by edited later or not: count, estimated tokens, median remaining turns, and share of total and of main-thread billed spend.
+- Main-thread whole-file reads over 350 and over 800 lines, counted as newlines in the Read result text, not the file's own line count, each split by edited later or not: count, estimated tokens, median remaining turns, and share of total and of main-thread billed spend.
 - Whole-file read calls and estimated tokens by size bucket (under 2000, 2000-4999, 5000 or more), main thread versus subagent.
 - One row per tracked subagent agent type that has at least one scanned subagent transcript, read from the transcript's sibling `.meta.json` `agentType`, plus a `TOTAL` row. The first line of each row gives agent count, mean turns, share of total spend, whole-file read count and estimated tokens, `whole_file_weight_share`, and `all_read_weight_share`, which counts every kept Read result in the agent type's windows, partial reads included. A second line gives shares of the whole-file weight: reads of 2000 tokens or more (large), large reads never edited later, repeats of a path the same agent already read whole-file, paths the main thread read whole-file at any point in the session or a subagent window scanned before this one read whole-file (seen elsewhere), and the file kind (`instruction` for `skills/`, `agents/`, `rules/` paths and `CLAUDE.md`; `other_prose` for `.md`, `.mdx`, `.txt`; `code/other` otherwise).
 - An agent type prints by name only when this repo's `agents/` directory tracks it or it is a built-in agent type. Every other type, and a transcript with no readable `agentType`, folds into one `(withheld — untracked agent type)` row. The `TOTAL` row includes the folded types.
@@ -1545,13 +1545,13 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 - Every read is weighted as one 5-minute cache write followed by cache reads, whatever tier or hit rate the turns actually had, so a read written to the 1-hour tier or written again after a cache miss is understated.
 - A read first reaches the API on the turn after it is issued, as a cache write, and is a cache read only from the turn after that. The weight charges one cache read for the write turn as well, so it overstates each read with a remaining turn by one cache-read token per token. A read with no remaining turn is never sent in its window and is still charged a full cache write.
 - Whole-file means no `offset` and no `limit`. `read-scope` also files a read with no `file_path` and a `pages` read in their own cohorts. `read-cost` drops a read with no path and judges a `pages` read by `offset` and `limit` alone, so the two commands can disagree on the whole-file count.
-- A main transcript with no records is skipped without being counted, and its `subagents/` directory is not read.
+- A main transcript with no records is skipped without being counted, and its `subagents/` directory is not read, which understates the session count and every subagent figure under it.
 - A subagent's partial read (with `offset` or `limit`) counts toward `all_read_weight_share` only, and a main-thread partial read counts toward no printed figure.
 - A Read whose result is not plain text, such as an image, is left out of every figure, which understates read weight.
 - A subagent file that repeats only some of an earlier subagent file's turns still counts as an agent, so the agent count and mean turns depend on file order in that case.
 - When files repeat records, the first-visited copy (files visit in sorted path order) sets a read's remaining turns and edited-later, and, when its usage is valid, a turn's billed usage. A shorter copy understates read weight and can mark a later-edited read as never edited. A copy cut mid-turn understates that turn's billed weight. `repeated_reads_skipped` bounds how many reads are exposed, not how much weight is understated. A `seen_elsewhere` credit omits main-thread reads that a repeated copy skipped, so it is a floor.
 - Edited-later counts an edit tool call whether or not it succeeded, so failed edits understate never-edited reads. It cannot see edits made through Bash or by another window, which overstates them.
-- Main-file records flagged `isSidechain` are dropped from the main window, and no other window receives them.
+- Main-file records flagged `isSidechain` are dropped from the main window, and no other window receives them. Their reads and billed spend are missing from the subagent figures and the total-spend denominator, not from the main-thread counts.
 - Repeats and edited-later span the whole transcript file, while remaining turns stop at a compaction.
   - An edit after a compaction marks an earlier read as edited later, which understates never-edited reads.
   - A re-read after a compaction counts as a repeat.

@@ -169,8 +169,6 @@ def _read_weight(event: _ReadEvent, weights: dict[str, float]) -> float:
 
 
 def _scan_window(records: Sequence[dict], seen_tool_use_ids: set[str]) -> _WindowScan:
-    """Copies of request content carry the same tool blocks and would double every figure, so only conversation
-    records count."""
     pending: dict[str, dict] = {}
     reads: list[dict] = []
     edited_at_turn: dict[str, int] = {}
@@ -306,7 +304,7 @@ def _accumulate_session(
     subagent_windows: Iterable[tuple[str, Sequence[dict]]],
     weights: dict[str, float],
 ) -> None:
-    """Subagent windows are consumed one at a time, so a generator keeps only one parsed file in memory."""
+    """Subagent windows are consumed lazily, so at most two parsed subagent files are in memory beside the main records."""
     totals.sessions += 1
     main_scan = _scan_window([rec for rec in main_records if not rec.get("isSidechain")], seen.tool_use_ids)
     main_billed, main_calls = _new_billed_weight(main_scan, seen.message_ids, weights)
@@ -392,7 +390,7 @@ def _read_cost_roots() -> list[Path]:
 
 
 def _refuse_wider_scope(args: argparse.Namespace, roots: Sequence[Path]) -> None:
-    """Exit 2 unless the scan is this repo on exactly one account -- the scope that makes the output publishable."""
+    """Exit 2 unless the scan covers the working directory's repository on exactly one account."""
     if not bool(getattr(args, "this_repo", False)) or getattr(args, "projects", None) not in (None, "*"):
         print(
             "read-cost: requires --this-repo and refuses any --projects scope -- see docs/transcript-analysis.md",
@@ -415,7 +413,7 @@ def cmd_read_cost(args: argparse.Namespace) -> None:
 
 def _scope_header(scope_label: str) -> str:
     return (
-        f"READ COST SOURCES ({scope_label}; reads one account (the active account), this repository only;"
+        f"READ COST SOURCES ({scope_label}; reads one account (the active account), the working directory's repository only;"
         f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} not consulted)"
     )
 

@@ -386,7 +386,7 @@ reached bare from the shim — see the exception noted above. `context_compositi
 The read-cost command: `cmd_read_cost`, its `_add_read_cost_subparser` registration, and every helper
 used only by it. Imports `corpus`, `cost`, `pricing`, `redaction`, `render`, `scope`, and `subagent_mix`
 all by module (attribute access). The shim reads `_add_read_cost_subparser` bare. Cross-module private
-reads are `cost._usage_is_invalid`, `redaction._repo_tracked_agent_type_names`, and
+reads include `cost._usage_is_invalid`, `redaction._repo_tracked_agent_type_names`, and
 `subagent_mix._WITHHELD_AGENT_TYPE_LABEL`.
 
 ### `ledger_common.py`

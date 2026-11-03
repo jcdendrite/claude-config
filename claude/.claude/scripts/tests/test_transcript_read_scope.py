@@ -9,6 +9,7 @@ from transcript_analysis import (
 )
 
 from .conftest import (
+    _NON_CONVERSATION_CONTENT_RECORD_TYPES,
     _api_request_blob_rec,
     _asst,
     _bash_use,
@@ -451,7 +452,8 @@ class TestScanReadScopeSession:
         assert stats["repeat_whole_file_reads"] == 1
         assert stats["repeat_whole_file_output_log_reads"] == 0
 
-    def test_api_request_blob_copy_of_subagent_read_is_not_counted_or_filed_as_main(self):
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_copy_of_subagent_read_is_not_counted_or_filed_as_main(self, record_type):
         """An api-request-blob record copies a subagent's Read and its result but carries no
         isSidechain key. Walking it would double the Read count and file the copy under main scope."""
         subagent_read = _asst(
@@ -461,8 +463,8 @@ class TestScanReadScopeSession:
         records = [
             subagent_read,
             subagent_result,
-            _api_request_blob_rec([_read_tool_use("r1", file_path="/sub.py")], agent_id="agent-a"),
-            _api_request_blob_rec([_tool_result("r1", "w" * 4000)], agent_id="agent-a"),
+            _api_request_blob_rec([_read_tool_use("r1", file_path="/sub.py")], agent_id="agent-a", record_type=record_type),
+            _api_request_blob_rec([_tool_result("r1", "w" * 4000)], agent_id="agent-a", record_type=record_type),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["read_total"] == 1
@@ -474,26 +476,29 @@ class TestScanReadScopeSession:
         ] == 0
         assert stats["read_result_tokens_total"] == 1000
 
-    def test_api_request_blob_tool_results_and_locate_calls_excluded_from_denominators(self):
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_tool_results_and_locate_calls_excluded_from_denominators(self, record_type):
         records = [
             _opus([{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}]),
             _user_msg([_tool_result("g1", "x" * 80)]),  # 20 tokens
             _api_request_blob_rec(
                 [{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}],
+                record_type=record_type,
             ),
-            _api_request_blob_rec([_tool_result("g1", "x" * 80)]),
+            _api_request_blob_rec([_tool_result("g1", "x" * 80)], record_type=record_type),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["locate_call_n"] == 1
         assert stats["locate_result_tokens_total"] == 20
         assert stats["all_tool_result_tokens_total"] == 20
 
-    def test_api_request_blob_copy_of_read_is_not_a_repeat_whole_file_read(self):
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_copy_of_read_is_not_a_repeat_whole_file_read(self, record_type):
         records = [
             _opus([_read_tool_use("r1", file_path="/shared.py")]),
             _read_result("r1", "x" * 4000),
-            _api_request_blob_rec([_read_tool_use("r1", file_path="/shared.py")]),
-            _api_request_blob_rec([_tool_result("r1", "x" * 4000)]),
+            _api_request_blob_rec([_read_tool_use("r1", file_path="/shared.py")], record_type=record_type),
+            _api_request_blob_rec([_tool_result("r1", "x" * 4000)], record_type=record_type),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["repeat_whole_file_reads"] == 0

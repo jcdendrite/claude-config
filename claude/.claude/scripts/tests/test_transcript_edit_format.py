@@ -9,6 +9,7 @@ import pytest
 from transcript_analysis import edit_format, scope
 
 from .conftest import (
+    _NON_CONVERSATION_CONTENT_RECORD_TYPES,
     _api_request_blob_rec,
     _bash_use,
     _hook_deny_current,
@@ -445,14 +446,17 @@ class TestScanEditFormatSession:
         assert stats["known_failures"][("Edit", "not_found")] == 1
         assert stats["known_failures"][("Write", "unread")] == 1
 
-    def test_api_request_blob_copies_of_edit_call_and_failure_are_not_counted(self):
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_copies_of_edit_call_and_failure_are_not_counted(self, record_type):
         """A request-content copy of an Edit call and its error result must not double the call
         census or the known-failure count."""
         records = [
             _opus([_edit_tool_use("e1", old_string="a", new_string="b")], out=10),
             _error_result("e1", "String to replace not found in file."),
-            _api_request_blob_rec([_edit_tool_use("e1", old_string="a", new_string="b")]),
-            _api_request_blob_rec(_error_result("e1", "String to replace not found in file.")["message"]["content"]),
+            _api_request_blob_rec([_edit_tool_use("e1", old_string="a", new_string="b")], record_type=record_type),
+            _api_request_blob_rec(
+                _error_result("e1", "String to replace not found in file.")["message"]["content"], record_type=record_type,
+            ),
         ]
         stats = edit_format._scan_edit_format_session(records)
         assert stats["calls"] == {"Edit": 1}

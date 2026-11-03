@@ -11,6 +11,7 @@ import pytest
 from transcript_analysis import corpus, pricing, read_cost, redaction, scope, subagent_mix
 
 from .conftest import (
+    _NON_CONVERSATION_CONTENT_RECORD_TYPES,
     _api_request_blob_rec,
     _asst,
     _compact_boundary_rec,
@@ -41,6 +42,11 @@ def _turn(message_id: str, content: list | None = None, *, usage: dict | None = 
     if usage is not None:
         rec["message"]["usage"] = usage
     return rec
+
+
+def _sidechain_copies(records: list[dict]) -> list[dict]:
+    """Every record a subagent transcript file holds, user records included, carries isSidechain true."""
+    return [{**rec, "isSidechain": True} for rec in records]
 
 
 def _read_cost_args(*, this_repo: bool = True, projects: str = "*") -> object:
@@ -124,13 +130,16 @@ class TestScanWindow:
         ])
         assert _event_for(scan, "/a.py").remaining_turns == 2
 
-    def test_api_request_blob_adds_no_event_and_is_not_a_repeated_read(self):
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_adds_no_event_and_is_not_a_repeated_read(self, record_type):
         scan = _scan([
             _turn("m1", [_read_tool_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
-            _api_request_blob_rec([_read_tool_use("r1", file_path="/a.py")], agent_id="agent-a"),
-            _api_request_blob_rec([_read_tool_use("r2", file_path="/b.py")], agent_id="agent-a"),
-            _api_request_blob_rec([{"type": "tool_result", "tool_use_id": "r2", "content": _HUNDRED_TOKEN_TEXT}]),
+            _api_request_blob_rec([_read_tool_use("r1", file_path="/a.py")], agent_id="agent-a", record_type=record_type),
+            _api_request_blob_rec([_read_tool_use("r2", file_path="/b.py")], agent_id="agent-a", record_type=record_type),
+            _api_request_blob_rec(
+                [{"type": "tool_result", "tool_use_id": "r2", "content": _HUNDRED_TOKEN_TEXT}], record_type=record_type,
+            ),
         ])
         assert [event.path for event in scan.events] == ["/a.py"]
         assert scan.repeated_reads == 0
@@ -623,6 +632,28 @@ class TestAccumulateSession:
         )
         assert totals.main_whole_file_events == []
 
+    def test_subagent_window_of_sidechain_flagged_records_still_counts_toward_every_subagent_figure(self):
+        weights = _weights()
+        totals = read_cost._ReadCostTotals()
+        read_cost._accumulate_session(
+            totals, read_cost._SeenIds(),
+            [_turn("m1", usage={"output_tokens": 2})],
+            [(_TRACKED_AGENT_TYPE, _sidechain_copies([
+                _turn("s1", [_read_tool_use("r1", file_path="/a.py")], usage={"output_tokens": 1}),
+                _read_result("r1", _HUNDRED_TOKEN_TEXT),
+                _turn("s2", usage={"output_tokens": 1}),
+            ]))],
+            weights,
+        )
+        row = totals.rows_by_agent_type[_TRACKED_AGENT_TYPE]
+        assert row.agents == 1
+        assert row.turns == 2
+        assert row.billed == pytest.approx(2 * weights["output"])
+        assert row.whole_file_reads == 1
+        assert row.all_read_weight == pytest.approx(100 * (weights["cache_write_5m"] + weights["cache_read"]))
+        assert totals.billed_subagent == pytest.approx(row.billed)
+        assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "<2000")] == 1
+
     def test_retained_main_thread_events_carry_no_path(self):
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
@@ -1065,14 +1096,14 @@ class TestScopeRefusal:
         assert "sessions=1 " in out
 
     @pytest.mark.usefixtures("only_the_built_in_agent_types_are_tracked")
-    def test_header_states_the_active_account_this_repository_and_the_unconsulted_roots_file(
+    def test_header_states_the_active_account_the_working_directorys_repository_and_the_unconsulted_roots_file(
         self, fake_projects, capsys,
     ):
         read_cost.cmd_read_cost(_read_cost_args())
 
         assert capsys.readouterr().out.splitlines()[0] == (
             "READ COST SOURCES (this repo (1 project dirs); reads one account (the active account),"
-            " this repository only; ~/.claude/transcript-config-dirs not consulted)"
+            " the working directory's repository only; ~/.claude/transcript-config-dirs not consulted)"
         )
 
     def test_roots_are_the_active_config_dirs_projects_directory(self, fake_projects):
@@ -1162,7 +1193,7 @@ class TestSkippedInput:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unlistable_subagent_directory_is_counted(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
-        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")])
+        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]))
         subagent_dir = fake_projects / "sess" / "subagents"
         os.chmod(subagent_dir, 0o000)
         try:
@@ -1174,7 +1205,7 @@ class TestSkippedInput:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_subagent_transcript_is_counted(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
-        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")])
+        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]))
         subagent_transcript = fake_projects / "sess" / "subagents" / "agent-a.jsonl"
         os.chmod(subagent_transcript, 0o000)
         try:
@@ -1185,7 +1216,7 @@ class TestSkippedInput:
 
     def test_unreadable_meta_is_counted_beside_the_withheld_row_its_agent_folds_into(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
-        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")])
+        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]))
         (fake_projects / "sess" / "subagents" / "agent-a.meta.json").write_text("not json")
 
         out = self._run(capsys)
@@ -1199,7 +1230,7 @@ class TestSkippedInput:
 
     def test_missing_meta_is_not_counted_as_unreadable(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
-        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")])
+        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]))
         (fake_projects / "sess" / "subagents" / "agent-a.meta.json").unlink()
 
         assert _skipped_input_counts(self._run(capsys)) == _NO_SKIPPED_INPUT
@@ -1226,18 +1257,18 @@ class TestReport:
         _write_jsonl(fake_projects / "sentinel-session-id.jsonl", main_records)
         _write_subagent_dispatch(
             fake_projects, "sentinel-session-id", "agent-tracked", "tool-1",
-            [
+            _sidechain_copies([
                 _turn("s1", [_read_tool_use("a1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
                 _read_result("a1", "line\n" * 1000),
-            ],
+            ]),
             agent_type=_TRACKED_AGENT_TYPE,
         )
         _write_subagent_dispatch(
             fake_projects, "sentinel-session-id", "agent-untracked", "tool-2",
-            [
+            _sidechain_copies([
                 _turn("s2", [_read_tool_use("a2", file_path="/sentinel/dir/other.py")], usage={"output_tokens": 10}),
                 _read_result("a2", "line\n" * 1000),
-            ],
+            ]),
             agent_type=_UNTRACKED_AGENT_TYPE,
         )
 
@@ -1273,7 +1304,7 @@ class TestReport:
         monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: frozenset({allowlist_only_type}))
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
         _write_subagent_dispatch(
-            fake_projects, "sess", "agent-a", "tool-1", [_turn("s1")], agent_type=allowlist_only_type,
+            fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]), agent_type=allowlist_only_type,
         )
 
         read_cost.cmd_read_cost(_read_cost_args())
