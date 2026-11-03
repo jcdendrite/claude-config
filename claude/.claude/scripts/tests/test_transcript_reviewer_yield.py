@@ -1529,6 +1529,25 @@ class TestReviewerYield:
         assert cols["Active"] == "1"
         assert cols["Edited"] == "1"
 
+    def test_spawn_block_with_non_dict_input_does_not_abort_the_scoring_loop(self, fake_projects):
+        """Guards a spawn-tool block with a truthy non-dict input raising in the
+        scoring loop and dropping every reviewer dispatch in the session."""
+        malformed_spawn = {"type": "tool_use", "id": "bad1", "name": "Agent", "input": "not-a-dict"}
+        records = [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[
+                malformed_spawn, _agent_use("a1", "staff-sdet"),
+            ]),
+        ]
+        session_jsonl = fake_projects / "sess.jsonl"
+        _write_jsonl(session_jsonl, records)
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        data = reviewer_yield.compute_reviewer_yield_data([(session_jsonl, records)])
+        assert data["agg"]["staff-sdet"]["dispatches"] == 1
+
 
 class TestExtractCitedPaths:
     """_extract_cited_paths(text) -> set[str]: a pure tokenizer over one
@@ -1755,6 +1774,29 @@ class TestBuildToolResultTsMap:
         assert result == {}
 
 
+class TestToolInput:
+    """_tool_input(block) -> dict: the shared guard every tool_use input read goes through."""
+
+    def test_dict_input_passes_through_unchanged(self):
+        """Guards the helper rewriting a well-formed input so it no longer matches what the block carried."""
+        block_input = {"subagent_type": "staff-sdet"}
+        assert reviewer_yield._tool_input({"input": block_input}) == block_input
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            pytest.param({}, id="key-missing"),
+            pytest.param({"input": None}, id="none"),
+            pytest.param({"input": "x"}, id="str"),
+            pytest.param({"input": ["x"]}, id="list"),
+            pytest.param({"input": 7}, id="int"),
+        ],
+    )
+    def test_absent_or_non_dict_input_is_an_empty_dict(self, block):
+        """Guards a caller receiving a non-dict and raising on .get()."""
+        assert reviewer_yield._tool_input(block) == {}
+
+
 class TestScanReviewerTranscripts:
     """_scan_reviewer_transcripts(records, dispatch_index) ->
     {dispatch_id: _ReviewerTranscriptScan}: the pre-pass behind
@@ -1829,6 +1871,197 @@ class TestScanReviewerTranscripts:
         scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
         assert scan.read_error is False
         assert scan.last_assistant_text == "text before the corrupted record"
+
+    def test_non_dict_write_input_does_not_abort_the_scan(self, tmp_path):
+        """Guards a Write tool_use with a non-dict input raising and aborting the whole transcript scan."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "tool_use", "id": "w1", "name": "Write", "input": "not-a-dict"},
+            ]),
+            _asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "after the bad write"}]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "after the bad write"
+        assert scan.write_content_blobs == []
+        assert scan.write_target_paths == []
+
+    def test_spawn_block_with_non_dict_input_does_not_abort_the_pre_pass(self, tmp_path):
+        """Guards a spawn-tool block with a truthy non-dict input raising in the
+        pre-pass and dropping every reviewer dispatch in the session."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 2 issues"}]),
+        ])
+        malformed_spawn = {"type": "tool_use", "id": "bad1", "name": "Agent", "input": "not-a-dict"}
+        records = [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[
+                malformed_spawn, _agent_use("a1", "staff-sdet"),
+            ]),
+        ]
+        scans = reviewer_yield._scan_reviewer_transcripts(records, {"a1": (transcript_path, None)})
+        assert list(scans) == ["a1"]
+        assert scans["a1"].last_assistant_text == "Found 2 issues"
+
+
+class TestScanReviewerTranscriptHandback:
+    """A reviewer's final report can arrive as a SubagentHandback tool call
+    with no text block, so the scan must read the verdict from its message."""
+
+    @staticmethod
+    def _handback_block_with_input(handback_input, tool_name="SubagentHandback"):
+        return {"type": "tool_use", "id": "hb1", "name": tool_name, "input": handback_input}
+
+    @classmethod
+    def _handback_block(cls, message, tool_name="SubagentHandback"):
+        return cls._handback_block_with_input({"message": message}, tool_name)
+
+    @classmethod
+    def _handback_record(cls, message, tool_name="SubagentHandback"):
+        return _asst("claude-sonnet-4-6", sidechain=True, content=[cls._handback_block(message, tool_name)])
+
+    @staticmethod
+    def _text_block(text):
+        return {"type": "text", "text": text}
+
+    @classmethod
+    def _text_record(cls, text):
+        return _asst("claude-sonnet-4-6", sidechain=True, content=[cls._text_block(text)])
+
+    def test_handback_message_is_the_last_assistant_text(self, tmp_path):
+        """Guards a scan that ignores tool_use blocks and reports no verdict for a handback-only final turn."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            self._text_record("working"),
+            self._handback_record("Wrote findings to x.md. Found 3 issues."),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Wrote findings to x.md. Found 3 issues."
+        assert reviewer_yield._classify_reviewer_verdict(scan.last_assistant_text) == (
+            reviewer_yield._REVIEWER_VERDICT_FINDINGS_FOUND, 3,
+        )
+
+    def test_non_handback_tool_input_message_is_not_the_last_assistant_text(self, tmp_path):
+        """Guards reading input.message from any tool_use instead of only SubagentHandback."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            self._text_record("Found 2 issues."),
+            self._handback_record("Found 9 issues.", tool_name="SendMessage"),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues."
+
+    def test_last_of_two_handback_records_wins(self, tmp_path):
+        """Guards keeping the first handback seen instead of the most recent one."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            self._handback_record("Found 1 issue"),
+            self._handback_record("Found 4 issues"),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 4 issues"
+
+    def test_blank_handback_message_does_not_hide_a_later_handback_in_the_same_record(self, tmp_path):
+        """Guards a blank first handback message ending the search and shadowing a later handback that carries the verdict."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                self._handback_block(""),
+                self._handback_block("Found 2 issues"),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues"
+
+    def test_handback_message_wins_over_text_block_in_the_same_record(self, tmp_path):
+        """Guards a record's preamble text block masking the handback message that carries the verdict."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                self._text_block("Handing back now."),
+                self._handback_block("Found 2 issues"),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues"
+
+    def test_handback_message_wins_over_whitespace_only_text_block(self, tmp_path):
+        """Tripwire for a future text-first selection order: a whitespace-only
+        text block would then count as the record's text and hide the handback message."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                self._text_block("  \n "),
+                self._handback_block("Found 2 issues"),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues"
+
+    @pytest.mark.parametrize("blank_message", ["", "   "], ids=["empty", "whitespace-only"])
+    def test_blank_handback_message_falls_through_to_the_text_block_in_the_same_record(self, tmp_path, blank_message):
+        """Guards a blank handback message counting as the record's text and dropping its real text block."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                self._text_block("Found 2 issues"),
+                self._handback_block(blank_message),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues"
+
+    @pytest.mark.parametrize(
+        "handback_input",
+        [
+            pytest.param({"message": None}, id="message-none"),
+            pytest.param({"message": 7}, id="message-int"),
+            pytest.param({"message": ["x"]}, id="message-list"),
+            pytest.param({"message": ""}, id="message-empty"),
+            pytest.param({"message": "   "}, id="message-whitespace-only"),
+            pytest.param({}, id="message-key-missing"),
+            pytest.param(None, id="input-none"),
+            pytest.param("not-a-dict", id="input-non-dict"),
+        ],
+    )
+    def test_malformed_handback_input_does_not_blank_earlier_text(self, tmp_path, handback_input):
+        """Guards a malformed handback input raising or blanking the verdict text seen earlier."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            self._text_record("earlier text"),
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                self._handback_block_with_input(handback_input),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "earlier text"
+
+    def test_record_with_none_content_does_not_abort_the_scan(self, tmp_path):
+        """Guards a record whose message.content is None raising in the handback
+        read and aborting the scan before a later text record is seen."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        content_less_record = _asst("claude-sonnet-4-6", sidechain=True, content=[])
+        content_less_record["message"]["content"] = None
+        _write_jsonl(transcript_path, [
+            content_less_record,
+            self._text_record("after the content-less record"),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.read_error is False
+        assert scan.last_assistant_text == "after the content-less record"
+
+    def test_non_dict_content_element_does_not_hide_a_handback_block(self, tmp_path):
+        """Guards a bare-string element in a content list raising on .get() and
+        hiding the handback block beside it."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        _write_jsonl(transcript_path, [
+            _asst("claude-sonnet-4-6", sidechain=True, content=[
+                "bare string element",
+                self._handback_block("Found 2 issues"),
+            ]),
+        ])
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.last_assistant_text == "Found 2 issues"
 
 
 class TestIndexSessionEdits:
@@ -1922,6 +2155,19 @@ class TestIndexSessionEdits:
         result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
         key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
         assert result == {key: corpus._parse_ts(code_writer_ts)}
+
+    def test_code_write_block_with_non_dict_input_does_not_abort_the_index(self):
+        """Guards a code-write tool_use with a truthy non-dict input raising
+        and dropping every edit in the session from the index."""
+        ts = "2026-05-19T11:00:00.000Z"
+        malformed_write = {"type": "tool_use", "id": "bad1", "name": "Write", "input": "not-a-dict"}
+        records = [
+            {**_asst("claude-opus-4-7", ts=ts, content=[malformed_write, _edit_use("e1", path="src/foo.py")]),
+             "cwd": "/repo"},
+        ]
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
+        key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: corpus._parse_ts(ts)}
 
 
 class TestReviewerYieldCitedKeys:
