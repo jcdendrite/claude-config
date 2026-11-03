@@ -551,17 +551,6 @@ class TestFormatDriftCanary:
         subagents.cmd_subagents(_subagents_args())
         assert "WARNING" not in capsys.readouterr().err
 
-    def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
-        """cmd_skill_pair also emits the drift warning when spawns have no sidechain turns."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-                _agent_use("a1", "staff-backend-engineer"),
-            ]),
-        ])
-        skill_pair.cmd_skill_pair(_skill_pair_args())
-        assert "WARNING" in capsys.readouterr().err
-
     def test_subagent_records_without_issidechain_field_treated_as_main_thread(
         self, fake_projects, capsys
     ):
@@ -593,6 +582,21 @@ class TestFormatDriftCanary:
         # (subagent record has no isSidechain field → not counted as sidechain).
         assert "WARNING" in captured.err
 
+
+class TestSkillPairFormatDriftCanary:
+    def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
+        """cmd_skill_pair also emits the drift warning when spawns have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" in capsys.readouterr().err
+
+
+class TestCacheEfficiencyFormatDriftCanary:
     def test_drift_warning_also_fires_in_cache_efficiency(self, fake_projects, capsys):
         """cmd_cache_efficiency also emits the drift warning when spawns
         have no sidechain turns."""
