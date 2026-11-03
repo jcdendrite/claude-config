@@ -35,7 +35,9 @@ from ._pr_cost_helpers import (
     _PRIOR_ROW_MARKER,
     _ROUNDS_PASS_FAILURE_STEM,
     _ROUNDS_PER_PR_STEM,
+    _SEEDED_MACHINE_IDENTITY,
     _UPGRADE_NOTICE_STEM,
+    _already_captured_line,
     _cell_with,
     _current_line_with_cell,
     _enable_pr_cost,
@@ -58,8 +60,10 @@ from ._pr_cost_helpers import (
     _sample_pr_cost_row,
     _sample_review_round,
     _sample_review_rounds,
+    _spy_on_scans,
     _tokens,
     _upgrade_notice_line,
+    _write_ledger_row_on_lock_acquire,
 )
 from ._review_round_corpus_helpers import (
     _LEAK_SENTINEL_PREFIX,
@@ -1068,7 +1072,6 @@ _CAUSE_BY_RULE = {
     "tokens": "a claude-config defect",
     "dollars": _TRANSCRIPT_OR_DEFECT,
 }
-_SEEDED_MACHINE_IDENTITY = "c0ffee01"  # _enable_pr_cost's default identity, so a seeded row shares the run's key
 _EARLIER_CAPTURED_AT = "2026-01-01T00:00:00Z"  # distinct from the run's own wall-clock captured_at
 _ZERO_SCALARS = {
     "cache_read_usd": 0.0, "cache_write_5m_usd": 0.0, "cache_write_1h_usd": 0.0, "output_usd": 0.0, "input_usd": 0.0,
@@ -2308,40 +2311,6 @@ def _arrange_round_run(fake_projects, tmp_path, monkeypatch, write_corpus=_write
     return ledger_path
 
 
-class _ScanSpy:
-    """Wraps (does not replace) the two calls a --record run's transcript passes make."""
-
-    def __init__(self) -> None:
-        self.scope_calls: list[dict] = []
-        self.round_calls: list[dict] = []
-
-    @property
-    def scalar_scans(self) -> list[dict]:
-        return [call for call in self.scope_calls if call["include_subagents"] is True]
-
-    @property
-    def round_scans(self) -> list[dict]:
-        return [call for call in self.scope_calls if call["include_subagents"] is False]
-
-
-def _spy_on_scans(monkeypatch) -> _ScanSpy:
-    spy = _ScanSpy()
-    real_resolve = scope._resolve_project_scope
-    real_compute = review_rounds.compute_review_round_costs
-
-    def resolving(args, command, **kwargs):
-        spy.scope_calls.append(kwargs)
-        return real_resolve(args, command, **kwargs)
-
-    def computing(session_iter, **kwargs):
-        spy.round_calls.append(kwargs)
-        return real_compute(session_iter, **kwargs)
-
-    monkeypatch.setattr(scope, "_resolve_project_scope", resolving)
-    monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
-    return spy
-
-
 def _write_account_session(root: Path, branch: str = "feature-a") -> None:
     """One small priced session under an --all-accounts root's test project."""
     (root / "-home-user-testrepo").mkdir(parents=True, exist_ok=True)
@@ -2712,19 +2681,9 @@ class TestReviewRoundsPreLockSkip:
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         spy = _spy_on_scans(monkeypatch)
-        real_acquire = pr_cost_ledger._acquire_pr_cost_ledger_lock
-        acquire_count = 0
-
-        def acquiring_after_a_concurrent_record(lock_f):
-            nonlocal acquire_count
-            acquire_count += 1
-            if acquire_count == 2:  # the per-branch lock: the account read above was the first
-                pr_cost_ledger._write_pr_cost_ledger_file(
-                    ledger_path, [_sample_pr_cost_row(pr_number=1, machine=_SEEDED_MACHINE_IDENTITY)],
-                )
-            real_acquire(lock_f)
-
-        monkeypatch.setattr(pr_cost_ledger, "_acquire_pr_cost_ledger_lock", acquiring_after_a_concurrent_record)
+        _write_ledger_row_on_lock_acquire(
+            monkeypatch, ledger_path, _sample_pr_cost_row(pr_number=1, machine=_SEEDED_MACHINE_IDENTITY),
+        )
 
         with pytest.raises(SystemExit) as exc_info:
             _run_record(fake_projects, pr=1)
@@ -2733,13 +2692,6 @@ class TestReviewRoundsPreLockSkip:
         assert _already_captured_line(1) in capsys.readouterr().err.splitlines()
         assert len(_ledger_rows(ledger_path)) == 1
         assert len(spy.round_scans) == 1  # the row arrived after the pre-lock lookup, which would have skipped the scan
-
-
-def _already_captured_line(pr_number: int) -> str:
-    return (
-        f"pr-cost:   PR #{pr_number} for machine={_SEEDED_MACHINE_IDENTITY} is already captured --"
-        " pass --force (with --pr) to append a correcting row"
-    )
 
 
 def _fail_the_pass(monkeypatch, failing_call_numbers: set[int] | None = None) -> None:

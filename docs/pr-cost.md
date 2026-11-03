@@ -69,7 +69,18 @@ A later column follows the same shape: freeze the outgoing header and document t
 
 - **Recorded only.** No report reads the cell yet: read mode and `review-cost-by-size` do not print it. It is reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
 - **Shape.** `{"rule": int, "rounds": {skill: [round, ...]}}`, in the same canonical encoding as `model_breakdown`. `rounds` has one key per review skill the writer tracked (`code-review`, `plan-review`, `ready-for-review`), and each list holds that skill's rounds in round order.
-- **Absence.** An empty cell means not captured. That covers a row recorded before the column existed, a failed review-round pass, a cell that failed its write-time check, a branch with no local transcript activity, and a checkout that does not record rounds. A cell whose every skill list is empty means captured with zero rounds, and a skill key absent from `rounds` was not tracked by the writer. "Captured" and "recorded zero" mean among the records the pass could parse: an unreadable main transcript, or a non-UTF-8 or non-JSON line, is dropped without a count, so the cell does not claim completeness. A literal `null` cell is malformed.
+- **Absence.** An empty cell means not captured, which covers:
+  - a row recorded before the column existed
+  - a failed review-round pass
+  - a cell that failed its write-time check
+  - a branch with no local transcript activity
+  - a checkout that does not record rounds
+
+  Other states:
+  - A cell whose every skill list is empty means captured with zero rounds.
+  - A skill key absent from `rounds` was not tracked by the writer.
+  - "Captured" and "recorded zero" mean among the records the pass could parse. An unreadable main transcript, or a non-UTF-8 or non-JSON line, is dropped without a count, so the cell does not claim completeness.
+  - A literal `null` cell is malformed.
 - **Trailing cell.** `review_rounds` is the current header's last column, so a row with an empty cell ends in a tab. Readers must not whitespace-strip lines.
 - **Round fields.** Every round holds these keys:
   - `main_usd_micros` and `agent_usd_micros`: the round's main-thread and subagent dollars as integer micro-dollars, as-priced under the row's `rate_stamp`.
@@ -118,7 +129,7 @@ pr-cost:   PR #<a>: review rounds <reason> -- recorded the row without them; see
 
 A branch with no local transcript activity, and a checkout that does not record rounds, record an empty cell with no line and no count-line entry.
 
-Before a `--record` run writes a row for a branch with local transcript activity, it prints `pr-cost: scanning transcripts for review rounds...` to stderr, with `account-K's ` before `transcripts` under `--all-accounts`, then runs the review-round pass. It runs at most once per account, and an unforced run skips it for a PR already captured. When that pass fails, it prints once:
+`--record` prints `pr-cost: scanning transcripts for review rounds...` to stderr before the review-round pass (see "`--record`'s capture"), with `account-K's ` before `transcripts` under `--all-accounts`. The pass runs at most once per account, and an unforced run skips it for a PR already captured. When that pass fails, it prints once:
 
 ```text
 pr-cost: the review-round pass failed (<ExceptionClass>) -- any row this run records<for-account> carries no review rounds; see docs/pr-cost.md
@@ -149,9 +160,10 @@ Handle its output as follows:
 The command re-raises the exception with its raw traceback and prices every session, so it can also fail on a record the pass skipped. The tool's account labels do not cover the traceback: its paths can name any scanned account's private project, and its message can quote transcript text. The remedy depends on the traceback:
 
 - A traceback that ends in record parsing in `corpus.py` or `scope.py`, such as `_parse_iso_datetime` or `_index_subagent_dispatches`, points at a record outside the transcript format. The traceback does not name the record. Report it on claude-config's GitHub Issues (linked from README.md) with the class name and the last frame's function name, and no paths.
-- Every `--record` that writes a row for that account records it without rounds and exits 1, until the offending session ages out of `cleanupPeriodDays`. The only supported way to stop it is the `pr_cost_recording` off switch (see the "Off switch" and "Scheduled callers" bullets under "Upgrading an existing ledger"), at the cost that scalar capture stops too. A single-account `--record` still exits 1 while the key is off, so pause that caller.
+  - Every `--record` that writes a row for that account records it without rounds and exits 1, until the offending session ages out of `cleanupPeriodDays`. The only supported way to stop it is the `pr_cost_recording` off switch (see the "Off switch" and "Scheduled callers" bullets under "Upgrading an existing ledger"), at the cost that scalar capture stops too. A single-account `--record` still exits 1 while the key is off, so pause that caller.
 - Any other traceback: update claude-config, then re-capture each listed PR with `--record --force --pr N` inside `cleanupPeriodDays`. If it repeats on a current checkout, report the class name and the last frame's function name, as in the first bullet above.
-- A row recorded during a failed pass counts as captured, so a scheduled rerun without `--pr` skips it. Only `--record --force --pr N`, inside `cleanupPeriodDays`, refills its rounds. A scheduled caller that ignores exit 1 loses those rounds, and rows recorded meanwhile stay without them.
+
+After any failed pass, a row recorded during it counts as captured, so a scheduled rerun without `--pr` skips it. Only `--record --force --pr N`, inside `cleanupPeriodDays`, refills its rounds. A scheduled caller that ignores exit 1 loses those rounds, and rows recorded meanwhile stay without them.
 
 After an exit 1 for a row without its breakdown:
 
@@ -170,7 +182,9 @@ After an exit 1 for a `review_rounds` check failure:
 - A scheduled rerun without `--pr` skips the row, because a recorded row counts as captured. Only `--record --force --pr N`, with the run's account flags, inside `cleanupPeriodDays`, refills the cell.
 - `size`, and a `shape` caused by a leaf above `2**63 - 1` (a token count or a micro-dollar figure), come from the transcript. A repeat of `size` on an updated checkout does not add the rounds. If the same PR fails `shape` again on an updated checkout, the transcript is the likely cause and re-forcing will not add the rounds.
 - For `size` alone, a checkout that raises `_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS` past the cell's length adds the rounds. The write cap may not exceed `_REVIEW_ROUNDS_CELL_READ_MAX_CHARS` (8388608 characters), so a longer cell stays unrecordable.
-- `model-membership`, `label-membership` and `build` are claude-config defects, except that a `build` ending in `OverflowError` is likely transcript-caused, from a token count far beyond any real PR, and a `build` ending in `ValueError` is also likely transcript-caused when a token count has more digits than the interpreter's integer-to-string limit allows. Report each defect on claude-config's GitHub Issues (linked from README.md) with the rule name and, for `build`, the exception's class name, and no paths.
+- `model-membership`, `label-membership` and `build` are claude-config defects, except the two `build` cases below. Report each defect on claude-config's GitHub Issues (linked from README.md) with the rule name and, for `build`, the exception's class name, and no paths.
+  - `build` ending in `OverflowError` is likely transcript-caused, from a token count far beyond any real PR.
+  - `build` ending in `ValueError` is likely transcript-caused when a token count has more digits than the interpreter's integer-to-string limit allows.
 
 ### Upgrading an existing ledger
 
@@ -274,7 +288,7 @@ pr-cost:   PR #<a> for machine=<m>: refusing --force -- the new row would lose c
 
 A single-account `--pr` run exits 1 at once. Under `--all-accounts`, that account skips the PR, and an account that records no row counts as skipped in the summary, as other skips do. The run then exits 1 after its summary and any count line.
 
-The guard has no override, so it also blocks a re-capture meant to heal a degraded `status` whenever that would lose rounds. A higher-rule re-capture over partly aged transcripts passes, leaving the prior series only in the superseded row, and prints no notice. The guard covers `review_rounds` only.
+The guard has no override, so it also blocks a re-capture meant to heal a degraded `status` whenever that would lose rounds. A higher-rule re-capture over partly aged transcripts passes, leaving the prior series only in the superseded row, and prints no notice.
 
 Each `<reason>` has a next step, and none is a hand edit (see "Data"):
 - `the review-round pass failed`: follow the remedy under "Write-time check failures". The captured row stays current, so repeat the same `--force --pr N` once the cause is fixed, inside `cleanupPeriodDays`.

@@ -1175,7 +1175,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). The run reads the transcripts a second time only when it reaches a row write for a branch with local transcript activity. That second read captures each PR's `review_rounds` cell. A completed run exits 1 when any of these holds:
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). The run reads the transcripts a second time to capture each PR's `review_rounds` cell. See `docs/pr-cost.md` § "`--record`'s capture" for when. A completed run exits 1 when any of these holds:
   - a row was recorded without its per-model breakdown;
   - the review-round pass or a cell's write-time check failed;
   - a `--force` re-capture was refused because it would lose captured review rounds.

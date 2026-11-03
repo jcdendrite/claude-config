@@ -1034,6 +1034,64 @@ def _corpus_adjacent_assistant_opened_rounds(fake_projects) -> None:
     ])
 
 
+# Per-class counts the two same-model reviewers of a sibling-dispatch corpus return, and their per-class sum.
+_SIBLING_REVIEWER_BASES = (30, 50)
+_SIBLING_REVIEWERS_SUMMED_TOKENS = {"claude-opus-5": {"standard": {
+    "input": 82, "output": 84, "cache_read": 86, "cache_write_1h": 88, "cache_write_5m": 90,
+}}}
+
+
+def _sibling_reviewer_turn(base: int, *, ts: str) -> dict:
+    return _priced_with_classes("claude-opus-5", base, branch="feat", ts=ts)
+
+
+def _turn_dollars(turn: dict) -> float:
+    dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(
+        turn["message"]["model"], turn["message"]["usage"],
+    )
+    return sum(dollars_by_class.values())
+
+
+def _write_sibling_reviewer_dispatches(fake_projects) -> None:
+    for agent_id, tool_use_id, base, ts in (
+        ("agent-1", "a1", _SIBLING_REVIEWER_BASES[0], "2026-08-01T10:00:30.000Z"),
+        ("agent-2", "a2", _SIBLING_REVIEWER_BASES[1], "2026-08-01T10:02:30.000Z"),
+    ):
+        _write_subagent_dispatch(
+            fake_projects, "sess-1", agent_id, tool_use_id, [_sibling_reviewer_turn(base, ts=ts)],
+        )
+
+
+def _corpus_sibling_reviewers_in_one_record(fake_projects) -> None:
+    """Two same-model reviewers dispatched by the one assistant record that opens the round."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced_with_classes(
+            "claude-sonnet-5", 10, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    _write_sibling_reviewer_dispatches(fake_projects)
+
+
+def _corpus_sibling_reviewers_across_a_task_notification(fake_projects) -> None:
+    """Two same-model reviewers dispatched by separate assistant records, a task notification between them."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced_with_classes(
+            "claude-sonnet-5", 10, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg([_tool_result("a1", "launched")], branch="feat", ts="2026-08-01T10:00:05.000Z"),
+        _task_notification_msg(branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        _priced_with_classes(
+            "claude-sonnet-5", 20, branch="feat", ts="2026-08-01T10:02:00.000Z",
+            content=[_agent_use("a2", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    _write_sibling_reviewer_dispatches(fake_projects)
+
+
 # Every distinct round shape TestComputeReviewRoundCosts already exercises
 # elsewhere in this file, reused for the bidirectional agreement guard below
 # rather than one new hand-picked corpus.
@@ -1049,6 +1107,10 @@ _ROUND_SHAPE_CORPUS_BUILDERS = [
     pytest.param(_corpus_ready_for_review, id="ready_for_review"),
     pytest.param(_corpus_token_and_variant_mix, id="token_and_variant_mix"),
     pytest.param(_corpus_adjacent_assistant_opened_rounds, id="adjacent_assistant_opened_rounds"),
+    pytest.param(_corpus_sibling_reviewers_in_one_record, id="sibling_reviewers_in_one_record"),
+    pytest.param(
+        _corpus_sibling_reviewers_across_a_task_notification, id="sibling_reviewers_across_a_task_notification",
+    ),
 ]
 
 
@@ -1226,6 +1288,25 @@ class TestRoundTokensAndMalformedUsage:
             "claude-opus-5": {"standard": _token_classes(300)},
             "claude-haiku-4-5-20251001": {"us_geo": _token_classes(400)},
         }
+
+    @pytest.mark.parametrize("build_corpus", [
+        pytest.param(_corpus_sibling_reviewers_in_one_record, id="one_record"),
+        pytest.param(_corpus_sibling_reviewers_across_a_task_notification, id="across_a_task_notification"),
+    ])
+    def test_sibling_same_model_dispatches_in_one_round_sum_their_tokens_and_dollars(self, fake_projects, build_corpus):
+        """Reviewers dispatched in parallel on one model and variant each add to the round's agent tokens,
+        so the token splits sum to what the dollars were priced from."""
+        build_corpus(fake_projects)
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        (round_entry,) = data["rounds"]
+        assert round_entry["agents"] == 2
+        assert round_entry["agent_tokens"] == _SIBLING_REVIEWERS_SUMMED_TOKENS
+        assert round_entry["agent_dollars"] == pytest.approx(sum(
+            _turn_dollars(_sibling_reviewer_turn(base, ts="2026-08-01T10:00:30.000Z"))
+            for base in _SIBLING_REVIEWER_BASES
+        ))
 
     @pytest.mark.parametrize(("speed", "inference_geo", "variant"), [
         (None, None, "standard"),
@@ -1574,6 +1655,26 @@ class TestGoldenRoundProjections:
                     "input": 72, "output": 74, "cache_read": 76, "cache_write_1h": 78, "cache_write_5m": 80,
                 }}}),
             ],
+            "sibling_reviewers_in_one_record": [
+                # Reviewer classes: (31..35) + (51..55).
+                _golden_round(
+                    "code-review", agents=2, main_tokens={"claude-sonnet-5": {"standard": _token_classes(10)}},
+                    agent_tokens={"claude-opus-5": {"standard": {
+                        "input": 82, "output": 84, "cache_read": 86, "cache_write_1h": 88, "cache_write_5m": 90,
+                    }}},
+                ),
+            ],
+            "sibling_reviewers_across_a_task_notification": [
+                # Main classes: (11..15) + (21..25).
+                _golden_round(
+                    "code-review", agents=2, main_tokens={"claude-sonnet-5": {"standard": {
+                        "input": 32, "output": 34, "cache_read": 36, "cache_write_1h": 38, "cache_write_5m": 40,
+                    }}},
+                    agent_tokens={"claude-opus-5": {"standard": {
+                        "input": 82, "output": 84, "cache_read": 86, "cache_write_1h": 88, "cache_write_5m": 90,
+                    }}},
+                ),
+            ],
         },
     }
 
@@ -1616,6 +1717,8 @@ class TestGoldenRoundProjections:
         "ready_for_review": ["ready-for-review"],
         "token_and_variant_mix": ["code-review"],
         "adjacent_assistant_opened_rounds": ["code-review", "plan-review"],
+        "sibling_reviewers_in_one_record": ["code-review"],
+        "sibling_reviewers_across_a_task_notification": ["code-review"],
     }
 
     def test_every_shape_has_a_hand_written_skill_sequence(self):

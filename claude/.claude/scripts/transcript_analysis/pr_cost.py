@@ -343,7 +343,6 @@ def _review_round_cell(review_round: dict, merged_ts: float | None) -> dict:
 
 
 def _build_review_rounds_cell(rounds: Sequence[dict], merged_at: str) -> dict | None:
-    """The review_rounds cell value for one branch's round dicts."""
     merged_ts = corpus._parse_ts(merged_at)
     ordered_rounds = sorted(rounds, key=lambda review_round: review_round["sort_key"])
     return {
@@ -454,7 +453,6 @@ def _review_rounds_check_cause(rule: str, build_error_class: str | None) -> str:
 def _review_rounds_force_refusal(
     prior_cell: dict | None, new_cell: dict | None, new_absence: str | None, build_error_class: str | None,
 ) -> str | None:
-    """Why a --force re-capture must not replace the prior row's review_rounds cell, or None when it may."""
     if prior_cell is None:
         return None
     if new_cell is None:
@@ -491,7 +489,7 @@ def _failed_cells_count_entry(pr_number: int, failed_columns: Sequence[str], acc
 
 
 def _scan_review_rounds_by_branch(args: argparse.Namespace, root: Path) -> dict[str, list[dict]]:
-    """Every review round in one account's main-thread transcripts. Prints no scope line."""
+    """Prints no scope line."""
     session_iter, _scope_label = scope._resolve_project_scope(args, "pr-cost", include_subagents=False, roots=[root])
     result = review_rounds.compute_review_round_costs(session_iter, resolved_roots=None, rounds_only=True)
     rounds_by_branch: dict[str, list[dict]] = {}

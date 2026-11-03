@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
-from transcript_analysis import ledger_common, pr_cost_export, pr_cost_ledger, pricing
+from transcript_analysis import ledger_common, pr_cost_export, pr_cost_ledger, pricing, review_rounds, scope
 
 # Frozen ledger header lines, oldest first, hand-written: the single test-side source for every older header.
 # Never derive an entry from the live column tuple. When a column is added, append the outgoing header
@@ -204,6 +204,16 @@ def _force_refusal_line(pr_number: int, machine: str, reason: str) -> str:
     return f"pr-cost:   PR #{pr_number} for machine={machine}: {_FORCE_REFUSAL_STEM} ({reason}); see docs/pr-cost.md"
 
 
+_SEEDED_MACHINE_IDENTITY = "c0ffee01"  # _enable_pr_cost's default identity, so a seeded row shares the run's key
+
+
+def _already_captured_line(pr_number: int, machine: str = _SEEDED_MACHINE_IDENTITY) -> str:
+    return (
+        f"pr-cost:   PR #{pr_number} for machine={machine} is already captured --"
+        " pass --force (with --pr) to append a correcting row"
+    )
+
+
 def _upgrade_notice_line(ledger_label: str) -> str:
     """The stderr line announcing an upgraded ledger; ledger_label is "the ledger", or "account-N's ledger"
     under --all-accounts."""
@@ -217,7 +227,7 @@ def _merged_pr(number: int, branch: str) -> dict:
     }
 
 
-def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
+def _enable_pr_cost(config_dir: Path, identity: str = _SEEDED_MACHINE_IDENTITY) -> None:
     """Opt an account into pr-cost --record and seed its machine identity.
     pr-cost has no shared opt-in fixture the way cost-ledger's
     cost_ledger_enabled does, because every test here resolves its own
@@ -617,3 +627,53 @@ def _parse_pr_cost_export_row(line: str) -> dict:
     """Parses one tab-separated pr-cost-export data row into a
     {column: cell} dict keyed by _PR_COST_EXPORT_COLUMNS."""
     return dict(zip(pr_cost_export._PR_COST_EXPORT_COLUMNS, line.split("\t"), strict=True))
+
+
+class _ScanSpy:
+    """Wraps (does not replace) the two calls a --record run's transcript passes make."""
+
+    def __init__(self) -> None:
+        self.scope_calls: list[dict] = []
+        self.round_calls: list[dict] = []
+
+    @property
+    def scalar_scans(self) -> list[dict]:
+        return [call for call in self.scope_calls if call["include_subagents"] is True]
+
+    @property
+    def round_scans(self) -> list[dict]:
+        return [call for call in self.scope_calls if call["include_subagents"] is False]
+
+
+def _spy_on_scans(monkeypatch) -> _ScanSpy:
+    spy = _ScanSpy()
+    real_resolve = scope._resolve_project_scope
+    real_compute = review_rounds.compute_review_round_costs
+
+    def resolving(args, command, **kwargs):
+        spy.scope_calls.append(kwargs)
+        return real_resolve(args, command, **kwargs)
+
+    def computing(session_iter, **kwargs):
+        spy.round_calls.append(kwargs)
+        return real_compute(session_iter, **kwargs)
+
+    monkeypatch.setattr(scope, "_resolve_project_scope", resolving)
+    monkeypatch.setattr(review_rounds, "compute_review_round_costs", computing)
+    return spy
+
+
+def _write_ledger_row_on_lock_acquire(monkeypatch, ledger_path: Path, row: dict, acquire_ordinal: int = 2) -> None:
+    """Simulate a concurrent --record: write `row` to `ledger_path` just before the `acquire_ordinal`-th ledger-lock
+    acquire. The default second acquire is the per-branch lock; the first is the account's ledger read."""
+    real_acquire = pr_cost_ledger._acquire_pr_cost_ledger_lock
+    acquire_count = 0
+
+    def acquiring_after_a_concurrent_record(lock_f):
+        nonlocal acquire_count
+        acquire_count += 1
+        if acquire_count == acquire_ordinal:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row])
+        real_acquire(lock_f)
+
+    monkeypatch.setattr(pr_cost_ledger, "_acquire_pr_cost_ledger_lock", acquiring_after_a_concurrent_record)
