@@ -150,7 +150,7 @@ The count line is what tells the meanings of exit 1 apart: a run that ends with 
 
 The per-PR line carries no `account-K` label under `--all-accounts`, and neither does a `--force` refusal line. On stderr, the nearest `pr-cost: resolving branch account-K/branch-N...` line above it names the account. The count line also names the account for every PR once the run completes. A `--force` refusal adds no count-line entry, so its refusal line is the record.
 
-After an exit 1 for a failed review-round pass, find the cause with `review-round-cost`, run with the failed run's scope flags minus `--all-accounts` and the top-level `--config-dir PATH` (before the subcommand name) set to the failing account's config directory. The `for account-K` line on stderr names that account, where K is its position among the scanned roots sorted by resolved path. Without `--config-dir`, the command scans the active profile and every declared account.
+To find the cause after an exit 1 for a failed review-round pass, run `review-round-cost` with the failed run's scope flags minus `--all-accounts`, and with the top-level `--config-dir PATH` (placed before the subcommand name) set to the failing account's config directory. The `for account-K` line on stderr names that account, where K is its position among the scanned roots sorted by resolved path. Without `--config-dir`, the command scans the active profile and every declared account.
 
 Handle its output as follows:
 
@@ -278,7 +278,7 @@ A `--force` re-capture also refills a `review_rounds` cell that a failed pass or
 - P is not captured (empty): allowed, because that row holds no rounds.
 - N is empty: refused, with the reason the absence gives. A P whose lists are all empty is a recorded zero, so it refuses here too.
 - N's `rule` is lower than P's: refused.
-- Equal `rule` values, where some skill in P has a longer list or a higher summed `agents` than in N, a missing skill key counting as empty: refused. Under one rule, a skill's list gets shorter only when a session transcript is gone, and its summed `agents` falls only when a dispatch transcript is. A later session that adds rounds raises both and is never refused.
+- Equal `rule` values, where some skill in P has a longer list or a higher summed `agents` than in N, a missing skill key counting as empty: refused. Under one rule, a skill's list gets shorter when a session transcript is gone or the re-run's scope is narrower, and its summed `agents` falls when a dispatch transcript is gone or the scope is narrower. A later session that adds rounds raises both and is never refused.
 - Otherwise allowed, a higher N `rule` included.
 
 A refusal prints this to stderr, and the ledger stays unchanged:
@@ -392,7 +392,11 @@ Each account's own `pr_cost_recording` config key still individually gates wheth
 
 **Same per-account opt-in gate as `--all-accounts`.** An account is included only if its own `pr_cost_recording` config key resolves true (see "`--all-accounts`" above, and [`docs/config-file.md`](config-file.md) for the file and legacy-fallback mechanics). An account not opted in is skipped, not aborted, with a per-account stderr notice and a count in the provenance line's `skipped_not_opted_in`. This reuses the same `_config.config_enabled` call, so it inherits the same legacy-sentinel symlink caveat when `claude-config.toml` doesn't set the key: symlinking one account's `<config-dir>/.pr-cost-enabled` to another's silently opts both accounts into the export together, defeating the per-account gate. Create each account's sentinel (or `claude-config.toml`) as its own regular file.
 
-**Parsing.** The file opens with a `#`-prefixed provenance line above the TSV header — pass `comment="#"` to a tab reader (`pandas.read_csv` handles this as-is), or `tail -n +2` before a raw split. `cut -f`, a bare `awk -F'\t'`, and spreadsheet imports all silently shift every column by one row if the preamble isn't stripped first. The last column, `review_rounds`, may be empty, so a line can end in a tab: do not strip lines or index columns by position (see the "Trailing cell" bullet under "The `review_rounds` cell"). Read the provenance line's fields by their `key=` name, not by position, because a key can be inserted among them. Parse `review_rounds` with a TSV parser and a JSON parser, not a spreadsheet: a cell can reach 1048576 characters, and a spreadsheet can truncate it into invalid JSON.
+**Parsing.** The file opens with a `#`-prefixed provenance line above the TSV header — pass `comment="#"` to a tab reader (`pandas.read_csv` handles this as-is), or `tail -n +2` before a raw split. `cut -f`, a bare `awk -F'\t'`, and spreadsheet imports all silently shift every column by one row if the preamble isn't stripped first.
+
+- Do not strip lines or index columns by position. The last column, `review_rounds`, may be empty, so a line can end in a tab (see the "Trailing cell" bullet under "The `review_rounds` cell").
+- Read the provenance line's fields by their `key=` name, not by position, because a key can be inserted among them.
+- Parse `review_rounds` with a TSV parser and a JSON parser, not a spreadsheet: a cell can reach 1048576 characters, and a spreadsheet can truncate it into invalid JSON.
 
 **Columns.** `_PR_COST_EXPORT_COLUMNS` in `claude/.claude/scripts/transcript_analysis/pr_cost_export.py` is the ledger's own schema (see "Schema" above) with these changes:
 

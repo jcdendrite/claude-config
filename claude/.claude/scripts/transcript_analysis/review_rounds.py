@@ -163,7 +163,6 @@ def _round_open_skill(rec: dict) -> str | None:
         blocks = _assistant_content_blocks(rec)
         return _skill_block_round_skill(blocks) or _spawn_block_round_skill(blocks)
     if rtype == "user":
-        # The substring test is a cheap filter before the fresh-prompt check.
         # A review slash tag quoted as prose inside a fresh human prompt can still open a round,
         # as can one in a subagent summary that closes its own task-notification envelope early.
         content_raw = (rec.get("message") or {}).get("content", "")

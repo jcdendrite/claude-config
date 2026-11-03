@@ -182,13 +182,13 @@ _UPGRADE_NOTICE_FRAGMENT = (
 
 
 def _rounds_scan_start_line(account_ordinal: int | None = None) -> str:
-    """The stderr start line of the review-round pass; account_ordinal is None for a single-account run."""
+    """The stderr start line of the review-round pass."""
     owner = "" if account_ordinal is None else f"account-{account_ordinal}'s "
     return f"pr-cost: scanning {owner}{_ROUNDS_SCAN_START_STEM}"
 
 
 def _rounds_pass_failure_line(exception_class: str, account_ordinal: int | None = None) -> str:
-    """The stderr line for a failed review-round pass; account_ordinal is None for a single-account run."""
+    """The stderr line for a failed review-round pass."""
     for_account = "" if account_ordinal is None else f" for account-{account_ordinal}"
     return (
         f"pr-cost: {_ROUNDS_PASS_FAILURE_STEM} ({exception_class}) -- any row this run records{for_account}"
