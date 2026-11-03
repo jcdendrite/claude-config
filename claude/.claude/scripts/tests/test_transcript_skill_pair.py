@@ -223,3 +223,28 @@ class TestSkillPairFormatDriftCanary:
         ])
         skill_pair.cmd_skill_pair(_skill_pair_args())
         assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_skill_pair_without_spawns(self, fake_projects, capsys):
+        """The negative counterpart for cmd_skill_pair: no spawns, no warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+            ]),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_skill_pair_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """A spawn paired with a sidechain turn in the subagents/ file is not drift."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" not in capsys.readouterr().err
