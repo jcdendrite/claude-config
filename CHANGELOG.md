@@ -110,6 +110,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - It passes `--no-color --no-ext-diff`, `--ignore-submodules=none` and a context width pinned to 3 lines by an inline `GIT_DIFF_OPTS=-u3`.
     - A `.gitmodules` `ignore` setting no longer drops a gitlink change from the text.
     - `textconv` no longer applies: a text file with a `textconv` driver now prints its raw diff, unconverted, and a binary file with one prints `Binary files ... differ`.
+- **`pr-diff-against-base.sh` now prints `DIFF_EMPTY: no changes against base` on stderr when the cumulative diff is empty, and `/ready-for-review` step 3 halts on that line instead of on "exit 0 with no output".** The exit status stays 0 and stdout is unchanged, so a script that tests the exit status or reads stdout sees no difference. A script that treated an empty stdout as the empty-diff signal can match the stderr line instead.
+  - `marker.sh write cumulative-review` now answers an empty recorded subject by telling the caller to halt as step 3 says and naming the `DIFF_EMPTY:` line. It keeps the advice to re-run `pr-diff-against-base.sh --record` for a stale empty subject only.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
