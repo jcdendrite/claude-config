@@ -24,7 +24,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, NoReturn
 
-from transcript_analysis import corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, scope
+from transcript_analysis import corpus, cost, gh_cli, pr_cost_ledger, pricing, render, review_rounds, scope, session_pricing
 
 _SECONDS_PER_DAY = 86400
 
@@ -536,7 +536,7 @@ def _accumulate_session(
         usage = _record_usage(rec)
         if usage is None:
             continue
-        if cost._usage_is_invalid(usage):
+        if session_pricing._usage_is_invalid(usage):
             totals.invalid_usage_records += 1
             continue
         ts = corpus._parse_ts(rec.get("timestamp"))

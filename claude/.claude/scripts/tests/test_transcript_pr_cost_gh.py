@@ -14,11 +14,15 @@ import pytest
 from transcript_analysis import ledger_common, pr_cost, pr_cost_ledger, scope
 
 from ._pr_cost_helpers import (
+    _SEEDED_MACHINE_IDENTITY,
+    _already_captured_line,
     _argv_carries_repo_pin,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _pr_cost_args,
     _sample_pr_cost_row,
+    _spy_on_scans,
+    _write_ledger_row_on_lock_acquire,
 )
 from .conftest import _priced, _two_declared_roots, _write_jsonl
 
@@ -721,6 +725,45 @@ class TestPrCostAllAccounts:
         captured = capsys.readouterr()
         assert "is already captured" in captured.err
         assert "recorded 0 of 2 declared accounts (1 not opted in, 1 skipped)" in captured.out
+
+    def test_targeted_pr_captured_by_a_concurrent_record_after_the_pre_lock_read_skips_that_account_not_the_run(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The locked already-captured check keeps the pre-lock check's --all-accounts contract: a row a
+        concurrent --record appends to one account's ledger after the pre-lock read skips that account, and the
+        run still records the other account."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        for acct in (acct_a, acct_b):
+            _enable_pr_cost(acct)
+        for root in roots:
+            project_dir = root / "-home-user-testrepo"
+            project_dir.mkdir(parents=True)
+            _write_jsonl(project_dir / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_ledger_row_on_lock_acquire(
+            monkeypatch, acct_a / "pr-cost-ledger.tsv",
+            _sample_pr_cost_row(pr_number=1, machine=_SEEDED_MACHINE_IDENTITY),
+        )
+        spy = _spy_on_scans(monkeypatch)
+        args = _pr_cost_args(record=True, pr=1, all_accounts=True)
+
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        captured = capsys.readouterr()
+        assert _already_captured_line(1) in captured.err.splitlines()
+        assert len(pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())) == 1
+        rows_b = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_b) == 1
+        assert rows_b[0]["turn_count"] > 0
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+        assert len(spy.round_scans) == 2  # account-1 scanned before its locked re-check; a pre-lock catch would skip it
 
     def test_targeted_pr_merged_inside_asof_window_converts_to_per_account_skip_not_hard_abort(
         self, tmp_path, monkeypatch, capsys,
