@@ -13,6 +13,7 @@ from .conftest import (
     _bash_use,
     _compact_boundary_rec,
     _opus,
+    _read_use,
     _tool_result,
     _user_msg,
     _write_cost_root,
@@ -40,15 +41,6 @@ def _read_scope_args(
         "extra_config_dirs": extra_config_dirs,
         "since": since,
     })()
-
-
-def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
-    tool_input: dict = {"file_path": file_path}
-    if offset is not None:
-        tool_input["offset"] = offset
-    if limit is not None:
-        tool_input["limit"] = limit
-    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
 
 
 def _read_result(tool_id: str, content, *, is_error: bool = False) -> dict:
@@ -115,9 +107,9 @@ class TestReadScope:
 
     def test_read_call_census_counts_offset_limit_and_pages_calls(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_read_tool_use("r1", file_path="/a.py", offset=0, limit=50)]),
+            _opus([_read_use("r1", file_path="/a.py", offset=0, limit=50)]),
             _read_result("r1", "x" * 40),
-            _opus([_read_tool_use("r2", file_path="/b.py")]),
+            _opus([_read_use("r2", file_path="/b.py")]),
             _read_result("r2", "y" * 400),
         ])
         read_scope._read_scope_report(_read_scope_args())
@@ -131,9 +123,9 @@ class TestReadScope:
         must still count in the denominator every cohort share divides by —
         a `targeted + whole_file` denominator would print 50%/50% instead."""
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_read_tool_use("r1", file_path="/a.py", offset=0)]),
+            _opus([_read_use("r1", file_path="/a.py", offset=0)]),
             _read_result("r1", "x" * 40),
-            _opus([_read_tool_use("r2", file_path="/b.py")]),
+            _opus([_read_use("r2", file_path="/b.py")]),
             _read_result("r2", "y" * 400),
             _opus([{"type": "tool_use", "id": "r3", "name": "Read", "input": {}}]),
         ])
@@ -145,10 +137,10 @@ class TestReadScope:
 
     def test_unpaired_error_non_text_and_unparsed_input_each_print_own_line(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),  # unpaired
-            _opus([_read_tool_use("r2", file_path="/b.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),  # unpaired
+            _opus([_read_use("r2", file_path="/b.py")]),
             _read_result("r2", "denied", is_error=True),  # error_result
-            _opus([_read_tool_use("r3", file_path="/c.png")]),
+            _opus([_read_use("r3", file_path="/c.png")]),
             _read_result("r3", [{"type": "image", "source": {}}]),  # non_text_result
             _opus([{"type": "tool_use", "id": "r4", "name": "Read", "input": {"__unparsedToolInput": "x"}}]),
             _read_result("r4", "text"),
@@ -164,9 +156,9 @@ class TestReadScope:
     def test_no_file_path_substring_appears_anywhere_in_printed_report(self, fake_projects, capsys):
         distinctive_path = "/very/distinctive/secret-project-path/module.py"
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_read_tool_use("r1", file_path=distinctive_path)]),
+            _opus([_read_use("r1", file_path=distinctive_path)]),
             _read_result("r1", "x" * 4000),
-            _opus([_read_tool_use("r2", file_path=distinctive_path)]),
+            _opus([_read_use("r2", file_path=distinctive_path)]),
             _read_result("r2", "y" * 4000),
         ])
         read_scope._read_scope_report(_read_scope_args())
@@ -176,11 +168,11 @@ class TestReadScope:
 
     def test_per_account_breakdown_uses_account_n_labels_not_raw_paths(self, tmp_path, capsys):
         root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * 40),
         ])
         root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
-            _opus([_read_tool_use("r2", file_path="/b.py", offset=0, limit=10)]),
+            _opus([_read_use("r2", file_path="/b.py", offset=0, limit=10)]),
             _read_result("r2", "y" * 40),
         ])
         read_scope._read_scope_report(_read_scope_args(), roots=[root_a, root_b])
@@ -194,7 +186,7 @@ class TestReadScope:
 
     def test_per_account_zero_calls_prints_no_read_calls_line(self, tmp_path, capsys):
         root_a = _write_cost_root(tmp_path, "acct-alice-clientwork", "-home-user-repo-a", "sess-a", [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * 40),
         ])
         root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
@@ -217,7 +209,7 @@ class TestReadScope:
 
     def test_no_redact_allowed_alone_with_single_root_content_unchanged(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * 40),
         ])
         read_scope._read_scope_report(_read_scope_args(no_redact=True))
@@ -232,10 +224,10 @@ class TestReadScope:
         test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly.
         Refusal happens before any output is printed."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
         ])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _opus([_read_tool_use("r2", file_path="/b.py")]),
+            _opus([_read_use("r2", file_path="/b.py")]),
         ])
         with pytest.raises(SystemExit) as exc_info:
             read_scope._read_scope_report(_read_scope_args(no_redact=True), roots=[root_a, root_b])
@@ -274,9 +266,9 @@ class TestReadScope:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _growth_asst(ts="2026-05-19T10:00:00.000Z", context=10, session_id="sess"),
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=50, session_id="sess"),
-            _opus([_read_tool_use("r1", file_path="/shared.py")]),
+            _opus([_read_use("r1", file_path="/shared.py")]),
             _read_result("r1", "x" * 4000),
-            _opus([_read_tool_use("r2", file_path="/shared.py")]),
+            _opus([_read_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ])
         _write_subagent_jsonl(fake_projects, "sess", "agent-a", [
@@ -323,7 +315,7 @@ class TestScanReadScopeSession:
         truthiness regression that would silently file first-line reads
         as whole-file."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/foo.py", offset=0, limit=50)]),
+            _opus([_read_use("r1", file_path="/foo.py", offset=0, limit=50)]),
             _read_result("r1", "line1\nline2\n"),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -336,7 +328,7 @@ class TestScanReadScopeSession:
         regression that would misclassify it as whole-file, mirroring the
         offset=0 case above."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/foo.py", limit=0)]),
+            _opus([_read_use("r1", file_path="/foo.py", limit=0)]),
             _read_result("r1", ""),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -348,9 +340,9 @@ class TestScanReadScopeSession:
         misclassify the other with no test failing unless both are covered
         independently."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/a.py", offset=10)]),
+            _opus([_read_use("r1", file_path="/a.py", offset=10)]),
             _read_result("r1", "x" * 40),
-            _opus([_read_tool_use("r2", file_path="/b.py", limit=20)]),
+            _opus([_read_use("r2", file_path="/b.py", limit=20)]),
             _read_result("r2", "y" * 40),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -361,9 +353,9 @@ class TestScanReadScopeSession:
         """The published 'whole-file tokens inside subagents' figure
         depends on this bucketing being right."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/main.py")]),
+            _opus([_read_use("r1", file_path="/main.py")]),
             _read_result("r1", "z" * 4000),
-            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r2", file_path="/sub.py")]),
+            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_use("r2", file_path="/sub.py")]),
             _read_result("r2", "w" * 4000),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -380,9 +372,9 @@ class TestScanReadScopeSession:
         Two Reads of different sizes must land in different buckets, each
         with its own count and its own token sum."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/small.py")]),
+            _opus([_read_use("r1", file_path="/small.py")]),
             _read_result("r1", "a" * 40),  # 10 tokens -> bucket "0-499"
-            _opus([_read_tool_use("r2", file_path="/big.py")]),
+            _opus([_read_use("r2", file_path="/big.py")]),
             _read_result("r2", "b" * 3000),  # 750 tokens -> bucket "500-1999"
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -398,9 +390,9 @@ class TestScanReadScopeSession:
         total -- a single-scope denominator would hide that a subagent's
         reads dominate the cohort's tokens."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/main.py")]),
+            _opus([_read_use("r1", file_path="/main.py")]),
             _read_result("r1", "a" * 40),  # 10 tokens, whole_file/main
-            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r2", file_path="/sub.py")]),
+            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_use("r2", file_path="/sub.py")]),
             _read_result("r2", "b" * 3000),  # 750 tokens, whole_file/subagent
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -412,11 +404,11 @@ class TestScanReadScopeSession:
         subagent group is not a repeat -- the subagent's read is the only
         way that subagent can see the file at all, not redundant work."""
         main_group = [
-            _opus([_read_tool_use("r1", file_path="/shared.py")]),
+            _opus([_read_use("r1", file_path="/shared.py")]),
             _read_result("r1", "x" * 4000),
         ]
         subagent_group = [
-            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r2", file_path="/shared.py")]),
+            _asst("claude-sonnet-4-6", sidechain=True, content=[_read_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ]
         groups = [main_group, subagent_group]
@@ -429,9 +421,9 @@ class TestScanReadScopeSession:
         """The same path read whole-file twice within the same source file
         (same context window) is exactly one repeat."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/shared.py")]),
+            _opus([_read_use("r1", file_path="/shared.py")]),
             _read_result("r1", "x" * 4000),
-            _opus([_read_tool_use("r2", file_path="/shared.py")]),
+            _opus([_read_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -442,9 +434,9 @@ class TestScanReadScopeSession:
         """A repeated .log-suffixed whole-file read increments the
         .output/.log sub-counter, not just the general repeat counter."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/run.log")]),
+            _opus([_read_use("r1", file_path="/run.log")]),
             _read_result("r1", "x" * 4000),
-            _opus([_read_tool_use("r2", file_path="/run.log")]),
+            _opus([_read_use("r2", file_path="/run.log")]),
             _read_result("r2", "y" * 4000),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -456,9 +448,9 @@ class TestScanReadScopeSession:
         must leave the sub-counter at 0 even though the general repeat
         counter still increments."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/shared.py")]),
+            _opus([_read_use("r1", file_path="/shared.py")]),
             _read_result("r1", "x" * 4000),
-            _opus([_read_tool_use("r2", file_path="/shared.py")]),
+            _opus([_read_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -482,7 +474,7 @@ class TestScanReadScopeSession:
             _user_msg([_tool_result("gl1", "y" * 40)]),  # 10 tokens
             _opus([_bash_use("b1", "ls")]),
             _user_msg([_tool_result("b1", "z" * 400)]),  # not a locate tool -- excluded
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "w" * 40),  # Read itself is never a locate call
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -518,7 +510,7 @@ class TestScanReadScopeSession:
 
     def test_error_result_counted_and_excluded_from_histogram(self):
         records = [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "permission denied", is_error=True),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -529,14 +521,14 @@ class TestScanReadScopeSession:
         assert stats["read_total"] == 1
 
     def test_unpaired_read_call_counted_but_call_still_in_census(self):
-        records = [_opus([_read_tool_use("r1", file_path="/a.py")])]
+        records = [_opus([_read_use("r1", file_path="/a.py")])]
         stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["unpaired"] == 1
         assert stats["read_total"] == 1
 
     def test_non_text_result_counted_and_excluded_from_histogram(self):
         records = [
-            _opus([_read_tool_use("r1", file_path="/a.png")]),
+            _opus([_read_use("r1", file_path="/a.png")]),
             _read_result("r1", [{"type": "image", "source": {"type": "base64", "data": "..."}}]),
         ]
         stats = read_scope._scan_read_scope_session(records, [records], None)
@@ -587,9 +579,9 @@ class TestScanReadScopeSession:
         token sum that counted any of these would inflate the denominator
         the revisit trigger and any ceiling estimate are stated against."""
         records = [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * 4000, is_error=True),
-            _opus([_read_tool_use("r2", file_path="/b.png")]),
+            _opus([_read_use("r2", file_path="/b.png")]),
             _read_result("r2", [{"type": "image", "source": {}}]),
             _opus([{"type": "tool_use", "id": "r3", "name": "Read", "input": {"file_path": "/c.pdf", "pages": "1-3"}}]),
             _read_result("r3", "page text " * 500),
@@ -605,15 +597,15 @@ class TestScanReadScopeSession:
         calling _read_session_file_partitioned (the function under test) --
         _read_session_file is now defined as exactly that function's own
         flatten, so an oracle built the same way could never fail."""
-        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r2", file_path="/b.py")])])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-b", [_opus([_read_tool_use("r3", file_path="/c.py")])])
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_use("r1", file_path="/a.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_use("r2", file_path="/b.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-b", [_opus([_read_use("r3", file_path="/c.py")])])
         jsonl = fake_projects / "sess.jsonl"
 
         expected = [
-            _opus([_read_tool_use("r1", file_path="/a.py")]),
-            _opus([_read_tool_use("r2", file_path="/b.py")]),
-            _opus([_read_tool_use("r3", file_path="/c.py")]),
+            _opus([_read_use("r1", file_path="/a.py")]),
+            _opus([_read_use("r2", file_path="/b.py")]),
+            _opus([_read_use("r3", file_path="/c.py")]),
         ]
         assert corpus.read_session_file(jsonl, include_subagents=True) == expected
 
@@ -623,12 +615,12 @@ class TestScanReadScopeSession:
         (an early return on a falsy main group would drop the subagent
         records entirely) against a hand-built expected value."""
         _write_jsonl(fake_projects / "sess.jsonl", [])
-        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_use("r1", file_path="/a.py")])])
         jsonl = fake_projects / "sess.jsonl"
 
         expected = [
             [],
-            [_opus([_read_tool_use("r1", file_path="/a.py")])],
+            [_opus([_read_use("r1", file_path="/a.py")])],
         ]
         assert corpus._read_session_file_partitioned(jsonl, include_subagents=True) == expected
 

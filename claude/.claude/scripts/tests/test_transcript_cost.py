@@ -2740,7 +2740,7 @@ class TestCostSummary:
         helper reaches the table's Of those, unreadable cell. Monkeypatches
         scope._scan_root_transcripts directly rather than chmod'ing a real
         file -- that helper's own permission-probe behavior is already
-        unit-tested (test_transcript_analysis.py's
+        unit-tested (test_transcript_scope_scan.py's
         test_skipped_counts_unreadable_file_separately_from_scanned), so
         this test only needs to prove cost.py's accumulator threads the
         scanned/skipped counts through to the table."""

@@ -774,10 +774,15 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-`pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in `tests/test_transcript_pricing.py`,
-`tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `corpus.py` and `scope.py`
-are exercised through `transcript-analysis.py`'s existing test suite
-(`tests/test_transcript_analysis.py`). `pricing.py`'s
+`corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
+`tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
+`tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `scope.py`'s
+scan-traversal, scan-gap, and glob-selection classes are tested in
+`tests/test_transcript_scope_scan.py`, and the rest of `scope.py` in
+`tests/test_transcript_scope.py`. `TestProjectsFlagHasNoArgparseType` stays in
+`tests/test_transcript_analysis.py` because it reads `build_parser`.
+`TestSkillFilesQuoteRootCountDescLiteral` stays there too, because `select-tests.py` declares that
+file, not the scope files, as a `SKILL.md` reader. `pricing.py`'s
 shared per-session step, staleness rule, and canary return values, and
 `cost.py`'s accumulation of that step's counts, also have direct tests in
 `tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
@@ -906,8 +911,9 @@ only helpers used by more than one file, or by `tests/test_transcript_analysis.p
 `_sum_column_across_rows`, `_subagent_mix_args`, and `_subagents_args`. Each file keeps its other
 family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
-family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
-there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
+family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` lives
+in `tests/test_transcript_corpus.py`: it checks the subagent record shape `corpus.iter_sessions`
+reads back from fixture files and reads no name from the family.
 
 The handoff-nudge command family splits at module seams, and handoff-signal-response's tests split
 again at its detection/reporting seam:

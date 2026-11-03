@@ -1444,9 +1444,19 @@ def _attr_ts(minute: int) -> str:
     return f"2026-05-12T12:{minute:02d}:00.000Z"
 
 
-def _read_use(tool_id: str, file_path: str) -> dict:
+def _read_use(tool_id: str, file_path: str, *, offset: int | None = None, limit: int | None = None) -> dict:
     """Build a Read tool_use block with the given file_path."""
-    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
+    tool_input: dict = {"file_path": file_path}
+    if offset is not None:
+        tool_input["offset"] = offset
+    if limit is not None:
+        tool_input["limit"] = limit
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
+
+
+def _worktree_porcelain(*paths: str) -> str:
+    """`git worktree list --porcelain` output naming each of `paths` as a worktree, for tests that stub subprocess.run."""
+    return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
 
 
 def _exit_plan_mode(tool_id: str = "epm1") -> dict:

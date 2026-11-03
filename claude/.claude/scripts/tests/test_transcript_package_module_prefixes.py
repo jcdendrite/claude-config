@@ -119,6 +119,9 @@ TEST_FILES = (
     "test_transcript_pricing.py",
     "test_transcript_redaction.py",
     "test_transcript_render.py",
+    "test_transcript_scope.py",
+    "test_transcript_scope_scan.py",
+    "test_transcript_corpus.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
