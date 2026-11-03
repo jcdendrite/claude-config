@@ -163,7 +163,9 @@ def _round_open_skill(rec: dict) -> str | None:
         blocks = _assistant_content_blocks(rec)
         return _skill_block_round_skill(blocks) or _spawn_block_round_skill(blocks)
     if rtype == "user":
-        # The substring test runs first: the envelope regex is quadratic in unterminated openers.
+        # The substring test is a cheap filter before the fresh-prompt check.
+        # A review slash tag quoted as prose inside a fresh human prompt can still open a round,
+        # as can one in a subagent summary that closes its own task-notification envelope early.
         content_raw = (rec.get("message") or {}).get("content", "")
         content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
         if _SLASH_COMMAND_PREFIX not in content_str or not render._is_fresh_user_prompt(rec):

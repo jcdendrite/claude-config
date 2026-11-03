@@ -2776,7 +2776,11 @@ class TestReviewRoundPassFailure:
         assert row["input_tokens"] == 1_000_000
         err = capsys.readouterr().err
         assert err.splitlines().count(_rounds_pass_failure_line("AttributeError")) == 1
-        assert "no attribute" not in err
+        with pytest.raises(AttributeError) as raised_by_the_round_pass:
+            pr_cost._scan_review_rounds_by_branch(_pr_cost_args(record=True), fake_projects.parent)
+        withheld_message = str(raised_by_the_round_pass.value)
+        assert withheld_message
+        assert withheld_message not in err
 
     def test_keyboard_interrupt_from_the_pass_propagates_and_writes_no_row(self, fake_projects, tmp_path, monkeypatch):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)

@@ -677,13 +677,13 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     A ledger rewritten from an older header prints one upgrade notice.
     A run that finished every branch with such a row prints a count line and
     exits 1.
+    A refused write exits 1 at once.
+    It suppresses that row's per-PR line, any upgrade notice, and the count
+    line. Earlier branches' lines have already printed.
     A --force re-capture that would replace captured review rounds with none,
     fewer or less complete ones is refused before any write: a single-account
     --pr run exits 1 at once, and --all-accounts skips that account and exits
     1 after its summary.
-    A refused write exits 1 at once.
-    It suppresses that row's per-PR line, any upgrade notice, and the count
-    line. Earlier branches' lines have already printed.
 
     Every stdout/stderr path below routes branch/repo values through
     _assign_root_scoped_redact_label -- no raw branch name or repo value is

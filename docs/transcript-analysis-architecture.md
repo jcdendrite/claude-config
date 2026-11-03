@@ -285,9 +285,14 @@ main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RUL
 is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
-miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
-judgment-pair's `--skills` default, by `pr_cost.py` and `pr_cost_export.py`, for the skills a `review_rounds` cell holds, and by the shim's `build_parser()`, for review-round-cost's
-`--skill` choices. `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
+miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
+
+- `judgment_pair.py`: judgment-pair's `--skills` default.
+- `pr_cost.py` and `pr_cost_export.py`: the skills a `review_rounds` cell holds.
+- The shim's `build_parser()`: review-round-cost's `--skill` choices.
+- `subagent_mix.py`: its round filter and the round-count table keys.
+
+`_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
 `_round_skill_name` for its `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison, and
 `_SLASH_COMMAND_RE` to extract a `/slash`-invoked skill name before `_round_skill_name` normalizes it.
 `_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.

@@ -224,9 +224,7 @@ def _decode_model_breakdown_cell(cell: str, line_no: int) -> dict | None:
     """Decode one model_breakdown cell: "" is None (not recorded), anything
     else must be structurally valid JSON (see _model_breakdown_cell_violation).
     Preserves values, accepting whitespace and key-order variants -- the
-    formatter re-encodes canonically on the next write. Every message names a
-    fixed rule, never cell text, and is raised outside the except clauses
-    in _load_json_cell so no cell text reaches __context__."""
+    formatter re-encodes canonically on the next write."""
     if cell == "":
         return None
     decoded, rule = _load_json_cell(cell)
@@ -345,7 +343,7 @@ def _review_rounds_cell_violation(decoded: object) -> str | None:
 
 
 def _decode_review_rounds_cell(cell: str, line_no: int) -> dict | None:
-    """Returns the whole object, unknown round keys included. Every message names a fixed rule, never cell text."""
+    """Returns the whole object, unknown round keys included."""
     if cell == "":
         return None
     if len(cell) > _REVIEW_ROUNDS_CELL_READ_MAX_CHARS:

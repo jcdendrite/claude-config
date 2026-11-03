@@ -34,6 +34,7 @@ from .conftest import (
     _slash_user,
     _task_notification_msg,
     _tool_result,
+    _two_declared_roots,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
@@ -86,22 +87,6 @@ def _review_round_cost_args(
 
 def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
-
-
-def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
-    """Active profile (acct-a) plus one declared root (acct-b, via
-    TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal setup resolve_scan_roots
-    resolves to more than one root with no --config-dir flag involved."""
-    acct_a = tmp_path / "acct-a"
-    (acct_a / "projects").mkdir(parents=True)
-    acct_b = tmp_path / "acct-b"
-    (acct_b / "projects").mkdir(parents=True)
-    monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-    roots_file = tmp_path / "roots"
-    roots_file.write_text(f"{acct_b}\n")
-    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-    return [acct_a / "projects", acct_b / "projects"]
 
 
 class TestComputeReviewRoundCosts:
@@ -1092,6 +1077,37 @@ def _corpus_sibling_reviewers_across_a_task_notification(fake_projects) -> None:
     _write_sibling_reviewer_dispatches(fake_projects)
 
 
+def _corpus_records_the_detection_gates_reject(fake_projects) -> None:
+    """One real slash round holding every record a detection gate must not count: an isMeta slash record, a slash
+    tag quoted inside a task notification, a Skill block with a non-object input or a non-string skill, and a
+    main-thread turn whose message.model is a list."""
+    skill_blocks_outside_the_accepted_shape = [
+        {"type": "tool_use", "id": "s1", "name": "Skill", "input": ["plan-review"]},
+        {"type": "tool_use", "id": "s2", "name": "Skill", "input": {"skill": ["ready-for-review"]}},
+    ]
+    notification_quoting_a_slash_tag = {
+        **_user_msg(
+            "<task-notification><summary><command-name>/ready-for-review</command-name></summary>"
+            "</task-notification>",
+            branch="feat", ts="2026-08-01T10:03:00.000Z",
+        ),
+        "origin": {"kind": "task-notification"},
+    }
+    turn_with_list_model = _priced("claude-sonnet-5", input=250_000, branch="feat", ts="2026-08-01T10:04:00.000Z")
+    turn_with_list_model["message"]["model"] = ["claude-sonnet-5"]
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _slash_user("code-review", branch="feat", ts="2026-08-01T10:00:00.000Z"),
+        {**_slash_user("plan-review", branch="feat", ts="2026-08-01T10:01:00.000Z"), "isMeta": True},
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:02:00.000Z",
+            content=skill_blocks_outside_the_accepted_shape,
+        ),
+        notification_quoting_a_slash_tag,
+        turn_with_list_model,
+        _user_msg("done", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
 # Every distinct round shape TestComputeReviewRoundCosts already exercises
 # elsewhere in this file, reused for the bidirectional agreement guard below
 # rather than one new hand-picked corpus.
@@ -1111,6 +1127,7 @@ _ROUND_SHAPE_CORPUS_BUILDERS = [
     pytest.param(
         _corpus_sibling_reviewers_across_a_task_notification, id="sibling_reviewers_across_a_task_notification",
     ),
+    pytest.param(_corpus_records_the_detection_gates_reject, id="records_the_detection_gates_reject"),
 ]
 
 
@@ -1675,6 +1692,12 @@ class TestGoldenRoundProjections:
                     }}},
                 ),
             ],
+            "records_the_detection_gates_reject": [
+                _golden_round(
+                    "code-review", unpriced_turns=1, unpriced_tokens=250_000,
+                    main_tokens=_standard_input("claude-sonnet-5", 100_000),
+                ),
+            ],
         },
     }
 
@@ -1719,6 +1742,7 @@ class TestGoldenRoundProjections:
         "adjacent_assistant_opened_rounds": ["code-review", "plan-review"],
         "sibling_reviewers_in_one_record": ["code-review"],
         "sibling_reviewers_across_a_task_notification": ["code-review"],
+        "records_the_detection_gates_reject": ["code-review"],
     }
 
     def test_every_shape_has_a_hand_written_skill_sequence(self):

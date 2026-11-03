@@ -63,7 +63,6 @@ A later column follows the same shape: freeze the outgoing header and document t
 - **Labels are stable.** Variant and class labels are never renamed or removed, but a later version may add one, so readers must tolerate unknown variant and class labels. A new leaf field, key shape, or nesting level would arrive as a new appended column under a new header, never as a reshaped `model_breakdown`, because this version's parser refuses it.
 - **Model, variant, and class keys are checked for shape only** at read and export, so the exporting checkout does not vouch for them.
 - **Per-model sums cover recorded rows only.** A row with an empty `model_breakdown` cell contributes nothing to a per-model sum, so while any row is not recorded a per-model total can be lower than the scalar `*_usd` and `*_tokens` totals over the same rows.
-- **Not the current header's trailing cell.** `invalid_usage_records` and `review_rounds` follow `model_breakdown` in column order, so an empty `model_breakdown` cell never ends a line under the current header.
 
 ### The `review_rounds` cell
 
@@ -80,6 +79,7 @@ A later column follows the same shape: freeze the outgoing header and document t
   - A cell whose every skill list is empty means captured with zero rounds.
   - A skill key absent from `rounds` was not tracked by the writer.
   - "Captured" and "recorded zero" mean among the records the pass could parse. An unreadable main transcript, or a non-UTF-8 or non-JSON line, is dropped without a count, so the cell does not claim completeness.
+  - A session older than `cleanupPeriodDays` at capture time makes the figure an undercount on the retention axis, because the pass reads only the sessions that survive. This holds even when every round list is empty. No field marks that case.
   - A literal `null` cell is malformed.
 - **Trailing cell.** `review_rounds` is the current header's last column, so a row with an empty cell ends in a tab. Readers must not whitespace-strip lines.
 - **Round fields.** Every round holds these keys:
@@ -95,8 +95,9 @@ A later column follows the same shape: freeze the outgoing header and document t
 - **Branch-name join.** The cell inherits the row's branch-name join. A row with `join_confidence: low` holds the rounds of every PR that used the branch name, as its scalar columns hold their spend.
 - **One machine's view.** Each row's lists come from one machine's transcripts, so they cannot be interleaved with another machine's row. Rounds carry no timestamps to interleave them by.
 - **Never compare against the row's totals.** A round attributes every record inside its window to the round's opening branch, while the row attributes each record on its own. A branch's round dollars can therefore exceed its row total, and no bound between the two holds. Do not sum, bound or compare a round total against the row's totals.
+- **Advisory only.** Rounds are inferred from the agent's own transcripts. They are not evidence that a review ran, and a round list is neither a floor nor a ceiling on the reviews that ran or on the review spend. Any consumer that enforces a requirement on rounds must corroborate from a source the agent does not author.
 - **Reader contract.** A round may gain a key later, only as a key-shaped name holding an integer from 0 to `2**63 - 1`. Readers must tolerate added round keys, and treat a missing key as unknown rather than zero. Any other change to the cell's structure arrives as a new appended column under a new header.
-- **`rule` and `rate_stamp`.** The cell's `rule` stamp is a round-detection version. It is unrelated to the attribution cutover's old-rule and new-rule rows (see "Pre-branch and subagent attribution") and to the check rules in "Write-time check failures". The stamp is bumped by any change to which records open a round, where a window ends, which branch a round goes to, or which turns and dispatches it prices. Compare rounds across rows only at one `rule` value. `rule` does not cover pricing: `rate_stamp` does, and the per-round token splits re-price under any other rate table.
+- **`rule` and `rate_stamp`.** The cell's `rule` stamp is a round-detection version. It is unrelated to the attribution cutover's old-rule and new-rule rows (see "Pre-branch and subagent attribution") and to the check rules in "Write-time check failures". `REVIEW_ROUND_RULE` in `review_rounds.py` names what bumps it. Compare rounds across rows only at one `rule` value. `rule` does not cover pricing: `rate_stamp` does, and the per-round token splits re-price under any other rate table.
 - **Labels and keys.** Skill, model, variant, class and added-key names are checked for shape at read (`[a-z0-9][a-z0-9._-]{0,63}`) and not for membership, so a label a newer checkout added never makes this checkout refuse the ledger. Integers run from 0 to `2**63 - 1`.
 - **Size bounds.** Both bounds are in `pr_cost_ledger.py`, and both measure characters of the cell.
   - `_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS` is 1048576. It measures the canonical encoding, which is ASCII, so characters equal bytes. A cell longer than this fails the `size` check (see "Write-time check failures"). It may rise later, up to the lowest read bound any released checkout carries.
@@ -129,7 +130,7 @@ pr-cost:   PR #<a>: review rounds <reason> -- recorded the row without them; see
 
 A branch with no local transcript activity, and a checkout that does not record rounds, record an empty cell with no line and no count-line entry.
 
-`--record` prints `pr-cost: scanning transcripts for review rounds...` to stderr before the review-round pass (see "`--record`'s capture"), with `account-K's ` before `transcripts` under `--all-accounts`. The pass runs at most once per account, and an unforced run skips it for a PR already captured. When that pass fails, it prints once:
+`--record` prints `pr-cost: scanning transcripts for review rounds...` to stderr before the review-round pass (see "`--record`'s capture"), with `account-K's ` before `transcripts` under `--all-accounts`. When that pass fails, it prints once:
 
 ```text
 pr-cost: the review-round pass failed (<ExceptionClass>) -- any row this run records<for-account> carries no review rounds; see docs/pr-cost.md
@@ -181,7 +182,7 @@ After an exit 1 for a `review_rounds` check failure:
 
 - A scheduled rerun without `--pr` skips the row, because a recorded row counts as captured. Only `--record --force --pr N`, with the run's account flags, inside `cleanupPeriodDays`, refills the cell.
 - `size`, and a `shape` caused by a leaf above `2**63 - 1` (a token count or a micro-dollar figure), come from the transcript. A repeat of `size` on an updated checkout does not add the rounds. If the same PR fails `shape` again on an updated checkout, the transcript is the likely cause and re-forcing will not add the rounds.
-- For `size` alone, a checkout that raises `_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS` past the cell's length adds the rounds. The write cap may not exceed `_REVIEW_ROUNDS_CELL_READ_MAX_CHARS` (8388608 characters), so a longer cell stays unrecordable.
+- For `size` alone, a checkout that raises `_REVIEW_ROUNDS_CELL_WRITE_MAX_CHARS` past the cell's length adds the rounds. The cap rises only within the bound in "Size bounds", so a longer cell stays unrecordable.
 - `model-membership`, `label-membership` and `build` are claude-config defects, except the two `build` cases below. Report each defect on claude-config's GitHub Issues (linked from README.md) with the rule name and, for `build`, the exception's class name, and no paths.
   - `build` ending in `OverflowError` is likely transcript-caused, from a token count far beyond any real PR.
   - `build` ending in `ValueError` is likely transcript-caused when a token count has more digits than the interpreter's integer-to-string limit allows.
@@ -245,7 +246,7 @@ With no `--record`, `pr-cost` prints one line for every row currently in the led
 
 The `machine` cell is generated once per config directory, persisted at `<config-dir>/machine-id`, and cannot be chosen or influenced by the operator (see "Machine identity" below). With no `--pr`, it walks every branch with local corpus activity; `--pr N` targets exactly one PR and turns several would-be skips into hard failures (an unmatched or too-recent PR aborts instead of being silently skipped).
 
-A run that reaches a row write for a branch with local transcript activity, a refused `--force` included, reads the transcripts a second time, after a start line, to capture each PR's `review_rounds` cell, pricing only sessions that open a round. A run that reaches no such write does not (see "Write-time check failures").
+A run that reaches a row write for a branch with local transcript activity, a refused `--force` included, reads the transcripts a second time, after a start line, to capture each PR's `review_rounds` cell, pricing only sessions that open a round. A run that reaches no such write does not (see "Write-time check failures"). The pass runs at most once per account, and an unforced run skips it for a PR already captured.
 
 ### Machine identity
 
@@ -474,6 +475,8 @@ Concatenating two or more `pr-cost-export` outputs directly double-counts: the s
 A row skipped under the two bullets above is not grounds to refuse the whole input: one malformed row elsewhere in a large export shouldn't discard every other row's data.
 
 Leave an input out of round sums when its provenance line's `review_rounds_dropped_keys` is nonzero, or re-export it from an updated checkout first, because its token splits can under-sum its dollars (see "Columns" above).
+
+A session older than `cleanupPeriodDays` at capture time makes a PR's round sum an undercount on the retention axis, even when every round list is empty. No field marks that PR (see "The `review_rounds` cell").
 
 **Namespace every token by its source input.** Prefix every `account`, `host`, `repo`, `pr_number`, and `machine` token with a label naming the input file it came from, before comparing anything across inputs. A token is unique only within the export run that produced it, so once two exports are combined, a PR's true identity is the tuple of its input, account, host, repo, and PR number. The plain (account, host, repo, PR number) tuple is not enough, because two separately-run exports can each reuse the same tokens for different PRs.
 

@@ -1183,7 +1183,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
   See `docs/pr-cost.md` § "Write-time check failures" and § "The re-record contract".
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
 - `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
-- `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
+- `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing, unless the guard detects a loss of captured review rounds (see `docs/pr-cost.md` § "The re-record contract").
 - `--asof-window-days DAYS` — close-out window a merged PR must clear before it's eligible for capture (default `3`, a provisional placeholder — see `docs/pr-cost.md`).
 - `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
 - `--risk-surface-glob GLOB` — glob pattern considered risk surface for the `risk_surface_flag` proxy (repeatable; replaces the claude-config defaults entirely when given).
