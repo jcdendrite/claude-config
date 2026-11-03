@@ -4,7 +4,7 @@
 
 Goal: finish the transcript-analysis decomposition by moving `build_parser()` and `main()` out of the shim into `transcript_analysis/cli.py`, relocating the last classes out of the legacy `test_transcript_analysis.py`, and recording a test-placement rule so a later contributor never has to decompose the tests again.
 
-Ask: "do we need to modify the architecture markdown for transcript analysis to indicate exactly when to add to test_transcript_analysis versus create a new test suite file ? I don't want us to have to do decomp again" (engineer, this session). Scope decisions, engineer's selected labels: "Two PRs (Recommended)", "Move verbatim, record the overage (Recommended)", "Shim re-exports both names (Recommended)", "Yes, add it (Recommended)". On the gap between the size check's two halves the engineer said: "I accept the gap between F1 and F2. I aim to go from F1 to F2 quickly".
+Ask: "do we need to modify the architecture markdown for transcript analysis to indicate exactly when to add to test_transcript_analysis versus create a new test suite file ? I don't want us to have to do decomp again" (engineer, this session). Scope decisions, engineer's selected labels: "Two PRs (Recommended)", "Move verbatim, record the overage (Recommended)", "Shim re-exports both names (Recommended)", "Yes, add it (Recommended)". On the gap between the size check's two halves the engineer said: "I accept the gap between F1 and F2. I aim to go from F1 to F2 quickly". During PR 1's commit-2 review, the engineer widened the scope with two selected labels: "Add the guard test here" (a `select-tests.py` guard for the multi-root file's `SKILL.md` reads) and "Separate commit after the move (Recommended)" (two new no-warning tests for the skill-pair canary).
 
 The decomposition (tracker GH-1116, closed) has moved every leaf module and every command group into `claude/.claude/scripts/transcript_analysis/`. The shim `claude/.claude/scripts/transcript-analysis.py` still holds `build_parser()` and `main()`, because while commands lived in the shim a `cli.py` would have had to import back into it. The governing plan, `.claude/plans/transcript-analysis-decomposition.md` (final phase, lines 155-161), commits this phase to moving them and to relocating `_UNCONDITIONAL_HEADER_CASES` with its two classes atomically.
 
@@ -42,7 +42,9 @@ PR 1 moves every test out of `test_transcript_analysis.py` (below, L) into the f
 - `test_transcript_package_module_prefixes.py`: in `TEST_FILES`, replace the `"test_transcript_analysis.py"` entry with `"test_transcript_cli.py"`, then append `"test_transcript_analysis_multi_root_scope.py"` and `"test_transcript_subagents_format_drift.py"`. That takes it from 66 entries to 68 (row 12).
 - Nothing else changes in this commit. Authored text waits for commit 3, so commit 2's proofs expect no finding beyond imports (M6).
 
-**PR 1 commit 3, authored text.**
+**PR 1 commit 2b, two no-warning tests (row 36).** After commit 2, `tests/test_transcript_skill_pair.py` gains two methods at the end of `TestSkillPairFormatDriftCanary`: `test_no_warning_in_skill_pair_without_spawns` and `test_no_warning_in_skill_pair_with_spawn_and_real_sidechain_turn`. Their text is the scratch patch `<scratch>/r2-skill-pair-tests.patch`, which commit 2's review round drafted and the parent set aside so commit 2 stayed a pure move. They mirror the cache-efficiency canary's no-warning cases. The class had only the warning-fires case. A missing patch stops the run, and none is rewritten from memory.
+
+**PR 1 commit 3, authored text.** Every `:N` line number in this commit is from 0a66c019. Later edits moved them: origin/main's moved the architecture doc's by 6 and `select-tests.py`'s by 1, and commit 1's rewrite of the :913-914 sentence moved the doc's later lines by 2 more. Each edit matches by its quoted text, never by number.
 - **The rule file**, `.claude/rules/transcript-analysis-tests.md` (M8). It holds the fenced frontmatter below, a blank line, the heading line `## Where a transcript-analysis test goes`, a blank line, then the fenced body below. Write it exactly as given.
 
 ```markdown
@@ -128,7 +130,7 @@ split by position, as in `_part2`.
     - "The first three share" becomes "The first four share".
     - "`tests/test_transcript_analysis.py` imports it too. All four consumers" becomes "`tests/test_transcript_analysis_multi_root_scope.py` imports it too. All its consumers".
     - "used by more than one file, or by `tests/test_transcript_analysis.py` as well:" becomes "used by more than one file:".
-  - :913-914. Replace the `TestFormatDriftCanary` sentence with: "Each command's format-drift canary tests live with that command: `cmd_skill_pair`'s in `tests/test_transcript_skill_pair.py` and `cmd_cache_efficiency`'s in `tests/test_transcript_cache_efficiency.py`."
+  - :913-914. Commit 1 already rewrote this sentence (row 36). Replace the sentence that begins "`TestFormatDriftCanary`, `TestSkillPairFormatDriftCanary`, and" and ends "respectively." with: "Each command's format-drift canary tests live with that command: `cmd_skill_pair`'s in `tests/test_transcript_skill_pair.py` and `cmd_cache_efficiency`'s in `tests/test_transcript_cache_efficiency.py`."
   - :946. Change "`tests/test_transcript_analysis.py` imports only" to "`tests/test_transcript_analysis_multi_root_scope.py` imports only".
   - :957-959. Change "more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file imports it too, as" to "more than one of those files, `tests/test_transcript_analysis_multi_root_scope.py`, or `tests/test_transcript_analysis_branch_attribution.py` reads. Each imports it as".
   - :969-974:
@@ -149,9 +151,16 @@ split by position, as in `_part2`.
   - `_cache_efficiency_helpers.py`: "and by test_transcript_analysis.py's cross-group cache-efficiency tests." becomes "and by test_transcript_cache_rebuild.py's cross-instrument reconciliation test."
 - **Other prose naming L** (row 13):
   - `conftest.py` :1600: `test_transcript_analysis.py's` becomes `test_transcript_subagents_format_drift.py's`.
-  - `test_transcript_cost.py` :4392-4394: the banner's middle lines become the single line `# format-drift canary (cost side)`.
+  - `test_transcript_cost.py` :4392-4394 needs no edit: commit 1 already made the banner the single line `# format-drift canary (cost side)` (row 36).
   - `test_transcript_shared_fixtures.py`: its docstring becomes `"""Tests of conftest's shared fixtures and helpers. This file deliberately loads no transcript-analysis.py shim, so a fixture that comes to depend on the shim fails here first."""`, wrapped under ruff's 130-column line length.
-  - `select-tests.py` :112-115: replace those lines with `# test_transcript_analysis_multi_root_scope.py, one of the files the glob` / `# below matches, reads specific SKILL.md files by path, not by import.` / `# Domain-narrowing can't see that dependency, so it's declared here as a` / `# cross-domain exception rather than folded into the scripts domain rule.` Lines :116-118 stay.
+  - `select-tests.py`, the four-line comment that begins `# test_transcript_analysis.py` (:112-115 at 0a66c019): replace those lines with `# test_transcript_analysis_multi_root_scope.py, one of the files the glob` / `# below matches, reads specific SKILL.md files by path, not by import.` / `# Domain-narrowing can't see that dependency, so it's declared here as a` / `# cross-domain exception rather than folded into the scripts domain rule.` Lines :116-118 stay.
+
+**PR 1 commit 4, the select-tests guard (row 37).** In `tests/test_select_tests.py`, in `TestSelectPytestTargets` directly after `test_transcript_analysis_script_import_closure_selects_the_error_mode_nudge_test`, add `test_skill_md_change_selects_the_multi_root_scope_test_file`.
+- Its docstring is `"""The multi-root scope test file reads SKILL.md inside test bodies, which TestCrossDomainReadCompleteness cannot see, so only the TRANSCRIPT_ANALYSIS_TEST_GLOB row selects it for a skill edit. The path is hand-typed, so any rename of the file fails here and must update this pin."""`, wrapped under ruff's 130-column line length.
+- It asserts the probe path `claude-skills/skills/transcript-analysis/SKILL.md` exists under `_REPO_ROOT`, as the neighbouring test does.
+- It calls `_mod.select_pytest_targets` on that path and asserts `is_full_suite` is `False`.
+- It expands the result with `_mod.resolve_target_paths(list(result.target_paths), repo_root=_REPO_ROOT)`, and asserts the hand-typed `"claude/.claude/scripts/tests/test_transcript_analysis_multi_root_scope.py"` is in the expansion.
+- It adds no other test and edits no other line of the file.
 
 **PR 2 commit 1, the move.**
 - `transcript_analysis/cli.py`: line 1 is `"""build_parser() and main() for transcript-analysis.py, which re-exports both."""`, line 2 is blank, and the rest is the shim's lines from `import argparse` through `main()`'s last line, byte for byte. At 0a66c019 those are :7-1021, so the file comes to 1,017 lines (row 32). It is built with `sed`, never retyped.
@@ -212,7 +221,7 @@ if __name__ == "__main__":
 
 **Givens:**
 - G1. Agents run `select-tests.py`, not the full suite, outside CLAUDE.md's two named cases. Reason: changing this needs an edit to CLAUDE.md § "Commands". `[verified: CLAUDE.md "Commands"]`
-- G2. Code and test files stay under the 1,000-line limit, and nothing enforces it until F2 lands. Reason: the limit and its timing are a repo decision this plan does not own. `[verified: docs/design-decisions/code-file-line-limit.md:19, :50-57]`
+- G2. Code and test files this plan creates or moves stay under the 1,000-line limit, and nothing enforces it until F2 lands. Commit 4 adds about 15 lines to `test_select_tests.py`, which is already 3,445 lines. Reason: the limit and its timing are a repo decision this plan does not own. `[verified: docs/design-decisions/code-file-line-limit.md:19, :50-57]`
 - G3. This machine runs pytest with one xdist worker, through `PYTEST_XDIST_AUTO_NUM_WORKERS=1`. Reason: machine memory lies outside the plan's reach. `[unverified — relayed by the dispatching session]`
 - G4. The shim keeps its path and executable bit. Reason: `pr-cost-section.sh` :38 and :46, `skill-fidelity-report.sh` :16 and :23, `nudge-error-mode-analysis.sh` :151, and every stow consumer's shell history run it by path. `[verified: Grep]`
 - G5. This phase moves `build_parser()` and `main()` into `cli.py`, reduces the shim to a package import and a `__main__` guard, and relocates `_UNCONDITIONAL_HEADER_CASES` with its two classes in one move. Reason: the governing plan fixes this phase's content. `[verified: .claude/plans/transcript-analysis-decomposition.md:155-161, :185-188]`
@@ -250,7 +259,7 @@ if __name__ == "__main__":
 9. Thirteen test files load a shim copy: L, plus `test_transcript_` plan_boundary, pr_cost_gh, ledger_common, cost, handoff_signal_response, cache_rebuild, pr_cost_export, cache_rebuild_ttl_rules, review_rounds, cost_counts, and period_cost, plus `test_author_outcome.py`. `test_transcript_cache_efficiency.py`, `test_transcript_skill_invocation.py`, `test_transcript_pr_link.py`, and `test_transcript_review_cost_by_size.py` load none. `[verified: Grep of `spec_from_file_location` and `_SCRIPT =`]`
 10. File sizes. `[verified: ripgrep line counts at 0a66c019]`
     - Current: L 1,436, cache_efficiency 316, cache_rebuild 555, skill_pair 212, shared_fixtures 24, branch_attribution 636, subagents 939, pricing 653, scope 900, scope_scan 773, review_cost_by_size 1,057.
-    - Projected after PR 1: cli about 360, multi_root_scope about 550, subagents_format_drift about 95, skill_pair about 230, cache_efficiency about 385, cache_rebuild about 600, shared_fixtures about 100, branch_attribution about 890. `[unverified: span arithmetic; Verification step 6 measures]`
+    - Projected after PR 1: cli about 360, multi_root_scope about 550, subagents_format_drift about 95, skill_pair about 250 with commit 2b, cache_efficiency about 385, cache_rebuild about 600, shared_fixtures about 100, branch_attribution about 890. `[unverified: span arithmetic; Verification step 6 measures]`
     - The four `cmd_subagents` canary tests span about 64 lines, which would take `test_transcript_subagents.py` past 1,000.
 11. `select-tests.py`. `[verified: read]`
     - `TRANSCRIPT_ANALYSIS_TEST_GLOB` (:119) is selected on any hook or skill change (:819). Its comment (:112-115) names L as the `SKILL.md` reader.
@@ -263,7 +272,7 @@ if __name__ == "__main__":
     - `PRODUCTION_MODULES` (:27-57) lists a subset of modules, so `cli.py` need not join it.
     - `test_production_modules_reference_only_real_sibling_attributes` (:380-397) fails a listed module that assigns through a sibling module's attribute. `main()`'s `scope.PROJECTS_DIR = ...` (shim :1020) is such an assignment.
 13. Prose naming L outside the architecture doc. `[verified: Grep]`
-    - Sites this change makes false: eight helper-module docstrings (`_subagent_helpers.py:2`, `_audit_routing_helpers.py:2`, `_handoff_nudge_helpers.py:1`, `_skill_helpers.py:2`, `_commit_gate_helpers.py:1`, `_cache_efficiency_helpers.py:1`, `_session_signal_helpers.py:2`, `_cache_rebuild_helpers.py:2`), `conftest.py:1600`, `test_transcript_cost.py:4392-4394`, and `select-tests.py:112`.
+    - Sites this change makes false: eight helper-module docstrings (`_subagent_helpers.py:2`, `_audit_routing_helpers.py:2`, `_handoff_nudge_helpers.py:1`, `_skill_helpers.py:2`, `_commit_gate_helpers.py:1`, `_cache_efficiency_helpers.py:1`, `_session_signal_helpers.py:2`, `_cache_rebuild_helpers.py:2`), `conftest.py:1600`, and `select-tests.py:112`. `test_transcript_cost.py:4392-4394` was a ninth site, which commit 1 fixed (row 36).
     - Already stale before this change: `test_check_claude_md_length.py:889` and `test_transcript_context_composition.py:616`.
     - Dated records under `docs/reports/` and `docs/case-studies/` name L, and are preserved.
     - `test_select_tests.py:1839` asserts a path prefix the glob still satisfies.
@@ -321,6 +330,15 @@ if __name__ == "__main__":
     - Allowed residues: :267, :354, :684, and § "Tests"'s shim-copy loader sentences.
 34. The pure-check precedent. `claude-skills/skills/tests/test_rules_frontmatter.py`'s `rule_frontmatter_violations` (:138-242) returns violation strings for its inputs. The real-tree test calls it at :260, and `TestRuleFrontmatterViolations` (:398-695) drives each red branch with a synthetic input. `[verified: read, Grep]`
 35. After commit 1 inserts two class headers above the multi-root group, the comment block above `_UNCONDITIONAL_HEADER_CASES` sits below L's :672-676, near :676-680. L's loader at :86-93 precedes the insertions and keeps its lines. `[unverified: relayed from the SDET plan review's simulated L-c1; Verification names the block by content, so no step depends on the number]`
+36. Decisions made during commit 2's `/code-review` (round 5 in the branch review ledger, SETTLED rows). `[engineer-verified: "Add the guard test here"]` This covers adding a guard test for the multi-root file's `SKILL.md` reads, and so adding `tests/test_select_tests.py` to Critical files. The test's design is this plan's choice (M16). `[engineer-verified: "Separate commit after the move (Recommended)"]` This covers adding two no-warning tests to the skill-pair canary as their own commit after the move. Their text is the reviewer-round draft in the scratch patch, which the engineer did not read. Commit 1's own review rounds (ledger rounds 2 and 3, ADDRESS) also made two edits this plan had put in commit 3: the cost-side banner and one architecture-doc sentence, both naming the class commit 1 splits. `[verified: git show of e39a1aab; git diff of the staged fixes; scratch patch saved by git diff]`
+37. The guard's selection. `[verified: probe run this session]`
+    - `select_pytest_targets(["claude-skills/skills/transcript-analysis/SKILL.md"])` returns `is_full_suite` false and four targets:
+      - `claude-skills/skills/tests`;
+      - `claude/.claude/hooks/tests/test_doc_counts.py`;
+      - `claude/.claude/scripts/tests/test_transcript_analysis*.py`;
+      - `claude/.claude/scripts/tests/test_transcript_denials.py`.
+    - `resolve_target_paths` expands the glob to concrete files, including `test_transcript_analysis_multi_root_scope.py`.
+    - The neighbouring test at `test_select_tests.py:1625` hand-types its expected path for the same reason.
 
 **Mechanisms:**
 - M1: Two sequenced PRs. PR 1, the tests and the rule, merges before PR 2, the move, is cut. `anchors: row1, G5`. Moving the tests first lets PR 2's move be proved against tests already relocated, and the plan ships with the PR that carries the rule. Cutting both PRs from main was set aside: both edit the architecture doc's § "Tests" and `test_transcript_cli.py`.
@@ -334,7 +352,7 @@ if __name__ == "__main__":
 - M5: Cross-module groups go to `test_transcript_analysis_<invariant>.py` files: the multi-root group to a new file, and the branch classes to the existing `test_transcript_analysis_branch_attribution.py`. `anchors: row7, row10, row11`. The alternatives each fail:
   - `test_transcript_scope.py` (900 lines) and `test_transcript_scope_scan.py` (773) cannot take about 490 lines, and their subject is scope's own code.
   - A name outside the glob drops the two `SKILL.md` pins from skill-edit selection, and `TestCrossDomainReadCompleteness` cannot see a read made inside a function body.
-- M6: PR 1 has three implementation commits: the in-place split, a pure move, and authored text. `anchors: row27, row28`. Putting prose in the move commit, as `leaf-module-tests.md` did, was set aside: docstring edits in existing destination files would add `remainder-ast` findings to enumerate, and commit 3's text then needs review alone.
+- M6: PR 1 has five implementation commits: the in-place split, a pure move, two new skill-pair tests, authored text, and the select-tests guard. `anchors: row27, row28, row36`. Putting prose in the move commit, as `leaf-module-tests.md` did, was set aside: docstring edits in existing destination files would add `remainder-ast` findings to enumerate, and commit 3's text then needs review alone.
 - M7: A scratch mover cuts and pastes AST spans. It carries the comment block directly above `_UNCONDITIONAL_HEADER_CASES`, copies L's loader block into the cli file, and refuses to write if L holds anything it cannot account for. `anchors: row6, row27, row28`. The lighter options each fail:
   - Re-emitting about 1,330 lines through Write risks a retyping slip per line.
   - Hand-cut `sed` ranges miss decorator lines and the attached comment block.
@@ -353,8 +371,15 @@ if __name__ == "__main__":
   - A redundant `as` alias depends on ruff behavior this session did not check.
 - M11: PR 2 points `test_transcript_cli.py` at `cli` and leaves the other twelve loaders. `anchors: row3, row12`. Leaving it on the shim was set aside: `cli.py`'s own test file would then reach `cli` only through the re-export.
 - M12: PR 2 retargets the cost import-direction guard to `cli.py` rather than deleting it. Its pin, no public cost name crossing into the CLI, still applies. `anchors: row18`.
-- M13: Proofs. Commit 1 gets a sorted-line diff, `remainder`, and `test-ids` renames. Commit 2 gets `nodes --verbatim` over all destinations, a `remainder` of L against a residue stub, a census of each new and grown file, and `test-ids`. PR 2 gets a byte diff of the body, `nodes`, `remainder`, and a before-and-after `capture --all-help --runs` comparison. `anchors: G1, G3, row16, row27, row28, row35`.
-- M14: F2 conditional. If F2's check exists on a PR's base, PR 1 deletes L's exception row. PR 2 deletes the shim's row and adds a row for `cli.py`, with its measured size as the ceiling and the reason "verbatim move of build_parser; splitting its inline subparsers is pending". The F2 probe runs at step 0 and again at each PR's second sync point, because a rebase absorbs a newly landed F2 silently and the PR's CI would then fail on `cli.py`. `anchors: row31, row32, G2`.
+- M13: Proofs. Commit 2b gets a diff stat and a test count (Verification 7b), and commit 4 gets a seeded control (Verification 10b). Commit 1 gets a sorted-line diff, `remainder`, and `test-ids` renames. Commit 2 gets `nodes --verbatim` over all destinations, a `remainder` of L against a residue stub, a census of each new and grown file, and `test-ids`. PR 2 gets a byte diff of the body, `nodes`, `remainder`, and a before-and-after `capture --all-help --runs` comparison. `anchors: G1, G3, row16, row27, row28, row35`.
+- M14: F2 conditional. If F2's check exists on a PR's base, PR 1 deletes L's exception row. It also raises `test_select_tests.py`'s ceiling row, if it has one, by commit 4's exact added line count. PR 2 deletes the shim's row and adds a row for `cli.py`, with its measured size as the ceiling and the reason "verbatim move of build_parser; splitting its inline subparsers is pending". The F2 probe runs at step 0 and again at each PR's second sync point, because a rebase absorbs a newly landed F2 silently and the PR's CI would then fail on `cli.py`. `anchors: row31, row32, G2`.
+- M16: The select-tests guard is one hand-typed pin in `test_select_tests.py`, not a scan. `anchors: row11, row36, row37`. The alternatives each fail:
+  - A test that derives every `SKILL.md`-reading file from source would also cover a future reader. It needs its own scanner for reads inside function bodies. `TestCrossDomainReadCompleteness` cannot see those reads, and the engineer chose a guard test without asking for that machinery.
+  - Extending `TestCrossDomainReadCompleteness` to read function bodies changes a shared check for one file's sake.
+  - Hoisting the multi-root file's five `SKILL.md` reads into module-level constants would let the existing completeness check cover them. It edits the text of tests commit 2 moved verbatim, in a PR whose contract is that move, and it would need its own commit.
+  - Documentation alone is what commit 3's rule sentence already does, and the engineer asked for a test.
+
+  The pin covers the one reader that depends on the prefix. Another future reader outside the glob stays uncaught until its own row is added, and the rule's sentence tells the contributor to add that row.
 - M15: No CHANGELOG entry for `cli.py`. `anchors: row19`. The earlier decomposition phases that added a module the shim imports shipped without one, and `cli.py` is the same kind of change: one more file in `transcript_analysis/`, the directory `CHANGELOG.md:535` already tells a real-directory consumer to re-stow. A CHANGELOG line in `:535`'s re-run-`./install.sh` form was set aside, because the exposure equals every earlier phase's. If a consumer's `transcript_analysis/` is a real directory of per-file links, `cli.py` stays unlinked after `git pull` and every shim run fails with `ModuleNotFoundError`, which silences the error-mode nudge (`hooks/nudge-error-mode-analysis.sh:151-154`) and drops the PR body's Cost section (`scripts/pr-cost-section.sh:38-42`).
 
 ## Critical files
@@ -391,9 +416,10 @@ if __name__ == "__main__":
   Verification it runs: ruff as in A1. Then `PYTEST_XDIST_AUTO_NUM_WORKERS=1 scripts/venv-run.sh pytest -n0` on the eight destination files and `test_transcript_package_module_prefixes.py`, plus one `-n0` run on each new file alone.
 
   Return: each file's node count, each existing file's added imports as `remainder` triples, and `wc -l` of every created and grown file.
+- **A2b, PR 1 commit 2b.** Files: `tests/test_transcript_skill_pair.py` only. Apply `<scratch>/r2-skill-pair-tests.patch` with `git apply`, which adds the two methods at the end of `TestSkillPairFormatDriftCanary`. Edit no other line. Verification it runs: ruff as in A1, then `PYTEST_XDIST_AUTO_NUM_WORKERS=1 scripts/venv-run.sh pytest -n0 claude/.claude/scripts/tests/test_transcript_skill_pair.py`.
 - **A3, PR 1 commit 3.** Files:
   - Create the rule file and `test_transcript_analysis_module_test_files.py`.
-  - Modify the architecture doc, the eight helper modules, `conftest.py`, `test_transcript_cost.py`, `test_transcript_shared_fixtures.py`, and `select-tests.py`.
+  - Modify the architecture doc, the eight helper modules, `conftest.py`, `test_transcript_shared_fixtures.py`, and `select-tests.py`.
 
   Make exactly Approach "PR 1 commit 3". Verification it runs:
   - ruff as in A1.
@@ -401,6 +427,7 @@ if __name__ == "__main__":
   - The same on `claude-skills/skills/tests/test_skills.py -k citation`.
 
   Return each prose edit as `file:line old → new`.
+- **A4, PR 1 commit 4.** Files: `tests/test_select_tests.py` only. Make exactly Approach "PR 1 commit 4". Verification it runs: ruff as in A1, then `PYTEST_XDIST_AUTO_NUM_WORKERS=1 scripts/venv-run.sh pytest -n0 claude/.claude/scripts/tests/test_select_tests.py -k skill_md_change_selects_the_multi_root_scope_test_file`. Return the test's line range.
 - **B1, PR 2 commit 1.** Files: create `transcript_analysis/cli.py`. Modify `transcript-analysis.py`, `test_transcript_analysis_cost_import_direction.py`, and the architecture doc (the `cli.py` section only).
   - Build `cli.py` by writing its two header lines with Write. Then run `sed -n '<first>,<last>p' claude/.claude/scripts/transcript-analysis.py >> claude/.claude/scripts/transcript_analysis/cli.py`, with the range Verification step 1 recorded. Only then rewrite the shim.
   - Verification it runs: ruff as in A1. Then `PYTEST_XDIST_AUTO_NUM_WORKERS=1 scripts/venv-run.sh pytest -n0` on `test_transcript_analysis_cost_import_direction.py`, `test_transcript_cli.py`, `test_transcript_cli_bootstrap.py`, `test_transcript_package_module_prefixes.py`, `test_transcript_analysis_branch_attribution_structure.py`, `test_transcript_analysis_import_cycles.py`, `test_transcript_analysis_architecture_doc.py`, and `test_transcript_analysis_module_test_files.py`.
@@ -409,19 +436,23 @@ if __name__ == "__main__":
 **Files, PR 1** (this branch, `GH-1116/cli-phase-and-test-placement-rule`). Paths are under `claude/.claude/scripts/` unless shown in full.
 - Commit 0, the plan: `.claude/plans/cli-phase-and-test-placement-rule.md`.
 - Commit 1: L, `tests/test_transcript_analysis.py`.
+  - Its review also edited two files that named the class commit 1 splits (row 36).
+  - One is `tests/test_transcript_cost.py`, the :4392-4394 banner.
+  - The other is `docs/transcript-analysis-architecture.md`, the sentence at :919, which commit 3 rewrites again.
 - Commit 2:
   - Create `tests/test_transcript_cli.py`, `tests/test_transcript_analysis_multi_root_scope.py`, and `tests/test_transcript_subagents_format_drift.py`.
   - Delete L.
   - Modify `tests/test_transcript_skill_pair.py`, `tests/test_transcript_cache_efficiency.py`, `tests/test_transcript_cache_rebuild.py`, `tests/test_transcript_shared_fixtures.py`, `tests/test_transcript_analysis_branch_attribution.py`, and `tests/test_transcript_package_module_prefixes.py`.
+- Commit 2b: modify `tests/test_transcript_skill_pair.py`.
 - Commit 3:
   - Create `.claude/rules/transcript-analysis-tests.md` and `tests/test_transcript_analysis_module_test_files.py`.
   - Modify:
     - `docs/transcript-analysis-architecture.md`;
     - `tests/_subagent_helpers.py`, `tests/_audit_routing_helpers.py`, `tests/_handoff_nudge_helpers.py`, `tests/_skill_helpers.py`, `tests/_commit_gate_helpers.py`, `tests/_cache_efficiency_helpers.py`, `tests/_session_signal_helpers.py`, and `tests/_cache_rebuild_helpers.py`;
     - `tests/conftest.py`, the :1600 docstring line only;
-    - `tests/test_transcript_cost.py`, the :4392-4394 banner only;
     - `tests/test_transcript_shared_fixtures.py`, its docstring;
     - `select-tests.py`, the :112-115 comment only.
+- Commit 4: modify `tests/test_select_tests.py`.
 - Conditional (M14): the file holding F2's exception rows, which the F2 probe names at Verification step 0 or at the second sync point. If the probe finds the check but cannot name that file, stop and ask the engineer.
 
 **Files, PR 2** (its own branch and worktree per `branch-management`, cut from `origin/main` after PR 1 merges).
@@ -451,6 +482,7 @@ if __name__ == "__main__":
 - PR 1's body also:
   - says `select-tests.py` widened to the full suite (row 11);
   - lists the seven tests M3 leaves in `test_transcript_cli.py`;
+  - names commits 2b and 4 as additions the engineer chose during commit 2's review (row 36), and says commit 2 itself stayed a pure move;
   - says every local run was single-worker (G3), so CI's run is the moved tests' first multi-worker run.
 - PR 2's body also:
   - states `cli.py`'s measured `wc -l` and its overage against the 1,000-line limit;
@@ -467,9 +499,9 @@ if __name__ == "__main__":
   3. Repeat the F2 probe from PR 1 step 0 (M14). If the line-count check has appeared, make this PR's M14 row edit as its own commit, after `/code-review`, with `Refs GH-1116`.
 - Resume. After a compaction or in a new session, run `ls -- ~/.local/state/cli-phase/`. The one entry that starts with `<pr>-` is `<scratch>`, and more than one stops the run. Rerun the interrupted step against it.
 - If a dispatch or a Verification step is interrupted:
-  1. `git status --short` must list only Critical files and, after PR 1 step 9's control began, `claude/.claude/scripts/transcript_analysis/zz_probe.py`.
-  2. Restore each modified file with its own `git restore --source=HEAD -- <path>`.
-  3. Remove each untracked Critical file, and `zz_probe.py` when listed, with `rm -- <path>`.
+  1. `git status --short` must list only Critical files. After PR 1 step 9's control began it may also list `claude/.claude/scripts/transcript_analysis/zz_probe.py`. After step 10b's control began it may also list `claude/.claude/scripts/tests/test_transcript_multi_root_scope_probe.py`.
+  2. Restore each modified or deleted file with its own `git restore --source=HEAD -- <path>`.
+  3. Remove each untracked Critical file, and `zz_probe.py` or `test_transcript_multi_root_scope_probe.py` when listed, with `rm -- <path>`.
   4. Rerun the step.
 - Never use `git clean`, `git checkout .`, `git reset --hard`, or `git stash`.
 
@@ -521,6 +553,12 @@ Notation:
 
      It must be clean, with equal before and after totals.
 7. **Commit 2.** Run `/code-review`. Stage the deletion with `git rm --quiet -- <L>`, and each other file with its own `git add`. Commit with `Refs GH-1116`.
+7b. **Commit 2b.**
+   - Dispatch A2b. `git diff --stat` shows only `test_transcript_skill_pair.py`, adding two methods and no deletion.
+   - `<mf> remainder --before <scratch>/before-test_transcript_skill_pair.py --after <tests>/test_transcript_skill_pair.py --added TestSkillPairFormatDriftCanary --import-added .conftest:_agent_use` still exits 0, since the patch adds no import. If it adds one, the finding is `import-diff` only.
+   - ruff is clean.
+   - `<w1> scripts/venv-run.sh pytest -n0 <tests>/test_transcript_skill_pair.py` reports 14 passed: 12 at commit 2 plus the two new tests (row 36).
+   - Run `/code-review`, stage, and commit with `Refs GH-1116`.
 8. **Dispatch A3.**
 9. **Commit-3 checks.**
    - Run Grep with `multiline: true` for `test_transcript_analysis\.py` over the architecture doc, the eight helper modules, `conftest.py`, `select-tests.py`, and `test_transcript_cost.py`. It must match nothing. Grep for `legacy file` in the architecture doc must match nothing too.
@@ -531,6 +569,17 @@ Notation:
      4. Rerun the test, which must pass. `git status --short` must not list `zz_probe.py`.
    - ruff is clean, and A3's pytest runs pass.
 10. **Commit 3.** Run `/code-review`, which also runs `ai-instruction-and-memory-files` on the rule file. Then stage, and commit with `Refs GH-1116`.
+10b. **Commit 4.**
+   - Dispatch A4. `git diff --stat` shows only `test_select_tests.py`, adding one test and no deletion.
+   - Run the new test alone with `<w1> scripts/venv-run.sh pytest -n0 <tests>/test_select_tests.py -k skill_md_change_selects_the_multi_root_scope_test_file`. It passes.
+   - Seeded control, which shows the test fails when the file leaves the glob. It uses plain `mv`, so the index never changes:
+     1. Run `mv -- <tests>/test_transcript_analysis_multi_root_scope.py <tests>/test_transcript_multi_root_scope_probe.py`.
+     2. Run the new test as above. It must report `1 failed` and exit 1, on the membership assertion. A collection error or exit 5 stops the run.
+     3. Run `mv -- <tests>/test_transcript_multi_root_scope_probe.py <tests>/test_transcript_analysis_multi_root_scope.py`.
+     4. Rerun the test, which must pass. `git status --short` must show only `test_select_tests.py`.
+   - Run `wc -l <tests>/test_select_tests.py` before dispatch A4 and again after it. Record both counts for the PR body (G2).
+   - Run `<w1> scripts/venv-run.sh pytest -n0 <tests>/test_select_tests.py`, which passes.
+   - Run `/code-review`, stage, and commit with `Refs GH-1116`.
 11. **Selected suite and hand-off.**
     - Apply the sync check. Then run `/ready-for-review`, whose step 2 runs `<w1> scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. It selects the full suite (row 11).
     - Follow `.claude/plans/leaf-module-tests.md` Verification 8 for that run: the `test_shellcheck.py` pre-run, the background call, the marker re-activation, and the merge-base reproduction of a failure outside Critical files. The run must pass.
