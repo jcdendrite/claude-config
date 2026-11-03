@@ -50,7 +50,7 @@ Run `read-cost` again if the workload changes. The result binds this repo's mix,
 - One price ratio is applied across models, so Opus-pinned `plan-architect` is understated relative to Sonnet agents. Per-model cache-read exceptions, the fast-mode multiplier and the inference-geo multiplier are not applied either, so every share is a token-equivalent share, not a dollar share.
 - Each read is priced as one 5-minute cache write plus cache reads, which understates some reads and overstates others (`docs/transcript-analysis.md` `read-cost` Known limits).
 - `read-cost` measures the `Read` tool only. The considered design also covered Bash reads, which are not measured, so the reachable set is understated.
-- The main/subagent shares in `docs/case-studies/targeted-read-discipline.md` come from `read-scope` runs that counted `api-request-blob` records, and are not re-derived here.
+- The main/subagent shares in `docs/case-studies/targeted-read-discipline.md` come from `read-scope` runs that counted any `api-request-blob` records present, and are not re-derived here.
 
 ## Sources
 

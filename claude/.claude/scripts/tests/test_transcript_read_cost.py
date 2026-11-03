@@ -676,8 +676,29 @@ class TestAccumulateSession:
             _weights(),
         )
         assert totals.bucket_calls[(read_cost._SCOPE_MAIN, "<2000")] == 1
+        assert totals.bucket_tokens[(read_cost._SCOPE_MAIN, "<2000")] == 100
         assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "5000+")] == 1
         assert totals.bucket_tokens[(read_cost._SCOPE_SUBAGENT, "5000+")] == 6000
+
+    def test_bucket_tables_sum_same_size_reads_within_and_across_sessions(self):
+        totals = read_cost._ReadCostTotals()
+        seen = read_cost._SeenIds()
+        small_text = "x" * 4 * 100
+        large_text = "x" * 4 * 6000
+        for session_prefix in ("a", "b"):
+            read_cost._accumulate_session(
+                totals, seen,
+                _read_exchange(f"{session_prefix}-m1", f"{session_prefix}-r1", "/a.py", text=small_text)
+                + _read_exchange(f"{session_prefix}-m2", f"{session_prefix}-r2", "/b.py", text=small_text),
+                [(_TRACKED_AGENT_TYPE,
+                  _read_exchange(f"{session_prefix}-s1", f"{session_prefix}-r3", "/c.py", text=large_text)
+                  + _read_exchange(f"{session_prefix}-s2", f"{session_prefix}-r4", "/d.py", text=large_text))],
+                _weights(),
+            )
+        assert totals.bucket_calls[(read_cost._SCOPE_MAIN, "<2000")] == 4
+        assert totals.bucket_tokens[(read_cost._SCOPE_MAIN, "<2000")] == 400
+        assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "5000+")] == 4
+        assert totals.bucket_tokens[(read_cost._SCOPE_SUBAGENT, "5000+")] == 24000
 
     def test_subagent_row_carries_its_own_window_billed_weight_and_whole_file_tokens(self):
         totals = read_cost._ReadCostTotals()
@@ -1334,6 +1355,23 @@ class TestReport:
         assert "main-thread whole-file reads scanned=1\n" in out
         sessions_line = next(line for line in out.splitlines() if line.startswith("sessions="))
         assert sessions_line.endswith(" repeated_reads_skipped=1")
+
+    def test_header_prints_the_unit_and_class_weights_derived_from_pricing_rates(self, capsys):
+        model = "claude-sonnet-4-6"
+        assert model not in pricing._CACHE_READ_MULTIPLIER_OVERRIDES
+        rates = pricing._model_rates(model)
+        write_weight = rates["cache_write_5m"] / rates["cache_read"]
+        class_weights = ", ".join(f"{cls}={rates[cls] / rates['cache_read']:g}" for cls in pricing._TOKEN_CLASSES)
+
+        read_cost._print_read_cost_report(read_cost._ReadCostTotals(), _weights(), frozenset({_TRACKED_AGENT_TYPE}))
+
+        out_lines = capsys.readouterr().out.splitlines()
+        assert (
+            "Unit: cache-read-token equivalents. A read's weight is its estimated tokens"
+            f" (4 chars/token) times one 5-minute cache write ({write_weight:g}) plus one"
+            " cache read (1) per later turn in its context window."
+        ) in out_lines
+        assert f"Class weights: {class_weights}." in out_lines
 
 
 @pytest.mark.usefixtures("only_the_tracked_agent_type_is_tracked")

@@ -1461,7 +1461,7 @@ Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--con
 **Publication.**
 - Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account".
   - Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead.
-  - It reads the active config directory's `projects/` alone, and a project directory symlinked from there is read wherever it points.
+  - It reads the active config directory's `projects/` alone, and any symlink under that directory is followed.
   - A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 - `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication. Under it stderr also carries a `scanning root K/N` line per root, printed only when more than one root resolves.
 
@@ -1545,6 +1545,7 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 - Every read is weighted as one 5-minute cache write followed by cache reads, whatever tier or hit rate the turns actually had, so a read written to the 1-hour tier or written again after a cache miss is understated.
 - A read first reaches the API on the turn after it is issued, as a cache write, and is a cache read only from the turn after that. The weight charges one cache read for the write turn as well, so it overstates each read with a remaining turn by one cache-read token per token. A read with no remaining turn is never sent in its window and is still charged a full cache write.
 - Whole-file means no `offset` and no `limit`. `read-scope` also files a read with no `file_path` and a `pages` read in their own cohorts. `read-cost` drops a read with no path and judges a `pages` read by `offset` and `limit` alone, so the two commands can disagree on the whole-file count.
+- `read-scope` and `read-cost` both skip `api-request-blob` records, which carry copies of request content. `read-scope`'s prompt-token growth never counted them, while every other `read-scope` figure did before the filter.
 - A main transcript with no records is skipped without being counted, and its `subagents/` directory is not read, which understates the session count and every subagent figure under it.
 - A subagent's partial read (with `offset` or `limit`) counts toward `all_read_weight_share` only, and a main-thread partial read counts toward no printed figure.
 - A Read whose result is not plain text, such as an image, is left out of every figure, which understates read weight.
@@ -1558,7 +1559,7 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
   - A re-read after an edit of the same path counts as a repeat, and the re-read itself reads as never edited.
 - The scan reads every main transcript and every subagent file in scope. A corpus of several hundred sessions takes minutes.
 
-**Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
+**Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. It reads the active config directory's `projects/` alone, and any symlink under that directory is followed. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 
 **When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to size a gate on large reads before building it. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
 
