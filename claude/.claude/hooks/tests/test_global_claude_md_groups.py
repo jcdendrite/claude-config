@@ -98,6 +98,7 @@ _PLACEMENTS = [
     ("think-through-before-writing", "Think through your proposed approach", "core"),
     ("worktree-edit-write-targeting", "Edit and Write must also target the worktree path", "core"),
     ("script-first-bash-recipes", "**Script-first for multi-step Bash recipes;", "core"),
+    ("change-size-floor", "never cut validation, error handling, security, or accessibility", "core"),
     # Main-session-only bullets: autonomy grants, dispatch rules, the output-preferences read, and clear-stale.
     (
         "autonomous-shipping",
