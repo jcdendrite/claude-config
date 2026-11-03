@@ -1,5 +1,6 @@
 """The read-cost command: what share of spend whole-file Read results account for, split by main thread and
-subagent type, with the cuts that show how much of it a read gate could reach -- plus its subparser registration.
+subagent type, with the cuts that show how much of it a hook denying large reads could reach -- plus its
+subparser registration. The hook design is in docs/design-decisions/large-read-gate-declined.md.
 
 Every printed figure is an aggregate: nothing printed carries a path, session identifier, project name or
 untracked agent-type name.
@@ -229,7 +230,10 @@ def _scan_window(records: Sequence[dict], seen_tool_use_ids: set[str]) -> _Windo
                 if owner is not None and not block.get("is_error") and isinstance(result, str):
                     seen_tool_use_ids.add(result_tool_id)
                     owner["tokens"] = len(result) // _READ_COST_CHARS_PER_TOKEN
-                    owner["lines"] = result.count("\n")
+                    # A real Read result's last numbered row has no trailing newline, so the count adds one.
+                    # The empty-file case is a one-line warning with no numbered row, which scores 1.
+                    # Only the line-threshold cohorts read `lines`, so that case cannot reach them.
+                    owner["lines"] = result.count("\n") + (1 if result and not result.endswith("\n") else 0)
                     reads.append(owner)
 
     events = []

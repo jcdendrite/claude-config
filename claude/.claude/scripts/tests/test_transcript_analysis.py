@@ -292,6 +292,21 @@ def test_read_cost_without_this_repo_is_refused_through_main(monkeypatch, capsys
     assert "read-cost: requires --this-repo" in err
 
 
+def test_read_cost_with_a_projects_glob_is_refused_through_main(monkeypatch, capsys):
+    """argparse accepts --projects alone, so the refusal comes from cmd_read_cost, not the parser.
+
+    The glob uses the --projects=GLOB form because argparse reads a separate "-home-*" token as an option.
+    """
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost", "--projects=-home-*"])
+    with pytest.raises(SystemExit) as exc_info:
+        _mod.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "read-cost: requires --this-repo and refuses any --projects scope" in err
+
+
 def test_read_cost_this_repo_runs_to_a_report_through_main(fake_projects, monkeypatch, capsys):
     """The real argparse Namespace reaches cmd_read_cost, _refuse_wider_scope and _resolve_project_scope."""
     monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])

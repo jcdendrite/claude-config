@@ -307,10 +307,46 @@ class TestScanWindow:
     def test_event_tokens_and_lines_come_from_the_result_text(self):
         scan = _scan([
             _turn("m1", [_read_use("r1", file_path="/a.py")]),
-            _read_result("r1", "ab\n" * 8),
+            _read_result("r1", "ab\n" * 7 + "abc"),
         ])
         event = _event_for(scan, "/a.py")
         assert (event.tokens, event.lines) == (6, 8)
+
+    @pytest.mark.parametrize(("result_text", "expected_lines"), [
+        ("", 0),
+        ("ab", 1),
+        ("ab\n", 1),
+        ("ab\nab", 2),
+        ("ab\nab\n", 2),
+    ])
+    def test_event_lines_count_the_numbered_lines_whether_or_not_the_result_ends_in_a_newline(
+        self, result_text, expected_lines,
+    ):
+        scan = _scan([
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
+            _read_result("r1", result_text),
+        ])
+        assert _event_for(scan, "/a.py").lines == expected_lines
+
+    @pytest.mark.parametrize(("line_threshold", "row_count", "in_cohort"), [
+        (350, 351, True),
+        (350, 350, False),
+        (800, 801, True),
+        (800, 800, False),
+    ])
+    def test_unterminated_numbered_read_result_lands_in_the_cohort_only_above_the_threshold(
+        self, line_threshold, row_count, in_cohort,
+    ):
+        # The real Read tool prefixes each row with a line number and a tab, and ends the last row without a newline.
+        real_shape_result = "\n".join(f"{row_number:6d}\t line {row_number}" for row_number in range(1, row_count + 1))
+        scan = _scan([
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
+            _read_result("r1", real_shape_result),
+        ])
+
+        cohort = read_cost._cohort_figures(scan.events, line_threshold, _weights(), 0.0, 0.0)
+
+        assert cohort.reads == (1 if in_cohort else 0)
 
     def test_tool_result_of_a_legacy_human_record_is_kept(self):
         human_result = _read_result("r1", _HUNDRED_TOKEN_TEXT)
@@ -1094,8 +1130,11 @@ class TestScopeRefusal:
         assert "requires --this-repo" in capsys.readouterr().err
 
     def test_refused_with_a_projects_glob(self, fake_projects, capsys):
+        # The parser's mutually exclusive group never yields this Namespace.
+        # The `projects ... not in (None, "*")` test in `_refuse_wider_scope` is defense-in-depth for direct callers.
+        # The explicit `this_repo=True` keeps the other refusal leg out of play, so only the projects leg can refuse.
         with pytest.raises(SystemExit) as raised:
-            read_cost._read_cost_report(_read_cost_args(projects="-home-*"), [fake_projects.parent])
+            read_cost._read_cost_report(_read_cost_args(projects="-home-*", this_repo=True), [fake_projects.parent])
         assert raised.value.code == 2
         assert "refuses any --projects scope" in capsys.readouterr().err
 

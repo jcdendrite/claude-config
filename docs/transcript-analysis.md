@@ -1511,7 +1511,7 @@ Per-PR rows, sorted by lines then PR number
 
 ## read-cost
 
-**Purpose.** What share of spend whole-file `Read` results account for, split by main thread and subagent agent type, and how much of that a gate on large main-thread reads could reach. It is a measurement of where read tokens sit in the cache, not of what any one read cost to produce.
+**Purpose.** What share of spend whole-file `Read` results account for, split by main thread and subagent agent type, and how much of that a hook denying large whole-file reads could reach (see `docs/design-decisions/large-read-gate-declined.md`). It is a measurement of where read tokens sit in the cache, not of what any one read cost to produce.
 
 **Flags.**
 - `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
@@ -1533,7 +1533,7 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 - A `skipped input:` line with the count of each unreadable input and of invalid-usage turns. A missing sidecar is not counted.
 - The count of main-thread whole-file reads scanned.
 - `repeated_reads_skipped`, on the `sessions=` line: Read calls skipped because their tool id was already seen. A re-read of a path is a new call, so it never counts here.
-- Main-thread whole-file reads over 350 and over 800 lines, counted as newlines in the Read result text, not the file's own line count, each split by edited later or not: count, estimated tokens, median remaining turns, and share of total and of main-thread billed spend.
+- Main-thread whole-file reads over 350 and over 800 lines, counted as numbered lines in the Read result text, not the file's own line count. A read of exactly 351 or 801 numbered lines is inside the 350-line or 800-line cohort. Each cohort is split by edited later or not: count, estimated tokens, median remaining turns, and share of total and of main-thread billed spend.
 - Whole-file read calls and estimated tokens by size bucket (under 2000, 2000-4999, 5000 or more), main thread versus subagent.
 - One row per tracked subagent agent type that has at least one scanned subagent transcript, read from the transcript's sibling `.meta.json` `agentType`, plus a `TOTAL` row. The first line of each row gives agent count, mean turns, share of total spend, whole-file read count and estimated tokens, `whole_file_weight_share`, and `all_read_weight_share`, which counts every kept Read result in the agent type's windows, partial reads included. A second line gives shares of the whole-file weight: reads of 2000 tokens or more (large), large reads never edited later, repeats of a path the same agent already read whole-file, paths the main thread read whole-file at any point in the session or a subagent window scanned before this one read whole-file (seen elsewhere), and the file kind (`instruction` for `skills/`, `agents/`, `rules/` paths and `CLAUDE.md`; `other_prose` for `.md`, `.mdx`, `.txt`; `code/other` otherwise).
 - An agent type prints by name only when this repo's `agents/` directory tracks it or it is a built-in agent type. Every other type, and a transcript with no readable `agentType`, folds into one `(withheld — untracked agent type)` row. The `TOTAL` row includes the folded types.
@@ -1561,7 +1561,7 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 
 **Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. It reads the active config directory's `projects/` alone, and any symlink under that directory is followed. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 
-**When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to size a gate on large reads before building it. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
+**When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to re-check whether the cost reopens `docs/design-decisions/large-read-gate-declined.md`'s decision. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
 
 ---
 

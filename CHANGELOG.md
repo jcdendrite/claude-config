@@ -21,7 +21,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A branch already latched at pull time meets its first re-armed consult two states early, one under the round-2 pilot. Its deny text counts its earlier states as recorded since the last consult.
   - A `/ready-for-review` run already under way at pull time keeps the old Cap text while the hooks already count its reviews, so it can run both consults until it ends.
 - **`read-scope`, `edit-format`, `cache-rebuild` and `context-composition` now skip `api-request-blob` records, and a new `read-cost` subcommand prices reads across their context windows.**
-  - `read-scope` main-thread read figures drop sharply where these records exist, because each blob copied a tool call that was already counted.
+  - `read-scope` main-thread read figures can drop where these records exist, because each blob copied a tool call that was already counted.
   - `context-composition` no longer reads such a record as an `isSidechain` toggle, so a subagent context it split into several sequences stays whole.
   - `read-cost` reads the active account alone, refuses `--projects` and a top-level `--config-dir`, and requires `--this-repo`. `docs/transcript-analysis.md` § "read-cost" states when its figures are publishable.
 - **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**

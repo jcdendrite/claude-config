@@ -2,7 +2,7 @@
 
 *2026-11-01.*
 
-This repo does not deny large whole-file reads, and does not redirect them to a cheaper worker model. The design considered was a `PreToolUse` hook that denies a whole-file `Read` or Bash read above a line threshold and sends the agent to a script that asks a worker model about the file. It was declined on measurement, for this repo's own workload.
+This repo does not deny large whole-file reads, and does not redirect them to a cheaper worker model. The design considered (the gate) was a `PreToolUse` hook that denies a whole-file `Read` or Bash read above a line threshold and sends the agent to a script that asks a worker model about the file. It was declined on measurement, for this repo's own workload.
 
 ## What was measured
 
@@ -29,21 +29,21 @@ The specialist reviewer agents' whole-file reads are about 3.9% of spend. That s
 ## Why the gate would not work anyway
 
 - **It clears on any `offset` or `limit`.** Exempting targeted reads is necessary because edits need them. So the natural response to a deny is `limit: 2000`, which returns the same content and wastes a turn.
-- **It cannot see intent.** A whole-file read is right when the task is the whole file. The read-sweep plan shelved in #1330 stopped for the same reason: its false positives depend on why a read happened, which transcripts do not record.
+- **It cannot see intent.** A whole-file read is right when the task is the whole file. The read-sweep plan shelved in #1330 also turned on intent: its expected false positives depend on why a read happened, which transcripts do not record. That plan proposed a retrospective measurement of read-heavy multi-site sweeps, not a deny gate, and was shelved in part because the parent plan's detectors missed their precision and kappa floors (`docs/design-decisions/tool-call-advisory-does-not-ship.md`, `.claude/plans/broaden-delegation-trigger-beyond-bash.md`).
 - **The tool already says to narrow.** The `Read` tool description tells the agent to read only the part of a file it needs when it already knows which part (`docs/case-studies/targeted-read-discipline.md`).
 
 ## Why the cheaper worker does not fit
 
-- **Parents re-checked a cheap worker's output.** `check-runner`, a cheap worker absorbing verbose command output, was retired because its misbehavior survived repeated hardening and parents kept re-running its delegated commands inline and voicing distrust (`docs/case-studies/check-runner.md` § "Retirement (2026-06-23)").
+- **A cheap worker's premise failed here before.** `check-runner`, a cheap worker that summarised verbose Bash output, rested on a premise the measurement behind its retirement refuted: no inline check run in the measured corpus reached the harness's output-truncation threshold (`docs/case-studies/check-runner.md` § "Retirement (2026-06-23)"). This design's premise, that a gate would reach a meaningful cost, also fails, by a different route: the reads do cross the thresholds, but the never-edited main-thread ones are a negligible share of spend.
 - **A cheaper worker is not a free one.** Worker spend moves rather than disappears, and a saved token says nothing about answer accuracy.
-- **A script that reads files itself bypasses the read gates.** `deny-env-reads.sh` and `deny-credential-file-reads.sh` see tool calls, not what a subprocess opens, and the content then leaves the machine.
+- **A script that reads files itself bypasses the existing read-deny hooks.** `deny-env-reads.sh` and `deny-credential-file-reads.sh` see tool calls, not what a subprocess opens, and the content then leaves the machine.
 - **The lighter primitive exists.** Locate-and-report reads already route to `Explore` under `subagent-delegation`, inside the hooks.
 
 ## When to reopen
 
 Reopen when the never-edited main-thread whole-file reads in either the 350-line or the 800-line cohort the report prints reach 1% of total spend.
 
-Run `read-cost` again if the workload changes. The result binds this repo's mix, which is review-heavy with short files. A codebase of very large source files is not described by these numbers, and that is the case where this design could pay.
+Run `read-cost` again if the workload changes. The result binds this repo's mix, which is review-heavy, with 41 main-thread whole-file reads over 350 lines and 2 over 800. A codebase of very large source files is not described by these numbers, and that is the case where this design could pay.
 
 ## Limits
 
