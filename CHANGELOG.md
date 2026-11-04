@@ -7,7 +7,6 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **The global `CLAUDE.md`'s Scope discipline Axis 4 now also says never to cut validation, error handling, security, or accessibility.**
-  - The clause joins Axis 4's first sentence, after "Prefer minimal, targeted changes".
   - **Takes effect** for a session only if that session started after you pulled this change.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
