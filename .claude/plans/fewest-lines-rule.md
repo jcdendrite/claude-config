@@ -41,7 +41,6 @@ M1 adds the floor to the first sentence of Scope discipline's **Axis 4 — Chang
 
 ```markdown
 - **The global `CLAUDE.md`'s Scope discipline Axis 4 now also says never to cut validation, error handling, security, or accessibility.**
-  - The clause joins Axis 4's first sentence, after "Prefer minimal, targeted changes".
   - **Takes effect** for a session only if that session started after you pulled this change.
 ```
 
@@ -138,16 +137,19 @@ Dispatch split: one `code-writer` dispatch for M1-M3, handed this plan's path. N
 5. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -n 2` passes.
 6. `/code-review` dispatches `ai-instruction-and-memory-files` for M1. It owes no compression-diff table, because M1 removes and shortens nothing (row 15), and its behavior test passes the added clause.
 7. The commit passes `check-claude-md-length.sh`. After the last rebase onto `main` before handoff, `wc -c claude/.claude/CLAUDE.md` still prints no more than 30720, because another PR may have used the headroom.
-8. The PR body references GH-1364 with no closing keyword ("Closes", "Fixes" or "Resolves", before either `#1364` or `GH-1364`) and says piece 4 remains. It credits ponytail as GH-1364 names it, and carries no figure from GH-1364's wider-corpus analysis and no count from local transcripts (G3).
+8. The PR body must pass four checks:
+   - It references GH-1364 with no GitHub closing keyword (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, before either `#1364` or `GH-1364`).
+     - `pr-description-claude-config` otherwise requires a closing keyword on a `GH-<N>` branch, so the run of `/pr-description` is told to use a non-closing reference such as "Part of #1364".
+     - Check the published body with `gh pr view --json body` after the last body write, because later commits rewrite it.
+   - It says piece 4 remains.
+   - It credits ponytail as GH-1364 names it.
+   - It carries no figure from GH-1364's wider-corpus analysis and no count from local transcripts (G3).
 
 ## Out of scope
 
 - GH-1364 piece 4, the diff-size prompt, ships as its own PR. This PR does not close GH-1364.
 - Raising G1's byte cap. M1 fits (rows 13-14). If Verification step 1 finds less room, the raise or a trim elsewhere goes back to the engineer, who named both (row 8).
-- Extracting the `# Main session` section from the global `CLAUDE.md` to free bytes. It belongs to the separate existing effort, not this PR.
-  - The group-layout test ties the two-group split to extraction and tracks it under GH-1085 (`claude/.claude/hooks/tests/test_global_claude_md_groups.py:3-11`).
-  - The architect's finding that the extraction would free no room for anything the main session loads is `[unverified: relayed by the dispatching session]`.
-  - GH-1085 itself was not opened.
+- Extracting the `# Main session` section from the global `CLAUDE.md` to free bytes. It belongs to a separate existing effort, tracked under GH-1085 (`claude/.claude/hooks/tests/test_global_claude_md_groups.py:3-11`).
 - Trimming other `CLAUDE.md` text: M1 fits without it.
 - `code-writer.md`: its baseline already names Axis 1–4 (row 4), so a name-only line would restate it, and the engineer chose no pointer (row 11).
 - `code-review` Step 1 and `plan-review/SKILL.md:89`: review-time and plan-time sizing already exist. A back-pointer to Axis 4, or a Step 1 note reconciling the floor with its over-elaboration markers (row 17), would add a SKILL.md edit, with its skill-review gate, for no check either step lacks.
