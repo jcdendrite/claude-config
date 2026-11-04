@@ -38,12 +38,6 @@ def _n_cited_reviewer_dispatches(
     increasing timestamp — records to prepend to the session's own list. Each
     dispatch's subagent transcript/meta.json is written as a side effect.
     Sanctioned by test-conventions §6 for the Active=N floor boundary fixture.
-
-    The verdict text ends with a word after `cited_path`, not a period
-    directly against it — _CITED_PATH_CANDIDATE_RE's char class includes
-    ".", so a trailing sentence period would extract as part of the
-    candidate and normalize to a different key than the edit side's clean
-    file_path/notebook_path string.
     """
     records: list[dict] = []
     for i in range(count):
@@ -1242,6 +1236,71 @@ class TestReviewerYield:
         )
         assert cols["Cited"] == "0"
 
+    def test_handback_pointer_to_own_findings_file_with_trailing_period_excluded_from_cited(
+        self, fake_projects, capsys,
+    ):
+        """Guards a pointer line like 'Wrote findings to agent-reviews/x.md.'
+        extracting 'x.md.' (period kept), which keys differently from the
+        reviewer's own absolute Write target and counts its findings file as
+        a citation."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [
+                {**_asst("claude-sonnet-4-6", sidechain=True, content=[
+                    _write_use("w1", "Missing null check.", path="/repo/agent-reviews/x.md"),
+                ]), "cwd": "/repo"},
+                {**_asst("claude-sonnet-4-6", sidechain=True, content=[{
+                    "type": "tool_use", "id": "hb1", "name": "SubagentHandback",
+                    "input": {"message": "Wrote findings to agent-reviews/x.md. Found 3 issues."},
+                }]), "cwd": "/repo"},
+            ],
+            agent_type="staff-sdet",
+        )
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
+        )
+        assert cols["Cited"] == "0"
+
+    def test_real_file_named_beside_own_findings_pointer_still_counts_as_cited(
+        self, fake_projects, capsys,
+    ):
+        """Guards the trailing-punctuation fix over-excluding: a real edited
+        file named next to the dispatch's own findings file stays Cited."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            {**_asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+             "cwd": "/repo"},
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+            {**_asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[
+                _edit_use("e1", path="/repo/src/foo.py"),
+            ]), "cwd": "/repo"},
+        ])
+        message = "Wrote findings to agent-reviews/x.md src/foo.py. Found 3 issues."
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [
+                {**_asst("claude-sonnet-4-6", sidechain=True, content=[
+                    _write_use("w1", "Missing null check.", path="/repo/agent-reviews/x.md"),
+                ]), "cwd": "/repo"},
+                {**_asst("claude-sonnet-4-6", sidechain=True, content=[{
+                    "type": "tool_use", "id": "hb1", "name": "SubagentHandback", "input": {"message": message},
+                }]), "cwd": "/repo"},
+            ],
+            agent_type="staff-sdet",
+        )
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
+        )
+        assert cols["Cited"] == "1"
+        assert cols["Edited"] == "1"
+
     def test_prompt_named_file_legitimately_cited_in_findings_is_not_excluded(self, fake_projects, capsys):
         """Regression: a file named in the dispatching prompt ('review
         src/foo.py') that the reviewer then legitimately cites in its own
@@ -1583,6 +1642,26 @@ class TestExtractCitedPaths:
         split at the boundary of its non-ASCII characters."""
         result = reviewer_yield._extract_cited_paths("see café/日本語/foo.py for the fix")
         assert "café/日本語/foo.py" in result
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Wrote findings to agent-reviews/x.md.", {"Wrote", "findings", "to", "agent-reviews/x.md"}),
+            ("see agent-reviews/x.md, then stop", {"see", "agent-reviews/x.md", "then", "stop"}),
+            ("see agent-reviews/x.md: done", {"see", "agent-reviews/x.md", "done"}),
+            ("see src/foo.py:42.", {"see", "src/foo.py:42"}),
+            ("see src/foo.py", {"see", "src/foo.py"}),
+        ],
+    )
+    def test_trailing_sentence_punctuation_is_not_part_of_the_candidate(self, text, expected):
+        """Guards the trailing "." / ":" strip that makes a pointer line's path key equal the file it names.
+
+        The comma and plain-filename cases have nothing to strip and are controls.
+        """
+        assert reviewer_yield._extract_cited_paths(text) == expected
+
+    def test_punctuation_only_run_adds_no_empty_candidate_and_keeps_the_word(self):
+        assert reviewer_yield._extract_cited_paths("wait... : .") == {"wait"}
 
     def test_empty_text_returns_empty_set(self):
         assert reviewer_yield._extract_cited_paths("") == set()

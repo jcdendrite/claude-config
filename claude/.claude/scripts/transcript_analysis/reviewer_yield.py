@@ -83,11 +83,8 @@ class _ReviewerTranscriptScan(NamedTuple):
 
     last_assistant_text: the last non-blank assistant text, or ''. Within one
       record a SubagentHandback tool call's message takes precedence over its
-      text blocks. A trailing assistant record with no text (e.g. a final
-      tool-only turn) does not blank out an earlier one — this walks the
-      whole file and keeps the most recent non-blank text seen, matching
-      "last assistant text block" rather than "last assistant record's
-      text, possibly empty."
+      text blocks. A trailing record with no text (e.g. a final tool-only
+      turn) does not blank out an earlier one.
     write_content_blobs: every Write tool_use's input.content string found
       along the same walk, in file order.
     write_target_paths: every Write tool_use's input.file_path found along
@@ -268,10 +265,13 @@ def _extract_cited_paths(text: str) -> set[str]:
 
     Returns every run matched by _CITED_PATH_CANDIDATE_RE, deduplicated —
     including runs that turn out to be plain prose words or bare filenames.
+    A trailing "." or ":" is sentence punctuation, not part of the path, and
+    is stripped so "agent-reviews/x.md." keys the same as the file it names.
     _normalize_cited_path is what decides whether a candidate is a real,
     join-able path; this function only tokenizes.
     """
-    return set(_CITED_PATH_CANDIDATE_RE.findall(text))
+    stripped_candidates = (candidate.rstrip(".:") for candidate in _CITED_PATH_CANDIDATE_RE.findall(text))
+    return {candidate for candidate in stripped_candidates if candidate}
 
 
 # Strips a trailing ":line" or ":line:col" suffix (e.g. "foo.py:42" or
@@ -633,9 +633,9 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     subagent_type in the reviewer set — _REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES)
     to its own subagent
     transcript via subagents/<id>.meta.json's toolUseId field, then
-    classifies that transcript's last assistant text (a text block, or a
-    SubagentHandback tool call's message) as findings-found, zero-finding,
-    or unclassified. A dispatch with no matching meta.json is
+    classifies that transcript's last assistant text (see
+    _ReviewerTranscriptScan) as findings-found, zero-finding, or
+    unclassified. A dispatch with no matching meta.json is
     excluded entirely (not counted as unclassified) — meta.json is the only
     signal that a subagent transcript for this dispatch exists at all. A
     second, distinct exclusion path is a meta.json file that exists but is
