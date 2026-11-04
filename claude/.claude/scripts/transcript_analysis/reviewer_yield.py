@@ -55,15 +55,12 @@ _SUBAGENT_HANDBACK_TOOL_NAME = "SubagentHandback"
 
 
 def _tool_input(block: dict) -> dict:
-    """A tool_use block's input, or {} when absent or not a dict."""
     block_input = block.get("input")
     return block_input if isinstance(block_input, dict) else {}
 
 
 def _handback_message(content: object) -> str:
-    """The verdict text of the first SubagentHandback tool_use with a
-    non-blank message in one assistant record's content, or '' if there is
-    none."""
+    """Empty when the record carries no non-blank handback message."""
     if not isinstance(content, list):
         return ""
     for block in content:

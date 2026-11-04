@@ -1239,10 +1239,10 @@ class TestReviewerYield:
     def test_handback_pointer_to_own_findings_file_with_trailing_period_excluded_from_cited(
         self, fake_projects, capsys,
     ):
-        """Guards a pointer line like 'Wrote findings to agent-reviews/x.md.'
-        extracting 'x.md.' (period kept), which keys differently from the
-        reviewer's own absolute Write target and counts its findings file as
-        a citation."""
+        """Guards a trailing sentence period staying in the extracted candidate
+        'agent-reviews/x.md.' from a pointer line like 'Wrote findings to
+        agent-reviews/x.md.'. Otherwise its key differs from the reviewer's own
+        absolute Write target and the findings file is counted as a citation."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -1270,8 +1270,8 @@ class TestReviewerYield:
     def test_real_file_named_beside_own_findings_pointer_still_counts_as_cited(
         self, fake_projects, capsys,
     ):
-        """Guards the trailing-punctuation fix over-excluding: a real edited
-        file named next to the dispatch's own findings file stays Cited."""
+        """Guards a pointer line that names both the findings file and a real
+        edited file from dropping the edited file: it stays Cited."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             {**_asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
              "cwd": "/repo"},
@@ -1854,7 +1854,7 @@ class TestBuildToolResultTsMap:
 
 
 class TestToolInput:
-    """_tool_input(block) -> dict: the shared guard every tool_use input read goes through."""
+    """_tool_input(block) -> dict: a tool_use block's input, normalized to a dict."""
 
     def test_dict_input_passes_through_unchanged(self):
         """Guards the helper rewriting a well-formed input so it no longer matches what the block carried."""
