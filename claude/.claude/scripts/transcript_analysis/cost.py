@@ -41,17 +41,6 @@ _PRE_BRANCH_MOVED_LINE = (
 )
 
 
-def _usage_is_invalid(usage: object) -> bool:
-    """True when usage's token fields fail session_pricing._validate_usage_token_fields -- the caller must
-    skip this turn instead of handing an untrusted negative or non-numeric field to pricing._price_turn's
-    arithmetic."""
-    try:
-        session_pricing._validate_usage_token_fields(usage)
-    except ValueError:
-        return True
-    return False
-
-
 def _new_pr_cost_agg() -> dict:
     """Zero-valued per-branch aggregate shape accumulated by
     _compute_pr_cost_branch_totals, and reused as the zero-cost default for
@@ -96,7 +85,7 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
     float-summation order. An unpriced turn never
     reaches "by_model": its model identity is deliberately not recorded.
 
-    A record whose usage fails _usage_is_invalid is counted in its agg's
+    A record whose usage fails session_pricing._usage_is_invalid is counted in its agg's
     "invalid_usage_records" and excluded from every other aggregate below
     (including "turn_count" and "session_starts") -- its token fields are
     untrusted, so nothing about it is safe to accumulate.
@@ -118,7 +107,7 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
             branch = scope._attributed_branch(rec, branch_context)
             agg = branch_totals[branch] if branch is not None else unbranched_totals
 
-            if _usage_is_invalid(usage):
+            if session_pricing._usage_is_invalid(usage):
                 agg["invalid_usage_records"] += 1
                 continue
 
@@ -172,7 +161,7 @@ def _first_main_thread_turns_dollars_by_branch(
     `deduped_records` must already be pricing.dedup_turns_by_request_id's
     output. Sums fewer than `until_first_n_turns` turns per branch, never
     padded or scaled, when a branch has fewer main-thread turns than that
-    within this session. A turn whose usage fails _usage_is_invalid
+    within this session. A turn whose usage fails session_pricing._usage_is_invalid
     contributes 0 dollars but still consumes one of the branch's
     `until_first_n_turns` slots, the same treatment an unpriced turn gets.
     """
@@ -187,7 +176,7 @@ def _first_main_thread_turns_dollars_by_branch(
         branch = scope._attributed_branch(rec, branch_context)
         if branch is None or counted_by_branch[branch] >= until_first_n_turns:
             continue
-        if not _usage_is_invalid(usage):
+        if not session_pricing._usage_is_invalid(usage):
             model = (rec.get("message") or {}).get("model", "")
             dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
             if dollars_by_class is not None:
@@ -540,7 +529,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     a sidechain record takes its dispatching main thread's branch at its timestamp, and a session's leading
     default-branch records count toward the first branch it enters. The full report prints the turns and
     dollars that second step moved into the filter set (_PRE_BRANCH_MOVED_LINE).
-    A usage-bearing turn whose token fields fail _usage_is_invalid is excluded before reaching
+    A usage-bearing turn whose token fields fail session_pricing._usage_is_invalid is excluded before reaching
     pricing._price_turn and counted in the MALFORMED USAGE banner.
     """
     top_n: int = getattr(args, "top", 20) or 20
@@ -750,7 +739,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         else {}
     )
     unpriced_tokens: dict[str, int] = defaultdict(int)
-    # Usage-bearing turns dropped by _usage_is_invalid before pricing -- mirrors
+    # Usage-bearing turns dropped by session_pricing._usage_is_invalid before pricing -- mirrors
     # period_cost._accumulate_session's invalid_usage_records counter.
     invalid_usage_records = 0
     # Turn counts (not re-priced dollars) tallied per branch a --branches
@@ -820,7 +809,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             if not usage:
                 continue
             # Parsed and credited to root_earliest_ts unconditionally -- not gated on since_ts,
-            # and not gated on _usage_is_invalid below -- so root_earliest_ts reflects the
+            # and not gated on session_pricing._usage_is_invalid below -- so root_earliest_ts reflects the
             # corpus's actual earliest turn even when that turn's own usage is rejected for pricing.
             rec_ts = corpus._parse_ts(rec.get("timestamp"))
             if account_ordinal is not None and rec_ts is not None:
@@ -847,7 +836,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             # Checked only once the record is confirmed in-scope (past the since_ts and
             # branch-filter continues above), so invalid_usage_records -- like every other
             # accumulator below -- counts only turns the report being rendered actually covers.
-            if _usage_is_invalid(usage):
+            if session_pricing._usage_is_invalid(usage):
                 invalid_usage_records += 1
                 continue
 
@@ -1152,7 +1141,7 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
     relies on that absence. context_over is bucket-based dollar share
     (_context_bucket); context_class_dollars is the dollar share from
     context-class token pricing (cache_read + cache_write tiers) regardless
-    of bucket — cost-ledger's only consumer of the latter. A turn whose usage fails _usage_is_invalid is
+    of bucket — cost-ledger's only consumer of the latter. A turn whose usage fails session_pricing._usage_is_invalid is
     excluded before pricing, uncounted, the same treatment an undated turn gets below.
     """
     data: dict[str, dict[str, float]] = defaultdict(
@@ -1170,7 +1159,7 @@ def compute_cost_trend_data(session_iter) -> tuple[dict[str, dict[str, float]], 
             usage = msg.get("usage")
             if not usage:
                 continue
-            if _usage_is_invalid(usage):
+            if session_pricing._usage_is_invalid(usage):
                 # Mirrors the undated-turn skip below: no counter at this call site. The record's
                 # own fields aren't trustworthy enough to attribute to a week.
                 continue

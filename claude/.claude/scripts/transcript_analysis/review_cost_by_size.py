@@ -72,6 +72,7 @@ class _JoinCounts(NamedTuple):
     ambiguous_branch_count: int
     unpriced_turns: int
     dangling_dispatches: int
+    invalid_usage_records: int
 
 
 def _scan_code_review_rounds(
@@ -98,7 +99,8 @@ def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> t
 
     A branch with no merged PR, or one that never joins (a default-branch candidate or a branch no PR can
     be opened from), counts as unmatched. A branch matching more than one merged PR counts as ambiguous
-    and is excluded. Unpriced turns and dangling dispatches are summed over joined rounds only.
+    and is excluded. Unpriced turns, dangling dispatches and malformed-usage turns are summed over joined
+    rounds only.
     """
     prs_by_head_branch: dict[str, list[dict]] = {}
     for pr in merged_prs:
@@ -113,6 +115,7 @@ def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> t
     ambiguous_branch_count = 0
     unpriced_turns = 0
     dangling_dispatches = 0
+    invalid_usage_records = 0
     for branch, branch_rounds in rounds_by_branch.items():
         if branch in scope._DEFAULT_BRANCH_CANDIDATES or scope._names_no_pr_branch(branch):
             unmatched_branch_count += 1
@@ -133,6 +136,7 @@ def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> t
         ))
         unpriced_turns += sum(entry["unpriced_turns"] for entry in ordered_rounds)
         dangling_dispatches += sum(entry["dangling"] for entry in ordered_rounds)
+        invalid_usage_records += sum(entry["invalid_usage_records"] for entry in ordered_rounds)
 
     return records, _JoinCounts(
         merged_pr_count=len(merged_prs),
@@ -140,6 +144,7 @@ def _join_rounds_to_prs(rounds: Sequence[dict], merged_prs: Sequence[dict]) -> t
         ambiguous_branch_count=ambiguous_branch_count,
         unpriced_turns=unpriced_turns,
         dangling_dispatches=dangling_dispatches,
+        invalid_usage_records=invalid_usage_records,
     )
 
 
@@ -306,6 +311,11 @@ def _print_join_diagnostics(joined_pr_count: int, counts: _JoinCounts, scan_gap_
     print(f"  Ambiguous branches (excluded): {counts.ambiguous_branch_count}")
     print(f"  Unpriced turns inside joined rounds: {counts.unpriced_turns}")
     print(f"  Dangling dispatches inside joined rounds: {counts.dangling_dispatches}")
+    if counts.invalid_usage_records:
+        print(
+            f"  MALFORMED USAGE — {counts.invalid_usage_records:,} usage-bearing turns inside joined rounds had"
+            " non-numeric or negative token fields and were excluded from this report's dollars"
+        )
     print(f"  Unreadable sources skipped: {scan_gap_count}")
 
 

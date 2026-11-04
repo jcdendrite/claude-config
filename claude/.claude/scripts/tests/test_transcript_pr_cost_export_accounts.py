@@ -13,8 +13,10 @@ from transcript_analysis import (
 )
 
 from ._pr_cost_helpers import (
+    _DROPPED_LINE_PREFIX,
     _PRE_HOST_HEADER_LINE,
     _PRE_MODEL_HEADER_LINE,
+    _dropped_keys_line,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _legacy_row_line,
@@ -22,6 +24,7 @@ from ._pr_cost_helpers import (
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
     _pre_model_row_line,
+    _review_rounds_cell_dropping,
     _sample_model_breakdown,
     _sample_pr_cost_row,
 )
@@ -523,6 +526,47 @@ class TestPrCostExportMixedSchemaAccounts:
         assert [row["model_breakdown"] for row in exported_rows] == ["", "", source_cell]
 
 
+class TestPrCostExportReviewRoundsDroppedKeysAcrossAccounts:
+    @staticmethod
+    def _export_two_accounts(tmp_path, monkeypatch, first_unknown_keys: int, second_unknown_keys: int):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root, unknown_key_count in zip(roots, (first_unknown_keys, second_unknown_keys), strict=True):
+            _enable_pr_cost(root.parent)
+            pr_cost_ledger._write_pr_cost_ledger_file(
+                root.parent / "pr-cost-ledger.tsv",
+                [_sample_pr_cost_row(review_rounds=_review_rounds_cell_dropping(unknown_key_count))],
+            )
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        return _parse_pr_cost_export_provenance_line(out_path.read_text().splitlines()[0])
+
+    def test_two_accounts_dropping_different_nonzero_counts_give_their_sum_in_the_provenance_and_the_stderr_line(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        provenance = self._export_two_accounts(tmp_path, monkeypatch, first_unknown_keys=2, second_unknown_keys=3)
+
+        assert provenance["review_rounds_dropped_keys"] == "5"
+        err = capsys.readouterr().err
+        assert _dropped_keys_line(5) in err.splitlines()
+        assert "future-count" not in err
+
+    def test_only_the_first_account_dropping_still_counts_it_when_the_second_drops_zero(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Fails an assign-instead-of-add loop and a last-account-wins loop."""
+        provenance = self._export_two_accounts(tmp_path, monkeypatch, first_unknown_keys=4, second_unknown_keys=0)
+
+        assert provenance["review_rounds_dropped_keys"] == "4"
+        assert _dropped_keys_line(4) in capsys.readouterr().err.splitlines()
+
+    def test_neither_account_dropping_prints_no_stderr_line(self, tmp_path, monkeypatch, capsys):
+        provenance = self._export_two_accounts(tmp_path, monkeypatch, first_unknown_keys=0, second_unknown_keys=0)
+
+        assert provenance["review_rounds_dropped_keys"] == "0"
+        assert _DROPPED_LINE_PREFIX not in capsys.readouterr().err
+
+
 class TestPrCostExportProvenanceLine:
     def test_provenance_line_present_above_header_and_parses_as_key_value_tokens(
         self, tmp_path, fake_projects, monkeypatch,
@@ -545,7 +589,7 @@ class TestPrCostExportProvenanceLine:
         parsed = _parse_pr_cost_export_provenance_line(provenance)
         assert set(parsed) == {
             "exported_at", "declared", "opted_in", "skipped_not_opted_in", "legacy_header_accounts",
-            "legacy_machine_value_rows", "corpus", "corpus_override",
+            "legacy_machine_value_rows", "review_rounds_dropped_keys", "corpus", "corpus_override",
         }
         assert lines[1] == pr_cost_export._PR_COST_EXPORT_HEADER_LINE
 

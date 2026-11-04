@@ -1,3 +1,5 @@
+import itertools
+
 import pytest
 from transcript_analysis import render
 
@@ -97,6 +99,62 @@ class TestHelpers:
         user-typed text."""
         text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
         assert render._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_never_scans_openers_past_the_last_closer(self, monkeypatch):
+        """Each opener with no later closer costs a failed scan to the end of the text, so a record
+        that quotes thousands of them must not reach the pattern: only the span up to the last closer
+        is passed to it. This pins work done (the length scanned), not wall time. It is coupled to
+        `_TASK_NOTIFICATION_RE.sub(repl, string)`, so a rewrite that scans without that pattern must
+        re-baseline it."""
+        closed_envelope = "<task-notification>done</task-notification>"
+        unterminated_openers = "<task-notification>quoted " * 2000
+        tail = "and the rest"
+        real_pattern = render._TASK_NOTIFICATION_RE
+        scanned_lengths: list[int] = []
+
+        class RecordingPattern:
+            def sub(self, repl, string, count=0):
+                scanned_lengths.append(len(string))
+                return real_pattern.sub(repl, string, count)
+
+        monkeypatch.setattr(render, "_TASK_NOTIFICATION_RE", RecordingPattern())
+
+        result = render._strip_task_notifications(closed_envelope + unterminated_openers + tail)
+
+        assert sum(scanned_lengths) == len(closed_envelope)
+        assert result == " " + unterminated_openers + tail
+
+    def test_strip_task_notifications_without_a_closer_never_runs_the_pattern(self, monkeypatch):
+        text = "<task-notification>quoted " * 2000
+
+        class FailingPattern:
+            def sub(self, repl, string, count=0):
+                raise AssertionError("the pattern must not run when no closer exists")
+
+        monkeypatch.setattr(render, "_TASK_NOTIFICATION_RE", FailingPattern())
+
+        assert render._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_matches_the_uncut_pattern_on_every_short_fragment_sequence(self):
+        """The prefix cut changes no output relative to substituting over the whole text.
+        The alphabet pairs whole tags with tag stems and a bare `>`, so concatenation forms
+        complete tags, tags broken by filler, and stems that never close."""
+        fragments = [
+            "<task-notification>",
+            "</task-notification>",
+            "<task-notification",
+            "</task-notification",
+            ">",
+            "x",
+            "\n",
+            " ",
+        ]
+        max_fragment_count = 4
+
+        for fragment_count in range(max_fragment_count + 1):
+            for combination in itertools.product(fragments, repeat=fragment_count):
+                text = "".join(combination)
+                assert render._strip_task_notifications(text) == render._TASK_NOTIFICATION_RE.sub(" ", text), combination
 
 
 class TestSanitizeTableCell:

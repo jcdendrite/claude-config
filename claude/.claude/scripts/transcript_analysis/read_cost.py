@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
-from transcript_analysis import corpus, cost, pricing, redaction, render, scope, subagent_mix
+from transcript_analysis import corpus, pricing, redaction, render, scope, session_pricing, subagent_mix
 
 # ~4 chars/token, the estimate read-scope uses. A deliberate second pin rather than a shared constant, so
 # recalibrating one report's figures does not silently move the other's.
@@ -196,7 +196,7 @@ def _scan_window(records: Sequence[dict], seen_tool_use_ids: set[str]) -> _Windo
                 turn_index += 1
             usage = msg.get("usage")
             if usage:
-                if cost._usage_is_invalid(usage):
+                if session_pricing._usage_is_invalid(usage):
                     invalid_usage_ids.add(message_id)
                 else:
                     usage_by_message[message_id] = usage
