@@ -1,6 +1,5 @@
-"""Pins that conftest's fake_projects, cost_ledger_file, and cost_ledger_enabled work in a
-test file that loads no transcript-analysis.py shim. This file deliberately loads none, so a
-fixture that comes to depend on the shim fails here first."""
+"""Tests of conftest's shared fixtures and helpers. This file deliberately loads no transcript-analysis.py shim,
+so a fixture that comes to depend on the shim fails here first."""
 import pytest
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, scope
 

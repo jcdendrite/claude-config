@@ -1,5 +1,5 @@
 """Test helpers shared by the audit-routing family's test files
-(test_transcript_audit_routing*.py) and by test_transcript_analysis.py's
+(test_transcript_audit_routing*.py) and by test_transcript_analysis_multi_root_scope.py's
 cross-subcommand tables."""
 from __future__ import annotations
 
