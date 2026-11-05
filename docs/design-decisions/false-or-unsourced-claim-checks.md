@@ -20,7 +20,7 @@ The reviewer holds `Read`, `Grep`, `Glob` and `Write`, with no `Bash` or network
 
 ## Why the reviewer stays one agent at `effort: high`
 
-The angle's boundary with Prose restating the code is a precedence clause, like the restating angle's precedence over the altitude angle in `prose-restating-code-is-deleted.md`. The clause is the last bullet of the `False or unsourced claim` block in `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles". A passage both angles could flag then draws one finding, not two with opposite fixes. Without the clause that restating takes deletion whether true or false, a comment both false and restating draws the false-claim finding rather than the restating one.
+The reviewer stays one agent because the angle's boundary with Prose restating the code is a precedence clause, not a judgment that needs its own context. The clause is like the restating angle's precedence over the altitude angle in `prose-restating-code-is-deleted.md`. That file also says the judgment at the boundary between angles is what needs `effort: high`. The clause is the last bullet of the `False or unsourced claim` block in `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles". A passage both angles could flag then draws one finding, not two with opposite fixes. The precedence cell in `.claude/plans/prose-claim-truth-check.md` § "Verification" measures that a comment both false and restating draws the Prose restating the code finding, not a `False or unsourced claim` finding.
 
 ## Why a mechanical reference checker is deferred
 
@@ -40,7 +40,7 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 
 **Angle.** Every cell met its bar:
 - Must-flag, each 5 of 5: a false default, a false count, the quantified claim found by search, an unsourced number, and an unsourced causal claim.
-- Precedence: Prose restating the code with a deletion fix 5 of 5, and `False or unsourced claim` on that site 0 of 5.
+- Precedence cell (a comment that restates the code and is also false): Prose restating the code with a deletion fix 5 of 5, and `False or unsourced claim` on that site 0 of 5.
 - Must-pass, each 0 of 5: a true default, a settleable cause and effect, a number with a named source, an instruction carrying a number, an unsettleable claim that is neither a number nor a cause and effect, a record's account of past events, and quoted text.
 - No Prose restating the code finding landed on a usage-doc cell.
 
@@ -50,9 +50,9 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 - A diff changing no name drew no finding and made no search in 5 of 5 runs.
 
 **Unmeasured and caveats:**
-- The no-contract runs read the bullet with `Read` only. Each transcript holds two `Read` calls and no `Grep`, `Glob` or `Bash` call, counting `"type":"tool_use"` entries. A raw count of `"name":"Grep"` strings over-counts, because the tool schemas in a transcript's header carry those names too.
-- The three must-pass contract cells met their bar partly by omission, because the runs examined only a few files and the plan, dated-record and ordinary-word sites were never examined. Only the changelog skip was exercised, in 5 of 5 runs.
-- Every run of the angle's current wording used `Bash` grep in place of `Grep` and `Glob`, so the search-dependent cells were measured under that substitution, not under the tools the cells specify.
+- The runs over the diff that changes no name read the bullet with `Read` only. Each transcript holds two `Read` calls and no `Grep`, `Glob` or `Bash` call, counting `"type":"tool_use"` entries. A raw count of `"name":"Grep"` strings over-counts, because the tool schemas in a transcript's header carry those names too.
+- The tripwire's must-pass cells met their bar partly by omission, because the runs examined only a few files and never examined the plan, dated-record and ordinary-word sites. Only the changelog skip was exercised, in 5 of 5 runs.
+- Every run of the angle used `Bash` grep in place of `Grep` and `Glob`, so the search-dependent cells were measured under that substitution, not under the tools the cells specify.
 - The tripwire cells apply the bullet alone, so they do not measure it inside a full `/code-review` run.
 
 ## The guard's limit
