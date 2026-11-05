@@ -188,12 +188,14 @@ or causal claims in prose" bullet and §Working Style's "Be precise" bullet.
   cause and effect in the code. A settleable claim's subject is its source.
   Every other claim is unsettleable, whatever it concerns.
 - False: a settleable claim its subject, read at the diff's state, contradicts
-  or supports only in part. `Read` the subject the claim names. `Grep` when
-  the claim names no path or quantifies over a set ("every", "no", "only").
-  Only the subject can contradict a claim, never another doc restating it.
-  Cite the subject's `file:line`, or for a count or quantified claim the path
-  and the hits. Never report a claim false without that citation. The fix is
-  the statement the subject supports.
+  or supports only in part.
+  - `Read` the subject the claim names.
+  - `Grep` when the claim names no path or quantifies over a set ("every",
+    "no", "only").
+  - Only the subject can contradict a claim, never another doc restating it.
+  - Report no finding without a citation: the subject's `file:line`, or for a
+    count or quantified claim the path and the hits.
+  - The fix is the statement the subject supports.
 - Unsourced: an unsettleable number or cause-and-effect claim naming no
   source, wherever its subject lives. The fix names the source, marks the
   claim unverified, or deletes it. Any other unsettleable claim draws no
