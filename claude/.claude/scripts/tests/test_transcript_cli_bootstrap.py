@@ -25,7 +25,7 @@ import pytest
 from helpers import REPO_ROOT, init_git_repo_with_commit
 
 from ._review_round_helpers import _marker_write_use
-from ._routing_guard_helpers import _note_line
+from ._routing_guard_helpers import _capture_file_text, _note_line
 from .conftest import _asst, _bash_use, _priced, _skill_block, _table_cols, _tool_result, _user_msg, _write_jsonl
 
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
@@ -1267,7 +1267,15 @@ def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Pat
         _user_msg("next task", branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:02:00.000Z"),
         _priced("claude-sonnet-5", input=130_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:03:00.000Z"),
     ]
-    _write_jsonl(project_dir / "session.jsonl", records)
+    _write_jsonl(project_dir / "session.jsonl", [{"sessionId": "session", **record} for record in records])
+    # One recorder row before every record: the routing key off and both pilots on, so a transposition shows.
+    (account / ".session-config-keys-log.jsonl").write_text("\n" + json.dumps({
+        "session_id": "session", "source": "startup", "logged_at": "2026-08-01T09:00:00Z",
+        "keys": {
+            "review_orchestrator_routing": "false", "round_consult_round2_pilot": "true",
+            "architect_fix_plan_pilot": "true",
+        },
+    }) + "\n")
     note_dir = tmp_path / "notes"
     note_dir.mkdir()
     note = note_dir / "note.tsv"
@@ -1317,6 +1325,10 @@ def test_transcript_analysis_routing_guard_capture_subprocess_publishes_one_file
     assert [p.name for p in published] == [expected_name]
     assert (published[0].stat().st_mode & 0o777) == 0o600
     assert result.stdout.startswith("DO NOT PUBLISH")
+    stored = json.loads(published[0].read_text())
+    assert {name: stored[name] for name in ("routing", "round_consult_round2_pilot", "architect_fix_plan_pilot")} == {
+        "routing": "off", "round_consult_round2_pilot": "on", "architect_fix_plan_pilot": "on",
+    }
 
 
 def test_transcript_analysis_routing_guard_capture_subprocess_from_another_repo_exits_1_and_creates_nothing(tmp_path):
@@ -1361,8 +1373,8 @@ def _routing_guard_compute_fixture(tmp_path: Path, branches_per_arm: int) -> tup
                 for loop_index in range(1 + index % 3)
             ]
             digest = hashlib.sha256(branch.encode()).hexdigest()
-            (captures_dir / f"{digest}.r1.json").write_text(json.dumps({"loops": loops}))
-            note_lines.append(_note_line(account, branch, arm))
+            (captures_dir / f"{digest}.r1.json").write_text(_capture_file_text(loops, routing=arm))
+            note_lines.append(_note_line(account, branch))
     note_dir = tmp_path / "compute-notes"
     note_dir.mkdir()
     note = note_dir / "note.tsv"
@@ -1394,7 +1406,8 @@ def test_transcript_analysis_routing_guard_compute_below_the_real_minimum_prints
     )
 
     assert result.returncode == 3, result.stderr
-    assert result.stdout.startswith("routing-guard: NOT RUN")
+    # Exactly the minimum reason, so a run that is NOT RUN only because its files are unusable fails.
+    assert result.stdout.splitlines() == ["routing-guard: NOT RUN: fewer key-on branches than the guard's minimum"]
     assert not out_path.exists()
 
 

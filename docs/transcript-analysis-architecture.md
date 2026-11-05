@@ -777,12 +777,13 @@ bare.
 ### `routing_guard.py`
 
 The routing-guard command: `cmd_routing_guard` and the `_add_routing_guard_subparser` registration.
-Its `--capture` mode publishes one write-once file per sampled branch into the account's
-`routing-guard-captures` directory, gated by the account's `pr_cost_recording` key. Without `--capture` it
-computes the guard from those files and reads no transcripts. `docs/transcript-analysis.md` § "routing-guard" states both
-modes. Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`, and
-`scope` all by module (attribute access), and `_config` for the opt-in read. It makes private reads across
-those modules, such as `review_rounds._session_record_branches` and `ledger_common._publish_new_file`.
+Its `--capture` mode publishes one write-once file for each captured branch into the account's
+`routing-guard-captures` directory, gated by the account's `pr_cost_recording` key. Its inputs are the
+account's transcripts of this repo and the account's session config-keys log, which supplies each branch's arm and
+pilot states. Without `--capture` it computes the guard from those files and reads no transcripts and no log. `docs/transcript-analysis.md` § "routing-guard" states both
+modes. Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`,
+`scope`, and `session_pricing` all by module (attribute access), and `_config` for the opt-in read. It makes private reads across
+those modules, such as `review_rounds._session_record_branches`, `session_pricing._usage_is_invalid` and `ledger_common._publish_new_file`.
 `_add_routing_guard_subparser` is the one name `build_parser()` reaches bare.
 
 ## Sibling scripts

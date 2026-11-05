@@ -7,14 +7,17 @@ import random
 import re
 import shlex
 import stat
+import subprocess
 import sys
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import date
 from itertools import product
 from pathlib import Path
 from typing import NamedTuple
 
 import _config
+import _config_dir
 import pytest
 from helpers import REPO_ROOT
 from transcript_analysis import corpus, pricing, review_rounds, routing_guard, scope
@@ -22,16 +25,23 @@ from transcript_analysis import corpus, pricing, review_rounds, routing_guard, s
 from ._pr_cost_helpers import _enable_pr_cost
 from ._review_round_helpers import _SONNET
 from ._routing_guard_helpers import (
+    _BANNER_PROVENANCE_SENTENCE,
+    _COMPUTE_PROVENANCE_LINE,
+    _VALID_STATES,
     _assert_git_failure_diagnostic_precedes_note_refusal,
+    _capture_file_text,
     _digest_name,
     _environment_unchanged,
     _install_git_not_found,
     _install_path_spies,
     _install_subprocess_recorder,
     _invoke_routing_guard,
+    _log_row,
     _note_line,
     _note_row,
     _Outcome,
+    _routing_guard_section_lines,
+    _write_log,
 )
 from .conftest import _agent_use, _commit, _init_repo, _priced, _skill_block, _user_msg, _write_jsonl, _write_subagent_dispatch
 
@@ -56,17 +66,25 @@ _CAPTURES_DIR = "routing-guard-captures"
 _LOCATOR = re.compile(r"note line \d+")
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees this read.
 _TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
-_ROUTING_GUARD_HEADING = "## routing-guard"
 _SAMPLE_OUTPUT_HEADING = "### Sample output"
-_DIGIT_SCAN_EXEMPT_PREFIXES = ("routing-guard: --out", "routing-guard: git-tracked check")
+# `routing_guard.py` names the file, not an attribute of the module.
+_CITED_MODULE_NAME = re.compile(r"routing_guard\.(?!py\b)([A-Za-z_]\w*)")
+# The --out lines that echo the operator's own path, quoted by repr. The fixed --out messages are not exempt.
+_DIGIT_SCAN_EXEMPT_PREFIXES = (
+    "routing-guard: --out '", 'routing-guard: --out "', "routing-guard: git-tracked check",
+)
 _PRODUCTION_BOOTSTRAP_REPLICATES = routing_guard._BOOTSTRAP_REPLICATES
 _TEST_BOOTSTRAP_REPLICATES = 300
+# Dates far enough from any real clock that a rate's expiry never flips with the day the suite runs.
+_FAR_PAST_RATE_EXPIRY = date(2000, 1, 1)
+_FAR_FUTURE_RATE_EXPIRY = date(2999, 1, 1)
 
 
 @pytest.fixture(autouse=True)
 def _rates_never_expire(monkeypatch):
     """Keep the stale-rate line off every output, so no test depends on the clock."""
-    monkeypatch.setattr(pricing, "_rate_expired", lambda _model, _as_of: False)
+    for model in pricing._MODEL_BASE_INPUT_RATES:
+        monkeypatch.setitem(pricing._MODEL_RATE_EXPIRES, model, _FAR_FUTURE_RATE_EXPIRY)
 
 
 def _loop(
@@ -99,18 +117,26 @@ class _Lab:
 
     def row(
         self, account: Path, branch: str, arm: str = "on", *, loops: list[dict] | None = None,
-        pilots: tuple[str, str] = ("off", "off"),
+        pilot_states: tuple[str, str] = ("off", "off"), status: str = "merged",
     ) -> int:
-        """Add a note row and, when `loops` is given, its capture file. Returns the row's note line."""
-        self.note_lines.append(_note_line(account, branch, arm, pilots))
+        """Add a note row and, when `loops` is given, its capture file. Returns the row's note line.
+
+        `arm` and `pilot_states` are the states the capture file stores. The note holds only the branch and its status.
+        """
+        self.note_lines.append(_note_line(account, branch, status))
         if loops is not None:
-            self.write_capture(account, branch, loops)
+            self.write_capture(account, branch, loops, routing=arm, round2=pilot_states[0], architect=pilot_states[1])
         return len(self.note_lines)
 
     @staticmethod
-    def write_capture(account: Path, branch: str, loops: list[dict], *, revision: int = 1) -> Path:
+    def write_capture(
+        account: Path, branch: str, loops: list[dict], *, revision: int = 1, routing: str = "off", round2: str = "off",
+        architect: str = "off",
+    ) -> Path:
         path = account / _CAPTURES_DIR / _digest_name(branch, revision)
-        path.write_text(json.dumps({"loops": loops}))
+        path.write_text(_capture_file_text(
+            loops, routing=routing, round_consult_round2_pilot=round2, architect_fix_plan_pilot=architect,
+        ))
         return path
 
     def write_note(self, *, mode: int = 0o600, order: Sequence[int] | None = None) -> None:
@@ -302,11 +328,24 @@ _DEFINED = [_loop(growth=1)]
 _UNDEFINED = [_loop(growth=None)]
 
 
-def _select(rows: list[routing_guard._NoteRow], loaded: dict | None = None, ready=(_ACCOUNT_A, _ACCOUNT_B)):
-    fetched = loaded if loaded is not None else {
-        row.line_no: _DEFINED for row in rows if row.arm in ("on", "off")
-    }
+def _record(arm: str = "on", pilot_states: tuple[str, str] = ("off", "off"), loops: list[dict] | None = None):
+    """A loaded capture file: the loops and the three stored states."""
+    return routing_guard._CaptureRecord(
+        _DEFINED if loops is None else loops, routing_guard._KeyStates(arm, pilot_states[0], pilot_states[1]),
+    )
+
+
+def _select(entries: list[tuple], ready=(_ACCOUNT_A, _ACCOUNT_B), loaded: dict | None = None):
+    """Run the sample selection. Each entry is (note row, the row's loaded file), the file a `_record`."""
+    rows = [row for row, _file in entries]
+    fetched = loaded if loaded is not None else {row.line_no: file for row, file in entries}
     return routing_guard._select_sample(rows, ready, fetched)
+
+
+def _entry(
+    line_no: int, account: Path, branch: str, arm: str = "on", *, pilot_states=("off", "off"), loops=None, status="merged",
+):
+    return _note_row(line_no, account, branch, status), _record(arm, pilot_states, loops)
 
 
 class TestSelectSample:
@@ -314,101 +353,176 @@ class TestSelectSample:
     def _minimum_of_one(self, monkeypatch):
         monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 1)
 
-    def test_a_balanced_account_gives_no_reason_and_both_arms(self):
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "off-1", "off")]
+    def test_a_balanced_account_gives_no_reason_and_both_arms_read_from_the_files(self):
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off")]
 
-        selection = _select(rows)
+        selection = _select(entries)
 
         assert selection.reasons == []
         assert [row.branch for row in selection.on_rows] == ["on-1"]
         assert [row.branch for row in selection.off_rows] == ["off-1"]
 
-    def test_fewer_on_rows_than_the_minimum_is_a_reason(self, monkeypatch):
+    def test_the_arm_comes_from_the_file_and_not_from_the_row_order(self):
+        entries = [_entry(1, _ACCOUNT_A, "first", "off"), _entry(2, _ACCOUNT_A, "second", "on")]
+
+        selection = _select(entries)
+
+        assert [row.branch for row in selection.on_rows] == ["second"]
+        assert [row.branch for row in selection.off_rows] == ["first"]
+
+    def test_fewer_on_files_than_the_minimum_is_a_reason(self, monkeypatch):
         monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 2)
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "off-1", "off")]
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off")]
 
-        assert _select(rows).reasons == [routing_guard._NotRunReason(routing_guard._REASON_TOO_FEW_ON, None)]
+        assert _select(entries).reasons == [routing_guard._NotRunReason(routing_guard._REASON_TOO_FEW_ON, None)]
 
-    def test_an_account_that_is_not_ready_is_one_reason_naming_its_first_row_including_an_unmerged_one(self):
-        rows = [
-            _note_row(1, _ACCOUNT_A, "work-in-progress", "unmerged"),
-            _note_row(2, _ACCOUNT_A, "on-1"),
-            _note_row(3, _ACCOUNT_A, "off-1", "off"),
+    def test_an_account_that_is_not_ready_is_one_reason_naming_its_first_merged_row_and_excluded_rows_do_not_count(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "work-in-progress", status="excluded"),
+            _entry(2, _ACCOUNT_A, "on-1"),
+            _entry(3, _ACCOUNT_A, "off-1", "off"),
         ]
 
-        selection = _select(rows, loaded={}, ready=())
+        selection = _select(entries, ready=(), loaded={})
 
-        assert selection.reasons == [routing_guard._NotRunReason(routing_guard._REASON_ACCOUNT_NOT_READY, 1)]
+        assert selection.reasons == [routing_guard._NotRunReason(routing_guard._REASON_ACCOUNT_NOT_READY, 2)]
         assert selection.on_rows == [] and selection.off_rows == []
 
     def test_a_missing_and_an_unusable_file_are_separate_reasons_each_naming_its_row(self):
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "off-1", "off")]
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off")]
         loaded = {1: routing_guard._StandingFile.ABSENT, 2: routing_guard._StandingFile.UNREADABLE}
 
-        selection = _select(rows, loaded)
+        selection = _select(entries, loaded=loaded)
 
         assert selection.reasons == [
             routing_guard._NotRunReason(routing_guard._REASON_FILE_MISSING, 1),
             routing_guard._NotRunReason(routing_guard._REASON_FILE_UNUSABLE, 2),
         ]
 
-    def test_an_account_whose_on_rows_mix_pilot_states_has_no_reference_state(self):
-        rows = [
-            _note_row(1, _ACCOUNT_A, "on-1", pilots=("on", "off")),
-            _note_row(2, _ACCOUNT_A, "on-2", pilots=("off", "off")),
-            _note_row(3, _ACCOUNT_A, "off-1", "off"),
-            _note_row(4, _ACCOUNT_A, "off-2", "off", pilots=("on", "on")),
+    @pytest.mark.parametrize("unusable", [routing_guard._StandingFile.INVALID, routing_guard._StandingFile.EARLIER_LAYOUT])
+    def test_an_invalid_file_and_an_earlier_layout_file_are_both_unusable(self, unusable):
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off")]
+
+        selection = _select(entries, loaded={1: _record(), 2: unusable})
+
+        assert selection.reasons == [routing_guard._NotRunReason(routing_guard._REASON_FILE_UNUSABLE, 2)]
+
+    def test_count_reasons_are_withheld_while_any_file_failed_to_load(self, monkeypatch):
+        monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 5)
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "on-2"), _entry(3, _ACCOUNT_A, "off-1", "off")]
+
+        selection = _select(entries, loaded={1: _record(), 2: _record(), 3: routing_guard._StandingFile.UNREADABLE})
+
+        assert selection.reasons == [routing_guard._NotRunReason(routing_guard._REASON_FILE_UNUSABLE, 3)]
+
+    def test_an_account_whose_on_files_mix_pilot_states_has_no_reference_state(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", pilot_states=("on", "off")),
+            _entry(2, _ACCOUNT_A, "on-2", pilot_states=("off", "off")),
+            _entry(3, _ACCOUNT_A, "off-1", "off"),
+            _entry(4, _ACCOUNT_A, "off-2", "off", pilot_states=("on", "on")),
         ]
 
-        reasons = _select(rows).reasons
+        reasons = _select(entries).reasons
 
         assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_MIXED_PILOTS, 1)]
 
-    def test_an_off_row_with_a_different_pilot_state_than_the_on_rows_is_a_reason_naming_that_row(self):
-        rows = [
-            _note_row(1, _ACCOUNT_A, "on-1", pilots=("on", "off")),
-            _note_row(2, _ACCOUNT_A, "off-1", "off", pilots=("on", "off")),
-            _note_row(3, _ACCOUNT_A, "on-2", pilots=("on", "off")),
-            _note_row(4, _ACCOUNT_A, "off-2", "off", pilots=("off", "off")),
+    def test_an_off_file_with_a_different_pilot_state_than_the_on_files_is_a_reason_naming_that_row(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", pilot_states=("on", "off")),
+            _entry(2, _ACCOUNT_A, "off-1", "off", pilot_states=("on", "off")),
+            _entry(3, _ACCOUNT_A, "on-2", pilot_states=("on", "off")),
+            _entry(4, _ACCOUNT_A, "off-2", "off", pilot_states=("off", "off")),
         ]
 
-        reasons = _select(rows).reasons
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_OFF_PILOT_DIFFERS, 4)]
+
+    def test_on_files_differing_only_in_the_architect_pilot_have_no_reference_state(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", pilot_states=("on", "on")),
+            _entry(2, _ACCOUNT_A, "on-2", pilot_states=("on", "off")),
+            _entry(3, _ACCOUNT_A, "off-1", "off", pilot_states=("on", "on")),
+            _entry(4, _ACCOUNT_A, "off-2", "off", pilot_states=("on", "on")),
+        ]
+
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_MIXED_PILOTS, 1)]
+
+    def test_an_off_file_differing_only_in_the_architect_pilot_is_a_reason_naming_that_row(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", pilot_states=("on", "on")),
+            _entry(2, _ACCOUNT_A, "off-1", "off", pilot_states=("on", "on")),
+            _entry(3, _ACCOUNT_A, "on-2", pilot_states=("on", "on")),
+            _entry(4, _ACCOUNT_A, "off-2", "off", pilot_states=("on", "off")),
+        ]
+
+        reasons = _select(entries).reasons
 
         assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_OFF_PILOT_DIFFERS, 4)]
 
     def test_an_account_with_unequal_arm_counts_is_a_reason_naming_its_first_row(self):
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "on-2")]
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "on-2")]
 
-        reasons = _select(rows).reasons
+        reasons = _select(entries).reasons
 
         assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_ARM_SIZE_MISMATCH, 1)]
 
     def test_an_arm_with_no_loop_whose_growth_is_defined_is_a_reason(self):
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "off-1", "off")]
-        loaded = {1: _UNDEFINED, 2: _DEFINED}
+        entries = [_entry(1, _ACCOUNT_A, "on-1", loops=_UNDEFINED), _entry(2, _ACCOUNT_A, "off-1", "off")]
 
-        reasons = _select(rows, loaded).reasons
+        reasons = _select(entries).reasons
 
         assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_NO_GROWTH_DEFINED, None)]
 
-    def test_off_rows_of_an_account_with_no_on_row_and_every_unmerged_row_are_ignored(self):
-        rows = [
-            _note_row(1, _ACCOUNT_A, "on-1"),
-            _note_row(2, _ACCOUNT_A, "off-1", "off"),
-            _note_row(3, _ACCOUNT_B, "stray-off", "off"),
-            _note_row(4, _ACCOUNT_A, "in-progress", "unmerged"),
+    def test_the_growth_reason_is_withheld_while_the_arm_sizes_differ(self):
+        entries = [_entry(1, _ACCOUNT_A, "on-1", loops=_UNDEFINED), _entry(2, _ACCOUNT_A, "on-2", loops=_UNDEFINED)]
+
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_ARM_SIZE_MISMATCH, 1)]
+
+    def test_the_growth_reason_is_withheld_while_there_are_too_few_on_files(self, monkeypatch):
+        monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 2)
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", loops=_UNDEFINED),
+            _entry(2, _ACCOUNT_A, "off-1", "off", loops=_UNDEFINED),
         ]
 
-        selection = _select(rows)
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_TOO_FEW_ON, None)]
+
+    def test_the_growth_reason_surfaces_once_the_count_reasons_clear(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1", loops=_UNDEFINED),
+            _entry(2, _ACCOUNT_A, "off-1", "off", loops=_UNDEFINED),
+        ]
+
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_NO_GROWTH_DEFINED, None)]
+
+    def test_off_files_of_an_account_with_no_on_file_and_every_excluded_row_are_ignored(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "on-1"),
+            _entry(2, _ACCOUNT_A, "off-1", "off"),
+            _entry(3, _ACCOUNT_B, "stray-off", "off"),
+            _entry(4, _ACCOUNT_A, "in-progress", status="excluded"),
+        ]
+
+        selection = _select(entries)
 
         assert selection.reasons == []
         assert [row.branch for row in selection.on_rows + selection.off_rows] == ["on-1", "off-1"]
 
     def test_two_reasons_that_hold_at_once_come_back_in_the_declared_order(self, monkeypatch):
         monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 3)
-        rows = [_note_row(1, _ACCOUNT_A, "on-1"), _note_row(2, _ACCOUNT_A, "on-2")]
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "on-2")]
 
-        reasons = [found.reason for found in _select(rows).reasons]
+        reasons = [found.reason for found in _select(entries).reasons]
 
         assert reasons == [routing_guard._REASON_TOO_FEW_ON, routing_guard._REASON_ARM_SIZE_MISMATCH]
         assert reasons == sorted(reasons, key=routing_guard._NOT_RUN_REASONS.index)
@@ -452,8 +566,8 @@ class TestSampleReasonsEndToEnd:
 
     def test_a_pilot_mismatch_is_not_run_naming_the_off_row(self, lab, capsys):
         account = lab.account()
-        lab.row(account, "branch-on", "on", loops=[_loop(growth=1)], pilots=("on", "on"))
-        off_line = lab.row(account, "branch-off", "off", loops=[_loop(growth=2)], pilots=("off", "on"))
+        lab.row(account, "branch-on", "on", loops=[_loop(growth=1)], pilot_states=("on", "on"))
+        off_line = lab.row(account, "branch-off", "off", loops=[_loop(growth=2)], pilot_states=("off", "on"))
         lab.write_note()
 
         outcome = _compute(capsys, lab)
@@ -461,16 +575,14 @@ class TestSampleReasonsEndToEnd:
         assert outcome.code == 3
         assert outcome.out.splitlines() == [_not_run_line(routing_guard._REASON_OFF_PILOT_DIFFERS, off_line)]
 
-    def test_an_account_with_no_on_row_a_key_off_account_and_unmerged_rows_do_not_affect_the_run_or_have_a_file_opened(
+    def test_an_account_with_no_on_file_and_excluded_rows_do_not_affect_the_run_or_have_a_file_opened(
         self, lab, capsys, monkeypatch,
     ):
         account, _on_line, _off_line = _minimal_pair(lab)
         stray = lab.account("acct-stray")
         lab.row(stray, "stray-off", "off", loops=[_loop(growth=3)])
-        key_off_stray = lab.account("acct-stray-key-off", key_on=False)
-        lab.row(key_off_stray, "key-off-stray-off", "off", loops=[_loop(growth=4)])
-        lab.row(stray, "in-progress", "unmerged", loops=[_loop(growth=5)])
-        lab.row(account, "unmerged-beside-the-pair", "unmerged", loops=[_loop(growth=6)])
+        lab.row(stray, "in-progress", status="excluded", loops=[_loop(growth=5)])
+        lab.row(account, "excluded-beside-the-pair", status="excluded", loops=[_loop(growth=6)])
         lab.write_note()
         spies = _install_path_spies(monkeypatch)
 
@@ -480,8 +592,54 @@ class TestSampleReasonsEndToEnd:
         assert outcome.code in (0, 1)
         assert "NOT RUN" not in outcome.out
         assert {_digest_name("branch-on"), _digest_name("branch-off")} <= opened_names
-        for ignored_branch in ("stray-off", "key-off-stray-off", "in-progress", "unmerged-beside-the-pair"):
+        for ignored_branch in ("in-progress", "excluded-beside-the-pair"):
             assert _digest_name(ignored_branch) not in opened_names
+
+    def test_an_account_with_only_key_off_files_and_its_key_off_is_not_run(self, lab, capsys, monkeypatch):
+        account, _on_line, _off_line = _minimal_pair(lab)
+        key_off_account = lab.account("acct-key-off", key_on=False)
+        stray_line = lab.row(key_off_account, "stray-off", "off", loops=[_loop(growth=4)])
+        lab.write_note()
+        spies = _install_path_spies(monkeypatch)
+
+        outcome = _compute(capsys, lab)
+
+        assert outcome.code == 3
+        assert outcome.out.splitlines() == [_not_run_line(routing_guard._REASON_ACCOUNT_NOT_READY, stray_line)]
+        assert _digest_name("stray-off") not in {Path(path).name for path in spies.opened_paths()}
+
+    def test_one_invalid_on_file_among_ten_gives_exactly_the_per_row_reason_and_no_count_reason(
+        self, lab_at_the_real_minimum, capsys,
+    ):
+        lab = lab_at_the_real_minimum
+        account = lab.account()
+        # Nine loaded key-on files plus the invalid one: counting only the loaded files would add the key-on minimum
+        # and the arm-size reasons.
+        for index in range(9):
+            lab.row(account, f"on-{index}", "on", loops=[_loop(input_tokens=1_000_000, growth=10 + index)])
+        for index in range(10):
+            lab.row(account, f"off-{index}", "off", loops=[_loop(input_tokens=1_000_000, growth=20 + index)])
+        invalid_line = lab.row(account, "on-invalid", "on")
+        (account / _CAPTURES_DIR / _digest_name("on-invalid")).write_bytes(b"not json")
+        lab.write_note()
+
+        outcome = _compute(capsys, lab)
+
+        assert outcome.code == 3
+        assert outcome.out.splitlines() == [_not_run_line(routing_guard._REASON_FILE_UNUSABLE, invalid_line)]
+
+    def test_a_log_in_the_account_directory_that_contradicts_its_files_changes_nothing_because_compute_reads_no_log(
+        self, lab, capsys, monkeypatch,
+    ):
+        account, _on_line, _off_line = _minimal_pair(lab)
+        baseline = _compute(capsys, lab)
+        _write_log(account, _log_row("any-session", routing="false"), _log_row("another-session", routing="true"))
+        spies = _install_path_spies(monkeypatch)
+
+        with_log = _compute(capsys, lab)
+
+        assert (with_log.code, with_log.out) == (baseline.code, baseline.out)
+        assert not any(path.endswith(".session-config-keys-log.jsonl") for path in spies.opened_paths())
 
 
 class TestFlags:
@@ -536,7 +694,7 @@ class TestFlags:
 def _sentinel_cells() -> list[tuple[str, dict]]:
     """Capture file contents the validator refuses, each carrying a sentinel in the rejected cell."""
     base = _loop(input_tokens=5, growth=1)
-    return [
+    cases = [
         ("unknown-variant", {"loops": [{**base, "overhead_tokens": {"sentinel-model": {"sentinel-variant": {"input": 1}}}}]}),
         ("unknown-class", {"loops": [{**base, "overhead_tokens": {_SONNET: {"standard": {"sentinel-class": 1}}}}]}),
         ("model-not-an-object", {"loops": [{**base, "overhead_tokens": {"sentinel-model": 1}}]}),
@@ -544,6 +702,11 @@ def _sentinel_cells() -> list[tuple[str, dict]]:
         ("later-turns-cell", {"loops": [{**base, "later_turns": {"sentinel-model": "sentinel-count"}}]}),
         ("extra-root-key", {"loops": [base], "sentinel-key": 1}),
     ]
+    with_states = [(case_id, {**_VALID_STATES, **content}) for case_id, content in cases]
+    state_cells = [
+        (f"{key}-sentinel-state", {"loops": [base], **{**_VALID_STATES, key: "sentinel-state"}}) for key in _VALID_STATES
+    ]
+    return [*with_states, *state_cells]
 
 
 class TestCaptureFiles:
@@ -635,24 +798,32 @@ class TestCaptureFiles:
         branch = "feat/ünï-cøde"
         account = lab.account()
         round_facts = routing_guard._RoundFacts(
-            session_key="session-a", open_idx=0, open_ts=1.0, has_marker_write=True, context_at_open=10,
-            context_at_window_end=40, later_turns={}, overhead_tokens={_SONNET: {"standard": {"input": 1_000_000}}},
+            session_key="session-a", session_id="session-a", open_idx=0, open_ts=1.0, has_marker_write=True,
+            context_at_open=10, context_at_window_end=40, later_turns={},
+            overhead_tokens={_SONNET: {"standard": {"input": 1_000_000}}},
             degraded=False, denied_open=False, spawn_open=False,
         )
         scan = routing_guard._ScanFacts()
-        scan.branches[branch] = routing_guard._BranchFacts(has_timestamped_record=True, last_record_ts=1.0)
+        scan.branches[branch] = routing_guard._BranchFacts(
+            has_timestamped_record=True, first_record_ts=1.0,
+        )
         scan.rounds_by_branch[branch] = [round_facts]
-        on_row = routing_guard._NoteRow(1, account.resolve(), branch, "on", "off", "off")
+        on_row = routing_guard._NoteRow(1, account.resolve(), branch, "merged")
+        key_states = routing_guard._BranchKeyStates(
+            {key: "on" if key == routing_guard._ROUTING_KEY else "off" for key in routing_guard._STATE_KEYS}, (),
+        )
         # The published file goes through capture's own row publisher, then compute finds it by the branch's digest.
-        all_captured = routing_guard._capture_account_rows([on_row], {1: routing_guard._StandingFile.ABSENT}, scan, account)
+        report = routing_guard._capture_account_rows(
+            [on_row], {1: routing_guard._StandingFile.ABSENT}, {1: key_states}, set(), scan, account,
+        )
         capsys.readouterr()
-        lab.row(account, branch, "on")
+        lab.row(account, branch)
         lab.row(account, "branch-off", "off", loops=[_loop(growth=2)])
         lab.write_note()
 
         outcome = _compute(capsys, lab)
 
-        assert all_captured
+        assert report.kinds[routing_guard._RowKind.CAPTURED] == 1
         assert (account / _CAPTURES_DIR / _digest_name(branch)).is_file()
         assert outcome.code in (0, 1)
         assert "NOT RUN" not in outcome.out
@@ -717,7 +888,7 @@ class TestPricing:
             review_rounds._session_record_branches(records, windows), None, defaultdict(float), collect_tokens=True,
         )
         loop = {
-            "overhead_tokens": routing_guard._nest_token_sink(entries[0]["tokens"]),
+            "overhead_tokens": entries[0]["tokens"],
             "growth_tokens": None, "later_turns": {}, "degraded": False,
         }
 
@@ -740,6 +911,35 @@ class TestPricing:
         assert outcome.code in (0, 1)
         assert routing_guard._DEGRADED_NOTICES["on"] in outcome.err.splitlines()
         assert routing_guard._DEGRADED_NOTICES["off"] not in outcome.err.splitlines()
+
+    @pytest.mark.parametrize(
+        "key_on_loop",
+        [
+            pytest.param(
+                {
+                    "overhead_tokens": {
+                        _SONNET: {"standard": {"input": 1_000_000}}, _UNPRICED_MODEL: {"standard": {"input": 5}},
+                    },
+                    "growth_tokens": 100, "later_turns": {}, "degraded": False,
+                },
+                id="a-skipped-model",
+            ),
+            pytest.param(_loop(input_tokens=1_000_000, growth=100, degraded=True), id="a-lost-dispatch"),
+        ],
+    )
+    def test_a_degraded_key_on_arm_on_the_passed_side_still_prints_passed_as_the_only_stdout_line_beside_its_notice(
+        self, lab, capsys, key_on_loop,
+    ):
+        account = lab.account()
+        lab.row(account, "branch-on", "on", loops=[key_on_loop])
+        lab.row(account, "branch-off", "off", loops=[_loop(input_tokens=2_000_000, growth=300, later={_SONNET: 10})])
+        lab.write_note()
+
+        outcome = _compute(capsys, lab)
+
+        assert outcome.code == 0
+        assert outcome.out.splitlines() == [routing_guard._STATUS_PASSED]
+        assert routing_guard._DEGRADED_NOTICES["on"] in outcome.err.splitlines()
 
     def test_an_unlisted_model_name_in_a_capture_file_reaches_no_output_stream_and_the_run_completes_degraded(
         self, lab, capsys,
@@ -765,6 +965,7 @@ class TestPricing:
         lab.write_note()
         unlisted = _compute(capsys, lab)
         monkeypatch.setitem(pricing._MODEL_BASE_INPUT_RATES, "claude-future-1", 3.00)
+        monkeypatch.setitem(pricing._MODEL_RATE_EXPIRES, "claude-future-1", _FAR_FUTURE_RATE_EXPIRY)
 
         listed = _compute(capsys, lab)
 
@@ -813,7 +1014,8 @@ class TestPricing:
         lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=1_000_000, growth=100, model=key_on_overhead_model)])
         lab.row(account, "branch-off", "off", loops=[_loop(input_tokens=1_000_000, growth=300, later={_OPUS: 10})])
         lab.write_note()
-        monkeypatch.setattr(pricing, "_rate_expired", lambda model, _as_of: model == expired_model)
+        if expired_model is not None:
+            monkeypatch.setitem(pricing._MODEL_RATE_EXPIRES, expired_model, _FAR_PAST_RATE_EXPIRY)
 
         outcome = _compute(capsys, lab)
 
@@ -888,7 +1090,7 @@ class TestPointNet:
         figures = routing_guard._arm_net(on, off)
 
         # On: $10 / 2 loops = $5. Off: $20 / 3 loops = $6.67, because the null-growth branch's 2 loops count.
-        # Gap: 600k over the 1 growth-defined key-off loop, less 200k over 2 key-on loops = 500k tokens.
+        # Gap: key-off mean 600k over its 1 growth-defined loop, less key-on mean 100k (200k / 2 loops) = 500k tokens.
         # Carry: 500k * 10e-6 / 3 key-off loops = $1.67.
         assert figures.overhead_difference == pytest.approx(5.0 - 20.0 / 3)
         assert figures.gap == pytest.approx(500_000)
@@ -910,7 +1112,7 @@ class TestPointNet:
 
         figure_lines = out_path.read_text().splitlines()
         # On: $4.00 / 2 loops = $2.00. Off: $12.00 / 2 loops = $6.00, the null-growth loop included.
-        # Gap: 600k over the 1 growth-defined key-off loop, less 200k over 2 key-on loops = 400k tokens.
+        # Gap: key-off mean 600k over its 1 growth-defined loop, less key-on mean 200k ((100k + 300k) / 2 loops) = 400k tokens.
         # Carry: 400k * (10 + 10) * 0.2e-6 / 2 loops = $0.80.
         assert outcome.code in (0, 1)
         assert "overhead difference per loop: -$4.00" in figure_lines
@@ -1316,6 +1518,41 @@ class TestOutput:
         ]
         assert routing_guard._OUT_PUBLISHED_NOTICE in outcome.err.splitlines()
 
+    def test_the_out_file_banner_states_that_the_key_state_rests_on_rows_any_process_running_as_the_account_can_write(
+        self, lab, capsys,
+    ):
+        out_path = _passed_fixture(lab)
+
+        _compute(capsys, lab, out=str(out_path))
+
+        assert out_path.read_text().splitlines()[3] == _BANNER_PROVENANCE_SENTENCE
+
+    @pytest.mark.parametrize("scenario", ["passed", "failed"])
+    def test_a_status_run_prints_the_unauthenticated_rows_statement_on_stderr_and_keeps_stdout_the_bare_status(
+        self, lab, capsys, scenario,
+    ):
+        account = lab.account()
+        on_input_tokens = 9_000_000 if scenario == "failed" else 1_000_000
+        lab.row(account, "on-1", "on", loops=[_loop(input_tokens=on_input_tokens, growth=100)])
+        lab.row(account, "off-1", "off", loops=[_loop(input_tokens=1_000_000, growth=100)])
+        lab.write_note()
+
+        outcome = _compute(capsys, lab)
+
+        expected_status = routing_guard._STATUS_FAILED if scenario == "failed" else routing_guard._STATUS_PASSED
+        assert outcome.out.splitlines() == [expected_status]
+        assert _COMPUTE_PROVENANCE_LINE in outcome.err.splitlines()
+
+    def test_a_not_run_prints_no_unauthenticated_rows_statement(self, lab, capsys):
+        account = lab.account()
+        lab.row(account, "on-1", "on", loops=[_loop(growth=1)])
+        lab.write_note()
+
+        outcome = _compute(capsys, lab)
+
+        assert outcome.code == 3
+        assert _COMPUTE_PROVENANCE_LINE not in outcome.err
+
     def test_the_out_file_is_ascii_so_its_bytes_do_not_depend_on_the_locale(self, lab, capsys):
         out_path = _passed_fixture(lab)
 
@@ -1430,6 +1667,21 @@ class TestOutput:
 
 
 class TestOutPath:
+    def test_an_empty_path_is_refused_with_exit_2_before_any_capture_file_is_opened(self, lab, capsys, monkeypatch):
+        _minimal_pair(lab)
+        args = _mod.build_parser().parse_args(["routing-guard", "--note", str(lab.note), "--out", ""])
+        spies = _install_path_spies(monkeypatch)
+
+        with pytest.raises(SystemExit) as exit_info:
+            args.func(args)
+
+        captured = capsys.readouterr()
+        assert exit_info.value.code == 2
+        assert captured.err.strip() == routing_guard._EMPTY_OUT_MESSAGE
+        assert captured.out == ""
+        assert not any(char.isdigit() for char in captured.err)
+        assert not any(path.endswith(".r1.json") for path in spies.opened_paths())
+
     def test_an_existing_path_is_refused_with_exit_2_before_any_capture_file_is_opened(self, lab, capsys, monkeypatch):
         _minimal_pair(lab)
         out_path = lab.root / "figures.txt"
@@ -1554,8 +1806,10 @@ class TestUnlistedDenyRemedyCommand:
 
     @staticmethod
     def _remedy_words() -> list[str]:
-        unlisted_deny = routing_guard._DenyFact("unlisted-branch", 1.0)
-        reconciliation = routing_guard._reconcile_denies([unlisted_deny], [], Path("/placeholder/account"), set(), {})
+        unlisted_deny = routing_guard._DenyFact("unlisted-branch", 1.0, "sess-1")
+        reconciliation = routing_guard._reconcile_denies(
+            [unlisted_deny], [routing_guard._KeyState("on", None)], [], Path("/placeholder/account"), set(), {}, {},
+        )
         (refusal,) = reconciliation.refusals
         return [word.rstrip(",;") for word in refusal.split()]
 
@@ -1613,7 +1867,7 @@ class TestCriterionThreeInComputeMode:
         self, lab, capsys, monkeypatch, tmp_path,
     ):
         account, _on_line, _off_line = _minimal_pair(lab)
-        lab.row(account, "unmerged-branch", "unmerged", loops=[_loop(growth=9)])
+        lab.row(account, "excluded-branch", status="excluded", loops=[_loop(growth=9)])
         lab.write_note()
         decoy = lab.account("decoy-account")
         (decoy / "projects" / "decoy-project").mkdir()
@@ -1622,8 +1876,13 @@ class TestCriterionThreeInComputeMode:
         roots_file = tmp_path / "declared-roots"
         roots_file.write_text(f"{decoy}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        assert decoy in _config_dir.declared_transcript_roots()
         spies = _install_path_spies(monkeypatch)
         recorder = _install_subprocess_recorder(monkeypatch)
+        # Positive control: the `<=` check below also holds for a recorder that records nothing.
+        subprocess.Popen([sys.executable, "-c", "pass"]).wait()
+        assert recorder.executables() == {sys.executable}
+        recorder.argvs.clear()
 
         with _environment_unchanged():
             outcome = _compute(capsys, lab)
@@ -1637,7 +1896,8 @@ class TestCriterionThreeInComputeMode:
             for path in recorded for projects_dir in projects_dirs
         )
         assert not any(str(decoy) in path for path in recorded)
-        assert _digest_name("unmerged-branch") not in {Path(path).name for path in spies.opened_paths()}
+        assert _digest_name("excluded-branch") not in {Path(path).name for path in spies.opened_paths()}
+        assert not any(path.endswith(".session-config-keys-log.jsonl") for path in recorded)
         assert not any(path.endswith(_CAPTURES_DIR) for path in spies.listed_paths())
         assert str(lab.note) in spies.opened_paths()
         assert any(path.endswith(_digest_name("branch-on")) for path in spies.opened_paths())
@@ -1650,25 +1910,30 @@ def test_the_digit_helper_ignores_only_note_line_locators():
     assert _digits_outside_locators(outcome) == ["routing-guard: 5 unexpected"]
 
 
+def test_the_digit_helper_exempts_a_repr_quoted_out_echo_line_and_flags_a_fixed_out_line_with_a_digit():
+    double_quoted_repr = repr("/placeholder/operator's-figures-1.txt")
+    single_quoted_repr = repr("/placeholder/figures-1.txt")
+    assert double_quoted_repr[0] != single_quoted_repr[0]
+    echo_lines = [
+        f"routing-guard: --out {path_repr} already exists -- refusing to overwrite"
+        for path_repr in (double_quoted_repr, single_quoted_repr)
+    ]
+    fixed_line = "routing-guard: --out is empty 2"
+
+    flagged = _digits_outside_locators(_Outcome(2, "", "\n".join([*echo_lines, fixed_line]) + "\n"))
+
+    assert flagged == [fixed_line]
+
+
+@pytest.mark.parametrize(
+    "fixed_out_message", [routing_guard._OUT_WITH_CAPTURE_MESSAGE, routing_guard._EMPTY_OUT_MESSAGE],
+)
+def test_each_fixed_out_message_is_digit_free(fixed_out_message):
+    assert not any(char.isdigit() for char in fixed_out_message)
+
+
 def test_the_captures_directory_name_is_the_one_the_fixtures_write_into():
     assert routing_guard._CAPTURES_DIR_NAME == _CAPTURES_DIR
-
-
-def _routing_guard_section_lines(doc_text: str) -> list[str]:
-    """The lines of the `## routing-guard` section, which ends at the next `## ` heading outside a code fence."""
-    section: list[str] = []
-    in_section = False
-    in_fence = False
-    for line in doc_text.split("\n"):
-        if line.startswith("```"):
-            in_fence = not in_fence
-        elif not in_fence and line.startswith("## "):
-            if in_section:
-                break
-            in_section = line == _ROUTING_GUARD_HEADING
-        if in_section:
-            section.append(line)
-    return section
 
 
 def _sample_output_fences(section_lines: list[str]) -> list[str]:
@@ -1736,32 +2001,38 @@ class TestRoutingGuardDocSection:
         assert fences, "the routing-guard section has no fence under its Sample output subheading"
         assert [fence for fence in fences if re.search(r"\d", fence)] == []
 
-    def test_the_out_sample_carries_the_banner_verbatim(self):
-        fences = _sample_output_fences(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text()))
+    def test_the_out_sample_fence_opens_with_the_banner_placeholder_and_the_doc_names_the_constant_it_stands_for(self):
+        placeholder = "<DO NOT PUBLISH banner>"
+        section = _routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text())
+        out_fences = [fence for fence in _sample_output_fences(section) if "<figure label>" in fence]
 
-        out_samples = [fence for fence in fences if "net per loop:" in fence]
-
-        assert len(out_samples) == 1
-        assert routing_guard._DO_NOT_PUBLISH_BANNER in out_samples[0]
-
-    def test_every_not_run_reason_appears_verbatim_in_the_section(self):
-        section_text = "\n".join(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text()))
-
-        assert [reason for reason in routing_guard._NOT_RUN_REASONS if reason not in section_text] == []
+        assert len(out_fences) == 1
+        assert out_fences[0].splitlines()[0] == placeholder
+        naming_lines = [
+            line for line in section if f"`{placeholder}`" in line and "`routing_guard._DO_NOT_PUBLISH_BANNER`" in line
+        ]
+        assert naming_lines, "no line of the section says which constant the banner placeholder stands for"
+        assert hasattr(routing_guard, "_DO_NOT_PUBLISH_BANNER")
 
     def test_the_heading_the_messages_cite_is_a_subheading_of_the_section_and_each_message_carries_the_pointer(self):
         account = Path("/placeholder/account")
-        off_row_refusal, = routing_guard._reconcile_denies(
-            [routing_guard._DenyFact("off-branch", 1.0)], [_note_row(1, account, "off-branch", "off")], account, set(), {},
-        ).refusals
         unlisted_branch_refusal, = routing_guard._reconcile_denies(
-            [routing_guard._DenyFact("unlisted-branch", 1.0)], [], account, set(), {},
+            [routing_guard._DenyFact("unlisted-branch", 1.0, "sess-1")], [routing_guard._KeyState("on", None)], [], account,
+            set(), {}, {},
         ).refusals
         pointer_opening = 'routing-guard "'
-        cited_from = off_row_refusal[off_row_refusal.index(pointer_opening) + len(pointer_opening):]
+        cited_from = unlisted_branch_refusal[unlisted_branch_refusal.index(pointer_opening) + len(pointer_opening):]
         cited_heading = cited_from.split('"')[0]
         section = _routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text())
 
         assert f"### {cited_heading}" in section
-        for message in (off_row_refusal, unlisted_branch_refusal, routing_guard._DROPPED_DENY_NOTICE):
+        for message in (unlisted_branch_refusal, routing_guard._DROPPED_DENY_NOTICE):
             assert f'routing-guard "{cited_heading}"' in message
+
+    def test_each_routing_guard_name_the_section_cites_exists_on_the_module(self):
+        section_text = "\n".join(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text()))
+
+        cited_names = set(_CITED_MODULE_NAME.findall(section_text))
+
+        assert {"_NOT_RUN_REASONS", "_DO_NOT_PUBLISH_BANNER"} <= cited_names
+        assert [name for name in cited_names if not hasattr(routing_guard, name)] == []

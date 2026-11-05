@@ -126,7 +126,6 @@ class TestPrCostExportOptIn:
         out = capsys.readouterr().out
         assert str(out_path) in out
         assert "wrote 2 row(s) from 3 of 4 declared account(s)" in out
-        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
 
     def test_fully_skipped_run_with_no_opted_in_account_exits_0_with_header_only_file(
         self, tmp_path, fake_projects, monkeypatch,

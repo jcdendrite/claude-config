@@ -296,14 +296,14 @@ def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, u
         group[token_class] += count
 
 
-def _record_turn_tokens(token_sink: dict[tuple[str, str], Counter[str]], model: str, usage: dict) -> None:
-    """Add one turn's per-class token counts to `token_sink` under (model, pricing variant).
+def _record_turn_tokens(token_sink: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
+    """Add one turn's per-class token counts to `token_sink`, nested model, then pricing variant, then token class.
 
     A `<synthetic>` turn is skipped. A turn whose model the rate table does not price is recorded under its own model.
     """
     if model == pricing._SYNTHETIC_MODEL_ID:
         return
-    token_sink.setdefault((model, pricing._pricing_variant(usage)), Counter()).update(pricing._token_counts(usage))
+    _add_turn_tokens(token_sink, model, usage)
 
 
 def _price_dispatch(
@@ -312,7 +312,7 @@ def _price_dispatch(
     visited: set[str],
     tally: _DispatchTally,
     *,
-    token_sink: dict[tuple[str, str], Counter[str]] | None = None,
+    token_sink: dict[str, dict[str, dict[str, int]]] | None = None,
 ) -> None:
     """Price one subagent dispatch into `tally` and recurse into every Agent/Task
     spawn inside its own transcript, passing the same tally.
@@ -342,7 +342,7 @@ def _price_dispatch(
     successfully priced — review-round-cost's own "agents" column.
 
     `token_sink`, when given, receives every non-synthetic, valid-usage turn's
-    class token counts keyed (model, pricing variant), priced or not,
+    class token counts nested model, then pricing variant, priced or not,
     recursion included (_record_turn_tokens). It does not change `tally`.
     """
     if tool_use_id in visited:
@@ -408,8 +408,8 @@ def _price_session_rounds(
     agent_dollars, agents, unpriced_turns, dangling, main_tokens, agent_tokens,
     unpriced_tokens, invalid_usage_records, open_idx and window_end.
     With `collect_tokens`, each entry also holds `tokens`: the class token
-    counts of its window's main-thread turns and dispatches keyed
-    (model, pricing variant) by _record_turn_tokens' rule.
+    counts of its window's main-thread turns and dispatches, nested model,
+    then pricing variant, by _record_turn_tokens' rule.
     """
     dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
     visited: set[str] = set()

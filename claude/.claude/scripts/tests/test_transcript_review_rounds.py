@@ -2510,11 +2510,11 @@ class TestPriceDispatchTokenSink:
         )
 
         assert token_sink == {
-            ("claude-sonnet-5", "standard"): _class_tokens(
-                input=1200, output=14, cache_read=5, cache_write_1h=7, cache_write_5m=3,
-            ),
-            ("claude-sonnet-5", "fast_us_geo"): _class_tokens(input=100, output=1),
-            (_UNPRICED_MODEL, "standard"): _class_tokens(input=40, output=2),
+            "claude-sonnet-5": {
+                "standard": _class_tokens(input=1200, output=14, cache_read=5, cache_write_1h=7, cache_write_5m=3),
+                "fast_us_geo": _class_tokens(input=100, output=1),
+            },
+            _UNPRICED_MODEL: {"standard": _class_tokens(input=40, output=2)},
         }
 
     def test_tally_equals_the_call_without_a_sink(self, fake_projects):
@@ -2530,6 +2530,31 @@ class TestPriceDispatchTokenSink:
         # The unpriced-model and <synthetic> turns, one missing dispatch, a1 plus n1 resolved.
         assert (with_sink.unpriced_turns, with_sink.dangling, with_sink.resolved) == (2, 1, 2)
 
+    @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])
+    def test_a_malformed_usage_turn_adds_no_tokens_is_counted_invalid_and_leaves_the_tally_unchanged(
+        self, fake_projects, malformed_input_tokens,
+    ):
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        _write_jsonl(session_jsonl, [])
+        malformed_turn = _malformed_usage_turn(
+            {"input_tokens": malformed_input_tokens}, ts="2026-08-01T10:01:00.000Z", branch="main",
+        )
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
+            _priced("claude-sonnet-5", input=1000, output=10),
+            malformed_turn,
+        ])
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
+        without_sink = review_rounds._DispatchTally(tokens={})
+        with_sink = review_rounds._DispatchTally(tokens={})
+        token_sink: dict = {}
+
+        review_rounds._price_dispatch("a1", dispatch_index, set(), without_sink)
+        review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink=token_sink)
+
+        assert token_sink == {"claude-sonnet-5": {"standard": _class_tokens(input=1000, output=10)}}
+        assert with_sink.invalid_usage_records == 1
+        assert with_sink == without_sink
+
     def test_dangling_dispatch_adds_nothing(self, fake_projects):
         session_jsonl = self._write_dispatch_tree(fake_projects)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(session_jsonl)
@@ -2540,6 +2565,18 @@ class TestPriceDispatchTokenSink:
         )
 
         assert token_sink == {}
+
+
+class TestRecordTurnTokens:
+    def test_a_non_string_model_and_an_empty_model_sum_under_the_empty_model(self):
+        token_sink: dict = {}
+        model_field_values = [{"unhashable": "model"}, ""]
+        for model_field_value in model_field_values:
+            turn = _priced("claude-sonnet-5", input=5, output=1)
+            turn["message"]["model"] = model_field_value
+            review_rounds._record_turn_tokens(token_sink, review_rounds._turn_model(turn), turn["message"]["usage"])
+
+        assert token_sink == {"": {"standard": _class_tokens(input=10, output=2)}}
 
 
 class TestPriceSessionRoundsTokens:
@@ -2580,9 +2617,11 @@ class TestPriceSessionRoundsTokens:
 
         assert len(entries) == 1
         assert entries[0]["tokens"] == {
-            ("claude-sonnet-5", "standard"): _class_tokens(input=1300, output=11, cache_write_1h=2000),
-            ("claude-sonnet-5", "fast_us_geo"): _class_tokens(input=50),
-            (_UNPRICED_MODEL, "standard"): _class_tokens(input=7),
+            "claude-sonnet-5": {
+                "standard": _class_tokens(input=1300, output=11, cache_write_1h=2000),
+                "fast_us_geo": _class_tokens(input=50),
+            },
+            _UNPRICED_MODEL: {"standard": _class_tokens(input=7)},
         }
 
     def test_entries_carry_window_bounds_and_no_tokens_key_by_default(self, fake_projects):
@@ -2592,6 +2631,75 @@ class TestPriceSessionRoundsTokens:
 
         assert [(entry["open_idx"], entry["window_end"]) for entry in entries] == [(0, 4)]
         assert "tokens" not in entries[0]
+
+    def _collect_one_round_tokens(self, fake_projects: Path, *, main_turn: dict, dispatch_turn: dict) -> dict:
+        """One code-review round: a standard opening turn that spawns a1, `main_turn`, then a closing user message.
+        Dispatch a1 holds `dispatch_turn`. Returns the round's entry priced with collect_tokens."""
+        session_jsonl = fake_projects / "sess-1.jsonl"
+        records = [
+            _priced(
+                "claude-sonnet-5", input=1000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            main_turn,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        _write_jsonl(session_jsonl, records)
+        _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [dispatch_turn])
+        windows = review_rounds.detect_round_windows(records)
+        record_branches = review_rounds._session_record_branches(records, windows)
+
+        entries = review_rounds._price_session_rounds(
+            session_jsonl, records, windows, record_branches, None, defaultdict(float), collect_tokens=True,
+        )
+
+        assert len(entries) == 1
+        return entries[0]
+
+    @pytest.mark.parametrize("non_string_model", [["claude-sonnet-5"], None], ids=["list", "none"])
+    def test_a_non_string_model_on_a_main_thread_turn_sums_under_the_empty_model(self, fake_projects, non_string_model):
+        main_turn = _priced("claude-sonnet-5", input=40, output=2, branch="feat", ts="2026-08-01T10:00:30.000Z")
+        main_turn["message"]["model"] = non_string_model
+
+        entry = self._collect_one_round_tokens(
+            fake_projects, main_turn=main_turn, dispatch_turn=_priced("claude-sonnet-5", input=300),
+        )
+
+        assert entry["tokens"] == {
+            "claude-sonnet-5": {"standard": _class_tokens(input=1300)},
+            "": {"standard": _class_tokens(input=40, output=2)},
+        }
+
+    @pytest.mark.parametrize("non_string_model", [["claude-sonnet-5"], None], ids=["list", "none"])
+    def test_a_non_string_model_on_a_dispatch_turn_sums_under_the_empty_model(self, fake_projects, non_string_model):
+        dispatch_turn = _priced("claude-sonnet-5", input=300, output=3)
+        dispatch_turn["message"]["model"] = non_string_model
+
+        entry = self._collect_one_round_tokens(
+            fake_projects,
+            main_turn=_priced("claude-sonnet-5", input=40, branch="feat", ts="2026-08-01T10:00:30.000Z"),
+            dispatch_turn=dispatch_turn,
+        )
+
+        assert entry["tokens"] == {
+            "claude-sonnet-5": {"standard": _class_tokens(input=1040)},
+            "": {"standard": _class_tokens(input=300, output=3)},
+        }
+
+    @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])
+    def test_a_malformed_usage_main_thread_turn_adds_no_tokens_and_is_counted_invalid(
+        self, fake_projects, malformed_input_tokens,
+    ):
+        malformed_turn = _malformed_usage_turn(
+            {"input_tokens": malformed_input_tokens}, ts="2026-08-01T10:00:30.000Z",
+        )
+
+        entry = self._collect_one_round_tokens(
+            fake_projects, main_turn=malformed_turn, dispatch_turn=_priced("claude-sonnet-5", input=300),
+        )
+
+        assert entry["tokens"] == {"claude-sonnet-5": {"standard": _class_tokens(input=1300)}}
+        assert entry["invalid_usage_records"] == 1
 
 
 class TestComputeReviewRoundCostsRoundKeys:

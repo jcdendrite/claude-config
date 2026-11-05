@@ -4169,6 +4169,32 @@ def test_routing_guard_section_cites_real_pr_cost_headings(pr_cost_heading: str)
     )
 
 
+@pytest.mark.parametrize(
+    ("target", "heading"),
+    [
+        ("docs/session-config-keys-log.md", "State at a transcript record"),
+        ("docs/session-config-keys-log.md", "Coverage"),
+        ("README.md", "Updating after git pull"),
+    ],
+)
+def test_routing_guard_section_cites_real_key_state_headings(target: str, heading: str) -> None:
+    """docs/transcript-analysis.md's `routing-guard` section cites the session
+    config-keys log's reader rules and `README.md` § "Updating after git pull"
+    for its key-state rules and next steps — each resolves to a real heading.
+
+    The section defers to the reader doc instead of restating its rules, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename there would otherwise orphan the pointer with no reader-visible
+    symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        target,
+        heading,
+        repo_root=REPO_ROOT,
+    )
+
+
 _SHOW_WITHHELD_BARRED_LIST_FILES = (
     ".claude/skills/code-review-claude-config/SKILL.md",
     "docs/private-project-redaction.md",

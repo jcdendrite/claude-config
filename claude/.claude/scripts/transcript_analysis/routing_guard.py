@@ -5,13 +5,16 @@ rate table current then. `docs/transcript-analysis.md` § "routing-guard" states
 
 OUTPUT INVARIANT, each clause pinned by the tests it names:
 - Free text (assistant and user message text, `Skill` and `Agent` arguments, denial text, a dispatch's meta description)
-  reaches neither a capture file nor stdout or stderr. Denial text is read only to classify a record.
-  `TestFreeText` in test_transcript_routing_guard_capture.py.
-  No line names a branch, a config-directory path or an account label. `_invoke_routing_guard` in
-  _routing_guard_helpers.py asserts, on every exit, that no note branch, note config-dir cell, absolute cell's final
-  path segment or `--config-dir` argument appears in either stream.
+  reaches no capture file, stdout or stderr. Denial text is read only to classify a record.
+  Pinned by `TestFreeText` in test_transcript_routing_guard_capture.py.
+- No line names a branch, a config-directory path or an account label. Pinned by `_invoke_routing_guard` in
+  _routing_guard_helpers.py, which asserts, on every exit, that no note branch, note config-dir cell, absolute cell's
+  final path segment or `--config-dir` argument appears in either stream.
 - A capture file stores `message.model` strings verbatim. Every other string it holds is a fixed label.
   `TestGoldenFile` there.
+- The session config-keys log is read for a row's session id, `logged_at` and key values. A session id and a
+  key value reach no capture file, stdout or stderr, and each key value reaches the file only as `on` or `off`.
+  Pinned by `TestKeyStateOutput` there.
 - A transcript `requestId` can reach stderr, and nothing else, through pricing.dedup_turns_by_request_id's rate-limited
   prints. The DO NOT PUBLISH banner covers it. `TestFreeText` there.
 - Compute writes no string read from a capture file, a model string included, to stdout, stderr or the `--out` file.
@@ -29,6 +32,8 @@ import json
 import math
 import os
 import random
+import re
+import stat
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -38,7 +43,17 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn
 
 import _config
-from transcript_analysis import author_outcome, corpus, denials, ledger_common, pricing, render, review_rounds, scope
+from transcript_analysis import (
+    author_outcome,
+    corpus,
+    denials,
+    ledger_common,
+    pricing,
+    render,
+    review_rounds,
+    scope,
+    session_pricing,
+)
 
 _COMMAND = "routing-guard"
 
@@ -70,12 +85,19 @@ _CAPTURE_TEMP_SUFFIX = ".tmp"
 _ROUTING_DENY_LABEL = "review-orchestrator routing"
 _WORKTREE_SLUG_INFIX = "--claude-worktrees-"
 
+_UNAUTHENTICATED_INPUTS_STATEMENT = (
+    "the key state behind PASSED and FAILED comes from log rows any process running as the account can write,"
+    " and compute reads capture files the account can write too, as it can the transcripts they were built from,"
+    " so those statuses rest on unauthenticated inputs"
+)
 _DO_NOT_PUBLISH_BANNER = (
     "DO NOT PUBLISH -- this output belongs to the owner alone.\n"
     "`docs/private-project-redaction.md` section \"A wider corpus goes to the owner, never into a public artifact\""
     " allows a public artifact to state only whether the guard passed and whether the default flipped.\n"
-    "Run and read routing-guard outside any agent session."
+    "Run and read routing-guard outside any agent session.\n"
+    f"Note that {_UNAUTHENTICATED_INPUTS_STATEMENT}."
 )
+_UNAUTHENTICATED_INPUTS_LINE = f"{_COMMAND}: {_UNAUTHENTICATED_INPUTS_STATEMENT}"
 
 _DROPPED_DENY_NOTICE = (
     f"{_COMMAND}: a routing-labeled denial whose tool_use is not in its session was not counted;"
@@ -83,22 +105,136 @@ _DROPPED_DENY_NOTICE = (
     ' see docs/transcript-analysis.md routing-guard "Deny reconciliation"'
 )
 
-_NOTE_COLUMN_COUNT = 5
-_ARM_ON = "on"
-_ARM_OFF = "off"
-_ARM_UNMERGED = "unmerged"
-_NOTE_ARMS = (_ARM_ON, _ARM_OFF, _ARM_UNMERGED)
-_PILOT_ON = "on"
-_PILOT_OFF = "off"
-_PILOT_NONE = "-"
-_PILOT_STATES = (_PILOT_ON, _PILOT_OFF)
+_NOTE_COLUMN_COUNT = 3
+_STATUS_MERGED = "merged"
+_STATUS_EXCLUDED = "excluded"
+_NOTE_STATUSES = (_STATUS_MERGED, _STATUS_EXCLUDED)
+_WRONG_COLUMN_COUNT_REASON = (
+    "the row needs three columns: config dir, branch and merged or excluded;"
+    " the arm and pilot columns are gone because the session config-keys log supplies them"
+)
+_UNKNOWN_STATUS_REASON = f"the third column must be {_STATUS_MERGED} or {_STATUS_EXCLUDED}"
+
+# The stored and derived state of a key. The routing key's state names the arm.
+_STATE_ON = "on"
+_STATE_OFF = "off"
+# A branch's state for a key when its rounds disagree, or when a round's state is unknown. Neither is stored,
+# because capture refuses such a branch.
+_STATE_MIXED = "mixed"
+_STATE_UNKNOWN = "unknown"
+# config-keys.psv keys, read from the session config-keys log. docs/session-config-keys-log.md § "Values" defines the tokens.
+_ROUTING_KEY = "review_orchestrator_routing"
+_ROUND2_PILOT_KEY = "round_consult_round2_pilot"
+_ARCHITECT_PILOT_KEY = "architect_fix_plan_pilot"
+_STATE_KEYS = (_ROUTING_KEY, _ROUND2_PILOT_KEY, _ARCHITECT_PILOT_KEY)
+_LOG_VALUE_OFF = "false"
+_LOG_VALUE_UNREADABLE = "unreadable"
 
 _REASON_NO_RECORDS = "no-records"
 _REASON_NO_COMPLETE_LOOP = "no-complete-loop"
 _REASON_ORCHESTRATOR_UNREADABLE = "orchestrator-unreadable"
+_REASON_KEY_STATE_UNKNOWN = "key-state-unknown"
+_REASON_KEY_STATE_MIXED = "key-state-mixed"
+_REASON_KEY_STATE_CONTRADICTED = "key-state-contradicted"
+
+# The causes of an unknown key state, in the order `_key_state_at` tests them.
+_CAUSE_ROUND_UNTIMED = "round-untimed"
+_CAUSE_LOG_UNUSABLE = "log-unusable"
+_CAUSE_LOST_EVENT = "lost-event"
+_CAUSE_BEFORE_RECORDER = "before-recorder"
+_CAUSE_HOOK_NOT_RUN = "hook-not-run"
+_CAUSE_UNREADABLE = "unreadable"
+_CAUSE_KEY_NOT_IN_ROW = "key-not-in-row"
+_CAUSES = (
+    _CAUSE_ROUND_UNTIMED,
+    _CAUSE_LOG_UNUSABLE,
+    _CAUSE_LOST_EVENT,
+    _CAUSE_BEFORE_RECORDER,
+    _CAUSE_HOOK_NOT_RUN,
+    _CAUSE_UNREADABLE,
+    _CAUSE_KEY_NOT_IN_ROW,
+)
+
+_LOG_FILE_NAME = ".session-config-keys-log.jsonl"
+# docs/session-config-keys-log.md § "Retention": a row for a harness-shaped session id is under this bound.
+_LOG_LINE_MAX_BYTES = 2048
+# One `readline` limit: the line bound plus its newline, so a line of exactly the bound is read whole.
+_LOG_LINE_READ_LIMIT = _LOG_LINE_MAX_BYTES + 1
+# docs/session-config-keys-log.md § "Joining a row to its transcript" and § "Rows" give the grammars.
+_LOG_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+_LOG_KEY_NAME_PATTERN = re.compile(r"[a-z0-9_]+")
+_LOG_TOKEN_PATTERN = re.compile(r"[a-z0-9_-]+")
+_LOG_LOGGED_AT_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+# docs/session-config-keys-log.md § "Coverage": the basename of the recorder in a hook attachment's `command`.
+_RECORDER_HOOK_BASENAME = "record-session-config-keys.sh"
+# The recorder's path is fixed whatever CLAUDE_CONFIG_DIR is, so README's `ls` check form does not apply to it.
+_RECORDER_HOOK_PATH = f"~/.claude/hooks/{_RECORDER_HOOK_BASENAME}"
+_HOOK_SUCCESS_ATTACHMENT_TYPE = "hook_success"
 
 _CONFIG_READER_NOTICE = (
     "routing-guard: the config reader reported a problem; its message is withheld because it can name a path"
+)
+_EARLIER_LAYOUT_NOTE = (
+    "the file uses the earlier layout; delete it and capture again while the branch's sessions are inside retention"
+)
+_LOG_UNUSABLE_NOTICE = (
+    f"{_COMMAND}: the session config-keys log is not a regular file this account owns, or cannot be read;"
+    " no key state was derived"
+)
+_HOOK_NOT_RUN_ON_ACCOUNT_LINE = (
+    f"{_COMMAND}: the session config-keys recorder has not run on this account; run the `ls` check in README.md"
+    f' § "Updating after git pull" on {_RECORDER_HOOK_PATH}'
+)
+_NO_KEY_OFF_ROW_LINE = (
+    f"{_COMMAND}: no row in the session config-keys log shows the routing key off,"
+    " so the key-off arm cannot be filled from existing branches"
+)
+_SKIPPED_LOG_LINES_LINE = f"{_COMMAND}: some lines of the session config-keys log were skipped as invalid"
+_FUTURE_SESSIONS_ONLY = "a fix helps future sessions only, so list the branch `excluded` for this run"
+# What the deny notice says in place of `_CAUSE_ROUND_UNTIMED`, whose next-step line explains a round, not a deny.
+_DENY_UNTIMED_PHRASE = "the deny has no parseable time or no session id"
+_NEXT_STEP_LINES = {
+    _CAUSE_BEFORE_RECORDER: (
+        f"{_COMMAND}: next step, {_CAUSE_BEFORE_RECORDER}: only a branch worked after the log began can be captured;"
+        " list the branch `excluded`"
+    ),
+    _CAUSE_HOOK_NOT_RUN: (
+        f"{_COMMAND}: next step, {_CAUSE_HOOK_NOT_RUN}: run the `ls` check in README.md"
+        f' § "Updating after git pull" on {_RECORDER_HOOK_PATH}, then read the usual causes in'
+        ' docs/session-config-keys-log.md § "Coverage"; a session that began before the log did can read'
+        f" {_CAUSE_HOOK_NOT_RUN} too, and either way {_FUTURE_SESSIONS_ONLY}"
+    ),
+    _CAUSE_LOST_EVENT: (
+        f"{_COMMAND}: next step, {_CAUSE_LOST_EVENT}: run the checks in docs/session-config-keys-log.md"
+        f' § "Notice"; {_FUTURE_SESSIONS_ONLY}'
+    ),
+    _CAUSE_LOG_UNUSABLE: (
+        f"{_COMMAND}: next step, {_CAUSE_LOG_UNUSABLE}: check that the log is a regular file the account owns"
+        " and can be read, then capture again"
+    ),
+    _CAUSE_ROUND_UNTIMED: (
+        f"{_COMMAND}: next step, {_CAUSE_ROUND_UNTIMED}: a round has no parseable time or no session id;"
+        " list the branch `excluded`"
+    ),
+    **{
+        reason: f"{_COMMAND}: next step, {reason}: list the branch `excluded`"
+        for reason in (_CAUSE_UNREADABLE, _CAUSE_KEY_NOT_IN_ROW, _REASON_KEY_STATE_MIXED, _REASON_KEY_STATE_CONTRADICTED)
+    },
+}
+_NEXT_ACTION_NO_MERGED_ROW = f"{_COMMAND}: next: wait for a post-recorder branch to merge, then list it `{_STATUS_MERGED}`"
+_NEXT_ACTION_ACT_ON_LINES = (
+    f"{_COMMAND}: next: act on the lines above, and list a row `{_STATUS_EXCLUDED}` when its cause is permanent for that branch"
+)
+_PRICING_DRIFT_REMEDY = (
+    "resolve the usage drift in pricing, then delete the capture file of every row published by a run that printed"
+    " the PRICING INTEGRITY line and capture those rows again while their sessions are inside retention,"
+    ' before running compute; see docs/transcript-analysis.md routing-guard "The captures directory"'
+)
+_NEXT_ACTION_RESOLVE_PRICING_DRIFT = f"{_COMMAND}: next: {_PRICING_DRIFT_REMEDY}"
+_NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT = f"{_NEXT_ACTION_ACT_ON_LINES}; and also: {_PRICING_DRIFT_REMEDY}"
+_NEXT_ACTION_CAPTURE_AGAIN = (
+    f"{_COMMAND}: next: capture again after the last sampled branch's sessions end,"
+    " then run compute once the note holds enough key-on files and each account has as many key-off files as key-on"
 )
 _PERMISSIVE_NOTE_NOTICE = "routing-guard: the note is readable by group or others; restrict it to the owner"
 _COMPUTE_CONFIG_DIR_MESSAGE = (
@@ -106,16 +242,18 @@ _COMPUTE_CONFIG_DIR_MESSAGE = (
     " the note names each config directory"
 )
 _OUT_WITH_CAPTURE_MESSAGE = "routing-guard: --out belongs to compute; drop --capture or drop --out"
+_EMPTY_OUT_MESSAGE = "routing-guard: --out is empty; pass a new path (compute only) or drop --out"
 _UNEXPECTED_ERROR_MESSAGE = "routing-guard: unexpected error; no traceback is printed because it can name a path or a branch"
 _PRICING_INTEGRITY_LINE = (
-    "routing-guard: PRICING INTEGRITY -- the transcript format may have drifted, so a captured row may be wrong;"
+    "routing-guard: PRICING INTEGRITY -- the transcript usage format may have drifted, so a captured row may be wrong;"
+    " this line reports usage drift only;"
     " read this run's stderr for the diagnostic"
 )
 
 # Every NOT RUN reason is fixed and digit-free. The tuple's order is the order they print in.
 _REASON_TOO_FEW_ON = "fewer key-on branches than the guard's minimum"
 _REASON_ACCOUNT_NOT_READY = (
-    "an account with key-on branches has its key off, a config fault, or no captures directory"
+    "an account with merged branches has its `pr_cost_recording` key off, a config fault, or no captures directory"
 )
 _REASON_FILE_MISSING = "a listed branch has no capture file at the current revision"
 _REASON_FILE_UNUSABLE = "a listed branch's capture file cannot be read or fails validation"
@@ -146,12 +284,15 @@ _OUT_PUBLISHED_NOTICE = (
     " and delete it once its figures are read"
 )
 _DEGRADED_NOTICES = {
-    arm: f"{_COMMAND}: some key-{arm} loops are degraded: a dispatch transcript was lost or a model has no price"
-    for arm in (_ARM_ON, _ARM_OFF)
+    arm: (
+        f"{_COMMAND}: some key-{arm} loops are degraded:"
+        " a dispatch transcript was lost, a turn had malformed usage or a model has no price"
+    )
+    for arm in (_STATE_ON, _STATE_OFF)
 }
 _UNDEFINED_REPLICATE_NOTICES = {
     arm: f"{_COMMAND}: some bootstrap replicates left the key-{arm} arm with no loop whose growth is defined"
-    for arm in (_ARM_ON, _ARM_OFF)
+    for arm in (_STATE_ON, _STATE_OFF)
 }
 
 # The speed and inference_geo values pricing._pricing_variant maps back to each label.
@@ -174,9 +315,7 @@ class _NoteRow(NamedTuple):
     line_no: int
     resolved_config_dir: Path
     branch: str
-    arm: str
-    round_consult_round2_pilot: str
-    architect_fix_plan_pilot: str
+    status: str
 
 
 class _InvalidCapture(Exception):
@@ -198,16 +337,26 @@ class _OptInOutcome(enum.Enum):
 
 
 class _StandingFile(enum.Enum):
-    """A captures-directory entry that gives no usable bytes: absent, or present but unreadable or invalid."""
+    """A captures-directory entry that gives no usable record: absent, or present but unreadable or invalid."""
 
     ABSENT = "absent"
     UNREADABLE = "unreadable"
+    INVALID = "invalid"
+    # A file of the earlier layout that held loops and no key states.
+    EARLIER_LAYOUT = "earlier layout"
+
+
+class _LogStatus(enum.Enum):
+    ABSENT = "absent"
+    READ = "read"
+    UNUSABLE = "unusable"
 
 
 class _RoundFacts(NamedTuple):
     """The derived facts one code-review round contributes. Never a raw record."""
 
     session_key: str
+    session_id: str | None
     open_idx: int
     open_ts: float | None
     has_marker_write: bool
@@ -231,25 +380,94 @@ class _Loop(NamedTuple):
     joined_denied_opens: int
 
 
+class _KeyStates(NamedTuple):
+    """A branch's derived state for each key `_STATE_KEYS` names, each `on` or `off`. Stored in the capture file."""
+
+    routing: str
+    round_consult_round2_pilot: str
+    architect_fix_plan_pilot: str
+
+
+# The short name each state carries in the per-row line.
+_STATE_LABELS = _KeyStates(
+    routing="routing", round_consult_round2_pilot="consult-pilot", architect_fix_plan_pilot="fix-plan-pilot",
+)
+
+
+class _CaptureRecord(NamedTuple):
+    """What a validated capture file holds."""
+
+    loops: list[dict]
+    states: _KeyStates
+
+
 class _BuiltRow(NamedTuple):
     text: str
     loops: list[_Loop]
+    states: _KeyStates
+
+
+class _KeyState(NamedTuple):
+    """One key's state at one instant: `state` is `on` or `off`, else None and `cause` names why it is unknown."""
+
+    state: str | None
+    cause: str | None
+
+
+class _BranchKeyStates(NamedTuple):
+    """Per key in `_STATE_KEYS`, a branch's state: `on`, `off`, `mixed` or `unknown`. `causes` is in `_CAUSES` order."""
+
+    by_key: dict[str, str]
+    causes: tuple[str, ...]
+
+
+class _WholeFailure(NamedTuple):
+    """Why a branch cannot be captured whole. `next_step_classes` are the `_NEXT_STEP_LINES` keys the reason calls for."""
+
+    reason: str
+    next_step_classes: frozenset[str]
 
 
 class _DenyFact(NamedTuple):
     branch: str
     ts: float | None
+    session_id: str | None
 
 
 class _DenyReconciliation(NamedTuple):
     refusals: list[str]
     notices: list[str]
+    contradicted_line_nos: set[int]
+
+
+class _LogRow(NamedTuple):
+    logged_at: float
+    keys: dict[str, str]
+
+
+@dataclass
+class _SessionConfigKeysLog:
+    """The valid rows of the session config-keys log for the scanned sessions, in file order, and the account-wide facts."""
+
+    status: _LogStatus
+    rows_by_session: dict[str, list[_LogRow]] = field(default_factory=dict)
+    earliest_logged_at: float | None = None
+    routing_off_seen: bool = False
+    skipped_lines: bool = False
+
+
+@dataclass
+class _RecorderEvents:
+    """The earliest time of one session's recorder hook attachments, and the times of those that are lost events."""
+
+    earliest_attachment_time: float | None = None
+    lost_event_times: list[float] = field(default_factory=list)
 
 
 @dataclass
 class _BranchFacts:
     has_timestamped_record: bool = False
-    last_record_ts: float | None = None
+    first_record_ts: float | None = None
     orchestrator_unreadable: bool = False
 
 
@@ -259,6 +477,7 @@ class _ScanFacts:
     rounds_by_branch: dict[str, list[_RoundFacts]] = field(default_factory=dict)
     denies: list[_DenyFact] = field(default_factory=list)
     seen_deny_ids: set[str] = field(default_factory=set)
+    recorder_events: dict[str, _RecorderEvents] = field(default_factory=dict)
     dropped_deny_without_tool_use: bool = False
 
 
@@ -294,16 +513,8 @@ def _resolve_note_config_dir(config_dir: Path, line_no: int) -> Path:
         raise _NoteRefusal(line_no, "the config directory cannot be resolved") from None
 
 
-def _validate_note_arm_and_pilots(line_no: int, arm: str, round2_pilot: str, architect_pilot: str) -> None:
-    if arm not in _NOTE_ARMS:
-        raise _NoteRefusal(line_no, "unknown arm value")
-    allowed_pilots = (_PILOT_NONE,) if arm == _ARM_UNMERGED else _PILOT_STATES
-    if round2_pilot not in allowed_pilots or architect_pilot not in allowed_pilots:
-        raise _NoteRefusal(line_no, "unknown pilot value")
-
-
 def _parse_note(text: str) -> list[_NoteRow]:
-    """The note's rows, one per tab-separated line: config dir, branch, arm and the two pilot states.
+    """The note's rows, one per tab-separated line: config dir, branch and `merged` or `excluded`.
 
     A `#` line and a blank line are skipped and a trailing `\\r` is dropped. Cells are not trimmed.
     Raises _NoteRefusal for the first bad line.
@@ -316,19 +527,20 @@ def _parse_note(text: str) -> list[_NoteRow]:
             continue
         cells = line.split("\t")
         if len(cells) != _NOTE_COLUMN_COUNT:
-            raise _NoteRefusal(line_no, "wrong column count")
-        config_cell, branch, arm, round2_pilot, architect_pilot = cells
+            raise _NoteRefusal(line_no, _WRONG_COLUMN_COUNT_REASON)
+        config_cell, branch, status = cells
         config_dir = _expand_note_config_dir(config_cell, line_no)
         resolved_config_dir = _resolve_note_config_dir(config_dir, line_no)
         if not branch or branch != branch.strip():
             raise _NoteRefusal(line_no, "unknown branch value")
-        _validate_note_arm_and_pilots(line_no, arm, round2_pilot, architect_pilot)
+        if status not in _NOTE_STATUSES:
+            raise _NoteRefusal(line_no, _UNKNOWN_STATUS_REASON)
         if branch in scope._DEFAULT_BRANCH_CANDIDATES:
             raise _NoteRefusal(line_no, "the branch is a default-branch name")
         if branch in seen_branches:
             raise _NoteRefusal(line_no, "the branch is listed twice")
         seen_branches.add(branch)
-        rows.append(_NoteRow(line_no, resolved_config_dir, branch, arm, round2_pilot, architect_pilot))
+        rows.append(_NoteRow(line_no, resolved_config_dir, branch, status))
     return rows
 
 
@@ -437,6 +649,12 @@ def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+_REASON_NOT_AN_OBJECT = "the file is not a JSON object"
+_REASON_EARLIER_LAYOUT = "the file holds loops and no key states"
+_REASON_WRONG_KEYS = "the file does not hold exactly the loops and the three key states"
+_REASON_KEY_STATE_VALUE = "a key state is neither on nor off"
+
+
 def _validate_overhead_tokens(overhead_tokens: object) -> None:
     if not isinstance(overhead_tokens, dict):
         raise _InvalidCapture("overhead_tokens is not an object")
@@ -469,10 +687,11 @@ def _validate_loop(loop: object) -> None:
         raise _InvalidCapture("degraded is not a boolean")
 
 
-def _parse_capture_bytes(data: bytes) -> list[dict]:
-    """The loops of one capture file's bytes, or _InvalidCapture with a fixed reason that never echoes a cell.
+def _parse_capture_bytes(data: bytes) -> _CaptureRecord:
+    """The loops and the three key states of one capture file's bytes, or _InvalidCapture with a fixed reason.
 
-    Shared by every reader and writer of a capture file, so a file is checked the same way on every path.
+    Shared by every reader and writer of a capture file, so a file is checked the same way on every path. The
+    reason never echoes a cell.
     """
     try:
         text = data.decode("utf-8")
@@ -483,17 +702,24 @@ def _parse_capture_bytes(data: bytes) -> list[dict]:
     except (ValueError, RecursionError):
         # ValueError covers invalid JSON, a duplicate key, a non-finite number and an integer past Python's digit limit.
         raise _InvalidCapture("not valid JSON") from None
-    if not isinstance(parsed, dict) or set(parsed) != {"loops"}:
-        raise _InvalidCapture("the file is not an object holding only loops")
+    if not isinstance(parsed, dict):
+        raise _InvalidCapture(_REASON_NOT_AN_OBJECT)
+    if set(parsed) == {"loops"}:
+        raise _InvalidCapture(_REASON_EARLIER_LAYOUT)
+    if set(parsed) != {"loops", *_KeyStates._fields}:
+        raise _InvalidCapture(_REASON_WRONG_KEYS)
+    for field_name in _KeyStates._fields:
+        if parsed[field_name] not in (_STATE_ON, _STATE_OFF):
+            raise _InvalidCapture(_REASON_KEY_STATE_VALUE)
     loops = parsed["loops"]
     if not isinstance(loops, list) or not loops:
         raise _InvalidCapture("loops is not a non-empty list")
     for loop in loops:
         _validate_loop(loop)
-    return loops
+    return _CaptureRecord(loops, _KeyStates(*(parsed[field_name] for field_name in _KeyStates._fields)))
 
 
-def _serialize_loops(loops: Sequence[_Loop]) -> str:
+def _serialize_capture(loops: Sequence[_Loop], states: _KeyStates) -> str:
     """The capture file text. ASCII-only, so it encodes the same under any locale."""
     return json.dumps(
         {
@@ -506,6 +732,7 @@ def _serialize_loops(loops: Sequence[_Loop]) -> str:
                 }
                 for loop in loops
             ],
+            **states._asdict(),
         },
         sort_keys=True, allow_nan=False,
     )
@@ -524,6 +751,248 @@ def _read_standing_capture(path: Path) -> bytes | _StandingFile:
             return handle.read()
     except OSError:
         return _StandingFile.UNREADABLE
+
+
+def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
+    """The validated record of the capture file at `path`, or why there is none.
+
+    ABSENT means the name does not exist. A file that opens but fails the validator is INVALID, or
+    EARLIER_LAYOUT when it holds loops and no key states.
+    """
+    standing = _read_standing_capture(path)
+    if isinstance(standing, _StandingFile):
+        return standing
+    try:
+        return _parse_capture_bytes(standing)
+    except _InvalidCapture as invalid:
+        return _StandingFile.EARLIER_LAYOUT if invalid.reason == _REASON_EARLIER_LAYOUT else _StandingFile.INVALID
+
+
+# --- the session config-keys log -----------------------------------------------
+#
+# docs/session-config-keys-log.md states the reader rules (§ "Rows", § "Values", § "State at a transcript record",
+# § "Coverage"). The functions below apply them and add only the choices their docstrings name.
+
+
+def _discard_rest_of_line(handle, remaining: int) -> int:
+    """Drop the rest of an over-long line without holding it. Returns the bytes still allowed."""
+    while remaining > 0:
+        chunk = handle.readline(min(_LOG_LINE_READ_LIMIT, remaining))
+        remaining -= len(chunk)
+        if not chunk or chunk.endswith(b"\n"):
+            break
+    return remaining
+
+
+def _is_valid_log_token(value: object, pattern: re.Pattern[str]) -> bool:
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _valid_log_row(parsed: object) -> tuple[str, _LogRow] | None:
+    """(session id, row) for a parsed line that passes the reader doc's row validation, else None."""
+    if not isinstance(parsed, dict):
+        return None
+    session_id = parsed.get("session_id")
+    keys = parsed.get("keys")
+    if (
+        not _is_valid_log_token(session_id, _LOG_SESSION_ID_PATTERN)
+        or not _is_valid_log_token(parsed.get("source"), _LOG_TOKEN_PATTERN)
+        or not _is_valid_log_token(parsed.get("logged_at"), _LOG_LOGGED_AT_PATTERN)
+        or not isinstance(keys, dict)
+    ):
+        return None
+    if not all(
+        _is_valid_log_token(name, _LOG_KEY_NAME_PATTERN) and _is_valid_log_token(value, _LOG_TOKEN_PATTERN)
+        for name, value in keys.items()
+    ):
+        return None
+    logged_at = corpus._parse_ts(parsed["logged_at"])
+    if logged_at is None:
+        return None
+    return session_id, _LogRow(logged_at, keys)
+
+
+def _parse_log_line(line: bytes) -> tuple[str, _LogRow] | None:
+    try:
+        parsed = json.loads(line.decode("utf-8"))
+    except (ValueError, RecursionError, TypeError):
+        # ValueError covers a bad UTF-8 byte and invalid JSON. RecursionError covers nesting past the recursion limit.
+        return None
+    return _valid_log_row(parsed)
+
+
+def _read_session_config_keys_log(path: Path, wanted_session_ids: Collection[str]) -> _SessionConfigKeysLog:
+    """The log's rows for `wanted_session_ids`, with the account-wide facts, streamed once.
+
+    A missing file is ABSENT. Any other failure to open it safely, a non-regular or foreign-owned file included,
+    is UNUSABLE. The read stops at the size `fstat` reports and never holds an over-long line.
+    A blank line is no row and is not counted as skipped, because the recorder starts every append with one.
+    The log has a writer other than this tool, the recorder hook, so its file type and content are not this tool's to assume.
+    The capture store has this tool as its only intended writer, so its reader keeps the lighter open.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return _SessionConfigKeysLog(_LogStatus.ABSENT)
+    except OSError:
+        return _SessionConfigKeysLog(_LogStatus.UNUSABLE)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            return _SessionConfigKeysLog(_LogStatus.UNUSABLE)
+        log = _SessionConfigKeysLog(_LogStatus.READ)
+        remaining = info.st_size
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            while remaining > 0:
+                line = handle.readline(min(_LOG_LINE_READ_LIMIT, remaining))
+                if not line:
+                    break
+                remaining -= len(line)
+                if len(line) > _LOG_LINE_MAX_BYTES and not line.endswith(b"\n"):
+                    log.skipped_lines = True
+                    remaining = _discard_rest_of_line(handle, remaining)
+                    continue
+                if not line.strip():
+                    continue
+                found = _parse_log_line(line)
+                if found is None:
+                    log.skipped_lines = True
+                    continue
+                session_id, row = found
+                if log.earliest_logged_at is None or row.logged_at < log.earliest_logged_at:
+                    log.earliest_logged_at = row.logged_at
+                if row.keys.get(_ROUTING_KEY) == _LOG_VALUE_OFF:
+                    log.routing_off_seen = True
+                # Rows per scanned session are not capped; a real log holds a few per session.
+                if session_id in wanted_session_ids:
+                    log.rows_by_session.setdefault(session_id, []).append(row)
+        return log
+    except OSError:
+        return _SessionConfigKeysLog(_LogStatus.UNUSABLE)
+    finally:
+        os.close(fd)
+
+
+def _recorder_attachment(rec: dict) -> tuple[str, float, bool] | None:
+    """(session id, time, whether it is a lost event) for a main-thread recorder hook attachment, else None.
+
+    docs/session-config-keys-log.md § "Coverage" defines a lost event as such an attachment with a non-empty `stdout`.
+    A record whose `stdout` or `timestamp` is not a usable string is skipped.
+    """
+    if rec.get("type") != "attachment" or rec.get("isSidechain"):
+        return None
+    attachment = rec.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != _HOOK_SUCCESS_ATTACHMENT_TYPE:
+        return None
+    command = attachment.get("command")
+    if not isinstance(command, str) or command.rsplit("/", 1)[-1] != _RECORDER_HOOK_BASENAME:
+        return None
+    session_id, stdout, timestamp = rec.get("sessionId"), attachment.get("stdout"), rec.get("timestamp")
+    if not (isinstance(session_id, str) and session_id and isinstance(stdout, str) and isinstance(timestamp, str)):
+        return None
+    ts = corpus._parse_ts(timestamp)
+    if ts is None:
+        return None
+    return session_id, ts, stdout != ""
+
+
+def _coverage_start(log: _SessionConfigKeysLog, recorder_events: Mapping[str, _RecorderEvents]) -> float | None:
+    """The reader doc's coverage start, narrowed to this repo's sessions when it falls back to attachments."""
+    if log.earliest_logged_at is not None:
+        return log.earliest_logged_at
+    return _earliest_ts(events.earliest_attachment_time for events in recorder_events.values())
+
+
+def _lost_event_hides(round_ts: float, session_rows: Sequence[_LogRow], lost_event_times: Sequence[float]) -> bool:
+    """Whether a lost event at or before the round has no row after it.
+
+    `logged_at` is floored, so a row follows an event only past the event's whole second.
+    """
+    return any(
+        not any(math.floor(event_ts) < row.logged_at <= round_ts for row in session_rows)
+        for event_ts in lost_event_times
+        if event_ts <= round_ts
+    )
+
+
+class _RoundRow(NamedTuple):
+    """What the log gives every key at one round: the row taken, else the cause that leaves every key unknown."""
+
+    row: _LogRow | None
+    cause: str | None
+
+
+def _round_row_at(
+    session_id: str | None, at_ts: float | None, log: _SessionConfigKeysLog,
+    recorder_events: Mapping[str, _RecorderEvents], coverage_start: float | None,
+) -> _RoundRow:
+    """The row of `session_id` in force at `at_ts`, or the first key-independent cause in `_CAUSES` order."""
+    if at_ts is None or not session_id:
+        return _RoundRow(None, _CAUSE_ROUND_UNTIMED)
+    if log.status is _LogStatus.UNUSABLE:
+        return _RoundRow(None, _CAUSE_LOG_UNUSABLE)
+    session_rows = log.rows_by_session.get(session_id, [])
+    events = recorder_events.get(session_id)
+    if events is not None and _lost_event_hides(at_ts, session_rows, events.lost_event_times):
+        return _RoundRow(None, _CAUSE_LOST_EVENT)
+    taken: _LogRow | None = None
+    for row in session_rows:
+        # A later line wins a tie, and a later line with an earlier `logged_at` does not displace the later row.
+        if row.logged_at <= at_ts and (taken is None or row.logged_at >= taken.logged_at):
+            taken = row
+    if taken is None:
+        if coverage_start is not None and at_ts < coverage_start:
+            return _RoundRow(None, _CAUSE_BEFORE_RECORDER)
+        return _RoundRow(None, _CAUSE_HOOK_NOT_RUN)
+    return _RoundRow(taken, None)
+
+
+def _key_state_in_round_row(key: str, round_row: _RoundRow) -> _KeyState:
+    if round_row.row is None:
+        return _KeyState(None, round_row.cause)
+    value = round_row.row.keys.get(key)
+    if value is None:
+        return _KeyState(None, _CAUSE_KEY_NOT_IN_ROW)
+    if value == _LOG_VALUE_UNREADABLE:
+        return _KeyState(None, _CAUSE_UNREADABLE)
+    return _KeyState(_STATE_OFF if value == _LOG_VALUE_OFF else _STATE_ON, None)
+
+
+def _key_state_at(
+    key: str, session_id: str | None, at_ts: float | None, log: _SessionConfigKeysLog,
+    recorder_events: Mapping[str, _RecorderEvents], coverage_start: float | None,
+) -> _KeyState:
+    """`key`'s state in `session_id` at `at_ts`, or the first cause in `_CAUSES` order that leaves it unknown.
+
+    One function returns the state or the cause, so the two cannot disagree.
+    """
+    return _key_state_in_round_row(key, _round_row_at(session_id, at_ts, log, recorder_events, coverage_start))
+
+
+def _branch_key_states(
+    rounds: Sequence[_RoundFacts], log: _SessionConfigKeysLog, recorder_events: Mapping[str, _RecorderEvents],
+    coverage_start: float | None,
+) -> _BranchKeyStates:
+    """Each key's state over `rounds`, the rounds of a branch's loops: unknown, else mixed, else the one value.
+
+    The causes cover every unknown key, in `_CAUSES` order.
+    """
+    round_rows = [
+        _round_row_at(round_facts.session_id, round_facts.open_ts, log, recorder_events, coverage_start)
+        for round_facts in rounds
+    ]
+    by_key: dict[str, str] = {}
+    causes: set[str] = set()
+    for key in _STATE_KEYS:
+        results = [_key_state_in_round_row(key, round_row) for round_row in round_rows]
+        key_causes = {result.cause for result in results if result.cause is not None}
+        if key_causes:
+            by_key[key] = _STATE_UNKNOWN
+            causes |= key_causes
+            continue
+        states = {result.state for result in results}
+        by_key[key] = _STATE_MIXED if len(states) > 1 else next(iter(states), _STATE_UNKNOWN)
+    return _BranchKeyStates(by_key, tuple(cause for cause in _CAUSES if cause in causes))
 
 
 # --- scanning ----------------------------------------------------------------
@@ -551,31 +1020,19 @@ def _capture_scope(root: Path, scan_gaps: Counter[str]) -> _CaptureScope:
 
 
 def _main_thread_turns(records: list[dict]) -> list[tuple[int, str, int]]:
-    """(record index, model, context) for each main-thread assistant turn with usage, a `<synthetic>` record excluded."""
+    """(record index, model, context) for each main-thread assistant turn with valid usage, a `<synthetic>` record excluded."""
     turns: list[tuple[int, str, int]] = []
     for idx, rec in enumerate(records):
         if rec.get("type") != "assistant" or rec.get("isSidechain"):
             continue
-        message = rec.get("message") or {}
-        usage = message.get("usage")
-        if not usage:
+        usage = (rec.get("message") or {}).get("usage")
+        if not usage or session_pricing._usage_is_invalid(usage):
             continue
-        model = message.get("model")
-        model = model if isinstance(model, str) else ""
+        model = review_rounds._turn_model(rec)
         if model == pricing._SYNTHETIC_MODEL_ID:
             continue
         turns.append((idx, model, pricing._context_at_turn(usage)))
     return turns
-
-
-def _nest_token_sink(token_sink: Mapping[tuple[str, str], Mapping[str, int]]) -> dict[str, dict[str, dict[str, int]]]:
-    nested: dict[str, dict[str, dict[str, int]]] = {}
-    for (model, variant), counts in token_sink.items():
-        # A None model and an empty model name share one stored key, so their counts add.
-        target = nested.setdefault(model if isinstance(model, str) else "", {}).setdefault(variant, {})
-        for token_class, tokens in counts.items():
-            target[token_class] = target.get(token_class, 0) + tokens
-    return nested
 
 
 def _hook_denials_in_record(rec: dict) -> Iterable[tuple[str, str, str]]:
@@ -626,15 +1083,19 @@ def _main_thread_tool_use_ids(records: list[dict]) -> tuple[set[str], set[str]]:
     return tool_use_ids, code_review_skill_ids
 
 
+def _record_session_id(rec: dict) -> str | None:
+    """The record's `sessionId`, else None. It is the join key to the session config-keys log."""
+    session_id = rec.get("sessionId")
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
 def _record_routing_denies(scan: _ScanFacts, records: list[dict], record_branches: list[str]) -> set[str]:
     """Add this session's routing-gate denies to `scan`, deduped by non-empty tool_use_id, and return those ids.
 
-    A tool_use_id that is not a string counts as empty.
-
-    A deny the harness attests with a `hookName` counts as it stands. A deny identified only by its text
-    signature counts only when its tool_use_id is a `Skill(code-review)` tool_use of the same session, so an
-    ordinary tool error that carries the gate's wording does not. A dropped one whose id matches no tool_use of
-    the session sets `scan.dropped_deny_without_tool_use`, because the deny may be real with its tool_use elsewhere.
+    A tool_use_id that is not a string counts as empty. A deny identified only by its text signature counts
+    only when its id joins a `Skill(code-review)` tool_use of the same session, so an ordinary tool error that
+    carries the gate's wording does not. When that rule drops a deny whose id matches no tool_use of the session,
+    `scan.dropped_deny_without_tool_use` is set, because the deny may be real with its tool_use elsewhere.
     """
     tool_use_ids, code_review_skill_ids = _main_thread_tool_use_ids(records)
     denied_tool_use_ids: set[str] = set()
@@ -655,7 +1116,9 @@ def _record_routing_denies(scan: _ScanFacts, records: list[dict], record_branche
                 if tool_use_id in scan.seen_deny_ids:
                     continue
                 scan.seen_deny_ids.add(tool_use_id)
-            scan.denies.append(_DenyFact(record_branches[idx], corpus._parse_ts(rec.get("timestamp"))))
+            scan.denies.append(_DenyFact(
+                record_branches[idx], corpus._parse_ts(rec.get("timestamp")), _record_session_id(rec),
+            ))
     return denied_tool_use_ids
 
 
@@ -669,8 +1132,22 @@ def _record_branch_activity(scan: _ScanFacts, records: list[dict], record_branch
         if ts is None:
             continue
         facts.has_timestamped_record = True
-        if facts.last_record_ts is None or ts > facts.last_record_ts:
-            facts.last_record_ts = ts
+        if facts.first_record_ts is None or ts < facts.first_record_ts:
+            facts.first_record_ts = ts
+
+
+def _record_recorder_events(scan: _ScanFacts, records: list[dict]) -> None:
+    """Pool this session's recorder hook attachment times per `sessionId`, whichever file they came from."""
+    for rec in records:
+        found = _recorder_attachment(rec)
+        if found is None:
+            continue
+        session_id, ts, is_lost_event = found
+        events = scan.recorder_events.setdefault(session_id, _RecorderEvents())
+        if events.earliest_attachment_time is None or ts < events.earliest_attachment_time:
+            events.earliest_attachment_time = ts
+        if is_lost_event:
+            events.lost_event_times.append(ts)
 
 
 def _opens_with_denied_skill(rec: dict, denied_tool_use_ids: Collection[str]) -> bool:
@@ -687,6 +1164,7 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
     windows = review_rounds.detect_round_windows(records)
     record_branches = review_rounds._session_record_branches(records, windows)
     _record_branch_activity(scan, records, record_branches)
+    _record_recorder_events(scan, records)
     denied_tool_use_ids = _record_routing_denies(scan, records, record_branches)
     code_review_spans = dict(author_outcome._code_review_rounds(records))
     if not code_review_spans:
@@ -723,6 +1201,7 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
         open_rec = records[open_idx]
         scan.rounds_by_branch.setdefault(branch, []).append(_RoundFacts(
             session_key=session_key,
+            session_id=_record_session_id(open_rec),
             open_idx=open_idx,
             open_ts=corpus._parse_ts(entry["ts"]),
             has_marker_write=author_outcome._round_has_marker_write(
@@ -731,8 +1210,8 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
             context_at_open=turns[open_turn][2] if open_turn < len(turns) else None,
             context_at_window_end=turns[end_turn][2] if end_turn < len(turns) else None,
             later_turns=dict(Counter(model for _idx, model in outside_turns[first_later:])),
-            overhead_tokens=_nest_token_sink(entry["tokens"]),
-            degraded=entry["dangling"] > 0,
+            overhead_tokens=entry["tokens"],
+            degraded=entry["dangling"] > 0 or entry["invalid_usage_records"] > 0,
             denied_open=_opens_with_denied_skill(open_rec, denied_tool_use_ids),
             spawn_open=review_rounds.round_opened_by_spawn(open_rec),
         ))
@@ -757,14 +1236,26 @@ def _scan_sessions(root: Path, capture_scope: _CaptureScope, scan_gaps: Counter[
 # --- loops and the whole verdict ---------------------------------------------
 
 
-def _whole_reason(branch_facts: _BranchFacts | None, rounds: Sequence[_RoundFacts]) -> str | None:
-    """Why a branch cannot be captured whole, or None when it can. The first failing condition names the reason."""
+def _whole_failure(
+    branch_facts: _BranchFacts | None, rounds: Sequence[_RoundFacts], key_states: _BranchKeyStates,
+) -> _WholeFailure | None:
+    """Why a branch cannot be captured whole, or None when it can. The first failing condition names the reason.
+
+    `key_states` covers the rounds of the branch's loops, so a branch with no complete loop is refused before it is read.
+    The contradiction between a deny and the log (`key-state-contradicted`) is a deny reconciliation outcome.
+    """
     if branch_facts is None or not branch_facts.has_timestamped_record:
-        return _REASON_NO_RECORDS
+        return _WholeFailure(_REASON_NO_RECORDS, frozenset())
     if not any(round_facts.has_marker_write for round_facts in rounds):
-        return _REASON_NO_COMPLETE_LOOP
+        return _WholeFailure(_REASON_NO_COMPLETE_LOOP, frozenset())
     if branch_facts.orchestrator_unreadable:
-        return _REASON_ORCHESTRATOR_UNREADABLE
+        return _WholeFailure(_REASON_ORCHESTRATOR_UNREADABLE, frozenset())
+    if _STATE_UNKNOWN in key_states.by_key.values():
+        return _WholeFailure(
+            f"{_REASON_KEY_STATE_UNKNOWN}: {', '.join(key_states.causes)}", frozenset(key_states.causes),
+        )
+    if _STATE_MIXED in key_states.by_key.values():
+        return _WholeFailure(_REASON_KEY_STATE_MIXED, frozenset({_REASON_KEY_STATE_MIXED}))
     return None
 
 
@@ -801,42 +1292,67 @@ def _joined_denied_opens(rounds: Sequence[_RoundFacts]) -> int:
     )
 
 
-def _assemble_loops(rounds: Sequence[_RoundFacts]) -> list[_Loop]:
-    """A branch's loops: each is the run of rounds up to and including the first one whose span writes the marker.
+def _loop_groups(rounds: Sequence[_RoundFacts]) -> list[list[_RoundFacts]]:
+    """A branch's loops as groups of rounds: each runs up to and including the first round whose span writes the marker.
 
     Rounds sort by open time, session path and open index, the order compute_review_round_costs uses.
     Rounds after the last marker write belong to no loop and are dropped.
     """
-    loops: list[_Loop] = []
+    groups: list[list[_RoundFacts]] = []
     open_loop: list[_RoundFacts] = []
     for round_facts in sorted(rounds, key=_round_sort_key):
         open_loop.append(round_facts)
-        if not round_facts.has_marker_write:
-            continue
-        loops.append(_Loop(
-            overhead_tokens=_merge_overhead_tokens(open_loop),
-            growth_tokens=_loop_growth_tokens(open_loop[0], open_loop[-1]),
-            later_turns=dict(round_facts.later_turns),
-            degraded=any(member.degraded for member in open_loop),
-            round_count=len(open_loop),
-            joined_denied_opens=_joined_denied_opens(open_loop),
-        ))
-        open_loop = []
-    return loops
+        if round_facts.has_marker_write:
+            groups.append(open_loop)
+            open_loop = []
+    return groups
 
 
-def _build_row(rounds: Sequence[_RoundFacts]) -> _BuiltRow:
+def _rounds_in_loops(rounds: Sequence[_RoundFacts]) -> list[_RoundFacts]:
+    return [round_facts for group in _loop_groups(rounds) for round_facts in group]
+
+
+def _assemble_loops(rounds: Sequence[_RoundFacts]) -> list[_Loop]:
+    """A branch's loops, built from the groups `_loop_groups` finds."""
+    return [
+        _Loop(
+            overhead_tokens=_merge_overhead_tokens(group),
+            growth_tokens=_loop_growth_tokens(group[0], group[-1]),
+            later_turns=dict(group[-1].later_turns),
+            degraded=any(member.degraded for member in group),
+            round_count=len(group),
+            joined_denied_opens=_joined_denied_opens(group),
+        )
+        for group in _loop_groups(rounds)
+    ]
+
+
+def _build_row(rounds: Sequence[_RoundFacts], key_states: _BranchKeyStates) -> _BuiltRow:
+    """The row for a branch whose key states are all `on` or `off`."""
     loops = _assemble_loops(rounds)
-    return _BuiltRow(_serialize_loops(loops), loops)
+    states = _KeyStates(
+        routing=key_states.by_key[_ROUTING_KEY],
+        round_consult_round2_pilot=key_states.by_key[_ROUND2_PILOT_KEY],
+        architect_fix_plan_pilot=key_states.by_key[_ARCHITECT_PILOT_KEY],
+    )
+    return _BuiltRow(_serialize_capture(loops, states), loops, states)
 
 
 # --- deny reconciliation -----------------------------------------------------
 
 
-def _utc_minute(ts: float | None) -> str:
+def _utc_text(ts: float | None, pattern: str, unknown: str) -> str:
+    """`ts` formatted in UTC, or `unknown` when there is none or UTC conversion leaves `datetime`'s year range."""
     if ts is None:
-        return "an unknown time"
-    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+        return unknown
+    try:
+        return datetime.fromtimestamp(ts, tz=UTC).strftime(pattern)
+    except (ValueError, OverflowError, OSError):
+        return unknown
+
+
+def _utc_minute(ts: float | None) -> str:
+    return _utc_text(ts, "%Y-%m-%d %H:%M UTC", "an unknown time")
 
 
 def _earliest_ts(timestamps: Iterable[float | None]) -> float | None:
@@ -846,37 +1362,60 @@ def _earliest_ts(timestamps: Iterable[float | None]) -> float | None:
 
 def _reconcile_denies(
     denies: Sequence[_DenyFact],
+    deny_routing_states: Sequence[_KeyState],
     note_rows: Sequence[_NoteRow],
     account_config_dir: Path,
     built_line_nos: Collection[int],
     branch_facts: Mapping[str, _BranchFacts],
+    routing_by_line: Mapping[int, str],
 ) -> _DenyReconciliation:
     """Check this root's routing-gate denies against the note, so an unlisted branch with a deny here cannot shrink an arm.
 
-    A deny on an off row of this account, or on a branch the note does not list, is a refusal.
-    A deny on a branch listed for another config dir is not, because no note edit could clear it.
-    The two row notices fire only for rows in `built_line_nos`, the rows this run builds.
+    `deny_routing_states` is parallel to `denies`. `routing_by_line` holds each merged row's routing state, derived
+    this run for a row in `built_line_nos` and read from its standing file otherwise. The log never excuses a deny.
+    A deny on a branch listed for another config dir is a notice, because no note edit could clear a refusal.
     """
     rows_by_branch = {row.branch: row for row in note_rows}
     refusals: list[str] = []
     notices: list[str] = []
+    contradicted_line_nos = {
+        row.line_no
+        for deny, deny_state in zip(denies, deny_routing_states, strict=True)
+        if deny_state.state == _STATE_OFF
+        and (row := rows_by_branch.get(deny.branch)) is not None
+        and row.resolved_config_dir == account_config_dir
+        and row.status == _STATUS_MERGED
+        and row.line_no in built_line_nos
+    }
     denied_branches = {deny.branch for deny in denies}
     if any(not deny.branch or deny.branch in scope._DEFAULT_BRANCH_CANDIDATES for deny in denies):
         notices.append(f"{_COMMAND}: a routing deny on an empty or default-branch name cannot belong to a sampled branch")
 
-    refused_off_rows: set[int] = set()
     unlisted_branches: dict[str, float | None] = {}
-    for deny in denies:
+    unknown_state_noticed: set[int] = set()
+    routing_off_noticed: set[int] = set()
+    for deny, deny_state in zip(denies, deny_routing_states, strict=True):
         row = rows_by_branch.get(deny.branch)
         if row is None:
             if deny.branch and deny.branch not in scope._DEFAULT_BRANCH_CANDIDATES and deny.branch not in unlisted_branches:
                 unlisted_branches[deny.branch] = _earliest_ts(d.ts for d in denies if d.branch == deny.branch)
-        elif row.resolved_config_dir == account_config_dir and row.arm == _ARM_OFF and row.line_no not in refused_off_rows:
-            refused_off_rows.add(row.line_no)
-            refusals.append(
-                f"{_COMMAND}: note line {row.line_no} is listed off but this root holds a routing deny for it;"
-                " the branch was worked with the key on;"
-                ' see docs/transcript-analysis.md routing-guard "Deny reconciliation" for the sanctioned note edit'
+            continue
+        if row.resolved_config_dir != account_config_dir or row.status != _STATUS_MERGED:
+            continue
+        if deny_state.state is None and row.line_no not in unknown_state_noticed:
+            unknown_state_noticed.add(row.line_no)
+            cause_text = _DENY_UNTIMED_PHRASE if deny_state.cause == _CAUSE_ROUND_UNTIMED else deny_state.cause
+            notices.append(
+                f"{_COMMAND}: note line {row.line_no} holds a routing deny, but the log leaves the routing state"
+                f" at that deny unknown ({cause_text})"
+            )
+        if (
+            routing_by_line.get(row.line_no) == _STATE_OFF and row.line_no not in contradicted_line_nos
+            and row.line_no not in routing_off_noticed
+        ):
+            routing_off_noticed.add(row.line_no)
+            notices.append(
+                f"{_COMMAND}: note line {row.line_no} holds a routing deny, but the routing key reads off for it"
             )
     for earliest_ts in unlisted_branches.values():
         refusals.append(
@@ -884,11 +1423,11 @@ def _reconcile_denies(
             " in a terminal outside any agent session, run review-trace with the same top-level --config-dir"
             " given to capture and --deny-only, once with --this-repo and, if no row matches that minute,"
             f" once with --projects='<main-project-slug>{_WORKTREE_SLUG_INFIX}*' for a removed worktree's"
-            " sessions; match the row at that minute, and list its branch as on if it merged, else as unmerged;"
+            " sessions; match the row at that minute, then add a note row for its branch:"
+            f" {_STATUS_MERGED} if the branch belongs in the sample, else {_STATUS_EXCLUDED};"
             ' see docs/transcript-analysis.md routing-guard "Deny reconciliation"'
         )
 
-    first_deny_ts = _earliest_ts(deny.ts for deny in denies)
     for row in note_rows:
         if row.resolved_config_dir != account_config_dir:
             if row.branch in branch_facts or row.branch in denied_branches:
@@ -897,21 +1436,14 @@ def _reconcile_denies(
                     " but has records on this root; its rounds are split across accounts"
                 )
             continue
-        if row.line_no not in built_line_nos:
+        if row.status != _STATUS_MERGED or row.line_no not in built_line_nos:
             continue
-        if row.arm == _ARM_ON and row.branch not in denied_branches:
+        if routing_by_line.get(row.line_no) == _STATE_ON and row.branch not in denied_branches:
             notices.append(
-                f"{_COMMAND}: note line {row.line_no} is listed on but no routing deny was found for it;"
+                f"{_COMMAND}: note line {row.line_no} was worked with the routing key on but no routing deny was found for it;"
                 " a typed /code-review or an unrouted round leaves none"
             )
-        if row.arm == _ARM_OFF:
-            last_record_ts = branch_facts[row.branch].last_record_ts if row.branch in branch_facts else None
-            if first_deny_ts is not None and last_record_ts is not None and last_record_ts > first_deny_ts:
-                notices.append(
-                    f"{_COMMAND}: note line {row.line_no} is listed off but has records later than this account's"
-                    " first routing deny; the key may have been turned off again"
-                )
-    return _DenyReconciliation(refusals, notices)
+    return _DenyReconciliation(refusals, notices, contradicted_line_nos)
 
 
 # --- the capture run ---------------------------------------------------------
@@ -925,7 +1457,16 @@ def _row_line(line_no: int, outcome: str) -> str:
     return f"{_COMMAND}: note line {line_no}: {outcome}"
 
 
-def _captured_line(line_no: int, built: _BuiltRow) -> str:
+def _utc_date(ts: float | None) -> str:
+    return _utc_text(ts, "%Y-%m-%d", "an unknown date")
+
+
+def _states_text(states: _KeyStates) -> str:
+    """Each state as `<label>=<on|off>`, routing first and then the two pilots."""
+    return "/".join(f"{label}={state}" for label, state in zip(_STATE_LABELS, states, strict=True))
+
+
+def _captured_line(line_no: int, built: _BuiltRow, earliest_record_ts: float | None) -> str:
     rounds = sum(loop.round_count for loop in built.loops)
     growth_defined = sum(1 for loop in built.loops if loop.growth_tokens is not None)
     joined = sum(loop.joined_denied_opens for loop in built.loops)
@@ -933,23 +1474,23 @@ def _captured_line(line_no: int, built: _BuiltRow) -> str:
     return _row_line(
         line_no,
         f"captured ({rounds} rounds, {len(built.loops)} loops, {growth_defined} with growth defined,"
-        f" {joined} denied round-opens joined, degraded: {_yes_no(degraded)})",
+        f" {joined} denied round-opens joined, degraded: {_yes_no(degraded)}, states: {_states_text(built.states)},"
+        f" earliest record {_utc_date(earliest_record_ts)})",
     )
 
 
-def _standing_line(line_no: int, standing: bytes | _StandingFile) -> tuple[str, bool]:
+def _standing_line(line_no: int, standing: _CaptureRecord | _StandingFile) -> tuple[str, bool]:
     """The per-row line for an existing file, and whether the row is good."""
+    if standing is _StandingFile.EARLIER_LAYOUT:
+        return _row_line(line_no, f"invalid ({_EARLIER_LAYOUT_NOTE})"), False
     if isinstance(standing, _StandingFile):
         return _row_line(line_no, "invalid"), False
-    try:
-        loops = _parse_capture_bytes(standing)
-    except _InvalidCapture:
-        return _row_line(line_no, "invalid"), False
-    growth_defined = sum(1 for loop in loops if loop["growth_tokens"] is not None)
-    degraded = any(loop["degraded"] for loop in loops)
+    growth_defined = sum(1 for loop in standing.loops if loop["growth_tokens"] is not None)
+    degraded = any(loop["degraded"] for loop in standing.loops)
     return _row_line(
         line_no,
-        f"already captured ({len(loops)} loops, {growth_defined} with growth defined, degraded: {_yes_no(degraded)})",
+        f"already captured ({len(standing.loops)} loops, {growth_defined} with growth defined,"
+        f" degraded: {_yes_no(degraded)}, states: {_states_text(standing.states)})",
     ), True
 
 
@@ -991,26 +1532,55 @@ def _refuse_unless_still_opted_in(account_dir: Path) -> None:
         _refuse(_OPT_IN_REFUSALS[opt_in], 1)
 
 
+class _RowKind(enum.Enum):
+    CAPTURED = "captured"
+    ALREADY_CAPTURED = "already captured"
+    MISSING = "missing"
+    INVALID = "invalid"
+
+
+@dataclass
+class _AccountReport:
+    """What one capture run did to an account's merged rows, for the lines printed after the row lines."""
+
+    kinds: Counter[_RowKind] = field(default_factory=Counter)
+    key_on_files: int = 0
+    key_off_files: int = 0
+    next_step_classes: set[str] = field(default_factory=set)
+
+    def count_file(self, kind: _RowKind, states: _KeyStates) -> None:
+        self.kinds[kind] += 1
+        if states.routing == _STATE_ON:
+            self.key_on_files += 1
+        else:
+            self.key_off_files += 1
+
+
 def _capture_account_rows(
-    account_rows: Sequence[_NoteRow], standing_by_line: Mapping[int, bytes | _StandingFile],
+    merged_rows: Sequence[_NoteRow], standing_by_line: Mapping[int, _CaptureRecord | _StandingFile],
+    key_states_by_line: Mapping[int, _BranchKeyStates], contradicted_line_nos: Collection[int],
     scan: _ScanFacts, account_dir: Path,
-) -> bool:
-    """Build, publish and report each row. Returns whether every row is captured or already captured."""
+) -> _AccountReport:
+    """Build, publish and report each merged row."""
     captures_dir = account_dir / _CAPTURES_DIR_NAME
+    report = _AccountReport()
     published_count = 0
     captures_dir_ready = False
-    all_good = True
-    for row in account_rows:
+    for row in merged_rows:
         path = captures_dir / _capture_file_name(row.branch, _CAPTURE_REVISION)
         standing = standing_by_line[row.line_no]
         if standing is _StandingFile.ABSENT:
             rounds = scan.rounds_by_branch.get(row.branch, [])
-            reason = _whole_reason(scan.branches.get(row.branch), rounds)
-            if reason is not None:
-                print(_row_line(row.line_no, f"missing ({reason})"))
-                all_good = False
+            key_states = key_states_by_line[row.line_no]
+            failure = _whole_failure(scan.branches.get(row.branch), rounds, key_states)
+            if failure is None and row.line_no in contradicted_line_nos:
+                failure = _WholeFailure(_REASON_KEY_STATE_CONTRADICTED, frozenset({_REASON_KEY_STATE_CONTRADICTED}))
+            if failure is not None:
+                print(_row_line(row.line_no, f"missing ({failure.reason})"))
+                report.kinds[_RowKind.MISSING] += 1
+                report.next_step_classes |= failure.next_step_classes
                 continue
-            built = _build_row(rounds)
+            built = _build_row(rounds, key_states)
             text_bytes = built.text.encode("utf-8")
             try:
                 _parse_capture_bytes(text_bytes)
@@ -1029,17 +1599,59 @@ def _capture_account_rows(
             outcome = ledger_common._publish_new_file(path, built.text, _CAPTURE_TEMP_PREFIX, _CAPTURE_TEMP_SUFFIX)
             if outcome is ledger_common._PublishOutcome.CREATED:
                 published_count += 1
-                print(_captured_line(row.line_no, built))
+                print(_captured_line(row.line_no, built, scan.branches[row.branch].first_record_ts))
+                report.count_file(_RowKind.CAPTURED, built.states)
                 continue
             if outcome is not ledger_common._PublishOutcome.EXISTS:
                 _exit_publish_failed(outcome, published_count)
-            standing = _read_standing_capture(path)
+            standing = _load_capture_file(path)
             if standing is _StandingFile.ABSENT:
                 standing = _StandingFile.UNREADABLE
         line, row_is_good = _standing_line(row.line_no, standing)
         print(line)
-        all_good = all_good and row_is_good
-    return all_good
+        if row_is_good:
+            report.count_file(_RowKind.ALREADY_CAPTURED, standing.states)
+        else:
+            report.kinds[_RowKind.INVALID] += 1
+    return report
+
+
+def _account_level_lines(log: _SessionConfigKeysLog, coverage_start: float | None) -> list[str]:
+    """The lines about the account's log that no single row owns. Each applies only on its own condition.
+
+    No coverage start means no valid row and no recorder attachment of any kind, which is the reader doc's
+    "the hook has not run".
+    """
+    if log.status is _LogStatus.UNUSABLE:
+        return [_LOG_UNUSABLE_NOTICE]
+    lines: list[str] = []
+    if coverage_start is None:
+        lines.append(_HOOK_NOT_RUN_ON_ACCOUNT_LINE)
+    if log.status is _LogStatus.READ and not log.routing_off_seen:
+        lines.append(_NO_KEY_OFF_ROW_LINE)
+    if log.status is _LogStatus.READ and log.skipped_lines:
+        lines.append(_SKIPPED_LOG_LINES_LINE)
+    return lines
+
+
+def _summary_lines(
+    report: _AccountReport, merged_row_count: int, excluded_row_count: int, *, pricing_drift: bool,
+) -> list[str]:
+    counts = report.kinds
+    summary = (
+        f"{_COMMAND}: summary: {counts[_RowKind.CAPTURED]} captured, {counts[_RowKind.ALREADY_CAPTURED]} already captured,"
+        f" {counts[_RowKind.MISSING]} missing, {counts[_RowKind.INVALID]} invalid, {excluded_row_count} excluded;"
+        f" key-on files: {report.key_on_files}, key-off files: {report.key_off_files}"
+    )
+    if merged_row_count == 0:
+        next_action = _NEXT_ACTION_NO_MERGED_ROW
+    elif counts[_RowKind.MISSING] or counts[_RowKind.INVALID]:
+        next_action = _NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT if pricing_drift else _NEXT_ACTION_ACT_ON_LINES
+    elif pricing_drift:
+        next_action = _NEXT_ACTION_RESOLVE_PRICING_DRIFT
+    else:
+        next_action = _NEXT_ACTION_CAPTURE_AGAIN
+    return [summary, next_action]
 
 
 def _run_capture(args: argparse.Namespace) -> None:
@@ -1067,13 +1679,36 @@ def _run_capture(args: argparse.Namespace) -> None:
             2,
         )
 
-    capturable_rows = [row for row in account_rows if row.arm in (_ARM_ON, _ARM_OFF)]
+    wanted_session_ids = {
+        round_facts.session_id for rounds in scan.rounds_by_branch.values() for round_facts in rounds if round_facts.session_id
+    } | {deny.session_id for deny in scan.denies if deny.session_id}
+    log = _read_session_config_keys_log(account_dir / _LOG_FILE_NAME, wanted_session_ids)
+    coverage_start = _coverage_start(log, scan.recorder_events)
+
+    merged_rows = [row for row in account_rows if row.status == _STATUS_MERGED]
     standing_by_line = {
-        row.line_no: _read_standing_capture(captures_dir / _capture_file_name(row.branch, _CAPTURE_REVISION))
-        for row in capturable_rows
+        row.line_no: _load_capture_file(captures_dir / _capture_file_name(row.branch, _CAPTURE_REVISION))
+        for row in merged_rows
     }
     built_line_nos = {line_no for line_no, standing in standing_by_line.items() if standing is _StandingFile.ABSENT}
-    reconciliation = _reconcile_denies(scan.denies, note_rows, resolved_account_dir, built_line_nos, scan.branches)
+    key_states_by_line: dict[int, _BranchKeyStates] = {}
+    routing_by_line: dict[int, str] = {}
+    for row in merged_rows:
+        standing = standing_by_line[row.line_no]
+        if isinstance(standing, _CaptureRecord):
+            routing_by_line[row.line_no] = standing.states.routing
+        elif row.line_no in built_line_nos:
+            loop_rounds = _rounds_in_loops(scan.rounds_by_branch.get(row.branch, []))
+            key_states = _branch_key_states(loop_rounds, log, scan.recorder_events, coverage_start)
+            key_states_by_line[row.line_no] = key_states
+            routing_by_line[row.line_no] = key_states.by_key[_ROUTING_KEY]
+    deny_routing_states = [
+        _key_state_at(_ROUTING_KEY, deny.session_id, deny.ts, log, scan.recorder_events, coverage_start)
+        for deny in scan.denies
+    ]
+    reconciliation = _reconcile_denies(
+        scan.denies, deny_routing_states, note_rows, resolved_account_dir, built_line_nos, scan.branches, routing_by_line,
+    )
     if scan.dropped_deny_without_tool_use:
         print(_DROPPED_DENY_NOTICE, file=sys.stderr)
     for notice in reconciliation.notices:
@@ -1083,11 +1718,22 @@ def _run_capture(args: argparse.Namespace) -> None:
             print(refusal, file=sys.stderr)
         sys.exit(2)
 
-    all_good = _capture_account_rows(capturable_rows, standing_by_line, scan, account_dir)
+    report = _capture_account_rows(
+        merged_rows, standing_by_line, key_states_by_line, reconciliation.contradicted_line_nos, scan, account_dir,
+    )
     drift = pricing._format_drift_detected()
     if drift:
         print(_PRICING_INTEGRITY_LINE)
-    sys.exit(0 if all_good and not drift else 3)
+    for next_step_class in (*_CAUSES, _REASON_KEY_STATE_MIXED, _REASON_KEY_STATE_CONTRADICTED):
+        if next_step_class in report.next_step_classes:
+            print(_NEXT_STEP_LINES[next_step_class])
+    for line in _account_level_lines(log, coverage_start):
+        print(line)
+    excluded_row_count = sum(1 for row in account_rows if row.status == _STATUS_EXCLUDED)
+    for line in _summary_lines(report, len(merged_rows), excluded_row_count, pricing_drift=drift):
+        print(line)
+    needs_attention = report.kinds[_RowKind.MISSING] or report.kinds[_RowKind.INVALID]
+    sys.exit(3 if needs_attention or drift else 0)
 
 
 # --- the compute run ---------------------------------------------------------
@@ -1157,32 +1803,26 @@ def _account_is_ready(config_dir: Path) -> bool:
     return (config_dir / _CAPTURES_DIR_NAME).is_dir()
 
 
+def _merged_rows(note_rows: Sequence[_NoteRow]) -> list[_NoteRow]:
+    return [row for row in note_rows if row.status == _STATUS_MERGED]
+
+
 def _ready_accounts(note_rows: Sequence[_NoteRow]) -> set[Path]:
-    """The config dirs with an `on` row that pass _account_is_ready, checked in note order."""
-    accounts_with_on_rows = dict.fromkeys(row.resolved_config_dir for row in note_rows if row.arm == _ARM_ON)
-    return {config_dir for config_dir in accounts_with_on_rows if _account_is_ready(config_dir)}
+    """The config dirs with a `merged` row that pass _account_is_ready, checked in note order."""
+    accounts_with_merged_rows = dict.fromkeys(row.resolved_config_dir for row in _merged_rows(note_rows))
+    return {config_dir for config_dir in accounts_with_merged_rows if _account_is_ready(config_dir)}
 
 
-def _load_capture_loops(captures_dir: Path, branch: str) -> list[dict] | _StandingFile:
-    """The validated loops of `branch`'s file at the current revision, opened by exact name.
-
-    ABSENT means the name does not exist. Any other failure to read or validate gives UNREADABLE.
-    """
-    standing = _read_standing_capture(captures_dir / _capture_file_name(branch, _CAPTURE_REVISION))
-    if isinstance(standing, _StandingFile):
-        return standing
-    try:
-        return _parse_capture_bytes(standing)
-    except _InvalidCapture:
-        return _StandingFile.UNREADABLE
-
-
-def _load_sample_files(note_rows: Sequence[_NoteRow], ready: Collection[Path]) -> dict[int, list[dict] | _StandingFile]:
-    """Each `on` and `off` row's file, for the rows of a ready account only."""
+def _load_sample_files(
+    note_rows: Sequence[_NoteRow], ready: Collection[Path],
+) -> dict[int, _CaptureRecord | _StandingFile]:
+    """Each `merged` row's file, opened by its exact name, for the rows of a ready account only."""
     return {
-        row.line_no: _load_capture_loops(row.resolved_config_dir / _CAPTURES_DIR_NAME, row.branch)
-        for row in note_rows
-        if row.arm in (_ARM_ON, _ARM_OFF) and row.resolved_config_dir in ready
+        row.line_no: _load_capture_file(
+            row.resolved_config_dir / _CAPTURES_DIR_NAME / _capture_file_name(row.branch, _CAPTURE_REVISION),
+        )
+        for row in _merged_rows(note_rows)
+        if row.resolved_config_dir in ready
     }
 
 
@@ -1190,69 +1830,90 @@ def _has_growth_defined_loop(rows: Sequence[_NoteRow], loaded_loops: Mapping[int
     return any(loop["growth_tokens"] is not None for row in rows for loop in loaded_loops[row.line_no])
 
 
-def _account_reasons(
-    account_rows: Sequence[_NoteRow], ready: bool, loaded: Mapping[int, list[dict] | _StandingFile],
+def _pilot_states(record: _CaptureRecord) -> tuple[str, str]:
+    return (record.states.round_consult_round2_pilot, record.states.architect_fix_plan_pilot)
+
+
+def _row_load_reasons(
+    rows_by_account: Mapping[Path, Sequence[_NoteRow]], ready: Collection[Path],
+    loaded: Mapping[int, _CaptureRecord | _StandingFile],
 ) -> list[_NotRunReason]:
-    """The NOT RUN reasons one account with `on` rows contributes."""
-    on_rows = [row for row in account_rows if row.arm == _ARM_ON]
-    off_rows = [row for row in account_rows if row.arm == _ARM_OFF]
+    """The per-row reasons: an account not ready, and a `merged` row whose file is missing or unusable."""
     reasons: list[_NotRunReason] = []
-    if ready:
-        for row in [*on_rows, *off_rows]:
+    for config_dir, account_rows in rows_by_account.items():
+        if config_dir not in ready:
+            reasons.append(_NotRunReason(_REASON_ACCOUNT_NOT_READY, account_rows[0].line_no))
+            continue
+        for row in account_rows:
             fetched = loaded[row.line_no]
             if fetched is _StandingFile.ABSENT:
                 reasons.append(_NotRunReason(_REASON_FILE_MISSING, row.line_no))
-            elif fetched is _StandingFile.UNREADABLE:
+            elif isinstance(fetched, _StandingFile):
                 reasons.append(_NotRunReason(_REASON_FILE_UNUSABLE, row.line_no))
-    else:
-        reasons.append(_NotRunReason(_REASON_ACCOUNT_NOT_READY, account_rows[0].line_no))
-    reference_states = {(row.round_consult_round2_pilot, row.architect_fix_plan_pilot) for row in on_rows}
+    return reasons
+
+
+def _account_count_reasons(
+    account_rows: Sequence[_NoteRow], records: Mapping[int, _CaptureRecord],
+) -> tuple[list[_NotRunReason], list[_NoteRow], list[_NoteRow]]:
+    """(the pilot and arm-size reasons, key-on rows, key-off rows) of one account whose files all loaded.
+
+    The key-off rows of an account with no key-on row are ignored, so it adds neither.
+    """
+    on_rows: list[_NoteRow] = []
+    off_rows: list[_NoteRow] = []
+    for row in account_rows:
+        (on_rows if records[row.line_no].states.routing == _STATE_ON else off_rows).append(row)
+    if not on_rows:
+        return [], [], []
+    reasons: list[_NotRunReason] = []
+    reference_states = {_pilot_states(records[row.line_no]) for row in on_rows}
     if len(reference_states) > 1:
         reasons.append(_NotRunReason(_REASON_MIXED_PILOTS, on_rows[0].line_no))
     else:
         reasons.extend(
             _NotRunReason(_REASON_OFF_PILOT_DIFFERS, row.line_no)
             for row in off_rows
-            if (row.round_consult_round2_pilot, row.architect_fix_plan_pilot) not in reference_states
+            if _pilot_states(records[row.line_no]) not in reference_states
         )
     if len(off_rows) != len(on_rows):
         reasons.append(_NotRunReason(_REASON_ARM_SIZE_MISMATCH, account_rows[0].line_no))
-    return reasons
+    return reasons, on_rows, off_rows
 
 
 def _select_sample(
-    note_rows: Sequence[_NoteRow], ready: Collection[Path], loaded: Mapping[int, list[dict] | _StandingFile],
+    note_rows: Sequence[_NoteRow], ready: Collection[Path], loaded: Mapping[int, _CaptureRecord | _StandingFile],
 ) -> _SampleSelection:
     """The sampled rows of each arm and every NOT RUN reason the sample checks find.
 
-    `off` rows of an account with no `on` row, and every `unmerged` row, are ignored. The growth check
-    runs only when no other reason holds, since a row that failed to load would otherwise read as an arm
-    without growth.
+    Each `merged` row's arm and pilot states come from its file. `excluded` rows are ignored, and so are the
+    key-off files of an account with no key-on file. The count reasons run only when every account is ready and
+    every file loaded, and the growth check only when no other reason holds, since a row that failed to load
+    would otherwise read as an arm without growth.
     """
     rows_by_account: dict[Path, list[_NoteRow]] = {}
-    for row in note_rows:
+    for row in _merged_rows(note_rows):
         rows_by_account.setdefault(row.resolved_config_dir, []).append(row)
-    reasons: list[_NotRunReason] = []
-    if sum(1 for row in note_rows if row.arm == _ARM_ON) < _MIN_ON_BRANCHES:
-        reasons.append(_NotRunReason(_REASON_TOO_FEW_ON, None))
+    reasons = _row_load_reasons(rows_by_account, ready, loaded)
     on_rows: list[_NoteRow] = []
     off_rows: list[_NoteRow] = []
-    loaded_loops: dict[int, list[dict]] = {}
-    for config_dir, account_rows in rows_by_account.items():
-        if not any(row.arm == _ARM_ON for row in account_rows):
-            continue
-        reasons.extend(_account_reasons(account_rows, config_dir in ready, loaded))
-        for row in account_rows:
-            fetched = loaded.get(row.line_no)
-            if isinstance(fetched, list):
-                loaded_loops[row.line_no] = fetched
-                (on_rows if row.arm == _ARM_ON else off_rows).append(row)
-    if not reasons and not (
-        _has_growth_defined_loop(on_rows, loaded_loops) and _has_growth_defined_loop(off_rows, loaded_loops)
-    ):
-        reasons.append(_NotRunReason(_REASON_NO_GROWTH_DEFINED, None))
+    loops_by_line: dict[int, list[dict]] = {}
+    if not reasons:
+        records = {line_no: found for line_no, found in loaded.items() if isinstance(found, _CaptureRecord)}
+        for account_rows in rows_by_account.values():
+            account_reasons, account_on_rows, account_off_rows = _account_count_reasons(account_rows, records)
+            reasons.extend(account_reasons)
+            on_rows.extend(account_on_rows)
+            off_rows.extend(account_off_rows)
+        loops_by_line = {row.line_no: records[row.line_no].loops for row in [*on_rows, *off_rows]}
+        if len(on_rows) < _MIN_ON_BRANCHES:
+            reasons.append(_NotRunReason(_REASON_TOO_FEW_ON, None))
+        if not reasons and not (
+            _has_growth_defined_loop(on_rows, loops_by_line) and _has_growth_defined_loop(off_rows, loops_by_line)
+        ):
+            reasons.append(_NotRunReason(_REASON_NO_GROWTH_DEFINED, None))
     reasons.sort(key=lambda found: (_NOT_RUN_REASONS.index(found.reason), found.line_no or 0))
-    return _SampleSelection(on_rows, off_rows, loaded_loops, reasons)
+    return _SampleSelection(on_rows, off_rows, loops_by_line, reasons)
 
 
 def _usage_from_variant_tokens(variant: str, token_counts: Mapping[str, int]) -> dict:
@@ -1431,8 +2092,8 @@ def _out_file_text(figures: _NetFigures, bootstrap: _BootstrapResult, on: _ArmTo
         f"overhead difference per loop: {render._fmt_usd(figures.overhead_difference)}",
         f"carry per loop: {render._fmt_usd(figures.carry)}",
         f"growth gap, key-off minus key-on, tokens per loop: {figures.gap:,.1f}",
-        *_arm_figure_lines(_ARM_ON, on),
-        *_arm_figure_lines(_ARM_OFF, off),
+        *_arm_figure_lines(_STATE_ON, on),
+        *_arm_figure_lines(_STATE_OFF, off),
         f"undefined replicates: {bootstrap.undefined_total} of {bootstrap.replicates}",
     ]
     return "\n".join(lines) + "\n"
@@ -1442,7 +2103,7 @@ def _print_compute_notices(
     on: Sequence[_BranchScalars], off: Sequence[_BranchScalars], bootstrap: _BootstrapResult,
 ) -> None:
     for arm, branches, undefined_replicates in (
-        (_ARM_ON, on, bootstrap.undefined_on), (_ARM_OFF, off, bootstrap.undefined_off),
+        (_STATE_ON, on, bootstrap.undefined_on), (_STATE_OFF, off, bootstrap.undefined_off),
     ):
         if any(branch.degraded_loops for branch in branches):
             print(_DEGRADED_NOTICES[arm], file=sys.stderr)
@@ -1492,6 +2153,7 @@ def _run_compute(args: argparse.Namespace) -> None:
         )
         print(_OUT_PUBLISHED_NOTICE, file=sys.stderr)
     _print_compute_notices(on, off, bootstrap)
+    print(_UNAUTHENTICATED_INPUTS_LINE, file=sys.stderr)
     if bootstrap.lower > 0:
         print(_STATUS_FAILED)
         sys.exit(1)
@@ -1514,10 +2176,10 @@ def cmd_routing_guard(args: argparse.Namespace) -> None:
 
     Every exit goes through sys.exit, because main() ignores a handler's return value. One
     except clause maps an unexpected failure to exit 4, so a crash never reads as a refusal.
-    Only a fixed message, an OSError's strerror, or an unexpected failure's exception class and innermost
-    function name is printed, never a traceback.
     """
     try:
+        if args.out == "":
+            _refuse(_EMPTY_OUT_MESSAGE, 2)
         if args.capture:
             if args.out:
                 _refuse(_OUT_WITH_CAPTURE_MESSAGE, 2)
@@ -1548,13 +2210,13 @@ def _add_routing_guard_subparser(subparsers: argparse._SubParsersAction) -> None
         "--note", required=True, metavar="PATH",
         help=(
             "Absolute path to the note, outside any git work tree: one tab-separated row per branch holding"
-            " config dir, branch, on|off|unmerged and the two pilot states."
+            " config dir, branch and merged|excluded."
         ),
     )
     p_routing_guard.add_argument(
         "--capture", action="store_true",
         help=(
-            "Publish a write-once file for each `on` and `off` row of the --config-dir account that is captured whole"
+            "Publish a write-once file for each `merged` row of the --config-dir account that is captured whole"
             " and has no file yet. Needs the top-level --config-dir (before `routing-guard`) and that account's"
             " pr_cost_recording opt-in."
         ),

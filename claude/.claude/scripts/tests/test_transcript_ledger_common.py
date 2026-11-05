@@ -280,10 +280,10 @@ class TestMachineIdentity:
     def test_an_unrecognized_publish_outcome_exits_1_instead_of_returning_the_token(self, tmp_path, monkeypatch, capsys):
         cfg_dir = tmp_path / "cfg"
         cfg_dir.mkdir()
-        monkeypatch.setattr(_mod.ledger_common, "_publish_new_file", lambda *args: object())
+        monkeypatch.setattr(ledger_common, "_publish_new_file", lambda *args: object())
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.ledger_common._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+            ledger_common._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
 
         assert exc_info.value.code == 1
         assert "could not create the machine identity file" in capsys.readouterr().err
@@ -841,10 +841,10 @@ class TestOutPathHelpersNameTheCommand:
 
     def test_publish_new_owner_file_fails_closed_on_an_outcome_it_does_not_name(self, tmp_path, monkeypatch, capsys):
         out_path = tmp_path / "export.tsv"
-        monkeypatch.setattr(_mod.ledger_common, "_publish_new_file", lambda *args: object())
+        monkeypatch.setattr(ledger_common, "_publish_new_file", lambda *args: object())
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.ledger_common._publish_new_owner_file(str(out_path), _PUBLISHED_TEXT, _OUT_COMMAND)
+            ledger_common._publish_new_owner_file(str(out_path), _PUBLISHED_TEXT, _OUT_COMMAND)
 
         assert exc_info.value.code == 2
         assert capsys.readouterr().err == f"{_OUT_COMMAND}: --out {str(out_path)!r} could not be published; pass a new path\n"
