@@ -49,15 +49,39 @@ _REVIEWER_YIELD_ACTIVE_FLOOR = 10
 _REVIEWER_YIELD_INSUFFICIENT = "insufficient"
 
 
+# In auto mode a subagent's final report is this tool call's input.message
+# rather than a text block; other modes end on plain text.
+_SUBAGENT_HANDBACK_TOOL_NAME = "SubagentHandback"
+
+
+def _tool_input(block: dict) -> dict:
+    block_input = block.get("input")
+    return block_input if isinstance(block_input, dict) else {}
+
+
+def _handback_message(content: object) -> str:
+    """Empty when the record carries no non-blank handback message."""
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and block.get("name") == _SUBAGENT_HANDBACK_TOOL_NAME
+        ):
+            message = _tool_input(block).get("message")
+            if isinstance(message, str) and message.strip():
+                return message
+    return ""
+
+
 class _ReviewerTranscriptScan(NamedTuple):
     """One reviewer subagent transcript's join inputs, gathered in a single walk.
 
-    last_assistant_text: the last non-empty assistant text block, or ''. A
-      trailing assistant record with no text (e.g. a final tool-only turn)
-      does not blank out an earlier one — this walks the whole file and
-      keeps the most recent non-empty text seen, matching "last assistant
-      text block" rather than "last assistant record's text, possibly
-      empty."
+    last_assistant_text: the last non-blank assistant text, or ''. Within one
+      record a SubagentHandback tool call's message takes precedence over its
+      text blocks. A trailing record with no text (e.g. a final tool-only
+      turn) does not blank out an earlier one.
     write_content_blobs: every Write tool_use's input.content string found
       along the same walk, in file order.
     write_target_paths: every Write tool_use's input.file_path found along
@@ -120,14 +144,14 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> _ReviewerTranscriptScan:
                         code_write_tool_use_ids.add(block_id)
                 if block.get("name") != "Write":
                     continue
-                block_input = block.get("input") or {}
+                block_input = _tool_input(block)
                 blob = block_input.get("content")
                 if isinstance(blob, str):
                     write_content_blobs.append(blob)
                 target = block_input.get("file_path")
                 if isinstance(target, str) and target:
                     write_target_paths.append(target)
-        text = render._content_text(content)
+        text = _handback_message(content) or render._content_text(content)
         if text.strip():
             last_text = text
     return _ReviewerTranscriptScan(
@@ -166,7 +190,7 @@ def _scan_reviewer_transcripts(
                 continue
             if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
                 continue
-            block_input = block.get("input") or {}
+            block_input = _tool_input(block)
             stype = block_input.get("subagent_type") or ""
             if not _is_reviewer_subagent_type(stype):
                 continue
@@ -238,10 +262,13 @@ def _extract_cited_paths(text: str) -> set[str]:
 
     Returns every run matched by _CITED_PATH_CANDIDATE_RE, deduplicated —
     including runs that turn out to be plain prose words or bare filenames.
+    A trailing "." or ":" is sentence punctuation, not part of the path, and
+    is stripped so "agent-reviews/x.md." keys the same as the file it names.
     _normalize_cited_path is what decides whether a candidate is a real,
     join-able path; this function only tokenizes.
     """
-    return set(_CITED_PATH_CANDIDATE_RE.findall(text))
+    stripped_candidates = (candidate.rstrip(".:") for candidate in _CITED_PATH_CANDIDATE_RE.findall(text))
+    return {candidate for candidate in stripped_candidates if candidate}
 
 
 # Strips a trailing ":line" or ":line:col" suffix (e.g. "foo.py:42" or
@@ -405,7 +432,7 @@ def _index_session_edits(
                 continue
             if block.get("id") in reviewer_write_tool_use_ids:
                 continue
-            raw_path = _code_write_target_path(block.get("input") or {})
+            raw_path = _code_write_target_path(_tool_input(block))
             if not raw_path:
                 continue
             key = _normalize_cited_path(raw_path, cwd)
@@ -539,7 +566,7 @@ def compute_reviewer_yield_data(
                     continue
                 if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
                     continue
-                block_input = block.get("input") or {}
+                block_input = _tool_input(block)
                 stype = block_input.get("subagent_type") or ""
                 if not _is_reviewer_subagent_type(stype):
                     continue
@@ -603,8 +630,9 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     subagent_type in the reviewer set — _REVIEWER_PREFIX/_REVIEWER_EXACT_NAMES)
     to its own subagent
     transcript via subagents/<id>.meta.json's toolUseId field, then
-    classifies that transcript's last assistant text block as findings-found,
-    zero-finding, or unclassified. A dispatch with no matching meta.json is
+    classifies that transcript's last assistant text (see
+    _ReviewerTranscriptScan) as findings-found, zero-finding, or
+    unclassified. A dispatch with no matching meta.json is
     excluded entirely (not counted as unclassified) — meta.json is the only
     signal that a subagent transcript for this dispatch exists at all. A
     second, distinct exclusion path is a meta.json file that exists but is
