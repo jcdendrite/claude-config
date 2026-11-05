@@ -113,7 +113,7 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 | Extending `read-scope` to cover non-tool categories | Rejected | Its cohort model is `Read`-call-specific; every non-tool category (conversation-history replay, assistant text/thinking, the static system prefix) falls outside its frame. |
 | `context-distribution` as the host subcommand | Rejected | Buckets sessions by peak context without decomposing what filled it — a different question. Its redaction pattern (no redact map, no per-project label) was adopted anyway; see `docs/transcript-analysis.md`'s "Corpus scope" section. |
 
-The `read-scope` figures in this file predate the `api-request-blob` filter, so a fresh run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
+The `read-scope` figures in the table above predate the `api-request-blob` filter, so a fresh run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
 
 ## From `pin-explore-to-sonnet.md` (this plan) — Step 1's superseded earlier draft
 

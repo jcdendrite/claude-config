@@ -222,9 +222,8 @@ class TestConfigDirFlag:
         """Regression coverage for the other branch of main()'s hasattr
         check: a subcommand that DOES register its own --config-dir (e.g.
         "cost") must still get the "use that instead" recommendation --
-        test_transcript_cost_counts.py's
-        test_top_level_config_dir_message_omits_flag_recommendation only pins
-        the branch that omits it."""
+        TestConfigDirRouting.test_top_level_config_dir_message_omits_flag_recommendation
+        only pins the branch that omits it."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(
@@ -237,9 +236,49 @@ class TestConfigDirFlag:
         assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
 
 
+_REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG = (
+    "cost-counts", "period-cost", "review-cost-by-size", "read-cost",
+)
+
+
+def _subcommands_refusing_top_level_config_dir_without_their_own_flag() -> list[str]:
+    """The refusing-tuple members whose own parser registers no --config-dir flag."""
+    subparsers_action = next(
+        action for action in _mod.build_parser()._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    return [
+        name for name in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        if "--config-dir" not in subparsers_action.choices[name]._option_string_actions
+    ]
+
+
 class TestConfigDirRouting:
     def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
         assert "context-composition" in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+
+    def test_refusing_subcommands_without_their_own_config_dir_flag_are_exactly_the_expected_set(self):
+        assert set(_subcommands_refusing_top_level_config_dir_without_their_own_flag()) == set(
+            _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG
+        )
+
+    @pytest.mark.parametrize("subcommand", _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG)
+    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
+        """The members of scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        listed in _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG register no
+        --config-dir flag of their own -- the shared refusal message must not
+        recommend a flag that doesn't exist on their own parsers."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert subcommand in err
+        assert "use that instead" not in err
+        assert "since this subcommand resolves its scan roots itself" in err
 
     def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
         other_account = tmp_path / "other-account"

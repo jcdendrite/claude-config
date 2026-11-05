@@ -6,7 +6,7 @@ This repo does not deny large whole-file reads, and does not redirect them to a 
 
 ## What was measured
 
-Figures come from `transcript-analysis.py read-cost --this-repo`, which refuses any corpus wider than this repository on one account. Absolute corpus totals are omitted on purpose. Shares are of total spend in cache-read-token equivalents. A read's weight is one cache write plus one cache read per later turn in its context window, so main-thread tokens are charged for every turn they are re-sent. A 2026-11-03 run, after the change that counts numbered lines, re-confirmed the 350-line and 800-line call counts.
+Figures come from `transcript-analysis.py read-cost --this-repo`, which refuses any corpus wider than this repository on one account. Absolute corpus totals are omitted on purpose. Shares are of total spend in cache-read-token equivalents. A read's weight is one cache write plus one cache read per later turn in its context window, so main-thread tokens are charged for every turn they are re-sent. A 2026-11-03 run re-confirmed the 350-line and 800-line call counts.
 
 **The main thread has almost nothing to gate.**
 

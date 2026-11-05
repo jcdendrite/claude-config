@@ -1593,11 +1593,11 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
   - An edit after a compaction marks an earlier read as edited later, which understates never-edited reads.
   - A re-read after a compaction counts as a repeat.
   - A re-read after an edit of the same path counts as a repeat, and the re-read itself reads as never edited.
-- The scan reads every main transcript and every subagent file in scope. A corpus of several hundred sessions takes minutes.
+- The scan reads every main transcript and every subagent file in scope.
 
 **Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. It reads the active config directory's `projects/` alone, and any symlink under that directory is followed. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 
-**When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to re-check whether the cost reopens `docs/design-decisions/large-read-gate-declined.md`'s decision. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
+**When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to re-check whether the cost reopens `docs/design-decisions/large-read-gate-declined.md`'s decision. A run that reports `sessions=0` measured nothing and does not count toward that re-check, for example when the run was under an account that does not hold this repository's transcripts. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
 
 ---
 
