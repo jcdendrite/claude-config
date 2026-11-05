@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
-from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
+from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -893,7 +893,12 @@ def _api_request_blob_rec(
 ) -> dict:
     """A request-content copy record: carries message.content blocks but, unlike a real
     assistant/user record, has no isSidechain key. `record_type` stands in for any other non-conversation
-    record type that carries message.content."""
+    record type that carries message.content.
+
+    A real record observed in a transcript has top-level keys hash, message, sessionId and type; its message
+    has a role and a list content, and it has no isSidechain, timestamp or agentId key. The `agent_id` and `ts`
+    parameters add keys that record did not have.
+    """
     rec: dict = {"type": record_type, "message": {"content": content}}
     if agent_id is not None:
         rec["agentId"] = agent_id
@@ -1518,6 +1523,17 @@ def fake_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger_common, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
+
+
+@pytest.fixture()
+def stub_repo_tracked_agent_types(monkeypatch):
+    """Opt-in factory: calling it with agent type names makes redaction treat exactly those, plus the built-in
+    types, as this repo's tracked agent types, so a test needs no git repo or cache_clear to isolate the
+    allowlist."""
+    def _stub(*extra_names: str) -> None:
+        tracked = redaction._BUILT_IN_AGENT_TYPES | frozenset(extra_names)
+        monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: tracked)
+    return _stub
 
 
 @pytest.fixture()

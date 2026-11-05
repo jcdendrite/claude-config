@@ -31,7 +31,6 @@ from transcript_analysis import (
     read_cost,
     read_scope,
     rearm_backtest,
-    redaction,
     review_cost_by_size,
     review_trace,
     reviewer_yield,
@@ -307,10 +306,12 @@ def test_read_cost_with_a_projects_glob_is_refused_through_main(monkeypatch, cap
     assert "read-cost: requires --this-repo and refuses any --projects scope" in err
 
 
-def test_read_cost_this_repo_runs_to_a_report_through_main(fake_projects, monkeypatch, capsys):
+def test_read_cost_this_repo_runs_to_a_report_through_main(
+    fake_projects, stub_repo_tracked_agent_types, monkeypatch, capsys,
+):
     """The real argparse Namespace reaches cmd_read_cost, _refuse_wider_scope and _resolve_project_scope."""
     monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])
-    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: redaction._BUILT_IN_AGENT_TYPES)
+    stub_repo_tracked_agent_types()
     _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6")])
     monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost", "--this-repo"])
 

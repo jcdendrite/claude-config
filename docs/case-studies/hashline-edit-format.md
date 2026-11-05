@@ -131,6 +131,8 @@ Decline hashline. Measured against this harness and this machine's own transcrip
 - `old_string` overhead exceeds **~2.7% of total assistant output tokens** (4x today's measured 0.67%), same subcommand.
 - A Claude model ships with a benchmarked Δ REPLACE gain materially above Sonnet 4.5's **+3.3** in a comparable published benchmark.
 
+The 0.77% and 0.67% baselines predate the `api-request-blob` filter, so a fresh `edit-format` run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
+
 ## Sources
 
 - **[Stencil harness post](https://stencil.so/blog/the-harness-problem)** — the hashline proposal, the Δ PATCH/Δ REPLACE benchmark table, and the failure-driven-savings and pure-editing-benchmark quotes cited above.

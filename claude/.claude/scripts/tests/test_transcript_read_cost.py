@@ -82,22 +82,6 @@ def _row_with_every_field_set(value: int) -> read_cost._AgentTypeRow:
     return row
 
 
-class TestCacheReadEquivalentWeights:
-    def test_weights_pin_the_literal_ratios_of_each_class_to_cache_read(self):
-        assert _weights() == pytest.approx({
-            "cache_read": 1.0, "cache_write_5m": 12.5, "cache_write_1h": 20.0, "output": 50.0, "input": 10.0,
-        })
-
-    def test_weights_cover_every_token_class(self):
-        assert set(_weights()) == set(pricing._TOKEN_CLASSES)
-
-    def test_weights_agree_with_model_rates_for_a_model_without_a_cache_read_override(self):
-        model = "claude-sonnet-4-6"
-        assert model not in pricing._CACHE_READ_MULTIPLIER_OVERRIDES
-        rates = pricing._model_rates(model)
-        assert {cls: rate / rates["cache_read"] for cls, rate in rates.items()} == pytest.approx(_weights())
-
-
 class TestScanWindow:
     def test_turns_count_distinct_message_ids_not_records(self):
         scan = _scan([_turn("m1"), _turn("m1"), _turn("m2")])
@@ -1138,10 +1122,10 @@ class TestScopeRefusal:
         assert raised.value.code == 2
         assert "refuses any --projects scope" in capsys.readouterr().err
 
-    @pytest.mark.usefixtures("only_the_built_in_agent_types_are_tracked")
     def test_cmd_scans_the_active_account_alone_even_when_other_roots_are_declared(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
+        self, fake_projects, stub_repo_tracked_agent_types, tmp_path, monkeypatch, capsys,
     ):
+        stub_repo_tracked_agent_types()
         declared = tmp_path / "declared-account"
         (declared / "projects" / _PROJECT_SLUG).mkdir(parents=True)
         roots_file = tmp_path / "roots"
@@ -1155,10 +1139,10 @@ class TestScopeRefusal:
         out = capsys.readouterr().out
         assert "sessions=1 " in out
 
-    @pytest.mark.usefixtures("only_the_built_in_agent_types_are_tracked")
     def test_header_states_the_active_account_the_working_directorys_repository_and_the_unconsulted_roots_file(
-        self, fake_projects, capsys,
+        self, fake_projects, stub_repo_tracked_agent_types, capsys,
     ):
+        stub_repo_tracked_agent_types()
         read_cost.cmd_read_cost(_read_cost_args())
 
         assert capsys.readouterr().out.splitlines()[0] == (
@@ -1181,14 +1165,8 @@ class TestScopeRefusal:
 
 
 @pytest.fixture()
-def only_the_built_in_agent_types_are_tracked(monkeypatch):
-    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: redaction._BUILT_IN_AGENT_TYPES)
-
-
-@pytest.fixture()
-def only_the_tracked_agent_type_is_tracked(monkeypatch):
-    tracked = frozenset({_TRACKED_AGENT_TYPE}) | redaction._BUILT_IN_AGENT_TYPES
-    monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: tracked)
+def only_the_tracked_agent_type_is_tracked(stub_repo_tracked_agent_types):
+    stub_repo_tracked_agent_types(_TRACKED_AGENT_TYPE)
 
 
 _SKIPPED_INPUT_KEYS = (
@@ -1308,26 +1286,42 @@ class TestSkippedInput:
 
 @pytest.mark.usefixtures("only_the_tracked_agent_type_is_tracked")
 class TestReport:
+    _SESSION_ID = "sentinel-session-id"
+    _MAIN_PATH = "/sentinel/dir/big.py"
+    _OTHER_PATH = "/sentinel/dir/other.py"
+    _TRACKED_AGENT_ID = "agent-sentinel-tracked"
+    _UNTRACKED_AGENT_ID = "agent-sentinel-untracked"
+    _TRACKED_DISPATCH_ID = "sentinel-dispatch-tracked"
+    _UNTRACKED_DISPATCH_ID = "sentinel-dispatch-untracked"
+    _MESSAGE_IDS = ("sentinel-msg-main-1", "sentinel-msg-main-2", "sentinel-msg-tracked", "sentinel-msg-untracked")
+    _READ_IDS = ("sentinel-read-main", "sentinel-read-tracked", "sentinel-read-untracked")
+    _EDIT_ID = "sentinel-edit-main"
+
     def _write_corpus(self, fake_projects) -> None:
+        main_turn_1, main_turn_2, tracked_turn, untracked_turn = self._MESSAGE_IDS
+        main_read, tracked_read, untracked_read = self._READ_IDS
         main_records = [
-            _turn("m1", [_read_use("r1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
-            _read_result("r1", "line\n" * 1000),
-            _turn("m2", [_edit_use("e1", path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
+            _turn(main_turn_1, [_read_use(main_read, file_path=self._MAIN_PATH)], usage={"output_tokens": 10}),
+            _read_result(main_read, "line\n" * 1000),
+            _turn(main_turn_2, [_edit_use(self._EDIT_ID, path=self._MAIN_PATH)], usage={"output_tokens": 10}),
         ]
-        _write_jsonl(fake_projects / "sentinel-session-id.jsonl", main_records)
+        _write_jsonl(fake_projects / f"{self._SESSION_ID}.jsonl", main_records)
         _write_subagent_dispatch(
-            fake_projects, "sentinel-session-id", "agent-tracked", "tool-1",
+            fake_projects, self._SESSION_ID, self._TRACKED_AGENT_ID, self._TRACKED_DISPATCH_ID,
             _sidechain_copies([
-                _turn("s1", [_read_use("a1", file_path="/sentinel/dir/big.py")], usage={"output_tokens": 10}),
-                _read_result("a1", "line\n" * 1000),
+                _turn(tracked_turn, [_read_use(tracked_read, file_path=self._MAIN_PATH)], usage={"output_tokens": 10}),
+                _read_result(tracked_read, "line\n" * 1000),
             ]),
             agent_type=_TRACKED_AGENT_TYPE,
         )
         _write_subagent_dispatch(
-            fake_projects, "sentinel-session-id", "agent-untracked", "tool-2",
+            fake_projects, self._SESSION_ID, self._UNTRACKED_AGENT_ID, self._UNTRACKED_DISPATCH_ID,
             _sidechain_copies([
-                _turn("s2", [_read_use("a2", file_path="/sentinel/dir/other.py")], usage={"output_tokens": 10}),
-                _read_result("a2", "line\n" * 1000),
+                _turn(
+                    untracked_turn, [_read_use(untracked_read, file_path=self._OTHER_PATH)],
+                    usage={"output_tokens": 10},
+                ),
+                _read_result(untracked_read, "line\n" * 1000),
             ]),
             agent_type=_UNTRACKED_AGENT_TYPE,
         )
@@ -1344,8 +1338,14 @@ class TestReport:
         assert "sessions=1 api_calls=4" in out
         assert "## Main-thread whole-file reads over 800 lines: 1" in out
         assert "edited_later=True: n=1" in out
-        for withheld in ("sentinel", "big.py", "other.py", _UNTRACKED_AGENT_TYPE, "tool-1", str(fake_projects)):
-            assert withheld not in out
+        withheld_identifiers = (
+            os.path.basename(self._MAIN_PATH), os.path.basename(self._OTHER_PATH), _UNTRACKED_AGENT_TYPE,
+        )
+        for withheld_identifier in withheld_identifiers:
+            assert withheld_identifier not in out
+        assert "sentinel" not in out
+        assert fake_projects.name not in out
+        assert str(fake_projects.parent.parent) not in out
 
     def test_tracked_agent_type_prints_by_name_and_untracked_folds_into_the_withheld_row(
         self, fake_projects, capsys,

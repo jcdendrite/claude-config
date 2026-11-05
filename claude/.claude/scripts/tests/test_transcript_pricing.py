@@ -97,6 +97,23 @@ _PRICING_VARIANT_USAGE_CASES = [
 ]
 
 
+class TestCacheReadEquivalentWeights:
+    def test_weights_pin_the_literal_ratios_of_each_class_to_cache_read(self):
+        assert pricing._cache_read_equivalent_weights() == pytest.approx({
+            "cache_read": 1.0, "cache_write_5m": 12.5, "cache_write_1h": 20.0, "output": 50.0, "input": 10.0,
+        })
+
+    def test_weights_cover_every_token_class(self):
+        assert set(pricing._cache_read_equivalent_weights()) == set(pricing._TOKEN_CLASSES)
+
+    def test_weights_agree_with_model_rates_for_a_model_without_a_cache_read_override(self):
+        model = "claude-sonnet-4-6"
+        assert model not in pricing._CACHE_READ_MULTIPLIER_OVERRIDES
+        rates = pricing._model_rates(model)
+        weights = pricing._cache_read_equivalent_weights()
+        assert {cls: rate / rates["cache_read"] for cls, rate in rates.items()} == pytest.approx(weights)
+
+
 class TestPricingVariant:
     """pricing._pricing_variant labels a turn by the multiplier conditions _price_turn applies, so
     pr-cost's per-model cells file each turn under the variant its dollars were priced with."""
