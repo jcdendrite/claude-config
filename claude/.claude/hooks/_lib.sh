@@ -4638,8 +4638,7 @@ _lib_architect_consult_latch_file() {
 
 # _lib_diff_size_latch_file CONFIG_DIR STATE_KEY
 # Prints the path of the branch's diff-size acknowledgment latch, with the same
-# empty-argument contract as _lib_architect_consult_latch_file. It joins paths
-# only, so a caller that already holds the key passes it in.
+# empty-argument contract as _lib_architect_consult_latch_file.
 _lib_diff_size_latch_file() {
   local config_dir="${1:-}" state_key="${2:-}"
   [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
@@ -4671,9 +4670,7 @@ _LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES=400
 _LIB_DIFF_SIZE_COUNT_CAP_SECONDS=30
 
 # _lib_sum_numstat_changed_lines
-# Reads `git diff --numstat` text on stdin and prints the sum of every row's added and deleted columns.
-# A row whose first two tab-separated columns are not both all digits, such as a binary file's `-` row, adds zero,
-# and empty input prints 0.
+# Reads `git diff --numstat` text on stdin and prints the sum of the added and deleted columns.
 _lib_sum_numstat_changed_lines() {
   LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { print total + 0 }'
 }
@@ -4681,21 +4678,14 @@ _lib_sum_numstat_changed_lines() {
 # _lib_diff_size_measure REPO_ROOT GITDIR BRANCH
 # Prints "<count> <base>" and returns 0, where <count> is the changed lines (additions plus deletions) the commit
 # being made leaves in the branch's diff against origin/<base>, not counting files under REPO_ROOT's .claude/plans/.
-# Returns 1 with no stdout when the commit is not measurable:
-#   - a merge, rebase, cherry-pick or revert is paused, or its state could not be read
-#   - the stack-base key is unusable, or a git read inside _lib_configured_stack_base failed or was cap-killed
-#     (either way its one stderr line reaches the caller's stderr)
-#   - the base does not resolve, equals BRANCH, or has no origin/<base> ref
-#   - the merge-base or the count call failed, a cap kill included
-#   - the merge-base came back empty
-#   - the changed-line sum came back empty (a missing or failing `awk`)
+# Returns 1 with no stdout when the commit is not measurable.
+# A commit during a paused merge, cherry-pick or revert, or on the base branch itself, is refused by design and returns 1.
+# _lib_configured_stack_base's one stderr line reaches the caller's stderr.
 # BRANCH must be the branch HEAD names, because _lib_configured_stack_base and the merge-base read HEAD themselves.
-# The base is the stack-base key's value when set, else the default branch. No `gh pr view`, which would add a
-# network call to every commit; a branch on a non-default base with no key set therefore overcounts.
-# The count reads the index against the merge-base.
-# That equals the diff the commit lands only because deny-invisible-commit-content.sh denies a chained `git add`,
-# a `-a` commit and a pathspec commit.
-# The equality does not hold where that hook's header lists Known gaps.
+# No `gh pr view`: it would add a network call to every commit, so a branch on a non-default base with no
+# stack-base key overcounts.
+# Counting the index equals the diff the commit lands only because deny-invisible-commit-content.sh denies a chained
+# `git add`, a `-a` commit and a pathspec commit, except where that hook's header lists Known gaps.
 _lib_diff_size_measure() {
   local repo_root="$1" gitdir="$2" branch="$3"
   local inprogress_status=0 stack_status=0 stack_line base merge_base numstat count
@@ -4714,8 +4704,11 @@ _lib_diff_size_measure() {
   # The unset keeps an inherited pathspec variable from reading the exclude as a literal name, which empties the diff at exit 0.
   numstat=$(
     unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
-    # Keeps the count from fetching a missing blob from a promisor remote, on a git that honors it.
+    # git.adoc documents GIT_NO_LAZY_FETCH as stopping the count from fetching a missing blob from a promisor remote.
+    # Its option form, `git --no-lazy-fetch`, is in the 2.45.0 release notes.
+    # Older git ignores GIT_NO_LAZY_FETCH, so only the count cap bounds the count there, and only under GNU timeout (see _lib_capped_for's header).
     export GIT_NO_LAZY_FETCH=1
+    # Inherited GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE stay set, because the commit being made inherits the same ones.
     _lib_capped_for "$_LIB_DIFF_SIZE_COUNT_CAP_SECONDS" git -C "$repo_root" diff-index --cached --numstat -M --ignore-submodules=none "$merge_base" -- ':(top,exclude).claude/plans/' 2>/dev/null
   ) || return 1
   count=$(printf '%s\n' "$numstat" | _lib_sum_numstat_changed_lines)
@@ -4727,29 +4720,22 @@ _lib_diff_size_measure() {
 # The one read sequence the diff-size gate and its acknowledgment script share, so they agree on the config dir,
 # repository, branch, latch path and count.
 # Only status 0 writes stdout: the latch path, then the "<count> <base>" line of _lib_diff_size_measure.
-# Only status 1 can write stderr, and statuses 2 and 3 write nothing.
-# The one line status 1 writes by design is _lib_configured_stack_base's stack-base line.
-# Any other stderr is incidental shell output, such as the error a missing `sha256sum` or `awk` writes.
+# Only status 1 can write stderr: _lib_configured_stack_base's stack-base line, plus incidental shell errors such as a
+# missing `sha256sum` or `awk`.
 # Statuses:
 #   - 0: the branch is unlatched and at or over _LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES
-#   - 1: state could not be read (config dir, repository, branch, key or measurement)
+#   - 1: state that could not be read, or a deliberately unmeasured commit
 #   - 2: the count is below the threshold
 #   - 3: the branch's latch path is a regular file
-# 1 is the only failure. 1 and 2 are distinct answers that a caller words differently, unlike
-# _lib_git_inprogress_state and _lib_configured_stack_base, where 2 means unreadable state.
+# Only 1 is a failure, unlike _lib_git_inprogress_state and _lib_configured_stack_base, where 2 means unreadable state.
 # Callers capture with `rc=0; out=$(_lib_diff_size_gate_state ...) || rc=$?`, because statuses 1, 2 and 3 are answers
 # and a bare call aborts a `set -e` script.
 # The latch test precedes the measurement because a latched branch is already at the threshold and would otherwise
 # pay for a measurement on every later commit.
-# Cost: about 8 git processes in the common case, each under a timeout wrapper, plus two sha256sum | awk pipelines
-# for the key's repository and branch hashes.
-# The upper bound if every capped call stalled is 102 seconds, from the worst path (no stack-base key, dangling origin/HEAD).
-# The bound is not reachable in full, because a killed rev-parse, branch read, stack-base read, config read or merge-base ends the sequence early.
-# The 102 seconds sum:
-#   - 10 calls at _lib_capped's 5 seconds plus the 2-second kill grace: rev-parse, branch read, stack-base branch read,
-#     config read, origin/HEAD's 2 reads, 3 default-branch candidate probes, merge-base
-#   - the count call at its cap plus the grace
-# The git reads here discard their stderr.
+# Cost: about 8 git processes in the common case, each under a timeout wrapper, plus two sha256sum | awk pipelines.
+# The upper bound if every capped call stalled is 102 seconds on the worst path (no stack-base key, dangling origin/HEAD).
+# That is 10 calls at _lib_capped's 5 seconds plus the 2-second kill grace, and the count call at its cap plus the grace.
+# The bound is not reachable in full, because a cap kill in some of those calls ends the sequence before the rest run.
 _lib_diff_size_gate_state() {
   local start_dir="${1:-}"
   local config_dir paths repo_root gitdir branch state_key latch_file measurement count

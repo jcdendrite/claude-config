@@ -76,7 +76,7 @@ Alternatives weighed:
 9. `code-writer` never commits, because the parent owns git, so the commit deny normally reaches a session that can call `AskUserQuestion`. [verified: `code-writer.md:23`]
 10. `_lib_command_concludes_commit` returns 0, 1 or 2 and matches `git commit` and every `--continue` form, including inside a bare-`&` piece. With `sed` or `tr` missing from `PATH` it returns 2. `_lib_git_inprogress_state` reports a paused rebase, merge, cherry-pick or revert from gitdir files. It takes the gitdir as an optional second argument and returns 2 when the gitdir does not resolve. [verified: `_lib.sh:2438-2504`, `_lib.sh:1635-1662`, `test_lib_commit_predicates.py:219-233`]
 11. When two PreToolUse hooks deny the same Bash call, the agent sees one reason, not both. A probe in this session staged an unreviewed plan file and ran `git commit -a -m <msg>`. Both `deny-invisible-commit-content.sh` and `require-code-review.sh` deny that command. `deny-invisible-commit-content.sh` had denied the identical command a call earlier. The agent was shown only the code-review reason. The hooks reference documents parallel runs and `deny` precedence and is silent on combining reasons. The design does not depend on which reason is shown (M2). [verified: the probe; the hooks reference at code.claude.com/docs/en/hooks, read through a subagent]
-12. The latch precedent is `log-reviewer-round.sh:140-144`: `mkdir -p`, `touch`, then a `find -mtime +30 -delete` sweep on the write path. `_lib_reviewer_round_state_key_for_branch` is the one home of the `<repo-hash>.<branch-hash>` formula for a caller that has already read the branch. `_lib_reviewer_round_state_key` reads the branch, calls it, and returns 1 on a detached HEAD. `_lib_architect_consult_latch_file` is the latch-path helper precedent, and the consult gate tests its latch with `-f`. [verified: `log-reviewer-round.sh:140-144`, `_lib.sh:4630-4637`, `_lib.sh:4670-4690`, `require-architect-consult.sh:109`]
+12. The latch precedent is `log-reviewer-round.sh:140-144`: `mkdir -p`, `touch`, then a `find -mtime +30 -delete` sweep on the write path. `_lib_reviewer_round_state_key_for_branch` is the one home of the `<repo-hash>.<branch-hash>` formula for a caller that has already read the branch. `_lib_reviewer_round_state_key` reads the branch, calls it, and returns 1 on a detached HEAD. `_lib_architect_consult_latch_file` is the latch-path helper precedent, and the consult gate tests its latch with `-f`. [verified: `log-reviewer-round.sh:140-144`, `_lib.sh:4630-4637`, `_lib_reviewer_round_state_key` and `_lib_reviewer_round_state_key_for_branch` in `_lib.sh`, `require-architect-consult.sh:109`]
 13. `git diff-index --cached --numstat -M --ignore-submodules=none <commit> --` prints one `<added>\t<deleted>\t<path>` row per changed path, and `-\t-` for a binary file. A rename with 3 edited lines prints `3\t3\t<old> => <new>`, and an empty diff prints nothing at exit 0. [verified: a git probe in review round 3]
 14. Pinning a skill-body number to a hook literal has a precedent: `ai-instruction-and-memory-files/SKILL.md`'s CLAUDE.md line cap is pinned to `check-claude-md-length.sh`'s `limit_for` default. The `DocCountFact` driver runs `re.findall` with no flags and requires exactly one match per occurrence pattern in its file. [verified: `test_doc_counts.py:227-250`, `:546-559`, `:662-676`, `:713-716`]
 15. `plan-it/SKILL.md` is 181 lines under the 200-line default cap, and `plan-review/SKILL.md` is 302 lines under its 500-line cap. [verified: `claude/.claude/hooks/check-skill-length.sh:130-141`; reads]
@@ -146,7 +146,11 @@ Alternatives weighed:
 **Mechanisms:**
 - **M1. The gate's checks (`_lib_diff_size_gate_state` in PR 1, the hook in PR 2).**
   - New `claude/.claude/hooks/require-diff-size-prompt.sh`: line 2 `# hook-class: gate`, line 3 `# tier-threat-model: cooperative`, and `DENY_GATE_LABEL="diff-size"`.
-  - It follows the runbook-pointer bootstrap form of `require-architect-consult.sh:41-63`, not the bare form (row 55). That form is the `emit_deny` stub, the `_lib.sh` source whose failure deny keeps the sibling's sentence pointing to `docs/hooks.md` § "Gate deadlock recovery", the `emit_deny` re-point, and the `_lib_parse_tool_input_or_deny` call.
+  - It follows the runbook-pointer bootstrap form of `require-architect-consult.sh:41-63`, not the bare form (row 55). That form has four parts:
+    - The `emit_deny` stub.
+    - The `_lib.sh` source, whose failure deny keeps the sibling's sentence pointing to `docs/hooks.md` § "Gate deadlock recovery".
+    - The `emit_deny` re-point.
+    - The `_lib_parse_tool_input_or_deny` call.
   - The hook's checks run cheapest first, and every allow is `exit 0` with no output:
     1. Allow unless `TOOL_NAME` is `Bash`.
     2. Allow unless `[[ "$COMMAND" == *git* ]]`. This pure-bash test spares every other Bash call the commit parse's `sed` and `tr` forks.
@@ -164,8 +168,13 @@ Alternatives weighed:
     8. Print the latch path, then the measurement's `<count> <base>` line, and return 0.
   - Its own git reads discard their stderr, and the measurement's stderr reaches the caller.
   - Only status 0 prints, and its two lines are the only fields a caller reads. The latch path already carries the config dir, and its key hashes the repository root and the branch, so the test checks all three through it.
-  - Its header lists the four statuses: 0 for an unlatched branch at or over the threshold, 1 for state that could not be read, 2 for a count below the threshold, and 3 for a latched branch. It says 1 is the only failure, and that 1 and 2 are distinct answers a caller words differently. In `_lib_git_inprogress_state` and `_lib_configured_stack_base` a 2 means unreadable state, so a caller written from that convention would misread this function.
-  - The header also states the per-commit cost and the worst-case wall time, in the shape of `_lib_reviewer_round_state_value`'s count at `_lib.sh:4718-4728`. The cost is about 8 git processes in the common case, each under a `timeout` wrapper, plus two `sha256sum | awk` pipelines. The ceiling is roughly 100 seconds if every capped call stalled. The writer re-derives both figures from the calls it writes.
+  - Its header lists the four statuses:
+    - 0: an unlatched branch at or over the threshold.
+    - 1: state that could not be read.
+    - 2: a count below the threshold.
+    - 3: a latched branch.
+  - The header also says 1 is the only failure, and that 1 and 2 are distinct answers a caller words differently. In `_lib_git_inprogress_state` and `_lib_configured_stack_base` a 2 means unreadable state, so a caller written from that convention would misread this function.
+  - The header also states the per-commit cost and the worst-case wall time, in the shape of `_lib_reviewer_round_state_value`'s count in its header comment. The cost is about 8 git processes in the common case, each under a `timeout` wrapper, plus two `sha256sum | awk` pipelines. The ceiling is roughly 100 seconds if every capped call stalled. The writer re-derives both figures from the calls it writes.
 
   anchors: root, row2, row10, row12, row20, row35, row41, row54, row55
 
@@ -203,9 +212,9 @@ Alternatives weighed:
     - The count call fails, a cap kill included.
 
   The count call captures `_lib_capped_for "$_LIB_DIFF_SIZE_COUNT_CAP_SECONDS" git -C "$REPO_ROOT" diff-index --cached --numstat -M --ignore-submodules=none "$MERGE_BASE" -- ':(top,exclude).claude/plans/'` into a variable and checks its status before summing.
-  - A pipeline would mask a failed git call, the hazard `_lib.sh:4730-4736` names.
+  - A pipeline would mask a failed git call, the hazard the "captured, not piped" comment in `_lib_reviewer_round_state_value` names.
   - Inside the command substitution, `unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS` runs first, as at `deny-private-project-refs.sh:618`, so an inherited variable cannot read the exclude as a literal name and zero the count (row 51).
-  - It then runs `export GIT_NO_LAZY_FETCH=1`, so the count does not fetch a missing blob from a promisor remote on a git that honors the variable. `plan-push-preflight.py:170-171` sets it the same way. A test pins the export through a recording shim.
+  - It then runs `export GIT_NO_LAZY_FETCH=1`, which git.adoc documents as stopping the count from fetching a missing blob from a promisor remote. `git --no-lazy-fetch` is in the 2.45.0 release notes. Older git, including the 2.43 floor, ignores the variable. There only the count cap bounds the count, and only under GNU timeout (see `_lib_capped_for`'s header). `plan-push-preflight.py:170-171` sets it the same way. A test pins the export through a recording shim.
   - Plumbing `diff-index` follows `pr-diff-against-base.sh:145-146`'s reason for plumbing: porcelain diff config cannot change the result.
   - Every path counts except those under the repository root's `.claude/plans/` (rows 48, 52). The `:(top,exclude)` spelling is the one both existing exclude pathspecs use (row 51).
   - Counting the index is exact because of row 23.
@@ -338,7 +347,7 @@ The writer does not stage (`code-writer.md:23`), and the dead-code tripwire read
     - The fixture builders take no env, so before building any fixture the test sets `helpers.isolated_git_config_env(home)`'s four variables with `monkeypatch.setenv`.
     - Every call passes `os.environ` with the case's own overrides merged over it, never the isolation dict alone, which would drop `PATH`.
     - Every `_lib_diff_size_gate_state` call sets an absolute `CLAUDE_CONFIG_DIR` under `tmp_path`, because a Claude session running the suite exports its own.
-    - The bare `origin`'s default branch is `trunk`, so a hard-coded `main` base fails.
+    - The bare `origin`'s default branch is `trunk`, so a hard-coded `main` base fails. The default-branch-guess case is the one exception and uses `main`. The guess probes only `main`, `master` and `develop`, so a `trunk` remote returns 1 by construction.
     - Deleted and added lines are textually distinct (`old-{i}`, `new-{i}`), and rename fixtures use a file of unique lines.
     - Each refusal list below is one `pytest.mark.parametrize` table over one shared builder.
     - Reuse, through `from helpers import ...` (row 58): `bare_remote_with_default_branch` with `branch="trunk"`, `push_conflicting_edit_to_origin`, `absolute_git_dir`, `git_toplevel`, `path_with_failing_tool_shim`, `build_path_without`, `_make_git_recording_argv`, `_run_git`, `isolated_git_config_env` and `reviewer_round_state_key`. From `._lib_sh_helpers`, reuse `_run_lib_call`, `_gh_shim_dir` and `_forge_state_marker`.
@@ -371,10 +380,14 @@ The writer does not stage (`code-writer.md:23`), and the dead-code tripwire read
     - A merge is paused: `_forge_state_marker(absolute_git_dir(<clone>), "merge", <HEAD oid>)` writes a `MERGE_HEAD` marker into the gitdir.
     - `path_with_failing_tool_shim(bin_dir, "git", "diff-index")` is first on `PATH`.
     - `awk` is left off `PATH` through `build_path_without`, so the changed-line sum comes back empty. This is a standalone test, not a table row.
+    - The gitdir is empty and a shim fails any `git` call whose argument is `--absolute-git-dir`, so the in-progress state is unreadable. The one call the shim hits is `git rev-parse --absolute-git-dir` inside `_lib_git_inprogress_state`. The untoggled premise runs the same call with the empty gitdir and no shim, and prints `5 trunk`. This is a standalone test, not a table row.
+  - `_lib_diff_size_measure` with `origin/HEAD` removed from a remote whose default branch is `main` still prints `<count> main`, through the default-branch guess:
+    - The case first asserts `refs/remotes/origin/HEAD` resolves.
+    - It then removes the ref with `git remote set-head origin -d` and asserts the ref no longer resolves.
+    - The call then prints `<count> main`.
   - `_lib_diff_size_measure` and the count cap, two cases:
     - A call that sources `_lib.sh` and prints `_LIB_DIFF_SIZE_COUNT_CAP_SECONDS` yields an integer above 5, `_lib_capped`'s cap. The case pins no exact value and scans no source text.
-    - The call string sets the constant to 1 after sourcing. `_make_git_recording_argv`'s shim, with `REAL_GIT` set, is first on `PATH`, and its action runs `exec sleep 4` when the arguments hold `diff-index`. The call returns 1 with no stdout, and the shim's log holds a `diff-index` call, so the refusal came from the killed count and not from an earlier refusal. Without a cap the stalled call would print `0 trunk` at status 0. The case skips when neither `timeout` nor `gtimeout` is on `PATH`, because `_lib_capped_for` then runs the call uncapped. The skip uses the two-line guard at `conftest.py:310-311` and `test_deny_pii_in_commits.py:1426`.
-    - The shim must `exec`, because a forked `sleep` would hold the command substitution open past the cap (`_lib.sh:73-79`).
+    - The call string sets the constant to 1 after sourcing. `_make_git_recording_argv`'s shim, with `REAL_GIT` set, is first on `PATH`, and its action runs `exec sleep 4` when the arguments hold `diff-index`. The call returns 1 with no stdout, and the shim's log holds a `diff-index` call, so the refusal came from the killed count and not from an earlier refusal. Without a cap the stalled call would print `0 trunk` at status 0. The case skips when neither `timeout` nor `gtimeout` is on `PATH`, because `_lib_capped_for` then runs the call uncapped. The skip uses the two-line guard at `conftest.py:310-311` and `test_deny_pii_in_commits.py:1426`. The shim must `exec`, because a forked `sleep` would hold the command substitution open past the cap (`_lib.sh:73-79`).
   - `_lib_diff_size_measure` and the lazy-fetch variable, one case, a shim-level unit over real git:
     - A shim built with `_make_git_recording_argv` logs `$GIT_NO_LAZY_FETCH` when the arguments hold `diff-index`.
     - The case sets `GIT_NO_LAZY_FETCH=0` in the ambient environment through `env_overrides`, so a logged `1` can only come from the export.
@@ -399,7 +412,7 @@ The writer does not stage (`code-writer.md:23`), and the dead-code tripwire read
 
 Session-owned: `.claude/plans/diff-size-prompt.md`, this plan.
 
-Projected diff: about 745 changed lines (additions plus deletions), measured from the implemented diff with this plan file left out, as M3's count leaves out the repository root's `.claude/plans/`. It is at or over the 400 threshold. `test_lib_diff_size.py` is about 565 of them, the `_lib.sh` additions about 110, the `_gh_shim_dir` move about 50, and the `test_lib_reviewer_round_state.py` cases about 12. It sits above the about 600 that row 60's `Proceed anyway` answered. Row 71 answered about 720, and the later review rounds added about 25 more lines of test cases.
+Projected diff: about 770 changed lines (additions plus deletions), measured from the implemented diff with this plan file left out, as M3's count leaves out the repository root's `.claude/plans/`. It is at or over the 400 threshold. `test_lib_diff_size.py` is about 590 of them, the `_lib.sh` additions about 110, the `_gh_shim_dir` move about 50, and the `test_lib_reviewer_round_state.py` cases about 12. It sits about 50 lines above the about 720 that row 71 answered, because later review rounds added test cases.
 
 ## Verification
 
@@ -413,7 +426,11 @@ These steps cover PR 1 only. PR 2's and PR 3's plans carry their own. The parent
 ## Out of scope
 
 - PR 2, a follow-up PR stacked on this branch, under its own plan (row 42). Beyond the Approach's cut list, it carries:
-  - The ack's test covers M2's write order: a failed write leaves no latch file and exits 3, a directory at the latch path exits 3 with no file left inside it, and a failing sweep still exits 0. It also asserts the ack's `mktemp` call carries a template, because BSD `mktemp` needs one (`claude/.claude/rules/shell-script-conventions.md:33-34`).
+  - The ack's test covers M2's write order:
+    - A failed write leaves no latch file and exits 3.
+    - A directory at the latch path exits 3 with no file left inside it.
+    - A failing sweep still exits 0.
+  - It also asserts the ack's `mktemp` call carries a template, because BSD `mktemp` needs one (`claude/.claude/rules/shell-script-conventions.md:33-34`).
   - The ack's test also covers M2's no-argument rule: the ack with any argument exits 2 and writes nothing.
   - The hook's test keeps one case each for `_lib_diff_size_gate_state` statuses 1 and 2, both asserting allow, so the status numbering cannot drift silently.
   - The hook's test also asserts the deny writes no latch file or directory (M6).
@@ -431,7 +448,12 @@ These steps cover PR 1 only. PR 2's and PR 3's plans carry their own. The parent
     - The results, in PR 2's description.
   - A default-mode observation is recorded only as confirmation that no `allow` rule matches (a command outside the allow list prompts there, `review-permissions/REFERENCES.md:80-82`), not as evidence for the entry.
   - PR 2 also adds a `review-permissions/REFERENCES.md` decision entry for the ack, or says why not.
-  - PR 2's plan also settles these findings from plan-review round 5, which concern only PR 2: how the pre-merge run loads the branch's settings and which observations gate the merge; the behavioral `mktemp` shim form for the template assertion; re-reading the hooks reference for the PreToolUse timeout default and either setting an explicit `timeout` on the entry or stating the fail-closed timeout path in M6; adding `require-diff-size-prompt.sh` to `_SELF_FILTERING_BASH_GATES` (`test_hook_alignment.py:872-888`); and wording the `docs/hooks.md:112` dependents entry as recognizing, not counting, the `--continue` forms.
+  - PR 2's plan also settles these findings from plan-review round 5, which concern only PR 2:
+    - How the pre-merge run loads the branch's settings, and which observations gate the merge.
+    - The behavioral `mktemp` shim form for the template assertion.
+    - The PreToolUse timeout default: re-read the hooks reference, then either set an explicit `timeout` on the entry or state the fail-closed timeout path in M6.
+    - Adding `require-diff-size-prompt.sh` to `_SELF_FILTERING_BASH_GATES` (`test_hook_alignment.py:872-888`).
+    - Wording the `docs/hooks.md:112` dependents entry as recognizing, not counting, the `--continue` forms.
   - Its Verification also carries a post-merge live check of the deny, the `AskUserQuestion` prompt, the ack and the retried commit chain (rows 37, 39).
   - The cross-test "every PreToolUse `Bash` hook allows the bare ack command" checks allow only. The prompting of prefixed and wrapped forms rests on the manual check above.
 - PR 3, a follow-up PR stacked on PR 2, under its own plan: M7's `plan-it/SKILL.md` and `plan-review/SKILL.md` sentences, M8's `DocCountFact` in `test_doc_counts.py`, and its CHANGELOG bullet (M9). Its Verification carries the two skills' line caps (row 15).

@@ -2,8 +2,10 @@
 _lib_diff_size_gate_state. The latch path helper is covered with the other
 branch-state path helpers in test_lib_reviewer_round_state.py.
 
-Every case that builds a repository does so against a bare `origin` whose
-default branch is `trunk`, so a hard-coded `main` base fails.
+Every case that builds a repository, except the default-branch-guess case,
+does so against a bare `origin` whose default branch is `trunk`, so a
+hard-coded `main` base fails. The default-branch-guess case uses `main`, because the guess probes
+only `main`, `master` and `develop`.
 """
 
 from __future__ import annotations
@@ -83,6 +85,12 @@ def _measure(
         **(env_overrides or {}),
     }
     return _run_lib_call(f'{call_prefix}_lib_diff_size_measure "$TEST_REPO_ROOT" "$TEST_GITDIR" "$TEST_BRANCH"', env=env)
+
+
+def _origin_head_resolves(repo: Path) -> bool:
+    return subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd=repo, capture_output=True
+    ).returncode == 0
 
 
 def _numstat_total(numstat_text: str) -> int:
@@ -231,6 +239,20 @@ class TestLibDiffSizeMeasurePlanExclusion:
         assert (result.returncode, result.stdout) == (0, "14 trunk\n"), result.stderr
 
 
+class TestLibDiffSizeMeasureDefaultBranch:
+    def test_a_clone_without_origin_head_measures_against_the_guessed_main(self, tmp_path: Path) -> None:
+        _bare, clone = bare_remote_with_default_branch(tmp_path, branch="main", file_name=SEED_FILE)
+        _run_git(clone, "checkout", "-q", "-b", "feature")
+        _stage_file(clone, "work.txt", _lines("work", 5))
+        assert _origin_head_resolves(clone)
+        _run_git(clone, "remote", "set-head", "origin", "-d")
+        assert not _origin_head_resolves(clone)
+
+        result = _measure(clone)
+
+        assert (result.returncode, result.stdout) == (0, "5 main\n"), result.stderr
+
+
 class TestLibDiffSizeMeasureStackBase:
     def test_a_pushed_parent_with_a_slashed_name_is_the_base_and_later_parent_commits_do_not_change_the_count(
         self, tmp_path: Path
@@ -321,6 +343,18 @@ class TestLibDiffSizeMeasureRefusals:
         farm_dir.mkdir()
 
         result = _measure(clone, env_overrides={"PATH": build_path_without("awk", farm_dir)})
+
+        assert (result.returncode, result.stdout) == (1, "")
+
+    def test_unreadable_in_progress_state_returns_1_with_no_stdout(self, tmp_path: Path) -> None:
+        # An empty gitdir makes _lib_git_inprogress_state resolve it itself, and the shim fails that one call.
+        _bare, clone = _clone_with_trunk_files(tmp_path)
+        _stage_file(clone, "work.txt", _lines("work", 5))
+        untoggled = _measure(clone, env_overrides={"TEST_GITDIR": ""})
+        assert untoggled.stdout == "5 trunk\n", untoggled.stderr
+        failing_gitdir_read = {"PATH": path_with_failing_tool_shim(tmp_path / "failing-gitdir-bin", "git", "--absolute-git-dir")}
+
+        result = _measure(clone, env_overrides={"TEST_GITDIR": "", **failing_gitdir_read})
 
         assert (result.returncode, result.stdout) == (1, "")
 
