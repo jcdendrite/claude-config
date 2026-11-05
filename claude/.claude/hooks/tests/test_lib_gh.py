@@ -4,40 +4,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
 from helpers import init_git_repo_with_commit
 
-from ._lib_sh_helpers import _LIB_SH, _run_lib_call
+from ._lib_sh_helpers import _LIB_SH, _gh_shim_dir, _run_lib_call
 
 # --- _lib_gh -----------------------------------------------------------
-
-
-def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
-    """PATH dir holding a fake `gh` that records argv and
-    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
-    exit_code."""
-    shim_dir = tmp_path / "gh-shim"
-    shim_dir.mkdir()
-    gh_shim = shim_dir / "gh"
-    gh_shim.write_text(textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import json
-        import os
-        import sys
-        record = {{
-            "args": sys.argv[1:],
-            "GH_HOST": os.environ.get("GH_HOST"),
-            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
-        }}
-        with open({str(call_log)!r}, "a") as f:
-            f.write(json.dumps(record) + chr(10))
-        sys.exit({exit_code})
-    """))
-    gh_shim.chmod(0o755)
-    return shim_dir
 
 
 class TestLibGh:

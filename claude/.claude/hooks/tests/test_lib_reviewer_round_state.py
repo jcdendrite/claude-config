@@ -129,7 +129,7 @@ def _path_helper(function_name: str, config_dir_arg: str, state_key_arg: str) ->
 
 
 class TestLibBranchStatePathHelpers:
-    """Contract for the path helpers the gate and the recorder share. The
+    """Contract for the path helpers the gates and the recorder share. The
     expected paths are literals, so a renamed directory fails here."""
 
     @pytest.mark.parametrize(
@@ -145,6 +145,11 @@ class TestLibBranchStatePathHelpers:
                 "/cfg/.architect-consult-latch.d/repohash.branchhash",
                 id="latch file",
             ),
+            pytest.param(
+                "_lib_diff_size_latch_file",
+                "/cfg/.diff-size-prompt-latch.d/repohash.branchhash",
+                id="diff-size latch file",
+            ),
         ],
     )
     def test_prints_the_path_under_the_config_dir(self, function_name, expected_path):
@@ -152,7 +157,10 @@ class TestLibBranchStatePathHelpers:
         assert result.returncode == 0
         assert result.stdout == f"{expected_path}\n"
 
-    @pytest.mark.parametrize("function_name", ["_lib_reviewer_round_state_file", "_lib_architect_consult_latch_file"])
+    @pytest.mark.parametrize(
+        "function_name",
+        ["_lib_reviewer_round_state_file", "_lib_architect_consult_latch_file", "_lib_diff_size_latch_file"],
+    )
     @pytest.mark.parametrize(
         ("config_dir_arg", "state_key_arg"),
         [

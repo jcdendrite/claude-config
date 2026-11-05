@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import textwrap
 from pathlib import Path
 
 from helpers import HOOKS_DIR
@@ -23,6 +24,31 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
         check=False,
         env=env,
     )
+
+
+def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
+    """PATH dir holding a fake `gh` that records argv and
+    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
+    exit_code."""
+    shim_dir = tmp_path / "gh-shim"
+    shim_dir.mkdir()
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        record = {{
+            "args": sys.argv[1:],
+            "GH_HOST": os.environ.get("GH_HOST"),
+            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
+        }}
+        with open({str(call_log)!r}, "a") as f:
+            f.write(json.dumps(record) + chr(10))
+        sys.exit({exit_code})
+    """))
+    gh_shim.chmod(0o755)
+    return shim_dir
 
 
 def _gate_diff_base(
