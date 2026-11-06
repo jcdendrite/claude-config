@@ -52,7 +52,7 @@ Alternatives weighed:
   - A note stops nothing.
   - Pairing it with this gate makes two layers.
 - **Measuring through `pr-diff-against-base.sh`**, whose base resolution calls `gh pr view`. Rejected for the network cost M4 states.
-- **Refusing the ack to a subagent.** Not added. The hook receives the agent identity as `AGENT_ID` through the shared payload parse (`_lib.sh:471,545`), but only on the commit call, not on the ack's own Bash call, so barring the ack needs a hook that matches the ack's command. The nearest precedent, `enforce-marker-script-shape.sh:436-448`, bars a non-roster subagent from ledger state only and leaves marker-like state open to it. Leaving the ack open is a choice made on the `cooperative` tier, and the deny text tells a subagent to report to its dispatcher. M6 states the gap.
+- **Refusing the ack to a subagent.** Not added. The hook receives the agent identity as `AGENT_ID` through the shared payload parse (`_lib.sh:471,545`), but only on the commit call, not on the ack's own Bash call. Barring the ack therefore needs a hook that matches the ack's command. The nearest precedent, `enforce-marker-script-shape.sh:436-448`, bars a non-roster subagent from ledger state only and leaves marker-like state open to it. Leaving the ack open is a choice made on the `cooperative` tier, and the deny text tells a subagent to report to its dispatcher. M6 states the gap.
 - **A kill-switch config key.** Not added. The Context reads the Ask as a fixed threshold that is not configurable, and the ack script already releases the gate once per branch. Adding a key would also edit the four pinned key-count claims (row 17).
 - **Shipping the helpers inside PR 2**, so no helper waits for a production caller. Rejected: that makes two PRs, not the three of row 42, and moves the direct tests' input matrix into the PR that already carries the hook and the script.
 - **The same read sequence written twice, in the hook and in the script, with a test that fails when they diverge.** Rejected: one function (M1) makes the two agree by construction, while a divergence test would pin only the inputs it builds.
@@ -115,7 +115,7 @@ Alternatives weighed:
 48. Lines under the repository root's `.claude/plans/` do not count toward the threshold. [engineer-verified: "the lines of the plan shouldn't count toward the code"]
 49. The carve-out takes the option the engineer selected. [engineer-verified: "Carve out plans (Recommended)"]
 50. Row 49's option description is the dispatching session's, not the engineer's words: exclude only the repository root's `.claude/plans/` through a pathspec, and keep a limit on plan size as a separate follow-up. [unverified]
-51. Two gates already scan a staged diff through a `:(top,exclude)` pathspec, and `deny-private-project-refs.sh` scans with that exclude alone. That gate notes that an inherited `GIT_LITERAL_PATHSPECS` reads the magic as a literal name and empties the diff at exit 0, and it unsets the four pathspec variables inside the command substitution. [verified: `deny-private-project-refs.sh:483`, `:616-619`; `deny-pii-in-commits.sh:424`]
+51. Two gates already scan a staged diff through a `:(top,exclude)` pathspec, and `deny-private-project-refs.sh` scans with that exclude alone. That gate notes that an inherited `GIT_LITERAL_PATHSPECS` reads the magic as a literal name and empties the diff at exit 0, and it unsets the four pathspec variables inside the command substitution. [verified: `deny-private-project-refs.sh:483`, `:616-620`; `deny-pii-in-commits.sh:424`]
 52. `git diff-index` given only `':(top,exclude).claude/plans/'` counts every other path. A file moved across that boundary counts as a whole-file add or delete, because the pathspec drops the other side before rename detection pairs them. [verified: a git probe in review round 3]
 53. The count call runs under a cap longer than `_lib_capped`'s 5 seconds. [engineer-verified: "Longer cap (Recommended)"]
 54. `_lib_capped_for SECONDS CMD [ARGS...]` takes the cap first and requires a non-empty SECONDS. `review-pr-checkout.sh` caps its own git diff at 30 seconds, "a chosen ceiling, not a measured figure, and larger than _lib_capped's 5s default because the diff's cost grows with the PR's size". [verified: `_lib.sh:54-60`, `:129-140`; `review-pr-checkout.sh:435-439`] Whether a 30-second cap fires before the harness's own hook timeout rests on row 70. [unverified]
@@ -140,9 +140,10 @@ Alternatives weighed:
 
     For auto mode and `bypassPermissions`, the first effect is documented behavior, not observed (row 69). [unverified]
 69. The plan's own addition, not shown to the engineer: a forced prompt on the bare ack in auto mode or `bypassPermissions` is documented, not observed (row 56), until PR 2's live check records it with the control run (Out of scope). The repo lists headless `-p` runs as untested (`docs/security-hardening.md:270`). The stop-and-report text in M5, not the prompt, is the headless mechanism. [unverified]
-70. A hook entry with no `timeout` gets the harness's 600-second default. This is a repo paraphrase of the hooks reference, `docs/handoff-nudge.md:198`, which carries its own re-verify-by date of 2026-11-17, and `docs/hooks.md:423` (fetched 2026-10-17). `docs/hooks.md:403` says a gate that times out blocks the call. The hooks reference was not re-read for this plan. [unverified]
+70. A hook entry with no `timeout` gets the harness's 600-second default. This is a repo paraphrase of the hooks reference, `docs/handoff-nudge.md:198` and `docs/hooks.md:423`. The first carries its own re-verify-by date of 2026-11-17. The second was fetched 2026-10-17. `docs/hooks.md:403` says a gate that times out blocks the call. The hooks reference was not re-read for this plan. [unverified]
 71. PR 1 ships at about 720 changed lines, above the about 600 row 60 answered, because the review rounds added test cases. [engineer-verified: "Proceed anyway at ~720 (Recommended)"]
 72. PR 1 measured about 850 changed lines on 2026-11-05, above the about 720 row 71 answered, because later review rounds added test cases. [engineer-verified: "Proceed at ~850 (Recommended)"]
+73. `claude/.claude/hooks/deny-private-project-refs.sh` gains one pointer comment naming the diff-size count's unset of the same four pathspec variables. It adds no executable line. [engineer-verified: "Pointer at both sites (Recommended)"]
 
 **Mechanisms:**
 - **M1. The gate's checks (`_lib_diff_size_gate_state` in PR 1, the hook in PR 2).**
@@ -219,7 +220,7 @@ Alternatives weighed:
 
   The count call captures `_lib_capped_for "$_LIB_DIFF_SIZE_COUNT_CAP_SECONDS" git -C "$REPO_ROOT" diff-index --cached --numstat -M --ignore-submodules=none "$MERGE_BASE" -- ':(top,exclude).claude/plans/'` into a variable and checks its status before summing.
   - A pipeline would mask a failed git call, the hazard the "captured, not piped" comment in `_lib_reviewer_round_state_value` names.
-  - Inside the command substitution, `unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS` runs first, as at `deny-private-project-refs.sh:618`, so an inherited variable cannot read the exclude as a literal name and zero the count (row 51).
+  - Inside the command substitution, `unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS` runs first, as at `deny-private-project-refs.sh:619`, so an inherited variable cannot read the exclude as a literal name and zero the count (row 51).
   - Run `export GIT_NO_LAZY_FETCH=1` next, which git.adoc documents as stopping the count from fetching a missing blob from a promisor remote. `git --no-lazy-fetch` is in the 2.45.0 release notes.
     - Older git, including the 2.43 floor, ignores the variable. There only the count cap bounds the count, and only under GNU timeout (see `_lib_capped_for`'s header).
     - `plan-push-preflight.py:170-171` sets it the same way.
@@ -245,7 +246,7 @@ Alternatives weighed:
     2. Run exactly `~/.claude/scripts/diff-size-ack.sh`, as its own Bash call, from this directory, in no other spelling.
     3. Re-run the denied command unchanged, chain included, because no part of it ran (row 37).
   - If the same denial recurs after the ack ran, whatever its exit status, report it to the engineer instead of asking again.
-  - If the ack call is denied or declined, treat it as `Split now`, except stop and report to the engineer instead of agreeing a split:
+  - If the ack call is denied or declined:
     - Stop and report.
     - Do not re-run the ack in any other spelling.
     - Do not release the gate by any other means.
@@ -290,11 +291,13 @@ Alternatives weighed:
   - A subagent can run the ack script. The gate is `cooperative`, so the deny text tells a subagent to report to its dispatcher instead of a bar (Approach).
   - In the documented flow the prompt comes after the `/code-review` round, because `/code-review` writes its marker in the commit chain (row 37).
   - A question asked in prose rather than through `AskUserQuestion` may be pushed past by `advance-past-commit-stall.sh` when autonomous shipping is active (row 39).
-  - A headless or scheduled session stops at the deny and reports. The deny text is that mechanism; the ask prompt's headless behavior is untested (row 69).
+  - A headless or scheduled session stops at the deny and reports, because the deny text says to.
+  - The ask prompt's headless behavior is untested (row 69).
   - A branch name reused in the same repository within 30 days inherits the old branch's latch.
   - A latch older than 30 days is swept only when some branch's ack runs, so a re-ask after 30 days is possible, not guaranteed.
   - The gate's denies and allows leave no trace. Only the ack's latch line does.
-  - A count call the 30-second cap kills leaves the commit unmeasured, and the largest refactors are the likeliest to reach the cap. The next commit measures again.
+  - A count call the 30-second cap kills leaves the commit unmeasured. The next commit measures again.
+  - The largest refactors are the likeliest to reach the cap.
   - The count runs below the diff `/ready-for-review` reviews by the lines of files under the repository root's `.claude/plans/`.
   - For the same reason it runs below the additions-plus-deletions size the 400 edge was taken from, which includes plan files.
   - Plans kept anywhere other than the repository root's `.claude/plans/` count.
@@ -302,7 +305,6 @@ Alternatives weighed:
   - The latch is a plain file the gate honors, so a direct write releases the gate with no trace line and no measurement.
   - The marker-shape guard (`enforce-marker-script-shape.sh:416,423`) covers `*-markers/*` and `.*-active.d/*`, not `*-latch.d`.
   - The ack costs a prompt and a direct write costs none, so the latch is not tamper-evident.
-  - The header and docs say the latch is not tamper-evident.
   - A direct latch write sits outside the cooperative tier.
   - The base ref name derives from remote or config state and appears in the deny text, so a hostile ref name reaches the agent as text. This sits outside the cooperative tier.
 
@@ -365,6 +367,7 @@ This branch carries PR 1 only, as one `code-writer` dispatch. The Approach's cut
 The writer does not stage (`code-writer.md:23`), and the dead-code tripwire reads its corpus from `git ls-files` (row 44), so the tripwire stays with the parent. `test_lib_diff_size.py` is already tracked on this branch, so no staging is needed. Once the dispatch returns, the parent runs Verification steps 1 and 4.
 
 - `claude/.claude/hooks/_lib.sh`: M3's two constants, `_lib_sum_numstat_changed_lines` and `_lib_diff_size_measure` with M4's base resolution inside it, M2's `_lib_diff_size_latch_file` beside `_lib_architect_consult_latch_file` (`_lib.sh:4630-4637`), and M1's `_lib_diff_size_gate_state` with its header. Reuse `_lib_config_dir`, `_lib_capped`, `_lib_capped_for`, `_lib_reviewer_round_state_key_for_branch`, `_lib_git_inprogress_state`, `_lib_configured_stack_base` and `_lib_default_branch_or_guess`.
+- `claude/.claude/hooks/deny-private-project-refs.sh`: one comment line beside its unset of the four pathspec variables (`:619`), naming `_lib_diff_size_measure`'s copy of the same unset (row 73).
 - `claude/.claude/hooks/tests/_lib_sh_helpers.py`: gains `_gh_shim_dir`, its body moved unchanged from `test_lib_gh.py:18-40`, and the `import textwrap` that body needs. It goes here, not to `helpers.py`, because this module holds what two or more `test_lib*.py` files share, and a `helpers.py` edit would force a full-suite run (row 57).
 - `claude/.claude/hooks/tests/test_lib_gh.py`: drops `_gh_shim_dir` and its now-unused `import textwrap` (`:7`). It imports `_gh_shim_dir` from `._lib_sh_helpers`, in isort order after `_LIB_SH` (`:13`).
 - `claude/.claude/hooks/tests/test_lib_reviewer_round_state.py`: `TestLibBranchStatePathHelpers` (`:131-166`) takes `_lib_diff_size_latch_file` as one more case in each of its two parametrized tests.

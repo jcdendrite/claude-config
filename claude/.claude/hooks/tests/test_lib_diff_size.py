@@ -442,17 +442,19 @@ class TestLibDiffSizeMeasureCountCap:
         call_log = tmp_path / "git-calls.log"
         # `exec` so the stalled process is the one the cap signals; a forked sleep would hold the
         # command substitution open past the cap.
-        _make_git_recording_argv(bin_dir, call_log, action='case "$*" in *diff-index*) exec sleep 4 ;; esac')
+        # The count call is `git -C <repo> diff-index ...`, so `$3` and the log line's third token are the subcommand,
+        # and an option placed before the subcommand moves it.
+        _make_git_recording_argv(bin_dir, call_log, action='case "$3" in diff-index) exec sleep 4 ;; esac')
         env_overrides = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "REAL_GIT": real_git}
 
         result = _measure(clone, env_overrides=env_overrides, call_prefix="_LIB_DIFF_SIZE_COUNT_CAP_SECONDS=1; ")
 
         assert (result.returncode, result.stdout) == (1, "")
-        assert any("diff-index" in call for call in call_log.read_text().splitlines())
+        assert any(call.split()[2:3] == ["diff-index"] for call in call_log.read_text().splitlines())
 
 
 class TestLibDiffSizeMeasureLazyFetch:
-    def test_the_count_call_runs_with_lazy_fetch_disabled(self, tmp_path: Path) -> None:
+    def test_the_count_call_runs_with_lazy_fetch_disabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real_git = shutil.which("git")
         assert real_git is not None
         _bare, clone = _clone_with_trunk_files(tmp_path)
@@ -460,17 +462,15 @@ class TestLibDiffSizeMeasureLazyFetch:
         bin_dir = tmp_path / "lazy-fetch-recording-bin"
         argv_log = tmp_path / "git-calls.log"
         lazy_fetch_log = tmp_path / "lazy-fetch-values.log"
+        # `$3` is the subcommand because of the `-C <repo>` prefix, as in the cap-kill test above.
         _make_git_recording_argv(
             bin_dir,
             argv_log,
-            action=f'case "$*" in *diff-index*) printf "%s\\n" "$GIT_NO_LAZY_FETCH" >> "{lazy_fetch_log}" ;; esac',
+            action=f'case "$3" in diff-index) printf "%s\\n" "$GIT_NO_LAZY_FETCH" >> "{lazy_fetch_log}" ;; esac',
         )
-        # An ambient `1` would satisfy the assertion without the export under test.
-        env_overrides = {
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-            "REAL_GIT": real_git,
-            "GIT_NO_LAZY_FETCH": "0",
-        }
+        # Removed so that only an `export` in the code under test can make the child see the variable.
+        monkeypatch.delenv("GIT_NO_LAZY_FETCH", raising=False)
+        env_overrides = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "REAL_GIT": real_git}
 
         result = _measure(clone, env_overrides=env_overrides)
 

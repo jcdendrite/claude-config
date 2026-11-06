@@ -4705,6 +4705,7 @@ _lib_diff_size_measure() {
   [ -n "$merge_base" ] || return 1
   # Captured, not piped, so a failed git call is not masked by the sum's own status.
   # The unset keeps an inherited pathspec variable from reading the exclude as a literal name, which empties the diff at exit 0.
+  # deny-private-project-refs.sh unsets the same four names before its staged-diff read, so edit both together.
   numstat=$(
     unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
     # git.adoc documents GIT_NO_LAZY_FETCH as stopping the count from fetching a missing blob from a promisor remote.
