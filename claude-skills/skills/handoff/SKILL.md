@@ -174,7 +174,7 @@ The script cannot check these — verify them yourself before writing:
 - In the deferral case, record it in §3 instead: the resuming session's restarted gate will regenerate the PR body
 - Otherwise, running `pr-description` here only ends that skill, not this checklist — finish the remaining items and write the handoff file in the same turn
 - Every load-bearing claim in §2/§3/§6 carries a confidence tag — the script only checks that a section isn't entirely untagged, not that each individual claim is
-- A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle (§3.5's, including its exception). A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
+- A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle stated in §3.5, including its exception. A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
 - If §3's next step implements an approved plan, it names `code-writer` as the dispatch rather than describing the work to do inline
 - Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls
 

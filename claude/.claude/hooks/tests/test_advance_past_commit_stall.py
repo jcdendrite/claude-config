@@ -773,15 +773,13 @@ def test_reason_disable_instruction_disables_the_hook_when_run_beside_a_scaffold
     assert second is None
 
 
-def test_denied_root_logs_a_root_denied_line(armed_home, tmp_path):
+def test_denied_root_logs_a_root_denied_line(armed_home, non_repo_dir):
     """A fire-pattern match whose .cwd resolves to no eligible root leaves a log line instead of vanishing silently."""
-    not_a_repo = tmp_path / "not-a-repo"
-    not_a_repo.mkdir()
     result = _fire(
         stop_input(
-            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(not_a_repo)
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(non_repo_dir)
         ),
-        cwd=not_a_repo,
+        cwd=non_repo_dir,
         home=armed_home,
     )
     assert result is None
@@ -789,15 +787,13 @@ def test_denied_root_logs_a_root_denied_line(armed_home, tmp_path):
     assert "root-denied session=s prompt=p1\n" in log_text
 
 
-def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(armed_home, tmp_path):
+def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(armed_home, non_repo_dir):
     """The root is resolved only after the fire pattern matches, so ordinary turns leave no log line."""
-    not_a_repo = tmp_path / "not-a-repo"
-    not_a_repo.mkdir()
     result = _fire(
         stop_input(
-            ISSUE_QUOTE_NONQUESTION, session_id="s", prompt_id="p1", cwd=str(not_a_repo)
+            ISSUE_QUOTE_NONQUESTION, session_id="s", prompt_id="p1", cwd=str(non_repo_dir)
         ),
-        cwd=not_a_repo,
+        cwd=non_repo_dir,
         home=armed_home,
     )
     assert result is None
@@ -1147,7 +1143,11 @@ def test_reason_tail_conditions_the_continue_directive_on_no_stated_hold(armed_h
         home=armed_home,
     )
     assert result is not None
-    assert "Unless the engineer has stated a hold, continue now" in result["reason"]
+    hold_condition = (
+        "Unless the engineer has stated a hold, or you cannot tell whether a line is one "
+        "(then ask, or say what is blocked)"
+    )
+    assert f"{hold_condition}, continue now" in result["reason"]
 
 
 # ------------------------------------------------------------------ #

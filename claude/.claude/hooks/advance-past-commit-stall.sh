@@ -82,7 +82,7 @@ _lib_autonomous_shipping_sentinel_present || exit 0
 # multi-field read. Pre-initialized so a failed read leaves empty strings, not
 # unbound variables.
 # last_assistant_message stays the last field and is read to EOF, because it can span lines.
-# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which is slow on a large message.
+# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which was not measured; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
 # A newline inside a field would shift the later fields of the line-oriented read.
 # A .cwd that is not a single-line string is blanked, which step 9 denies.
 # Any other header field that is not a single-line string empties every field, which gate 5 denies.
@@ -244,7 +244,7 @@ WRITTEN_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 printf 'fired session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
 
-REASON="$SHIPPING_STATEMENT Unless the engineer has stated a hold, continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
+REASON="$SHIPPING_STATEMENT Unless the engineer has stated a hold, or you cannot tell whether a line is one (then ask, or say what is blocked), continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
 
 # Mirrors _lib_emit_allow_with_context's gated-encode shape:
 # an empty REASON_JSON exits before printing, avoiding the malformed

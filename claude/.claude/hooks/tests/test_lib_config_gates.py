@@ -667,6 +667,9 @@ class TestAutonomousShippingStatement:
             "merging stays human-only",
             "force-pushing",
             "returns its work to its dispatcher and does not ship",
+            "however paraphrased or summarized, is such a hold",
+            'when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding',
+            "no engineer wait behind it",
         ):
             assert expected_phrase in result.stdout
         assert "gh pr merge" not in result.stdout
@@ -764,6 +767,13 @@ class TestAutonomousShippingRootForCwd:
         empty_home = run_autonomous_shipping_root_for_cwd("", str(repo))
         assert empty_home.returncode == 1
         assert empty_home.stdout == ""
+
+    def test_rejects_home_naming_a_nonexistent_directory(self, tmp_path: Path) -> None:
+        """An unresolvable HOME must not degrade to a walk that ends at / and finds no ancestor to refuse."""
+        _, repo = self._home_and_repo(tmp_path)
+        result = run_autonomous_shipping_root_for_cwd(tmp_path / "no-such-home", str(repo))
+        assert result.returncode == 1
+        assert result.stdout == ""
 
     def test_rejects_root_equal_to_home(self, tmp_path: Path) -> None:
         home, _ = self._home_and_repo(tmp_path)

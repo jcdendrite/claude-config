@@ -141,6 +141,21 @@ class TestAnnounceAutonomousShipping:
         assert result.returncode == 0
         assert session_start_additional_context(result) == shipping_statement(shipping_repo)
 
+    def test_other_hooks_kill_switches_do_not_silence_the_statement(
+        self, armed_home, shipping_repo, non_repo_dir, shipping_statement
+    ):
+        """The hook has no kill switch of its own, so the compact hook's and the Stop hook's switches leave it alone."""
+        config_dir = armed_home / ".claude"
+        (config_dir / ".authorization-boundary-disabled").touch()
+        (config_dir / "claude-config.toml").write_text(
+            "authorization_boundary_restore = false\ncommit_stall_block = false\n"
+        )
+        result = _run_hook(
+            {"source": "startup", "cwd": str(shipping_repo)}, armed_home, process_cwd=non_repo_dir
+        )
+        assert result.returncode == 0
+        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
+
     def test_empty_stdin_stays_silent(self, armed_home, non_repo_dir):
         result = _run_hook(None, armed_home, process_cwd=non_repo_dir, raw_stdin=b"")
         assert result.returncode == 0
