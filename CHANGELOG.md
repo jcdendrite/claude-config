@@ -14,7 +14,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`restore-authorization-boundary-on-compact.sh` now emits the boundary text and, when autonomous shipping is active, the shipping statement in one message, and its kill switch silences only the boundary text.**
   - **Statement:** the statement is resolved for the repo the payload's `.cwd` names. With `~/.claude/.authorization-boundary-disabled` set, the hook emits the statement alone, and it stays silent when shipping is not active.
   - **Migration:** if you relied on that kill switch to silence everything the hook says, turn off `autonomous_shipping`, or add `.claude/autonomous-shipping-optout` in the repo, to silence the statement.
-- **`/handoff` and `/brief` now file a plain commit, a plain `git push` of the current branch and `gh pr create` under the safe-to-execute section (§3 and §6), not under "Pending engineer authorization" (§3.5 and §6.5), where autonomous shipping is active and the engineer stated no hold.** The exception is one sentence in each skill's "Underlying principle" paragraph.
+  - **Timeout:** the `settings.json` registration now sets `"timeout": 10`, against the harness default of 600 s.
+- **`/handoff` and `/brief` now file a plain commit, a plain `git push` of the current branch and `gh pr create` under the safe-to-execute section (§3 and §6), not under "Pending engineer authorization" (§3.5 and §6.5), when the filed step names the resumer's own `autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold.** The exception is one sentence in each skill's "Underlying principle" paragraph.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
@@ -629,7 +630,13 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
-- **`advance-past-commit-stall.sh` no longer misses a permission question on a later line of a multi-line final message.** It read only the first line of `last_assistant_message`. It now reads the whole message and judges the last sentence of the last non-blank line, so a heading, bullets, then a closing "Should I push and open a PR?" fires. Its block reason now opens with the shared autonomous-shipping statement. It scans only the last 2048 characters of the message, and it now resolves the repo from the payload's `cwd` alone: no `$PWD` fallback, and no statement for a repo rooted at `$HOME` or above it.
+- **`advance-past-commit-stall.sh` no longer misses a permission question on a later line of a multi-line final message.**
+  - **Cause:** it read only the first line of `last_assistant_message`.
+  - **Judgment:** it now reads the whole message and judges the last sentence of the last non-blank line, so a heading, bullets, then a closing "Should I push and open a PR?" fires.
+  - **Block reason:** it now opens with the shared autonomous-shipping statement.
+  - **Scan window:** it scans only the last 2048 characters of the message.
+  - **Repo resolution:** it resolves the repo from the payload's `cwd` alone, with no `$PWD` fallback.
+  - **Rooted at `$HOME`:** the hook no longer fires for a repo rooted at `$HOME` or above it, because no statement is printed for such a repo.
 - **`review-round-cost` and `review-cost-by-size` now exclude a turn whose usage is not an object or whose token fields are not non-negative integers.**
   - **Excluded:** before, such a turn raised, priced negative, or had a float, boolean or numeric-string count coerced to an integer.
   - **Unpriced:** a turn whose `message.model` is a JSON array or object is now priced as unpriced instead of raising.

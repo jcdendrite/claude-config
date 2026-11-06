@@ -135,7 +135,7 @@ STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0
 
-# Bash's ## and % pattern removal scans in time quadratic in the string it is given, so only the message's tail is scanned.
+# Pattern removal over a long last line is slow, so only the message's tail is scanned; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
 # A last sentence longer than the window is judged on its final ASK_WINDOW_CHARS characters.
 ASK_WINDOW_CHARS=2048
 if [ "${#LAST_ASSISTANT_MESSAGE}" -gt "$ASK_WINDOW_CHARS" ]; then

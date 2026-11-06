@@ -62,11 +62,11 @@ Column legend:
 ### `autonomous_shipping`
 
 - Call site: `_lib.sh`'s `_lib_autonomous_shipping_active` /
-  `_lib_autonomous_shipping_sentinel_present` (delegated to by
-  `autonomous-shipping-active.sh`, and by the sentinel fast path of
+  `_lib_autonomous_shipping_sentinel_present`. `autonomous-shipping-active.sh`
+  delegates to them, and so does the sentinel fast path of
   `advance-past-commit-stall.sh`, `announce-autonomous-shipping.sh` and
-  `restore-authorization-boundary-on-compact.sh`), and
-  `_lib_autonomous_shipping_statement`, which the same three hooks call.
+  `restore-authorization-boundary-on-compact.sh`.
+  `_lib_autonomous_shipping_statement` is called by those same three hooks.
   `_lib_autonomous_shipping_sentinel_present` is a thin
   zero-arity wrapper over `_config_enabled autonomous_shipping`, with no
   raw-path probe of its own.

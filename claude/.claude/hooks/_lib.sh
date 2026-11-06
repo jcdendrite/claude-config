@@ -3009,7 +3009,7 @@ _lib_autonomous_shipping_root_for_cwd() {
   home_dir=$(cd -P -- "$HOME" 2>/dev/null && pwd -P) || return 1
   root=$(cd -- "$cwd" 2>/dev/null && _lib_repo_root) || return 1
   [ -n "$root" ] || return 1
-  # -ef compares the resolved file, so a symlinked HOME or root still matches.
+  # -ef compares resolved files rather than path strings.
   while :; do
     [ "$root" -ef "$home_dir" ] && return 1
     [ "$home_dir" = / ] && break
@@ -3026,7 +3026,7 @@ _lib_autonomous_shipping_statement() {
   [ "$#" -eq 1 ] || return 1
   _lib_autonomous_shipping_active "$1" || return 1
   # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the printed text, not command substitution.
-  printf '%s' 'Autonomous shipping is active for this repository: `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 here (checked when this message was generated). Re-run that script before pushing to confirm. In this repository, the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. It covers only committing, a plain push of the current branch (never to the default branch), and opening a PR: merging stays human-only, and force-pushing and every other irreversible action still need the engineer'\''s in-session confirmation. In a different repository, run that script there before relying on this.'
+  printf '%s' 'Autonomous shipping is active for this repository: `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 here (checked when this message was generated). Re-run that script before pushing to confirm. In this repository, the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. It covers only committing, a plain push of the current branch (never to the default branch), and opening a PR: merging stays human-only, and force-pushing and every other irreversible action still need the engineer'\''s in-session confirmation. A fork or subagent returns its work to its dispatcher and does not ship. In a different repository, run that script there before relying on this.'
 }
 
 # _lib_permission_prompt_tracking_active

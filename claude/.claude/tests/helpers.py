@@ -816,6 +816,66 @@ def run_hook_session_start(
     return hook_specific_output["sessionTitle"]
 
 
+def run_additional_context_session_start_hook(
+    hook: Path,
+    payload: dict | None,
+    home: Path,
+    *,
+    process_cwd: Path | None = None,
+    extra_env: dict | None = None,
+    raw_stdin: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    """Runs a SessionStart hook that emits advisory `additionalContext`, which run_hook_session_start cannot parse.
+
+    `raw_stdin` replaces the JSON-encoded payload, for malformed and empty stdin.
+    `extra_env` is applied after the HOME override, so it can also override HOME.
+    """
+    stdin = raw_stdin if raw_stdin is not None else json.dumps(payload).encode()
+    return subprocess.run(
+        [str(hook)],
+        input=stdin,
+        capture_output=True,
+        cwd=process_cwd,
+        env=_build_subprocess_env(home, extra_env),
+        check=False,
+    )
+
+
+def session_start_additional_context(result: subprocess.CompletedProcess) -> str:
+    """Returns the `additionalContext` of a SessionStart hook's output, asserting its event name."""
+    hook_specific_output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert hook_specific_output["hookEventName"] == "SessionStart"
+    return hook_specific_output["additionalContext"]
+
+
+def session_start_registered_timeouts(script_name: str) -> list[int | None]:
+    """Returns the `timeout` of every settings.json SessionStart entry whose command ends in `/script_name`."""
+    groups = json.loads((CLAUDE_DIR / "settings.json").read_text())["hooks"]["SessionStart"]
+    return [
+        hook.get("timeout")
+        for group in groups
+        for hook in group["hooks"]
+        if hook.get("command", "").endswith(f"/{script_name}")
+    ]
+
+
+def run_autonomous_shipping_statement(home: Path, *args: str) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_statement ARGS` with HOME set to `home` and nothing else inherited but PATH."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {HOOKS_DIR / "_lib.sh"}; _lib_autonomous_shipping_statement "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+
+
 def posttooluse_input(file_path: str) -> dict:
     """Build a PostToolUse Write event payload for consume-migration-token tests.
 

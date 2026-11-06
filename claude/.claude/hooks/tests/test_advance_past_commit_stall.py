@@ -203,6 +203,14 @@ CORPUS: list[tuple[str, bool]] = [
         "Want me to\ncommit this?",
         False,
     ),  # accepted miss: an ask wrapped across lines leaves no verb on the last line
+    (
+        "Want me to commit " + "the change and " * 100 + "now?",
+        True,
+    ),  # a 1-2 KB final sentence with the verb at its head sits inside the scan window
+    (
+        "Want me to commit " + "the change and " * 200 + "now?",
+        False,
+    ),  # accepted miss: a final sentence longer than the scan window loses its head verb (commit-stall-block.md)
 ]
 
 
@@ -238,8 +246,7 @@ def test_fire_predicate_corpus(
 )
 def test_large_final_message_still_fires(armed_home, dirty_repo, message):
     """Only the message's tail is scanned (the hook's ASK_WINDOW_CHARS), so the third case's early
-    exclusion word is out of view. Pattern removal over a long last line otherwise takes minutes.
-    No wall-clock assertion, per flake risk."""
+    exclusion word is out of view. No wall-clock assertion, per flake risk."""
     assert len(message) >= 4_000
     result = _fire(
         stop_input(message, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),

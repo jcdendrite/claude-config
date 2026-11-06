@@ -15,6 +15,7 @@ hook emits.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -22,7 +23,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without
+from helpers import (
+    HOOKS_DIR,
+    build_path_without,
+    run_additional_context_session_start_hook,
+    session_start_additional_context,
+    session_start_registered_timeouts,
+)
 
 RESTORE_BOUNDARY_HOOK = HOOKS_DIR / "restore-authorization-boundary-on-compact.sh"
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -40,30 +47,7 @@ _NAMED_TOKENS = [
 ]
 
 
-def _run_hook(
-    payload: dict | None,
-    isolated_home: Path,
-    extra_env: dict | None = None,
-    raw_stdin: bytes | None = None,
-    process_cwd: Path | None = None,
-) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HOME": str(isolated_home)}
-    if extra_env:
-        env.update(extra_env)
-    stdin = raw_stdin if raw_stdin is not None else json.dumps(payload).encode()
-    return subprocess.run(
-        [str(RESTORE_BOUNDARY_HOOK)],
-        input=stdin,
-        capture_output=True,
-        cwd=process_cwd,
-        env=env,
-        check=False,
-    )
-
-
-def _additional_context(result: subprocess.CompletedProcess) -> str:
-    """Parse hookSpecificOutput.additionalContext from the hook's JSON output."""
-    return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+_run_hook = functools.partial(run_additional_context_session_start_hook, RESTORE_BOUNDARY_HOOK)
 
 
 class TestRestoreAuthorizationBoundaryOnCompact:
@@ -101,7 +85,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
             check=False,
         )
         assert result.returncode == 0
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
 
     def test_emits_output_when_config_keys_psv_readable_but_missing_row(self, isolated_home, tmp_path):
@@ -128,7 +112,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
             check=False,
         )
         assert result.returncode == 0
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
 
     @pytest.mark.parametrize("token", _NAMED_TOKENS)
@@ -136,7 +120,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
         """Each illustrative shape is named by its literal command/verb
         token, not only a descriptive clause."""
         result = _run_hook({"source": "compact"}, isolated_home)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert token in ctx
 
     def test_gh_pr_merge_not_named(self, isolated_home):
@@ -145,7 +129,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
         §3.5's full list in would violate that invariant silently without
         this assertion."""
         result = _run_hook({"source": "compact"}, isolated_home)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "gh pr merge" not in ctx
 
     def test_named_tokens_are_subset_of_handoff_skill_section_3_5(self, isolated_home):
@@ -219,7 +203,7 @@ class TestRestoreAuthorizationBoundaryOnCompact:
             extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
         )
         assert result.returncode == 0
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
 
     def test_malformed_stdin_exits_0_with_no_output(self, isolated_home):
@@ -277,12 +261,12 @@ class TestShippingStatementOnCompact:
     ):
         unarmed_home = tmp_path / "unarmed-home"
         (unarmed_home / ".claude").mkdir(parents=True)
-        boundary_text = _additional_context(
+        boundary_text = session_start_additional_context(
             _run_hook(self._compact_payload(shipping_repo), unarmed_home)
         )
         result = _run_hook(self._compact_payload(shipping_repo), armed_home)
         assert result.returncode == 0
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in boundary_text
         assert ctx == f"{boundary_text} {shipping_statement(shipping_repo)}"
         assert "gh pr merge" not in ctx
@@ -293,7 +277,7 @@ class TestShippingStatementOnCompact:
         (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
         result = _run_hook(self._compact_payload(shipping_repo), armed_home)
         assert result.returncode == 0
-        assert _additional_context(result) == shipping_statement(shipping_repo)
+        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
 
     def test_kill_switch_with_empty_statement_part_is_silent(self, armed_home, shipping_repo):
         (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
@@ -307,30 +291,69 @@ class TestShippingStatementOnCompact:
         (shipping_repo / ".claude").mkdir()
         (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
         result = _run_hook(self._compact_payload(shipping_repo), armed_home)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
         assert "Autonomous shipping is active" not in ctx
 
-    def test_cwd_outside_a_repo_leaves_the_boundary_text_alone(self, armed_home, tmp_path):
-        non_repo_dir = tmp_path / "not-a-repo"
-        non_repo_dir.mkdir()
+    def test_cwd_outside_a_repo_leaves_the_boundary_text_alone(self, armed_home, non_repo_dir):
         result = _run_hook(self._compact_payload(non_repo_dir), armed_home)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
         assert "Autonomous shipping is active" not in ctx
 
     def test_missing_cwd_leaves_the_boundary_text_alone(self, armed_home, shipping_repo):
         """The process cwd is an eligible repo, so a `$PWD` fallback would append the statement."""
         result = _run_hook(self._compact_payload(None), armed_home, process_cwd=shipping_repo)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
         assert "Autonomous shipping is active" not in ctx
 
     def test_unarmed_machine_carries_no_statement(self, isolated_home, shipping_repo):
         result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
-        ctx = _additional_context(result)
+        ctx = session_start_additional_context(result)
         assert "not engineer authorization" in ctx
         assert "Autonomous shipping is active" not in ctx
+
+    def test_sentinel_only_under_claude_config_dir_appends_the_statement(
+        self, isolated_home, shipping_repo, tmp_path
+    ):
+        """HOME carries no sentinel, so only the config dir can have armed the hook."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "autonomous-shipping-required").write_text("# machine sentinel\n")
+        result = _run_hook(
+            self._compact_payload(shipping_repo),
+            isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        ctx = session_start_additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" in ctx
+
+    def test_sentinel_only_under_legacy_home_dir_appends_the_statement_when_config_dir_is_empty(
+        self, armed_home, shipping_repo, tmp_path
+    ):
+        """The legacy `$HOME/.claude` location stays armed after CLAUDE_CONFIG_DIR adoption."""
+        empty_config_dir = tmp_path / "empty-profile"
+        empty_config_dir.mkdir()
+        result = _run_hook(
+            self._compact_payload(shipping_repo),
+            armed_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
+        )
+        ctx = session_start_additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" in ctx
+
+    def test_armed_machine_with_a_relative_config_dir_stays_silent(self, armed_home, shipping_repo):
+        """An unresolvable config dir yields neither the boundary text nor a statement, even with an eligible cwd."""
+        result = _run_hook(
+            self._compact_payload(shipping_repo),
+            armed_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+        )
+        assert result.returncode == 0
+        assert result.stdout == b""
 
     @pytest.mark.parametrize("source", ["startup", "clear", "resume", "fork"])
     def test_armed_non_compact_sources_stay_silent(self, armed_home, shipping_repo, source):
@@ -338,3 +361,9 @@ class TestShippingStatementOnCompact:
         result = _run_hook({"source": source, "cwd": str(shipping_repo)}, armed_home)
         assert result.returncode == 0
         assert result.stdout == b""
+
+
+class TestRestoreAuthorizationBoundaryRegistration:
+    def test_registered_with_a_ten_second_timeout(self):
+        """The harness default is 600 s (docs/hooks.md § "Gate deadlock recovery"), so the registered cap is the binding bound."""
+        assert session_start_registered_timeouts("restore-authorization-boundary-on-compact.sh") == [10]

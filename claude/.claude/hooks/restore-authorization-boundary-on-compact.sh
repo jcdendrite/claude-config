@@ -19,6 +19,8 @@
 # The message is the boundary text and the shipping statement in one
 # additionalContext, so the statement sits beside the outside-repository clause
 # it overrides.
+# The boundary text shares the statement path's time budget: the hook's
+# settings.json timeout cancels the boundary text along with a stalled statement path.
 #
 # Kill switch: ~/.claude/.authorization-boundary-disabled (or under
 # $CLAUDE_CONFIG_DIR), mirroring .handoff-nudge-disabled /

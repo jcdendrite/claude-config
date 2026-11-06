@@ -7,15 +7,20 @@ roots are eligible, so every scenario below runs against all three hooks.
 """
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, init_git_repo_with_commit, run_hook_stop, stop_input
+from helpers import (
+    HOOKS_DIR,
+    init_git_repo_with_commit,
+    run_additional_context_session_start_hook,
+    run_hook_stop,
+    session_start_additional_context,
+    stop_input,
+)
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-autonomous-shipping.sh"
 COMPACT_HOOK = HOOKS_DIR / "restore-authorization-boundary-on-compact.sh"
@@ -60,11 +65,9 @@ def _add_linked_worktree(repo: Path, destination: Path) -> Path:
     return destination
 
 
-def _build_scenario(name: str, armed_home: Path, tmp_path: Path) -> Scenario:
-    """Builds the filesystem for one named case. The first three cases are the allow controls for the rest."""
+def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: Path) -> Scenario:
+    """Builds the filesystem for one named case. The cases with `granted` true are the allow controls for the rest."""
     repo = init_git_repo_with_commit(tmp_path / "shipping-repo", branch="main")
-    non_repo_dir = tmp_path / "not-a-repo"
-    non_repo_dir.mkdir()
     no_env: dict[str, str] = {}
 
     if name == "repo-root":
@@ -79,6 +82,22 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path) -> Scenario:
         linked = _add_linked_worktree(repo, tmp_path / "linked-worktree")
         _make_dirty(linked)
         return Scenario(str(linked), non_repo_dir, True, no_env)
+    if name == "repo-beneath-home":
+        # Nearly every real repo lives under HOME, so a rule that denied any root under HOME would disable the feature.
+        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        _make_dirty(repo_beneath_home)
+        return Scenario(str(repo_beneath_home), non_repo_dir, True, no_env)
+    if name == "nested-own-repo-beneath-a-home-rooted-work-tree":
+        init_git_repo_with_commit(armed_home, branch="main")
+        nested_repo = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        _make_dirty(nested_repo)
+        return Scenario(str(nested_repo), non_repo_dir, True, no_env)
+    if name == "symlinked-cwd-to-a-repo-beneath-home":
+        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        _make_dirty(repo_beneath_home)
+        cwd_link = tmp_path / "repo-link"
+        cwd_link.symlink_to(repo_beneath_home, target_is_directory=True)
+        return Scenario(str(cwd_link), non_repo_dir, True, no_env)
     if name == "optout-at-root":
         _commit_optout(repo)
         _make_dirty(repo)
@@ -142,6 +161,9 @@ SCENARIO_NAMES = [
     "repo-root",
     "subdirectory",
     "linked-worktree",
+    "repo-beneath-home",
+    "nested-own-repo-beneath-a-home-rooted-work-tree",
+    "symlinked-cwd-to-a-repo-beneath-home",
     "optout-at-root",
     "optout-with-subdirectory-cwd",
     "optout-with-linked-worktree-cwd",
@@ -157,27 +179,22 @@ SCENARIO_NAMES = [
 ]
 
 
-def _hook_env(armed_home: Path, scenario: Scenario) -> dict[str, str]:
-    return {**os.environ, "HOME": str(armed_home), **scenario.env_overrides}
-
-
 def _session_start_statement(hook: Path, source: str, armed_home: Path, scenario: Scenario) -> str:
     """Returns the statement a SessionStart hook printed, or "" when its additionalContext carried none."""
     payload: dict = {"source": source}
     if scenario.cwd is not None:
         payload["cwd"] = scenario.cwd
-    result = subprocess.run(
-        [str(hook)],
-        input=json.dumps(payload).encode(),
-        capture_output=True,
-        cwd=scenario.process_cwd,
-        env=_hook_env(armed_home, scenario),
-        check=False,
+    result = run_additional_context_session_start_hook(
+        hook,
+        payload,
+        armed_home,
+        process_cwd=scenario.process_cwd,
+        extra_env=scenario.env_overrides,
     )
     assert result.returncode == 0
     if not result.stdout:
         return ""
-    additional_context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    additional_context = session_start_additional_context(result)
     start = additional_context.find(STATEMENT_LEAD)
     return "" if start == -1 else additional_context[start:]
 
@@ -221,9 +238,9 @@ HOOK_STATEMENTS: dict[str, Callable[[Path, Scenario], str]] = {
 @pytest.mark.parametrize("hook_name", list(HOOK_STATEMENTS))
 @pytest.mark.parametrize("scenario_name", SCENARIO_NAMES)
 def test_statement_is_printed_only_for_an_eligible_root(
-    armed_home, tmp_path, shipping_statement, hook_name, scenario_name
+    armed_home, tmp_path, non_repo_dir, shipping_statement, hook_name, scenario_name
 ):
-    scenario = _build_scenario(scenario_name, armed_home, tmp_path)
+    scenario = _build_scenario(scenario_name, armed_home, tmp_path, non_repo_dir)
 
     printed = HOOK_STATEMENTS[hook_name](armed_home, scenario)
 

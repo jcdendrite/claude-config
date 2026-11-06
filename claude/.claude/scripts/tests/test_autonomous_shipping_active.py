@@ -16,6 +16,7 @@ from pathlib import Path
 from .conftest import _init_repo
 
 _SCRIPT = Path(__file__).parent.parent / "autonomous-shipping-active.sh"
+_HOOKS_LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
 
 
 def _run_script(repo: Path, config_dir: Path, *, home: Path) -> subprocess.CompletedProcess:
@@ -116,3 +117,29 @@ class TestAutonomousShippingActive:
         result = _run_script(repo, config_dir, home=home)
 
         assert result.returncode == 0
+
+    def test_exit_zero_for_a_home_rooted_work_tree_that_the_root_helper_denies(
+        self, tmp_path: Path
+    ) -> None:
+        """Deliberate divergence, documented in docs/hooks.md: the script has no
+        HOME rule, so it still grants for a work tree rooted at HOME, while the
+        hooks' _lib_autonomous_shipping_root_for_cwd denies that root. Aligning
+        either side must update the docs and this pin together."""
+        home_repo = tmp_path / "home"
+        _init_repo(home_repo)
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "autonomous-shipping-required").touch()
+
+        script_result = _run_script(home_repo, config_dir, home=home_repo)
+        root_helper_result = subprocess.run(
+            ["bash", "-c", f'. {_HOOKS_LIB_SH}; _lib_autonomous_shipping_root_for_cwd "$1"', "bash", str(home_repo)],
+            env={"PATH": os.environ["PATH"], "HOME": str(home_repo)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert script_result.returncode == 0
+        assert root_helper_result.returncode == 1
+        assert root_helper_result.stdout == ""

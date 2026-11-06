@@ -18,7 +18,7 @@ printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cl
 - `permission_mode` is not `plan`.
 - `prompt_id` differs from the last one this hook fired on for this session — at most one forced continuation per user turn.
 - The **final sentence** of the last assistant message (the last sentence of its last non-blank line) asks permission to commit, push, or open a PR (case-insensitive phrasing match: "want me to", "should I", "shall I", and similar, paired with commit/push/open a PR), and that sentence does not also carry an exclusion phrase (`merge`, `--force`, `failing`, `blocked`, and similar).
-- The hook's payload `.cwd` is an absolute path inside a repo whose root is neither `$HOME` nor an ancestor of it (`_lib_autonomous_shipping_root_for_cwd`); there is no `$PWD` fallback.
+- The repo comes from the payload's `.cwd` through `_lib_autonomous_shipping_root_for_cwd` in `_lib.sh`, which defines which roots are eligible.
 - `_lib_autonomous_shipping_active` holds for the resolved repo — the machine-level `autonomous_shipping` config key above resolves true, and the repo carries no `.claude/autonomous-shipping-optout`.
 - Work is actually pending: a dirty tree, HEAD ahead of its configured upstream, or (the common state before a branch's first push) no upstream configured at all.
 
@@ -55,7 +55,7 @@ The fire and exclusion regexes both scan only the **final sentence** of the last
 - If the exclusion regex scanned the whole message, "Fixed the failing test in the parser. Want me to commit this…?" — the modal shape after a routine bug-fix task — would never fire, because "failing" appears in an earlier sentence. That's the primary case this hook exists to catch; over-suppressing it defeats the fix.
 - Scoped to the final sentence, an earlier-sentence failure signal can be missed instead — but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
 - A line break ends a sentence. The window is the last sentence of the last non-blank line, so a message that is a heading, bullets, then a closing question is judged on the question alone.
-- Only the last 2048 characters of the message are scanned (`ASK_WINDOW_CHARS` in the hook), because bash pattern removal over a long last line grows quadratically. A last sentence longer than that is judged on its final 2048 characters, so an exclusion word earlier in it is not seen.
+- Only the last 2048 characters of the message are scanned (`ASK_WINDOW_CHARS` in the hook), because bash pattern removal over a long last line is slow (see [the design record](design-decisions/autonomous-shipping-state-in-hook-context.md)). A last sentence longer than that is judged on its final 2048 characters, so an exclusion word earlier in it is not seen.
 
 ## Log location
 

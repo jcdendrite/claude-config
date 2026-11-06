@@ -10,6 +10,7 @@ so it cannot use run_hook_session_start.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -18,47 +19,21 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without, init_git_repo_with_commit
+from helpers import (
+    HOOKS_DIR,
+    build_path_without,
+    run_additional_context_session_start_hook,
+    session_start_additional_context,
+    session_start_registered_timeouts,
+)
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-autonomous-shipping.sh"
 SETTINGS_JSON = HOOKS_DIR.parent / "settings.json"
 EMITTING_SOURCES = ["startup", "resume", "clear"]
 
 
-def _run_hook(
-    payload: dict | None,
-    home: Path,
-    *,
-    process_cwd: Path,
-    extra_env: dict | None = None,
-    raw_stdin: bytes | None = None,
-) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HOME": str(home)}
-    if extra_env:
-        env.update(extra_env)
-    stdin = raw_stdin if raw_stdin is not None else json.dumps(payload).encode()
-    return subprocess.run(
-        [str(ANNOUNCE_HOOK)],
-        input=stdin,
-        capture_output=True,
-        cwd=process_cwd,
-        env=env,
-        check=False,
-    )
-
-
-def _additional_context(result: subprocess.CompletedProcess) -> str:
-    parsed = json.loads(result.stdout)
-    hook_output = parsed["hookSpecificOutput"]
-    assert hook_output["hookEventName"] == "SessionStart"
-    return hook_output["additionalContext"]
-
-
-@pytest.fixture
-def non_repo_dir(tmp_path) -> Path:
-    directory = tmp_path / "not-a-repo"
-    directory.mkdir()
-    return directory
+_run_hook = functools.partial(run_additional_context_session_start_hook, ANNOUNCE_HOOK)
+STATEMENT_LEAD = "Autonomous shipping is active for this repository"
 
 
 class TestAnnounceAutonomousShipping:
@@ -71,7 +46,7 @@ class TestAnnounceAutonomousShipping:
             {"source": source, "cwd": str(shipping_repo)}, armed_home, process_cwd=non_repo_dir
         )
         assert result.returncode == 0
-        assert _additional_context(result) == shipping_statement(shipping_repo)
+        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
 
     def test_subdirectory_cwd_emits(self, armed_home, shipping_repo, non_repo_dir, shipping_statement):
         subdirectory = shipping_repo / "pkg" / "inner"
@@ -79,7 +54,7 @@ class TestAnnounceAutonomousShipping:
         result = _run_hook(
             {"source": "startup", "cwd": str(subdirectory)}, armed_home, process_cwd=non_repo_dir
         )
-        assert _additional_context(result) == shipping_statement(shipping_repo)
+        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
 
     def test_linked_worktree_cwd_emits(
         self, armed_home, shipping_repo, non_repo_dir, tmp_path, shipping_statement
@@ -93,7 +68,7 @@ class TestAnnounceAutonomousShipping:
         result = _run_hook(
             {"source": "resume", "cwd": str(linked_worktree)}, armed_home, process_cwd=non_repo_dir
         )
-        assert _additional_context(result) == shipping_statement(linked_worktree)
+        assert session_start_additional_context(result) == shipping_statement(linked_worktree)
 
     @pytest.mark.parametrize("source", ["compact", "fork", "unknown-source"])
     def test_other_sources_stay_silent(self, armed_home, shipping_repo, non_repo_dir, source):
@@ -125,51 +100,51 @@ class TestAnnounceAutonomousShipping:
         assert result.returncode == 0
         assert result.stdout == b""
 
-    def test_repo_optout_stays_silent(self, armed_home, shipping_repo, non_repo_dir):
-        (shipping_repo / ".claude").mkdir()
-        (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
-        result = _run_hook(
-            {"source": "startup", "cwd": str(shipping_repo)}, armed_home, process_cwd=non_repo_dir
-        )
-        assert result.returncode == 0
-        assert result.stdout == b""
-
-    def test_cwd_outside_a_repo_stays_silent_even_when_process_cwd_is_an_armed_repo(
-        self, armed_home, shipping_repo, non_repo_dir
-    ):
-        """A `$PWD` fallback would resolve the armed process-cwd repo and emit."""
-        result = _run_hook(
-            {"source": "startup", "cwd": str(non_repo_dir)}, armed_home, process_cwd=shipping_repo
-        )
-        assert result.returncode == 0
-        assert result.stdout == b""
-
     @pytest.mark.parametrize(
         "bad_cwd",
-        [None, "", 42, ["/tmp"], "relative/path"],
-        ids=["missing", "empty", "number", "array", "relative"],
+        [42, ["/tmp"]],
+        ids=["number", "array"],
     )
-    def test_unusable_payload_cwd_stays_silent_even_when_process_cwd_is_an_armed_repo(
+    def test_non_string_payload_cwd_stays_silent_even_when_process_cwd_is_an_armed_repo(
         self, armed_home, shipping_repo, bad_cwd
     ):
-        payload: dict = {"source": "startup"}
-        if bad_cwd is not None:
-            payload["cwd"] = bad_cwd
-        result = _run_hook(payload, armed_home, process_cwd=shipping_repo)
+        """Missing, empty and relative cwd are rows of test_autonomous_shipping_grant_boundary.py."""
+        result = _run_hook(
+            {"source": "startup", "cwd": bad_cwd}, armed_home, process_cwd=shipping_repo
+        )
         assert result.returncode == 0
         assert result.stdout == b""
 
-    def test_repo_root_equal_to_home_stays_silent(self, armed_home, non_repo_dir):
-        """$HOME held as a git work tree must not grant the statement to every project beneath it."""
-        init_git_repo_with_commit(armed_home, branch="main")
-        project_below_home = armed_home / "project"
-        project_below_home.mkdir()
-        for cwd in (armed_home, project_below_home):
-            result = _run_hook(
-                {"source": "startup", "cwd": str(cwd)}, armed_home, process_cwd=non_repo_dir
-            )
-            assert result.returncode == 0
-            assert result.stdout == b""
+    def test_sentinel_only_under_claude_config_dir_emits(
+        self, isolated_home, shipping_repo, non_repo_dir, tmp_path
+    ):
+        """HOME carries no sentinel, so only the config dir can have armed the hook."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "autonomous-shipping-required").write_text("# machine sentinel\n")
+        result = _run_hook(
+            {"source": "startup", "cwd": str(shipping_repo)},
+            isolated_home,
+            process_cwd=non_repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert result.returncode == 0
+        assert session_start_additional_context(result).startswith(STATEMENT_LEAD)
+
+    def test_sentinel_only_under_legacy_home_dir_emits_when_config_dir_is_empty(
+        self, armed_home, shipping_repo, non_repo_dir, tmp_path, shipping_statement
+    ):
+        """The legacy `$HOME/.claude` location stays armed after CLAUDE_CONFIG_DIR adoption."""
+        empty_config_dir = tmp_path / "empty-profile"
+        empty_config_dir.mkdir()
+        result = _run_hook(
+            {"source": "startup", "cwd": str(shipping_repo)},
+            armed_home,
+            process_cwd=non_repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
+        )
+        assert result.returncode == 0
+        assert session_start_additional_context(result) == shipping_statement(shipping_repo)
 
     def test_empty_stdin_stays_silent(self, armed_home, non_repo_dir):
         result = _run_hook(None, armed_home, process_cwd=non_repo_dir, raw_stdin=b"")
@@ -271,6 +246,10 @@ class TestAnnounceHookRegistration:
             if command.endswith("/announce-autonomous-shipping.sh")
         ]
         assert [matcher for matcher, _ in registrations] == ["startup|resume|clear"]
+
+    def test_registered_with_a_ten_second_timeout(self):
+        """The harness default is 600 s (docs/hooks.md § "Gate deadlock recovery"), so the registered cap is the binding bound."""
+        assert session_start_registered_timeouts("announce-autonomous-shipping.sh") == [10]
 
     def test_matcher_sources_are_disjoint_from_the_compact_hook(self):
         commands_by_matcher = self._session_start_commands_by_matcher()
