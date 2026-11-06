@@ -108,6 +108,12 @@ class TestScanWindow:
         assert _event_for(scan, "/b.py").remaining_turns == 0
         assert _event_for(scan, "/c.py").remaining_turns == 1
 
+    def test_token_estimate_counts_characters_not_bytes_of_a_multibyte_result(self):
+        multibyte_text = "é" * 400
+        assert len(multibyte_text.encode("utf-8")) == 2 * len(multibyte_text)
+        scan = _scan(_read_exchange("m1", "r1", "/a.py", text=multibyte_text))
+        assert _event_for(scan, "/a.py").tokens == 400 // read_cost._READ_COST_CHARS_PER_TOKEN
+
     def test_read_with_no_boundary_after_it_runs_to_the_end_of_the_window(self):
         scan = _scan([
             _turn("m1", [_read_use("r1", file_path="/a.py")]),
@@ -646,15 +652,20 @@ class TestSizeBucket:
 
 
 class TestAccumulateSession:
-    def test_main_file_sidechain_records_are_left_to_the_subagent_windows(self):
-        sidechain_turn = _turn("m-side", [_read_use("r1", file_path="/a.py")])
-        sidechain_turn["isSidechain"] = True
+    def test_main_file_sidechain_record_is_dropped_and_contributes_nothing(self):
+        sidechain_records = _sidechain_copies([
+            _turn("m-side", [_read_use("r1", file_path="/a.py")], usage={"output_tokens": 5}),
+            _read_result("r1", "x" * 400),
+        ])
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
             totals, read_cost._SeenIds(),
-            [sidechain_turn, _read_result("r1", "x" * 400)], [], _weights(),
+            sidechain_records, [], _weights(),
         )
         assert totals.main_whole_file_events == []
+        assert totals.billed_main == 0
+        assert totals.billed_subagent == 0
+        assert totals.api_calls == 0
 
     def test_subagent_window_of_sidechain_flagged_records_still_counts_toward_every_subagent_figure(self):
         weights = _weights()

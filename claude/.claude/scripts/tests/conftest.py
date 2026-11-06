@@ -892,12 +892,11 @@ def _api_request_blob_rec(
     content: list, *, agent_id: str | None = None, ts: str | None = None, record_type: str = "api-request-blob",
 ) -> dict:
     """A request-content copy record: carries message.content blocks but, unlike a real
-    assistant/user record, has no isSidechain key. `record_type` stands in for any other non-conversation
-    record type that carries message.content.
+    assistant/user record, has no isSidechain key. `record_type` is one of
+    `_NON_CONVERSATION_CONTENT_RECORD_TYPES`.
 
-    A real record observed in a transcript has top-level keys hash, message, sessionId and type; its message
-    has a role and a list content, and it has no isSidechain, timestamp or agentId key. The `agent_id` and `ts`
-    parameters add keys that record did not have.
+    A real record observed in a transcript also has the top-level keys hash and sessionId, and its message has
+    a role; it has no timestamp or agentId key. The `agent_id` and `ts` parameters add keys that record did not have.
     """
     rec: dict = {"type": record_type, "message": {"content": content}}
     if agent_id is not None:
