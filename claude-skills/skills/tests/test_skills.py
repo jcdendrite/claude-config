@@ -5261,7 +5261,7 @@ def test_ready_for_review_step3_discards_the_diff_stdout() -> None:
         "redirect, so the diff stays out of the session and stderr still reaches it; "
         f"found {invocation_lines!r}"
     )
-    assert "read the diff only from the file at that path" in section_text, (
+    assert "Read the diff only from the file at that path" in section_text, (
         f"{skill_md_path}: step 3 no longer tells the session to read the diff "
         "from the DIFF_FILE: path now that stdout is discarded"
     )
