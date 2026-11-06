@@ -239,6 +239,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/__init__.py",
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
+    "claude/.claude/hooks/tests/_lib_sh_helpers.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
@@ -280,6 +281,7 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
+    "claude/.claude/scripts/tests/test_diff_size_ack.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
     "claude/.claude/scripts/tests/test_review_pr_lib.py",
 })
