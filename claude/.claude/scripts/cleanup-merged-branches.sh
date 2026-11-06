@@ -32,6 +32,8 @@
 # which basis (tip-match or pr-head-ancestor) qualified a Tier A branch.
 # Tier B branches prompt interactively; when stdin is not a TTY, Tier B
 # branches are skipped with a warning.
+# A branch checked out in the main worktree is skipped whole: its worktree is
+# never removed, and neither its local branch nor its remote branch is deleted.
 #
 # No user-controlled branch-name argument means no argument-injection
 # attack surface against the destructive git ops. The exact-string
@@ -58,8 +60,53 @@
 # Usage:
 #   cleanup-merged-branches.sh
 #   cleanup-merged-branches.sh --dry-run
+#   cleanup-merged-branches.sh --list-removable
 #   cleanup-merged-branches.sh --all-projects --dry-run
 #   cleanup-merged-branches.sh --all-projects
+#
+# --list-removable is a machine-readable preview that removes nothing. It runs
+# the same `git fetch` and `git remote set-head` as --dry-run, and it cannot be
+# combined with --dry-run. Stdout carries only one tab-separated line per
+# worktree the real run would remove: <main worktree path> <branch> <worktree
+# path>. Column 1 is the first record `git worktree list --porcelain` prints,
+# whichever checkout the script runs from. In a `--separate-git-dir` repository
+# that record can be the git dir rather than the checkout. Every other message
+# goes to stderr.
+# It lists only Tier A branches whose worktree is idle, not locked by a live
+# or pid-less lock, clean, free of populated submodules, not the main worktree
+# and not the worktree the script runs from. A worktree whose directory is gone
+# is listed, because `git worktree remove` removes it. Tier B is left out
+# because the real run removes it only after a `y` at a prompt.
+# A listed worktree can be locked by a holder this user cannot signal: a dead
+# pid, or another user's process. The real run unlocks it first, and a plain
+# `git worktree remove` is refused until `git worktree unlock`.
+# Every listed line is a worktree the real run would remove, but git stays the
+# authority: a listed worktree can still fail to remove when git refuses for a
+# reason the probes do not model. Two such states are known:
+#   - a gitlink inactive in config whose directory has its own `.git`, which
+#     `git submodule status` marks uninitialized and git counts as populated;
+#   - a `.git` file whose back-link names another worktree's admin dir.
+# A Tier A branch it could not evaluate is left out with one stderr line naming
+# the branch and the reason, and the run exits 1 after printing every other
+# line. The cases are:
+#   - a failed `gh` lookup;
+#   - an idle state that cannot be verified;
+#   - a worktree without a `.git`, or a failed `git status`, `git rev-parse` or
+#     `git submodule status`;
+#   - a tab in a path.
+# A failed up-front `git worktree list` exits 1 before any line, with a stderr
+# line that names no branch.
+# A nonzero exit means the list is partial: discard it.
+# Exit 0 does not mean the list is complete, because a branch can be left out
+# with no nonzero exit:
+#   - a failed fetch of a PR's refs/pull/<n>/head, which leaves the branch
+#     unclassified as Tier A;
+#   - a failed per-branch `git worktree list` after the up-front listing
+#     succeeded, which leaves the branch with no worktree to evaluate;
+#   - under --all-projects, a configured root that is missing or holds no repos.
+# A newline in a worktree path is unsupported: porcelain parsing is line-based.
+# Under --all-projects each repo gets a banner on stderr, and any repo that
+# exits nonzero makes the overall exit 1, with stdout still only list lines.
 #
 # --all-projects sweeps every git repo found under the roots listed in
 # ~/.claude/cleanup-merged-branches-roots (one absolute path per line) instead
@@ -93,7 +140,10 @@
 #      swept repo's own gh auth state is what actually governs that repo.
 #      Without direnv, or in single-repo mode, unauthenticated `gh` still
 #      hard-exits 1.
-#   2  bad arguments
+#   2  bad arguments, including --dry-run combined with --list-removable
+#
+# With --list-removable, exit 1 also means a Tier A branch could not be
+# evaluated and is missing from the list; see above.
 
 set -euo pipefail
 
@@ -114,26 +164,34 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 usage() {
-  echo "Usage: $(basename "$0") [--dry-run] [--all-projects]" >&2
+  echo "Usage: $(basename "$0") [--dry-run | --list-removable] [--all-projects]" >&2
 }
 
 DRY_RUN=0
+DRY_RUN_FLAG_SEEN=0
+LIST_REMOVABLE=0
 ALL_PROJECTS=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run)      DRY_RUN=1 ;;
+    --dry-run)        DRY_RUN=1; DRY_RUN_FLAG_SEEN=1 ;;
+    --list-removable) DRY_RUN=1; LIST_REMOVABLE=1 ;;
     --all-projects) ALL_PROJECTS=1 ;;
     *)              usage; exit 2 ;;
   esac
   shift
 done
+if [ "$DRY_RUN_FLAG_SEEN" -eq 1 ] && [ "$LIST_REMOVABLE" -eq 1 ]; then
+  usage
+  exit 2
+fi
 # readonly: load_repo_environment() below evals arbitrary `export` statements
 # from an .envrc; a clobber attempt on DRY_RUN aborts under set -e instead of
-# silently flipping --dry-run. ALL_PROJECTS is readonly for symmetry — every
-# read of it happens before load_repo_environment ever runs, so it has
-# nothing left to protect by this point, but the shared declaration keeps
-# both dispatch-controlling flags handled the same way.
-readonly DRY_RUN ALL_PROJECTS
+# silently flipping --dry-run. LIST_REMOVABLE is readonly for the same
+# reason. ALL_PROJECTS is readonly for symmetry — every read of it happens
+# before load_repo_environment ever runs, so it has nothing left to protect
+# by this point, but the shared declaration keeps every dispatch-controlling
+# flag handled the same way.
+readonly DRY_RUN LIST_REMOVABLE ALL_PROJECTS
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -245,10 +303,10 @@ discover_repo_roots() {
 # own `cd` never fires it and a sweep would query every repo with the
 # invoking shell's credentials instead of each repo's own.
 #
-# The eval below is deliberately unguarded: DRY_RUN/ALL_PROJECTS are
-# readonly by this point, so an .envrc attempting to clobber either aborts
-# the whole script under set -e instead of silently taking effect (see the
-# `readonly DRY_RUN ALL_PROJECTS` comment above).
+# The eval below is deliberately unguarded: DRY_RUN/LIST_REMOVABLE/
+# ALL_PROJECTS are readonly by this point, so an .envrc attempting to clobber
+# any of them aborts the whole script under set -e instead of silently taking
+# effect (see the `readonly DRY_RUN LIST_REMOVABLE ALL_PROJECTS` comment above).
 load_repo_environment() {
   local direnv_exports
   direnv_exports=$(direnv_export_bash)
@@ -292,6 +350,27 @@ if [ "$(git rev-parse --show-toplevel)" != "$REPO_ROOT" ] \
   echo "ERROR: this repo's environment changed git's repo root, git dir, or common dir (an .envrc exporting GIT_DIR, GIT_WORK_TREE, or GIT_COMMON_DIR?); aborting this repo untouched." >&2
   exit 1
 fi
+
+# REPO_ROOT is the checkout the script runs in, a linked worktree when run
+# from one; the main worktree is what `git worktree remove` never removes.
+# Outside list mode a failed listing falls back to REPO_ROOT, because
+# resolve_worktree_for_branch then finds no worktree to act on anyway.
+if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
+  if [ "$LIST_REMOVABLE" -eq 1 ]; then
+    echo "cleanup-merged-branches.sh: --list-removable: 'git worktree list --porcelain' failed; no worktree can be evaluated" >&2
+    exit 1
+  fi
+  MAIN_WORKTREE_PATH="$REPO_ROOT"
+fi
+
+# List mode exits 1 after printing when any branch it could not evaluate
+# was left out, so an incomplete list never reads as a complete one.
+LIST_INDETERMINATE=0
+# note_list_indeterminate <branch> <reason> — list mode only.
+note_list_indeterminate() {
+  echo "cleanup-merged-branches.sh: --list-removable: '$1' not evaluated: $2" >&2
+  LIST_INDETERMINATE=1
+}
 
 # ---------------------------------------------------------------------------
 # Default branch resolution
@@ -741,6 +820,9 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
     skip-error)
       SKIP_REASON_BRANCHES+=("$BRANCH")
       SKIP_REASON_MESSAGES+=("gh lookup failed; skipping to fail closed")
+      if [ "$LIST_REMOVABLE" -eq 1 ]; then
+        note_list_indeterminate "$BRANCH" "gh lookup failed"
+      fi
       ;;
     none)
       ;;
@@ -766,6 +848,55 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
   done
 
+  # emit_removable_line — print "<main worktree>\t<branch>\t<worktree>" when
+  # worktree_removal_verdict says the real run would remove this Tier A
+  # branch's worktree. A worktree it cannot evaluate is reported on stderr and
+  # makes the run exit 1.
+  emit_removable_line() {
+    local branch="$1"
+    worktree_removal_verdict "$branch" "$MAIN_WORKTREE_PATH" "$REPO_ROOT"
+    case "$WORKTREE_REMOVAL_VERDICT" in
+      unlock-remove | remove) ;;
+      idle-unverifiable)
+        note_list_indeterminate "$branch" "cannot verify the worktree is idle"
+        return 0
+        ;;
+      status-unverifiable)
+        note_list_indeterminate "$branch" "cannot verify ${WORKTREE_PATH} is clean"
+        return 0
+        ;;
+      submodules-unverifiable)
+        note_list_indeterminate "$branch" "cannot verify ${WORKTREE_PATH} has no populated submodules"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+    # Refnames cannot contain a tab, so only the paths can break the format.
+    case "$MAIN_WORKTREE_PATH$WORKTREE_PATH" in
+      *$'\t'*)
+        note_list_indeterminate "$branch" "a tab in a path would break the line format"
+        return 0
+        ;;
+    esac
+    # Porcelain parsing is line-based and REPO_ROOT is whole only when run from
+    # the main checkout, so this misses a newline in a linked worktree's path.
+    case "$MAIN_WORKTREE_PATH$REPO_ROOT" in
+      *$'\n'*)
+        note_list_indeterminate "$branch" "a newline in the repo path would break the line format"
+        return 0
+        ;;
+    esac
+    printf '%s\t%s\t%s\n' "$MAIN_WORKTREE_PATH" "$branch" "$WORKTREE_PATH"
+  }
+
+  if [ "$LIST_REMOVABLE" -eq 1 ]; then
+    for BRANCH in "${_DRY_TIER_A[@]}"; do
+      emit_removable_line "$BRANCH"
+    done
+    [ "$LIST_INDETERMINATE" -eq 0 ] || exit 1
+    exit 0
+  fi
+
   if [ "${#_DRY_TIER_A[@]}" -eq 0 ] && [ "${#_DRY_TIER_B[@]}" -eq 0 ] \
      && [ "${#SKIPPED_BRANCHES[@]}" -eq 0 ] && [ "${#SKIP_REASON_BRANCHES[@]}" -eq 0 ]; then
     if [ -t 1 ]; then
@@ -776,21 +907,21 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
   _dry_print_branch_with_lock() {
     local _branch="$1"
-    resolve_worktree_for_branch "$_branch"
-    local _wt_path="$WORKTREE_PATH"
-    local _locked="$WORKTREE_LOCKED"
     local _tag=""
-    if [ -n "$_wt_path" ] && [ "$_wt_path" != "$REPO_ROOT" ]; then
-      local _in_use=0
-      worktree_in_use "$_wt_path" || _in_use=$?
-      if [ "$_in_use" -eq 0 ]; then
-        _tag=" [worktree in use — would skip]"
-      elif [ "$_in_use" -eq 2 ]; then
-        _tag=" [worktree idle state unverifiable — would skip]"
-      elif [ "$_locked" -eq 1 ]; then
-        _tag=" [locked — will unlock and remove]"
-      fi
-    fi
+    worktree_removal_verdict "$_branch" "$MAIN_WORKTREE_PATH" "$REPO_ROOT"
+    case "$WORKTREE_REMOVAL_VERDICT" in
+      main) _tag=" [checked out in the main worktree — would skip]" ;;
+      current-worktree) _tag=" [the worktree this script is running from — would skip]" ;;
+      in-use) _tag=" [worktree in use — would skip]" ;;
+      idle-unverifiable) _tag=" [worktree idle state unverifiable — would skip]" ;;
+      live-lock) _tag=" [locked by live pid ${WORKTREE_LOCK_PID} — would skip]" ;;
+      pidless-lock) _tag=" [locked, no pid recorded — treated as live, would skip]" ;;
+      dirty) _tag=" [worktree has uncommitted changes — remove would fail]" ;;
+      submodules) _tag=" [worktree has populated submodules — remove would fail]" ;;
+      status-unverifiable | submodules-unverifiable) _tag=" [worktree state unverifiable — remove may fail]" ;;
+      unlock-remove) _tag=" [locked — will unlock and remove]" ;;
+      none | remove) ;;
+    esac
     _branch_info=""
     for _mb_i in "${!MERGED_BRANCHES[@]}"; do
       if [ "${MERGED_BRANCHES[$_mb_i]}" = "$_branch" ]; then
@@ -889,62 +1020,87 @@ for BRANCH in "${TO_DELETE[@]}"; do
 
   echo "  ${BRANCH}:"
 
-  resolve_worktree_for_branch "$BRANCH"
+  # The real run pays for the verdict's probes twice by design: list mode and --dry-run need them, and git stays the authority.
+  worktree_removal_verdict "$BRANCH" "$MAIN_WORKTREE_PATH" "$REPO_ROOT"
 
-  if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$REPO_ROOT" ]; then
-    WORKTREE_IN_USE=0
-    worktree_in_use "$WORKTREE_PATH" || WORKTREE_IN_USE=$?
-    if [ "$WORKTREE_IN_USE" -eq 0 ]; then
+  case "$WORKTREE_REMOVAL_VERDICT" in
+    none)
+      echo "    worktree:       not found"
+      ;;
+    main)
+      echo "    worktree:       skipped (checked out in the main worktree)"
+      SKIPPED_IN_USE+=("$BRANCH")
+      SKIPPED_IN_USE_REASON_VALUES+=("checked out in the main worktree")
+      continue
+      ;;
+    current-worktree)
+      echo "    worktree:       skipped (the worktree this script is running from)"
+      SKIPPED_IN_USE+=("$BRANCH")
+      SKIPPED_IN_USE_REASON_VALUES+=("the worktree this script is running from")
+      continue
+      ;;
+    in-use)
       echo "    worktree:       skipped (in use by a live process)"
       SKIPPED_IN_USE+=("$BRANCH")
       SKIPPED_IN_USE_REASON_VALUES+=("worktree in use by a live process")
       continue
-    elif [ "$WORKTREE_IN_USE" -eq 2 ]; then
+      ;;
+    idle-unverifiable)
       echo "    worktree:       skipped (cannot verify it is idle)"
       SKIPPED_IN_USE+=("$BRANCH")
       SKIPPED_IN_USE_REASON_VALUES+=("worktree idle state unverifiable")
       continue
-    fi
-    if [ "$WORKTREE_LOCKED" -eq 1 ]; then
-      WORKTREE_LOCK_ALIVE=0
-      if [ -n "$WORKTREE_LOCK_PID" ]; then
-        kill -0 "$WORKTREE_LOCK_PID" 2>/dev/null && WORKTREE_LOCK_ALIVE=1
-      else
-        WORKTREE_LOCK_ALIVE=1
+      ;;
+    live-lock)
+      echo "    worktree:       skipped (locked by live pid ${WORKTREE_LOCK_PID})"
+      SKIPPED_LIVE_LOCK+=("$BRANCH")
+      continue
+      ;;
+    pidless-lock)
+      echo "    worktree:       skipped (locked, no pid recorded — treated as live)"
+      SKIPPED_LIVE_LOCK+=("$BRANCH")
+      continue
+      ;;
+    *)
+      # dirty, submodules, the two unverifiable probes, unlock-remove and
+      # remove: git decides, so a refusal is reported, not predicted.
+      WORKTREE_UNLOCKED=0
+      if [ "$WORKTREE_LOCKED" -eq 1 ]; then
+        if git worktree unlock "$WORKTREE_PATH" 2>/dev/null; then
+          WORKTREE_UNLOCKED=1
+          echo "    worktree:       unlocked stale lock (pid ${WORKTREE_LOCK_PID} dead)"
+        fi
       fi
-
-      if [ "$WORKTREE_LOCK_ALIVE" -eq 1 ]; then
-        echo "    worktree:       skipped (locked by live pid ${WORKTREE_LOCK_PID:-unknown})"
-        SKIPPED_LIVE_LOCK+=("$BRANCH")
+      WORKTREE_REMOVE_OUTPUT=
+      if WORKTREE_REMOVE_OUTPUT=$(git worktree remove "$WORKTREE_PATH" 2>&1); then
+        echo "    worktree:       removed: ${WORKTREE_PATH}"
+      else
+        echo "    worktree:       remove failed (manual step needed)"
+        if [ -n "$WORKTREE_REMOVE_OUTPUT" ]; then
+          printf '%s\n' "$WORKTREE_REMOVE_OUTPUT" | sed 's/^/                    /'
+        fi
+        # --no-optional-locks: git's own remove refusal already names which
+        # rule fired (dirty/locked/submodules); this adds what is dirty.
+        # Without a `.git`, status would walk up and report an enclosing repo's files.
+        WORKTREE_STATUS_OUTPUT=""
+        if [ -e "$WORKTREE_PATH/.git" ]; then
+          WORKTREE_STATUS_OUTPUT=$(git --no-optional-locks -C "$WORKTREE_PATH" status --porcelain --ignore-submodules=none 2>&1) || true
+        fi
+        if [ -n "$WORKTREE_STATUS_OUTPUT" ]; then
+          printf '%s\n' "$WORKTREE_STATUS_OUTPUT" | sed 's/^/                    /'
+        fi
+        # The reason names the dead pid: a lock with no pid reads as live, so later runs would skip the worktree forever.
+        if [ "$WORKTREE_UNLOCKED" -eq 1 ]; then
+          if git worktree lock --reason "kept by cleanup-merged-branches (pid ${WORKTREE_LOCK_PID})" "$WORKTREE_PATH" 2>/dev/null; then
+            echo "    worktree:       re-locked (pid ${WORKTREE_LOCK_PID})"
+          else
+            echo "    worktree:       re-lock failed (manual step needed)"
+          fi
+        fi
         continue
       fi
-
-      if git worktree unlock "$WORKTREE_PATH" 2>/dev/null; then
-        echo "    worktree:       unlocked stale lock (pid ${WORKTREE_LOCK_PID} dead)"
-      fi
-    fi
-    WORKTREE_REMOVE_OUTPUT=
-    if WORKTREE_REMOVE_OUTPUT=$(git worktree remove "$WORKTREE_PATH" 2>&1); then
-      echo "    worktree:       removed: ${WORKTREE_PATH}"
-    else
-      if [ "$WORKTREE_LOCKED" -eq 1 ]; then
-        git worktree lock "$WORKTREE_PATH" 2>/dev/null || true
-      fi
-      echo "    worktree:       remove failed (manual step needed)"
-      if [ -n "$WORKTREE_REMOVE_OUTPUT" ]; then
-        printf '%s\n' "$WORKTREE_REMOVE_OUTPUT" | sed 's/^/                    /'
-      fi
-      # --no-optional-locks: git's own remove refusal already names which
-      # rule fired (dirty/locked/submodules); this adds what is dirty.
-      WORKTREE_STATUS_OUTPUT=$(git --no-optional-locks -C "$WORKTREE_PATH" status --porcelain 2>&1) || true
-      if [ -n "$WORKTREE_STATUS_OUTPUT" ]; then
-        printf '%s\n' "$WORKTREE_STATUS_OUTPUT" | sed 's/^/                    /'
-      fi
-      continue
-    fi
-  else
-    echo "    worktree:       not found"
-  fi
+      ;;
+  esac
 
   # After --prune, check the tracking ref directly; substring grep on fetch output
   # can't distinguish "origin/feat/foo" from "origin/feat/foo-v2".
@@ -1055,7 +1211,11 @@ else
 
   SWEEP_HAD_FAILURE=0
   for _sweep_repo in "${DISCOVERED_REPOS[@]}"; do
-    echo "== ${_sweep_repo} =="
+    if [ "$LIST_REMOVABLE" -eq 1 ]; then
+      echo "== ${_sweep_repo} ==" >&2
+    else
+      echo "== ${_sweep_repo} =="
+    fi
     # A subshell nested directly inside `if !(...)` or a `||` list runs with
     # errexit silently disabled for its whole execution (a documented bash
     # quirk, not specific to this script) — a genuine unguarded failure

@@ -10,6 +10,11 @@
 #   progress / clear_progress            — stderr-only progress line helpers
 #   collect_process_cwds / worktree_in_use — live-process detection
 #   resolve_worktree_for_branch          — branch -> worktree path/lock lookup
+#   worktree_lock_is_live                — is a lock's recorded pid alive, or unknown
+#   main_worktree_path                   — the main worktree's path
+#   worktree_is_clean                    — the cleanliness check `git worktree remove` runs
+#   worktree_has_populated_submodules    — the submodule refusal `git worktree remove` raises
+#   worktree_removal_verdict             — what a real cleanup run does with a branch's worktree
 #   collect_all_worktrees                — full `worktree list --porcelain` scan
 #   worktree_canon_path                  — symlink-resolved path, raw on failure
 #   worktree_matches_filter              — branch/path match against FILTER_ARGS
@@ -226,6 +231,181 @@ resolve_worktree_for_branch() {
     fi
   done < <(git worktree list --porcelain)
   _commit_worktree_candidate
+}
+
+# worktree_lock_is_live <lock-pid>
+#
+# Returns 0 when the lock holder must be treated as alive, 1 when this user's
+# `kill -0` cannot signal the pid: it is dead, or it belongs to another user.
+# An empty pid (a lock with no `pid N` in its reason) returns 0, so a lock of
+# unknown ownership fails closed.
+worktree_lock_is_live() {
+  local lock_pid="${1:-}"
+  [ -z "$lock_pid" ] && return 0
+  kill -0 "$lock_pid" 2>/dev/null
+}
+
+# main_worktree_path
+#
+# Prints the main worktree's path: the first record of `git worktree list
+# --porcelain`, the same whichever worktree the caller runs from. Returns 1
+# when the listing fails or its first line is not a `worktree` record.
+main_worktree_path() {
+  local listing first_line
+  listing=$(git worktree list --porcelain 2>/dev/null) || return 1
+  first_line="${listing%%$'\n'*}"
+  [[ "$first_line" == "worktree "* ]] || return 1
+  printf '%s\n' "${first_line#worktree }"
+}
+
+# worktree_is_clean <path>
+#
+# Runs the cleanliness check `git worktree remove` runs before it removes a
+# worktree. Returns 0 when clean, 1 when dirty, 2 when the check cannot run: the
+# worktree has no `.git`, or `git status` fails. A path whose directory is gone
+# returns 0, because `git worktree remove` removes such a worktree.
+# Sets WORKTREE_STATUS_PORCELAIN to the status lines (empty unless dirty) and
+# WORKTREE_PROBE_REASON to a one-line reason on a 2, empty otherwise.
+# The `.git` check comes first because `git -C <path> status` in a directory
+# without one walks up to the enclosing repo and reports that repo's state.
+# A `.git` file whose back-link names another worktree's admin dir passes this
+# check, though `git worktree remove` refuses that worktree as invalid.
+# shellcheck disable=SC2034  # both globals are read by the sourcing script
+worktree_is_clean() {
+  local path="$1"
+  WORKTREE_STATUS_PORCELAIN=""
+  WORKTREE_PROBE_REASON=""
+  [ -d "$path" ] || return 0
+  if [ ! -e "$path/.git" ]; then
+    WORKTREE_PROBE_REASON="$path has no .git"
+    return 2
+  fi
+  if ! WORKTREE_STATUS_PORCELAIN=$(git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=none 2>/dev/null); then
+    WORKTREE_STATUS_PORCELAIN=""
+    WORKTREE_PROBE_REASON="'git status' failed in $path"
+    return 2
+  fi
+  [ -z "$WORKTREE_STATUS_PORCELAIN" ]
+}
+
+# worktree_has_populated_submodules <path>
+#
+# Returns 0 when <path> has a populated submodule, 1 when it has none, and 2
+# when the check cannot run: the worktree has no `.git`, or `git rev-parse` or
+# `git submodule status` fails. `git worktree remove` refuses a worktree with a
+# populated submodule, and one whose own git dir still holds a `modules`
+# directory even if every submodule is now uninitialized. It removes a worktree
+# whose submodules are only uninitialized, which `git submodule status` marks
+# with a leading `-`. A path whose directory is gone returns 1.
+# A gitlink inactive in config whose directory has its own `.git` reads as
+# uninitialized here but counts as populated to git, so it returns 1 and the
+# real remove still refuses it.
+# Sets WORKTREE_PROBE_REASON to a one-line reason on a 2, empty otherwise.
+# The `modules` directory is read from the worktree's own git dir, never the
+# main checkout's, which would make every worktree look populated whenever the
+# main checkout has an initialized submodule.
+# shellcheck disable=SC2034  # WORKTREE_PROBE_REASON is read by the sourcing script
+worktree_has_populated_submodules() {
+  local path="$1" submodule_status submodule_line worktree_git_dir
+  WORKTREE_PROBE_REASON=""
+  [ -d "$path" ] || return 1
+  if [ ! -e "$path/.git" ]; then
+    WORKTREE_PROBE_REASON="$path has no .git"
+    return 2
+  fi
+  if ! worktree_git_dir=$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null); then
+    WORKTREE_PROBE_REASON="'git rev-parse' failed in $path"
+    return 2
+  fi
+  [ -d "$worktree_git_dir/modules" ] && return 0
+  if ! submodule_status=$(git -C "$path" submodule status 2>/dev/null); then
+    WORKTREE_PROBE_REASON="'git submodule status' failed in $path"
+    return 2
+  fi
+  while IFS= read -r submodule_line; do
+    case "$submodule_line" in
+      '' | -*) ;;
+      *) return 0 ;;
+    esac
+  done <<< "$submodule_status"
+  return 1
+}
+
+# worktree_removal_verdict <branch> <main-worktree-path> <current-worktree-path>
+#
+# Resolves <branch>'s worktree with resolve_worktree_for_branch and sets
+# WORKTREE_REMOVAL_VERDICT to what a real cleanup run does with it, leaving
+# WORKTREE_PATH, WORKTREE_LOCKED and WORKTREE_LOCK_PID populated; always
+# returns 0. A global carries the verdict because a `$(...)`
+# capture would lose those. Precondition: collect_process_cwds has already run.
+# <current-worktree-path> is the checkout the caller runs in. It is compared by
+# canonical path, since the caller's `--show-toplevel` and git's porcelain can
+# spell one path differently. First match wins:
+#   none                      no worktree is checked out to the branch
+#   main                      it is the main worktree, which is never removed
+#   current-worktree          it is the worktree the caller runs in, never removed
+#   in-use                    a live process is working inside it
+#   idle-unverifiable         the live-process scan could not run
+#   live-lock                 locked by a pid that is alive
+#   pidless-lock              locked with no pid recorded, treated as live
+#   submodules                `git worktree remove` refuses populated submodules
+#   dirty                     `git worktree remove` refuses uncommitted changes
+#   status-unverifiable       the cleanliness check could not run
+#   submodules-unverifiable   the submodule check could not run
+#   unlock-remove             locked by a dead pid, unlocked then removed
+#   remove                    removed
+# The last six are the tokens for which a real run attempts `git worktree
+# remove`. A refusal git raises for a reason these probes do not model still
+# fails that attempt. The probes run only after the lock checks, populated
+# submodules first, the order `git worktree remove` checks them in.
+# shellcheck disable=SC2034  # WORKTREE_REMOVAL_VERDICT is read by the sourcing script
+worktree_removal_verdict() {
+  local branch="$1" main_worktree="$2" current_worktree="$3" in_use_rc=0 clean_rc=0 submodules_rc=0
+  resolve_worktree_for_branch "$branch"
+  WORKTREE_REMOVAL_VERDICT="none"
+  [ -n "$WORKTREE_PATH" ] || return 0
+  if [ "$WORKTREE_PATH" = "$main_worktree" ]; then
+    WORKTREE_REMOVAL_VERDICT="main"
+    return 0
+  fi
+  if [ "$(worktree_canon_path "$WORKTREE_PATH")" = "$(worktree_canon_path "$current_worktree")" ]; then
+    WORKTREE_REMOVAL_VERDICT="current-worktree"
+    return 0
+  fi
+  worktree_in_use "$WORKTREE_PATH" || in_use_rc=$?
+  if [ "$in_use_rc" -eq 0 ]; then
+    WORKTREE_REMOVAL_VERDICT="in-use"
+    return 0
+  elif [ "$in_use_rc" -eq 2 ]; then
+    WORKTREE_REMOVAL_VERDICT="idle-unverifiable"
+    return 0
+  fi
+  if [ "$WORKTREE_LOCKED" -eq 1 ] && worktree_lock_is_live "$WORKTREE_LOCK_PID"; then
+    if [ -n "$WORKTREE_LOCK_PID" ]; then
+      WORKTREE_REMOVAL_VERDICT="live-lock"
+    else
+      WORKTREE_REMOVAL_VERDICT="pidless-lock"
+    fi
+    return 0
+  fi
+  worktree_has_populated_submodules "$WORKTREE_PATH" || submodules_rc=$?
+  if [ "$submodules_rc" -eq 0 ]; then
+    WORKTREE_REMOVAL_VERDICT="submodules"
+    return 0
+  fi
+  worktree_is_clean "$WORKTREE_PATH" || clean_rc=$?
+  if [ "$clean_rc" -eq 1 ]; then
+    WORKTREE_REMOVAL_VERDICT="dirty"
+  elif [ "$clean_rc" -eq 2 ]; then
+    WORKTREE_REMOVAL_VERDICT="status-unverifiable"
+  elif [ "$submodules_rc" -eq 2 ]; then
+    WORKTREE_REMOVAL_VERDICT="submodules-unverifiable"
+  elif [ "$WORKTREE_LOCKED" -eq 1 ]; then
+    WORKTREE_REMOVAL_VERDICT="unlock-remove"
+  else
+    WORKTREE_REMOVAL_VERDICT="remove"
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------

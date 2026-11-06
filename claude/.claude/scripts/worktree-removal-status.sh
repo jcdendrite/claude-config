@@ -3,11 +3,16 @@
 # `git worktree remove` (no --force) would succeed, and why when it wouldn't.
 #
 # Read-only: every working-tree check uses `git --no-optional-locks status
-# --porcelain`, so a concurrent session in the same worktree is never
-# blocked or has its index touched.
+# --porcelain --ignore-submodules=none`, so a concurrent session in the same
+# worktree is never blocked or has its index touched.
 #
 # Per `git worktree remove --help`, remove refuses a dirty, locked, or
-# submodule-containing worktree without --force. A live process working
+# submodule-containing worktree without --force. Submodule-containing means a
+# populated submodule, or a leftover `modules` directory in the worktree's git
+# dir; an uninitialized submodule alone does not count. The report can read
+# "Submodules: no / would succeed" for two states git still refuses; see the
+# comments on `worktree_is_clean` and `worktree_has_populated_submodules` in
+# `_worktree-lib.sh` for both. A live process working
 # inside a worktree downgrades the verdict to "do not remove" regardless of
 # --force, since --force does not itself check for one. See
 # docs/scripts.md's entry for this script for the full behavior writeup.
@@ -51,7 +56,7 @@ fi
 # Canonicalize, main-worktree/current-worktree identification
 # ---------------------------------------------------------------------------
 
-MAIN_WORKTREE_PATH=$(worktree_canon_path "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
+MAIN_WORKTREE_PATH=$(worktree_canon_path "${ALL_WT_PATHS[0]}")
 CURRENT_WORKTREE_PATH=$(worktree_canon_path "$(git rev-parse --show-toplevel)")
 
 # Canonicalize every reported worktree path once, up front, so every
@@ -113,21 +118,6 @@ fi
 collect_process_cwds
 
 # ---------------------------------------------------------------------------
-# worktree_has_submodules <path> -- 0 = has submodules, 1 = no submodules,
-# 2 = could not determine. `git submodule status` prints one line per
-# initialized submodule and nothing when there are none, so a missing
-# .gitmodules and an empty-but-clean submodule config both report "no".
-# ---------------------------------------------------------------------------
-
-worktree_has_submodules() {
-  local path="$1" output
-  [ -d "$path" ] || return 2
-  output=$(git -C "$path" submodule status 2>/dev/null) || return 2
-  [ -n "$output" ] && return 0
-  return 1
-}
-
-# ---------------------------------------------------------------------------
 # report_worktree <index> -- prints one "Label: value" block for the
 # worktree at ALL_WT_* index <index>, and sets IS_REMOVABLE / IS_DIRTY /
 # IS_LOCKED / IS_PRUNABLE / IS_IN_USE / IS_UNVERIFIABLE (each 0 or 1) for
@@ -182,23 +172,32 @@ report_worktree() {
     echo "Locked: no"
   fi
 
-  local status_output status_failed=0
-  if ! status_output=$(git --no-optional-locks -C "$path" status --porcelain 2>&1); then
-    status_failed=1
-  fi
-  if [ "$status_failed" -eq 1 ]; then
-    echo "Status: could not be determined (${status_output})"
-    IS_UNVERIFIABLE=1
-  elif [ -z "$status_output" ]; then
-    echo "Status: clean"
-  else
-    echo "Status: dirty"
-    printf '%s\n' "$status_output" | sed 's/^/  /'
-    IS_DIRTY=1
-  fi
+  local clean_rc=0 status_failure_text
+  worktree_is_clean "$path" || clean_rc=$?
+  case "$clean_rc" in
+    0) echo "Status: clean" ;;
+    1)
+      echo "Status: dirty"
+      printf '%s\n' "$WORKTREE_STATUS_PORCELAIN" | sed 's/^/  /'
+      IS_DIRTY=1
+      ;;
+    *)
+      # worktree_is_clean discards git's stderr, so re-run status for its text.
+      # Without a .git, status would walk up to an enclosing repo, so report the lib's reason.
+      status_failure_text=""
+      if [ -e "$path/.git" ]; then
+        status_failure_text=$(git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=none 2>&1) || true
+      fi
+      if [ -z "$status_failure_text" ]; then
+        status_failure_text="$WORKTREE_PROBE_REASON"
+      fi
+      echo "Status: could not be determined (${status_failure_text})"
+      IS_UNVERIFIABLE=1
+      ;;
+  esac
 
   local submodules_rc=0
-  worktree_has_submodules "$path" || submodules_rc=$?
+  worktree_has_populated_submodules "$path" || submodules_rc=$?
   local has_submodules=0
   case "$submodules_rc" in
     0) echo "Submodules: yes"; has_submodules=1 ;;

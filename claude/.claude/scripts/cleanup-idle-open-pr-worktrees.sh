@@ -31,9 +31,9 @@
 #      means this check can read "still active" when only CI touched the
 #      PR — under-deletes (fails safe) rather than over-deletes.
 #   4. Otherwise -> candidate. A worktree that doesn't actually exist for
-#      this branch (never checked out, or it's the worktree this script is
-#      running from) is skipped silently rather than erroring. A worktree a
-#      live process is working inside is skipped and reported.
+#      this branch (never checked out, the worktree this script is running
+#      from, or the main worktree) is skipped silently rather than erroring.
+#      A worktree a live process is working inside is skipped and reported.
 #   5. Removed via `git worktree remove` (no --force — a dirty working tree
 #      makes git itself refuse the removal), capturing success/failure per
 #      candidate so one refusal doesn't abort the batch under `set -euo
@@ -124,6 +124,13 @@ fi
 # ---------------------------------------------------------------------------
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# The main worktree is what `git worktree remove` never removes, and REPO_ROOT
+# is a linked worktree when the script runs from one. main_worktree_path fails
+# only when the worktree listing does, and the REPO_ROOT comparison still holds.
+if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
+  MAIN_WORKTREE_PATH="$REPO_ROOT"
+fi
 
 if ! git remote get-url origin >/dev/null 2>&1; then
   echo "ERROR: no 'origin' remote configured; cannot determine which repo's open PRs to check." >&2
@@ -292,9 +299,10 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
   fi
 
   resolve_worktree_for_branch "$BRANCH"
-  if [ -z "$WORKTREE_PATH" ] || [ "$WORKTREE_PATH" = "$REPO_ROOT" ]; then
-    # No removable worktree for this branch — never checked out, or it's
-    # the worktree this script is running from. Nothing to do.
+  if [ -z "$WORKTREE_PATH" ] || [ "$WORKTREE_PATH" = "$REPO_ROOT" ] || [ "$WORKTREE_PATH" = "$MAIN_WORKTREE_PATH" ]; then
+    # No removable worktree for this branch — never checked out, it's the
+    # worktree this script is running from, or it's the main worktree.
+    # Nothing to do.
     continue
   fi
 

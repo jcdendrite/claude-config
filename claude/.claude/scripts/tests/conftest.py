@@ -1726,6 +1726,75 @@ def _make_worktree(repo: Path, branch_name: str, wt_path: Path) -> None:
     )
 
 
+def _make_submodule_worktree(
+    tmp_path: Path, branch: str, wt_path: Path, *, populate: bool
+) -> tuple[Path, Path]:
+    """Return (local_repo, bare_remote) where `branch` is checked out in a
+    linked worktree at wt_path whose tree carries one submodule, `sm`.
+    With populate=True the submodule is initialized in the worktree, so
+    `git worktree remove` refuses it; otherwise it stays uninitialized."""
+    submodule_remote = tmp_path / "submodule-remote.git"
+    submodule_remote.mkdir()
+    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main"], cwd=submodule_remote, check=True)
+    submodule_seed = tmp_path / "submodule-seed"
+    _init_repo(submodule_seed)
+    _commit(submodule_seed, "submodule content")
+    subprocess.run(["git", "push", "-q", str(submodule_remote), "main"], cwd=submodule_seed, check=True)
+
+    local, bare = _make_repo_with_remote(tmp_path)
+    allow_file_protocol = ["git", "-c", "protocol.file.allow=always"]
+    subprocess.run(
+        [*allow_file_protocol, "submodule", "add", "-q", str(submodule_remote), "sm"], cwd=local, check=True,
+    )
+    subprocess.run(["git", "commit", "-q", "-m", "add submodule"], cwd=local, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+    _make_feature_branch(local, branch)
+    subprocess.run(["git", "branch", "-D", branch], cwd=bare, check=True)
+    _make_worktree(local, branch, wt_path)
+    if populate:
+        subprocess.run([*allow_file_protocol, "submodule", "update", "--init", "-q"], cwd=wt_path, check=True)
+    return local, bare
+
+
+def _lock_worktree(repo: Path, wt_path: Path, reason: str | None) -> None:
+    """`git worktree lock` wt_path, with `--reason` when reason is not None."""
+    command = ["git", "worktree", "lock", str(wt_path)]
+    if reason is not None:
+        command += ["--reason", reason]
+    subprocess.run(command, cwd=repo, check=True, capture_output=True)
+
+
+def _make_worktree_without_git_entry(tmp_path: Path, *, locked: bool = False) -> tuple[Path, Path]:
+    """Return (local_repo, wt_path): a clean linked worktree for `feat/no-dot-git`,
+    nested in the main checkout the way this repo lays them out, with its `.git`
+    file removed. The main checkout excludes the nested directory from its status,
+    so a status run that walks up from the worktree reports a clean repo. The
+    worktree is locked first when `locked` is set."""
+    local, _ = _make_repo_with_remote(tmp_path)
+    _make_feature_branch(local, "feat/no-dot-git")
+    wt_path = local / ".claude" / "worktrees" / "no-dot-git-tree"
+    _make_worktree(local, "feat/no-dot-git", wt_path)
+    if locked:
+        _lock_worktree(local, wt_path, None)
+    with (local / ".git" / "info" / "exclude").open("a") as exclude_file:
+        exclude_file.write(".claude/\n")
+    (wt_path / ".git").unlink()
+    return local, wt_path
+
+
+def _failing_tool_shims(tmp_path: Path, dir_name: str, *tools: str) -> Path:
+    """Return a new PATH-prepend directory under tmp_path, named from `dir_name` plus a
+    unique suffix, whose shim for each of `tools` exits 1 with no output, as if the
+    tool were present but broken."""
+    shim_dir = tmp_path / f"{dir_name}_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    for tool in tools:
+        shim = shim_dir / tool
+        shim.write_text("#!/bin/sh\nexit 1\n")
+        shim.chmod(0o755)
+    return shim_dir
+
+
 def _dead_pid() -> int:
     """Return a pid that is guaranteed not to be running."""
     proc = subprocess.Popen(["true"])

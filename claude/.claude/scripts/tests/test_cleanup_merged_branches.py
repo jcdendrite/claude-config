@@ -30,10 +30,17 @@ from .conftest import (
     _direnv_shim_source_reads_stdin,
     _direnv_shim_source_static_export,
     _direnv_shim_source_unconditional_unset,
+    _failing_tool_shims,
+    _git_shim_that_fails_on_subcommand,
+    _git_shim_that_fails_on_worktree_subcommand,
     _init_repo,
+    _lock_worktree,
     _make_feature_branch,
     _make_repo_with_remote,
+    _make_submodule_worktree,
     _make_worktree,
+    _make_worktree_without_git_entry,
+    _shim_match_count,
     _shimmed_env,
 )
 
@@ -47,6 +54,13 @@ def _rev_parse(repo: Path, ref: str) -> str:
         ["git", "rev-parse", ref], cwd=repo, capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
+
+
+def _local_branch_exists(repo: Path, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo, capture_output=True, check=False,
+    ).returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -956,10 +970,8 @@ class TestLockedWorktreeRemoveFailsCleanly:
         # Untracked file causes git worktree remove to refuse without --force
         (wt_path / "leftover.txt").write_text("in-progress work")
         dead = _dead_pid()
-        subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", f"test (pid {dead})"],
-            cwd=local, check=True, capture_output=True,
-        )
+        lock_reason = f"test (pid {dead})"
+        _lock_worktree(local, wt_path, lock_reason)
 
         env = fake_gh({"feat/locked-dirty": {"number": 220, "mergedAt": "2026-05-01"}})
         result = _run_script(local, env)
@@ -992,6 +1004,65 @@ class TestLockedWorktreeRemoveFailsCleanly:
             for record in records
         )
         assert wt_is_locked, "worktree should be relocked after failed remove"
+        # The reason carries the pid; without it a later run reads a pid-less lock as live and skips forever.
+        assert f"locked kept by cleanup-merged-branches (pid {dead})" in porcelain.stdout
+        # The lock outcome follows git's refusal and the diagnostic dump.
+        output_lines = result.stdout.splitlines()
+        relock_line = f"    worktree:       re-locked (pid {dead})"
+        assert relock_line in output_lines, result.stdout
+        assert output_lines.index(relock_line) > output_lines.index("                    ?? leftover.txt")
+
+    def test_relocked_reason_keeps_the_same_dead_pid_across_two_refused_cycles(self, tmp_path, fake_gh):
+        """A re-lock without the pid reads as a pid-less live lock on the next run, which skips
+        the worktree instead of reaching unlock-remove again."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-twice")
+        subprocess.run(["git", "branch", "-D", "feat/locked-twice"], cwd=bare, check=True)
+        wt_path = tmp_path / "locked-twice-tree"
+        _make_worktree(local, "feat/locked-twice", wt_path)
+        (wt_path / "leftover.txt").write_text("in-progress work")
+        dead = _dead_pid()
+        _lock_worktree(local, wt_path, f"keep — pid {dead}")
+        env = fake_gh({"feat/locked-twice": {"number": 221, "mergedAt": "2026-05-01"}})
+
+        first = _run_script(local, env)
+        second = _run_script(local, env)
+
+        for result in (first, second):
+            assert result.returncode == 0, result.stderr
+            assert f"unlocked stale lock (pid {dead} dead)" in result.stdout
+            assert "remove failed (manual step needed)" in result.stdout
+            assert f"re-locked (pid {dead})" in result.stdout
+            assert "locked, no pid recorded" not in result.stdout
+        porcelain = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert f"locked kept by cleanup-merged-branches (pid {dead})" in porcelain
+
+    def test_failed_relock_is_reported_and_leaves_the_worktree_unlocked(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/relock-fails")
+        subprocess.run(["git", "branch", "-D", "feat/relock-fails"], cwd=bare, check=True)
+        wt_path = tmp_path / "relock-fails-tree"
+        _make_worktree(local, "feat/relock-fails", wt_path)
+        (wt_path / "leftover.txt").write_text("in-progress work")
+        _lock_worktree(local, wt_path, f"test (pid {_dead_pid()})")
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*worktree lock*", exit_status=1)
+        env = fake_gh({"feat/relock-fails": {"number": 222, "mergedAt": "2026-05-01"}})
+        env = {**env, "PATH": f"{shim_dir}:{env['PATH']}"}
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "    worktree:       remove failed (manual step needed)" in result.stdout
+        assert "    worktree:       re-lock failed (manual step needed)" in result.stdout
+        assert "re-locked" not in result.stdout
+        assert _shim_match_count(shim_dir) == 1
+        porcelain = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert f"worktree {wt_path}\n" in porcelain
+        assert "\nlocked" not in porcelain
 
 
 # ---------------------------------------------------------------------------
@@ -3794,3 +3865,826 @@ class TestAllProjectsNoReposDiscovered:
 
         assert result.returncode == 0
         assert "no git repos found" in result.stderr.lower()
+
+# ---------------------------------------------------------------------------
+# --dry-run lock tag follows the real run's lock rule
+# ---------------------------------------------------------------------------
+
+def _add_tier_a_worktree(local: Path, bare: Path, branch: str, wt_path: Path) -> None:
+    """Merged-and-deleted-on-remote branch checked out in a linked worktree."""
+    _make_feature_branch(local, branch)
+    subprocess.run(["git", "branch", "-D", branch], cwd=bare, check=True)
+    _make_worktree(local, branch, wt_path)
+
+
+def _tier_a_branch_with_worktree(tmp_path, branch, wt_name, pr_number):
+    local, bare = _make_repo_with_remote(tmp_path)
+    wt_path = tmp_path / wt_name
+    _add_tier_a_worktree(local, bare, branch, wt_path)
+    return local, wt_path, {"number": pr_number, "mergedAt": "2026-05-01"}
+
+
+class TestDryRunLockTagMatchesRealRun:
+    """The dry-run lock tag applies the same liveness rule as the real run.
+    The liveness matrix itself lives in TestWorktreeLockIsLive."""
+
+    @pytest.mark.parametrize(
+        ("reason_for", "expected", "unexpected"),
+        [
+            (
+                lambda: f"test (pid {os.getpid()})",
+                f"[locked by live pid {os.getpid()} — would skip]",
+                "will unlock and remove",
+            ),
+            (
+                lambda: f"test (pid {_dead_pid()})",
+                "[locked — will unlock and remove]",
+                "would skip",
+            ),
+            (
+                lambda: "no pid in this reason",
+                "[locked, no pid recorded — treated as live, would skip]",
+                "will unlock and remove",
+            ),
+        ],
+        ids=["live-pid", "dead-pid", "pid-less"],
+    )
+    def test_lock_tag(self, tmp_path, fake_gh, reason_for, expected, unexpected):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/lock-tag", "lock-tag-tree", 800)
+        _lock_worktree(local, wt_path, reason_for())
+
+        env = fake_gh({"feat/lock-tag": pr})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert expected in result.stdout
+        assert unexpected not in result.stdout
+
+    def test_unlocked_worktree_has_no_lock_tag(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/no-lock")
+        _make_worktree(local, "feat/no-lock", tmp_path / "no-lock-tree")
+
+        env = fake_gh({"feat/no-lock": {"number": 801, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "feat/no-lock" in result.stdout
+        assert "locked" not in result.stdout
+
+
+class TestRealRunLockSkipWording:
+    """The real run's skip line names a recorded pid, or says none was recorded."""
+
+    def test_live_recorded_pid_is_named(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/live-lock", "live-lock-tree", 802)
+        _lock_worktree(local, wt_path, f"test (pid {os.getpid()})")
+
+        result = _run_script(local, fake_gh({"feat/live-lock": pr}))
+
+        assert result.returncode == 0
+        assert f"skipped (locked by live pid {os.getpid()})" in result.stdout
+        assert wt_path.exists()
+
+    def test_pid_less_lock_says_no_pid_was_recorded(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/pidless-lock", "pidless-lock-tree", 803)
+        _lock_worktree(local, wt_path, "no pid in this reason")
+
+        result = _run_script(local, fake_gh({"feat/pidless-lock": pr}))
+
+        assert result.returncode == 0
+        assert "skipped (locked, no pid recorded — treated as live)" in result.stdout
+        assert "live pid" not in result.stdout
+        assert wt_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# --dry-run tags a worktree that `git worktree remove` would refuse
+# ---------------------------------------------------------------------------
+
+class TestDryRunTagsWorktreesRemoveWouldRefuse:
+    def test_dirty_worktree_is_tagged(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/dirty-tag", "dirty-tag-tree", 804)
+        (wt_path / "untracked.txt").write_text("x")
+
+        result = _run_script(local, fake_gh({"feat/dirty-tag": pr}), args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "[worktree has uncommitted changes — remove would fail]" in result.stdout
+
+    def test_populated_submodule_is_tagged(self, tmp_path, fake_gh):
+        wt_path = tmp_path / "populated-tag-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/populated-tag", wt_path, populate=True)
+
+        env = fake_gh({"feat/populated-tag": {"number": 805, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "[worktree has populated submodules — remove would fail]" in result.stdout
+
+    def test_clean_worktree_with_uninitialized_submodule_is_untagged(self, tmp_path, fake_gh):
+        wt_path = tmp_path / "uninitialized-tag-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/uninitialized-tag", wt_path, populate=False)
+
+        env = fake_gh({"feat/uninitialized-tag": {"number": 806, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "feat/uninitialized-tag" in result.stdout
+        assert "would fail" not in result.stdout
+        assert "unverifiable" not in result.stdout
+
+    def test_populated_submodule_tag_outranks_the_dirty_tag(self, tmp_path, fake_gh):
+        """`git worktree remove` refuses populated submodules before uncommitted changes."""
+        wt_path = tmp_path / "dirty-populated-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/dirty-populated", wt_path, populate=True)
+        (wt_path / "untracked.txt").write_text("x")
+
+        env = fake_gh({"feat/dirty-populated": {"number": 808, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert "[worktree has populated submodules — remove would fail]" in result.stdout
+        assert "uncommitted changes" not in result.stdout
+
+    def test_worktree_whose_state_cannot_be_read_is_tagged_unverifiable(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/unreadable-tag", "unreadable-tag-tree", 809)
+        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+
+        result = _run_script(local, fake_gh({"feat/unreadable-tag": pr}), args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "[worktree state unverifiable — remove may fail]" in result.stdout
+
+    def test_worktree_whose_submodules_cannot_be_read_is_tagged_unverifiable(self, tmp_path, fake_gh):
+        """Reached with `git status` passing, which the broken-`.git` fixture cannot do."""
+        local, _, pr = _tier_a_branch_with_worktree(tmp_path, "feat/sm-unreadable-tag", "sm-unreadable-tag-tree", 819)
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*submodule status*", exit_status=1)
+        env = fake_gh({"feat/sm-unreadable-tag": pr})
+        env = {**env, "PATH": f"{shim_dir}:{env['PATH']}"}
+
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "[worktree state unverifiable — remove may fail]" in result.stdout
+
+    def test_unverifiable_idle_state_is_tagged(self, tmp_path, fake_gh):
+        local, _, pr = _tier_a_branch_with_worktree(tmp_path, "feat/idle-unknown-tag", "idle-unknown-tag-tree", 818)
+        env = _env_with_unverifiable_process_scan(tmp_path, fake_gh({"feat/idle-unknown-tag": pr}))
+
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "[worktree idle state unverifiable — would skip]" in result.stdout
+
+    def test_lock_tag_outranks_the_dirty_tag(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/locked-dirty", "locked-dirty-tree", 807)
+        (wt_path / "untracked.txt").write_text("x")
+        _lock_worktree(local, wt_path, f"test (pid {os.getpid()})")
+
+        result = _run_script(local, fake_gh({"feat/locked-dirty": pr}), args=["--dry-run"])
+
+        assert f"[locked by live pid {os.getpid()} — would skip]" in result.stdout
+        assert "uncommitted changes" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The real run's outcome for a worktree whose state could not be verified
+# ---------------------------------------------------------------------------
+
+class TestRealRunWorktreeStateUnverifiable:
+    def test_unverifiable_idle_state_skips_the_worktree_and_keeps_the_branch(self, tmp_path, fake_gh):
+        """Removing a worktree whose idle state could not be checked could pull it out from under a live session."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/idle-unknown-real", "idle-unknown-real-tree", 870)
+        env = _env_with_unverifiable_process_scan(tmp_path, fake_gh({"feat/idle-unknown-real": pr}))
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "    worktree:       skipped (cannot verify it is idle)" in result.stdout
+        assert "Skipped (worktree idle state unverifiable): feat/idle-unknown-real" in result.stdout
+        assert wt_path.exists()
+        assert _local_branch_exists(local, "feat/idle-unknown-real")
+
+    def test_unreadable_status_still_attempts_removal_and_reports_only_the_worktrees_own_state(self, tmp_path, fake_gh):
+        """git decides, so removal is attempted and its refusal reported. Without a
+        `.git`, a status run would walk up and print the main checkout's dirty files."""
+        local, wt_path = _make_worktree_without_git_entry(tmp_path)
+        (local / "main-checkout-dirty.txt").write_text("x")
+        env = fake_gh({"feat/no-dot-git": {"number": 871, "mergedAt": "2026-05-01"}})
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "    worktree:       remove failed (manual step needed)" in result.stdout
+        assert "main-checkout-dirty.txt" not in result.stdout
+        assert wt_path.exists()
+        assert _local_branch_exists(local, "feat/no-dot-git")
+        remote_refs = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "feat/no-dot-git"],
+            cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert remote_refs.strip() != ""
+
+
+class TestRealRunRemoveFailedDiagnostic:
+    def test_remove_failed_diagnostic_lists_a_submodule_change_that_config_would_ignore(self, tmp_path, fake_gh):
+        """The diagnostic's `git status` must not inherit `diff.ignoreSubmodules`, or a
+        refusal caused by a populated submodule would print no hint of its changes."""
+        wt_path = tmp_path / "ignored-submodule-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/ignored-submodule", wt_path, populate=True)
+        subprocess.run(["git", "config", "diff.ignoreSubmodules", "all"], cwd=local, check=True)
+        (wt_path / "sm" / "untracked-in-submodule.txt").write_text("x")
+        env = fake_gh({"feat/ignored-submodule": {"number": 872, "mergedAt": "2026-05-01"}})
+        plain_status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=wt_path, capture_output=True, text=True, check=True,
+        ).stdout
+        # Premise: the configured ignore hides the submodule from a plain status.
+        assert "M sm" not in [line.strip() for line in plain_status.splitlines()]
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert "    worktree:       remove failed (manual step needed)" in result.stdout
+        diagnostic_lines = [line.strip() for line in result.stdout.splitlines()]
+        assert "M sm" in diagnostic_lines, result.stdout
+
+
+# ---------------------------------------------------------------------------
+# --list-removable: machine-readable list of worktrees the real run removes
+# ---------------------------------------------------------------------------
+
+def _list_removable(local: Path, env: dict) -> subprocess.CompletedProcess:
+    return _run_script(local, env, args=["--list-removable"])
+
+
+def _env_with_unverifiable_process_scan(tmp_path: Path, env: dict) -> dict:
+    """PATH-prepend failing `readlink` and `lsof` shims, so collect_process_cwds
+    finds neither /proc nor lsof and worktree_in_use reports "cannot determine"."""
+    shim_dir = _failing_tool_shims(tmp_path, "no_process_scan_shims", "readlink", "lsof")
+    return {**env, "PATH": f"{shim_dir}:{env['PATH']}"}
+
+
+class TestListRemovable:
+    def test_tier_a_idle_worktree_listed_with_porcelain_path(self, tmp_path, fake_gh):
+        """The path comes from git, not from the branch name: a slashed branch
+        whose worktree directory shares nothing with it."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(
+            tmp_path, "pr55-split/03-breadcrumbs", "pr55-03-claude-md", 810,
+        )
+        env = fake_gh({"pr55-split/03-breadcrumbs": pr})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{local.resolve()}\tpr55-split/03-breadcrumbs\t{wt_path.resolve()}\n"
+        assert wt_path.exists(), "--list-removable must not remove anything"
+
+    def test_stdout_is_only_the_list(self, tmp_path, fake_gh):
+        """No headers, summaries, or skip lines on stdout, even with other candidates present."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/listed", "listed-tree", 811)
+        _make_feature_branch(local, "feat/open")
+        env = fake_gh({
+            "feat/listed": pr,
+            "feat/open": [{"number": 812, "state": "OPEN"}],
+        })
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/listed\t{wt_path.resolve()}"]
+
+    def test_tier_a_branch_checked_out_in_the_runner_adds_nothing_to_stdout(self, tmp_path, fake_gh):
+        """The currently-checked-out skip line is a stdout writer in --dry-run
+        and the real run; list mode must not reach it."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/listed", "listed-tree", 818)
+        _make_feature_branch(local, "feat/head-branch")
+        subprocess.run(["git", "checkout", "-q", "feat/head-branch"], cwd=local, check=True)
+        env = fake_gh({
+            "feat/listed": pr,
+            "feat/head-branch": {"number": 819, "mergedAt": "2026-05-01"},
+        })
+
+        probe = _run_script(local, env, args=["--dry-run"])
+        assert "Skipped: feat/head-branch (currently checked out)" in probe.stdout, probe.stdout
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/listed\t{wt_path.resolve()}"]
+
+    def test_nothing_to_remove_prints_nothing(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        env = fake_gh({})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_branch_without_worktree_not_listed_and_not_indeterminate(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/no-worktree")
+        subprocess.run(["git", "branch", "-D", "feat/no-worktree"], cwd=bare, check=True)
+        env = fake_gh({"feat/no-worktree": {"number": 813, "mergedAt": "2026-05-01"}})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_open_pr_branch_not_listed_and_not_indeterminate(self, tmp_path, fake_gh):
+        local, wt_path, _ = _tier_a_branch_with_worktree(tmp_path, "feat/open-pr", "open-pr-tree", 814)
+        env = fake_gh({"feat/open-pr": [{"number": 814, "state": "OPEN"}]})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_in_use_worktree_excluded(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/busy", "busy-tree", 815)
+        env = fake_gh({"feat/busy": pr})
+        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
+        try:
+            result = _list_removable(local, env)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_populated_submodule_worktree_excluded_and_really_refused(self, tmp_path, fake_gh):
+        """`git worktree remove` refuses a clean worktree holding a populated
+        submodule, so the real run leaves it standing and says so."""
+        wt_path = tmp_path / "populated-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/populated", wt_path, populate=True)
+        env = fake_gh({"feat/populated": {"number": 820, "mergedAt": "2026-05-01"}})
+
+        listed = _list_removable(local, env)
+        real = _run_script(local, env)
+
+        assert listed.returncode == 0, listed.stderr
+        assert listed.stdout == ""
+        assert real.returncode == 0
+        assert wt_path.exists()
+        assert _local_branch_exists(local, "feat/populated")
+        assert "worktree:       remove failed" in real.stdout
+
+    def test_uninitialized_submodule_worktree_listed_and_really_removed(self, tmp_path, fake_gh):
+        """An uninitialized submodule (`-` in `git submodule status`) does not
+        block `git worktree remove`, so the worktree is listed and the real run removes it."""
+        wt_path = tmp_path / "uninitialized-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/uninitialized", wt_path, populate=False)
+        env = fake_gh({"feat/uninitialized": {"number": 821, "mergedAt": "2026-05-01"}})
+        resolved_wt_path = wt_path.resolve()
+
+        listed = _list_removable(local, env)
+        real = _run_script(local, env)
+
+        assert listed.returncode == 0, listed.stderr
+        assert listed.stdout == f"{local.resolve()}\tfeat/uninitialized\t{resolved_wt_path}\n"
+        assert real.returncode == 0
+        assert not wt_path.exists()
+
+    def test_missing_worktree_directory_listed_and_really_removed(self, tmp_path, fake_gh):
+        """`git worktree remove` removes a worktree whose directory is already
+        gone, so the real run does too and the list must name it."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/dir-gone", "dir-gone-tree", 822)
+        resolved_wt_path = wt_path.resolve()
+        shutil.rmtree(wt_path)
+        env = fake_gh({"feat/dir-gone": pr})
+
+        listed = _list_removable(local, env)
+        real = _run_script(local, env)
+
+        assert listed.returncode == 0, listed.stderr
+        assert listed.stdout == f"{local.resolve()}\tfeat/dir-gone\t{resolved_wt_path}\n"
+        assert f"worktree:       removed: {resolved_wt_path}" in real.stdout
+        worktrees = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert str(resolved_wt_path) not in worktrees
+
+    def test_tier_b_excluded(self, tmp_path, fake_gh):
+        """A branch merged into main with no merged PR is Tier B: prompt-only in the real run."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/tier-b")
+        wt_path = tmp_path / "tier-b-tree"
+        _make_worktree(local, "feat/tier-b", wt_path)
+        for git_args in (["merge", "--no-ff", "-m", "merge tier-b", "feat/tier-b"], ["push", "origin", "main"]):
+            subprocess.run(["git", *git_args], cwd=local, check=True, capture_output=True)
+        env = fake_gh({"feat/tier-b": None})
+
+        probe = _run_script(local, env, args=["--dry-run"])
+        assert "Probable merges (would prompt)" in probe.stdout, probe.stdout
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_listed_set_equals_the_set_a_real_run_removes(self, tmp_path, fake_gh):
+        """One repo holding a worktree for every removal rule: the listed set
+        is exactly what the real run removes, and everything unlisted survives."""
+        populated_name = "populated-submodule"
+        names = ("clean", "dead-lock", "live-lock", "pid-less-lock", "dirty", "in-use", populated_name)
+        wt_paths = {name: tmp_path / f"{name}-tree" for name in names}
+        local, bare = _make_submodule_worktree(
+            tmp_path, f"feat/{populated_name}", wt_paths[populated_name], populate=True,
+        )
+        pr_data = {}
+        for pr_number, name in enumerate(names, start=830):
+            if name != populated_name:
+                _add_tier_a_worktree(local, bare, f"feat/{name}", wt_paths[name])
+            pr_data[f"feat/{name}"] = {"number": pr_number, "mergedAt": "2026-05-01"}
+        resolved_paths = {name: str(wt_path.resolve()) for name, wt_path in wt_paths.items()}
+        _lock_worktree(local, wt_paths["dead-lock"], f"test (pid {_dead_pid()})")
+        _lock_worktree(local, wt_paths["live-lock"], f"test (pid {os.getpid()})")
+        _lock_worktree(local, wt_paths["pid-less-lock"], "no pid in this reason")
+        (wt_paths["dirty"] / "untracked.txt").write_text("x")
+        env = fake_gh(pr_data)
+        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_paths["in-use"]))
+        try:
+            listed = _list_removable(local, env)
+            real = _run_script(local, env)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        listed_paths = {line.split("\t")[2] for line in listed.stdout.splitlines()}
+        removed_paths = {path for name, path in resolved_paths.items() if not wt_paths[name].exists()}
+        assert listed.returncode == 0, listed.stderr
+        assert real.returncode == 0
+        assert listed_paths == {resolved_paths["clean"], resolved_paths["dead-lock"]}
+        assert listed_paths == removed_paths
+        for name in ("live-lock", "pid-less-lock", "dirty", "in-use", populated_name):
+            assert wt_paths[name].exists(), f"{name} is unlisted, so the real run must leave it"
+
+
+class TestListRemovableFromLinkedWorktree:
+    """Run from a linked worktree, `git rev-parse --show-toplevel` is that
+    worktree; the main worktree is still the one `git worktree remove` refuses."""
+
+    def _main_checkout_holding_a_tier_a_branch(self, tmp_path, *, keep_remote_branch=False):
+        """Returns (local, runner_path, sibling_path, pr_data): the main checkout sits on
+        the Tier A branch feat/in-main-checkout, and a clean Tier A worktree feat/sibling
+        exists beside the runner worktree the script is run from. The remote copy of
+        feat/in-main-checkout is deleted unless keep_remote_branch is set."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        sibling_path = tmp_path / "sibling-tree"
+        _add_tier_a_worktree(local, bare, "feat/sibling", sibling_path)
+        _make_feature_branch(local, "feat/in-main-checkout")
+        if not keep_remote_branch:
+            subprocess.run(["git", "branch", "-D", "feat/in-main-checkout"], cwd=bare, check=True)
+        runner_path = tmp_path / "runner-tree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feat/runner", str(runner_path), "main"],
+            cwd=local, check=True,
+        )
+        subprocess.run(["git", "checkout", "-q", "feat/in-main-checkout"], cwd=local, check=True)
+        pr_data = {
+            "feat/sibling": {"number": 840, "mergedAt": "2026-05-01"},
+            "feat/in-main-checkout": {"number": 841, "mergedAt": "2026-05-01"},
+        }
+        return local, runner_path, sibling_path, pr_data
+
+    def test_main_checkout_never_listed_and_column_one_is_the_main_worktree(self, tmp_path, fake_gh):
+        local, runner_path, sibling_path, pr_data = self._main_checkout_holding_a_tier_a_branch(tmp_path)
+
+        result = _list_removable(runner_path, fake_gh(pr_data))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/sibling\t{sibling_path.resolve()}"]
+
+    def test_dry_run_tags_the_main_checkout_as_skipped_whatever_its_state(self, tmp_path, fake_gh):
+        local, runner_path, _, pr_data = self._main_checkout_holding_a_tier_a_branch(tmp_path)
+        (local / "untracked.txt").write_text("x")
+
+        result = _run_script(runner_path, fake_gh(pr_data), args=["--dry-run"])
+
+        assert result.returncode == 0
+        in_main_line = next(line for line in result.stdout.splitlines() if "feat/in-main-checkout" in line)
+        assert "[checked out in the main worktree — would skip]" in in_main_line
+        assert "uncommitted changes" not in in_main_line
+
+    def test_real_run_leaves_the_main_checkout_branch_and_remote_branch_alone(self, tmp_path, fake_gh):
+        """A Tier A branch checked out in the main checkout is skipped whole:
+        `git worktree remove` would refuse its worktree, and deleting its
+        remote branch while the local one stays would be a half cleanup."""
+        local, runner_path, sibling_path, pr_data = self._main_checkout_holding_a_tier_a_branch(
+            tmp_path, keep_remote_branch=True,
+        )
+
+        result = _run_script(runner_path, fake_gh(pr_data))
+
+        assert result.returncode == 0, result.stderr
+        assert local.is_dir()
+        checked_out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert checked_out == "feat/in-main-checkout"
+        assert _local_branch_exists(local, "feat/in-main-checkout")
+        assert "remove failed" not in result.stdout
+        remote_branches = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "feat/in-main-checkout"],
+            cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "refs/heads/feat/in-main-checkout" in remote_branches
+        assert "    worktree:       skipped (checked out in the main worktree)" in result.stdout
+        assert "Skipped (checked out in the main worktree): feat/in-main-checkout" in result.stdout
+        assert not sibling_path.exists(), "the sibling worktree is still cleaned up"
+
+
+class TestRunnerWorktreeOnATierABranchIsNeverRemoved:
+    """The script runs from a linked worktree whose own branch has a merged PR,
+    the usual way it is run. The main checkout sits on main."""
+
+    def _repo_with_runner_on_a_tier_a_branch(self, tmp_path):
+        """Returns (local, runner_path, sibling_path, pr_data): a clean Tier A worktree
+        feat/sibling exists beside the runner worktree, itself on the Tier A branch feat/runner."""
+        local, bare = _make_repo_with_remote(tmp_path)
+        sibling_path = tmp_path / "sibling-tree"
+        runner_path = tmp_path / "runner-tree"
+        _add_tier_a_worktree(local, bare, "feat/sibling", sibling_path)
+        _add_tier_a_worktree(local, bare, "feat/runner", runner_path)
+        pr_data = {
+            "feat/sibling": {"number": 842, "mergedAt": "2026-05-01"},
+            "feat/runner": {"number": 843, "mergedAt": "2026-05-01"},
+        }
+        return local, runner_path, sibling_path, pr_data
+
+    def test_list_removable_leaves_the_runner_out(self, tmp_path, fake_gh):
+        local, runner_path, sibling_path, pr_data = self._repo_with_runner_on_a_tier_a_branch(tmp_path)
+
+        result = _list_removable(runner_path, fake_gh(pr_data))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/sibling\t{sibling_path.resolve()}"]
+        assert runner_path.exists()
+
+    def test_dry_run_does_not_offer_the_runner_for_cleanup(self, tmp_path, fake_gh):
+        _, runner_path, _, pr_data = self._repo_with_runner_on_a_tier_a_branch(tmp_path)
+
+        result = _run_script(runner_path, fake_gh(pr_data), args=["--dry-run"])
+
+        assert result.returncode == 0, result.stderr
+        assert "Skipped: feat/runner (currently checked out)" in result.stdout
+        assert not any(line.startswith("  feat/runner") for line in result.stdout.splitlines()), result.stdout
+        assert runner_path.exists()
+
+    def test_real_run_skips_the_runner_and_keeps_its_worktree_and_branch(self, tmp_path, fake_gh):
+        local, runner_path, sibling_path, pr_data = self._repo_with_runner_on_a_tier_a_branch(tmp_path)
+
+        result = _run_script(runner_path, fake_gh(pr_data))
+
+        assert result.returncode == 0, result.stderr
+        assert "Skipped: feat/runner (currently checked out)" in result.stdout
+        assert runner_path.exists()
+        assert _local_branch_exists(local, "feat/runner")
+        assert not sibling_path.exists(), "the sibling worktree is still cleaned up"
+
+
+class TestListRemovableFailsClosed:
+    """A Tier A candidate the run could not evaluate is left out of the list
+    with a stderr line naming it, and the run exits 1 after printing the rest."""
+
+    def test_gh_lookup_failure_exits_nonzero_naming_branch_and_reason(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/gh-down")
+        env = fake_gh({"feat/gh-down": "error"})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/gh-down" in result.stderr
+        assert "gh lookup failed" in result.stderr
+
+    def test_listable_lines_still_print_when_a_sibling_branch_is_indeterminate(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/listable", "listable-tree", 850)
+        _make_feature_branch(local, "feat/gh-down")
+        env = fake_gh({"feat/listable": pr, "feat/gh-down": "error"})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/listable\t{wt_path.resolve()}"]
+        assert "feat/gh-down" in result.stderr
+
+    def test_git_status_failure_exits_nonzero_naming_branch(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/status-broken", "status-broken-tree", 851)
+        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        env = fake_gh({"feat/status-broken": pr})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/status-broken" in result.stderr
+        assert f"cannot verify {wt_path.resolve()} is clean" in result.stderr
+
+    def test_git_submodule_status_failure_exits_nonzero_naming_branch(self, tmp_path, fake_gh):
+        """Reached with `git status` passing, which the broken-`.git` fixture cannot do."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/submodule-broken", "submodule-broken-tree", 855)
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*submodule status*", exit_status=1)
+        env = fake_gh({"feat/submodule-broken": pr})
+        env = {**env, "PATH": f"{shim_dir}:{env['PATH']}"}
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/submodule-broken" in result.stderr
+        assert f"cannot verify {wt_path.resolve()} has no populated submodules" in result.stderr
+
+    def test_unverifiable_idle_state_exits_nonzero_naming_branch(self, tmp_path, fake_gh):
+        local, _, pr = _tier_a_branch_with_worktree(tmp_path, "feat/idle-unknown", "idle-unknown-tree", 852)
+        env = _env_with_unverifiable_process_scan(tmp_path, fake_gh({"feat/idle-unknown": pr}))
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/idle-unknown" in result.stderr
+        assert "cannot verify the worktree is idle" in result.stderr
+
+    def test_tab_in_worktree_path_exits_nonzero_naming_branch(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "tab\ttree"
+        _add_tier_a_worktree(local, bare, "feat/tab-path", wt_path)
+        env = fake_gh({"feat/tab-path": {"number": 853, "mergedAt": "2026-05-01"}})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/tab-path" in result.stderr
+        assert "tab in a path" in result.stderr
+
+    def test_newline_in_the_repo_path_exits_nonzero_naming_branch(self, tmp_path, fake_gh):
+        """Porcelain parsing is line-based, so the main worktree path read back is truncated at the newline."""
+        repo_parent = tmp_path / "repo-parent\nsecond-line"
+        repo_parent.mkdir()
+        local, bare = _make_repo_with_remote(repo_parent)
+        _add_tier_a_worktree(local, bare, "feat/newline-repo", tmp_path / "newline-repo-tree")
+        env = fake_gh({"feat/newline-repo": {"number": 845, "mergedAt": "2026-05-01"}})
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "feat/newline-repo" in result.stderr
+        assert "a newline in the repo path would break the line format" in result.stderr
+
+    def test_worktree_list_failure_exits_nonzero_before_listing(self, tmp_path, fake_gh):
+        local, _, pr = _tier_a_branch_with_worktree(tmp_path, "feat/list-broken", "list-broken-tree", 854)
+        shim_dir = _git_shim_that_fails_on_worktree_subcommand(tmp_path, "list")
+        env = fake_gh({"feat/list-broken": pr})
+        env = {**env, "PATH": f"{shim_dir}:{env['PATH']}"}
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "git worktree list --porcelain" in result.stderr
+
+    def test_no_origin_repo_exits_nonzero_before_listing(self, tmp_path, fake_gh):
+        """A repo with no `origin` hits the unresolvable-default-branch exit
+        before list mode runs, so the consumer still sees a nonzero exit."""
+        no_origin = tmp_path / "no-origin"
+        no_origin.mkdir()
+        subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=no_origin, check=True)
+
+        result = _list_removable(no_origin, fake_gh({}))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "could not resolve origin/HEAD" in result.stderr
+
+
+class TestListRemovableAllProjects:
+    def _roots_file(self, tmp_path: Path, root: Path) -> Path:
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+        return roots_file
+
+    def test_healthy_sweep_exits_zero_with_only_list_lines_on_stdout(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        listed_lines = set()
+        pr_data = {}
+        for repo_name in ("alpha", "beta"):
+            repo_dir = root / repo_name
+            repo_dir.mkdir(parents=True)
+            branch = f"feat/{repo_name}"
+            local, wt_path, pr_data[branch] = _tier_a_branch_with_worktree(
+                repo_dir, branch, f"{repo_name}-tree", 860,
+            )
+            listed_lines.add(f"{local.resolve()}\t{branch}\t{wt_path.resolve()}")
+
+        result = _run_all_projects(
+            tmp_path, fake_gh(pr_data), self._roots_file(tmp_path, root), extra_args=["--list-removable"],
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert set(result.stdout.splitlines()) == listed_lines
+        assert "== " in result.stderr
+
+    def test_crashed_repo_fails_the_sweep_and_keeps_stdout_to_the_list(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        root.mkdir()
+        healthy_dir = root / "healthy"
+        healthy_dir.mkdir()
+        local, wt_path, pr = _tier_a_branch_with_worktree(healthy_dir, "feat/sweep", "sweep-tree", 861)
+        broken_dir = root / "broken"
+        broken_dir.mkdir()
+        subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=broken_dir, check=True)
+        env = fake_gh({"feat/sweep": pr})
+
+        result = _run_all_projects(
+            tmp_path, env, self._roots_file(tmp_path, root), extra_args=["--list-removable"],
+        )
+
+        assert result.returncode == 1
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/sweep\t{wt_path.resolve()}"]
+        assert "== " in result.stderr
+
+    def test_indeterminate_repo_fails_the_sweep_and_other_repos_still_list(self, tmp_path, fake_gh):
+        root = tmp_path / "root"
+        healthy_dir = root / "healthy"
+        healthy_dir.mkdir(parents=True)
+        local, wt_path, pr = _tier_a_branch_with_worktree(healthy_dir, "feat/sweep", "sweep-tree", 862)
+        gh_down_dir = root / "gh-down"
+        gh_down_dir.mkdir()
+        gh_down_local, _ = _make_repo_with_remote(gh_down_dir)
+        _make_feature_branch(gh_down_local, "feat/gh-down")
+        env = fake_gh({"feat/sweep": pr, "feat/gh-down": "error"})
+
+        result = _run_all_projects(
+            tmp_path, env, self._roots_file(tmp_path, root), extra_args=["--list-removable"],
+        )
+
+        assert result.returncode == 1
+        assert result.stdout.splitlines() == [f"{local.resolve()}\tfeat/sweep\t{wt_path.resolve()}"]
+        assert "feat/gh-down" in result.stderr
+
+
+class TestListRemovableAllProjectsDiscoveryOmissions:
+    """Root discovery is outside the per-repo evaluation: a missing or empty
+    root exits 0 with an empty list, so exit 0 does not promise completeness."""
+
+    @pytest.mark.parametrize("root_kind", ["missing", "without-repos"])
+    def test_root_with_no_repos_exits_zero_with_empty_stdout(self, tmp_path, fake_gh, root_kind):
+        root = tmp_path / "root"
+        if root_kind == "without-repos":
+            root.mkdir()
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{root}\n")
+
+        result = _run_all_projects(tmp_path, fake_gh({}), roots_file, extra_args=["--list-removable"])
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+
+class TestEnvrcCannotOverrideListRemovable:
+    """An .envrc exporting LIST_REMOVABLE=0 must not turn `--list-removable`
+    into the human dry-run output a consumer would misparse: readonly
+    LIST_REMOVABLE aborts the eval under set -e instead."""
+
+    def test_envrc_list_removable_override_is_rejected(self, tmp_path, fake_gh):
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/envrc-list", "envrc-list-tree", 880)
+        env = fake_gh({"feat/envrc-list": pr}, direnv_source=_direnv_shim_source_static_export("LIST_REMOVABLE", "0"))
+
+        result = _list_removable(local, env)
+
+        assert result.returncode != 0
+        assert "Would clean up" not in result.stdout
+        assert result.stdout == ""
+        assert wt_path.exists()
+
+
+class TestListRemovableFlags:
+    def test_unknown_flag_exits_2_with_usage_on_stderr(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+
+        result = _run_script(local, fake_gh({}), args=["--list-removables"])
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "Usage:" in result.stderr
+
+    @pytest.mark.parametrize(
+        "flags",
+        [["--dry-run", "--list-removable"], ["--list-removable", "--dry-run"]],
+        ids=["dry-run-first", "list-removable-first"],
+    )
+    def test_dry_run_combined_with_list_removable_exits_2(self, tmp_path, fake_gh, flags):
+        local, _ = _make_repo_with_remote(tmp_path)
+
+        result = _run_script(local, fake_gh({}), args=flags)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "Usage:" in result.stderr
+        assert "[--dry-run | --list-removable]" in result.stderr

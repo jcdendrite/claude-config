@@ -508,6 +508,32 @@ class TestSelfWorktreeNeverRemoved:
         assert wt_path.exists(), "the worktree running the script must never remove itself"
 
 
+class TestMainCheckoutBranchNeverACandidate:
+    """Run from a linked worktree, REPO_ROOT is that worktree, so an idle
+    open-PR branch checked out in the main checkout needs its own exclusion:
+    `git worktree remove` refuses the main worktree."""
+
+    def test_idle_branch_checked_out_in_main_checkout_is_not_listed_from_a_linked_worktree(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-main")
+        runner_path = tmp_path / "runner-tree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feat/runner", str(runner_path), "main"],
+            cwd=local, check=True,
+        )
+        subprocess.run(["git", "checkout", "-q", "feat/in-main"], cwd=local, check=True)
+
+        env = fake_gh([
+            {"headRefName": "feat/in-main", "number": 11, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
+        ])
+        result = _run_script(runner_path, env, args=["--dry-run"])
+
+        assert result.returncode == 0, result.stderr
+        assert "Would remove" not in result.stdout
+        assert "feat/in-main" not in result.stdout
+        assert "would-remove=0" in result.stdout
+
+
 class TestMultiRowBulkResponse:
     """A single bulk response mixing draft, recently-active, stale, and
     in-use branches: each lands in its correct bucket and the end-of-run
