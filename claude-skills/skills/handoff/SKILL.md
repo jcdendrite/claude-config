@@ -115,7 +115,7 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 - External communications on the user's behalf (Slack, email, GitHub issue/PR comments)
 - `rm -rf` or bulk deletes
 
-**Underlying principle:** if the action mutates shared state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts), it belongs in §3.5, not §3.
+**Underlying principle:** if the action mutates shared state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts), it belongs in §3.5, not §3. Exception: a commit, a plain `git push` of the current branch (never `--force`, never to the default branch), and `gh pr create` belong in §3, not here, when `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 in the resuming session's repository and the engineer has stated no hold on them.
 
 ## §4 Files modified this session
 Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path and direct the resuming session to re-enter it before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
@@ -174,7 +174,7 @@ The script cannot check these — verify them yourself before writing:
 - In the deferral case, record it in §3 instead: the resuming session's restarted gate will regenerate the PR body
 - Otherwise, running `pr-description` here only ends that skill, not this checklist — finish the remaining items and write the handoff file in the same turn
 - Every load-bearing claim in §2/§3/§6 carries a confidence tag — the script only checks that a section isn't entirely untagged, not that each individual claim is
-- A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle (mutates shared state irreversibly, or has externally-visible side effects outside this repo). A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
+- A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle (§3.5's, including its exception). A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
 - If §3's next step implements an approved plan, it names `code-writer` as the dispatch rather than describing the work to do inline
 - Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls
 

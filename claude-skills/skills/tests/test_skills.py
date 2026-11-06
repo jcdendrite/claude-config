@@ -1941,6 +1941,33 @@ class TestContinuityFileBucketCrosscheck:
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
         assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
 
+    def test_handoff_section3_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """handoff §3.5 must carve out commit, push and PR creation when the
+        resolver exits 0, so a handoff does not file them as pending
+        authorization on a machine where autonomous shipping is active."""
+        match = re.search(r"## §3\.5.*?(?=\n## §4)", _skill_file("handoff").read_text(), re.DOTALL)
+        assert match, "handoff/SKILL.md §3.5 section not found — has it been renamed?"
+        section = match.group(0)
+        assert "autonomous-shipping-active.sh" in section
+        assert "exits 0" in section
+        assert "no hold" in section
+        assert "never to the default branch" in section
+
+    def test_brief_section6_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """brief §6.5 carries the same exception as handoff §3.5."""
+        match = re.search(r"## §6\.5.*?(?=\n## §7 )", _skill_file("brief").read_text(), re.DOTALL)
+        assert match, "brief/SKILL.md §6.5 section not found — has it been renamed?"
+        section = match.group(0)
+        assert "autonomous-shipping-active.sh" in section
+        assert "exits 0" in section
+        assert "no hold" in section
+        assert "never to the default branch" in section
+
+    def test_handoff_prewrite_checklist_defers_to_section3_5_exception(self):
+        """The checklist's restatement of the principle must defer to §3.5 so
+        it cannot contradict the exception."""
+        assert "not the underlying principle (§3.5's, including its exception)" in _skill_file("handoff").read_text()
+
     def test_handoff_prewrite_checklist_crosschecks_section2_6(self):
         """handoff's pre-write checklist must verify §2.6 was populated before writing."""
         assert (

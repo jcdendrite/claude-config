@@ -17,11 +17,12 @@ printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cl
 - `session_id` and `prompt_id` are present and well-formed.
 - `permission_mode` is not `plan`.
 - `prompt_id` differs from the last one this hook fired on for this session — at most one forced continuation per user turn.
-- The **final sentence** of the last assistant message asks permission to commit, push, or open a PR (case-insensitive phrasing match: "want me to", "should I", "shall I", and similar, paired with commit/push/open a PR), and that sentence does not also carry an exclusion phrase (`merge`, `--force`, `failing`, `blocked`, and similar).
+- The **final sentence** of the last assistant message (the last sentence of its last non-blank line) asks permission to commit, push, or open a PR (case-insensitive phrasing match: "want me to", "should I", "shall I", and similar, paired with commit/push/open a PR), and that sentence does not also carry an exclusion phrase (`merge`, `--force`, `failing`, `blocked`, and similar).
+- The hook's payload `.cwd` is an absolute path inside a repo whose root is neither `$HOME` nor an ancestor of it (`_lib_autonomous_shipping_root_for_cwd`); there is no `$PWD` fallback.
 - `_lib_autonomous_shipping_active` holds for the resolved repo — the machine-level `autonomous_shipping` config key above resolves true, and the repo carries no `.claude/autonomous-shipping-optout`.
 - Work is actually pending: a dirty tree, HEAD ahead of its configured upstream, or (the common state before a branch's first push) no upstream configured at all.
 
-The `reason` text names the next step explicitly: `/code-review` → commit (path-scoped staging, never stage-all) → `/ready-for-review` → PR-open, stopping before merge — merge stays human-only regardless of this setting.
+The `reason` text opens with the shared autonomous-shipping statement (`_lib_autonomous_shipping_statement` in `_lib.sh`, the same text the SessionStart hooks deliver), then names the next step explicitly: `/code-review` → commit (path-scoped staging, never stage-all) → `/ready-for-review` → PR-open. The statement carries the limit that merge stays human-only regardless of this setting.
 
 ## How to disable
 
@@ -45,12 +46,16 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 
 **Everywhere:** turn off the machine-level `autonomous_shipping` config key (`printf 'autonomous_shipping = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`).
 
+The `commit_stall_block` switch and `.commit-stall-block-disabled` silence only this Stop hook. The SessionStart statement keeps telling the agent not to ask until `autonomous_shipping` is off or the repo carries the optout.
+
 ## Fire predicate and the exclusion-window tradeoff
 
 The fire and exclusion regexes both scan only the **final sentence** of the last assistant message, not the whole message. This is a deliberate, accepted tradeoff, not an oversight:
 
 - If the exclusion regex scanned the whole message, "Fixed the failing test in the parser. Want me to commit this…?" — the modal shape after a routine bug-fix task — would never fire, because "failing" appears in an earlier sentence. That's the primary case this hook exists to catch; over-suppressing it defeats the fix.
 - Scoped to the final sentence, an earlier-sentence failure signal can be missed instead — but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
+- A line break ends a sentence. The window is the last sentence of the last non-blank line, so a message that is a heading, bullets, then a closing question is judged on the question alone.
+- Only the last 2048 characters of the message are scanned (`ASK_WINDOW_CHARS` in the hook), because bash pattern removal over a long last line grows quadratically. A last sentence longer than that is judged on its final 2048 characters, so an exclusion word earlier in it is not seen.
 
 ## Log location
 
@@ -66,7 +71,7 @@ The log is append-only and not rotated automatically. Trim it periodically if di
 
 ## Known limitations
 
-- **Silent (non-question) stops are not caught.** The predicate requires a question construction in the final sentence. A session that simply states "Per your standing instruction, I haven't committed" and ends the turn without asking anything is not detected — the always-loaded `## Shipping` section in `CLAUDE.md` is the only defense against that shape, and it's prose, not a hook.
+- **Silent (non-question) stops are not caught.** The predicate requires a question construction in the final sentence. A session that simply states "Per your standing instruction, I haven't committed" and ends the turn without asking anything is not detected — the always-loaded `## Shipping` section in `CLAUDE.md` and the SessionStart shipping statement (`announce-autonomous-shipping.sh`, plus `restore-authorization-boundary-on-compact.sh` after compaction) are the only defenses against that shape, and both are context, not a gate.
 - **The `--dry-run`/default-branch bypass residuals in `require-ready-for-review.sh` are inherited, not fixed, by this hook.** `git push --dry-run && gh pr create` still bypasses the pre-handoff review gate entirely — pre-existing in code this hook doesn't touch (the identical shape already bypasses a second real `git push` chained the same way). See that hook's own header comment for the full residual list; this Stop hook doesn't gate a git operation itself, so it can't close that gap.
 - **State files persist until the next fire, not until session teardown.** The hook sweeps entries older than 30 days from its own state dir each time it fires — interactive session or `claude -p` one-shot alike — so a state file from one session lingers until the next qualifying fire anywhere sweeps the directory, not indefinitely.
 - **The three git calls this hook makes (repo-root resolve, `git status --porcelain`, the upstream-ahead check) are unbounded on stock macOS.** `_lib_capped`'s `timeout` wrapper is a no-op when GNU coreutils isn't installed, so a wedged git call (a stale NFS mount, a held index lock) hangs the hook rather than failing closed to a decision. Every other hot-path hook in this repo shares the same limitation; `install.sh` warns about the missing `timeout`/`gtimeout` binary at onboarding time.

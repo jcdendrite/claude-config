@@ -45,6 +45,7 @@ def _run_hook(
     isolated_home: Path,
     extra_env: dict | None = None,
     raw_stdin: bytes | None = None,
+    process_cwd: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(isolated_home)}
     if extra_env:
@@ -54,6 +55,7 @@ def _run_hook(
         [str(RESTORE_BOUNDARY_HOOK)],
         input=stdin,
         capture_output=True,
+        cwd=process_cwd,
         env=env,
         check=False,
     )
@@ -257,3 +259,82 @@ class TestRestoreAuthorizationBoundaryOnCompact:
     def test_exit_0_always(self, isolated_home):
         result = _run_hook({"source": "compact"}, isolated_home)
         assert result.returncode == 0
+
+
+class TestShippingStatementOnCompact:
+    """When autonomous shipping is active, the compact hook appends the shared statement to the boundary
+    text in one message. The statement follows `autonomous_shipping`, not the boundary kill switch."""
+
+    @staticmethod
+    def _compact_payload(repo: Path | None) -> dict:
+        payload: dict = {"source": "compact"}
+        if repo is not None:
+            payload["cwd"] = str(repo)
+        return payload
+
+    def test_armed_compact_is_the_boundary_text_then_one_space_then_the_statement(
+        self, armed_home, shipping_repo, shipping_statement, tmp_path
+    ):
+        unarmed_home = tmp_path / "unarmed-home"
+        (unarmed_home / ".claude").mkdir(parents=True)
+        boundary_text = _additional_context(
+            _run_hook(self._compact_payload(shipping_repo), unarmed_home)
+        )
+        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in boundary_text
+        assert ctx == f"{boundary_text} {shipping_statement(shipping_repo)}"
+        assert "gh pr merge" not in ctx
+
+    def test_kill_switch_silences_only_the_boundary_text(
+        self, armed_home, shipping_repo, shipping_statement
+    ):
+        (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
+        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        assert result.returncode == 0
+        assert _additional_context(result) == shipping_statement(shipping_repo)
+
+    def test_kill_switch_with_empty_statement_part_is_silent(self, armed_home, shipping_repo):
+        (armed_home / ".claude" / ".authorization-boundary-disabled").touch()
+        (shipping_repo / ".claude").mkdir()
+        (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
+        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        assert result.returncode == 0
+        assert result.stdout == b""
+
+    def test_repo_optout_leaves_the_boundary_text_alone(self, armed_home, shipping_repo):
+        (shipping_repo / ".claude").mkdir()
+        (shipping_repo / ".claude" / "autonomous-shipping-optout").touch()
+        result = _run_hook(self._compact_payload(shipping_repo), armed_home)
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" not in ctx
+
+    def test_cwd_outside_a_repo_leaves_the_boundary_text_alone(self, armed_home, tmp_path):
+        non_repo_dir = tmp_path / "not-a-repo"
+        non_repo_dir.mkdir()
+        result = _run_hook(self._compact_payload(non_repo_dir), armed_home)
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" not in ctx
+
+    def test_missing_cwd_leaves_the_boundary_text_alone(self, armed_home, shipping_repo):
+        """The process cwd is an eligible repo, so a `$PWD` fallback would append the statement."""
+        result = _run_hook(self._compact_payload(None), armed_home, process_cwd=shipping_repo)
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" not in ctx
+
+    def test_unarmed_machine_carries_no_statement(self, isolated_home, shipping_repo):
+        result = _run_hook(self._compact_payload(shipping_repo), isolated_home)
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+        assert "Autonomous shipping is active" not in ctx
+
+    @pytest.mark.parametrize("source", ["startup", "clear", "resume", "fork"])
+    def test_armed_non_compact_sources_stay_silent(self, armed_home, shipping_repo, source):
+        """The announce hook is the only emitter on these sources."""
+        result = _run_hook({"source": source, "cwd": str(shipping_repo)}, armed_home)
+        assert result.returncode == 0
+        assert result.stdout == b""

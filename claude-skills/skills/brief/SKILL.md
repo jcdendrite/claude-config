@@ -88,7 +88,7 @@ Steps from §6 that require explicit in-session confirmation from the engineer b
 - External communications on the user's behalf (Slack, email, GitHub issue/PR comments)
 - `rm -rf` or bulk deletes
 
-**Underlying principle:** if the action mutates shared state irreversibly — state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts) — it belongs in §6.5.
+**Underlying principle:** if the action mutates shared state irreversibly — state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts) — it belongs in §6.5. Exception: a commit, a plain `git push` of the current branch (never `--force`, never to the default branch), and `gh pr create` belong in §6, not here, when `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 in the resuming session's repository and the engineer has stated no hold on them.
 
 ## §7 Out of scope
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.

@@ -55,14 +55,6 @@ DOCUMENTED_MISS = (
 )
 
 
-@pytest.fixture
-def armed_home(isolated_home):
-    """isolated_home plus the machine-level autonomous-shipping sentinel."""
-    marker = isolated_home / ".claude" / "autonomous-shipping-required"
-    marker.write_text("# machine sentinel\n")
-    return isolated_home
-
-
 def _init_repo(repo: Path) -> None:
     init_git_repo_with_commit(repo, branch="main", file_name="f", content="a\n")
 
@@ -171,6 +163,46 @@ CORPUS: list[tuple[str, bool]] = [
         False,
     ),  # "anyway" exclusion
     ("Here is a summary of the changes I made to the parser module.", False),
+    # Multi-line final messages: the window is the last sentence of the last non-blank line.
+    (
+        "Fixed the failing test\nWant me to commit this?",
+        True,
+    ),  # unpunctuated earlier line carrying an exclusion word; only the last-line step passes it
+    (
+        "Fixed the failing test.\n\nWant me to commit this?",
+        True,
+    ),  # capture reads past the first line; the earlier paragraph's exclusion word is outside the window
+    (
+        "## Summary\n- Fixed the parser\n- Added a regression test\n\nShould I push and open a PR?",
+        True,
+    ),  # heading and bullet lines before the ask
+    ("Want me to commit this?\n", True),  # trailing newline
+    (
+        "The tests are failing.\nWant me to commit anyway?",
+        False,
+    ),  # "anyway" in the final sentence
+    (
+        "Want me to commit this?\n\nHere is the diff summary.",
+        False,
+    ),  # the last line carries no ask
+    (
+        "Want me to commit this?\r\n\r\n",
+        True,
+    ),  # CRLF: the trailing carriage returns are stripped before the line split
+    (
+        "Want me to commit this?\n  ",
+        True,
+    ),  # trailing spaces after the last newline: only the whitespace strip exposes the ask line
+    ("", False),  # empty final message
+    ("  \n \r\n ", False),  # whitespace-only final message
+    (
+        "Want me to:\n- commit\n- push",
+        False,
+    ),  # accepted miss: a bulleted ask leaves no verb on the last line ("A line break ends a sentence", commit-stall-block.md)
+    (
+        "Want me to\ncommit this?",
+        False,
+    ),  # accepted miss: an ask wrapped across lines leaves no verb on the last line
 ]
 
 
@@ -193,6 +225,28 @@ def test_fire_predicate_corpus(
         assert result is not None, f"expected a block for: {message!r}"
     else:
         assert result is None, f"expected silence for: {message!r}, got {result!r}"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Fixed one more parser case.\n" * 8000 + "Want me to commit this?",
+        "lorem ipsum dolor sit amet " * 4000 + "Want me to commit this?",
+        "The build is failing " + "and so on " * 400 + "so want me to commit this?",
+    ],
+    ids=["200KB-multi-line", "100KB-single-line", "exclusion-word-beyond-the-scan-window"],
+)
+def test_large_final_message_still_fires(armed_home, dirty_repo, message):
+    """Only the message's tail is scanned (the hook's ASK_WINDOW_CHARS), so the third case's early
+    exclusion word is out of view. Pattern removal over a long last line otherwise takes minutes.
+    No wall-clock assertion, per flake risk."""
+    assert len(message) >= 4_000
+    result = _fire(
+        stop_input(message, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
 
 
 def test_case_folding_lowercase_verb_fires(armed_home, dirty_repo):
@@ -902,6 +956,35 @@ def test_emitted_payload_is_exactly_decision_and_reason(armed_home, dirty_repo):
     assert isinstance(result["reason"], str)
     assert "/code-review" in result["reason"]
     assert "/ready-for-review" in result["reason"]
+
+
+def test_reason_opens_with_the_shared_shipping_statement(armed_home, dirty_repo, shipping_statement):
+    """Single-source pin: the reason holds the helper's output byte for byte, so text drifting from the helper's fails."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
+    assert result["reason"].startswith(shipping_statement(dirty_repo) + " ")
+    assert "gh pr merge" not in result["reason"]
+    assert "/code-review" in result["reason"]
+    assert "/ready-for-review" in result["reason"]
+
+
+def test_reason_tail_conditions_the_continue_directive_on_no_stated_hold(armed_home, dirty_repo):
+    """A closing question can itself be the hold check, so the directive must not be unconditional."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
+    assert "Unless the engineer has stated a hold, continue now" in result["reason"]
 
 
 # ------------------------------------------------------------------ #

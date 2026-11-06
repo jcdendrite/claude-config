@@ -180,11 +180,22 @@
         ]
       },
       {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-autonomous-shipping.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh"
+            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh",
+            "timeout": 10
           }
         ]
       },
