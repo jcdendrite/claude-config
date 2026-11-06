@@ -46,14 +46,13 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 
 **Tripwire.** Every cell with a bar met it:
 - Must-flag, each 5 of 5: a vanished flag name and a redefined default.
-- Must-pass, each 0 of 5: the changelog, plan and dated-record skip, an ordinary use of the word "limit", and a still-true statement. The runs did not exercise the plan, dated-record and ordinary-word sites, as the caveats note.
+- Must-pass, each 0 of 5: the changelog skip and a still-true statement. The other must-pass sites were not exercised, as the second caveat below states.
 - A diff changing no name drew no finding and made no search in 5 of 5 runs.
 
 **Unmeasured and caveats:**
 - The runs over the diff that changes no name read the bullet with `Read` only. Each transcript holds two `Read` calls and no `Grep`, `Glob` or `Bash` call, counting `"type":"tool_use"` entries. A raw count of `"name":"Grep"` strings over-counts, because the tool schemas in a transcript's header carry those names too.
 - The tripwire's must-pass cells met their bar partly by omission, because the runs examined only a few files and never examined the plan, dated-record and ordinary-word sites. Only the changelog skip was exercised, in 5 of 5 runs.
 - Every run of the angle used `Bash` grep in place of `Grep` and `Glob`, so the search-dependent cells were measured under that substitution, not under the tools the cells specify.
-- The tripwire cells apply the bullet alone, so they do not measure it inside a full `/code-review` run.
 
 ## The guard's limit
 
