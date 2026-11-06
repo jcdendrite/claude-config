@@ -62,6 +62,7 @@ from helpers import (
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    change_type_table_rows,
     extract_skill_command,
     heading_texts,
     normalize_heading,
@@ -723,6 +724,25 @@ class TestReviewLedgerAuthoringEffortLiteral:
             "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
             "main finding append, main-flow CLEAN append) -- found "
             f"{skill_body.count(literal)}"
+        )
+
+
+class TestReviewLedgerReviewerLaneLiteral:
+    """The per-finding append template carries `--reviewer '<lane>'` once, in the
+    code span that also names the ADDRESS|DEFER|SETTLED dispositions, so moving
+    the flag onto the CLEAN template, or duplicating it, fails."""
+
+    def test_reviewer_flag_sits_once_on_the_per_finding_append_template(self):
+        skill_body = _skill_body("code-review")
+        literal = "--reviewer '<lane>'"
+
+        assert skill_body.count(literal) == 1, (
+            f"code-review/SKILL.md must carry {literal!r} exactly once, on the per-finding append "
+            f"template -- found {skill_body.count(literal)}"
+        )
+        template_span = re.search(r"`([^`\n]*" + re.escape(literal) + r"[^`\n]*)`", skill_body)
+        assert template_span is not None and "--disposition ADDRESS|DEFER|SETTLED" in template_span.group(1), (
+            f"{literal!r} must sit in the inline code span of the ADDRESS|DEFER|SETTLED append template"
         )
 
 
@@ -5082,29 +5102,6 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_rows(skill_md_path: Path) -> list[str]:
-    """Raw row-line strings of every data row in the Change-type table.
-
-    Shared header-lookup-and-row-walk for every reader of the Change-type
-    table — `_change_type_table_left_columns` and
-    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    both build on this instead of re-walking the table themselves.
-    """
-    lines = skill_md_path.read_text().splitlines()
-    header_index = next(
-        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
-        None,
-    )
-    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
-
-    rows = []
-    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
-        if not line.startswith("|"):
-            break
-        rows.append(line)
-    return rows
-
-
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 
@@ -5115,7 +5112,7 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     `test_scope_exempt_row_excludes_security_controls_row`), a resulting
     mismatch surfaces as a loud assertion failure, not silently.
     """
-    return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
+    return [row.split("|")[1].strip() for row in change_type_table_rows(skill_md_path)]
 
 
 def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
@@ -5127,7 +5124,7 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     shorthand `_change_type_table_left_columns` returns.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-    for line in _change_type_table_rows(skill_md_path):
+    for line in change_type_table_rows(skill_md_path):
         # line.split("|")[1] truncates at an embedded pipe in the left cell,
         # same caveat as _change_type_table_left_columns's identical parse.
         if line.split("|")[1].strip() == exempt_shorthand:
@@ -6703,7 +6700,7 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
     "row retires; another finding at the site leaves it live. The "
     "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id>`, which retires the decision and its "
+    "is logged `ADDRESS --ref <id> --relog`, which retires the decision and its "
     "carries from the PR block."
 )
 
@@ -7608,8 +7605,30 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "--defer-criterion '<name>' --ref '<id>' --cited-line '<file:line>']",
+        "--defer-criterion '<name>' --ref '<id>' --relog --cited-line '<file:line>']",
         id="append-template-quotes-criterion-ref-and-cited-line",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "Finding | Lane | Disposition | Rationale",
+        id="disposition-table-names-the-lane-column",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "`skill-tool` marks a Skill-tool review's finding, `unrostered-agent` marks a finding a spawned reviewer "
+        "agent outside the roster raised, and `orchestrator` marks any finding no reviewer agent or Skill-tool "
+        "review raised.",
+        id="lane-cell-defines-the-three-non-roster-literals",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "CLEAN takes no lanes",
+        id="clean-append-takes-no-lanes",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "as a reopen, a gate-denial recovery and a `--carry-forward` withdrawal do",
+        id="relog-is-for-a-row-that-only-re-logs-its-decision",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",

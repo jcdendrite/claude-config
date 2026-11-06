@@ -2,7 +2,8 @@
 # _review-ledger-lib.sh — validation, site hash, row reader and render for review-ledger.sh.
 #
 # Sourced by review-ledger.sh after hooks/_lib.sh, whose _lib_jq, _lib_capped,
-# _lib_hash_diff_text and _lib_status_consistent_with_cap_kill it calls. Not executable
+# _lib_hash_diff_text, _lib_status_consistent_with_cap_kill, _lib_is_reviewer_persona,
+# _lib_list_contains and _lib_reviewer_persona_agents it calls. Not executable
 # on its own; source it, do not invoke it.
 # It sets no EXIT trap, because _lib_acquire_append_lock owns the sourcing script's one.
 
@@ -17,6 +18,10 @@ _REVIEW_LEDGER_DEFER_CRITERIA=(
   contract-pinned-at-another-layer
   edge-case-below-current-scale
 )
+
+# The lanes that name a source of findings with no roster agent. No entry may
+# be an agent name or an --authoring-agent value.
+_REVIEW_LEDGER_NON_AGENT_LANES=(orchestrator skill-tool unrostered-agent)
 
 # Length of a row's id and of a site hash, in hex digits. 12 digits stay below
 # the PR-body redaction gate's 32-digit hex-run detector.
@@ -46,6 +51,15 @@ _review_ledger_defer_hint() {
   local names
   names=$(IFS=,; printf '%s' "${_REVIEW_LEDGER_DEFER_CRITERIA[*]}")
   printf 'DEFER needs --source <repo-relative path>[:<start>[-<end>]] and --defer-criterion, one of: %s' "${names//,/, }"
+}
+
+# Appended to every lane rejection, so the message alone tells a caller how to
+# correct its call.
+_review_ledger_lane_hint() {
+  local personas_list personas
+  mapfile -t personas_list < <(_lib_reviewer_persona_agents)
+  personas=$(IFS=,; printf '%s' "${personas_list[*]}")
+  printf 'Pass --reviewer <lane> once for each lane that raised the finding. Accepted lanes: %s, orchestrator (a finding no reviewer agent or Skill-tool review raised), skill-tool (a Skill-tool review'"'"'s finding), unrostered-agent (a spawned reviewer agent outside the roster). CLEAN takes neither --reviewer nor --relog. Pass --relog instead only when this row records no raise of its own and only re-logs its --ref decision, whose raise an earlier row records, as a reopen, a gate-denial recovery or a --carry-forward withdrawal does.' "${personas//,/, }"
 }
 
 _review_ledger_is_criterion() {
@@ -174,6 +188,52 @@ _review_ledger_validate_flags() {
       fi
       ;;
   esac
+  return 0
+}
+
+# _review_ledger_validate_lanes DISPOSITION DECIDED_BY REF RELOG [LANE...]
+# Lane rules only, with no I/O. RELOG is "1" when --relog was given. Every LANE
+# must be a roster persona or one of _REVIEW_LEDGER_NON_AGENT_LANES. Prints the
+# reason, then the lane hint, to stderr and returns 1 on the first violation.
+_review_ledger_validate_lanes() {
+  local disposition="$1" decided_by="$2" ref="$3" relog="$4"
+  shift 4
+  local lane
+  for lane in "$@"; do
+    if ! _lib_is_reviewer_persona "$lane" && ! _lib_list_contains "$lane" "${_REVIEW_LEDGER_NON_AGENT_LANES[@]}"; then
+      _review_ledger_reject "--reviewer '$lane' is not an accepted lane. $(_review_ledger_lane_hint)"
+      return 1
+    fi
+  done
+
+  if [ "$disposition" = CLEAN ]; then
+    if [ "$#" -gt 0 ]; then
+      _review_ledger_reject "--reviewer is not accepted with --disposition CLEAN, which takes no lanes. $(_review_ledger_lane_hint)"
+      return 1
+    fi
+    if [ "$relog" = 1 ]; then
+      _review_ledger_reject "--relog is not accepted with --disposition CLEAN, which takes no lanes. $(_review_ledger_lane_hint)"
+      return 1
+    fi
+    return 0
+  fi
+
+  if [ "$relog" = 1 ] && [ -z "$ref" ]; then
+    _review_ledger_reject "--relog needs --ref, because it copies the --ref decision's lanes. $(_review_ledger_lane_hint)"
+    return 1
+  fi
+  if [ "$relog" = 1 ] && [ "$decided_by" = carry ]; then
+    _review_ledger_reject "--relog is not accepted on a carry (--decided-by carry), which records a repeat raised this round. $(_review_ledger_lane_hint)"
+    return 1
+  fi
+  if [ "$relog" = 1 ] && [ "$#" -gt 0 ]; then
+    _review_ledger_reject "--reviewer and --relog cannot be combined: --relog copies the --ref decision's lanes. $(_review_ledger_lane_hint)"
+    return 1
+  fi
+  if [ "$relog" != 1 ] && [ "$#" -eq 0 ]; then
+    _review_ledger_reject "--disposition $disposition needs at least one lane (--reviewer) or --relog. $(_review_ledger_lane_hint)"
+    return 1
+  fi
   return 0
 }
 
@@ -457,6 +517,38 @@ _review_ledger_lookup_ref() {
   '
 }
 
+# _review_ledger_ref_reviewers LEDGER_FILE REF
+# Prints, as one compact JSON array, the string entries of the `reviewers` array
+# on the first row whose id is REF, or [] when that row holds no array there.
+# Returns 1 with the reason on stderr when the read or the look-up jq fails, or
+# when no row has that id, so each differs from a legitimate [].
+_review_ledger_ref_reviewers() {
+  local ledger_file="$1" ref="$2" rows reviewers
+  rows=$(_review_ledger_read_rows "$ledger_file") || {
+    _review_ledger_reject "could not read the ledger to copy the --ref decision's lanes (jq missing, failed, or timed out). Abort without writing."
+    return 1
+  }
+  # shellcheck disable=SC2016 # single-quoted on purpose: $ref and $row are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
+  reviewers=$(printf '%s\n' "$rows" | _lib_jq -n -c --arg ref "$ref" "$_REVIEW_LEDGER_JQ_COMMON"'
+    [inputs | select((.id | s) == $ref)] | .[0] as $row
+    | if $row == null then null
+      else ($row.reviewers) as $lanes
+        | if ($lanes | type) == "array" then [$lanes[] | select(type == "string")] else [] end
+      end
+  ') || reviewers=""
+  case "$reviewers" in
+    '')
+      _review_ledger_reject "could not read the ledger to copy the --ref decision's lanes (jq missing, failed, or timed out). Abort without writing."
+      return 1
+      ;;
+    null)
+      _review_ledger_reject "--ref $ref is no longer in the ledger, so its lanes cannot be copied for --relog. Run 'review-ledger.sh show' to list the ids."
+      return 1
+      ;;
+  esac
+  printf '%s' "$reviewers"
+}
+
 # _review_ledger_retirer_pointer RETIRER_ID RETIRER_DISP
 # Prints the clause that points a rejected --ref at the row that retired it, and
 # nothing otherwise. A DEFER or SETTLED retirer is itself a --ref target, so it
@@ -485,7 +577,7 @@ _review_ledger_carry_ref_advice() {
     <<<"$decision_info"
   [ "$decision_is_decision" = 1 ] || return 0
   if [ -z "$decision_retired_by" ]; then
-    printf '; its decision is %s. ADDRESS --ref %s reopens that decision and retires its carries from the PR block too' \
+    printf '; its decision is %s. ADDRESS --ref %s --relog reopens that decision and retires its carries from the PR block too' \
       "$decision_id" "$decision_id"
   elif _review_ledger_is_row_id "$decision_retired_by"; then
     printf '; its decision is %s, which row %s already retired, so it cannot be reopened' "$decision_id" "$decision_retired_by"
@@ -582,8 +674,9 @@ _review_ledger_check_ref() {
 # retired, unless a non-carry row that names REF holds the same fields as LINE.
 # That is a retry of a write that already landed, and the append then dedups it.
 # The fields compared are every one except id, schema_version and event_time,
-# which is the append's dedup key. Returns 1 with the reason on stderr, and also
-# when the ledger cannot be read.
+# which is the append's dedup key. A retry whose lane set differs from the landed
+# row's is therefore rejected as retired, not deduped. Returns 1 with the reason
+# on stderr, and also when the ledger cannot be read.
 _review_ledger_check_not_retired() {
   local ledger_file="$1" line="$2" ref="$3" is_retry
   [ -n "$_REVIEW_LEDGER_REF_RETIRED_BY" ] || return 0
@@ -651,7 +744,7 @@ _review_ledger_carry_line() {
   else
     shown_finding="a finding (not shown: jq could not clean it)"
   fi
-  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched %s to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s, which retires that decision and its carries from the PR block.\n' \
+  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched %s to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s --relog, which retires that decision and its carries from the PR block.\n' \
     "$ref" "${ref_event_date:-unknown}" "$ref_round" "$basis" "$shown_finding" "$ref" "$ref"
 }
 

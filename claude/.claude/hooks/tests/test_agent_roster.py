@@ -12,10 +12,23 @@ import subprocess
 
 import pytest
 import yaml
-from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT
+from helpers import (
+    CLAUDE_DIR,
+    HOOKS_DIR,
+    REPO_ROOT,
+    SKILLS_DIR,
+    change_type_table_rows,
+    markdown_table_rows,
+    review_ledger_non_agent_lanes,
+    reviewer_persona_agents,
+)
 from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
+
+# The module-level Path chain keeps TestCrossDomainReadCompleteness able to resolve this read.
+CODE_REVIEW_SKILL_MD = SKILLS_DIR / "code-review" / "SKILL.md"
+ITEM_OWNERSHIP_TABLE_HEADER = "| Item | Primary owner | Co-owners |"
 
 # The stack-specialist reviewer roster — the personas dispatched by /plan-review
 # and /code-review off their Item-ownership tables. This list is ALSO the ground
@@ -875,6 +888,64 @@ def _review_only_agents() -> list[str]:
         check=True,
     )
     return [line for line in result.stdout.splitlines() if line]
+
+
+def _agents_named_in_rows(rows: list[str]) -> set[str]:
+    """Backticked names in `rows` that have a claude/.claude/agents/<name>.md file, minus NON_REVIEWER_AGENTS."""
+    named = {name for row in rows for name in re.findall(r"`([^`]+)`", row)}
+    return {
+        name for name in named
+        if (AGENTS_DIR / f"{name}.md").is_file() and f"{name}.md" not in NON_REVIEWER_AGENTS
+    }
+
+
+class TestAgentsNamedInRows:
+    def test_drops_non_reviewer_agents_and_names_without_an_agent_file(self):
+        rows = [
+            "| Code | `code-writer` `staff-sdet` `Explore` |",
+            "| Plan | `plan-architect` `review-orchestrator` `no-such-agent` |",
+        ]
+
+        assert _agents_named_in_rows(rows) == {"staff-sdet"}
+
+
+class TestReviewLedgerLaneRoster:
+    """review-ledger.sh gives each roster reviewer its own lane and every other source of findings one of three
+    literals. These pins keep the two vocabularies from overlapping or leaving a reviewer without a lane."""
+
+    @pytest.mark.parametrize(
+        ("table_name", "table_rows"),
+        [
+            pytest.param("Change-type", lambda: change_type_table_rows(CODE_REVIEW_SKILL_MD), id="change-type"),
+            pytest.param(
+                "Item-ownership",
+                lambda: markdown_table_rows(CODE_REVIEW_SKILL_MD, ITEM_OWNERSHIP_TABLE_HEADER),
+                id="item-ownership",
+            ),
+        ],
+    )
+    def test_every_reviewer_agent_a_code_review_table_spawns_has_its_own_roster_lane(self, table_name, table_rows):
+        """The pin covers reviewer agents only. A non-reviewer agent cited in a table is dropped from the walk by
+        name, and adding it to _LIB_REVIEW_ONLY_AGENTS would put a writing agent under deny-reviewer-tree-mutation.sh."""
+        walked = _agents_named_in_rows(table_rows())
+
+        assert "staff-sdet" in walked, f"the {table_name} walk found no staff-sdet: a renamed header or an empty walk"
+        unrostered = walked - set(reviewer_persona_agents())
+        assert not unrostered, (
+            f"code-review/SKILL.md's {table_name} table spawns {sorted(unrostered)}, which have no roster lane. "
+            "Add each reviewer to _LIB_REVIEW_ONLY_AGENTS in _lib.sh, or its findings land under the composite "
+            "unrostered-agent lane and cannot be split per agent. A writing agent is not a reviewer: list it in "
+            "NON_REVIEWER_AGENTS, because adding it to _LIB_REVIEW_ONLY_AGENTS would put it under "
+            "deny-reviewer-tree-mutation.sh."
+        )
+
+    def test_no_non_agent_lane_is_an_agent_name(self):
+        """A literal that matched an agent would mean two things across `reviewers` and the agent roster."""
+        review_only = set(_review_only_agents())
+
+        for lane in review_ledger_non_agent_lanes():
+            assert lane not in review_only, f"{lane!r} is in _LIB_REVIEW_ONLY_AGENTS"
+            assert not (AGENTS_DIR / f"{lane}.md").exists(), f"{lane!r} has an agents/{lane}.md file"
 
 
 class TestReviewOrchestratorRosterPlacement:

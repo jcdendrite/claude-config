@@ -118,6 +118,7 @@ Alternatives weighed:
 51. `test_agent_roster.py` reads the Change-type table through the same parser as `test_skills.py`. `[engineer-verified: "Unless you abstract out the existing table parser so that test agent roster can use it"]`
 52. `test_select_tests.py` takes no edit, and no `_KNOWN_CROSS_DOMAIN_READS` pair is added for `test_agent_roster.py`. Asked whether to keep that pair, the engineer wrote "What’s the correct thing to do here?" and stated the test-quality criterion quoted in this row's tag. The pair would duplicate a check that already holds (row 46), so dropping it is this plan's own judgment applying that criterion. The tag covers the criterion only. With no test-selection file touched, row 50's "drop select-tests" now holds in full. `[engineer-verified: "we wanna have decent test coverage but not vacuous tests, but not duplicated tests"]`
 53. A reviewer agent outside `_LIB_REVIEWER_PERSONA_AGENTS` gets the composite lane `unrostered-agent`, so its row lands instead of being lost (M17). `[engineer-verified: "Keep `unrostered-agent` (Recommended)"]`
+54. `test_lib_payload_matchers.py` also edits to import the shared `reviewer_persona_agents`, which removes a duplicate of the reader this PR adds to `helpers.py`. Asked whether to keep that file edit, the engineer selected "Keep it and add to plan (Recommended)". `[engineer-verified: "Keep it and add to plan (Recommended)"]`
 
 **Mechanisms:**
 
@@ -246,7 +247,7 @@ Implementation runs as one `code-writer` dispatch. The script, its library, the 
   - The reopen advice at `:488` and `:654` reads `ADDRESS --ref <id> --relog`.
 - `claude/.claude/scripts/tests/test_review_ledger_lib.py` — the input matrices (row 28).
   - `_review_ledger_validate_lanes`, always called with explicit arguments, the four-argument no-lane shape among them:
-    - Accepted: a hard-coded `staff-sdet`, `orchestrator`, `skill-tool` and `unrostered-agent`, then every name `_lib_reviewer_persona_agents` prints, as a second parametrization.
+    - Accepted: a hard-coded `staff-sdet`, `orchestrator`, `skill-tool` and `unrostered-agent`, then every name the shared `reviewer_persona_agents` returns, as a second parametrization.
     - Rejected, with the accepted list: `inline`, an unknown name, `Explore`, `Plan`, `plan-architect`, `code-writer`, `review-orchestrator`, `Staff-SDET`, `staff-sdet` with a trailing space, `orchestrator` and `skill-tool` joined by a newline, and `*`, `staff-*`, `orchestrator-x` and `skill-tool*`, which cover glob and suffix matches on both halves.
     - Rejected, each input violating exactly one rule and asserting that rule's own reason line: a lane on CLEAN, `--relog` on CLEAN, neither or both on each of ADDRESS, DEFER and SETTLED, `--relog` without `--ref`, and `--relog` on a carry. The "both" and "`--relog` on CLEAN" inputs carry a well-formed non-empty REF, so `--relog` without `--ref` does not also fire.
     - Every rejection's stderr also holds each element of M15's hint: `--reviewer <lane>`, every accepted value with its one-clause gloss, that CLEAN takes neither, `--relog`, the discriminator, and its three examples.
@@ -292,7 +293,7 @@ Implementation runs as one `code-writer` dispatch. The script, its library, the 
       2. Another session carries it through `_decide_then_carry_as_another_session` (`:2411-2425`), with the default lane.
       3. The `ADDRESS --ref <id> --relog` that the carry line printed, run with no `--reviewer`, exits 0 and stores `["ciso-reviewer"]`.
       4. `render` then drops the decision and its carry.
-    - A new parametrized pair at exactly 4095 and 4096 bytes passing the maximum lane list. It adds one invariant beyond the existing pair's "whole line is measured": the list derives from `_lib_reviewer_persona_agents` plus `_REVIEW_LEDGER_NON_AGENT_LANES`, sorted, so a new persona widens it and the pair keeps testing the real maximum width M12 states. It passes the lanes both to the append and to `_fields_for_row_of_bytes`, whose `**row_overrides` reach `_row_envelope_bytes`. The 4095-byte row lands, and the 4096-byte row is rejected.
+    - A new parametrized pair at exactly 4095 and 4096 bytes passing the maximum lane list. It adds one invariant beyond the existing pair's "whole line is measured": the list derives from the shared `reviewer_persona_agents` and `review_ledger_non_agent_lanes`, sorted, so a new persona widens it and the pair keeps testing the real maximum width M12 states. It passes the lanes both to the append and to `_fields_for_row_of_bytes`, whose `**row_overrides` reach `_row_envelope_bytes`. The 4095-byte row lands, and the 4096-byte row is rejected.
 - `claude/.claude/scripts/tests/test_author_outcome.py` (`:999`, `:1032`, `:1072`, `:1082`), `claude/.claude/hooks/tests/test_announce_branch_review_history.py` (`:116-117`) and `claude/.claude/hooks/tests/test_require_code_review.py` (`:892-893`): each non-CLEAN append adds `--reviewer staff-sdet` (row 29).
 - `claude-skills/skills/code-review/SKILL.md` — M2, M7, M8, M9, M14, M15. Each token M11 pins appears verbatim.
   - `:346`: the header `Finding | Lane | Disposition | Rationale`, M9's two Lane sentences after it, and the lanes at the end of each inline tag.
@@ -312,13 +313,16 @@ Implementation runs as one `code-writer` dispatch. The script, its library, the 
   - The exactly-once pin goes beside `TestReviewLedgerAuthoringEffortLiteral` (`:702-726`).
   - `_PINNED_CONTRADICTION_ROUTE_CLAUSE`'s last sentence (`:6663-6666`) reads `ADDRESS --ref <id> --relog`.
   - `_REVIEW_LEDGER_PROSE_CONTROLS` (`:7485-7630`) carries the extended template token and M11's four new tokens.
-- `claude/.claude/tests/helpers.py` — M16, both after `heading_texts` (`:174-191`), each with a one-line docstring that names no caller:
+- `claude/.claude/tests/helpers.py` — M16's two table parsers after `heading_texts` (`:174-191`), then three shell-value readers, each with a one-line docstring that names no caller:
   - `markdown_table_rows(markdown_path: Path, header_line: str) -> list[str]`, its body moved from `test_skills.py:5052-5064` with the header literal replaced by `header_line`, which the not-found assertion names. Docstring: "Raw lines of a Markdown table's data rows, found by its exact header line."
   - `change_type_table_rows(skill_md_path: Path) -> list[str]`, returning `markdown_table_rows(skill_md_path, "| Change type | Spawn / invoke |")`. Docstring: "Raw lines of every data row in a SKILL.md's Change-type table."
+  - `_nonempty_shell_lines(shell_body, what) -> list[str]` runs `bash -c`, asserts a zero exit and at least one line, and returns the lines, so an emptied shell value fails a test instead of leaving it iterating nothing.
+  - `reviewer_persona_agents() -> list[str]` reads `_lib_reviewer_persona_agents` through it, and `review_ledger_non_agent_lanes() -> list[str]` reads `_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing `_lib.sh` and then `_review-ledger-lib.sh` as `review-ledger.sh:8-17` does.
+- `claude/.claude/hooks/tests/test_lib_payload_matchers.py` — imports the shared `reviewer_persona_agents` from `helpers.py` and drops its own copy of that reader, which ran the same command without the emptiness assertion (row 54).
 - `claude/.claude/hooks/tests/test_agent_roster.py` — M11's roster and literal pins.
   - `SKILLS_DIR`, `change_type_table_rows` and `markdown_table_rows` join the `helpers` import (`:15`). A module-level `CODE_REVIEW_SKILL_MD = SKILLS_DIR / "code-review" / "SKILL.md"` names the tables' file, so `TestCrossDomainReadCompleteness` resolves the read (row 46).
   - A module-level `ITEM_OWNERSHIP_TABLE_HEADER = "| Item | Primary owner | Co-owners |"` is that header's one home, matching `code-review/SKILL.md:459`.
-  - Both pins go beside `_review_only_agents` (`:868-877`). Read `_lib_reviewer_persona_agents` and `_REVIEW_LEDGER_NON_AGENT_LANES` through `bash -c` subprocesses shaped like it, with the library paths built inside the function. The lane read sources `_lib.sh` and then `_review-ledger-lib.sh`, as `review-ledger.sh:8-17` does.
+  - Both pins go beside `_review_only_agents` (`:868-877`). Read the roster and the lane literals through the shared `reviewer_persona_agents` and `review_ledger_non_agent_lanes` imported from `helpers.py`, so no test file keeps a reader of its own.
   - The literal pin reuses `_review_only_agents` and `AGENTS_DIR` (`:18`).
 - `docs/scripts.md` — the `review-ledger.sh` entry.
   - `:146`: `--reviewer` joins the flags whose empty value is rejected.

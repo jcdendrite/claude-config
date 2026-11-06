@@ -5,7 +5,7 @@ import os
 import subprocess
 
 import pytest
-from helpers import installed_locale_where
+from helpers import installed_locale_where, reviewer_persona_agents
 
 from ._lib_sh_helpers import _LIB_SH
 
@@ -295,16 +295,6 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
-def _reviewer_persona_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
     """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
 
@@ -319,7 +309,7 @@ def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> 
         check=True,
     ).stdout.split()
     assert review_only, "review-only roster must not be empty"
-    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+    assert set(reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
 
 
 def _is_reviewer_persona(agent_type: str) -> bool:
@@ -333,8 +323,7 @@ def _is_reviewer_persona(agent_type: str) -> bool:
 
 
 def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
-    roster = _reviewer_persona_agents()
-    assert roster, "reviewer-persona roster must not be empty"
+    roster = reviewer_persona_agents()
     rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
     assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
 

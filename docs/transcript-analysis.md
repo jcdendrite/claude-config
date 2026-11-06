@@ -1568,7 +1568,7 @@ A round with zero matching ledger rows but a marker-write call is inferred clean
 | `DEFER` alone, only `DEFER` carries, or `CLEAN` alone | PASS | no |
 | Any `ADDRESS` row, an `ADDRESS --ref` that reopens a decision included | FAILURE | no |
 
-The classification rule is unchanged, and an `ADDRESS` row still makes a round a `FAILURE`. The review skill now logs a consult's keep as `SETTLED`, which counts as a PASS, and rows from this schema onward carry `schema_version` 4. A failure share can therefore step down at the first corpus session holding a `SETTLED` row, because of how the keep is logged and not a change in `code-writer` quality. Re-running the analysis over a window before that row shows no step.
+The classification rule is unchanged, and an `ADDRESS` row still makes a round a `FAILURE`. The review skill now logs a consult's keep as `SETTLED`, which counts as a PASS, and rows from this schema onward carry a `schema_version` of at least 4. A failure share can therefore step down at the first corpus session holding a `SETTLED` row, because of how the keep is logged and not a change in `code-writer` quality. Re-running the analysis over a window before that row shows no step.
 
 A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see the ledger runbook in `docs/scripts.md`'s `review-ledger.sh` entry) also classifies as `FAILURE`. That rare over-count is accepted.
 
