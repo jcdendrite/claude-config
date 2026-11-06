@@ -16,6 +16,7 @@ from .conftest import (
     _api_request_blob_rec,
     _asst,
     _bash_use,
+    _non_boundary_system_rec,
     _tool_result,
     _user_msg,
     _write_jsonl,
@@ -269,6 +270,15 @@ class TestCompaction:
         assert len(sequences) == 2
         assert len(sequences[0]) == 2
         assert len(sequences[1]) == 2
+
+    def test_non_boundary_system_record_does_not_split_sequence(self):
+        user_record = _user_msg("a", ts="2026-05-19T10:00:00.000Z")
+        non_boundary_record = _non_boundary_system_rec()
+        assistant_record = _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z")
+        sequences = context_composition._split_context_sequences(
+            [user_record, non_boundary_record, assistant_record]
+        )
+        assert sequences == [[user_record, assistant_record]]
 
     def test_large_context_drop_without_compact_boundary_is_not_misclassified(self):
         """Compaction detection is purely structural (the compact_boundary marker), never

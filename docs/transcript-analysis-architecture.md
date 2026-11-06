@@ -767,7 +767,7 @@ name `build_parser()` reaches bare.
 The edit-format command: `cmd_edit_format`, the Edit/Write/MultiEdit call census with per-tool failure
 classification, governance-hook re-bucketing, not_found cause attribution, and
 old_string/new_string/Write token overhead, with a per-account breakdown above one root, and the
-`_add_edit_format_subparser` registration. Imports `pricing`, `render`, and `scope` all by module
+`_add_edit_format_subparser` registration. Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `_add_edit_format_subparser` is the one name
 `build_parser()` reaches bare.
 

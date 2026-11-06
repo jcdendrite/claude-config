@@ -1,8 +1,4 @@
-"""Tests for transcript_analysis/read_cost.py (read-cost).
-
-The window scan, billing, and per-agent-type rows are tested as pure functions over literal records. The
-command is tested on transcript files under the fake_projects corpus.
-"""
+"""Tests for transcript_analysis/read_cost.py (read-cost)."""
 import dataclasses
 import os
 from collections import Counter
@@ -16,6 +12,7 @@ from .conftest import (
     _asst,
     _compact_boundary_rec,
     _edit_use,
+    _non_boundary_system_rec,
     _read_result,
     _read_use,
     _user_msg,
@@ -87,13 +84,22 @@ def _row_with_every_field_set(value: int) -> read_cost._AgentTypeRow:
 
 class TestScanWindow:
     def test_turns_count_distinct_message_ids_not_records(self):
-        scan = _scan([_turn("m1"), _turn("m1"), _turn("m2")])
-        assert len(scan.turn_message_ids) == 2
+        scan = _scan([
+            _turn("m1", [_read_use("r1", file_path="/a.py")]),
+            _turn("m1"),
+            _read_result("r1", _HUNDRED_TOKEN_TEXT),
+            _turn("m2"),
+            _turn("m2"),
+            _turn("m3"),
+        ])
+        assert len(scan.turn_message_ids) == 3
+        assert _event_for(scan, "/a.py").remaining_turns == 2
 
     def test_compaction_boundary_ends_the_window_a_read_is_resent_in(self):
         scan = _scan([
             _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
+            _non_boundary_system_rec(),
             _turn("m2", [_read_use("r2", file_path="/b.py")]),
             _read_result("r2", _HUNDRED_TOKEN_TEXT),
             _compact_boundary_rec(),
@@ -103,7 +109,8 @@ class TestScanWindow:
         ])
         assert len(scan.turn_message_ids) == 4
         # r1 is resent once (turn 2) before the boundary, r2 in the last turn before it is never resent, and r3
-        # is resent in the one turn after it.
+        # is resent in the one turn after it. The non-boundary system record changes none of these values and
+        # exists so a guard keyed on type == "system" alone fails the /a.py assertion.
         assert _event_for(scan, "/a.py").remaining_turns == 1
         assert _event_for(scan, "/b.py").remaining_turns == 0
         assert _event_for(scan, "/c.py").remaining_turns == 1

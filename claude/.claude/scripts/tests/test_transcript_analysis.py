@@ -242,7 +242,6 @@ _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG = (
 
 
 def _subcommands_refusing_top_level_config_dir_without_their_own_flag() -> list[str]:
-    """The refusing-tuple members whose own parser registers no --config-dir flag."""
     subparsers_action = next(
         action for action in _mod.build_parser()._actions if isinstance(action, argparse._SubParsersAction)
     )
@@ -348,7 +347,7 @@ def test_read_cost_with_a_projects_glob_is_refused_through_main(monkeypatch, cap
 def test_read_cost_this_repo_runs_to_a_report_through_main(
     fake_projects, stub_repo_tracked_agent_types, monkeypatch, capsys,
 ):
-    """The real argparse Namespace reaches cmd_read_cost, _refuse_wider_scope and _resolve_project_scope."""
+    """Only test that drives a parsed --this-repo through main(); the direct-call tests hand-build their Namespace."""
     monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])
     stub_repo_tracked_agent_types()
     _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6")])

@@ -882,6 +882,10 @@ def _compact_boundary_rec() -> dict:
     return {"type": "system", "subtype": "compact_boundary"}
 
 
+def _non_boundary_system_rec() -> dict:
+    return {"type": "system", "subtype": "turn_duration"}
+
+
 # Non-conversation record types the record-type filters must skip.
 # attachment stands in for any such type that carries message.content,
 # so a filter that skips only api-request-blob fails the parametrized tests.
