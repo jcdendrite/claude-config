@@ -36,7 +36,7 @@ The specialist reviewer agents' whole-file reads are about 3.9% of spend. That s
 
 - **A cheap worker's premise failed here before.** `check-runner`, a cheap worker that summarised verbose Bash output, rested on a premise the measurement behind its retirement refuted: no inline check run in the measured corpus reached the harness's output-truncation threshold (`docs/case-studies/check-runner.md` § "Retirement (2026-06-23)"). This design's premise, that a gate would reach a meaningful cost, also fails, by a different route: the reads do cross the thresholds, but the never-edited main-thread ones are a negligible share of spend.
 - **A cheaper worker is not a free one.** Worker spend moves rather than disappears, and a saved token says nothing about answer accuracy.
-- **A script that reads files itself bypasses the existing read-deny hooks.** `deny-env-reads.sh` and `deny-credential-file-reads.sh` see tool calls, not what a subprocess opens, and the content then leaves the machine.
+- **A script that reads files itself reaches past the existing read-deny hooks.** Every Read-tool gate sees only `Read` calls. `deny-credential-bash-reads.sh` matches only the credential-path shapes it recognizes in a Bash call's command text, so a script argument outside those shapes passes it, and so does a path the script resolves itself, such as a symlink under an innocuous name (`docs/security-hardening.md` § "Limitations" covers the symlink case). File content would then leave the machine for the worker model's endpoint, under a new credential the script would need.
 - **The lighter primitive exists.** Locate-and-report reads already route to `Explore` under `subagent-delegation`, inside the hooks.
 
 ## When to reopen

@@ -882,9 +882,9 @@ def _compact_boundary_rec() -> dict:
     return {"type": "system", "subtype": "compact_boundary"}
 
 
-# Record types outside corpus.CONVERSATION_RECORD_TYPES. "attachment" is a hypothetical future type.
-# Real attachment records have no message.content.
-# The fixture gives it message.content so a blacklist rewrite of the filter stays detectable.
+# Non-conversation record types the record-type filters must skip.
+# attachment stands in for any such type that carries message.content,
+# so a filter that skips only api-request-blob fails the parametrized tests.
 _NON_CONVERSATION_CONTENT_RECORD_TYPES = ("api-request-blob", "attachment")
 
 

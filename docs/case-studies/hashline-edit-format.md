@@ -131,7 +131,7 @@ Decline hashline. Measured against this harness and this machine's own transcrip
 - `old_string` overhead exceeds **~2.7% of total assistant output tokens** (4x today's measured 0.67%), same subcommand.
 - A Claude model ships with a benchmarked Δ REPLACE gain materially above Sonnet 4.5's **+3.3** in a comparable published benchmark.
 
-The 0.77% and 0.67% baselines predate the `api-request-blob` filter, so a fresh `edit-format` run is not directly comparable.
+The 0.77% and 0.67% baselines were measured before `edit-format` skipped `api-request-blob` records, which copy request content, so a fresh run is not directly comparable. Any such records in the 2026-08-08 corpus inflated the 0.67% overhead, because they added `old_string` characters but no output tokens. They added both `Edit` calls and failures to the 0.77% rate, so its direction is unknown. The revisit thresholds stand as written.
 
 ## Sources
 

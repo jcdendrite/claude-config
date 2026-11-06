@@ -36,6 +36,9 @@ def _weights() -> dict[str, float]:
     return pricing._cache_read_equivalent_weights()
 
 
+_CACHE_WRITE_WEIGHT = _weights()["cache_write_5m"]
+
+
 def _turn(message_id: str, content: list | None = None, *, usage: dict | None = None) -> dict:
     rec = _asst("claude-sonnet-5", content=content)
     rec["message"]["id"] = message_id
@@ -447,18 +450,19 @@ class TestScanWindow:
 
 
 class TestBilledWeight:
+    # The literals are pricing._cache_read_equivalent_weights ratios; _CACHE_WRITE_WEIGHT is derived from the same function.
     def test_usage_is_weighted_per_token_class(self):
         usage = {
             "input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 3,
             "cache_creation": {"ephemeral_5m_input_tokens": 4, "ephemeral_1h_input_tokens": 5},
         }
         assert read_cost._billed_weight(usage, _weights()) == pytest.approx(
-            1 * 10 + 2 * 50 + 3 * 1 + 4 * 12.5 + 5 * 20
+            1 * 10 + 2 * 50 + 3 * 1 + 4 * _CACHE_WRITE_WEIGHT + 5 * 20
         )
 
     def test_flat_cache_creation_field_is_priced_as_five_minute_writes(self):
         usage = {"cache_creation_input_tokens": 4}
-        assert read_cost._billed_weight(usage, _weights()) == pytest.approx(4 * 12.5)
+        assert read_cost._billed_weight(usage, _weights()) == pytest.approx(4 * _CACHE_WRITE_WEIGHT)
 
     def test_usage_already_counted_in_another_window_is_billed_once(self):
         scan = _scan([_turn("m1", usage={"output_tokens": 1}), _turn("m2", usage={"output_tokens": 1})])
@@ -480,7 +484,7 @@ class TestAgentTypeRow:
             _turn("m2", [_read_use("r2", file_path="/a.py")]),
             _read_result("r2", _HUNDRED_TOKEN_TEXT),
         ], set())
-        assert row.repeat_in_agent_weight == pytest.approx(100 * 12.5)
+        assert row.repeat_in_agent_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
         assert row.seen_elsewhere_weight == 0.0
         assert read_paths == {"/a.py"}
 
@@ -489,7 +493,7 @@ class TestAgentTypeRow:
             _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ], {"/a.py"})
-        assert row.seen_elsewhere_weight == pytest.approx(100 * 12.5)
+        assert row.seen_elsewhere_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
         assert row.repeat_in_agent_weight == 0.0
 
     def test_large_unedited_read_counts_as_large_and_large_unedited(self):
@@ -497,14 +501,14 @@ class TestAgentTypeRow:
             _turn("m1", [_read_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
-        assert row.large_weight == row.large_unedited_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * 12.5)
+        assert row.large_weight == row.large_unedited_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * _CACHE_WRITE_WEIGHT)
 
     def test_large_edited_read_counts_as_large_but_not_large_unedited(self):
         row, _read_paths = self._row([
             _turn("m1", [_read_use("r1", file_path="/a.py"), _edit_use("e1", path="/a.py")]),
             _read_result("r1", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
-        assert row.large_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * 12.5)
+        assert row.large_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * _CACHE_WRITE_WEIGHT)
         assert row.large_unedited_weight == 0.0
 
     def test_partial_read_counts_toward_all_reads_but_not_whole_file(self):
@@ -512,7 +516,7 @@ class TestAgentTypeRow:
             _turn("m1", [_read_use("r1", file_path="/a.py", limit=5)]),
             _read_result("r1", _HUNDRED_TOKEN_TEXT),
         ], set())
-        assert row.all_read_weight == pytest.approx(100 * 12.5)
+        assert row.all_read_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
         assert (row.whole_file_reads, row.whole_file_weight) == (0, 0.0)
         assert read_paths == set()
 
@@ -523,7 +527,7 @@ class TestAgentTypeRow:
             _turn("m2"),
             _turn("m3"),
         ], set())
-        assert row.whole_file_weight == pytest.approx(100 * (12.5 + 2))
+        assert row.whole_file_weight == pytest.approx(100 * (_CACHE_WRITE_WEIGHT + 2))
 
     def test_path_in_the_session_set_and_read_twice_is_seen_elsewhere_once_and_a_repeat_once(self):
         row, _read_paths = self._row([
@@ -531,8 +535,8 @@ class TestAgentTypeRow:
             *_read_exchange("m2", "r2", "/a.py"),
         ], {"/a.py"})
         # The first read has one later turn (m2), the second none.
-        assert row.seen_elsewhere_weight == pytest.approx(100 * (12.5 + 1))
-        assert row.repeat_in_agent_weight == pytest.approx(100 * 12.5)
+        assert row.seen_elsewhere_weight == pytest.approx(100 * (_CACHE_WRITE_WEIGHT + 1))
+        assert row.repeat_in_agent_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
 
     def test_reread_after_an_edit_of_the_path_is_a_repeat_and_the_reread_reads_as_unedited(self):
         records = [
@@ -542,7 +546,7 @@ class TestAgentTypeRow:
         ]
         row, _read_paths = self._row(records, set())
         assert [event.edited_later for event in _scan(records).events] == [True, False]
-        assert row.repeat_in_agent_weight == pytest.approx(100 * 12.5)
+        assert row.repeat_in_agent_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
 
     def test_reread_after_a_compaction_is_a_repeat(self):
         row, _read_paths = self._row([
@@ -550,14 +554,14 @@ class TestAgentTypeRow:
             _compact_boundary_rec(),
             *_read_exchange("m2", "r2", "/a.py"),
         ], set())
-        assert row.repeat_in_agent_weight == pytest.approx(100 * 12.5)
+        assert row.repeat_in_agent_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
 
     def test_whole_file_read_one_token_under_the_threshold_is_not_large(self):
         row, _read_paths = self._row(_read_exchange(
             "m1", "r1", "/a.py", text="x" * (4 * (read_cost._LARGE_READ_TOKENS - 1)),
         ), set())
         assert row.large_weight == row.large_unedited_weight == 0.0
-        assert row.whole_file_weight == pytest.approx((read_cost._LARGE_READ_TOKENS - 1) * 12.5)
+        assert row.whole_file_weight == pytest.approx((read_cost._LARGE_READ_TOKENS - 1) * _CACHE_WRITE_WEIGHT)
 
     def test_read_of_a_character_count_that_floors_to_one_token_under_the_threshold_is_not_large(self):
         row, _read_paths = self._row(_read_exchange("m1", "r1", "/a.py", text="x" * 7999), set())
@@ -570,8 +574,8 @@ class TestAgentTypeRow:
             _read_result("r1", "x" * (4 * (read_cost._LARGE_READ_TOKENS - 1))),
             _read_result("r2", "x" * (4 * read_cost._LARGE_READ_TOKENS)),
         ], set())
-        assert row.large_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * 12.5)
-        assert row.whole_file_weight == pytest.approx((2 * read_cost._LARGE_READ_TOKENS - 1) * 12.5)
+        assert row.large_weight == pytest.approx(read_cost._LARGE_READ_TOKENS * _CACHE_WRITE_WEIGHT)
+        assert row.whole_file_weight == pytest.approx((2 * read_cost._LARGE_READ_TOKENS - 1) * _CACHE_WRITE_WEIGHT)
 
     def test_kind_weight_sums_whole_file_read_weight_per_kind_and_ignores_partial_reads(self):
         row, _read_paths = self._row([
@@ -587,9 +591,9 @@ class TestAgentTypeRow:
             _read_result("r4", "x" * (4 * 500)),
         ], set())
         assert row.kind_weight == pytest.approx({
-            read_cost._KIND_INSTRUCTION: 100 * 12.5,
-            read_cost._KIND_OTHER_PROSE: 200 * 12.5,
-            read_cost._KIND_CODE_OR_OTHER: 300 * 12.5,
+            read_cost._KIND_INSTRUCTION: 100 * _CACHE_WRITE_WEIGHT,
+            read_cost._KIND_OTHER_PROSE: 200 * _CACHE_WRITE_WEIGHT,
+            read_cost._KIND_CODE_OR_OTHER: 300 * _CACHE_WRITE_WEIGHT,
         })
 
     def test_merge_adds_kind_weight_across_rows_with_overlapping_kinds(self):
@@ -766,7 +770,7 @@ class TestAccumulateSession:
             ])],
             _weights(),
         )
-        assert totals.rows_by_agent_type[_TRACKED_AGENT_TYPE].seen_elsewhere_weight == pytest.approx(100 * 12.5)
+        assert totals.rows_by_agent_type[_TRACKED_AGENT_TYPE].seen_elsewhere_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
 
     def test_main_thread_partial_read_does_not_make_a_path_seen_elsewhere_for_a_subagent(self):
         totals = read_cost._ReadCostTotals()
@@ -805,7 +809,8 @@ class TestAccumulateSession:
         # /a.py was read in session A only, so the second session's subagent is credited for /b.py (its main
         # thread) and /c.py (an earlier subagent) but not for /a.py.
         assert totals.rows_by_agent_type["Plan"].seen_elsewhere_weight == 0.0
-        assert totals.rows_by_agent_type[_TRACKED_AGENT_TYPE].seen_elsewhere_weight == pytest.approx(2 * 100 * 12.5)
+        tracked_row = totals.rows_by_agent_type[_TRACKED_AGENT_TYPE]
+        assert tracked_row.seen_elsewhere_weight == pytest.approx(2 * 100 * _CACHE_WRITE_WEIGHT)
 
     @pytest.mark.parametrize(("first_scanned_type", "second_scanned_type"), [
         (_TRACKED_AGENT_TYPE, "Plan"),
@@ -824,7 +829,7 @@ class TestAccumulateSession:
             _weights(),
         )
         assert totals.rows_by_agent_type[first_scanned_type].seen_elsewhere_weight == 0.0
-        assert totals.rows_by_agent_type[second_scanned_type].seen_elsewhere_weight == pytest.approx(100 * 12.5)
+        assert totals.rows_by_agent_type[second_scanned_type].seen_elsewhere_weight == pytest.approx(100 * _CACHE_WRITE_WEIGHT)
 
     def test_subagent_transcript_repeated_in_a_second_file_is_billed_and_read_once(self):
         window_records = [
@@ -1265,6 +1270,7 @@ class TestSkippedInput:
         assert out.splitlines()[withheld_index + 2] == (
             "    also holds agents with a missing, unreadable or typeless .meta.json; unreadable: 1"
         )
+        assert out.count("also holds agents") == 1
 
     def test_missing_meta_is_not_counted_as_unreadable(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
@@ -1358,6 +1364,12 @@ class TestReport:
         assert f"\n{_TRACKED_AGENT_TYPE}: agents=1 " in out
         assert f"\n{subagent_mix._WITHHELD_AGENT_TYPE_LABEL}: agents=1 " in out
         assert "\nTOTAL: agents=2 " in out
+        withheld_row = f"{subagent_mix._WITHHELD_AGENT_TYPE_LABEL}: agents=1 "
+        withheld_index = next(i for i, line in enumerate(out.splitlines()) if line.startswith(withheld_row))
+        assert out.splitlines()[withheld_index + 2] == (
+            "    also holds agents with a missing, unreadable or typeless .meta.json; unreadable: 0"
+        )
+        assert out.count("also holds agents") == 1
 
     def test_agent_type_named_only_by_the_allowlist_seam_prints_by_name(self, fake_projects, monkeypatch, capsys):
         allowlist_only_type = "sentinel-allowlist-only-agent-type"
@@ -1372,6 +1384,7 @@ class TestReport:
         out = capsys.readouterr().out
         assert f"\n{allowlist_only_type}: agents=1 " in out
         assert f"\n{subagent_mix._WITHHELD_AGENT_TYPE_LABEL}:" not in out
+        assert "also holds agents" not in out
 
     def test_empty_corpus_prints_zero_shares_without_division_error(self, fake_projects, capsys):
         read_cost.cmd_read_cost(_read_cost_args())
