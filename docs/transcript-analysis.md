@@ -1588,12 +1588,11 @@ The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir
 - A subagent file that repeats only some of an earlier subagent file's turns still counts as an agent, so the agent count and mean turns depend on file order in that case.
 - When files repeat records, the first-visited copy (files visit in sorted path order) sets a read's remaining turns and edited-later, and, when its usage is valid, a turn's billed usage. A shorter copy understates read weight and can mark a later-edited read as never edited. A copy cut mid-turn understates that turn's billed weight. `repeated_reads_skipped` bounds how many reads are exposed, not how much weight is understated. A `seen_elsewhere` credit omits main-thread reads that a repeated copy skipped, so it is a floor.
 - Edited-later counts an edit tool call whether or not it succeeded, so failed edits understate never-edited reads. It cannot see edits made through Bash or by another window, which overstates them.
-- Main-file records flagged `isSidechain` are dropped from the main window, and no other window receives them. Their reads and billed spend are missing from the subagent figures and the total-spend denominator, not from the main-thread counts.
+- Main-file records flagged `isSidechain` are dropped from the main window, and no other window receives them. Their reads and billed spend appear in no figure. Because these are subagent records, the drop understates the subagent figures and the total-spend denominator but not the main-thread counts.
 - Repeats and edited-later span the whole transcript file, while remaining turns stop at a compaction.
   - An edit after a compaction marks an earlier read as edited later, which understates never-edited reads.
   - A re-read after a compaction counts as a repeat.
   - A re-read after an edit of the same path counts as a repeat, and the re-read itself reads as never edited.
-- The scan reads every main transcript and every subagent file in scope.
 
 **Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. It reads the active config directory's `projects/` alone, and any symlink under that directory is followed. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
 
