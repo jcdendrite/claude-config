@@ -200,13 +200,17 @@ or causal claims in prose" bullet and §Working Style's "Be precise" bullet.
   - The fix is the statement the subject supports.
 - Unsourced: an unsettleable number or cause-and-effect claim naming no
   source, wherever its subject lives. The fix names the source, marks the
-  claim unverified, or deletes it. Any other unsettleable claim draws no
-  finding.
+  claim unverified, or deletes it.
+- Any other unsettleable claim draws no finding.
 - A comment or docstring repeating what the code beside it shows, or a doc
   passage on how the code works, is a Prose restating the code finding with
-  deletion as its fix, whether true or false, and draws none here. A feature
-  doc's account of what the code does for its user or how to use it, a count,
-  a claim about another file, and a cause and effect across files stay here.
+  deletion as its fix, whether true or false, and draws none here.
+- These stay in this angle:
+  - A feature doc's account of what the code does for its user or how to use
+    it.
+  - A count.
+  - A claim about another file.
+  - A cause and effect across files.
 
 ## How to work
 

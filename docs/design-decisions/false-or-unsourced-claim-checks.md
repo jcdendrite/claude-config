@@ -6,7 +6,7 @@
 
 ## Why changed claims and stale claims take different routes
 
-The reviewer judges only added or modified lines, so it cannot see an unchanged passage that a code change makes false. The tripwire covers that arm inline in every round: the orchestrator already holds the changed code, and the tripwire's search key is a literal name the diff itself changes, so a diff that changes no such name searches nothing.
+The reviewer judges only added or modified lines, so it cannot see an unchanged passage that a code change makes false. The tripwire covers that arm inline in every round because the orchestrator already holds the changed code. The tripwire's search key is a literal name the diff itself changes. A diff that changes no such name searches nothing.
 
 The angle for changed claims shares the reviewer's existing deferral to `ready-for-review`'s cumulative pass, recorded in `comment-discipline-reviewer-deferred-to-cumulative-pass.md`. The tripwire cannot share that deferral. Step 1.5 has no per-context switch, and a finding first caught in the cumulative pass reopens `ready-for-review`'s step 3 and costs another cumulative round. That cost is an inference from the mechanism, not a measurement.
 
@@ -44,7 +44,7 @@ Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K
 - Must-pass, each 0 of 5: a true default, a settleable cause and effect, a number with a named source, an instruction carrying a number, an unsettleable claim that is neither a number nor a cause and effect, a record's account of past events, and quoted text.
 - No Prose restating the code finding landed on a usage-doc cell.
 
-**Tripwire.** Every cell with a bar met it, last run against the current bullet:
+**Tripwire.** Every cell with a bar met it:
 - Must-flag, each 5 of 5: a vanished flag name and a redefined default.
 - Must-pass, each 0 of 5: the changelog, plan and dated-record skip, an ordinary use of the word "limit", and a still-true statement. The runs did not exercise the plan, dated-record and ordinary-word sites, as the caveats note.
 - A diff changing no name drew no finding and made no search in 5 of 5 runs.
