@@ -76,6 +76,13 @@ Evaluate the diff against CLAUDE.md §Engineering Judgment, §Working Style, and
 - **Out-of-scope file edits** — files changed that the stated task did not require, especially copy, comment, or cosmetic edits on unrelated files. Distinct from item 14 (don't *fix* unchanged code): this is having *edited* what was out of scope. When the plan named for this branch's slug exists under `.claude/plans/`, a changed file its Critical files section does not name as a path to create or modify is a blocking stop-and-ask to the human, even when the change needs the file, which overrides CLAUDE.md Axis 1's required-edit carve-out. A reuse citation is not a listing. A listed directory or glob covers what it contains. The plan itself and a file a merge from the default branch brings in are exempt. Record a yes per `plan-it/SKILL.md` § "Step 5 — Architecture design". A no unstages that file, which stays on disk. Ask the human how to handle what the file served. Do no rework of your own.
 - **Preserved-record edits** — edits to already-applied migrations, changelog or incident records, or anchor fixtures.
 - **Non-durable comment** — a new or modified comment that narrates PR/incident history, references "this diff," or re-litigates a rejected alternative at length, rather than stating a durable fact about the code. This check always runs inline, regardless of whether `comment-discipline-reviewer` (checklist item 12a) is spawned for exhaustive enumeration.
+- **Stale claim in unchanged prose** — find a comment or durable-doc passage the diff leaves unchanged that still states the old contract of a name the diff changed: read the changed files' own comments, then `Grep` the repository for each such name's literal token.
+  - Trigger: the diff renames or removes a name other code or docs refer to (an exported function or class, CLI flag, config key, environment variable, file path, script, hook or heading), or changes what one accepts, returns, prints, exits with, allows or defaults to.
+  - Hit: counts only in prose that describes that name.
+  - Never a hit: a record, meaning a class "Preserved-record edits" names, a plan under `.claude/plans/`, or a design-decision record with a dated provenance line.
+  - A diff changing no such name searches nothing.
+  - Classification: a hit the change makes false is a defect the change causes (Step 0.6's causal-reach rule), not an item 14 pre-existing issue. Its fix takes the new value from the changed code or deletes prose restating the code.
+  - This check always runs inline, including rounds where Step 0.6 defers `comment-discipline-reviewer`.
 
 ## Base checklist
 
@@ -129,7 +136,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. A preference for minimal comments governs whether to *add* one; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
 
-12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Durable text, §Prose and Output Format's "Lead with the answer", "Shape follows content", and "One idea per sentence" bullets, or §Engineering Judgment's single-source-of-truth bullet?
+12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Durable text, §Prose and Output Format's "Lead with the answer", "Shape follows content", and "One idea per sentence" bullets, §Engineering Judgment's single-source-of-truth and "Quantitative or causal claims in prose" bullets, or §Working Style's "Be precise" bullet?
    - Comment verbosity — a multi-paragraph rationale where one line suffices
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
    - Paragraph readability — parallel rules stacked as sentences, or an instruction placed after its rationale or exception
@@ -139,6 +146,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
    - "Used to be X" framing
    - Survives-the-PR self-test on durable-doc content — a durable-doc paragraph that fails it
    - Restated canonical rule — a record-style doc paragraph restating a rule stated canonically elsewhere instead of citing it
+   - False or unsourced claim — a claim its subject contradicts, or a number or causal claim naming no source
 
 ### Security
 
@@ -471,7 +479,7 @@ Routes each checklist item to the reviewer subagent(s) that file findings on it.
 | **9h. Construct-substitution suppression** | judgment (any reviewer) | `staff-sdet` (suppression constructs inside test files or test-double setup; see `test-conventions` §8) |
 | **10. Undocumented limitations** | `staff-product-engineer` (user-visible limitations) | judgment (others) |
 | **11. Misleading names** | `staff-product-engineer` (API / copy facing) | `staff-frontend-engineer` (component / hook), `staff-backend-engineer` (server) |
-| **12a. Comment/prose discipline on added or modified text** | `comment-discipline-reviewer` (when spawned) | judgment (any reviewer, via Step 1.5's inline tripwire) |
+| **12a. Comment/prose discipline on added or modified text** | `comment-discipline-reviewer` (when spawned) | judgment (any reviewer, via Step 1.5's inline "Non-durable comment" tripwire) |
 | **13. Test adequacy for security controls** | `ciso-reviewer` (designated writer) | `staff-sdet` (second-reader) |
 | **14a. Config-file change without stated intent** | judgment (any reviewer) | `staff-platform-engineer` (build/CI/IaC configs) |
 | **15–19. Infrastructure** (concurrency scoping, secret exposure, least-privilege, idempotency, trigger alignment) | `staff-platform-engineer` | `ciso-reviewer` (16 secret exposure, 17 least-privilege) |
