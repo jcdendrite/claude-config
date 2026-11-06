@@ -724,6 +724,45 @@ class TestAccumulateSession:
         assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "5000+")] == 4
         assert totals.bucket_tokens[(read_cost._SCOPE_SUBAGENT, "5000+")] == 24000
 
+    def test_bucket_tables_exclude_a_large_partial_read_on_the_main_thread(self):
+        totals = read_cost._ReadCostTotals()
+        large_text = "x" * 4 * 6000
+        read_cost._accumulate_session(
+            totals, read_cost._SeenIds(),
+            [
+                _turn("m1", [
+                    _read_use("r1", file_path="/whole.py"),
+                    _read_use("r2", file_path="/partial.py", limit=5),
+                ]),
+                _read_result("r1", large_text),
+                _read_result("r2", large_text),
+            ],
+            [],
+            _weights(),
+        )
+        assert totals.bucket_calls[(read_cost._SCOPE_MAIN, "5000+")] == 1
+        assert totals.bucket_tokens[(read_cost._SCOPE_MAIN, "5000+")] == 6000
+
+    def test_bucket_tables_exclude_a_partial_read_in_a_subagent_window(self):
+        totals = read_cost._ReadCostTotals()
+        read_cost._accumulate_session(
+            totals, read_cost._SeenIds(),
+            [_turn("m1", usage={"output_tokens": 2})],
+            [(_TRACKED_AGENT_TYPE, [
+                _turn("s1", [
+                    _read_use("r1", file_path="/a.py"),
+                    _read_use("r2", file_path="/b.py"),
+                    _read_use("r3", file_path="/c.py", limit=5),
+                ], usage={"output_tokens": 1}),
+                _read_result("r1", _HUNDRED_TOKEN_TEXT),
+                _read_result("r2", "x" * 1000),
+                _read_result("r3", "x" * 4000),
+            ])],
+            _weights(),
+        )
+        assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "<2000")] == 2
+        assert totals.bucket_tokens[(read_cost._SCOPE_SUBAGENT, "<2000")] == 350
+
     def test_subagent_row_carries_its_own_window_billed_weight_and_whole_file_tokens(self):
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
