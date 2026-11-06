@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    AUTONOMOUS_SHIPPING_STATEMENT_LEAD,
     HOOKS_DIR,
+    add_linked_worktree,
     init_git_repo_with_commit,
     run_additional_context_session_start_hook,
     run_hook_stop,
@@ -26,18 +28,22 @@ ANNOUNCE_HOOK = HOOKS_DIR / "announce-autonomous-shipping.sh"
 COMPACT_HOOK = HOOKS_DIR / "restore-authorization-boundary-on-compact.sh"
 STOP_HOOK = HOOKS_DIR / "advance-past-commit-stall.sh"
 
-STATEMENT_LEAD = "Autonomous shipping is active"
 STOP_ASK = "Want me to commit this?"
 
 
 @dataclass
 class Scenario:
-    """`cwd` of None omits the payload field. `granted` is whether every hook must print the statement."""
+    """`cwd` of None omits the payload field. `granted` is whether every hook must print the statement.
+
+    `statement_root` is the repo the expected statement text is generated for, when that
+    cannot be the default repo because the default repo carries an optout the cwd does not see.
+    """
 
     cwd: str | None
     process_cwd: Path
     granted: bool
     env_overrides: dict[str, str]
+    statement_root: Path | None = None
 
 
 def _commit_all(repo: Path, message: str) -> None:
@@ -56,13 +62,8 @@ def _commit_optout(repo: Path) -> None:
     _commit_all(repo, "opt out of autonomous shipping")
 
 
-def _add_linked_worktree(repo: Path, destination: Path) -> Path:
-    subprocess.run(
-        ["git", "worktree", "add", "-q", "-b", "feature", str(destination)],
-        cwd=repo,
-        check=True,
-    )
-    return destination
+def _write_machine_config(armed_home: Path, content: str) -> None:
+    (armed_home / ".claude" / "claude-config.toml").write_text(content)
 
 
 def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: Path) -> Scenario:
@@ -79,7 +80,7 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
         _make_dirty(repo)
         return Scenario(str(subdirectory), non_repo_dir, True, no_env)
     if name == "linked-worktree":
-        linked = _add_linked_worktree(repo, tmp_path / "linked-worktree")
+        linked = add_linked_worktree(repo, tmp_path / "linked-worktree")
         _make_dirty(linked)
         return Scenario(str(linked), non_repo_dir, True, no_env)
     if name == "repo-beneath-home":
@@ -98,6 +99,36 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
         cwd_link = tmp_path / "repo-link"
         cwd_link.symlink_to(repo_beneath_home, target_is_directory=True)
         return Scenario(str(cwd_link), non_repo_dir, True, no_env)
+    if name == "toml-armed-without-the-legacy-file":
+        # The documented arming path is a config-file row, so a hook that only stats the legacy sentinel never announces there.
+        (armed_home / ".claude" / "autonomous-shipping-required").unlink()
+        _write_machine_config(armed_home, "autonomous_shipping = true\n")
+        _make_dirty(repo)
+        return Scenario(str(repo), non_repo_dir, True, no_env)
+    if name == "space-and-non-ascii-in-the-repo-path":
+        try:
+            repo_with_awkward_name = init_git_repo_with_commit(
+                tmp_path / "projects with space" / "répo ünï", branch="main"
+            )
+        except (OSError, UnicodeError) as error:
+            pytest.skip(f"filesystem rejects a space and non-ASCII path: {error}")
+        _make_dirty(repo_with_awkward_name)
+        return Scenario(str(repo_with_awkward_name), non_repo_dir, True, no_env)
+    if name == "untracked-optout-is-absent-from-a-new-worktree":
+        # Pins current behavior: the optout is read from the checked-out tree, so a new worktree does not carry an untracked one.
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "autonomous-shipping-optout").touch()
+        linked = add_linked_worktree(repo, tmp_path / "linked-worktree")
+        _make_dirty(linked)
+        return Scenario(str(linked), non_repo_dir, True, no_env, statement_root=linked)
+    if name == "tracked-optout-deleted-on-the-checked-out-branch":
+        # Pins current behavior: a branch that deletes the tracked optout turns the grant back on for that checkout.
+        _commit_optout(repo)
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+        (repo / ".claude" / "autonomous-shipping-optout").unlink()
+        _commit_all(repo, "delete the optout")
+        _make_dirty(repo)
+        return Scenario(str(repo), non_repo_dir, True, no_env)
     if name == "optout-at-root":
         _commit_optout(repo)
         _make_dirty(repo)
@@ -111,9 +142,14 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
         return Scenario(str(subdirectory), non_repo_dir, False, no_env)
     if name == "optout-with-linked-worktree-cwd":
         _commit_optout(repo)
-        linked = _add_linked_worktree(repo, tmp_path / "linked-worktree")
+        linked = add_linked_worktree(repo, tmp_path / "linked-worktree")
         _make_dirty(linked)
         return Scenario(str(linked), non_repo_dir, False, no_env)
+    if name == "toml-false-with-a-stale-legacy-file":
+        # The legacy file stays in place after an engineer sets the row to false; the row wins.
+        _write_machine_config(armed_home, "autonomous_shipping = false\n")
+        _make_dirty(repo)
+        return Scenario(str(repo), non_repo_dir, False, no_env)
     if name == "root-equal-to-home":
         init_git_repo_with_commit(armed_home, branch="main")
         _make_dirty(armed_home)
@@ -164,9 +200,14 @@ SCENARIO_NAMES = [
     "repo-beneath-home",
     "nested-own-repo-beneath-a-home-rooted-work-tree",
     "symlinked-cwd-to-a-repo-beneath-home",
+    "toml-armed-without-the-legacy-file",
+    "space-and-non-ascii-in-the-repo-path",
+    "untracked-optout-is-absent-from-a-new-worktree",
+    "tracked-optout-deleted-on-the-checked-out-branch",
     "optout-at-root",
     "optout-with-subdirectory-cwd",
     "optout-with-linked-worktree-cwd",
+    "toml-false-with-a-stale-legacy-file",
     "root-equal-to-home",
     "project-below-a-home-rooted-repo",
     "root-is-an-ancestor-of-home",
@@ -195,7 +236,7 @@ def _session_start_statement(hook: Path, source: str, armed_home: Path, scenario
     if not result.stdout:
         return ""
     additional_context = session_start_additional_context(result)
-    start = additional_context.find(STATEMENT_LEAD)
+    start = additional_context.find(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
     return "" if start == -1 else additional_context[start:]
 
 
@@ -225,7 +266,7 @@ def _stop_statement(armed_home: Path, scenario: Scenario) -> str:
     if blocked is None:
         return ""
     reason = blocked["reason"]
-    return reason[reason.find(STATEMENT_LEAD) :]
+    return reason[reason.find(AUTONOMOUS_SHIPPING_STATEMENT_LEAD) :]
 
 
 HOOK_STATEMENTS: dict[str, Callable[[Path, Scenario], str]] = {
@@ -245,6 +286,7 @@ def test_statement_is_printed_only_for_an_eligible_root(
     printed = HOOK_STATEMENTS[hook_name](armed_home, scenario)
 
     if scenario.granted:
-        assert printed.startswith(shipping_statement(tmp_path / "shipping-repo"))
+        statement_root = scenario.statement_root or tmp_path / "shipping-repo"
+        assert printed.startswith(shipping_statement(statement_root))
     else:
         assert printed == ""

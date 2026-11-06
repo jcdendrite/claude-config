@@ -508,7 +508,7 @@ def non_repo_dir(tmp_path):
 
 @pytest.fixture
 def shipping_statement(armed_home):
-    """Returns a callable that prints the text _lib_autonomous_shipping_statement emits for a repo root.
+    """Returns a callable that returns the text _lib_autonomous_shipping_statement emits for a repo root.
     Hook tests compare emitted text against it, so a hook whose text drifts from the helper's fails."""
 
     def statement_for(repo_root: Path) -> str:

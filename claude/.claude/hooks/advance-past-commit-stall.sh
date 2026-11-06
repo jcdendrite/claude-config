@@ -19,9 +19,11 @@
 # strict mode would turn those into premature exits that skip the
 # fail-silent tail.
 #
-# Kill switches: ~/.claude/.commit-stall-block-disabled (always-effective,
-# regardless of sentinel state) and <repo>/.claude/autonomous-shipping-optout
-# (repo-scoped, read via _lib_autonomous_shipping_active).
+# Kill switches: the commit_stall_block config key (`commit_stall_block = false`
+# in <config-dir>/claude-config.toml; the legacy <config-dir>/.commit-stall-block-disabled
+# file counts only while the key has no row there) and
+# <repo>/.claude/autonomous-shipping-optout (repo-scoped, read via
+# _lib_autonomous_shipping_active).
 #
 # STATE_DIR gets a 30-day eviction sweep on every fire, since state files are
 # themselves only ever written here — no SessionEnd hook cleans them up.
@@ -65,7 +67,7 @@ case "$?" in
   *) ;;
 esac
 
-# 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
+# 3. Machine-sentinel fast path: the cheap (no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9
 # below. This fast path delegates to _lib_autonomous_shipping_sentinel_present,
 # which unions the resolved config dir with the legacy ~/.claude location the
@@ -80,7 +82,10 @@ _lib_autonomous_shipping_sentinel_present || exit 0
 # multi-field read. Pre-initialized so a failed read leaves empty strings, not
 # unbound variables.
 # last_assistant_message stays the last field and is read to EOF, because it can span lines.
-# It is read with $(cat), because `read -d ''` reads a pipe byte by byte and is slow on a large message.
+# It is read with $(cat), because `read -d ''` is expected to read a pipe byte by byte, which is slow on a large message.
+# A newline inside a field would shift the later fields of the line-oriented read.
+# A .cwd that is not a single-line string is blanked, which step 9 denies.
+# Any other header field that is not a single-line string empties every field, which gate 5 denies.
 SESSION_ID=""
 AGENT_TYPE=""
 PERMISSION_MODE=""
@@ -95,8 +100,12 @@ LAST_ASSISTANT_MESSAGE=""
   IFS= read -r CWD
   LAST_ASSISTANT_MESSAGE=$(cat)
 } < <(
+  # shellcheck disable=SC2016 # single-quoted on purpose: $headers and $cwd are jq variable bindings, not shell variables.
   printf '%s\n' "$INPUT" \
-    | _lib_jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.prompt_id // ""),(.cwd // ""),(.last_assistant_message // "")' \
+    | _lib_jq -r 'def single_line: type == "string" and (contains("\n") | not);
+        [(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.prompt_id // "")] as $headers
+        | ((.cwd // "") | if single_line then . else "" end) as $cwd
+        | if ($headers | all(single_line)) then ($headers[], $cwd, (.last_assistant_message // "")) else empty end' \
     2>/dev/null
 ) 2>/dev/null || true
 
@@ -135,7 +144,7 @@ STATE_FILE="${STATE_DIR}/${SESSION_ID}"
 PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 [ "$PREVIOUSLY_FIRED_PROMPT_ID" = "$PROMPT_ID" ] && exit 0
 
-# Pattern removal over a long last line is slow, so only the message's tail is scanned; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
+# Pattern removal over a long last line is expected to be slow, so only the message's tail is scanned; see docs/design-decisions/autonomous-shipping-state-in-hook-context.md.
 # A last sentence longer than the window is judged on its final ASK_WINDOW_CHARS characters.
 ASK_WINDOW_CHARS=2048
 if [ "${#LAST_ASSISTANT_MESSAGE}" -gt "$ASK_WINDOW_CHARS" ]; then
@@ -187,7 +196,10 @@ fi
 # 9. Repo root + machine-anchored opt-in. The root comes from the payload's cwd
 # alone, with no $PWD fallback (see _lib_autonomous_shipping_root_for_cwd);
 # the regex above already filtered out most non-firing turns.
-REPO_ROOT=$(_lib_autonomous_shipping_root_for_cwd "$CWD") || exit 0
+REPO_ROOT=$(_lib_autonomous_shipping_root_for_cwd "$CWD") || {
+  printf 'root-denied session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
+  exit 0
+}
 SHIPPING_STATEMENT=$(_lib_autonomous_shipping_statement "$REPO_ROOT") || exit 0
 
 # 10. Work pending: dirty tree, HEAD ahead of its configured upstream, or —
@@ -232,7 +244,7 @@ WRITTEN_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 printf 'fired session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
 
-REASON="$SHIPPING_STATEMENT Unless the engineer has stated a hold, continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: touch ~/.claude/.commit-stall-block-disabled. To disable it for this repo: add .claude/autonomous-shipping-optout."
+REASON="$SHIPPING_STATEMENT Unless the engineer has stated a hold, continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
 
 # Mirrors _lib_emit_allow_with_context's gated-encode shape:
 # an empty REASON_JSON exits before printing, avoiding the malformed

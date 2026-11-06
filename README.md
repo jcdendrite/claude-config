@@ -375,6 +375,8 @@ To exempt a specific repo:
 mkdir -p .claude && touch .claude/autonomous-shipping-optout
 ```
 
+The optout lives in the checked-out tree, so any branch, fresh worktree or fresh clone can revoke it: an untracked file is absent from a new worktree, and a tracked file is gone once the checked-out branch deletes it. It is not a guard against untrusted checkouts.
+
 See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire predicate, in-session recovery, log format, and known limitations.
 
 ### PR cost disclosure

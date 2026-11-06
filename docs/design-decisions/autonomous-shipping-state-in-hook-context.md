@@ -30,13 +30,14 @@ The statement restates `CLAUDE.md` § "Shipping" on purpose. Hook context has to
 It names the resolver script as its source and does not tell the agent to skip `CLAUDE.md`'s verify step.
 It never overrides an engineer's specific hold or an instruction given in the current session, and it covers only committing, a plain push of the current branch and opening a PR.
 
-The Stop hook reads the whole message with `$(cat)`, because `read -d ''` reads a pipe one byte at a time.
+The Stop hook reads the whole message with `$(cat)`, because `read -d ''` is expected to read a pipe one byte at a time.
 It judges the last sentence of the last non-blank line.
-It scans only the last 2048 characters of the message, because Bash's `##` and `%` pattern removal over one long line takes time quadratic in its length.
+It scans only the last 2048 characters of the message, because Bash's `##` and `%` pattern removal over one long line is expected to take time quadratic in its length.
+Neither expectation was measured here.
 2048 is a chosen bound on the length of an ask sentence, not a measured knee.
 
 `/handoff` and `/brief` each gain one exception sentence, so a continuity file stops filing a plain commit, push or PR under pending authorization when the filed step names the resumer's own `autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold.
-A resuming session reads the file's authorization line as its brief, and a blanket "push and PR are not authorized" line there recreated the incident's failure through a different channel.
+A resuming session reads the file's authorization line as its brief, and a blanket "push and PR are not authorized" line there would recreate the incident's failure through a different channel.
 
 ## Why hook context instead of CLAUDE.md prose
 

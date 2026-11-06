@@ -66,10 +66,10 @@ Column legend:
   delegates to them, and so does the sentinel fast path of
   `advance-past-commit-stall.sh`, `announce-autonomous-shipping.sh` and
   `restore-authorization-boundary-on-compact.sh`.
-  `_lib_autonomous_shipping_statement` is called by those same three hooks.
   `_lib_autonomous_shipping_sentinel_present` is a thin
   zero-arity wrapper over `_config_enabled autonomous_shipping`, with no
   raw-path probe of its own.
+  `_lib_autonomous_shipping_statement` is called by those same three hooks.
 - Resolution: **config-dir-or-home**. `_config_enabled` reads this from
   `autonomous_shipping`'s `resolution` column and unions the resolved
   config dir with the literal `$HOME/.claude`, the same generic union

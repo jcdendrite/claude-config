@@ -18,7 +18,7 @@ printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cl
 - `permission_mode` is not `plan`.
 - `prompt_id` differs from the last one this hook fired on for this session — at most one forced continuation per user turn.
 - The **final sentence** of the last assistant message (the last sentence of its last non-blank line) asks permission to commit, push, or open a PR (case-insensitive phrasing match: "want me to", "should I", "shall I", and similar, paired with commit/push/open a PR), and that sentence does not also carry an exclusion phrase (`merge`, `--force`, `failing`, `blocked`, and similar).
-- The repo comes from the payload's `.cwd` through `_lib_autonomous_shipping_root_for_cwd` in `_lib.sh`, which defines which roots are eligible.
+- The repo comes from the payload's `.cwd` through `_lib_autonomous_shipping_root_for_cwd` in `_lib.sh`, which defines which roots are eligible. A `.cwd` containing a newline counts as absent, so the hook stays silent. A newline in `session_id`, `agent_type`, `permission_mode` or `prompt_id` also leaves the hook silent.
 - `_lib_autonomous_shipping_active` holds for the resolved repo — the machine-level `autonomous_shipping` config key above resolves true, and the repo carries no `.claude/autonomous-shipping-optout`.
 - Work is actually pending: a dirty tree, HEAD ahead of its configured upstream, or (the common state before a branch's first push) no upstream configured at all.
 
@@ -46,7 +46,7 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 
 **Everywhere:** turn off the machine-level `autonomous_shipping` config key (`printf 'autonomous_shipping = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`).
 
-The `commit_stall_block` switch and `.commit-stall-block-disabled` silence only this Stop hook. The SessionStart statement keeps telling the agent not to ask until `autonomous_shipping` is off or the repo carries the optout.
+The `commit_stall_block` switch and `.commit-stall-block-disabled` silence only this Stop hook. The legacy file counts only while `claude-config.toml` has no `commit_stall_block` row, so on a machine whose config file has the row, touching the file changes nothing. The SessionStart statement keeps telling the agent not to ask until `autonomous_shipping` is off or the repo carries the optout.
 
 ## Fire predicate and the exclusion-window tradeoff
 
@@ -55,7 +55,7 @@ The fire and exclusion regexes both scan only the **final sentence** of the last
 - If the exclusion regex scanned the whole message, "Fixed the failing test in the parser. Want me to commit this…?" — the modal shape after a routine bug-fix task — would never fire, because "failing" appears in an earlier sentence. That's the primary case this hook exists to catch; over-suppressing it defeats the fix.
 - Scoped to the final sentence, an earlier-sentence failure signal can be missed instead — but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
 - A line break ends a sentence. The window is the last sentence of the last non-blank line, so a message that is a heading, bullets, then a closing question is judged on the question alone.
-- Only the last 2048 characters of the message are scanned (`ASK_WINDOW_CHARS` in the hook), because bash pattern removal over a long last line is slow (see [the design record](design-decisions/autonomous-shipping-state-in-hook-context.md)). A last sentence longer than that is judged on its final 2048 characters, so an exclusion word earlier in it is not seen.
+- Only the last 2048 characters of the message are scanned (`ASK_WINDOW_CHARS` in the hook), because bash pattern removal over a long last line is expected to be slow, though that was not measured (see [the design record](design-decisions/autonomous-shipping-state-in-hook-context.md)). A last sentence longer than that is judged on its final 2048 characters, so an exclusion word earlier in it is not seen.
 
 ## Log location
 
@@ -66,6 +66,7 @@ The hook appends one line per significant event to `<config-dir>/.commit-stall-b
 | `fired session=<id> prompt=<id>` | The hook blocked the turn from ending |
 | `phrasing-drift session=<id> prompt=<id>` | The final sentence matched the permission-verb half of the fire pattern (`want me to`, `should I`, etc.) but not the object half (`commit`, `push`, `open a PR`) — the only signal that catches a future rewording of the stall without logging on nearly every non-matching turn |
 | `schema-drift session=<id> field=prompt_id` | `prompt_id` was absent from the Stop payload |
+| `root-denied session=<id> prompt=<id>` | The final sentence matched the fire pattern with no exclusion phrase, but `_lib_autonomous_shipping_root_for_cwd` rejected the payload's `.cwd`, so the hook stayed silent |
 
 The log is append-only and not rotated automatically. Trim it periodically if disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block.log"`.
 

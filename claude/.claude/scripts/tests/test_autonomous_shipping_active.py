@@ -13,10 +13,11 @@ import os
 import subprocess
 from pathlib import Path
 
+from helpers import run_autonomous_shipping_root_for_cwd
+
 from .conftest import _init_repo
 
 _SCRIPT = Path(__file__).parent.parent / "autonomous-shipping-active.sh"
-_HOOKS_LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
 
 
 def _run_script(repo: Path, config_dir: Path, *, home: Path) -> subprocess.CompletedProcess:
@@ -132,13 +133,7 @@ class TestAutonomousShippingActive:
         (config_dir / "autonomous-shipping-required").touch()
 
         script_result = _run_script(home_repo, config_dir, home=home_repo)
-        root_helper_result = subprocess.run(
-            ["bash", "-c", f'. {_HOOKS_LIB_SH}; _lib_autonomous_shipping_root_for_cwd "$1"', "bash", str(home_repo)],
-            env={"PATH": os.environ["PATH"], "HOME": str(home_repo)},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        root_helper_result = run_autonomous_shipping_root_for_cwd(home_repo, str(home_repo))
 
         assert script_result.returncode == 0
         assert root_helper_result.returncode == 1

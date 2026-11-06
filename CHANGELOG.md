@@ -637,6 +637,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Scan window:** it scans only the last 2048 characters of the message.
   - **Repo resolution:** it resolves the repo from the payload's `cwd` alone, with no `$PWD` fallback.
   - **Rooted at `$HOME`:** the hook no longer fires for a repo rooted at `$HOME` or above it, because no statement is printed for such a repo.
+  - **Kill switch:** the block reason names the `commit_stall_block = false` config row as the switch, because the legacy `.commit-stall-block-disabled` file does nothing once `claude-config.toml` holds a `commit_stall_block` row.
+  - **Newline in `cwd`:** a payload whose `cwd` contains a newline fails closed, so the hook does not fire.
+  - **Log:** a fire that the repo-root rule denies writes a `root-denied` line to `.commit-stall-block.log`.
 - **`review-round-cost` and `review-cost-by-size` now exclude a turn whose usage is not an object or whose token fields are not non-negative integers.**
   - **Excluded:** before, such a turn raised, priced negative, or had a float, boolean or numeric-string count coerced to an integer.
   - **Unpriced:** a turn whose `message.model` is a JSON array or object is now priced as unpriced instead of raising.

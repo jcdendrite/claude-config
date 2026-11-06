@@ -10,7 +10,12 @@ import os
 import subprocess
 from pathlib import Path
 
-from helpers import init_git_repo_with_commit, run_autonomous_shipping_statement
+from helpers import (
+    AUTONOMOUS_SHIPPING_STATEMENT_LEAD,
+    init_git_repo_with_commit,
+    run_autonomous_shipping_root_for_cwd,
+    run_autonomous_shipping_statement,
+)
 
 from ._lib_sh_helpers import _LIB_SH
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
@@ -666,6 +671,12 @@ class TestAutonomousShippingStatement:
             assert expected_phrase in result.stdout
         assert "gh pr merge" not in result.stdout
 
+    def test_statement_opens_with_the_shared_lead_constant(self, tmp_path: Path) -> None:
+        """The hook tests search for the constant, so it must track the emitted text."""
+        home, repo = self._armed_home_and_repo(tmp_path)
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.stdout.startswith(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
+
     def test_statement_has_no_trailing_newline(self, tmp_path: Path) -> None:
         home, repo = self._armed_home_and_repo(tmp_path)
         result = run_autonomous_shipping_statement(home, str(repo))
@@ -702,28 +713,6 @@ class TestAutonomousShippingStatement:
 # same cases through each hook; these pin the function's own contract.
 
 
-def _root_for_cwd(
-    home: Path | str | None, *args: str, process_cwd: Path | None = None
-) -> subprocess.CompletedProcess:
-    env = {"PATH": os.environ["PATH"]}
-    if home is not None:
-        env["HOME"] = str(home)
-    return subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'. {_LIB_SH}; _lib_autonomous_shipping_root_for_cwd "$@"',
-            "bash",
-            *args,
-        ],
-        capture_output=True,
-        text=True,
-        cwd=process_cwd,
-        env=env,
-        check=False,
-    )
-
-
 class TestAutonomousShippingRootForCwd:
     @staticmethod
     def _home_and_repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -736,26 +725,26 @@ class TestAutonomousShippingRootForCwd:
         home, repo = self._home_and_repo(tmp_path)
         subdirectory = repo / "pkg" / "inner"
         subdirectory.mkdir(parents=True)
-        result = _root_for_cwd(home, str(subdirectory))
+        result = run_autonomous_shipping_root_for_cwd(home, str(subdirectory))
         assert result.returncode == 0
         assert Path(result.stdout).resolve() == repo.resolve()
 
     def test_rejects_wrong_argument_count(self, tmp_path: Path) -> None:
         home, repo = self._home_and_repo(tmp_path)
         for args in ((), (str(repo), "extra")):
-            result = _root_for_cwd(home, *args)
+            result = run_autonomous_shipping_root_for_cwd(home, *args)
             assert result.returncode == 1, args
             assert result.stdout == "", args
 
     def test_rejects_empty_cwd(self, tmp_path: Path) -> None:
         home, _ = self._home_and_repo(tmp_path)
-        result = _root_for_cwd(home, "")
+        result = run_autonomous_shipping_root_for_cwd(home, "")
         assert result.returncode == 1
         assert result.stdout == ""
 
     def test_rejects_relative_cwd_that_resolves_to_a_repo(self, tmp_path: Path) -> None:
         home, repo = self._home_and_repo(tmp_path)
-        result = _root_for_cwd(home, ".", process_cwd=repo)
+        result = run_autonomous_shipping_root_for_cwd(home, ".", process_cwd=repo)
         assert result.returncode == 1
         assert result.stdout == ""
 
@@ -763,16 +752,16 @@ class TestAutonomousShippingRootForCwd:
         home, _ = self._home_and_repo(tmp_path)
         outside = tmp_path / "outside"
         outside.mkdir()
-        result = _root_for_cwd(home, str(outside))
+        result = run_autonomous_shipping_root_for_cwd(home, str(outside))
         assert result.returncode == 1
         assert result.stdout == ""
 
     def test_rejects_unset_and_empty_home(self, tmp_path: Path) -> None:
         _, repo = self._home_and_repo(tmp_path)
-        unset_home = _root_for_cwd(None, str(repo))
+        unset_home = run_autonomous_shipping_root_for_cwd(None, str(repo))
         assert unset_home.returncode == 1
         assert unset_home.stdout == ""
-        empty_home = _root_for_cwd("", str(repo))
+        empty_home = run_autonomous_shipping_root_for_cwd("", str(repo))
         assert empty_home.returncode == 1
         assert empty_home.stdout == ""
 
@@ -782,14 +771,14 @@ class TestAutonomousShippingRootForCwd:
         project = home / "project"
         project.mkdir()
         for cwd in (home, project):
-            result = _root_for_cwd(home, str(cwd))
+            result = run_autonomous_shipping_root_for_cwd(home, str(cwd))
             assert result.returncode == 1, cwd
             assert result.stdout == "", cwd
 
     def test_rejects_root_that_is_an_ancestor_of_home(self, tmp_path: Path) -> None:
         home, _ = self._home_and_repo(tmp_path)
         init_git_repo_with_commit(tmp_path, branch="main")
-        result = _root_for_cwd(home, str(home))
+        result = run_autonomous_shipping_root_for_cwd(home, str(home))
         assert result.returncode == 1
         assert result.stdout == ""
 
@@ -800,7 +789,7 @@ class TestAutonomousShippingRootForCwd:
         removed_worktree = tmp_path / "removed-worktree"
         removed_worktree.mkdir()
         removed_worktree.rmdir()
-        result = _root_for_cwd(home, str(removed_worktree), process_cwd=repo)
+        result = run_autonomous_shipping_root_for_cwd(home, str(removed_worktree), process_cwd=repo)
         assert result.returncode == 1
         assert result.stdout == ""
 
@@ -812,7 +801,7 @@ class TestAutonomousShippingRootForCwd:
         physical_home.mkdir()
         home_link = tmp_path / "home-link"
         home_link.symlink_to(physical_home, target_is_directory=True)
-        result = _root_for_cwd(home_link, str(work_tree))
+        result = run_autonomous_shipping_root_for_cwd(home_link, str(work_tree))
         assert result.returncode == 1
         assert result.stdout == ""
 
@@ -820,7 +809,7 @@ class TestAutonomousShippingRootForCwd:
         home = tmp_path / "home"
         home.mkdir()
         repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
-        result = _root_for_cwd(home, str(repo))
+        result = run_autonomous_shipping_root_for_cwd(home, str(repo))
         assert result.returncode == 0
         assert Path(result.stdout).resolve() == repo.resolve()
 
@@ -831,7 +820,7 @@ class TestAutonomousShippingRootForCwd:
         home.mkdir()
         init_git_repo_with_commit(home, branch="main")
         nested_repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
-        result = _root_for_cwd(home, str(nested_repo))
+        result = run_autonomous_shipping_root_for_cwd(home, str(nested_repo))
         assert result.returncode == 0
         assert Path(result.stdout).resolve() == nested_repo.resolve()
 
@@ -841,7 +830,7 @@ class TestAutonomousShippingRootForCwd:
         repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
         cwd_link = tmp_path / "repo-link"
         cwd_link.symlink_to(repo, target_is_directory=True)
-        result = _root_for_cwd(home, str(cwd_link))
+        result = run_autonomous_shipping_root_for_cwd(home, str(cwd_link))
         assert result.returncode == 0
         assert Path(result.stdout).resolve() == repo.resolve()
 
@@ -851,7 +840,7 @@ class TestAutonomousShippingRootForCwd:
         home = tmp_path / "home"
         home.mkdir()
         sibling_repo = init_git_repo_with_commit(tmp_path / "home-projects", branch="main")
-        result = _root_for_cwd(home, str(sibling_repo))
+        result = run_autonomous_shipping_root_for_cwd(home, str(sibling_repo))
         assert result.returncode == 0
         assert Path(result.stdout).resolve() == sibling_repo.resolve()
 

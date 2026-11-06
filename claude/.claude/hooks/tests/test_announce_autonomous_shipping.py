@@ -11,29 +11,29 @@ so it cannot use run_hook_session_start.
 from __future__ import annotations
 
 import functools
-import json
 import os
 import shutil
 import stat
-import subprocess
 from pathlib import Path
 
 import pytest
 from helpers import (
+    AUTONOMOUS_SHIPPING_STATEMENT_LEAD,
     HOOKS_DIR,
+    add_linked_worktree,
     build_path_without,
+    hook_beside_degraded_schema,
     run_additional_context_session_start_hook,
     session_start_additional_context,
+    session_start_matchers_registering,
     session_start_registered_timeouts,
 )
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-autonomous-shipping.sh"
-SETTINGS_JSON = HOOKS_DIR.parent / "settings.json"
 EMITTING_SOURCES = ["startup", "resume", "clear"]
 
 
 _run_hook = functools.partial(run_additional_context_session_start_hook, ANNOUNCE_HOOK)
-STATEMENT_LEAD = "Autonomous shipping is active for this repository"
 
 
 class TestAnnounceAutonomousShipping:
@@ -59,12 +59,7 @@ class TestAnnounceAutonomousShipping:
     def test_linked_worktree_cwd_emits(
         self, armed_home, shipping_repo, non_repo_dir, tmp_path, shipping_statement
     ):
-        linked_worktree = tmp_path / "linked-worktree"
-        subprocess.run(
-            ["git", "worktree", "add", "-q", "-b", "feature", str(linked_worktree)],
-            cwd=shipping_repo,
-            check=True,
-        )
+        linked_worktree = add_linked_worktree(shipping_repo, tmp_path / "linked-worktree")
         result = _run_hook(
             {"source": "resume", "cwd": str(linked_worktree)}, armed_home, process_cwd=non_repo_dir
         )
@@ -129,7 +124,7 @@ class TestAnnounceAutonomousShipping:
             extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
         )
         assert result.returncode == 0
-        assert session_start_additional_context(result).startswith(STATEMENT_LEAD)
+        assert session_start_additional_context(result).startswith(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
 
     def test_sentinel_only_under_legacy_home_dir_emits_when_config_dir_is_empty(
         self, armed_home, shipping_repo, non_repo_dir, tmp_path, shipping_statement
@@ -175,6 +170,29 @@ class TestAnnounceAutonomousShipping:
             armed_home,
             process_cwd=non_repo_dir,
             extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+        )
+        assert result.returncode == 0
+        assert result.stdout == b""
+
+    def test_armed_machine_with_an_unrelated_schema_row_missing_still_announces(
+        self, armed_home, shipping_repo, non_repo_dir, tmp_path
+    ):
+        """Control for the degraded-schema rows below: the same directory shape announces when only an unread row is gone."""
+        working_hook = hook_beside_degraded_schema(tmp_path, ANNOUNCE_HOOK, schema_without_key="commit_stall_block")
+        result = run_additional_context_session_start_hook(
+            working_hook, {"source": "startup", "cwd": str(shipping_repo)}, armed_home, process_cwd=non_repo_dir
+        )
+        assert result.returncode == 0
+        assert session_start_additional_context(result).startswith(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
+
+    @pytest.mark.parametrize("schema_without_key", [None, "autonomous_shipping"], ids=["schema-absent", "row-missing"])
+    def test_armed_machine_with_a_degraded_schema_stays_silent(
+        self, armed_home, shipping_repo, non_repo_dir, tmp_path, schema_without_key
+    ):
+        """autonomous_shipping fails toward not shipping, so a torn config-keys.psv must not announce on an armed machine."""
+        degraded_hook = hook_beside_degraded_schema(tmp_path, ANNOUNCE_HOOK, schema_without_key=schema_without_key)
+        result = run_additional_context_session_start_hook(
+            degraded_hook, {"source": "startup", "cwd": str(shipping_repo)}, armed_home, process_cwd=non_repo_dir
         )
         assert result.returncode == 0
         assert result.stdout == b""
@@ -229,43 +247,22 @@ class TestAnnounceAutonomousShipping:
 
 
 class TestAnnounceHookRegistration:
-    @staticmethod
-    def _session_start_commands_by_matcher() -> dict[str, list[str]]:
-        groups = json.loads(SETTINGS_JSON.read_text())["hooks"]["SessionStart"]
-        commands_by_matcher: dict[str, list[str]] = {}
-        for group in groups:
-            for hook in group["hooks"]:
-                commands_by_matcher.setdefault(group.get("matcher", ""), []).append(hook["command"])
-        return commands_by_matcher
-
     def test_registered_once_on_startup_resume_clear(self):
-        registrations = [
-            (matcher, command)
-            for matcher, commands in self._session_start_commands_by_matcher().items()
-            for command in commands
-            if command.endswith("/announce-autonomous-shipping.sh")
-        ]
-        assert [matcher for matcher, _ in registrations] == ["startup|resume|clear"]
+        assert session_start_matchers_registering("announce-autonomous-shipping.sh") == ["startup|resume|clear"]
 
     def test_registered_with_a_ten_second_timeout(self):
         """The harness default is 600 s (docs/hooks.md § "Gate deadlock recovery"), so the registered cap is the binding bound."""
         assert session_start_registered_timeouts("announce-autonomous-shipping.sh") == [10]
 
     def test_matcher_sources_are_disjoint_from_the_compact_hook(self):
-        commands_by_matcher = self._session_start_commands_by_matcher()
         announce_sources = {
             source
-            for matcher, commands in commands_by_matcher.items()
-            if any(command.endswith("/announce-autonomous-shipping.sh") for command in commands)
+            for matcher in session_start_matchers_registering("announce-autonomous-shipping.sh")
             for source in matcher.split("|")
         }
         compact_sources = {
             source
-            for matcher, commands in commands_by_matcher.items()
-            if any(
-                command.endswith("/restore-authorization-boundary-on-compact.sh")
-                for command in commands
-            )
+            for matcher in session_start_matchers_registering("restore-authorization-boundary-on-compact.sh")
             for source in matcher.split("|")
         }
         assert announce_sources
