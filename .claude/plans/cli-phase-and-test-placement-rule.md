@@ -42,9 +42,10 @@ PR 1 moves every test out of `test_transcript_analysis.py` (below, L) into the f
 - `test_transcript_package_module_prefixes.py`: in `TEST_FILES`, replace the `"test_transcript_analysis.py"` entry with `"test_transcript_cli.py"`, then append `"test_transcript_analysis_multi_root_scope.py"` and `"test_transcript_subagents_format_drift.py"`. That takes it from 66 entries to 68 (row 12).
 - Nothing else changes in this commit. Authored text waits for commit 3, so commit 2's proofs expect no finding beyond imports (M6).
 
-**PR 1 commit 2b, two no-warning tests (row 36).** After commit 2, `tests/test_transcript_skill_pair.py` gains two methods at the end of `TestSkillPairFormatDriftCanary`: `test_no_warning_in_skill_pair_without_spawns` and `test_no_warning_in_skill_pair_with_spawn_and_real_sidechain_turn`. Their text is the scratch patch `<scratch>/r2-skill-pair-tests.patch`, which commit 2's review round drafted and the parent set aside so commit 2 stayed a pure move. They mirror the cache-efficiency canary's no-warning cases. The class had only the warning-fires case. A missing patch stops the run, and none is rewritten from memory.
+**PR 1 commit 2b, two no-warning tests (row 36).** After commit 2, `tests/test_transcript_skill_pair.py` gains two methods at the end of `TestSkillPairFormatDriftCanary`: `test_no_warning_in_skill_pair_without_spawns` and `test_no_warning_in_skill_pair_with_spawn_and_real_sidechain_turn`. Their text is the scratch patch `<scratch>/r2-skill-pair-tests.patch`. Commit 2's review round drafted it, and the parent set it aside so commit 2 stayed a pure move. They mirror the cache-efficiency canary's no-warning cases. The class had only the warning-fires case. A missing patch stops the run, and none is rewritten from memory.
 
-**PR 1 commit 3, authored text.** Every `:N` line number in this commit is from 0a66c019. Later edits moved them: origin/main's moved the architecture doc's by 6 and `select-tests.py`'s by 1, and commit 1's rewrite of the :913-914 sentence moved the doc's later lines by 2 more. Each edit matches by its quoted text, never by number.
+**PR 1 commit 3, authored text.** Match each edit by its quoted text, never by `:N` line number. Every `:N` in this commit is from 0a66c019, and later edits moved them. origin/main's edits moved the architecture doc's lines by 6. They moved `select-tests.py`'s lines by 1. Commit 1's rewrite of the :913-914 sentence moved the doc's later lines by 2 more.
+
 - **The rule file**, `.claude/rules/transcript-analysis-tests.md` (M8). It holds the fenced frontmatter below, a blank line, the heading line `## Where a transcript-analysis test goes`, a blank line, then the fenced body below. Write it exactly as given.
 
 ```markdown
@@ -80,8 +81,9 @@ oracle to agree with, is not its subject.
   `tests/test_transcript_shared_fixtures.py`.
 
 No test file is a catch-all named for the tool as a whole.
-`tests/test_transcript_analysis_module_test_files.py` fails when a package module has neither a test file
-named for it nor an entry in that file's `MODULES_TESTED_ELSEWHERE`.
+`tests/test_transcript_analysis_module_test_files.py` fails when a test file is named
+`test_transcript_analysis.py`, or when a package module has neither a test file named for it nor a
+`MODULES_TESTED_ELSEWHERE` entry.
 
 **Size.** `docs/design-decisions/code-file-line-limit.md` sets the line limit, for test files as for code.
 A test file that would cross it splits at a named seam, and the new file's suffix names that seam. Never
@@ -89,28 +91,34 @@ split by position, as in `_part2`.
 ```
 
 - **The structural test**, `tests/test_transcript_analysis_module_test_files.py` (M9).
-  - Its docstring is `"""Pins that every transcript_analysis module has a test file named for it, or a MODULES_TESTED_ELSEWHERE entry naming the file that tests it. The match is by file name only and does not show that the file covers the module."""`, wrapped under ruff's 130-column line length.
+  - Its docstring is `"""Pins that every transcript_analysis module has a test file named for it, or a MODULES_TESTED_ELSEWHERE entry naming the file that tests it. The match is by file name only and does not show that the file covers the module. Also pins that test_transcript_analysis.py, the catch-all named for the tool as a whole, does not exist."""`, wrapped under ruff's 130-column line length.
   - `MODULES_TESTED_ELSEWHERE` maps `"author_outcome"` to `"test_author_outcome.py"`, `"cache_rebuild_rules"` to `"test_transcript_cache_rebuild_ttl_rules.py"`, and `"sessions"` to `"test_transcript_analysis_multi_root_scope.py"` (row 23). The one comment above it reads `# Modules whose tests live in a file named for something else, mapped to that file.`
   - Listing helpers, the only functions that read the tree:
     - `_package_module_names()` returns the stems of `transcript_analysis/*.py` other than `__init__`.
     - `_transcript_test_stems()` returns the stems of `tests/test_transcript_*.py`.
     - `_test_file_names()` returns the names of the files in `tests/`.
-  - Pure functions, which take every input as an argument and read nothing from disk. The two `_violations` functions follow `rule_frontmatter_violations` (row 34): each returns a list of violation strings, empty when its input passes.
+  - `CATCH_ALL_TEST_FILE_NAME` is `"test_transcript_analysis.py"`, the one stem the placement rule bars. The `test_transcript_analysis_<invariant>.py` family stays legal.
+  - Pure functions, which take every input as an argument and read nothing from disk. The three `_violations` functions follow `rule_frontmatter_violations` (row 34): each returns a list of violation strings, empty when its input passes.
     - `_owning_module(test_stem, module_names)` returns the longest module name `m` for which `test_stem` is `test_transcript_<m>` or starts with `test_transcript_<m>_`, and `None` when no module matches. Its result must not depend on the order of `module_names`.
     - `_owned_modules(test_stems, module_names)` returns the set of non-`None` owners of `test_stems`.
     - `_unnamed_module_violations(module_names, test_stems, entries)` returns one string per module that is neither owned nor a key of `entries`. Each names the module and both remedies.
     - `_entry_violations(module_names, test_stems, entries, test_file_names)` returns one string per key that is not a module, per key that is owned, and per value that `test_file_names` lacks. Each names the key or the value.
-  - It has eight tests. The first two run against the real tree, passing the listing helpers' results and `MODULES_TESTED_ELSEWHERE`:
+    - `_catch_all_violations(test_file_names)` returns one string per name equal to `CATCH_ALL_TEST_FILE_NAME`.
+  - It has twelve test functions, which collect as thirteen items because test 3 is parametrized. Tests 1, 2 and 10 run against the real tree, passing the listing helpers' results and `MODULES_TESTED_ELSEWHERE`:
     1. `test_every_package_module_has_a_named_test_file_or_an_entry` asserts `_unnamed_module_violations` returns `[]`.
     2. `test_every_entry_names_a_module_with_no_named_file_and_an_existing_test_file` asserts `_entry_violations` returns `[]`.
     3. `test_owning_module_takes_the_longest_matching_module_name` is parametrized over two module-name lists, `["cost", "cost_ledger", "pr_cost"]` and `["cost_ledger", "pr_cost", "cost"]`, so the shorter name comes both first and last. For each list it expects `cost_ledger` for `test_transcript_cost_ledger_record_gates`, `cost` for `test_transcript_cost_counts`, `pr_cost` for `test_transcript_pr_cost`, and `None` for both `test_transcript_costly` and `test_transcript_analysis_branch_attribution`.
     4. `test_package_directory_is_not_empty` is the non-vacuity guard: both the real module set and the real owned set are non-empty.
     5. `test_module_with_no_test_file_and_no_entry_is_reported`: module names `["alpha"]`, no test stems, no entries. `_unnamed_module_violations` returns exactly one string, naming `alpha`.
-    6. `test_entry_whose_key_is_not_a_module_is_reported`: module names `["alpha"]`, test stems `["test_transcript_alpha"]`, entries `{"beta": "test_beta_elsewhere.py"}`, file names `["test_transcript_alpha.py", "test_beta_elsewhere.py"]`. `_entry_violations` returns exactly one string, naming `beta`.
-    7. `test_entry_whose_key_is_owned_is_reported`: module names `["alpha"]`, test stems `["test_transcript_alpha"]`, entries `{"alpha": "test_alpha_elsewhere.py"}`, file names `["test_transcript_alpha.py", "test_alpha_elsewhere.py"]`. `_entry_violations` returns exactly one string, naming `alpha`.
-    8. `test_entry_whose_test_file_is_missing_is_reported`: module names `["alpha"]`, no test stems, entries `{"alpha": "test_alpha_elsewhere.py"}`, no file names. `_entry_violations` returns exactly one string, naming `test_alpha_elsewhere.py`.
+    6. `test_module_whose_name_prefixes_an_owned_module_is_still_reported`: module names `["cost", "cost_ledger"]`, test stems `["test_transcript_cost_ledger_record_gates"]`, no entries. `_unnamed_module_violations` returns exactly one string, naming `transcript_analysis/cost.py` and not `cost_ledger`.
+    7. `test_entry_whose_key_is_not_a_module_is_reported`: module names `["alpha"]`, test stems `["test_transcript_alpha"]`, entries `{"beta": "test_beta_elsewhere.py"}`, file names `["test_transcript_alpha.py", "test_beta_elsewhere.py"]`. `_entry_violations` returns exactly one string, naming `beta`.
+    8. `test_entry_whose_key_is_owned_is_reported`: module names `["alpha"]`, test stems `["test_transcript_alpha"]`, entries `{"alpha": "test_alpha_elsewhere.py"}`, file names `["test_transcript_alpha.py", "test_alpha_elsewhere.py"]`. `_entry_violations` returns exactly one string, naming `alpha`.
+    9. `test_entry_whose_test_file_is_missing_is_reported`: module names `["alpha"]`, no test stems, entries `{"alpha": "test_alpha_elsewhere.py"}`, no file names. `_entry_violations` returns exactly one string, naming `test_alpha_elsewhere.py`.
+    10. `test_catch_all_test_file_is_absent` asserts `_catch_all_violations` returns `[]` for the real tree's file names.
+    11. `test_catch_all_test_file_is_reported`: file names `["test_transcript_cli.py", "test_transcript_analysis.py"]`. `_catch_all_violations` returns exactly one string, naming `test_transcript_analysis.py`.
+    12. `test_invariant_test_file_is_not_reported_as_a_catch_all`: file names `["test_transcript_analysis_multi_root_scope.py"]`. `_catch_all_violations` returns `[]`.
 
-    Each synthetic input in tests 5-8 trips one branch only, so "exactly one" also shows the other branches stay quiet on it.
+    Each synthetic input in tests 5-9 and 11 trips one branch only, so "exactly one" also shows the other branches stay quiet on it.
 - **`docs/transcript-analysis-architecture.md` § "Tests"** (row 15). The section stays a catalog. Each edit below anchors on content and rewraps only the lines it touches.
   - Right under the heading, add `` `.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where the existing tests live. ``
   - After that paragraph, add a paragraph that names the seven tests M3 leaves in the cli file as exceptions to the rule (row 8). Its lead line is "`tests/test_transcript_cli.py` holds seven tests that are exceptions to the rule's bullet on one command's CLI wiring. Each belongs in its command's file:". Then a four-item list:
@@ -204,7 +212,7 @@ if __name__ == "__main__":
     - :354's provenance of `_compute_deny_summary_data`;
     - :684, which runs the script itself;
     - the § "Tests" sentences about test files that load a shim copy.
-  - In § "Tests", PR 1 shifts every line, so this edit anchors on text. Replace the whole sentence that starts "A test file that reads a name only the shim has" and ends "the same boilerplate `tests/test_transcript_cli.py` uses." (PR 1's wording; :808-811 at 0a66c019, starting mid-line on :808) with: "A test file that reads `build_parser` or `main` imports `cli` like any other package module. Older test files that load their own copy of `transcript-analysis.py` via `spec_from_file_location` keep working, because the script re-exports both names."
+  - In § "Tests", replace the whole sentence that starts "A test file that reads a name only the shim has" and ends "the same boilerplate `tests/test_transcript_cli.py` uses." with the text below. PR 1 shifts every line, so the edit anchors on that text, not a number. The sentence is PR 1's wording, at :808-811 at 0a66c019, starting mid-line on :808. Replacement: "A test file that reads `build_parser` or `main` imports `cli` like any other package module. Older test files that load their own copy of `transcript-analysis.py` via `spec_from_file_location` keep working, because the script re-exports both names."
 - `transcript_analysis/__init__.py` (row 20). Its docstring becomes:
   - `"""transcript-analysis.py's decomposed modules; docs/transcript-analysis-architecture.md says what each one holds.`
   - (blank line)
@@ -272,7 +280,7 @@ if __name__ == "__main__":
     - `PRODUCTION_MODULES` (:27-57) lists a subset of modules, so `cli.py` need not join it.
     - `test_production_modules_reference_only_real_sibling_attributes` (:380-397) fails a listed module that assigns through a sibling module's attribute. `main()`'s `scope.PROJECTS_DIR = ...` (shim :1020) is such an assignment.
 13. Prose naming L outside the architecture doc. `[verified: Grep]`
-    - Sites this change makes false: eight helper-module docstrings (`_subagent_helpers.py:2`, `_audit_routing_helpers.py:2`, `_handoff_nudge_helpers.py:1`, `_skill_helpers.py:2`, `_commit_gate_helpers.py:1`, `_cache_efficiency_helpers.py:1`, `_session_signal_helpers.py:2`, `_cache_rebuild_helpers.py:2`), `conftest.py:1600`, and `select-tests.py:112`. `test_transcript_cost.py:4392-4394` was a ninth site, which commit 1 fixed (row 36).
+    - Sites this change makes false: eight helper-module docstrings (`_subagent_helpers.py:2`, `_audit_routing_helpers.py:2`, `_handoff_nudge_helpers.py:1`, `_skill_helpers.py:2`, `_commit_gate_helpers.py:1`, `_cache_efficiency_helpers.py:1`, `_session_signal_helpers.py:2`, `_cache_rebuild_helpers.py:2`), `conftest.py:1600`, and `select-tests.py:112`. `test_transcript_cost.py:4392-4394` was an eleventh site, which commit 1 fixed (row 36).
     - Already stale before this change: `test_check_claude_md_length.py:889` and `test_transcript_context_composition.py:616`.
     - Dated records under `docs/reports/` and `docs/case-studies/` name L, and are preserved.
     - `test_select_tests.py:1839` asserts a path prefix the glob still satisfies.
@@ -330,7 +338,10 @@ if __name__ == "__main__":
     - Allowed residues: :267, :354, :684, and § "Tests"'s shim-copy loader sentences.
 34. The pure-check precedent. `claude-skills/skills/tests/test_rules_frontmatter.py`'s `rule_frontmatter_violations` (:138-242) returns violation strings for its inputs. The real-tree test calls it at :260, and `TestRuleFrontmatterViolations` (:398-695) drives each red branch with a synthetic input. `[verified: read, Grep]`
 35. After commit 1 inserts two class headers above the multi-root group, the comment block above `_UNCONDITIONAL_HEADER_CASES` sits below L's :672-676, near :676-680. L's loader at :86-93 precedes the insertions and keeps its lines. `[unverified: relayed from the SDET plan review's simulated L-c1; Verification names the block by content, so no step depends on the number]`
-36. Decisions made during commit 2's `/code-review` (round 5 in the branch review ledger, SETTLED rows). `[engineer-verified: "Add the guard test here"]` This covers adding a guard test for the multi-root file's `SKILL.md` reads, and so adding `tests/test_select_tests.py` to Critical files. The test's design is this plan's choice (M16). `[engineer-verified: "Separate commit after the move (Recommended)"]` This covers adding two no-warning tests to the skill-pair canary as their own commit after the move. Their text is the reviewer-round draft in the scratch patch, which the engineer did not read. Commit 1's own review rounds (ledger rounds 2 and 3, ADDRESS) also made two edits this plan had put in commit 3: the cost-side banner and one architecture-doc sentence, both naming the class commit 1 splits. `[verified: git show of e39a1aab; git diff of the staged fixes; scratch patch saved by git diff]`
+36. Decisions made during commit 2's `/code-review` (round 5 in the branch review ledger, SETTLED rows):
+  - `[engineer-verified: "Add the guard test here"]` This covers adding a guard test for the multi-root file's `SKILL.md` reads, and so adding `tests/test_select_tests.py` to Critical files. The test's design is this plan's choice (M16).
+  - `[engineer-verified: "Separate commit after the move (Recommended)"]` This covers adding two no-warning tests to the skill-pair canary as their own commit after the move. Their text is the reviewer-round draft in the scratch patch, which the engineer did not read.
+  - Commit 1's own review rounds (ledger rounds 2 and 3, ADDRESS) also made two edits this plan had put in commit 3: the cost-side banner and one architecture-doc sentence, both naming the class commit 1 splits. `[verified: git show of e39a1aab; git diff of the staged fixes; scratch patch saved by git diff]`
 37. The guard's selection. `[verified: probe run this session]`
     - `select_pytest_targets(["claude-skills/skills/transcript-analysis/SKILL.md"])` returns `is_full_suite` false and four targets:
       - `claude-skills/skills/tests`;
@@ -371,8 +382,20 @@ if __name__ == "__main__":
   - A redundant `as` alias depends on ruff behavior this session did not check.
 - M11: PR 2 points `test_transcript_cli.py` at `cli` and leaves the other twelve loaders. `anchors: row3, row12`. Leaving it on the shim was set aside: `cli.py`'s own test file would then reach `cli` only through the re-export.
 - M12: PR 2 retargets the cost import-direction guard to `cli.py` rather than deleting it. Its pin, no public cost name crossing into the CLI, still applies. `anchors: row18`.
-- M13: Proofs. Commit 2b gets a diff stat and a test count (Verification 7b), and commit 4 gets a seeded control (Verification 10b). Commit 1 gets a sorted-line diff, `remainder`, and `test-ids` renames. Commit 2 gets `nodes --verbatim` over all destinations, a `remainder` of L against a residue stub, a census of each new and grown file, and `test-ids`. PR 2 gets a byte diff of the body, `nodes`, `remainder`, and a before-and-after `capture --all-help --runs` comparison. `anchors: G1, G3, row16, row27, row28, row35`.
-- M14: F2 conditional. If F2's check exists on a PR's base, PR 1 deletes L's exception row. It also raises `test_select_tests.py`'s ceiling row, if it has one, by commit 4's exact added line count. PR 2 deletes the shim's row and adds a row for `cli.py`, with its measured size as the ceiling and the reason "verbatim move of build_parser; splitting its inline subparsers is pending". The F2 probe runs at step 0 and again at each PR's second sync point, because a rebase absorbs a newly landed F2 silently and the PR's CI would then fail on `cli.py`. `anchors: row31, row32, G2`.
+- M13: Proofs, one set per commit:
+  - Commit 2b: a diff stat and a test count (Verification 7b).
+  - Commit 4: a seeded control (Verification 10b).
+  - Commit 1: a sorted-line diff, `remainder`, and `test-ids` renames.
+  - Commit 2: `nodes --verbatim` over all destinations, a `remainder` of L against a residue stub, a census of each new and grown file, and `test-ids`.
+  - PR 2: a byte diff of the body, `nodes`, `remainder`, and a before-and-after `capture --all-help --runs` comparison.
+
+  `anchors: G1, G3, row16, row27, row28, row35`.
+- M14: F2 conditional. If F2's check exists on a PR's base:
+  - PR 1 deletes L's exception row. It also raises `test_select_tests.py`'s ceiling row, if it has one, by commit 4's exact added line count.
+  - PR 2 deletes the shim's row and adds a row for `cli.py`, with its measured size as the ceiling and the reason "verbatim move of build_parser; splitting its inline subparsers is pending".
+  - The F2 probe runs at step 0 and again at each PR's second sync point, because a rebase absorbs a newly landed F2 silently and the PR's CI would then fail on `cli.py`.
+
+  `anchors: row31, row32, G2`.
 - M16: The select-tests guard is one hand-typed pin in `test_select_tests.py`, not a scan. `anchors: row11, row36, row37`. The alternatives each fail:
   - A test that derives every `SKILL.md`-reading file from source would also cover a future reader. It needs its own scanner for reads inside function bodies. `TestCrossDomainReadCompleteness` cannot see those reads, and the engineer chose a guard test without asking for that machinery.
   - Extending `TestCrossDomainReadCompleteness` to read function bodies changes a shared check for one file's sake.
@@ -380,7 +403,11 @@ if __name__ == "__main__":
   - Documentation alone is what commit 3's rule sentence already does, and the engineer asked for a test.
 
   The pin covers the one reader that depends on the prefix. Another future reader outside the glob stays uncaught until its own row is added, and the rule's sentence tells the contributor to add that row.
-- M15: No CHANGELOG entry for `cli.py`. `anchors: row19`. The earlier decomposition phases that added a module the shim imports shipped without one, and `cli.py` is the same kind of change: one more file in `transcript_analysis/`, the directory `CHANGELOG.md:535` already tells a real-directory consumer to re-stow. A CHANGELOG line in `:535`'s re-run-`./install.sh` form was set aside, because the exposure equals every earlier phase's. If a consumer's `transcript_analysis/` is a real directory of per-file links, `cli.py` stays unlinked after `git pull` and every shim run fails with `ModuleNotFoundError`, which silences the error-mode nudge (`hooks/nudge-error-mode-analysis.sh:151-154`) and drops the PR body's Cost section (`scripts/pr-cost-section.sh:38-42`).
+- M15: No CHANGELOG entry for `cli.py`. `anchors: row19`. The earlier decomposition phases that added a module the shim imports shipped without one. `cli.py` is the same kind of change: one more file in `transcript_analysis/`, the directory `CHANGELOG.md:535` already tells a real-directory consumer to re-stow.
+  - A CHANGELOG line in `:535`'s re-run-`./install.sh` form was set aside, because the exposure equals every earlier phase's.
+  - The exposure: if a consumer's `transcript_analysis/` is a real directory of per-file links, `cli.py` stays unlinked after `git pull`. Every shim run then fails with `ModuleNotFoundError`.
+  - That failure silences the error-mode nudge (`hooks/nudge-error-mode-analysis.sh:151-154`).
+  - It also drops the PR body's Cost section (`scripts/pr-cost-section.sh:38-42`).
 
 ## Critical files
 
