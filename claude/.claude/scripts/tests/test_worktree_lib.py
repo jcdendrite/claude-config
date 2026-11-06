@@ -22,9 +22,11 @@ from pathlib import Path
 import pytest
 
 from .conftest import (
+    _break_worktree_git_link,
     _dead_pid,
     _failing_tool_shims,
     _git_shim_that_fails_on_subcommand,
+    _live_process_in,
     _lock_worktree,
     _make_feature_branch,
     _make_repo_with_remote,
@@ -109,17 +111,13 @@ class TestWorktreeInUseLiveProcess:
     def test_path_with_live_process_reports_in_use(self, tmp_path):
         target = tmp_path / "live-dir"
         target.mkdir()
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(target))
-        try:
+        with _live_process_in(target):
             result = _run_bash(f'''
 collect_process_cwds
 RC=0
 worktree_in_use "{target}" || RC=$?
 echo "exit:$RC"
 ''')
-        finally:
-            holder.terminate()
-            holder.wait()
         assert result.returncode == 0, result.stderr
         assert "exit:0" in result.stdout
 
@@ -128,17 +126,13 @@ echo "exit:$RC"
         target = tmp_path / "live-dir"
         subdir = target / "nested"
         subdir.mkdir(parents=True)
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(subdir))
-        try:
+        with _live_process_in(subdir):
             result = _run_bash(f'''
 collect_process_cwds
 RC=0
 worktree_in_use "{target}" || RC=$?
 echo "exit:$RC"
 ''')
-        finally:
-            holder.terminate()
-            holder.wait()
         assert result.returncode == 0, result.stderr
         assert "exit:0" in result.stdout
 
@@ -152,17 +146,13 @@ class TestWorktreeInUseSymlinkCanonicalization:
         real_dir.mkdir()
         symlink = tmp_path / "symlink-to-real"
         symlink.symlink_to(real_dir)
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(real_dir))
-        try:
+        with _live_process_in(real_dir):
             result = _run_bash(f'''
 collect_process_cwds
 RC=0
 worktree_in_use "{symlink}" || RC=$?
 echo "exit:$RC"
 ''')
-        finally:
-            holder.terminate()
-            holder.wait()
         assert result.returncode == 0, result.stderr
         assert "exit:0" in result.stdout
 
@@ -227,8 +217,7 @@ class TestCollectProcessCwdsLsofFallback:
     ):
         target = tmp_path / "lsof-live-dir"
         target.mkdir()
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(target))
-        try:
+        with _live_process_in(target):
             env = {**os.environ, "PATH": f"{readlink_always_fails_path}:{os.environ['PATH']}"}
             result = _run_bash(f'''
 collect_process_cwds
@@ -237,9 +226,6 @@ RC=0
 worktree_in_use "{target}" || RC=$?
 echo "exit:$RC"
 ''', env=env)
-        finally:
-            holder.terminate()
-            holder.wait()
         assert result.returncode == 0, result.stderr
         assert "scan:ok" in result.stdout
         assert "exit:0" in result.stdout
@@ -271,6 +257,25 @@ echo "exit:$RC"
 ''', env=env)
         assert result.returncode == 0, result.stderr
         assert "scan:unavailable" in result.stdout
+        assert "exit:2" in result.stdout
+
+
+class TestWorktreeInUseBeforeAnyScan:
+    """A caller that never ran collect_process_cwds must read "could not
+    determine" (2), not "idle" (1), so it cannot remove a worktree it never
+    checked."""
+
+    def test_uncollected_scan_returns_could_not_determine(self, tmp_path):
+        target = tmp_path / "uncollected-dir"
+        target.mkdir()
+        result = _run_bash(f'''
+echo "scan:$PROCESS_CWD_SCAN"
+RC=0
+worktree_in_use "{target}" || RC=$?
+echo "exit:$RC"
+''')
+        assert result.returncode == 0, result.stderr
+        assert "scan:unknown" in result.stdout
         assert "exit:2" in result.stdout
 
 
@@ -471,7 +476,7 @@ printf 'reason:%s\\n' "$WORKTREE_PROBE_REASON"
 
     def test_unreadable_git_dir_is_a_status_failure(self, tmp_path):
         _, wt_path = self._linked_worktree(tmp_path)
-        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        _break_worktree_git_link(wt_path)
 
         assert self._rc(wt_path) == 2
 
@@ -488,7 +493,7 @@ printf 'reason:%s\\n' "$WORKTREE_PROBE_REASON"
 
     def test_status_failure_sets_a_reason_naming_the_path(self, tmp_path):
         _, wt_path = self._linked_worktree(tmp_path)
-        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        _break_worktree_git_link(wt_path)
 
         result = self._globals_after(wt_path)
 
@@ -595,12 +600,53 @@ echo "reason:$WORKTREE_PROBE_REASON"
     def test_missing_directory(self, tmp_path):
         assert self._rc(tmp_path / "gone-tree") == 1
 
+    @pytest.mark.parametrize(
+        ("status_line", "expected_rc"),
+        [
+            (" abc123def456 sm (heads/main)", 0),
+            ("+abc123def456 sm (heads/main)", 0),
+            ("Uabc123def456 sm", 0),
+            ("-abc123def456 sm", 1),
+            ("", 1),
+            (
+                "-abc123def456 sm-uninitialized\n"
+                " abc123def456 sm-populated (heads/main)",
+                0,
+            ),
+        ],
+        ids=["checked-out", "new-commits", "merge-conflict", "uninitialized", "blank-line", "uninitialized-then-populated"],
+    )
+    def test_submodule_status_line_decides_when_the_git_dir_has_no_modules_directory(
+        self, tmp_path, status_line, expected_rc
+    ):
+        """Git keeps `modules` in the worktree's own git dir, so a populated fixture
+        never reaches `git submodule status`; a function stands in for git's output."""
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/status-only")
+        wt_path = tmp_path / "status-only-tree"
+        _make_worktree(local, "feat/status-only", wt_path)
+
+        result = _run_bash(f'''
+git() {{
+  case "$*" in
+    *"submodule status"*) printf '%s\\n' {shlex.quote(status_line)} ;;
+    *) command git "$@" ;;
+  esac
+}}
+RC=0
+worktree_has_populated_submodules "{wt_path}" || RC=$?
+echo "exit:$RC"
+''')
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"exit:{expected_rc}"
+
     def test_unresolvable_git_dir_is_a_rev_parse_failure(self, tmp_path):
         local, _ = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/broken")
         wt_path = tmp_path / "broken-tree"
         _make_worktree(local, "feat/broken", wt_path)
-        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        _break_worktree_git_link(wt_path)
 
         assert self._rc(wt_path) == 2
 
@@ -608,7 +654,7 @@ echo "reason:$WORKTREE_PROBE_REASON"
 class TestWorktreeRemovalVerdict:
     """worktree_removal_verdict: one token per outcome a real cleanup run can
     have for a branch's worktree, first match wins. Each test builds the
-    single condition its token names; the ordering tests combine two."""
+    single condition its token names; the ordering tests combine it with later rules."""
 
     _BRANCH = "feat/verdict"
 
@@ -665,6 +711,22 @@ echo "pid:$WORKTREE_LOCK_PID"
 
         assert verdict["verdict"] == "main"
 
+    def test_main_outranks_a_live_process_in_it(self, tmp_path):
+        """A live process in the main checkout, such as the shell a script was started from, still leaves it `main`."""
+        local, _ = _make_repo_with_remote(tmp_path)
+        with _live_process_in(local):
+            verdict = self._verdict(local, local.resolve(), branch="main")
+
+        assert verdict["verdict"] == "main"
+
+    def test_current_worktree_outranks_a_live_process_in_it(self, tmp_path):
+        """The caller's own shell is a live process in its worktree, so the check must precede `in-use`."""
+        local, wt_path = self._linked_worktree(tmp_path)
+        with _live_process_in(wt_path):
+            verdict = self._verdict(wt_path, local.resolve(), current_path=wt_path)
+
+        assert verdict["verdict"] == "current-worktree"
+
     def test_the_worktree_the_caller_runs_in_is_current_worktree(self, tmp_path):
         local, wt_path = self._linked_worktree(tmp_path)
 
@@ -705,24 +767,16 @@ echo "pid:$WORKTREE_LOCK_PID"
 
     def test_worktree_with_a_live_process_is_in_use(self, tmp_path):
         local, wt_path = self._linked_worktree(tmp_path)
-        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
-        try:
+        with _live_process_in(wt_path):
             verdict = self._verdict(local, local.resolve())
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert verdict["verdict"] == "in-use"
 
     def test_in_use_outranks_a_live_lock(self, tmp_path):
         local, wt_path = self._linked_worktree(tmp_path)
         _lock_worktree(local, wt_path, f"test (pid {os.getpid()})")
-        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
-        try:
+        with _live_process_in(wt_path):
             verdict = self._verdict(local, local.resolve())
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert verdict["verdict"] == "in-use"
 
@@ -740,6 +794,17 @@ echo "pid:$WORKTREE_LOCK_PID"
         verdict = self._verdict(local, local.resolve(), preamble="PROCESS_CWD_SCAN=unavailable")
 
         assert verdict["verdict"] == "idle-unverifiable"
+
+    def test_a_scan_never_collected_is_idle_unverifiable(self, tmp_path):
+        local, _ = self._linked_worktree(tmp_path)
+        result = _run_bash(f'''
+cd {shlex.quote(str(local))}
+worktree_removal_verdict {shlex.quote(self._BRANCH)} {shlex.quote(str(local.resolve()))} {shlex.quote(str(local.resolve()))}
+echo "verdict:$WORKTREE_REMOVAL_VERDICT"
+''')
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "verdict:idle-unverifiable"
 
     def test_lock_with_a_live_pid_is_live_lock_and_keeps_the_lock_globals(self, tmp_path):
         local, wt_path = self._linked_worktree(tmp_path)
@@ -817,7 +882,7 @@ echo "pid:$WORKTREE_LOCK_PID"
 
     def test_failed_status_is_status_unverifiable(self, tmp_path):
         local, wt_path = self._linked_worktree(tmp_path)
-        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        _break_worktree_git_link(wt_path)
 
         verdict = self._verdict(local, local.resolve())
 
@@ -899,10 +964,7 @@ class TestCollectAllWorktrees:
         _make_feature_branch(local, "feat/locked")
         locked_path = tmp_path / "locked-tree"
         _make_worktree(local, "feat/locked", locked_path)
-        subprocess.run(
-            ["git", "worktree", "lock", str(locked_path), "--reason", "held for review"],
-            cwd=local, check=True,
-        )
+        _lock_worktree(local, locked_path, "held for review")
         _make_feature_branch(local, "feat/prunable")
         prunable_path = tmp_path / "prunable-tree"
         _make_worktree(local, "feat/prunable", prunable_path)
@@ -927,7 +989,7 @@ done
         _make_feature_branch(local, "feat/locked-bare")
         wt_path = tmp_path / "locked-bare-tree"
         _make_worktree(local, "feat/locked-bare", wt_path)
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
 
         result = _run_bash(f'''
 cd "{local}"
@@ -948,7 +1010,7 @@ done
         wt_path = tmp_path / "locked-digits-tree"
         _make_worktree(local, "feat/locked-digits", wt_path)
         reason = "issue 1234 blocked"
-        subprocess.run(["git", "worktree", "lock", str(wt_path), "--reason", reason], cwd=local, check=True)
+        _lock_worktree(local, wt_path, reason)
 
         result = _run_bash(f'''
 cd "{local}"
@@ -972,7 +1034,7 @@ done
         wt_path = tmp_path / "quoted-reason-tree"
         _make_worktree(local, "feat/quoted-reason", wt_path)
         reason = 'reason with "quotes" and \\ backslash'
-        subprocess.run(["git", "worktree", "lock", str(wt_path), "--reason", reason], cwd=local, check=True)
+        _lock_worktree(local, wt_path, reason)
 
         porcelain = subprocess.run(
             ["git", "worktree", "list", "--porcelain"], cwd=local,

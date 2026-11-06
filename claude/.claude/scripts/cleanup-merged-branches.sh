@@ -72,15 +72,17 @@
 # whichever checkout the script runs from. In a `--separate-git-dir` repository
 # that record can be the git dir rather than the checkout. Every other message
 # goes to stderr.
-# It lists only Tier A branches whose worktree is idle, not locked by a live
-# or pid-less lock, clean, free of populated submodules, not the main worktree
-# and not the worktree the script runs from. A worktree whose directory is gone
-# is listed, because `git worktree remove` removes it. Tier B is left out
-# because the real run removes it only after a `y` at a prompt.
+# It lists a Tier A branch's worktree only when it is:
+#   - idle, and not locked by a live pid or a pid-less lock;
+#   - clean, with no populated submodules;
+#   - neither the main worktree nor the worktree the script runs from.
+# A worktree whose directory is gone is listed, because `git worktree remove`
+# removes it. Tier B is left out because the real run removes it only after a
+# `y` at a prompt.
 # A listed worktree can be locked by a holder this user cannot signal: a dead
 # pid, or another user's process. The real run unlocks it first, and a plain
 # `git worktree remove` is refused until `git worktree unlock`.
-# Every listed line is a worktree the real run would remove, but git stays the
+# Every listed worktree is one the real run attempts to remove, but git stays the
 # authority: a listed worktree can still fail to remove when git refuses for a
 # reason the probes do not model. Two such states are known:
 #   - a gitlink inactive in config whose directory has its own `.git`, which
@@ -104,7 +106,7 @@
 #   - a failed per-branch `git worktree list` after the up-front listing
 #     succeeded, which leaves the branch with no worktree to evaluate;
 #   - under --all-projects, a configured root that is missing or holds no repos.
-# A newline in a worktree path is unsupported: porcelain parsing is line-based.
+# A newline in any worktree path, the main worktree's included, is unsupported: porcelain parsing is line-based.
 # Under --all-projects each repo gets a banner on stderr, and any repo that
 # exits nonzero makes the overall exit 1, with stdout still only list lines.
 #
@@ -831,6 +833,7 @@ done
 clear_progress
 
 # Snapshot live process working directories once; worktree_in_use queries it.
+# The snapshot precedes the interactive Tier B prompts, so a process that enters a worktree while a prompt waits is not seen.
 collect_process_cwds
 
 # ---------------------------------------------------------------------------
@@ -878,8 +881,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
         return 0
         ;;
     esac
-    # Porcelain parsing is line-based and REPO_ROOT is whole only when run from
-    # the main checkout, so this misses a newline in a linked worktree's path.
+    # A newline in any worktree path is unsupported, because porcelain parsing is line-based.
+    # This guard catches only some of those cases.
     case "$MAIN_WORKTREE_PATH$REPO_ROOT" in
       *$'\n'*)
         note_list_indeterminate "$branch" "a newline in the repo path would break the line format"
@@ -1020,7 +1023,8 @@ for BRANCH in "${TO_DELETE[@]}"; do
 
   echo "  ${BRANCH}:"
 
-  # The real run pays for the verdict's probes twice by design: list mode and --dry-run need them, and git stays the authority.
+  # The dirty and submodule probes repeat what `git worktree remove` checks and their result is unused here (git decides).
+  # The real run still computes the verdict so it shares one decision with --dry-run and --list-removable.
   worktree_removal_verdict "$BRANCH" "$MAIN_WORKTREE_PATH" "$REPO_ROOT"
 
   case "$WORKTREE_REMOVAL_VERDICT" in
@@ -1089,7 +1093,7 @@ for BRANCH in "${TO_DELETE[@]}"; do
         if [ -n "$WORKTREE_STATUS_OUTPUT" ]; then
           printf '%s\n' "$WORKTREE_STATUS_OUTPUT" | sed 's/^/                    /'
         fi
-        # The reason names the dead pid: a lock with no pid reads as live, so later runs would skip the worktree forever.
+        # The reason names the dead pid: a lock with no pid reads as live, so later runs would skip the worktree until someone unlocks it by hand.
         if [ "$WORKTREE_UNLOCKED" -eq 1 ]; then
           if git worktree lock --reason "kept by cleanup-merged-branches (pid ${WORKTREE_LOCK_PID})" "$WORKTREE_PATH" 2>/dev/null; then
             echo "    worktree:       re-locked (pid ${WORKTREE_LOCK_PID})"

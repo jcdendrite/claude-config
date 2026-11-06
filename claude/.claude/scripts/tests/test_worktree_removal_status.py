@@ -12,12 +12,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import textwrap
 from pathlib import Path
 
 from .conftest import (
+    _break_worktree_git_link,
     _commit,
     _dead_pid,
+    _failing_tool_shims,
+    _live_process_in,
+    _lock_worktree,
     _make_feature_branch,
     _make_repo_with_remote,
     _make_submodule_worktree,
@@ -27,15 +30,6 @@ from .conftest import (
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "worktree-removal-status.sh"
-
-# A PATH-shimmed readlink/lsof that always fails -- same source
-# test_worktree_lib.py's readlink_always_fails_path/lsof_always_fails_path
-# fixtures use, reused inline here (not imported) since those fixtures are
-# scoped to that file's own module.
-_ALWAYS_FAILS_SOURCE = textwrap.dedent("""\
-    #!/usr/bin/env bash
-    exit 1
-""")
 
 
 def _run_script(
@@ -108,10 +102,7 @@ class TestLockedWorktreeShowsFullReasonText:
         _make_worktree(local, "feat/locked", wt_path)
         dead = _dead_pid()
         reason = f"held for review (pid {dead})"
-        subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", reason],
-            cwd=local, check=True,
-        )
+        _lock_worktree(local, wt_path, reason)
 
         result = _run_script(local)
 
@@ -130,7 +121,7 @@ class TestLockedWorktreeWithNoReasonShowsBareLocked:
         _make_feature_branch(local, "feat/locked-no-reason")
         wt_path = tmp_path / "locked-no-reason-tree"
         _make_worktree(local, "feat/locked-no-reason", wt_path)
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
 
         result = _run_script(local)
 
@@ -152,7 +143,7 @@ class TestCombinedDirtyLockedVerdictListsBothReasons:
         wt_path = tmp_path / "dirty-locked-tree"
         _make_worktree(local, "feat/dirty-locked", wt_path)
         (wt_path / "scratch.txt").write_text("wip\n")
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
 
         result = _run_script(local)
 
@@ -219,7 +210,7 @@ class TestUnreadableStatusKeepsGitsErrorText:
         _make_feature_branch(local, "feat/broken")
         wt_path = tmp_path / "broken-tree"
         _make_worktree(local, "feat/broken", wt_path)
-        (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+        _break_worktree_git_link(wt_path)
 
         result = _run_script(local)
 
@@ -263,7 +254,7 @@ class TestLockedWorktreeWithMissingDirectory:
         _make_feature_branch(local, "feat/locked-gone")
         wt_path = tmp_path / "locked-gone-tree"
         _make_worktree(local, "feat/locked-gone", wt_path)
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
         shutil.rmtree(wt_path)
 
         result = _run_script(local)
@@ -346,12 +337,8 @@ class TestLiveProcessReportsInUse:
         wt_path = tmp_path / "in-use-tree"
         _make_worktree(local, "feat/in-use", wt_path)
 
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(wt_path))
-        try:
+        with _live_process_in(wt_path):
             result = _run_script(local)
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert result.returncode == 0, result.stderr
         assert "In use: yes (live process)" in result.stdout
@@ -372,12 +359,7 @@ class TestUnverifiableInUseCheckReportsCouldNotBeDetermined:
         wt_path = tmp_path / "unverifiable-tree"
         _make_worktree(local, "feat/unverifiable", wt_path)
 
-        shim_dir = tmp_path / "always-fails-shim"
-        shim_dir.mkdir()
-        for tool in ("readlink", "lsof"):
-            shim = shim_dir / tool
-            shim.write_text(_ALWAYS_FAILS_SOURCE)
-            shim.chmod(0o755)
+        shim_dir = _failing_tool_shims(tmp_path, "always-fails-shim", "readlink", "lsof")
         env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
 
         result = _run_script(local, env=env)

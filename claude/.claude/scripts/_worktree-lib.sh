@@ -12,6 +12,7 @@
 #   resolve_worktree_for_branch          — branch -> worktree path/lock lookup
 #   worktree_lock_is_live                — is a lock's recorded pid alive, or unknown
 #   main_worktree_path                   — the main worktree's path
+#   worktree_protected_role              — whether a worktree is the main or the runner's own, never removed
 #   worktree_is_clean                    — the cleanliness check `git worktree remove` runs
 #   worktree_has_populated_submodules    — the submodule refusal `git worktree remove` raises
 #   worktree_removal_verdict             — what a real cleanup run does with a branch's worktree
@@ -97,6 +98,7 @@ worktree_matches_filter() {
 
 # Snapshot of every readable process working directory. Populated once by
 # collect_process_cwds; PROCESS_CWD_SCAN records whether the scan succeeded.
+# It stays "unknown" until collect_process_cwds runs.
 declare -a PROCESS_CWDS=()
 PROCESS_CWD_SCAN="unknown"
 
@@ -155,8 +157,10 @@ collect_process_cwds() {
 #   0 = in use   1 = idle   2 = could not determine
 # Matches against the collect_process_cwds snapshot, so the OS is scanned
 # once per run rather than once per branch.
+# Returns 2 unless that snapshot succeeded, so a caller that never ran
+# collect_process_cwds cannot read a busy worktree as idle.
 worktree_in_use() {
-  [ "$PROCESS_CWD_SCAN" = "unavailable" ] && return 2
+  [ "$PROCESS_CWD_SCAN" = "ok" ] || return 2
   local target="$1" resolved cwd
   # Canonicalize so symlinked path components match the kernel-canonical
   # cwd strings reported by /proc and lsof.
@@ -258,6 +262,24 @@ main_worktree_path() {
   printf '%s\n' "${first_line#worktree }"
 }
 
+# worktree_protected_role <worktree-path> <main-worktree-path> <current-worktree-path>
+#
+# Prints `main` when <worktree-path> is the main worktree, else
+# `current-worktree` when it is the worktree the caller runs in, else nothing.
+# A removal run never removes either one.
+# The current worktree is compared by canonical path, since `--show-toplevel`
+# and git's porcelain can spell one path differently.
+# The main-worktree path is compared raw, and `main` outranks `current-worktree`.
+# The caller guards against an empty <worktree-path>, which matches an empty main or current path and prints a protected role.
+worktree_protected_role() {
+  local worktree_path="$1" main_worktree="$2" current_worktree="$3"
+  if [ "$worktree_path" = "$main_worktree" ]; then
+    printf 'main'
+  elif [ "$(worktree_canon_path "$worktree_path")" = "$(worktree_canon_path "$current_worktree")" ]; then
+    printf 'current-worktree'
+  fi
+}
+
 # worktree_is_clean <path>
 #
 # Runs the cleanliness check `git worktree remove` runs before it removes a
@@ -292,15 +314,15 @@ worktree_is_clean() {
 #
 # Returns 0 when <path> has a populated submodule, 1 when it has none, and 2
 # when the check cannot run: the worktree has no `.git`, or `git rev-parse` or
-# `git submodule status` fails. `git worktree remove` refuses a worktree with a
-# populated submodule, and one whose own git dir still holds a `modules`
-# directory even if every submodule is now uninitialized. It removes a worktree
-# whose submodules are only uninitialized, which `git submodule status` marks
-# with a leading `-`. A path whose directory is gone returns 1.
+# `git submodule status` fails. A path whose directory is gone returns 1.
+# Sets WORKTREE_PROBE_REASON to a one-line reason on a 2, empty otherwise.
+# `git worktree remove` refuses a worktree with a populated submodule, and one
+# whose own git dir still holds a `modules` directory even if every submodule
+# is now uninitialized. It removes a worktree whose submodules are only
+# uninitialized, which `git submodule status` marks with a leading `-`.
 # A gitlink inactive in config whose directory has its own `.git` reads as
 # uninitialized here but counts as populated to git, so it returns 1 and the
 # real remove still refuses it.
-# Sets WORKTREE_PROBE_REASON to a one-line reason on a 2, empty otherwise.
 # The `modules` directory is read from the worktree's own git dir, never the
 # main checkout's, which would make every worktree look populated whenever the
 # main checkout has an initialized submodule.
@@ -334,13 +356,12 @@ worktree_has_populated_submodules() {
 # worktree_removal_verdict <branch> <main-worktree-path> <current-worktree-path>
 #
 # Resolves <branch>'s worktree with resolve_worktree_for_branch and sets
-# WORKTREE_REMOVAL_VERDICT to what a real cleanup run does with it, leaving
-# WORKTREE_PATH, WORKTREE_LOCKED and WORKTREE_LOCK_PID populated; always
-# returns 0. A global carries the verdict because a `$(...)`
-# capture would lose those. Precondition: collect_process_cwds has already run.
-# <current-worktree-path> is the checkout the caller runs in. It is compared by
-# canonical path, since the caller's `--show-toplevel` and git's porcelain can
-# spell one path differently. First match wins:
+# WORKTREE_REMOVAL_VERDICT to what a real cleanup run does with it.
+# WORKTREE_PATH, WORKTREE_LOCKED and WORKTREE_LOCK_PID stay populated for the
+# caller. Always returns 0.
+# The verdict is a global because a `$(...)` capture would discard those three.
+# Run collect_process_cwds first, or the live-process check reads as idle-unverifiable.
+# <current-worktree-path> is the checkout the caller runs in. First match wins:
 #   none                      no worktree is checked out to the branch
 #   main                      it is the main worktree, which is never removed
 #   current-worktree          it is the worktree the caller runs in, never removed
@@ -360,16 +381,13 @@ worktree_has_populated_submodules() {
 # submodules first, the order `git worktree remove` checks them in.
 # shellcheck disable=SC2034  # WORKTREE_REMOVAL_VERDICT is read by the sourcing script
 worktree_removal_verdict() {
-  local branch="$1" main_worktree="$2" current_worktree="$3" in_use_rc=0 clean_rc=0 submodules_rc=0
+  local branch="$1" main_worktree="$2" current_worktree="$3" in_use_rc=0 clean_rc=0 submodules_rc=0 protected_role
   resolve_worktree_for_branch "$branch"
   WORKTREE_REMOVAL_VERDICT="none"
   [ -n "$WORKTREE_PATH" ] || return 0
-  if [ "$WORKTREE_PATH" = "$main_worktree" ]; then
-    WORKTREE_REMOVAL_VERDICT="main"
-    return 0
-  fi
-  if [ "$(worktree_canon_path "$WORKTREE_PATH")" = "$(worktree_canon_path "$current_worktree")" ]; then
-    WORKTREE_REMOVAL_VERDICT="current-worktree"
+  protected_role=$(worktree_protected_role "$WORKTREE_PATH" "$main_worktree" "$current_worktree")
+  if [ -n "$protected_role" ]; then
+    WORKTREE_REMOVAL_VERDICT="$protected_role"
     return 0
   fi
   worktree_in_use "$WORKTREE_PATH" || in_use_rc=$?

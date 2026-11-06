@@ -9,11 +9,10 @@
 # Per `git worktree remove --help`, remove refuses a dirty, locked, or
 # submodule-containing worktree without --force. Submodule-containing means a
 # populated submodule, or a leftover `modules` directory in the worktree's git
-# dir; an uninitialized submodule alone does not count. The report can read
-# "Submodules: no / would succeed" for two states git still refuses; see the
-# comments on `worktree_is_clean` and `worktree_has_populated_submodules` in
-# `_worktree-lib.sh` for both. A live process working
-# inside a worktree downgrades the verdict to "do not remove" regardless of
+# dir; an uninitialized submodule alone does not count. Two states git still
+# refuses can read as removable; see `worktree_is_clean` and
+# `worktree_has_populated_submodules` in `_worktree-lib.sh`.
+# A live process working inside a worktree downgrades the verdict to "do not remove" regardless of
 # --force, since --force does not itself check for one. See
 # docs/scripts.md's entry for this script for the full behavior writeup.
 #

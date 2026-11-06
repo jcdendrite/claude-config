@@ -71,8 +71,9 @@ set -euo pipefail
 # shellcheck source=../hooks/_config.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
 
-# progress / clear_progress, collect_process_cwds / worktree_in_use, and
-# resolve_worktree_for_branch are shared with cleanup-merged-branches.sh.
+# progress / clear_progress, collect_process_cwds / worktree_in_use,
+# resolve_worktree_for_branch, and worktree_protected_role are shared with
+# cleanup-merged-branches.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
 
@@ -127,7 +128,8 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 
 # The main worktree is what `git worktree remove` never removes, and REPO_ROOT
 # is a linked worktree when the script runs from one. main_worktree_path fails
-# only when the worktree listing does, and the REPO_ROOT comparison still holds.
+# when the listing fails or its first line is not a `worktree` record.
+# The fallback keeps the REPO_ROOT comparison, which still excludes the runner's own worktree.
 if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
   MAIN_WORKTREE_PATH="$REPO_ROOT"
 fi
@@ -299,7 +301,7 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
   fi
 
   resolve_worktree_for_branch "$BRANCH"
-  if [ -z "$WORKTREE_PATH" ] || [ "$WORKTREE_PATH" = "$REPO_ROOT" ] || [ "$WORKTREE_PATH" = "$MAIN_WORKTREE_PATH" ]; then
+  if [ -z "$WORKTREE_PATH" ] || [ -n "$(worktree_protected_role "$WORKTREE_PATH" "$MAIN_WORKTREE_PATH" "$REPO_ROOT")" ]; then
     # No removable worktree for this branch — never checked out, it's the
     # worktree this script is running from, or it's the main worktree.
     # Nothing to do.

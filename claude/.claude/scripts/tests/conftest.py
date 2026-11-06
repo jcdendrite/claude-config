@@ -17,6 +17,7 @@ a worktree is identical regardless of which script is under test.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -1764,6 +1765,23 @@ def _lock_worktree(repo: Path, wt_path: Path, reason: str | None) -> None:
     subprocess.run(command, cwd=repo, check=True, capture_output=True)
 
 
+def _break_worktree_git_link(wt_path: Path) -> None:
+    """Point wt_path's `.git` file at a git dir that does not exist, so every git
+    command run inside the worktree fails."""
+    (wt_path / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+
+
+def _make_runner_worktree_with_main_on(repo: Path, runner_path: Path, branch_in_main_checkout: str) -> None:
+    """Add a linked worktree at runner_path on a new branch `feat/runner`, then check
+    out branch_in_main_checkout in repo. A script run from runner_path sees the main
+    checkout holding branch_in_main_checkout from a linked worktree of its own."""
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feat/runner", str(runner_path), "main"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(["git", "checkout", "-q", branch_in_main_checkout], cwd=repo, check=True)
+
+
 def _make_worktree_without_git_entry(tmp_path: Path, *, locked: bool = False) -> tuple[Path, Path]:
     """Return (local_repo, wt_path): a clean linked worktree for `feat/no-dot-git`,
     nested in the main checkout the way this repo lays them out, with its `.git`
@@ -1793,6 +1811,18 @@ def _failing_tool_shims(tmp_path: Path, dir_name: str, *tools: str) -> Path:
         shim.write_text("#!/bin/sh\nexit 1\n")
         shim.chmod(0o755)
     return shim_dir
+
+
+@contextlib.contextmanager
+def _live_process_in(cwd: Path) -> Iterator[subprocess.Popen]:
+    """Run a sleeping process with working directory `cwd`, so the worktree-in-use
+    check sees a live process there; terminate and reap it on exit."""
+    holder = subprocess.Popen(["sleep", "120"], cwd=str(cwd))
+    try:
+        yield holder
+    finally:
+        holder.terminate()
+        holder.wait()
 
 
 def _dead_pid() -> int:

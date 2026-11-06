@@ -21,9 +21,12 @@ import pytest
 
 from .conftest import (
     _commit,
+    _live_process_in,
     _make_feature_branch,
     _make_repo_with_remote,
+    _make_runner_worktree_with_main_on,
     _make_worktree,
+    _shimmed_env,
 )
 
 # Path to the script under test (resolved relative to this file)
@@ -101,15 +104,8 @@ def _gh_shim_source(pr_data) -> str:
 @pytest.fixture()
 def fake_gh(tmp_path):
     """Yield a factory that installs a gh shim and returns the env dict."""
-    shim_dir = tmp_path / "gh_shim"
-    shim_dir.mkdir()
-
     def _make_env(pr_data) -> dict:
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source(pr_data))
-        shim_py.chmod(0o755)
-        new_path = str(shim_dir) + ":" + os.environ.get("PATH", "")
-        return {**os.environ, "PATH": new_path}
+        return _shimmed_env(tmp_path, _gh_shim_source(pr_data))
 
     return _make_env
 
@@ -473,12 +469,8 @@ class TestWorktreeInUseSkipped:
         env = fake_gh([
             {"headRefName": "feat/in-use", "number": 7, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
         ])
-        holder = subprocess.Popen(["sleep", "120"], cwd=str(wt_path))
-        try:
+        with _live_process_in(wt_path):
             result = _run_script(local, env)
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert result.returncode == 0, result.stderr
         assert "Skipped (worktree in use" in result.stdout
@@ -488,7 +480,7 @@ class TestWorktreeInUseSkipped:
 class TestSelfWorktreeNeverRemoved:
     """The worktree the script is currently running from must never become
     a removal candidate, even when its own branch has an idle, non-draft,
-    open PR — the WORKTREE_PATH == REPO_ROOT guard is the last safety check
+    open PR — the shared protected-worktree check is the last safety check
     standing between the classification loop and the script removing the
     checkout it is executing from."""
 
@@ -517,11 +509,7 @@ class TestMainCheckoutBranchNeverACandidate:
         local, _ = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/in-main")
         runner_path = tmp_path / "runner-tree"
-        subprocess.run(
-            ["git", "worktree", "add", "-q", "-b", "feat/runner", str(runner_path), "main"],
-            cwd=local, check=True,
-        )
-        subprocess.run(["git", "checkout", "-q", "feat/in-main"], cwd=local, check=True)
+        _make_runner_worktree_with_main_on(local, runner_path, "feat/in-main")
 
         env = fake_gh([
             {"headRefName": "feat/in-main", "number": 11, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
@@ -532,6 +520,24 @@ class TestMainCheckoutBranchNeverACandidate:
         assert "Would remove" not in result.stdout
         assert "feat/in-main" not in result.stdout
         assert "would-remove=0" in result.stdout
+
+    def test_live_process_in_main_checkout_does_not_report_its_branch_as_in_use(self, tmp_path, fake_gh):
+        """The main-worktree skip comes before the in-use check, so a live process
+        in the main checkout leaves the branch out of the in-use count."""
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/in-main")
+        runner_path = tmp_path / "runner-tree"
+        _make_runner_worktree_with_main_on(local, runner_path, "feat/in-main")
+
+        env = fake_gh([
+            {"headRefName": "feat/in-main", "number": 11, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
+        ])
+        with _live_process_in(local):
+            result = _run_script(runner_path, env, args=["--dry-run"])
+
+        assert result.returncode == 0, result.stderr
+        assert "Skipped (worktree in use" not in result.stdout
+        assert "skipped-in-use=0" in result.stdout
 
 
 class TestMultiRowBulkResponse:
@@ -566,12 +572,8 @@ class TestMultiRowBulkResponse:
             {"headRefName": "feat/multi-stale", "number": 3, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
             {"headRefName": "feat/multi-in-use", "number": 4, "isDraft": False, "updatedAt": _iso(hours_ago=10)},
         ])
-        holder = subprocess.Popen(["sleep", "120"], cwd=str(in_use_wt))
-        try:
+        with _live_process_in(in_use_wt):
             result = _run_script(local, env)
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert result.returncode == 0, result.stderr
         assert draft_wt.exists(), "draft must survive"
