@@ -4670,16 +4670,17 @@ _LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES=400
 _LIB_DIFF_SIZE_COUNT_CAP_SECONDS=30
 
 # _lib_sum_numstat_changed_lines
-# Reads `git diff --numstat` text on stdin and prints the sum of the added and deleted columns.
+# Reads `git diff --numstat` text on stdin and prints the changed-line total.
+# A row whose first two columns are not both digit strings adds zero: a binary row (`-`), a path with the `-diff` or `binary` attribute, or any other non-numeric count.
+# A total past the awk's integer range prints an awk-dependent value.
 _lib_sum_numstat_changed_lines() {
-  LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { print total + 0 }'
+  LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { printf "%d\n", total }'
 }
 
 # _lib_diff_size_measure REPO_ROOT GITDIR BRANCH
 # Prints "<count> <base>" and returns 0, where <count> is the changed lines (additions plus deletions) the commit
 # being made leaves in the branch's diff against origin/<base>, not counting files under REPO_ROOT's .claude/plans/.
 # Returns 1 with no stdout when the commit is not measurable.
-# A commit during a paused merge, cherry-pick or revert, or on the base branch itself, is refused by design and returns 1.
 # _lib_configured_stack_base's one stderr line reaches the caller's stderr.
 # BRANCH must be the branch HEAD names, because _lib_configured_stack_base and the merge-base read HEAD themselves.
 # No `gh pr view`: it would add a network call to every commit, so a branch on a non-default base with no
@@ -4733,9 +4734,8 @@ _lib_diff_size_measure() {
 # The latch test precedes the measurement because a latched branch is already at the threshold and would otherwise
 # pay for a measurement on every later commit.
 # Cost: about 8 git processes in the common case, each under a timeout wrapper, plus two sha256sum | awk pipelines.
-# The upper bound if every capped call stalled is 102 seconds on the worst path (no stack-base key, dangling origin/HEAD).
-# That is 10 calls at _lib_capped's 5 seconds plus the 2-second kill grace, and the count call at its cap plus the grace.
-# The bound is not reachable in full, because a cap kill in some of those calls ends the sequence before the rest run.
+# Upper bound on wall time: 102 seconds, summing every call's cap and its 2-second kill grace on the
+# no-stack-base-key, dangling-origin/HEAD path.
 _lib_diff_size_gate_state() {
   local start_dir="${1:-}"
   local config_dir paths repo_root gitdir branch state_key latch_file measurement count

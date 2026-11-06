@@ -2,10 +2,9 @@
 _lib_diff_size_gate_state. The latch path helper is covered with the other
 branch-state path helpers in test_lib_reviewer_round_state.py.
 
-Every case that builds a repository, except the default-branch-guess case,
-does so against a bare `origin` whose default branch is `trunk`, so a
-hard-coded `main` base fails. The default-branch-guess case uses `main`, because the guess probes
-only `main`, `master` and `develop`.
+Every repository is built against a bare `origin` whose default branch is `trunk`, so a hard-coded `main` base
+fails. The one exception is the default-branch-guess case, which uses `main` because the guess probes only `main`,
+`master` and `develop`.
 """
 
 from __future__ import annotations
@@ -94,7 +93,6 @@ def _origin_head_resolves(repo: Path) -> bool:
 
 
 def _numstat_total(numstat_text: str) -> int:
-    """Sum added plus deleted of `git diff-tree --numstat` rows, skipping a binary file's `-` columns."""
     total = 0
     for row in numstat_text.splitlines():
         added, deleted, _path = row.split("\t", 2)
@@ -166,9 +164,7 @@ class TestLibDiffSizeMeasureCounts:
         assert _diff_tree_total_after_commit(clone) == 400
 
     def test_a_deletion_a_rename_with_edits_and_a_binary_file_count_as_the_reviewed_diff_does(self, tmp_path: Path) -> None:
-        # Hand-derived: 50 deleted lines, plus a rename whose 3 edited lines count 3 added and 3 deleted,
-        # plus 7 added lines, plus a binary file that counts 0. Without `-M` the rename would count the
-        # whole file twice, so this constant also pins rename detection.
+        # Without `-M` the rename would count the whole file twice, so this constant also pins rename detection.
         expected_count = 50 + (3 + 3) + 7
         renamed_lines = _lines("ren", 40)
         _bare, clone = _clone_with_trunk_files(tmp_path, {"gone.txt": _lines("gone", 50), "ren.txt": renamed_lines})
@@ -195,6 +191,24 @@ class TestLibDiffSizeMeasureCounts:
         result = _measure(clone)
 
         assert (result.returncode, result.stdout) == (0, "0 trunk\n"), result.stderr
+
+    @pytest.mark.parametrize(
+        "gitattributes",
+        [
+            pytest.param("*.dat -diff\n", id="diff attribute unset"),
+            pytest.param("*.dat binary\n", id="binary attribute"),
+        ],
+    )
+    def test_a_staged_text_file_git_treats_as_binary_by_attribute_adds_0_beside_a_counted_file(
+        self, tmp_path: Path, gitattributes: str
+    ) -> None:
+        _bare, clone = _clone_with_trunk_files(tmp_path, {".gitattributes": gitattributes})
+        _stage_file(clone, "payload.dat", _lines("payload", 10))
+        _stage_file(clone, "plain.txt", _lines("plain", 7))
+
+        result = _measure(clone)
+
+        assert (result.returncode, result.stdout) == (0, "7 trunk\n"), result.stderr
 
     def test_counts_only_the_staged_lines_not_unstaged_edits_or_untracked_files(self, tmp_path: Path) -> None:
         _bare, clone = _clone_with_trunk_files(tmp_path)
@@ -237,6 +251,14 @@ class TestLibDiffSizeMeasurePlanExclusion:
         result = _measure(clone, env_overrides=env_overrides)
 
         assert (result.returncode, result.stdout) == (0, "14 trunk\n"), result.stderr
+
+    def test_a_plan_file_moved_out_of_the_plans_directory_counts_as_a_whole_file_add(self, tmp_path: Path) -> None:
+        _bare, clone = _clone_with_trunk_files(tmp_path, {".claude/plans/moved.md": _lines("moved", 30)})
+        _run_git(clone, "mv", ".claude/plans/moved.md", "moved.md")
+
+        result = _measure(clone)
+
+        assert (result.returncode, result.stdout) == (0, "30 trunk\n"), result.stderr
 
 
 class TestLibDiffSizeMeasureDefaultBranch:
@@ -301,6 +323,13 @@ def _toggle_origin_remote_removed(clone: Path, tmp_path: Path) -> tuple[str, dic
     return "feature", {}
 
 
+def _toggle_no_common_ancestor_with_the_base(clone: Path, tmp_path: Path) -> tuple[str, dict[str, str]]:
+    # origin/trunk still resolves, so only the merge-base call can refuse.
+    _run_git(clone, "checkout", "-q", "--orphan", "unrelated")
+    _commit_staged(clone)
+    return "unrelated", {}
+
+
 def _toggle_merge_in_progress(clone: Path, tmp_path: Path) -> tuple[str, dict[str, str]]:
     head_oid = _run_git(clone, "rev-parse", "HEAD").strip()
     _forge_state_marker(absolute_git_dir(clone), "merge", head_oid)
@@ -319,6 +348,7 @@ class TestLibDiffSizeMeasureRefusals:
             pytest.param(_toggle_stack_key_names_an_origin_ref, id="stack key is unusable"),
             pytest.param(_toggle_head_is_on_the_base_branch, id="branch equals the base"),
             pytest.param(_toggle_origin_remote_removed, id="origin remote removed"),
+            pytest.param(_toggle_no_common_ancestor_with_the_base, id="no common ancestor with the base"),
             pytest.param(_toggle_merge_in_progress, id="merge paused"),
             pytest.param(_toggle_diff_index_fails, id="count call fails"),
         ],
@@ -333,6 +363,30 @@ class TestLibDiffSizeMeasureRefusals:
         result = _measure(clone, branch=branch, env_overrides=env_overrides)
 
         assert (result.returncode, result.stdout) == (1, "")
+
+    def test_a_stack_key_naming_an_unpushed_parent_returns_1_with_empty_stdout_and_stderr(self, tmp_path: Path) -> None:
+        # The failing merge-base call prints `fatal:` text that only its `2>/dev/null` in _lib_diff_size_measure discards.
+        _bare, clone = _clone_with_trunk_files(tmp_path)
+        _stage_file(clone, "work.txt", _lines("work", 5))
+        untoggled = _measure(clone)
+        assert untoggled.stdout == "5 trunk\n", untoggled.stderr
+        branch, env_overrides = _toggle_stack_key_names_an_unpushed_parent(clone, tmp_path)
+
+        result = _measure(clone, branch=branch, env_overrides=env_overrides)
+
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
+
+    def test_a_corrupt_index_returns_1_with_empty_stdout_and_stderr(self, tmp_path: Path) -> None:
+        # The failing diff-index call prints `fatal:` text that only its `2>/dev/null` in _lib_diff_size_measure discards.
+        _bare, clone = _clone_with_trunk_files(tmp_path)
+        _stage_file(clone, "work.txt", _lines("work", 5))
+        untoggled = _measure(clone)
+        assert untoggled.stdout == "5 trunk\n", untoggled.stderr
+        (absolute_git_dir(clone) / "index").write_bytes(b"not a git index")
+
+        result = _measure(clone)
+
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
 
     def test_an_empty_changed_line_sum_returns_1_with_no_stdout(self, tmp_path: Path) -> None:
         _bare, clone = _clone_with_trunk_files(tmp_path)
@@ -425,7 +479,10 @@ class TestLibDiffSizeMeasureLazyFetch:
 
 
 class TestLibDiffSizeMeasureNeverRunsGh:
-    def test_a_measured_call_never_runs_gh(self, tmp_path: Path) -> None:
+    def test_a_measured_call_never_runs_gh(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The shim records GH_ENTERPRISE_TOKEN, so no ambient credential may reach it.
+        for ambient_name in [key for key in os.environ if key.startswith(("GH_", "GITHUB_"))]:
+            monkeypatch.delenv(ambient_name)
         _bare, clone = _clone_with_trunk_files(tmp_path)
         _stage_file(clone, "work.txt", _lines("work", 5))
         gh_call_log = tmp_path / "gh-calls.jsonl"
@@ -448,11 +505,12 @@ def _gate_state(
     tmp_path: Path,
     start_dir: Path | str | None = None,
     env_overrides: dict[str, str] | None = None,
+    process_cwd: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "CLAUDE_CONFIG_DIR": str(tmp_path / "cfg"),
-        "TEST_PROCESS_CWD": git_toplevel(repo),
+        "TEST_PROCESS_CWD": str(process_cwd) if process_cwd is not None else git_toplevel(repo),
         "TEST_START_DIR": str(start_dir if start_dir is not None else repo),
         **(env_overrides or {}),
     }
@@ -550,6 +608,19 @@ class TestLibDiffSizeGateState:
         assert measured.stdout == f"{_latch_path(linked, tmp_path)}\n400 trunk\n"
         assert (paused.returncode, paused.stdout) == (1, "")
 
+    def test_a_paused_merge_in_a_main_checkout_is_seen_from_an_unrelated_process_cwd(self, tmp_path: Path) -> None:
+        clone = _clone_with_staged_lines(tmp_path, 400)
+        unrelated_cwd = tmp_path / "unrelated-cwd"
+        unrelated_cwd.mkdir()
+        unpaused = _gate_state(clone, tmp_path, process_cwd=unrelated_cwd)
+        head_oid = _run_git(clone, "rev-parse", "HEAD").strip()
+        _forge_state_marker(absolute_git_dir(clone), "merge", head_oid)
+
+        paused = _gate_state(clone, tmp_path, process_cwd=unrelated_cwd)
+
+        assert unpaused.returncode == 0, unpaused.stderr
+        assert (paused.returncode, paused.stdout) == (1, "")
+
 
 def _toggle_sha256sum_missing(clone: Path, tmp_path: Path) -> tuple[Path | None, dict[str, str]]:
     farm_dir = tmp_path / "path-without-sha256sum"
@@ -597,3 +668,14 @@ class TestLibDiffSizeGateStateRefusals:
         result = _gate_state(clone, tmp_path, start_dir=start_dir, env_overrides=env_overrides)
 
         assert (result.returncode, result.stdout) == (1, "")
+
+    def test_a_start_dir_outside_any_repository_returns_1_with_empty_stdout_and_stderr(self, tmp_path: Path) -> None:
+        # The failing rev-parse call prints `fatal:` text that only its `2>/dev/null` in _lib_diff_size_gate_state discards.
+        clone = _clone_with_staged_lines(tmp_path, 400)
+        untoggled = _gate_state(clone, tmp_path)
+        assert untoggled.returncode == 0, untoggled.stderr
+        start_dir, env_overrides = _toggle_start_dir_outside_any_repository(clone, tmp_path)
+
+        result = _gate_state(clone, tmp_path, start_dir=start_dir, env_overrides=env_overrides)
+
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "")

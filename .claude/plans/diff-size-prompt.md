@@ -105,7 +105,7 @@ Alternatives weighed:
 38. `advance-past-commit-stall.sh` fires on a main session whose last message asks permission to commit, push or open a PR while autonomous shipping is active. [verified: `advance-past-commit-stall.sh:3-7`]
 39. A split-or-proceed question asked in prose rather than through `AskUserQuestion` can read to that hook as a commit-permission stall. [unverified: PR 2's post-merge live check checks it]
 40. `/ready-for-review` step 1 sets `branch.<branch>.gh-merge-base` when the engineer says a branch is stacked, and `branch-management/SKILL.md` never names that key. [verified: `ready-for-review/SKILL.md:52`; a grep of `branch-management/SKILL.md`]
-41. `git rev-parse --show-toplevel --absolute-git-dir` prints the two paths on two lines, in argument order. [unverified: PR 1's linked-worktree `MERGE_HEAD` case on `_lib_diff_size_gate_state` pins it]
+41. `git rev-parse --show-toplevel --absolute-git-dir` prints the two paths on two lines, in argument order. [unverified: `test_a_linked_worktree_is_measured_until_its_own_gitdir_holds_a_paused_merge` and `test_a_paused_merge_in_a_main_checkout_is_seen_from_an_unrelated_process_cwd` pin it]
 42. The design ships as three stacked PRs. [engineer-verified: "Three stacked PRs (Recommended)"]
 43. The PR order follows the design's reads: PR 2's hook and script call PR 1's helpers, and PR 3's pin reads PR 1's constant and PR 2's `docs/hooks.md` phrase (M8). [unverified]
 44. A `_lib.sh` function referenced only from a test passes the dead-code tripwire. The tripwire counts any mention outside a comment line in the tracked shell and Python corpus, and it fails locally until the referencing file is staged. It matches only function definitions, so it never checks a variable. [verified: `test_shell_lib_function_liveness.py:3-8`, `:47-48`, `:69`]
@@ -142,6 +142,7 @@ Alternatives weighed:
 69. The plan's own addition, not shown to the engineer: a forced prompt on the bare ack in auto mode or `bypassPermissions` is documented, not observed (row 56), until PR 2's live check records it with the control run (Out of scope). The repo lists headless `-p` runs as untested (`docs/security-hardening.md:270`). The stop-and-report text in M5, not the prompt, is the headless mechanism. [unverified]
 70. A hook entry with no `timeout` gets the harness's 600-second default. This is a repo paraphrase of the hooks reference, `docs/handoff-nudge.md:198`, which carries its own re-verify-by date of 2026-11-17, and `docs/hooks.md:423` (fetched 2026-10-17). `docs/hooks.md:403` says a gate that times out blocks the call. The hooks reference was not re-read for this plan. [unverified]
 71. PR 1 ships at about 720 changed lines, above the about 600 row 60 answered, because the review rounds added test cases. [engineer-verified: "Proceed anyway at ~720 (Recommended)"]
+72. PR 1 measured about 850 changed lines on 2026-11-05, above the about 720 row 71 answered, because later review rounds added test cases. [engineer-verified: "Proceed at ~850 (Recommended)"]
 
 **Mechanisms:**
 - **M1. The gate's checks (`_lib_diff_size_gate_state` in PR 1, the hook in PR 2).**
@@ -158,14 +159,15 @@ Alternatives weighed:
     4. Run `_lib_diff_size_gate_state "$CWD" 2>/dev/null`, with `CWD` defaulting to `$PWD`. Allow on any nonzero status.
     5. `emit_deny` with M5's message, built from the function's second line, then the column-0 `exit 0`.
   - `_lib.sh` gains `_lib_diff_size_gate_state START_DIR` (PR 1), the one read sequence the hook and the ack script both run, so the two cannot disagree on the config dir, repository, branch, latch path or count. Its steps, in order:
-    1. Resolve the config dir with `_lib_config_dir`. Return 1 on failure.
-    2. Read `REPO_ROOT` and `GITDIR` from one `_lib_capped git -C "$START_DIR" rev-parse --show-toplevel --absolute-git-dir` (row 41). Return 1 on failure or an empty line.
-    3. Read `BRANCH` from one `_lib_capped git -C "$REPO_ROOT" symbolic-ref -q --short HEAD`. Return 1 when it is empty.
-    4. Compute the key with `_lib_reviewer_round_state_key_for_branch "$REPO_ROOT" "$BRANCH"`, then the latch path with `_lib_diff_size_latch_file` (M2). Return 1 when either fails.
-    5. Return 3 when `[[ -f "$LATCH_FILE" ]]`. The latch test comes before the measurement because a latched branch is already at the threshold and would otherwise pay for a measurement on every later commit.
-    6. Run `_lib_diff_size_measure "$REPO_ROOT" "$GITDIR" "$BRANCH"` (M3). Return 1 on any nonzero status.
-    7. Return 2 when the count is below `_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES`.
-    8. Print the latch path, then the measurement's `<count> <base>` line, and return 0.
+    1. Return 1 when `START_DIR` is empty (`[ -n "$start_dir" ] || return 1`), because `git -C ""` leaves the cwd unchanged and the process cwd would be measured silently.
+    2. Resolve the config dir with `_lib_config_dir`. Return 1 on failure.
+    3. Read `REPO_ROOT` and `GITDIR` from one `_lib_capped git -C "$START_DIR" rev-parse --show-toplevel --absolute-git-dir` (row 41). Return 1 on failure or an empty line.
+    4. Read `BRANCH` from one `_lib_capped git -C "$REPO_ROOT" symbolic-ref -q --short HEAD`. Return 1 when it is empty.
+    5. Compute the key with `_lib_reviewer_round_state_key_for_branch "$REPO_ROOT" "$BRANCH"`, then the latch path with `_lib_diff_size_latch_file` (M2). Return 1 when either fails.
+    6. Return 3 when `[[ -f "$LATCH_FILE" ]]`. The latch test comes before the measurement because a latched branch is already at the threshold and would otherwise pay for a measurement on every later commit.
+    7. Run `_lib_diff_size_measure "$REPO_ROOT" "$GITDIR" "$BRANCH"` (M3). Return 1 on any nonzero status.
+    8. Return 2 when the count is below `_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES`.
+    9. Print the latch path, then the measurement's `<count> <base>` line, and return 0.
   - Its own git reads discard their stderr, and the measurement's stderr reaches the caller.
   - Only status 0 prints, and its two lines are the only fields a caller reads. The latch path already carries the config dir, and its key hashes the repository root and the branch, so the test checks all three through it.
   - Its header lists the four statuses:
@@ -174,7 +176,11 @@ Alternatives weighed:
     - 2: a count below the threshold.
     - 3: a latched branch.
   - The header also says 1 is the only failure, and that 1 and 2 are distinct answers a caller words differently. In `_lib_git_inprogress_state` and `_lib_configured_stack_base` a 2 means unreadable state, so a caller written from that convention would misread this function.
-  - The header also states the per-commit cost and the worst-case wall time, in the shape of `_lib_reviewer_round_state_value`'s count in its header comment. The cost is about 8 git processes in the common case, each under a `timeout` wrapper, plus two `sha256sum | awk` pipelines. The ceiling is roughly 100 seconds if every capped call stalled. The writer re-derives both figures from the calls it writes.
+  - The header also states the per-commit cost and the upper bound on wall time.
+    - The cost is about 8 git processes in the common case, each under a `timeout` wrapper, plus two `sha256sum | awk` pipelines.
+    - The header gives a 102-second upper bound on wall time.
+    - The bound holds on the no-stack-base-key, dangling-`origin/HEAD` path, where it sums every call's cap and its 2-second kill grace.
+    - The writer re-derives both figures from the calls it writes.
 
   anchors: root, row2, row10, row12, row20, row35, row41, row54, row55
 
@@ -204,8 +210,8 @@ Alternatives weighed:
 - **M3. The count (PR 1).** `_lib.sh` gains four more pieces beside the latch helper:
   - `_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES=400` on its own line, under a one-line comment naming `review_cost_by_size.py`'s `_SIZE_BUCKET_LOWER_EDGES` as the source of the edge. `_lib_diff_size_gate_state` compares against it (M1).
   - `_LIB_DIFF_SIZE_COUNT_CAP_SECONDS=30` on its own line, under a one-line comment calling it a chosen ceiling, not a measured figure, set above `_lib_capped`'s 5 seconds because the count's cost grows with the diff (rows 53, 54).
-  - `_lib_sum_numstat_changed_lines`, a pure function that reads `--numstat` text on stdin and prints the result of `LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { print total + 0 }'`. A binary file's `-\t-` row and any malformed row add zero.
-  - `_lib_diff_size_measure REPO_ROOT GITDIR BRANCH`, which prints `<count> <base>` and returns 0. BRANCH must be the branch HEAD names. `_lib_configured_stack_base` reads HEAD itself (row 36). The merge-base reads HEAD. The base-equals-branch test reads BRANCH. Its one caller reads BRANCH from HEAD one call earlier (M1). It returns 1 with no stdout when any of these holds:
+  - `_lib_sum_numstat_changed_lines`, a pure function that reads `--numstat` text on stdin and prints the result of `LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { printf "%d\n", total }'`. A binary file's `-\t-` row and any malformed row add zero.
+  - `_lib_diff_size_measure REPO_ROOT GITDIR BRANCH`, which prints `<count> <base>` and returns 0. BRANCH must be the branch HEAD names. Two steps read HEAD (`_lib_configured_stack_base`, row 36, and the merge-base), and one reads BRANCH (the base-equals-branch test). A BRANCH that is not HEAD's makes them disagree. Its one caller reads BRANCH from HEAD one call earlier (M1). It returns 1 with no stdout when any of these holds:
     - `_lib_git_inprogress_state "$REPO_ROOT" "$GITDIR"` returns 0 or 2.
     - The base does not resolve (M4) or equals `BRANCH`.
     - `_lib_capped git -C "$REPO_ROOT" merge-base "refs/remotes/origin/$BASE" HEAD` fails.
@@ -214,7 +220,10 @@ Alternatives weighed:
   The count call captures `_lib_capped_for "$_LIB_DIFF_SIZE_COUNT_CAP_SECONDS" git -C "$REPO_ROOT" diff-index --cached --numstat -M --ignore-submodules=none "$MERGE_BASE" -- ':(top,exclude).claude/plans/'` into a variable and checks its status before summing.
   - A pipeline would mask a failed git call, the hazard the "captured, not piped" comment in `_lib_reviewer_round_state_value` names.
   - Inside the command substitution, `unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS` runs first, as at `deny-private-project-refs.sh:618`, so an inherited variable cannot read the exclude as a literal name and zero the count (row 51).
-  - It then runs `export GIT_NO_LAZY_FETCH=1`, which git.adoc documents as stopping the count from fetching a missing blob from a promisor remote. `git --no-lazy-fetch` is in the 2.45.0 release notes. Older git, including the 2.43 floor, ignores the variable. There only the count cap bounds the count, and only under GNU timeout (see `_lib_capped_for`'s header). `plan-push-preflight.py:170-171` sets it the same way. A test pins the export through a recording shim.
+  - Run `export GIT_NO_LAZY_FETCH=1` next, which git.adoc documents as stopping the count from fetching a missing blob from a promisor remote. `git --no-lazy-fetch` is in the 2.45.0 release notes.
+    - Older git, including the 2.43 floor, ignores the variable. There only the count cap bounds the count, and only under GNU timeout (see `_lib_capped_for`'s header).
+    - `plan-push-preflight.py:170-171` sets it the same way.
+    - A test pins the export through a recording shim.
   - Plumbing `diff-index` follows `pr-diff-against-base.sh:145-146`'s reason for plumbing: porcelain diff config cannot change the result.
   - Every path counts except those under the repository root's `.claude/plans/` (rows 48, 52). The `:(top,exclude)` spelling is the one both existing exclude pathspecs use (row 51).
   - Counting the index is exact because of row 23.
@@ -231,10 +240,22 @@ Alternatives weighed:
 
 - **M5. The deny message (PR 2).** One `emit_deny` string, which `_lib_emit_deny` prefixes with `Blocked by diff-size gate:`. It opens with the measurement: once this commit lands, the branch's diff against `origin/<base>` holds `<count>` changed lines, additions plus deletions, not counting files under `.claude/plans/`, at or over the `<threshold>`-line threshold. It says the count is measured, not estimated. It then instructs, in substance:
   - Stop and ask the engineer through `AskUserQuestion`, in those terms, whether to split now or proceed anyway, with exactly the options `Split now` and `Proceed anyway`. The question may cite an answer the engineer gave at plan time. Do not retry before they answer.
-  - On `Proceed anyway`, state the count and base in the message before the call, then run exactly `~/.claude/scripts/diff-size-ack.sh` as its own Bash call from this directory, in no other spelling. Then re-run the denied command unchanged, chain included, because no part of it ran (row 37).
+  - On `Proceed anyway`, in order:
+    1. State the count and base in the message before the call.
+    2. Run exactly `~/.claude/scripts/diff-size-ack.sh`, as its own Bash call, from this directory, in no other spelling.
+    3. Re-run the denied command unchanged, chain included, because no part of it ran (row 37).
   - If the same denial recurs after the ack ran, whatever its exit status, report it to the engineer instead of asking again.
-  - If the ack call is denied or declined, treat it as `Split now`: stop, report, do not re-run the ack in any other spelling, do not release the gate by any other means, and do not retry the commit. The engineer can run the ack from this directory in their own terminal (M9's runbook, step 2).
-  - On `Split now`, do not retry. Agree with the engineer which part of the work moves, and start that branch through the `branch-management` skill. If the engineer says the new branch stacks on this one, set `git config branch.<new-branch>.gh-merge-base <this-branch>`, the key `/ready-for-review` step 1 sets (row 40). This gate keeps denying commits here until the branch's count falls below the threshold or the engineer answers `Proceed anyway`.
+  - If the ack call is denied or declined, treat it as `Split now`, except stop and report to the engineer instead of agreeing a split:
+    - Stop and report.
+    - Do not re-run the ack in any other spelling.
+    - Do not release the gate by any other means.
+    - Do not retry the commit.
+    - The engineer can run the ack from this directory in their own terminal (M9's runbook, step 2).
+  - On `Split now`:
+    - Do not retry.
+    - Agree with the engineer which part of the work moves, and start that branch through the `branch-management` skill.
+    - If the engineer says the new branch stacks on this one, set `git config branch.<new-branch>.gh-merge-base <this-branch>`, the key `/ready-for-review` step 1 sets (row 40).
+    - This gate keeps denying commits here until the branch's count falls below the threshold or the engineer answers `Proceed anyway`.
   - A session that cannot put the question to an engineer, such as a headless or scheduled run, stops and reports the count and base instead of retrying.
   - A subagent reports this denial to its dispatcher instead.
 
@@ -256,6 +277,11 @@ Alternatives weighed:
   - A stack key naming a parent with no `origin/<parent>` ref leaves the branch unmeasured.
   - The count reads `origin/<base>` as last fetched.
   - A binary file counts zero lines.
+  - A file with the `-diff` or `binary` attribute counts zero lines, so a repo-controlled attribute can zero a source file.
+  - The `.claude/plans/` carve-out excludes every file type under it, not only Markdown.
+  - A shallow clone whose history lacks the common ancestor leaves the branch unmeasured, because `merge-base` fails.
+  - With no stack key set, a remote not named `origin` leaves the branch unmeasured, because the default-branch guess finds no `origin/*` ref.
+  - With a stack key set, a remote not named `origin` leaves the branch unmeasured, because `merge-base` fails on the missing `refs/remotes/origin/<parent>` ref.
   - A commit made while a merge, rebase, cherry-pick or revert is paused is not measured. The next ordinary commit is.
   - `git -C <dir> commit` and `cd <dir> && git commit` are measured in the payload cwd's repository, not `<dir>`.
   - The latch records an approved run of the exact bare ack command. The harness prompt shows the engineer the command, not their `AskUserQuestion` answer.
@@ -273,7 +299,11 @@ Alternatives weighed:
   - For the same reason it runs below the additions-plus-deletions size the 400 edge was taken from, which includes plan files.
   - Plans kept anywhere other than the repository root's `.claude/plans/` count.
   - A file moved into or out of that directory counts as a whole-file add or delete.
-  - The latch is a plain file the gate honors, so a direct write releases the gate with no trace line and no measurement. The marker-shape guard (`enforce-marker-script-shape.sh:416,423`) covers `*-markers/*` and `.*-active.d/*`, not `*-latch.d`. The ack costs a prompt and a direct write costs none, so the latch is not tamper-evident, and the header and docs say so. This sits outside the cooperative tier.
+  - The latch is a plain file the gate honors, so a direct write releases the gate with no trace line and no measurement.
+  - The marker-shape guard (`enforce-marker-script-shape.sh:416,423`) covers `*-markers/*` and `.*-active.d/*`, not `*-latch.d`.
+  - The ack costs a prompt and a direct write costs none, so the latch is not tamper-evident.
+  - The header and docs say the latch is not tamper-evident.
+  - A direct latch write sits outside the cooperative tier.
   - The base ref name derives from remote or config state and appears in the deny text, so a hostile ref name reaches the agent as text. This sits outside the cooperative tier.
 
   anchors: row6, row8, row10, row11, row12, row19, row32, row37, row38, row39, row48, row52, row53, row56, row69
@@ -332,7 +362,7 @@ This branch carries PR 1 only, as one `code-writer` dispatch. The Approach's cut
 - `scripts/venv-run.sh ruff check` on the four Python files below
 - `scripts/venv-run.sh shellcheck claude/.claude/hooks/_lib.sh`
 
-The writer does not stage (`code-writer.md:23`), and the dead-code tripwire reads its corpus from `git ls-files` (row 44), so the tripwire stays with the parent. Once the dispatch returns, the parent stages `test_lib_diff_size.py` and runs Verification steps 1 and 4.
+The writer does not stage (`code-writer.md:23`), and the dead-code tripwire reads its corpus from `git ls-files` (row 44), so the tripwire stays with the parent. `test_lib_diff_size.py` is already tracked on this branch, so no staging is needed. Once the dispatch returns, the parent runs Verification steps 1 and 4.
 
 - `claude/.claude/hooks/_lib.sh`: M3's two constants, `_lib_sum_numstat_changed_lines` and `_lib_diff_size_measure` with M4's base resolution inside it, M2's `_lib_diff_size_latch_file` beside `_lib_architect_consult_latch_file` (`_lib.sh:4630-4637`), and M1's `_lib_diff_size_gate_state` with its header. Reuse `_lib_config_dir`, `_lib_capped`, `_lib_capped_for`, `_lib_reviewer_round_state_key_for_branch`, `_lib_git_inprogress_state`, `_lib_configured_stack_base` and `_lib_default_branch_or_guess`.
 - `claude/.claude/hooks/tests/_lib_sh_helpers.py`: gains `_gh_shim_dir`, its body moved unchanged from `test_lib_gh.py:18-40`, and the `import textwrap` that body needs. It goes here, not to `helpers.py`, because this module holds what two or more `test_lib*.py` files share, and a `helpers.py` edit would force a full-suite run (row 57).
@@ -341,84 +371,17 @@ The writer does not stage (`code-writer.md:23`), and the dead-code tripwire read
   - The path test expects `/cfg/.diff-size-prompt-latch.d/repohash.branchhash`.
   - The empty-argument test adds the name to its function list.
   - The class docstring's first sentence, which names the gate and the recorder, widens to cover the new helper.
-- `claude/.claude/hooks/tests/test_lib_diff_size.py` (new): the input matrix for the other three functions, one case per item below.
-  - Conventions:
-    - Each call sources `_lib.sh` through `_lib_sh_helpers._run_lib_call`.
-    - The fixture builders take no env, so before building any fixture the test sets `helpers.isolated_git_config_env(home)`'s four variables with `monkeypatch.setenv`.
-    - Every call passes `os.environ` with the case's own overrides merged over it, never the isolation dict alone, which would drop `PATH`.
-    - Every `_lib_diff_size_gate_state` call sets an absolute `CLAUDE_CONFIG_DIR` under `tmp_path`, because a Claude session running the suite exports its own.
-    - The bare `origin`'s default branch is `trunk`, so a hard-coded `main` base fails. The default-branch-guess case is the one exception and uses `main`. The guess probes only `main`, `master` and `develop`, so a `trunk` remote returns 1 by construction.
-    - Deleted and added lines are textually distinct (`old-{i}`, `new-{i}`), and rename fixtures use a file of unique lines.
-    - Each refusal list below is one `pytest.mark.parametrize` table over one shared builder.
-    - Reuse, through `from helpers import ...` (row 58): `bare_remote_with_default_branch` with `branch="trunk"`, `push_conflicting_edit_to_origin`, `absolute_git_dir`, `git_toplevel`, `path_with_failing_tool_shim`, `build_path_without`, `_make_git_recording_argv`, `_run_git`, `isolated_git_config_env` and `reviewer_round_state_key`. From `._lib_sh_helpers`, reuse `_run_lib_call`, `_gh_shim_dir` and `_forge_state_marker`.
-    - With `test_lib_reviewer_round_state.py`, the test names every new function on a non-comment line (row 44).
-  - `_lib_sum_numstat_changed_lines`, from text, as one parametrized table:
-    - Empty input prints 0.
-    - One row prints the sum of its two columns.
-    - Several rows print the sum of every row.
-    - A binary `-\t-` row adds 0.
-    - A rename row whose path reads `old => new` adds its two numbers.
-    - A rename row whose path reads `{a => b}/c` adds its two numbers.
-    - A row with a non-numeric column adds 0.
-  - `_lib_diff_size_measure` counts, in real git against a bare `origin`:
-    - 200 added plus 200 deleted prints `400 trunk`.
-    - A branch with no changes prints `0 trunk`.
-    - 300 committed lines plus 100 staged print 400 before the commit and 400 after it, and both equal the sum of `git diff-tree -r -M --numstat <merge-base> HEAD` taken after the commit.
-    - One mixed fixture holds a deletion, a rename with 3 edited lines and a staged binary file. Before and after its commit it prints a hand-derived constant, which also equals that `diff-tree` sum. Without `-M` the rename would count the whole file twice, so the constant pins rename detection too.
-    - A pure rename of a 300-line file counts 0.
-    - One fixture holding staged lines, an unstaged edit and an untracked file counts only the staged lines.
-  - `_lib_diff_size_measure` counts from the merge-base, not the base's tip: `origin/trunk` gains an unrelated commit of more than 400 lines after the branch point, through `push_conflicting_edit_to_origin` and a `git fetch origin`, and the count stays the branch's own.
-  - `_lib_diff_size_measure` and the plan-file exclusion, on one fixture with a distinct line count per file: a root `.claude/plans/` file of 50 lines, `.claude/plans-old/x.md` of 3, `sub/.claude/plans/x.md` of 4 and a code file of 7. One call prints 14. A second parameter runs the same call with `GIT_LITERAL_PATHSPECS=1` in the environment and still prints 14.
-  - `_lib_diff_size_measure` with a stack key naming a pushed parent with a slashed name, such as `feat/parent`:
-    - It prints that parent as the base and leaves the parent's lines out.
-    - The parent then gains a commit inside the test's clone: check out the parent, commit, `git push`, and check out the child again. The child's count stays the same. `push_conflicting_edit_to_origin` cannot make this commit, because it advances only the default branch.
-  - `_lib_diff_size_measure` refusals, each one toggle on a fixture that prints `<count> <base>` untoggled, and each returning 1 with no stdout:
-    - The stack key names a parent that was never pushed.
-    - The stack key reads `origin/trunk`. The check that its one stderr line starts `diff-size: branch.feature.gh-merge-base is origin/trunk` is a standalone test that pins exactly one line, not a table row.
-    - HEAD is on `trunk`, and `BRANCH` is `trunk`.
-    - The `origin` remote is removed.
-    - A merge is paused: `_forge_state_marker(absolute_git_dir(<clone>), "merge", <HEAD oid>)` writes a `MERGE_HEAD` marker into the gitdir.
-    - `path_with_failing_tool_shim(bin_dir, "git", "diff-index")` is first on `PATH`.
-    - `awk` is left off `PATH` through `build_path_without`, so the changed-line sum comes back empty. This is a standalone test, not a table row.
-    - The gitdir is empty and a shim fails any `git` call whose argument is `--absolute-git-dir`, so the in-progress state is unreadable. The one call the shim hits is `git rev-parse --absolute-git-dir` inside `_lib_git_inprogress_state`. The untoggled premise runs the same call with the empty gitdir and no shim, and prints `5 trunk`. This is a standalone test, not a table row.
-  - `_lib_diff_size_measure` with `origin/HEAD` removed from a remote whose default branch is `main` still prints `<count> main`, through the default-branch guess:
-    - The case first asserts `refs/remotes/origin/HEAD` resolves.
-    - It then removes the ref with `git remote set-head origin -d` and asserts the ref no longer resolves.
-    - The call then prints `<count> main`.
-  - `_lib_diff_size_measure` and the count cap, two cases:
-    - A call that sources `_lib.sh` and prints `_LIB_DIFF_SIZE_COUNT_CAP_SECONDS` yields an integer above 5, `_lib_capped`'s cap. The case pins no exact value and scans no source text.
-    - The call string sets the constant to 1 after sourcing. `_make_git_recording_argv`'s shim, with `REAL_GIT` set, is first on `PATH`, and its action runs `exec sleep 4` when the arguments hold `diff-index`. The call returns 1 with no stdout, and the shim's log holds a `diff-index` call, so the refusal came from the killed count and not from an earlier refusal. Without a cap the stalled call would print `0 trunk` at status 0. The case skips when neither `timeout` nor `gtimeout` is on `PATH`, because `_lib_capped_for` then runs the call uncapped. The skip uses the two-line guard at `conftest.py:310-311` and `test_deny_pii_in_commits.py:1426`. The shim must `exec`, because a forked `sleep` would hold the command substitution open past the cap (`_lib.sh:73-79`).
-  - `_lib_diff_size_measure` and the lazy-fetch variable, one case, a shim-level unit over real git:
-    - A shim built with `_make_git_recording_argv` logs `$GIT_NO_LAZY_FETCH` when the arguments hold `diff-index`.
-    - The case sets `GIT_NO_LAZY_FETCH=0` in the ambient environment through `env_overrides`, so a logged `1` can only come from the export.
-    - The call prints `<count> <base>` for a 5-line fixture, and the log is exactly `1`.
-  - `_lib_diff_size_measure` and `gh`: `_gh_shim_dir`'s shim, first on `PATH`, records a call when `gh` runs in the same environment, and records none during a measured call (M4). `_gh_shim_dir` creates its directory without `exist_ok`, so the case calls it once per `tmp_path`.
-  - `_lib_diff_size_gate_state`, in real git, each later case one toggle on the first case's fixture:
-    - An unlatched branch at 400 returns 0. Its first line is exactly `<config-dir>/.diff-size-prompt-latch.d/<key>`, with `<key>` from `reviewer_round_state_key`, and its second is `400 trunk`. A second call, from a subdirectory of the repository, prints the same two lines.
-    - Both calls of that case write nothing to stderr.
-    - A branch at 399 returns 2 with no stdout.
-    - A regular file at the latch path returns 3 with no stdout, even with the `diff-index` failing shim on `PATH`, so the latch test runs before the measurement.
-    - Statuses 2 and 3 also write nothing to stderr.
-    - A directory at the latch path reads as no latch and returns 0.
-    - An empty start dir returns 1 with no stdout. The process cwd stays inside the repository, so only the empty-argument check can refuse.
-    - An unusable stack-base key returns 1 with no stdout, and the measurement's `diff-size:` line is on stderr.
-    - In a linked worktree it returns 0, then 1 with no stdout once `_forge_state_marker(absolute_git_dir(<worktree>), "merge", <HEAD oid>)` writes `MERGE_HEAD` into that worktree's gitdir. The first call's whole stdout is compared, latch path included.
-  - `_lib_diff_size_gate_state` refusals, each one toggle on the first gate-state case's fixture, and each returning 1 with no stdout:
-    - `sha256sum` is left off `PATH` through `build_path_without`, so the key does not compute.
-    - `CLAUDE_CONFIG_DIR` is relative.
-    - The start dir is outside any repository, and the call string's `cd "$repo" &&` puts the process cwd inside the baseline repository. With the process cwd outside any repository, a missing step-2 check would still return 1 at step 3, so the case would not pin step 2.
-    - HEAD is detached.
-    - The count call fails, through the `diff-index` failing shim.
+- `claude/.claude/hooks/tests/test_lib_diff_size.py`: the input matrix for the other three functions. Its test names and module docstring are the record of the cases.
 
 Session-owned: `.claude/plans/diff-size-prompt.md`, this plan.
 
-Projected diff: about 770 changed lines (additions plus deletions), measured from the implemented diff with this plan file left out, as M3's count leaves out the repository root's `.claude/plans/`. It is at or over the 400 threshold. `test_lib_diff_size.py` is about 590 of them, the `_lib.sh` additions about 110, the `_gh_shim_dir` move about 50, and the `test_lib_reviewer_round_state.py` cases about 12. It sits about 50 lines above the about 720 that row 71 answered, because later review rounds added test cases.
+Projected diff: about 850 changed lines (additions plus deletions), measured from the staged diff on 2026-11-05. The figure leaves out this plan file, as M3's count leaves out the repository root's `.claude/plans/`. It is at or over the 400 threshold. `test_lib_diff_size.py` is about 680 of them, the `_lib.sh` additions about 100, the `_gh_shim_dir` move about 54, and the `test_lib_reviewer_round_state.py` cases about 12. It sits about 130 lines above the about 720 that row 71 answered, because later review rounds added test cases.
 
 ## Verification
 
 These steps cover PR 1 only. PR 2's and PR 3's plans carry their own. The parent runs them after the `code-writer` dispatch returns.
 
-1. Stage `test_lib_diff_size.py` first (row 44). Then `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -n 2` passes. The run includes `test_lib_diff_size.py`, `test_lib_reviewer_round_state.py`, `test_lib_gh.py` and `test_shell_lib_function_liveness.py`, which all live under the hooks test tree (`test_shell_lib_function_liveness.py:52`).
+1. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py -n 2` passes. The run includes `test_lib_diff_size.py`, `test_lib_reviewer_round_state.py`, `test_lib_gh.py` and `test_shell_lib_function_liveness.py`, which all live under the hooks test tree (`test_shell_lib_function_liveness.py:52`).
 2. `scripts/venv-run.sh ruff check claude/.claude/hooks/tests/` passes.
 3. `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck` passes, which lints the `_lib.sh` edit.
 4. `git grep -n -E '_lib_(diff_size|sum_numstat)|_LIB_DIFF_SIZE' -- claude/ claude-skills/ plugins/ scripts/` matches only `_lib.sh`, `test_lib_diff_size.py` and `test_lib_reviewer_round_state.py`, so no hook, script or skill runs the new code before PR 2 (row 46).
