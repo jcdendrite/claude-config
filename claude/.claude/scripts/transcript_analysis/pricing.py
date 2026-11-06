@@ -176,8 +176,8 @@ def _model_rates(model: str) -> dict[str, float] | None:
 def _cache_read_equivalent_weights() -> dict[str, float]:
     """Each _TOKEN_CLASSES entry's price as a multiple of one cache-read token's price.
 
-    Derived from the base multipliers alone, so one ratio holds for every model:
-    _CACHE_READ_MULTIPLIER_OVERRIDES' per-model cache-read exceptions are not applied.
+    Derived from the base multipliers alone, so one ratio applies to every model:
+    _CACHE_READ_MULTIPLIER_OVERRIDES' per-model cache-read exceptions are not reflected.
     """
     class_multipliers = {
         "cache_read": _CACHE_READ_MULTIPLIER,

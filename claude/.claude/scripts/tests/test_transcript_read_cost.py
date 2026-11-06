@@ -689,6 +689,24 @@ class TestAccumulateSession:
         assert totals.billed_subagent == pytest.approx(row.billed)
         assert totals.bucket_calls[(read_cost._SCOPE_SUBAGENT, "<2000")] == 1
 
+    def test_subagent_windows_are_pulled_one_at_a_time_and_each_is_accumulated_before_the_next_is_pulled(self):
+        totals = read_cost._ReadCostTotals()
+        agents_accumulated_when_each_window_was_pulled: list[int] = []
+
+        def windows_recording_progress():
+            for window_index in range(3):
+                agents_accumulated_when_each_window_was_pulled.append(
+                    sum(row.agents for row in totals.rows_by_agent_type.values()),
+                )
+                yield _TRACKED_AGENT_TYPE, [_turn(f"s{window_index}")]
+
+        read_cost._accumulate_session(
+            totals, read_cost._SeenIds(), [_turn("m1")], windows_recording_progress(), _weights(),
+        )
+
+        assert agents_accumulated_when_each_window_was_pulled == [0, 1, 2]
+        assert totals.rows_by_agent_type[_TRACKED_AGENT_TYPE].agents == 3
+
     def test_retained_main_thread_events_carry_no_path(self):
         totals = read_cost._ReadCostTotals()
         read_cost._accumulate_session(
@@ -1459,6 +1477,34 @@ class TestReport:
         assert "main-thread whole-file reads scanned=1\n" in out
         sessions_line = next(line for line in out.splitlines() if line.startswith("sessions="))
         assert sessions_line.endswith(" repeated_reads_skipped=1")
+
+    def test_command_parses_no_subagent_transcript_before_the_session_starts_accumulating(
+        self, fake_projects, monkeypatch,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
+        _write_subagent_dispatch(fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]))
+        _write_subagent_dispatch(fake_projects, "sess", "agent-b", "tool-2", _sidechain_copies([_turn("s2")]))
+        subagent_files_parsed: list[str] = []
+        subagent_files_parsed_at_session_start: list[int] = []
+        parse_jsonl_records = corpus._parse_jsonl_records
+        accumulate_session = read_cost._accumulate_session
+
+        def recording_parse(path):
+            if path.parent.name == corpus.SUBAGENT_SUBDIR:
+                subagent_files_parsed.append(path.name)
+            return parse_jsonl_records(path)
+
+        def spy(totals, seen, main_records, subagent_windows, weights):
+            subagent_files_parsed_at_session_start.append(len(subagent_files_parsed))
+            return accumulate_session(totals, seen, main_records, subagent_windows, weights)
+
+        monkeypatch.setattr(corpus, "_parse_jsonl_records", recording_parse)
+        monkeypatch.setattr(read_cost, "_accumulate_session", spy)
+
+        read_cost.cmd_read_cost(_read_cost_args())
+
+        assert subagent_files_parsed_at_session_start == [0]
+        assert sorted(subagent_files_parsed) == ["agent-a.jsonl", "agent-b.jsonl"]
 
     def test_header_prints_the_unit_and_class_weights_derived_from_pricing_rates(self, capsys):
         model = "claude-sonnet-4-6"

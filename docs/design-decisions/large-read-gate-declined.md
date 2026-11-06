@@ -28,7 +28,7 @@ The specialist reviewer agents' whole-file reads are about 3.9% of spend. That s
 
 ## Why the gate would not work anyway
 
-- **It clears on any `offset` or `limit`.** Exempting targeted reads is necessary because edits need them. So the natural response to a deny is `limit: 2000`, which returns the same content and wastes a turn.
+- **It clears on any `offset` or `limit`.** Exempting targeted reads is necessary because edits need them. So the likely response to a deny is `limit: 2000`, which would return the same content and waste a turn. That is an expectation, not a measurement, and a gate keyed on the effective returned size is not ruled out by this bullet.
 - **It cannot see intent.** A whole-file read is right when the task is the whole file. The read-sweep plan shelved in #1330 also turned on intent: its expected false positives depend on why a read happened, which transcripts do not record. That plan proposed a retrospective measurement of read-heavy multi-site sweeps, not a deny gate, and was shelved in part because the parent plan's detectors missed their precision and kappa floors (`docs/design-decisions/tool-call-advisory-does-not-ship.md`, `.claude/plans/broaden-delegation-trigger-beyond-bash.md`).
 - **The tool already says to narrow.** The `Read` tool description tells the agent to read only the part of a file it needs when it already knows which part (`docs/case-studies/targeted-read-discipline.md`).
 
