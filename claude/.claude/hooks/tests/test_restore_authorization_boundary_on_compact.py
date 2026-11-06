@@ -353,7 +353,8 @@ class TestShippingStatementOnCompact:
     def test_armed_machine_with_an_unrelated_schema_row_missing_still_appends_the_statement(
         self, armed_home, shipping_repo, tmp_path
     ):
-        """Control for the degraded-schema test: the same directory shape emits the statement when the autonomous_shipping row survives."""
+        """Control for the degraded-schema test.
+        The same directory shape emits the statement when the autonomous_shipping row survives."""
         degraded_hook = hook_beside_degraded_schema(
             tmp_path, RESTORE_BOUNDARY_HOOK, schema_without_key="commit_stall_block"
         )
