@@ -11,6 +11,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Step 1.5 gains a "Stale claim in unchanged prose" tripwire. When a diff renames, removes or redefines a name, it searches for unchanged comments and docs still describing the old contract. It runs inline in every round, and skips preserved records, plans and dated design-decision records.
   - A claim the reviewer cannot settle by reading the repository draws a finding only when it is a number or cause-and-effect claim naming no source. The fix names the source, marks the claim unverified, or deletes it.
   - The change is live on `git pull`.
+- **`restore-authorization-boundary-on-compact.sh` now emits the boundary text and, when autonomous shipping is active, the shipping statement in one message, and its kill switch silences only the boundary text.**
+  - **Statement:** the statement is resolved for the repo the payload's `.cwd` names. With `~/.claude/.authorization-boundary-disabled` set, the hook emits the statement alone, and it stays silent when shipping is not active.
+  - **Migration:** if you relied on that kill switch to silence everything the hook says, turn off `autonomous_shipping`, or add `.claude/autonomous-shipping-optout` in the repo, to silence the statement.
+  - **Timeout:** the `settings.json` registration now sets `"timeout": 10`, against the harness default of 600 s.
+- **`/handoff` and `/brief` now file a plain commit, a plain `git push` of the current branch and `gh pr create` under the safe-to-execute section (§3 and §6), not under "Pending engineer authorization" (§3.5 and §6.5), when the filed step names the resumer's own `autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold.** The exception is one sentence in each skill's "Underlying principle" paragraph.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
@@ -512,6 +517,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new SessionStart hook, `announce-autonomous-shipping.sh`, states the resolved autonomous-shipping state to the agent at startup, resume and `/clear`.**
+  - On a machine with `autonomous_shipping` on, in a repo without `.claude/autonomous-shipping-optout`, the agent is told the engineer's request to make a change authorizes committing it, pushing the current branch and opening a PR without asking. Merging stays human-only.
+  - It has no kill switch of its own: `autonomous_shipping` and the repo optout silence it. It is advisory context, so the model may still ask.
+  - The text lives in `_lib_autonomous_shipping_statement` in `_lib.sh`, which the hook, the compact hook and the Stop hook's block reason all print. See `docs/design-decisions/autonomous-shipping-state-in-hook-context.md`.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the registration points at a script that is not linked, which does not block session start, and the hook does not run.
 - **A new hook, `send-back-skipped-self-review.sh`, with its evaluator `evaluate-code-writer-self-review.py`, sends a `code-writer` return back once when it is missing any part of the self-review evidence `code-writer.md` mandates.** A second return that is still incomplete goes through, prefixed with a `SELF-REVIEW INCOMPLETE (hook-verified)` line in auto permission mode. In `acceptEdits` mode no hook-written line reaches the parent, so a missing `SELF-REVIEW INCOMPLETE` line there is not evidence of a completed self-review. The hook is fail-open and registers under PreToolUse `SubagentHandback` and SubagentStop `code-writer`.
   - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix. Its domain table routes build tooling and environment config to `staff-platform-engineer`, and any other file to `staff-backend-engineer`.
   - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. Until then each subagent handback and each `code-writer` stop runs a registration whose script is missing, which does not block the call, and the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
@@ -620,6 +630,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
+- **`advance-past-commit-stall.sh` no longer misses a permission question on a later line of a multi-line final message.**
+  - **Cause:** it read only the first line of `last_assistant_message`.
+  - **Judgment:** it now reads the whole message and judges the last sentence of the last non-blank line, so a heading, bullets, then a closing "Should I push and open a PR?" fires.
+  - **Block reason:** it now opens with the shared autonomous-shipping statement.
+  - **Scan window:** it scans only the last 2048 characters of the message.
+  - **Repo resolution:** it resolves the repo from the payload's `cwd` alone, with no `$PWD` fallback.
+  - **Rooted at `$HOME`:** the hook no longer fires for a repo rooted at `$HOME` or above it, because no statement is printed for such a repo.
+  - **Kill switch:** the block reason names the `commit_stall_block = false` config row as the switch, because the legacy `.commit-stall-block-disabled` file does nothing once `claude-config.toml` holds a `commit_stall_block` row.
+  - **Newline in `cwd`:** a payload whose `cwd` contains a newline fails closed, so the hook does not fire.
+  - **Log:** a fire that the repo-root rule denies writes a `root-denied` line to `.commit-stall-block.log`.
 - **`review-round-cost` and `review-cost-by-size` now exclude a turn whose usage is not an object or whose token fields are not non-negative integers.**
   - **Excluded:** before, such a turn raised, priced negative, or had a float, boolean or numeric-string count coerced to an integer.
   - **Unpriced:** a turn whose `message.model` is a JSON array or object is now priced as unpriced instead of raising.

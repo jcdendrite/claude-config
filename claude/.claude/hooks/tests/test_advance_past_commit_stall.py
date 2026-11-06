@@ -24,6 +24,8 @@ from helpers import (
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
     build_path_without,
+    config_schema_text_without_key,
+    hook_beside_degraded_schema,
     init_git_repo_with_commit,
     plant_traversal_canary,
     run_hook_stop,
@@ -53,14 +55,6 @@ DOCUMENTED_MISS = (
     "The push failed with a non-fast-forward error. "
     "Want me to push again after rebasing?"
 )
-
-
-@pytest.fixture
-def armed_home(isolated_home):
-    """isolated_home plus the machine-level autonomous-shipping sentinel."""
-    marker = isolated_home / ".claude" / "autonomous-shipping-required"
-    marker.write_text("# machine sentinel\n")
-    return isolated_home
 
 
 def _init_repo(repo: Path) -> None:
@@ -171,6 +165,54 @@ CORPUS: list[tuple[str, bool]] = [
         False,
     ),  # "anyway" exclusion
     ("Here is a summary of the changes I made to the parser module.", False),
+    # Multi-line final messages: the window is the last sentence of the last non-blank line.
+    (
+        "Fixed the failing test\nWant me to commit this?",
+        True,
+    ),  # unpunctuated earlier line carrying an exclusion word; only the last-line step passes it
+    (
+        "Fixed the failing test.\n\nWant me to commit this?",
+        True,
+    ),  # capture reads past the first line; the earlier paragraph's exclusion word is outside the window
+    (
+        "## Summary\n- Fixed the parser\n- Added a regression test\n\nShould I push and open a PR?",
+        True,
+    ),  # heading and bullet lines before the ask
+    ("Want me to commit this?\n", True),  # trailing newline
+    (
+        "The tests are failing.\nWant me to commit anyway?",
+        False,
+    ),  # "anyway" in the final sentence
+    (
+        "Want me to commit this?\n\nHere is the diff summary.",
+        False,
+    ),  # the last line carries no ask
+    (
+        "Want me to commit this?\r\n\r\n",
+        True,
+    ),  # CRLF: the trailing carriage returns are stripped before the line split
+    (
+        "Want me to commit this?\n  ",
+        True,
+    ),  # trailing spaces after the last newline: only the whitespace strip exposes the ask line
+    ("", False),  # empty final message
+    ("  \n \r\n ", False),  # whitespace-only final message
+    (
+        "Want me to:\n- commit\n- push",
+        False,
+    ),  # accepted miss: a bulleted ask leaves no verb on the last line ("A line break ends a sentence", commit-stall-block.md)
+    (
+        "Want me to\ncommit this?",
+        False,
+    ),  # accepted miss: an ask wrapped across lines leaves no verb on the last line
+    (
+        "Want me to commit " + "the change and " * 100 + "now?",
+        True,
+    ),  # a 1-2 KB final sentence with the verb at its head sits inside the scan window
+    (
+        "Want me to commit " + "the change and " * 200 + "now?",
+        False,
+    ),  # accepted miss: a final sentence longer than the scan window loses its head verb (commit-stall-block.md)
 ]
 
 
@@ -193,6 +235,27 @@ def test_fire_predicate_corpus(
         assert result is not None, f"expected a block for: {message!r}"
     else:
         assert result is None, f"expected silence for: {message!r}, got {result!r}"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Fixed one more parser case.\n" * 8000 + "Want me to commit this?",
+        "lorem ipsum dolor sit amet " * 4000 + "Want me to commit this?",
+        "The build is failing " + "and so on " * 400 + "so want me to commit this?",
+    ],
+    ids=["200KB-multi-line", "100KB-single-line", "exclusion-word-beyond-the-scan-window"],
+)
+def test_large_final_message_still_fires(armed_home, dirty_repo, message):
+    """Only the message's tail is scanned (the hook's ASK_WINDOW_CHARS), so the third case's early
+    exclusion word is out of view. No wall-clock assertion, per flake risk."""
+    assert len(message) >= 4_000
+    result = _fire(
+        stop_input(message, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
 
 
 def test_case_folding_lowercase_verb_fires(armed_home, dirty_repo):
@@ -398,11 +461,7 @@ def test_unreadable_config_keys_psv_does_not_fire(armed_home, dirty_repo, tmp_pa
     symlink the hook plus _lib.sh/_config.sh into a directory with no
     config-keys.psv sibling, so _config_schema_field sees an absent
     (unreadable) schema file."""
-    isolated_hooks_dir = tmp_path / "isolated-hooks"
-    isolated_hooks_dir.mkdir()
-    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
-    (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
-    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    isolated_hook = hook_beside_degraded_schema(tmp_path, ADVANCE_HOOK)
     # Distinct prompt_ids: STATE_DIR dedup is keyed on session_id+prompt_id
     # and shares the same armed_home across both calls below, so reusing one
     # prompt_id would make the second call's silence ambiguous between
@@ -413,7 +472,7 @@ def test_unreadable_config_keys_psv_does_not_fire(armed_home, dirty_repo, tmp_pa
         home=armed_home,
     )
     isolated_result = run_hook_stop(
-        isolated_hooks_dir / ADVANCE_HOOK.name,
+        isolated_hook,
         stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(dirty_repo)),
         cwd=dirty_repo,
         home=armed_home,
@@ -471,7 +530,7 @@ def test_commit_stall_block_case_statement_treats_exit_4_as_stays_armed(
     isolated_home, dirty_repo, tmp_path
 ):
     """Direct regression test for the case "$?" statement itself
-    (advance-past-commit-stall.sh:63-66), isolated the same way the exit-3
+    (the one after the commit_stall_block check in advance-past-commit-stall.sh), isolated the same way the exit-3
     test above is: config-keys.psv is readable and non-empty but missing
     commit_stall_block's own row (the interrupted stow-relink/git-pull
     shape, distinct from the wholly-unreadable file above), and
@@ -483,9 +542,7 @@ def test_commit_stall_block_case_statement_treats_exit_4_as_stays_armed(
     (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
     (isolated_hooks_dir / "_lib.sh.real").symlink_to(HOOKS_DIR / "_lib.sh")
     (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
-    real_schema = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
-    pruned_schema = [line for line in real_schema if not line.startswith("commit_stall_block|")]
-    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+    (isolated_hooks_dir / "config-keys.psv").write_text(config_schema_text_without_key("commit_stall_block"))
     (isolated_hooks_dir / "_lib.sh").write_text(
         "#!/bin/bash\n"
         '. "$(dirname "${BASH_SOURCE[0]}")/_lib.sh.real"\n'
@@ -660,6 +717,162 @@ def test_kill_switch_disables(armed_home, dirty_repo):
         cwd=dirty_repo,
         home=armed_home,
     )
+    assert result is None
+
+
+def test_config_row_true_still_fires_when_the_legacy_kill_switch_file_exists(armed_home, dirty_repo):
+    """A commit_stall_block row in claude-config.toml is authoritative, so the legacy file does not disable the hook."""
+    (armed_home / ".claude" / "claude-config.toml").write_text("commit_stall_block = true\n")
+    (armed_home / ".claude" / ".commit-stall-block-disabled").write_text("")
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
+
+
+def test_config_row_false_disables_when_no_legacy_file_exists(armed_home, dirty_repo):
+    (armed_home / ".claude" / "claude-config.toml").write_text("commit_stall_block = false\n")
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is None
+
+
+def test_reason_disable_instruction_disables_the_hook_when_run_beside_a_scaffolded_config_row(
+    armed_home, dirty_repo
+):
+    """The instruction the agent relays must take effect: the config row, not the legacy file."""
+    config_toml = armed_home / ".claude" / "claude-config.toml"
+    config_toml.write_text("commit_stall_block = true\n")
+    first = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert first is not None, "sanity check: the scaffolded `= true` row alone must not disable the hook"
+    reason = first["reason"]
+    assert ".commit-stall-block-disabled" not in reason
+    disable_command = reason.split("To disable this on this machine: ", 1)[1].split(". To disable it for this repo", 1)[0]
+
+    subprocess.run(["bash", "-c", disable_command], check=True)
+
+    assert config_toml.read_text().splitlines()[-1] == "commit_stall_block = false"
+    second = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert second is None
+
+
+def test_denied_root_logs_a_root_denied_line(armed_home, non_repo_dir):
+    """A fire-pattern match whose .cwd resolves to no eligible root leaves a log line instead of vanishing silently."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(non_repo_dir)
+        ),
+        cwd=non_repo_dir,
+        home=armed_home,
+    )
+    assert result is None
+    log_text = (armed_home / ".claude" / ".commit-stall-block.log").read_text()
+    assert "root-denied session=s prompt=p1\n" in log_text
+
+
+def test_non_matching_turn_with_a_non_repo_cwd_writes_no_root_denied_line(armed_home, non_repo_dir):
+    """The root is resolved only after the fire pattern matches, so ordinary turns leave no log line."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_NONQUESTION, session_id="s", prompt_id="p1", cwd=str(non_repo_dir)
+        ),
+        cwd=non_repo_dir,
+        home=armed_home,
+    )
+    assert result is None
+    log_file = armed_home / ".claude" / ".commit-stall-block.log"
+    assert not log_file.exists() or "root-denied" not in log_file.read_text()
+
+
+def test_cwd_containing_a_newline_fails_closed(armed_home, dirty_repo, tmp_path):
+    """The line-oriented read would split the path at the newline and resolve its first line,
+    here a symlink to an eligible repo, so a newline in .cwd must read as no cwd at all."""
+    (tmp_path / "link").symlink_to(dirty_repo, target_is_directory=True)
+    newline_cwd = tmp_path / "link\ninside"
+    newline_cwd.mkdir()
+    control = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(tmp_path / "link")
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(newline_cwd)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert control is not None, "sanity check: the symlinked path alone must fire"
+    assert result is None
+    log_text = (armed_home / ".claude" / ".commit-stall-block.log").read_text()
+    assert "root-denied session=s prompt=p2\n" in log_text
+
+
+@pytest.mark.parametrize("bad_cwd", [5, {"path": "/tmp"}, ["/tmp"]], ids=["number", "object", "array"])
+def test_non_string_cwd_fails_closed(armed_home, dirty_repo, bad_cwd):
+    """A non-string .cwd is blanked while the other fields stay readable, so the hook still reaches
+    the root check and logs root-denied instead of dropping the whole payload before it."""
+    payload = stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1")
+    payload["cwd"] = bad_cwd
+    result = _fire(payload, cwd=dirty_repo, home=armed_home)
+    assert result is None
+    log_text = (armed_home / ".claude" / ".commit-stall-block.log").read_text()
+    assert "root-denied session=s prompt=p1\n" in log_text
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\u0000\n"], ids=["newline", "nul-then-newline"])
+@pytest.mark.parametrize("field", ["session_id", "agent_type", "permission_mode", "prompt_id"])
+def test_header_field_containing_a_newline_does_not_shift_the_later_fields(armed_home, dirty_repo, field, line_break):
+    """Each value carries the later fields' own values after its line break, so a line-oriented read
+    that split it would reassemble a payload that fires. The hook must treat the payload as unreadable.
+    The nul-then-newline break pins that a NUL directly before the newline does not hide it from the check."""
+    headers = {"session_id": "s", "agent_type": "", "permission_mode": "default", "prompt_id": "p1"}
+    header_names = list(headers)
+    later_lines = [headers[name] for name in header_names[header_names.index(field) + 1 :]]
+    later_lines.append(str(dirty_repo))
+    payload = stop_input(ISSUE_QUOTE_QUESTION, cwd=str(dirty_repo), **headers)
+    control = _fire({**payload, "prompt_id": "p0"}, cwd=dirty_repo, home=armed_home)
+    payload[field] = headers[field] + line_break + "\n".join(later_lines)
+    result = _fire(payload, cwd=dirty_repo, home=armed_home)
+    assert control is not None, "sanity check: the clean payload must fire"
+    assert result is None
+
+
+@pytest.mark.parametrize("field", ["session_id", "agent_type", "permission_mode", "prompt_id"])
+@pytest.mark.parametrize("bad_value", [5, {"id": "s"}], ids=["number", "object"])
+def test_non_string_header_field_does_not_fire(armed_home, dirty_repo, field, bad_value):
+    """A header field that is not a string empties every field, which gate 5 denies."""
+    payload = stop_input(
+        ISSUE_QUOTE_QUESTION,
+        session_id="s",
+        agent_type="",
+        permission_mode="default",
+        prompt_id="p1",
+        cwd=str(dirty_repo),
+    )
+    control = _fire({**payload, "prompt_id": "p0"}, cwd=dirty_repo, home=armed_home)
+    payload[field] = bad_value
+    result = _fire(payload, cwd=dirty_repo, home=armed_home)
+    assert control is not None, "sanity check: the clean payload must fire"
     assert result is None
 
 
@@ -902,6 +1115,36 @@ def test_emitted_payload_is_exactly_decision_and_reason(armed_home, dirty_repo):
     assert isinstance(result["reason"], str)
     assert "/code-review" in result["reason"]
     assert "/ready-for-review" in result["reason"]
+
+
+def test_reason_opens_with_the_shared_shipping_statement(armed_home, dirty_repo, shipping_statement):
+    """Single-source pin: the reason holds the helper's output byte for byte, so text drifting from the helper's fails."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
+    assert result["reason"].startswith(shipping_statement(dirty_repo) + " ")
+    assert "gh pr merge" not in result["reason"]
+    assert "/code-review" in result["reason"]
+    assert "/ready-for-review" in result["reason"]
+
+
+def test_reason_tail_conditions_the_continue_directive_on_the_statement(armed_home, dirty_repo):
+    """A closing question can itself be the hold check, so the directive must not be unconditional.
+    The statement owns the conditions, so the tail defers to it."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None
+    assert "If the statement above lets you ship this work, continue now:" in result["reason"]
 
 
 # ------------------------------------------------------------------ #

@@ -62,11 +62,14 @@ Column legend:
 ### `autonomous_shipping`
 
 - Call site: `_lib.sh`'s `_lib_autonomous_shipping_active` /
-  `_lib_autonomous_shipping_sentinel_present` (delegated to by
-  `autonomous-shipping-active.sh` and `advance-past-commit-stall.sh:67`'s
-  fast path). `_lib_autonomous_shipping_sentinel_present` is a thin
+  `_lib_autonomous_shipping_sentinel_present`. `autonomous-shipping-active.sh`
+  delegates to them, and so does the sentinel fast path of
+  `advance-past-commit-stall.sh`, `announce-autonomous-shipping.sh` and
+  `restore-authorization-boundary-on-compact.sh`.
+  `_lib_autonomous_shipping_sentinel_present` is a thin
   zero-arity wrapper over `_config_enabled autonomous_shipping`, with no
   raw-path probe of its own.
+  `_lib_autonomous_shipping_statement` is called by those same three hooks.
 - Resolution: **config-dir-or-home**. `_config_enabled` reads this from
   `autonomous_shipping`'s `resolution` column and unions the resolved
   config dir with the literal `$HOME/.claude`, the same generic union
@@ -148,22 +151,26 @@ Column legend:
 
 ### `authorization_boundary_restore`
 
-- Call site: `restore-authorization-boundary-on-compact.sh:43`:
-  `_config_enabled authorization_boundary_restore || exit 0` — no raw
-  `[ -f ]` probe at the call site itself.
+- Call site: `restore-authorization-boundary-on-compact.sh`: a bare
+  `_config_enabled authorization_boundary_restore` whose status selects a
+  `case`, with no raw `[ -f ]` probe at the call site itself.
 - Resolution: **config-dir**. `authorization_boundary_restore`'s schema row
   carries `config-dir`, so `_config_value` reads only the resolved config
   dir — no `$HOME` union arm.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
   `_config_enabled`'s underlying `_lib_config_dir` failure propagates as
-  exit 2, which this hook's own `|| exit 0` treats as "not active."
+  exit 2, which this hook's `case` treats as "skip the boundary text."
 - Legacy-import-locations: **config-dir**. Never inventoried in
   `SENTINEL_INVENTORY` at all pre-migration (Context section: "missing from
   `SENTINEL_INVENTORY` today") — a user hand-toggles it directly, so there
   is no install.sh writer bug to recover from.
-- Fail direction on resolution failure: `exit 0` (advisory hook; an
-  unresolvable config dir leaves nothing to restate, so it no-ops rather
-  than guessing).
+- Fail direction on resolution failure: the boundary text is skipped
+  (advisory hook; an unresolvable config dir leaves no kill-switch location
+  to check, so it omits the text rather than guessing). The message has a
+  second part, the autonomous-shipping statement, which follows
+  `autonomous_shipping` and not this key, so this key's kill switch silences
+  only the boundary text. An unresolvable config dir also yields no
+  statement, because `autonomous_shipping` fails toward not shipping.
 
 ## Remaining sixteen keys
 
