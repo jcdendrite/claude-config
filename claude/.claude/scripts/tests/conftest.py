@@ -895,8 +895,10 @@ def _api_request_blob_rec(
     assistant/user record, has no isSidechain key. `record_type` is one of
     `_NON_CONVERSATION_CONTENT_RECORD_TYPES`.
 
-    A real record observed in a transcript also has the top-level keys hash and sessionId, and its message has
-    a role; it has no timestamp or agentId key. The `agent_id` and `ts` parameters add keys that record did not have.
+    An observed blob record has the top-level keys hash and sessionId.
+    Its message has a role.
+    It has no timestamp or agentId key.
+    The `agent_id` and `ts` parameters add keys the observed blob record lacked.
     """
     rec: dict = {"type": record_type, "message": {"content": content}}
     if agent_id is not None:

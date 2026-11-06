@@ -8,7 +8,7 @@ import os
 from collections import Counter
 
 import pytest
-from transcript_analysis import corpus, pricing, read_cost, redaction, scope, subagent_mix
+from transcript_analysis import corpus, pricing, read_cost, scope, subagent_mix
 
 from .conftest import (
     _NON_CONVERSATION_CONTENT_RECORD_TYPES,
@@ -1421,9 +1421,11 @@ class TestReport:
         )
         assert out.count("also holds agents") == 1
 
-    def test_agent_type_named_only_by_the_allowlist_seam_prints_by_name(self, fake_projects, monkeypatch, capsys):
+    def test_agent_type_named_only_by_the_allowlist_seam_prints_by_name(
+        self, fake_projects, stub_repo_tracked_agent_types, capsys,
+    ):
         allowlist_only_type = "sentinel-allowlist-only-agent-type"
-        monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: frozenset({allowlist_only_type}))
+        stub_repo_tracked_agent_types(allowlist_only_type)
         _write_jsonl(fake_projects / "sess.jsonl", [_turn("m1")])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a", "tool-1", _sidechain_copies([_turn("s1")]), agent_type=allowlist_only_type,
