@@ -30,8 +30,9 @@ oracle to agree with, is not its subject.
   `tests/test_transcript_shared_fixtures.py`.
 
 No test file is a catch-all named for the tool as a whole.
-`tests/test_transcript_analysis_module_test_files.py` fails when a package module has neither a test file
-named for it nor an entry in that file's `MODULES_TESTED_ELSEWHERE`.
+`tests/test_transcript_analysis_module_test_files.py` fails when a test file is named
+`test_transcript_analysis.py`, or when a package module has neither a test file named for it nor a
+`MODULES_TESTED_ELSEWHERE` entry.
 
 **Size.** `docs/design-decisions/code-file-line-limit.md` sets the line limit, for test files as for code.
 A test file that would cross it splits at a named seam, and the new file's suffix names that seam. Never

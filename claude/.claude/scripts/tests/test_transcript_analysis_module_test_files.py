@@ -1,5 +1,6 @@
 """Pins that every transcript_analysis module has a test file named for it, or a MODULES_TESTED_ELSEWHERE entry naming the
-file that tests it. The match is by file name only and does not show that the file covers the module."""
+file that tests it. The match is by file name only and does not show that the file covers the module. Also pins that
+test_transcript_analysis.py, the catch-all named for the tool as a whole, does not exist."""
 from __future__ import annotations
 
 import pytest
@@ -14,6 +15,8 @@ MODULES_TESTED_ELSEWHERE = {
     "cache_rebuild_rules": "test_transcript_cache_rebuild_ttl_rules.py",
     "sessions": "test_transcript_analysis_multi_root_scope.py",
 }
+
+CATCH_ALL_TEST_FILE_NAME = "test_transcript_analysis.py"
 
 
 def _package_module_names() -> list[str]:
@@ -69,6 +72,15 @@ def _entry_violations(
                 f"MODULES_TESTED_ELSEWHERE value {test_file_name!r} (for {module!r}) is not a file in {TESTS_DIR}"
             )
     return violations
+
+
+def _catch_all_violations(test_file_names: list[str]) -> list[str]:
+    return [
+        f"{test_file_name} is a catch-all named for the tool as a whole -- put the test in the file named for its "
+        f"subject (see .claude/rules/transcript-analysis-tests.md)"
+        for test_file_name in test_file_names
+        if test_file_name == CATCH_ALL_TEST_FILE_NAME
+    ]
 
 
 def test_every_package_module_has_a_named_test_file_or_an_entry():
@@ -143,3 +155,17 @@ def test_entry_whose_test_file_is_missing_is_reported():
     violations = _entry_violations(["alpha"], [], {"alpha": "test_alpha_elsewhere.py"}, [])
     assert len(violations) == 1
     assert "test_alpha_elsewhere.py" in violations[0]
+
+
+def test_catch_all_test_file_is_absent():
+    assert _catch_all_violations(_test_file_names()) == []
+
+
+def test_catch_all_test_file_is_reported():
+    violations = _catch_all_violations(["test_transcript_cli.py", "test_transcript_analysis.py"])
+    assert len(violations) == 1
+    assert "test_transcript_analysis.py" in violations[0]
+
+
+def test_invariant_test_file_is_not_reported_as_a_catch_all():
+    assert _catch_all_violations(["test_transcript_analysis_multi_root_scope.py"]) == []
