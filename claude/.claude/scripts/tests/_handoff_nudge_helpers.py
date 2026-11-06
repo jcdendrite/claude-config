@@ -1,5 +1,5 @@
-"""Test helpers shared by the handoff-nudge family's test files and by test_transcript_analysis.py's
-cross-subcommand table."""
+"""Test helpers shared by the handoff-nudge family's test files and by
+test_transcript_analysis_multi_root_scope.py's cross-subcommand table."""
 import argparse
 import json
 

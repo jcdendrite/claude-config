@@ -1597,7 +1597,7 @@ def _reset_pricing_format_drift_flags(monkeypatch):
 
     pytest-xdist's default --dist=load doesn't group by file, so a test that
     trips _warn_if_run_usage_drift or _warn_if_subagent_format_drift (e.g.
-    test_transcript_analysis.py's and test_transcript_reviewer_yield.py's own
+    test_transcript_subagents_format_drift.py's and test_transcript_reviewer_yield.py's own
     drift-canary tests) would otherwise leak a fired flag into a later
     _cost_report test sharing the same worker, intermittently tripping its
     PRICING INTEGRITY banner for an unrelated reason. monkeypatch.setattr

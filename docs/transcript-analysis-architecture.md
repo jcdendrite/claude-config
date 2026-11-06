@@ -780,15 +780,29 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
+`.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
+the existing tests live.
+
+`tests/test_transcript_cli.py` holds seven tests that are exceptions to the rule's bullet on one command's
+CLI wiring. Each belongs in its command's file:
+
+- `TestCacheEfficiencyArgparseWiring`'s two tests, in `tests/test_transcript_cache_efficiency.py`
+- `TestBuildParser`'s `test_this_repo_and_projects_mutually_exclusive_on_skill_invocation` and
+  `test_bare_skill_invocation_leaves_projects_unset`, in `tests/test_transcript_skill_invocation.py`
+- `TestBuildParser`'s `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts`, in
+  `tests/test_transcript_review_cost_by_size.py`
+- `TestBuildParser`'s `test_pr_link_without_repo_flag_defaults_to_none` and
+  `test_pr_link_with_repo_flag_parses_value`, in `tests/test_transcript_pr_link.py`
+
 `corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
 `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
 `tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `scope.py`'s
 scan-traversal, scan-gap, and glob-selection classes are tested in
 `tests/test_transcript_scope_scan.py`, and the rest of `scope.py` in
-`tests/test_transcript_scope.py`. `TestProjectsFlagHasNoArgparseType` stays in
-`tests/test_transcript_analysis.py` because it reads `build_parser`.
-`TestSkillFilesQuoteRootCountDescLiteral` stays there too, because `select-tests.py` declares that
-file, not the scope files, as a `SKILL.md` reader. `pricing.py`'s
+`tests/test_transcript_scope.py`. `TestProjectsFlagHasNoArgparseType` lives in `tests/test_transcript_cli.py`
+because it walks every subparser `build_parser()` registers. `TestSkillFilesQuoteRootCountDescLiteral` lives
+in `tests/test_transcript_analysis_multi_root_scope.py`, which `select-tests.py` selects as a `SKILL.md`
+reader. `pricing.py`'s
 shared per-session step, staleness rule, and canary return values, and
 `cost.py`'s accumulation of that step's counts, also have direct tests in
 `tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
@@ -814,7 +828,7 @@ only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
 only the shim has — `build_parser` or `main` — loads
 its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
-boilerplate `test_transcript_analysis.py` uses. Such a file imports every package module it reads
+boilerplate `tests/test_transcript_cli.py` uses. Such a file imports every package module it reads
 directly. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
@@ -831,7 +845,8 @@ shim copy is reserved for the argparse-wiring tests.
 
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
-`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
+`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim. It also holds
+`TestTableColsHelper`, the tests of `conftest.py`'s `_table_cols`.
 
 `tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
 map applied to code only, what remains of each source file, byte-compared CLI captures under a pinned
@@ -860,12 +875,9 @@ All six share
 `tests/_cache_rebuild_helpers.py` (a plain module, not a test file itself — see
 `.claude/rules/test-tree-packaging.md` for why its own consumers import it as
 `from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
-itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
-`tests/test_transcript_analysis.py` rather than moving with the rest of the family: it spans both
-cache-rebuild and cache-efficiency.
-`.claude/plans/transcript-analysis-decomposition.md`'s rule for a cross-group test (stated there for
-`_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the legacy file at least until every group it
-references has moved.
+itself. `TestCacheRebuildCrossInstrumentReconciliation` lives in `tests/test_transcript_cache_rebuild.py`:
+it tests cache-rebuild's sidechain W5m accumulator, and runs cache-efficiency only as the oracle that
+accumulator must agree with.
 
 The audit-routing family splits along its three subcommands rather than one file per module:
 `tests/test_transcript_audit_routing.py` (`cmd_audit_routing`),
@@ -874,9 +886,9 @@ The audit-routing family splits along its three subcommands rather than one file
 `tests/_audit_routing_helpers.py`, a plain module, not a test file itself. Its own consumers
 import it as `from ._audit_routing_helpers import ...` — see
 `.claude/rules/test-tree-packaging.md` for why. Each file keeps its own family-only helpers
-local to itself. `TestMultiRootFormatOutliers` stays in `tests/test_transcript_analysis.py`
-rather than moving with the rest of the family: it spans cost, audit-routing-samples, and
-judgment-pair.
+local to itself. `TestMultiRootFormatOutliers` lives in
+`tests/test_transcript_analysis_multi_root_scope.py` rather than with the rest of the family: it spans
+cost, audit-routing-samples, and judgment-pair.
 
 The cost-ledger command family splits at the `--record` refusal-gate seam rather than one file per
 module: `tests/test_transcript_cost_ledger.py` covers path resolution, read mode, serialization,
@@ -903,6 +915,7 @@ The subagent command family splits at command seams rather than one file per mod
 
 - `tests/test_transcript_subagents.py` covers `cmd_subagents`, plus the declared-roots multi-root class
   for both `cmd_subagents` and `cmd_subagent_mix`
+- `tests/test_transcript_subagents_format_drift.py` covers `cmd_subagents`'s format-drift canary
 - `tests/test_transcript_subagent_mix.py` covers `cmd_subagent_mix`'s spawn table, model-mix columns,
   declared-pin path safety, `--since`, and multi-root disclosure
 - `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and `Counterfactual $` columns
@@ -910,14 +923,15 @@ The subagent command family splits at command seams rather than one file per mod
 - `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, nested-spawn counting and
   attribution, disclosure allowlist, and the agent-type charset pin
 
-The first three share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
-`tests/test_transcript_analysis.py` imports it too. All four consumers import it relatively, as
+The first four share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
+`tests/test_transcript_analysis_multi_root_scope.py` imports it too. All its consumers import it relatively, as
 `from ._subagent_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why. It holds
-only helpers used by more than one file, or by `tests/test_transcript_analysis.py` as well:
+only helpers used by more than one file:
 `_sum_column_across_rows`, `_subagent_mix_args`, and `_subagents_args`. Each file keeps its other
 family-only helpers local to itself.
-`TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
-family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` lives
+Each command's format-drift canary tests live with that command: `cmd_skill_pair`'s in
+`tests/test_transcript_skill_pair.py` and `cmd_cache_efficiency`'s in `tests/test_transcript_cache_efficiency.py`.
+`TestSubagentFormatContract` lives
 in `tests/test_transcript_corpus.py`: it checks the subagent record shape `corpus.iter_sessions`
 reads back from fixture files and reads no name from the family.
 
@@ -949,7 +963,7 @@ again at its detection/reporting seam:
 `tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the six helpers more
 than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,
 `_ramp_curve_from_records`, `_check_result_json`, `_handoff_advisory_attachment`, and
-`_check_call_turn`. `tests/test_transcript_analysis.py` imports only `_spend_over_threshold_args` and
+`_check_call_turn`. `tests/test_transcript_analysis_multi_root_scope.py` imports only `_spend_over_threshold_args` and
 `_rearm_backtest_args`, for its cross-subcommand table. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
 — see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
 local to itself.
@@ -961,8 +975,9 @@ default, and the `/slash` `<command-args>` exclusion), `tests/test_transcript_sk
 `cmd_skill_pair`, and `tests/test_transcript_judgment_pair.py` covers `cmd_judgment_pair`. None of the
 three loads the shim: each imports its package module directly and relies on the loader-free
 `fake_projects` fixture. `tests/_skill_helpers.py`, a plain module, not a test file itself, holds the
-helpers more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file
-imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
+helpers more than one of those files, `tests/test_transcript_analysis_multi_root_scope.py`, or
+`tests/test_transcript_analysis_branch_attribution.py` reads. Each imports it as
+`from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
 why. `TestIsFreshUserPrompt` lives in `tests/test_transcript_render.py` because it tests
 `render.py`, not the judgment-pair command.
 
@@ -974,9 +989,9 @@ loads the shim: each imports its package module directly and relies on the loade
 `fake_projects` fixture. `TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration`
 covers buckets and duration from `tests/test_transcript_buckets.py`. `tests/_session_signal_helpers.py`,
 a plain module, not a test file itself, holds the helpers more than one of those files, or
-`tests/test_transcript_analysis.py`, reads. The legacy file imports it too, as
+`tests/test_transcript_analysis_branch_attribution.py`, reads. Each imports it as
 `from ._session_signal_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
-`TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays in `tests/test_transcript_analysis.py`
+`TestPerRecordConsumersCreditPrefixToTheBranchEntered` lives in `tests/test_transcript_analysis_branch_attribution.py`
 because it also spans judgment-pair and pr-link.
 
 The turn-shape, commit-gate, and pr-link commands each have one test file:
@@ -984,9 +999,9 @@ The turn-shape, commit-gate, and pr-link commands each have one test file:
 `tests/test_transcript_pr_link.py`. None of the three loads the shim: each imports its package modules
 directly and relies on the loader-free `fake_projects` fixture. `tests/_commit_gate_helpers.py`, a plain
 module, not a test file itself, holds `_gate_args`, which the commit-gate file and
-`tests/test_transcript_analysis.py`'s cross-subcommand header table both read. The legacy file imports it
-too, as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
-`sessions.py` has no test file of its own. The cross-subcommand header table covers its header.
+`tests/test_transcript_analysis_multi_root_scope.py`'s cross-subcommand header table both read. Both import it
+as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
+`sessions.py` has no test file of its own: that header table covers its header.
 `tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
 emission. No test covers the `--paths` refusal. The pr-link method of
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).
@@ -995,14 +1010,14 @@ The context-distribution, context-composition, and cache-efficiency commands eac
 `tests/test_transcript_context_distribution.py`, `tests/test_transcript_context_composition.py`, and
 `tests/test_transcript_cache_efficiency.py`. None of the three loads the shim: each imports its package
 modules directly. `tests/_cache_efficiency_helpers.py`, a plain module, not a test file itself, holds
-`_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_analysis.py` both
-read. The legacy file imports it too, as `from ._cache_efficiency_helpers import ...` — see
-`.claude/rules/test-tree-packaging.md` for why. `TestCacheEfficiencyArgparseWiring` and
-`TestConfigDirRouting` stay in `tests/test_transcript_analysis.py` because they read `build_parser` and
-`main`, which only the shim has.
+`_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_cache_rebuild.py` both
+read. Both import it as `from ._cache_efficiency_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. `TestConfigDirRouting` lives in `tests/test_transcript_cli.py`
+with `main()`'s other `--config-dir` tests. `TestCacheEfficiencyArgparseWiring` is there too, one of the
+exceptions named at the start of this section.
 
 The edit-format and instrument-authoring commands each have one test file:
 `tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither
 loads the shim: each imports its package modules directly. `_UNCONDITIONAL_HEADER_CASES` in
-`tests/test_transcript_analysis.py` reads `edit_format.cmd_edit_format` and
+`tests/test_transcript_analysis_multi_root_scope.py` reads `edit_format.cmd_edit_format` and
 `instrument_authoring.cmd_instrument_authoring` directly.

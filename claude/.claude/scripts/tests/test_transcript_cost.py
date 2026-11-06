@@ -4389,9 +4389,7 @@ class TestCostTrendConfigDir:
 
 
 # ---------------------------------------------------------------------------
-# format-drift canary (cost side; see TestFormatDriftCanary in
-# test_transcript_analysis.py for the subagents/skill-pair/cache-efficiency
-# siblings)
+# format-drift canary (cost side)
 # ---------------------------------------------------------------------------
 
 
