@@ -1773,13 +1773,36 @@ def _break_worktree_git_link(wt_path: Path) -> None:
 
 def _make_runner_worktree_with_main_on(repo: Path, runner_path: Path, branch_in_main_checkout: str) -> None:
     """Add a linked worktree at runner_path on a new branch `feat/runner`, then check
-    out branch_in_main_checkout in repo. A script run from runner_path sees the main
-    checkout holding branch_in_main_checkout from a linked worktree of its own."""
+    out branch_in_main_checkout in repo. A script run from runner_path is in a
+    linked worktree while the main checkout holds branch_in_main_checkout."""
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "feat/runner", str(runner_path), "main"],
         cwd=repo, check=True,
     )
     subprocess.run(["git", "checkout", "-q", branch_in_main_checkout], cwd=repo, check=True)
+
+
+def _worktree_lock_states(repo: Path) -> dict[Path, bool]:
+    """Map each worktree `git worktree list --porcelain` registers for repo, by
+    resolved path, to whether its record carries a `locked` line."""
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    lock_states: dict[Path, bool] = {}
+    for record in listing.strip().split("\n\n"):
+        lines = record.splitlines()
+        worktree_path = Path(lines[0].removeprefix("worktree ")).resolve()
+        lock_states[worktree_path] = any(line == "locked" or line.startswith("locked ") for line in lines[1:])
+    return lock_states
+
+
+def _leave_modules_directory_in_worktree_git_dir(wt_path: Path) -> None:
+    """Create an empty `modules` directory in the linked worktree's own git dir,
+    the leftover that makes `git worktree remove` refuse the worktree."""
+    worktree_git_dir = subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=wt_path, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    (Path(worktree_git_dir) / "modules").mkdir()
 
 
 def _make_worktree_without_git_entry(tmp_path: Path, *, locked: bool = False) -> tuple[Path, Path]:

@@ -19,6 +19,7 @@ from .conftest import (
     _commit,
     _dead_pid,
     _failing_tool_shims,
+    _leave_modules_directory_in_worktree_git_dir,
     _live_process_in,
     _lock_worktree,
     _make_feature_branch,
@@ -274,10 +275,7 @@ class TestLeftoverModulesDirectoryBlocksRemoval:
         _make_feature_branch(local, "feat/leftover-modules")
         wt_path = tmp_path / "leftover-modules-tree"
         _make_worktree(local, "feat/leftover-modules", wt_path)
-        worktree_git_dir = subprocess.run(
-            ["git", "rev-parse", "--absolute-git-dir"], cwd=wt_path, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        (Path(worktree_git_dir) / "modules").mkdir()
+        _leave_modules_directory_in_worktree_git_dir(wt_path)
 
         result = _run_script(local)
 
@@ -481,8 +479,8 @@ class TestMainWorktreeExcluded:
         assert f"Worktree: {linked_path} (current)" in result.stdout
 
     def test_main_worktree_excluded_when_its_git_dir_is_stored_elsewhere(self, tmp_path):
-        """With `--separate-git-dir` git lists the main worktree under its git dir, so excluding
-        it by `dirname <common dir>` would report it as a linked worktree."""
+        """With `--separate-git-dir`, git lists the main worktree under its git dir, not its
+        checkout, and it must still be excluded."""
         main_path = tmp_path / "main"
         separate_git_dir = tmp_path / "store.git"
         subprocess.run(
@@ -500,7 +498,6 @@ class TestMainWorktreeExcluded:
         result = _run_script(linked_path)
 
         assert result.returncode == 0, result.stderr
-        # Git lists the main worktree of a separate-git-dir repo by its git dir, not its checkout.
         assert f"Worktree: {separate_git_dir}\n" not in result.stdout
         assert f"Worktree: {main_path}\n" not in result.stdout
         assert f"Worktree: {linked_path} (current)" in result.stdout

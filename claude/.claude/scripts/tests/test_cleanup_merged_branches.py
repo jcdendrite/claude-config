@@ -45,6 +45,7 @@ from .conftest import (
     _make_worktree_without_git_entry,
     _shim_match_count,
     _shimmed_env,
+    _worktree_lock_states,
 )
 
 # Path to the script under test (resolved relative to this file)
@@ -987,17 +988,7 @@ class TestLockedWorktreeRemoveFailsCleanly:
         )
         assert ref_check.returncode == 0, "branch ref must survive when worktree remove fails"
         # Worktree must be relocked (best-effort restore of prior state)
-        porcelain = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=local, capture_output=True, text=True, check=True,
-        )
-        records = porcelain.stdout.strip().split("\n\n")
-        wt_str = str(wt_path)
-        wt_is_locked = any(
-            f"worktree {wt_str}" in record and "locked" in record
-            for record in records
-        )
-        assert wt_is_locked, "worktree should be relocked after failed remove"
+        assert _worktree_lock_states(local)[wt_path.resolve()] is True, "worktree should be relocked after failed remove"
         # The lock outcome follows git's refusal and the diagnostic dump.
         output_lines = result.stdout.splitlines()
         relock_line = f"    worktree:       re-locked (pid {dead})"
@@ -1046,11 +1037,7 @@ class TestLockedWorktreeRemoveFailsCleanly:
         assert "    worktree:       re-lock failed (manual step needed)" in result.stdout
         assert "re-locked" not in result.stdout
         assert _shim_match_count(shim_dir) == 1
-        porcelain = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"], cwd=local, capture_output=True, text=True, check=True,
-        ).stdout
-        assert f"worktree {wt_path}\n" in porcelain
-        assert "\nlocked" not in porcelain
+        assert _worktree_lock_states(local).get(wt_path.resolve()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1127,6 +1114,21 @@ def _make_descendant_of_merged_head_branch(repo: Path, remote: Path, branch_name
     _commit(repo, f"unmerged follow-up work on {branch_name}")
     subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
     return merged_head
+
+
+class TestWorktreeLockStates:
+    """`_worktree_lock_states` reports a bare `locked` line as locked."""
+
+    def test_reports_a_bare_lock_as_locked_and_a_fresh_worktree_as_unlocked(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/bare-lock")
+        wt_path = tmp_path / "bare-lock-tree"
+        _make_worktree(local, "feat/bare-lock", wt_path)
+        assert _worktree_lock_states(local)[wt_path.resolve()] is False
+
+        _lock_worktree(local, wt_path, None)
+
+        assert _worktree_lock_states(local)[wt_path.resolve()] is True
 
 
 class TestTierBReachableNoMergedPR:
@@ -4198,6 +4200,7 @@ class TestListRemovable:
         resolved_wt_path = wt_path.resolve()
         shutil.rmtree(wt_path)
         env = fake_gh({"feat/dir-gone": pr})
+        assert resolved_wt_path in _worktree_lock_states(local), "git must still register the worktree whose directory is gone"
 
         listed = _list_removable(local, env)
         real = _run_script(local, env)
@@ -4205,10 +4208,9 @@ class TestListRemovable:
         assert listed.returncode == 0, listed.stderr
         assert listed.stdout == f"{local.resolve()}\tfeat/dir-gone\t{resolved_wt_path}\n"
         assert f"worktree:       removed: {resolved_wt_path}" in real.stdout
-        worktrees = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"], cwd=local, capture_output=True, text=True, check=True,
-        ).stdout
-        assert str(resolved_wt_path) not in worktrees
+        registered_worktrees = _worktree_lock_states(local)
+        assert local.resolve() in registered_worktrees, "the listing parse must still see the main worktree"
+        assert resolved_wt_path not in registered_worktrees
 
     def test_tier_b_excluded(self, tmp_path, fake_gh):
         """A branch merged into main with no merged PR is Tier B: prompt-only in the real run."""
@@ -4334,7 +4336,9 @@ class TestListRemovableFromLinkedWorktree:
 
 class TestRunnerWorktreeOnATierABranchIsNeverRemoved:
     """The script runs from a linked worktree whose own branch has a merged PR,
-    the usual way it is run. The main checkout sits on main."""
+    the usual way it is run. The main checkout sits on main.
+    These tests pin the detection loop's "currently checked out" skip. The
+    `current-worktree` verdict is pinned only by the `_worktree-lib.sh` rows."""
 
     def _repo_with_runner_on_a_tier_a_branch(self, tmp_path):
         """Returns (local, runner_path, sibling_path, pr_data): a clean Tier A worktree
@@ -4366,7 +4370,9 @@ class TestRunnerWorktreeOnATierABranchIsNeverRemoved:
 
         assert result.returncode == 0, result.stderr
         assert "Skipped: feat/runner (currently checked out)" in result.stdout
-        assert not any(line.startswith("  feat/runner") for line in result.stdout.splitlines()), result.stdout
+        candidate_lines = [line for line in result.stdout.splitlines() if line.startswith("  feat/")]
+        assert any(line.startswith("  feat/sibling") for line in candidate_lines), result.stdout
+        assert not any(line.startswith("  feat/runner") for line in candidate_lines), result.stdout
         assert runner_path.exists()
 
     def test_real_run_skips_the_runner_and_keeps_its_worktree_and_branch(self, tmp_path, fake_gh):

@@ -26,6 +26,7 @@ from .conftest import (
     _dead_pid,
     _failing_tool_shims,
     _git_shim_that_fails_on_subcommand,
+    _leave_modules_directory_in_worktree_git_dir,
     _live_process_in,
     _lock_worktree,
     _make_feature_branch,
@@ -353,8 +354,6 @@ echo "pid:$WORKTREE_LOCK_PID"
 
 
 class TestWorktreeLockIsLive:
-    """worktree_lock_is_live: 0 = holder alive or unknown, 1 = this user cannot signal the pid."""
-
     def _rc(self, pid_arg: str) -> int:
         result = _run_bash(f'''
 RC=0
@@ -380,13 +379,13 @@ echo "exit:$RC"
 class TestMainWorktreePath:
     """main_worktree_path prints the main worktree whichever worktree it runs from."""
 
-    def _path_from(self, directory: Path) -> subprocess.CompletedProcess:
+    def _path_from(self, directory: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
         return _run_bash(f'''
 cd "{directory}"
 RC=0
 main_worktree_path || RC=$?
 echo "exit:$RC"
-''')
+''', env=env)
 
     def test_from_the_main_worktree(self, tmp_path):
         local, _ = _make_repo_with_remote(tmp_path)
@@ -427,11 +426,21 @@ echo "exit:$RC"
 
         assert result.stdout == "exit:1\n"
 
+    def test_a_first_listing_line_that_is_not_a_worktree_record_returns_1_and_prints_nothing(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        shim_dir = tmp_path / "listing-shim"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text("#!/usr/bin/env bash\necho 'HEAD 0000000'\n")
+        git_shim.chmod(0o755)
+        env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+
+        result = self._path_from(local, env=env)
+
+        assert result.stdout == "exit:1\n"
+
 
 class TestWorktreeIsClean:
-    """worktree_is_clean: 0 = clean (or directory gone), 1 = dirty, 2 = the
-    check cannot run (no `.git`, or `git status` failed)."""
-
     def _rc(self, wt_path: Path) -> int:
         result = _run_bash(f'''
 RC=0
@@ -531,10 +540,6 @@ printf 'reason:%s\\n' "$WORKTREE_PROBE_REASON"
 
 
 class TestWorktreeHasPopulatedSubmodules:
-    """worktree_has_populated_submodules: 0 = populated (or a leftover
-    `modules` directory), 1 = none (or only uninitialized, or directory
-    gone), 2 = the check cannot run (no `.git`, or git failed)."""
-
     def _rc(self, wt_path: Path) -> int:
         result = _run_bash(f'''
 RC=0
@@ -570,10 +575,7 @@ echo "exit:$RC"
         _make_feature_branch(local, "feat/leftover-modules")
         wt_path = tmp_path / "leftover-modules-tree"
         _make_worktree(local, "feat/leftover-modules", wt_path)
-        worktree_git_dir = subprocess.run(
-            ["git", "rev-parse", "--absolute-git-dir"], cwd=wt_path, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        (Path(worktree_git_dir) / "modules").mkdir()
+        _leave_modules_directory_in_worktree_git_dir(wt_path)
 
         assert self._rc(wt_path) == 0
 

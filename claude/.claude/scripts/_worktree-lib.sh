@@ -98,7 +98,6 @@ worktree_matches_filter() {
 
 # Snapshot of every readable process working directory. Populated once by
 # collect_process_cwds; PROCESS_CWD_SCAN records whether the scan succeeded.
-# It stays "unknown" until collect_process_cwds runs.
 declare -a PROCESS_CWDS=()
 PROCESS_CWD_SCAN="unknown"
 

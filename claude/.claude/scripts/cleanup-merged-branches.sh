@@ -1066,6 +1066,8 @@ for BRANCH in "${TO_DELETE[@]}"; do
       continue
       ;;
     *)
+      # Every verdict token the lib can return has its own arm in the list and the dry-run case.
+      # A new skip token needs its own arm here, or the real run attempts its removal.
       # dirty, submodules, the two unverifiable probes, unlock-remove and
       # remove: git decides, so a refusal is reported, not predicted.
       WORKTREE_UNLOCKED=0
