@@ -615,6 +615,7 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # `-U0` drops context lines, which the `^\+` filter below discards anyway.
   # An inherited pathspec variable such as GIT_LITERAL_PATHSPECS reads `:(top)` as a literal name and empties the diff at exit 0.
   # The unset runs inside the command substitution's subshell, so the parent environment is unchanged.
+  # _lib_diff_size_measure in _lib.sh unsets the same four names before its count, so edit both together.
   STAGED_DIFF=$(unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
     git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
   STAGED_DIFF_STATUS=$?
