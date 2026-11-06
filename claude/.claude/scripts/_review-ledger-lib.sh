@@ -56,10 +56,20 @@ _review_ledger_defer_hint() {
 # Appended to every lane rejection, so the message alone tells a caller how to
 # correct its call.
 _review_ledger_lane_hint() {
-  local personas_list personas
+  local personas_list accepted_lanes lane gloss
   mapfile -t personas_list < <(_lib_reviewer_persona_agents)
-  personas=$(IFS=,; printf '%s' "${personas_list[*]}")
-  printf 'Pass --reviewer <lane> once for each lane that raised the finding. Accepted lanes: %s, orchestrator (a finding no reviewer agent or Skill-tool review raised), skill-tool (a Skill-tool review'"'"'s finding), unrostered-agent (a spawned reviewer agent outside the roster). CLEAN takes neither --reviewer nor --relog. Pass --relog instead only when this row records no raise of its own and only re-logs its --ref decision, whose raise an earlier row records, as a reopen, a gate-denial recovery or a --carry-forward withdrawal does.' "${personas//,/, }"
+  accepted_lanes=$(printf '%s, ' "${personas_list[@]}")
+  for lane in "${_REVIEW_LEDGER_NON_AGENT_LANES[@]}"; do
+    case "$lane" in
+      orchestrator) gloss=' (a finding no reviewer agent or Skill-tool review raised)' ;;
+      skill-tool) gloss=" (a Skill-tool review's finding)" ;;
+      unrostered-agent) gloss=' (a spawned reviewer agent outside the roster)' ;;
+      *) gloss='' ;;
+    esac
+    accepted_lanes+="$lane$gloss, "
+  done
+  accepted_lanes=${accepted_lanes%, }
+  printf 'Pass --reviewer <lane> once for each lane that raised the finding. Accepted lanes: %s. CLEAN takes neither --reviewer nor --relog. Pass --relog instead only when this row records no raise of its own and only re-logs its --ref decision, whose raise an earlier row records, as a reopen, a gate-denial recovery or a --carry-forward withdrawal does.' "$accepted_lanes"
 }
 
 _review_ledger_is_criterion() {

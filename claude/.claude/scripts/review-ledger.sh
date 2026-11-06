@@ -106,12 +106,12 @@ Subcommands:
              (a Skill-tool review's finding) or unrostered-agent (a spawned
              reviewer agent outside the roster). CLEAN takes no lanes; every
              other disposition takes at least one lane (--reviewer) or --relog,
-             never both. --relog copies the --ref decision's lanes, so use it
-             only when this row records no raise of its own and only re-logs its
-             --ref decision, whose raise an earlier row records, as a reopen, a
-             gate-denial recovery or a --carry-forward withdrawal does. It needs
-             --ref and is rejected on a carry. The row stores its lanes sorted
-             and duplicate-free as reviewers.
+             never both. Use --relog only when this row records no raise of its
+             own and only re-logs its --ref decision, whose raise an earlier row
+             records. A reopen, a gate-denial recovery and a --carry-forward
+             withdrawal are such rows. --relog copies the --ref decision's lanes. It
+             needs --ref and is rejected on a carry. The row stores its lanes
+             sorted and duplicate-free as reviewers.
              No-ops (exit 0) if the identical line (by round, finding,
              disposition, rationale, source, authoring_agent,
              authoring_effort, reviewers, session_id and every field above)

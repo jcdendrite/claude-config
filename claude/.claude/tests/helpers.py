@@ -228,6 +228,21 @@ def reviewer_persona_agents() -> list[str]:
     return _nonempty_shell_lines(f". {_LIB_SH}; _lib_reviewer_persona_agents", "_lib_reviewer_persona_agents")
 
 
+def review_only_agents() -> list[str]:
+    """`_LIB_REVIEW_ONLY_AGENTS` from _lib.sh -- the reviewer agents deny-reviewer-tree-mutation.sh covers."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_review_only_agents", "_lib_review_only_agents")
+
+
+def no_gate_release_agents() -> list[str]:
+    """`_LIB_NO_GATE_RELEASE_AGENTS` from _lib.sh -- the agent identities barred from releasing a gate."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_no_gate_release_agents", "_lib_no_gate_release_agents")
+
+
+def plan_writer_agents() -> list[str]:
+    """`_LIB_PLAN_WRITER_AGENTS` from _lib.sh -- the agents confined to writing plan files."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_plan_writer_agents", "_lib_plan_writer_agents")
+
+
 def review_ledger_non_agent_lanes() -> list[str]:
     """`_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing _lib.sh then the library as review-ledger.sh does."""
     ledger_lib = SCRIPTS_DIR / "_review-ledger-lib.sh"

@@ -119,6 +119,8 @@ Alternatives weighed:
 52. `test_select_tests.py` takes no edit, and no `_KNOWN_CROSS_DOMAIN_READS` pair is added for `test_agent_roster.py`. Asked whether to keep that pair, the engineer wrote "What’s the correct thing to do here?" and stated the test-quality criterion quoted in this row's tag. The pair would duplicate a check that already holds (row 46), so dropping it is this plan's own judgment applying that criterion. The tag covers the criterion only. With no test-selection file touched, row 50's "drop select-tests" now holds in full. `[engineer-verified: "we wanna have decent test coverage but not vacuous tests, but not duplicated tests"]`
 53. A reviewer agent outside `_LIB_REVIEWER_PERSONA_AGENTS` gets the composite lane `unrostered-agent`, so its row lands instead of being lost (M17). `[engineer-verified: "Keep `unrostered-agent` (Recommended)"]`
 54. `test_lib_payload_matchers.py` also edits to import the shared `reviewer_persona_agents`, which removes a duplicate of the reader this PR adds to `helpers.py`. Asked whether to keep that file edit, the engineer selected "Keep it and add to plan (Recommended)". `[engineer-verified: "Keep it and add to plan (Recommended)"]`
+55. `test_deny_reviewer_tree_mutation.py` also edits to import the shared `review_only_agents`, which removes one of the private readers of `_lib_review_only_agents`. The same sweep moves the other private roster readers into `helpers.py` in the files this plan already lists, so each roster has one reader. Asked whether to keep that file edit, the engineer selected "Keep it and add to plan (Recommended)". `[engineer-verified: "Keep it and add to plan (Recommended)"]`
+56. `_nonempty_shell_lines` is the only emptiness guard for the shared roster readers, so a new `claude/.claude/tests/test_nonempty_shell_lines.py` unit-tests its nonzero-exit, empty-output (no bytes, and only a newline, which an emptied `printf '%s\n'` array prints) and blank-line cases, beside `test_git_repo_builders.py`. Asked whether to keep the new file, the engineer selected "Keep new file, add to plan (Recommended)". `[engineer-verified: "Keep new file, add to plan (Recommended)"]`
 
 **Mechanisms:**
 
@@ -166,7 +168,7 @@ Alternatives weighed:
   - **Roster pin**, in `test_agent_roster.py`. It walks the Change-type table and the Item-ownership table through M16's shared parser, and keeps the backticked names that have a `claude/.claude/agents/<name>.md` file. Each walk finds `staff-sdet`, so a renamed header or an empty walk fails. `_lib_reviewer_persona_agents` must print every name either walk finds, so every reviewer a table spawns has its own roster lane and none falls into the composite `unrostered-agent` bucket, where the follow-up cannot split it.
     - The assertion message says the pin covers reviewer agents only.
     - It says a non-reviewer agent cited in a table is dropped from the walk by name, and that adding it to `_LIB_REVIEW_ONLY_AGENTS` would put a writing agent under `deny-reviewer-tree-mutation.sh`.
-  - **Literal pin**, in `test_agent_roster.py`. Every entry of `_REVIEW_LEDGER_NON_AGENT_LANES` is absent from `_review_only_agents()`'s output and has no `claude/.claude/agents/<name>.md` file, so no literal can come to mean an agent. It asserts no set equality, which would only mirror the constant.
+  - **Literal pin**, in `test_agent_roster.py`. Every entry of `_REVIEW_LEDGER_NON_AGENT_LANES` is absent from the shared `review_only_agents()`'s output and has no `claude/.claude/agents/<name>.md` file, so no literal can come to mean an agent. It asserts no set equality, which would only mirror the constant.
   - A change to any file the two `test_agent_roster.py` pins read already selects `test_agent_roster.py` (row 42), so `select-tests.py` takes no edit. The pins read `code-review/SKILL.md` through a module-level constant, which `TestCrossDomainReadCompleteness` resolves and checks with no `_KNOWN_CROSS_DOMAIN_READS` pair (rows 46, 52).
   - **Prose tokens.** `_REVIEW_LEDGER_PROSE_CONTROLS` gains four tokens, each the exact substring below.
     - Under "## Finding disposition": `Finding | Lane | Disposition | Rationale`.
@@ -313,17 +315,19 @@ Implementation runs as one `code-writer` dispatch. The script, its library, the 
   - The exactly-once pin goes beside `TestReviewLedgerAuthoringEffortLiteral` (`:702-726`).
   - `_PINNED_CONTRADICTION_ROUTE_CLAUSE`'s last sentence (`:6663-6666`) reads `ADDRESS --ref <id> --relog`.
   - `_REVIEW_LEDGER_PROSE_CONTROLS` (`:7485-7630`) carries the extended template token and M11's four new tokens.
-- `claude/.claude/tests/helpers.py` — M16's two table parsers after `heading_texts` (`:174-191`), then three shell-value readers, each with a one-line docstring that names no caller:
+- `claude/.claude/tests/helpers.py` — M16's two table parsers after `heading_texts` (`:174-191`), then a shell-value guard and its readers, each with a docstring that names no caller:
   - `markdown_table_rows(markdown_path: Path, header_line: str) -> list[str]`, its body moved from `test_skills.py:5052-5064` with the header literal replaced by `header_line`, which the not-found assertion names. Docstring: "Raw lines of a Markdown table's data rows, found by its exact header line."
   - `change_type_table_rows(skill_md_path: Path) -> list[str]`, returning `markdown_table_rows(skill_md_path, "| Change type | Spawn / invoke |")`. Docstring: "Raw lines of every data row in a SKILL.md's Change-type table."
   - `_nonempty_shell_lines(shell_body, what) -> list[str]` runs `bash -c`, asserts a zero exit and at least one line, and returns the lines, so an emptied shell value fails a test instead of leaving it iterating nothing.
-  - `reviewer_persona_agents() -> list[str]` reads `_lib_reviewer_persona_agents` through it, and `review_ledger_non_agent_lanes() -> list[str]` reads `_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing `_lib.sh` and then `_review-ledger-lib.sh` as `review-ledger.sh:8-17` does.
-- `claude/.claude/hooks/tests/test_lib_payload_matchers.py` — imports the shared `reviewer_persona_agents` from `helpers.py` and drops its own copy of that reader, which ran the same command without the emptiness assertion (row 54).
+  - `reviewer_persona_agents()`, `review_only_agents()`, `no_gate_release_agents()` and `plan_writer_agents()` each read the matching `_lib_*_agents` roster function through it, so one reader of each roster exists among the test files (rows 54, 55). And `review_ledger_non_agent_lanes() -> list[str]` reads `_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing `_lib.sh` and then `_review-ledger-lib.sh` as `review-ledger.sh:8-17` does.
+- `claude/.claude/hooks/tests/test_lib_payload_matchers.py` — imports the shared `reviewer_persona_agents` from `helpers.py` and drops its own copy of that reader, which ran the same command without the emptiness assertion (row 54). It also imports `review_only_agents`, `no_gate_release_agents` and `plan_writer_agents` in place of its two inline `bash -c` readers and the no-gate-release and plan-writer readers (row 55).
+- `claude/.claude/tests/test_nonempty_shell_lines.py` (new) — three unit tests of `helpers.py`'s `_nonempty_shell_lines`: a nonzero exit raises with stderr, empty output raises naming `what`, and blank lines are dropped (row 56).
+- `claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py` — imports the shared `review_only_agents` from `helpers.py` and drops its own `_review_only_roster()` reader (row 55).
 - `claude/.claude/hooks/tests/test_agent_roster.py` — M11's roster and literal pins.
   - `SKILLS_DIR`, `change_type_table_rows` and `markdown_table_rows` join the `helpers` import (`:15`). A module-level `CODE_REVIEW_SKILL_MD = SKILLS_DIR / "code-review" / "SKILL.md"` names the tables' file, so `TestCrossDomainReadCompleteness` resolves the read (row 46).
   - A module-level `ITEM_OWNERSHIP_TABLE_HEADER = "| Item | Primary owner | Co-owners |"` is that header's one home, matching `code-review/SKILL.md:459`.
-  - Both pins go beside `_review_only_agents` (`:868-877`). Read the roster and the lane literals through the shared `reviewer_persona_agents` and `review_ledger_non_agent_lanes` imported from `helpers.py`, so no test file keeps a reader of its own.
-  - The literal pin reuses `_review_only_agents` and `AGENTS_DIR` (`:18`).
+  - Both pins go where the file's roster tests sit. Read the roster and the lane literals through the shared `reviewer_persona_agents` and `review_ledger_non_agent_lanes` imported from `helpers.py`, so no test file keeps a reader of its own.
+  - The literal pin reuses the shared `review_only_agents` and `AGENTS_DIR` (`:18`). The file drops its private `_review_only_agents`, `_no_gate_release_agents` and `_plan_writer_agents` readers for the shared ones (row 55).
 - `docs/scripts.md` — the `review-ledger.sh` entry.
   - `:146`: `--reviewer` joins the flags whose empty value is rejected.
   - One new **Lanes.** bullet:
@@ -352,6 +356,7 @@ Implementation runs as one `code-writer` dispatch. The script, its library, the 
 4. Run `wc -l claude-skills/skills/code-review/SKILL.md` and confirm it prints at most 550.
 5. Run `git grep -n "ADDRESS --ref"` with no pathspec, so docs, skills, tests and scripts are all searched. Confirm every hit is one of the kinds row 31 lists. Every reopen command among the hits reads `ADDRESS --ref <id> --relog`, with `%s` for the id in the script's two. The exception is the dated `branch-scoped-review-ledger.md:170`, which its new supersession note covers.
 6. Run `git diff origin/main -- claude/.claude/scripts/_review-ledger-lib.sh`, and confirm no hunk touches `_review_ledger_lookup_ref` and the only hunk inside `_review_ledger_carry_line` is its reopen advice `printf`.
+7. Run `git grep -nE "_lib_(review_only|no_gate_release|plan_writer|reviewer_persona)_agents" -- '*.py'` and confirm every hit is in `claude/.claude/tests/helpers.py`.
 
 ## Out of scope
 

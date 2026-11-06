@@ -20,7 +20,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `/code-review`'s disposition table column is now `Lane`.
   - `review-ledger.sh append` now requires every new ADDRESS, DEFER and SETTLED row that raises a finding to carry a declared lane, by `--reviewer`, or `--relog` on a row that re-logs a decision.
   - A reopen is now `ADDRESS --ref <id> --relog`.
-  - Restart any session that loaded `/code-review` before the pull, because its ADDRESS, DEFER and SETTLED appends exit 2 until it reloads the skill.
+  - Restart any session that loaded `/code-review` before the pull: a restart avoids a rejected first call and a lane guessed from the rejection hint.
+  - Any caller of `review-ledger.sh append` outside the stowed `/code-review` skill, such as a wrapper, must now pass `--reviewer <lane>` or `--relog` on a non-CLEAN row.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.

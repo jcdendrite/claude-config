@@ -26,6 +26,7 @@ from helpers import (
     init_git_repo,
     isolated_git_config_env,
     path_with_failing_tool_shim,
+    review_ledger_non_agent_lanes,
     reviewer_persona_agents,
     unwrapped_check_ignore_status,
 )
@@ -606,6 +607,7 @@ class TestRowIdPredicate:
 
 _PERSONA_AGENTS = reviewer_persona_agents()
 _NON_AGENT_LANES = ["orchestrator", "skill-tool", "unrostered-agent"]
+_LIB_NON_AGENT_LANES = review_ledger_non_agent_lanes()
 
 
 def _validate_lanes(
@@ -617,7 +619,7 @@ def _validate_lanes(
 def _assert_lane_hint(stderr: str) -> None:
     """Every element a caller needs to correct a rejected lane call from stderr alone."""
     assert "Pass --reviewer <lane> once for each lane that raised the finding" in stderr
-    for lane in [*_PERSONA_AGENTS, *_NON_AGENT_LANES]:
+    for lane in [*_PERSONA_AGENTS, *_NON_AGENT_LANES, *_LIB_NON_AGENT_LANES]:
         assert lane in stderr
     for gloss in (
         "orchestrator (a finding no reviewer agent or Skill-tool review raised)",
@@ -724,6 +726,20 @@ class TestValidateLanesRejects:
             marker for marker in _LANE_REASON_MARKERS if marker in reason
         ]
         _assert_lane_hint(result.stderr)
+
+    def test_a_lane_added_to_the_array_is_listed_in_the_hint_bare_when_it_has_no_gloss(self):
+        """The hint derives its non-agent lanes from `_REVIEW_LEDGER_NON_AGENT_LANES` and prints a glossless lane bare."""
+        result = _bash(
+            "_REVIEW_LEDGER_NON_AGENT_LANES+=(probe-lane)\n_review_ledger_validate_lanes ADDRESS '' '' '' not-a-persona"
+        )
+
+        assert result.returncode == 1
+        assert (
+            "unrostered-agent (a spawned reviewer agent outside the roster), probe-lane. CLEAN takes neither"
+            in result.stderr
+        )
+        # The hint lists personas first, then the non-agent lanes, joined by ", ".
+        assert f"{_PERSONA_AGENTS[-1]}, orchestrator (" in result.stderr
 
 
 class TestRefReviewers:
@@ -1251,7 +1267,12 @@ class TestCheckNotRetired:
     def test_a_row_identical_to_the_retirer_outside_id_time_and_schema_version_is_a_retry(self, ledger):
         retirer = _address(_SUCCESSOR_ID, ref=_DECISION_ID)
         _write_ledger(ledger, [_defer(_DECISION_ID), retirer])
-        retry = {**retirer, "id": "dddddddddddd", "event_time": "2026-09-09T09:09:09Z", "schema_version": 6}
+        retry = {
+            **retirer,
+            "id": "dddddddddddd",
+            "event_time": "2026-09-09T09:09:09Z",
+            "schema_version": retirer["schema_version"] + 1,
+        }
 
         assert _retry_check(ledger, retry).returncode == 0
 

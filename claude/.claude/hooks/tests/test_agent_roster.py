@@ -8,18 +8,19 @@ agent is added to the roster without the required frontmatter or output section.
 from __future__ import annotations
 
 import re
-import subprocess
 
 import pytest
 import yaml
 from helpers import (
     CLAUDE_DIR,
-    HOOKS_DIR,
     REPO_ROOT,
     SKILLS_DIR,
     change_type_table_rows,
     markdown_table_rows,
+    no_gate_release_agents,
+    plan_writer_agents,
     review_ledger_non_agent_lanes,
+    review_only_agents,
     reviewer_persona_agents,
 )
 from validate_skill_structure import parse_frontmatter
@@ -705,18 +706,6 @@ class TestAgentFrontmatter:
 HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Plan"}
 
 
-def _no_gate_release_agents() -> list[str]:
-    """Read _LIB_NO_GATE_RELEASE_AGENTS from _lib.sh — the shipping source of truth."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib}; _lib_no_gate_release_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 class TestNoGateReleaseRosterSync:
     """The no-gate-release boundary is grounded in the agent roster's tool lists.
 
@@ -735,7 +724,7 @@ class TestNoGateReleaseRosterSync:
     """
 
     def test_roster_members_have_agent_files_or_are_named_builtins(self):
-        for name in _no_gate_release_agents():
+        for name in no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
             assert (AGENTS_DIR / f"{name}.md").is_file(), (
@@ -764,7 +753,7 @@ class TestNoGateReleaseRosterSync:
         return {str(t).strip() for t in declared}
 
     def test_roster_members_do_not_carry_the_skill_tool(self):
-        for name in _no_gate_release_agents():
+        for name in no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
             declared = self._declared_tools(name)
@@ -788,7 +777,7 @@ class TestNoGateReleaseRosterSync:
         dispatch at all, which is true today only by inspection of the same
         frontmatter the Skill assertion reads.
         """
-        for name in _no_gate_release_agents():
+        for name in no_gate_release_agents():
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
             declared = self._declared_tools(name)
@@ -849,7 +838,7 @@ class TestNoGateReleaseRosterSync:
 
     def test_exemptions_are_all_roster_members(self):
         """A stale exemption for an agent no longer on the roster is dead weight."""
-        roster = set(_no_gate_release_agents())
+        roster = set(no_gate_release_agents())
         stale = HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS - roster
         assert not stale, (
             f"HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS names {sorted(stale)}, which "
@@ -876,18 +865,6 @@ class TestNoGateReleaseRosterSync:
             "coverage. Confirm the new name is genuinely a harness built-in with "
             "no agents/*.md file, then update this assertion deliberately."
         )
-
-
-def _review_only_agents() -> list[str]:
-    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib}; _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
 
 
 def _agents_named_in_rows(rows: list[str]) -> set[str]:
@@ -925,8 +902,7 @@ class TestReviewLedgerLaneRoster:
         ],
     )
     def test_every_reviewer_agent_a_code_review_table_spawns_has_its_own_roster_lane(self, table_name, table_rows):
-        """The pin covers reviewer agents only. A non-reviewer agent cited in a table is dropped from the walk by
-        name, and adding it to _LIB_REVIEW_ONLY_AGENTS would put a writing agent under deny-reviewer-tree-mutation.sh."""
+        """Covers reviewer agents only; non-reviewer agents are dropped from the walk by name."""
         walked = _agents_named_in_rows(table_rows())
 
         assert "staff-sdet" in walked, f"the {table_name} walk found no staff-sdet: a renamed header or an empty walk"
@@ -941,7 +917,7 @@ class TestReviewLedgerLaneRoster:
 
     def test_no_non_agent_lane_is_an_agent_name(self):
         """A literal that matched an agent would mean two things across `reviewers` and the agent roster."""
-        review_only = set(_review_only_agents())
+        review_only = set(review_only_agents())
 
         for lane in review_ledger_non_agent_lanes():
             assert lane not in review_only, f"{lane!r} is in _LIB_REVIEW_ONLY_AGENTS"
@@ -979,7 +955,7 @@ class TestReviewOrchestratorRosterPlacement:
         release the gate that skill's marker guards. Adding it there, or to
         _LIB_REVIEW_ONLY_AGENTS, which that roster is built from, would
         silently strip the capability the whole design depends on."""
-        assert "review-orchestrator" not in _no_gate_release_agents()
+        assert "review-orchestrator" not in no_gate_release_agents()
 
     @staticmethod
     def _description() -> str:
@@ -1012,18 +988,6 @@ class TestReviewOrchestratorRosterPlacement:
         )
 
 
-def _plan_writer_agents() -> list[str]:
-    """Read _LIB_PLAN_WRITER_AGENTS from _lib.sh — the shipping source of truth."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib}; _lib_plan_writer_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def _declared_tool_names(path) -> set[str]:
     """Tool names an agent file's frontmatter grants.
 
@@ -1046,7 +1010,7 @@ class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
     reopen the residual."""
 
     def test_write_without_bash_agents_are_review_only_confined(self):
-        review_only = set(_review_only_agents())
+        review_only = set(review_only_agents())
         for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
             tools = _declared_tool_names(path)
             if "Write" in tools and "Bash" not in tools:
@@ -1071,7 +1035,7 @@ class TestEditWithoutBashAgentsAreWriteScopeConfined:
     rates Low only while every writer without Bash is confined."""
 
     def test_edit_without_bash_agents_are_write_scope_confined(self):
-        confined = set(_review_only_agents()) | set(_plan_writer_agents())
+        confined = set(review_only_agents()) | set(plan_writer_agents())
         for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
             tools = _declared_tool_names(path)
             if tools & {"Edit", "MultiEdit"} and "Bash" not in tools:
@@ -1093,8 +1057,7 @@ class TestPlanWriterAgentsHoldOnlyPlanEditingTools:
     PERMITTED_PLAN_WRITER_TOOLS = {"Read", "Grep", "Glob", "Edit"}
 
     def test_every_plan_writer_declares_only_permitted_tools(self):
-        plan_writers = _plan_writer_agents()
-        assert plan_writers, "_LIB_PLAN_WRITER_AGENTS is empty"
+        plan_writers = plan_writer_agents()
         agent_paths = {path.stem: path for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES}
         for agent_name in plan_writers:
             assert agent_name in agent_paths, f"{agent_name} has no agent file"
@@ -1297,7 +1260,7 @@ class TestScratchExecutionSection:
         # Built-in agents such as Plan have no file and stay outside the section.
         missing = [
             name
-            for name in _review_only_agents()
+            for name in review_only_agents()
             if (AGENTS_DIR / f"{name}.md").exists()
             and "Bash" in (parse_frontmatter(AGENTS_DIR / f"{name}.md").get("tools") or "")
             and f"{name}.md" not in SCRATCH_SECTION_AGENTS
