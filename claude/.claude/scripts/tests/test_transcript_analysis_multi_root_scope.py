@@ -514,7 +514,7 @@ class TestSkillFilesQuoteRootCountDescLiteral:
 
 
 class TestSkillFilesReportObservedScopeNotUnionGuarantee:
-    """Mechanism 6: transcript-narrative/SKILL.md and transcript-analysis/SKILL.md
+    """transcript-narrative/SKILL.md and transcript-analysis/SKILL.md
     must instruct the reader to record the *observed* scope rather than assert
     a multi-account union/unconditional-header guarantee that --summary makes
     false. Each positive pin is the real contract (source-scanning a SKILL.md

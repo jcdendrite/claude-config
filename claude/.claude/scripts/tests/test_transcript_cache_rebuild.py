@@ -555,11 +555,11 @@ class TestCacheRebuildArgparseWiring:
 
 
 class TestCacheRebuildCrossInstrumentReconciliation:
-    """Verification item 10: cache-rebuild's new sidechain W5m accumulator
+    """cache-rebuild's sidechain W5m accumulator
     must agree exactly with cache-efficiency's own sidechain Write5m column
     on an identical fixture -- both dedup by requestId per group and
     classify origin off the identical isSidechain expression, so a
-    disagreement means the new accumulator has a bug, not that the corpus
+    disagreement means the accumulator has a bug, not that the corpus
     is odd."""
 
     def test_sidechain_w5m_matches_cache_efficiency_sidechain_write5m_on_identical_fixture(
