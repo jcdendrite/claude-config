@@ -717,6 +717,25 @@ class TestReviewLedgerRoundScopedDedup:
         rows = [json.loads(line) for line in ledger.read_text().splitlines()]
         assert [row["schema_version"] for row in rows] == [2, 5]
 
+    def test_clean_row_matching_an_existing_v4_row_on_every_other_field_lands_as_a_second_row(
+        self, isolated_home, git_repo
+    ):
+        """A v4 row carries a session_id but no reviewers key, so the reviewers
+        field in the dedup key keeps a current-schema CLEAN from collapsing into it."""
+        _seed_session(isolated_home, SID)
+        clean_args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        assert _run(clean_args, cwd=git_repo, home=isolated_home).returncode == 0
+        ledger = _ledger_path(isolated_home, git_repo)
+        (row,) = _ledger_rows(ledger)
+        del row["reviewers"]
+        row["schema_version"] = 4
+        ledger.write_text(json.dumps(row) + "\n")
+
+        result = _run(clean_args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert [stored.get("schema_version") for stored in _ledger_rows(ledger)] == [4, 5]
+
     def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
@@ -2246,6 +2265,25 @@ class TestReviewLedgerLanes:
         decision, reopened = _ledger_rows(_ledger_path(isolated_home, git_repo))
         assert reopened["reviewers"] == decision["reviewers"] == ["ciso-reviewer", "staff-sdet"]
 
+    def test_an_engineer_settled_relog_withdrawal_with_no_lane_stores_the_decisions_lanes(
+        self, isolated_home, git_repo
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        decision = _run(_engineer_args(reviewers=("ciso-reviewer",)), cwd=git_repo, home=isolated_home)
+        assert decision.returncode == 0, decision.stderr
+        decision_id = _logged_id(isolated_home, git_repo)
+
+        withdrawal = _run(
+            _engineer_args(ref=decision_id, round="2", reviewers=(), relog=True, carry_forward=False),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert withdrawal.returncode == 0, withdrawal.stderr
+        _decision_row, withdrawal_row = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert withdrawal_row["ref"] == decision_id
+        assert withdrawal_row["reviewers"] == ["ciso-reviewer"]
+
     def test_a_relog_of_a_decision_without_the_key_stores_an_empty_list(self, isolated_home, git_repo):
         decision_id = self._log_defer(isolated_home, git_repo)
         self._rewrite_decision(isolated_home, git_repo, reviewers=None)
@@ -2308,6 +2346,8 @@ class TestReviewLedgerLanes:
         assert before_reopen.returncode == 0, before_reopen.stderr
         assert f"orchestrator-matched carry of {decision_id}" in before_reopen.stdout
         assert f"| {decision_id} |" in before_reopen.stdout
+        decision, carry = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert (decision["reviewers"], carry["reviewers"]) == (["ciso-reviewer"], ["staff-sdet"])
 
         reopen = _run(
             _append_args(ref=decision_id, round="3", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,

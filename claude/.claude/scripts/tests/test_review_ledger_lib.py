@@ -662,6 +662,12 @@ class TestValidateLanesAccepts:
 
         assert result.returncode == 0, result.stderr
 
+    @pytest.mark.parametrize("decided_by", ["engineer", "plan-architect"])
+    def test_a_relog_with_a_ref_and_no_lanes_is_accepted_for_an_engineer_or_consult_decision(self, decided_by):
+        result = _validate_lanes("SETTLED", ref=_DECISION_ID, relog="1", decided_by=decided_by)
+
+        assert result.returncode == 0, result.stderr
+
     def test_a_clean_row_with_neither_flag_is_accepted(self):
         """The four-argument shape: no lanes follow RELOG."""
         result = _validate_lanes("CLEAN")
@@ -817,8 +823,7 @@ class TestRefReviewers:
         assert "could not read the ledger to copy the --ref decision's lanes" in result.stderr
 
     def test_a_failing_look_up_returns_1_with_no_stdout_and_the_same_reason(self, ledger, tmp_path):
-        """`.reviewers` appears only in the look-up program. The leading dot keeps a pytest tmp_path that embeds
-        this test's name from matching on the read pass's path argument."""
+        """`.reviewers` appears only in the look-up program."""
         _write_ledger(ledger, [_defer(_DECISION_ID)])
         lookup_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "*.reviewers*")
 
