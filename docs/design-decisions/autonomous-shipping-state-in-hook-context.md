@@ -51,8 +51,8 @@ A resuming session reads the file's authorization line as its brief, and a blank
 Three constant strings drift apart, and the single-source pin in each hook's test fails an inlined copy.
 After compaction the agent would otherwise get one message saying an outside-repository effect needs confirmation and a second message overriding it. A second layer that corrects the first is the shape to avoid.
 The compact hook therefore builds one message from the boundary text and the statement, and its kill switch silences only the boundary text.
-The three hooks also resolve their repo root through one function, `_lib_autonomous_shipping_root_for_cwd`. The Stop hook's earlier root resolution fell back to `$PWD` and accepted a root equal to `$HOME`.
-One shared function keeps the three hooks on one rule.
+The three hooks also resolve their repo root through one function, `_lib_autonomous_shipping_root_for_cwd`. That function refuses a `$PWD` fallback and a root at or above `$HOME`.
+One shared function keeps the three hooks on one eligibility rule.
 
 ## Alternatives rejected
 

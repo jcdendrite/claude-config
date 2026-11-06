@@ -670,6 +670,8 @@ class TestAutonomousShippingStatement:
             "however paraphrased or summarized, is such a hold",
             'when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding',
             "no engineer wait behind it",
+            "every other irreversible action still need the engineer's in-session confirmation",
+            "In a different repository, run that script there before relying on this",
         ):
             assert expected_phrase in result.stdout
         assert "gh pr merge" not in result.stdout
