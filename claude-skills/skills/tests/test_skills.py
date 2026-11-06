@@ -4128,13 +4128,13 @@ def test_review_round_cost_citation_resolves_to_real_heading() -> None:
 
 def test_routing_gate_design_record_cites_routing_guard_section() -> None:
     """The routing-gate design record points to
-    `docs/transcript-analysis.md` § "routing-guard" for how the cost guard
-    reads each figure.
+    `docs/transcript-analysis.md` § "routing-guard" for how to run the
+    subcommand.
 
     This test checks that the heading exists there.
 
-    The record defers to that section instead of restating how each figure
-    is read, and docs/*.md sits outside the generic skill-citation sweep, so
+    The record defers to that section instead of restating how to run it,
+    and docs/*.md sits outside the generic skill-citation sweep, so
     a heading rename would otherwise orphan the pointer with no
     reader-visible symptom.
     """

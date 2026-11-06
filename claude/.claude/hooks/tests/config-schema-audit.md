@@ -244,7 +244,7 @@ Column legend:
   sixth of the six rows affected.
 - Fail direction on resolution failure: exits with a diagnostic; recording
   is refused (matches `cost_ledger_recording`'s direction).
-- Second call site: `claude/.claude/scripts/transcript_analysis/routing_guard.py:353` (`_read_opt_in`,
+- Second call site: `claude/.claude/scripts/transcript_analysis/routing_guard.py` (`routing_guard._read_opt_in`,
   the `routing-guard` subcommand's one read of this key, for both its capture and compute modes).
   - Resolution: **config-dir**. It always passes an explicit `config_dir_override`, so `config_value`
     reads that one directory with no `$HOME` union.

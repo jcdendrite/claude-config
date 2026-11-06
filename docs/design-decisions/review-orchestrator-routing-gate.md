@@ -89,7 +89,7 @@ The shipped analyses cannot run the escape audit alone, because `review_rounds.p
 3. `transcript-analysis.py review-trace --this-repo --branches <list> --deny-summary` gives the denies under the `review-orchestrator routing` label.
 4. Any excess of step 2's count over step 3's is the un-denied blocks. First subtract every deny that fell inside a `/ready-for-review` cumulative pass or a `/review-pr` pass: it is a lost escape, not a routed round, and a local read of the denied block's parent skill identifies it when `--deny-summary` cannot join a deny to its block's bucket. Read only the un-denied blocks' args, locally, for whether each begins with `unrouted` (the args sense) and follows one of the four inline cases.
 
-`transcript-analysis.py routing-guard --capture` captures each sampled branch per account, and `transcript-analysis.py routing-guard` computes the net and its interval by the definitions above. `docs/transcript-analysis.md` § "routing-guard" states how to run it.
+`transcript-analysis.py routing-guard --capture` captures each sampled branch per account, and `transcript-analysis.py routing-guard` computes the net and its interval by the definitions above, except the sample. Both arms fill only from branches worked after the recorder landed. The key-off source differs. `docs/transcript-analysis.md` § "routing-guard" states how to run it and, under Known gaps, how the sample differs.
 
 ## Withdrawal form
 

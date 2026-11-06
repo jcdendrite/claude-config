@@ -57,8 +57,8 @@ from transcript_analysis import (
 
 _COMMAND = "routing-guard"
 
-# Bump only when a change alters what a stored row means. A bump leaves every earlier file unpoolable,
-# because a reader opens only the file at the current value.
+# Bump only when a change alters what a stored row means. Changing the top-level or loop keys strands every standing
+# file, bumped or not: the validator accepts only the current keys there and a reader opens only the current revision.
 _CAPTURE_REVISION = 1
 _CAPTURES_DIR_NAME = "routing-guard-captures"
 # docs/design-decisions/review-orchestrator-routing-gate.md: "The guard runs once at least 10 key-on PRs have
@@ -111,7 +111,7 @@ _STATUS_EXCLUDED = "excluded"
 _NOTE_STATUSES = (_STATUS_MERGED, _STATUS_EXCLUDED)
 _WRONG_COLUMN_COUNT_REASON = (
     "the row needs three columns: config dir, branch and merged or excluded;"
-    " the arm and pilot columns are gone because the session config-keys log supplies them"
+    " the session config-keys log supplies the arm and pilot states"
 )
 _UNKNOWN_STATUS_REASON = f"the third column must be {_STATUS_MERGED} or {_STATUS_EXCLUDED}"
 
@@ -174,8 +174,8 @@ _HOOK_SUCCESS_ATTACHMENT_TYPE = "hook_success"
 _CONFIG_READER_NOTICE = (
     "routing-guard: the config reader reported a problem; its message is withheld because it can name a path"
 )
-_EARLIER_LAYOUT_NOTE = (
-    "the file uses the earlier layout; delete it and capture again while the branch's sessions are inside retention"
+_LOOPS_ONLY_NOTE = (
+    "the file holds loops and no key states; delete it and capture again while the branch's sessions are inside retention"
 )
 _LOG_UNUSABLE_NOTICE = (
     f"{_COMMAND}: the session config-keys log is not a regular file this account owns, or cannot be read;"
@@ -231,7 +231,7 @@ _PRICING_DRIFT_REMEDY = (
     ' before running compute; see docs/transcript-analysis.md routing-guard "The captures directory"'
 )
 _NEXT_ACTION_RESOLVE_PRICING_DRIFT = f"{_COMMAND}: next: {_PRICING_DRIFT_REMEDY}"
-_NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT = f"{_NEXT_ACTION_ACT_ON_LINES}; and also: {_PRICING_DRIFT_REMEDY}"
+_NEXT_ACTION_ACT_ON_LINES_AND_RESOLVE_DRIFT = f"{_NEXT_ACTION_ACT_ON_LINES}; and also: {_PRICING_DRIFT_REMEDY}"
 _NEXT_ACTION_CAPTURE_AGAIN = (
     f"{_COMMAND}: next: capture again after the last sampled branch's sessions end,"
     " then run compute once the note holds enough key-on files and each account has as many key-off files as key-on"
@@ -342,8 +342,8 @@ class _StandingFile(enum.Enum):
     ABSENT = "absent"
     UNREADABLE = "unreadable"
     INVALID = "invalid"
-    # A file of the earlier layout that held loops and no key states.
-    EARLIER_LAYOUT = "earlier layout"
+    # A file that holds loops and no key states.
+    LOOPS_ONLY = "loops only"
 
 
 class _LogStatus(enum.Enum):
@@ -650,7 +650,7 @@ def _is_count(value: object) -> bool:
 
 
 _REASON_NOT_AN_OBJECT = "the file is not a JSON object"
-_REASON_EARLIER_LAYOUT = "the file holds loops and no key states"
+_REASON_LOOPS_ONLY = "the file holds loops and no key states"
 _REASON_WRONG_KEYS = "the file does not hold exactly the loops and the three key states"
 _REASON_KEY_STATE_VALUE = "a key state is neither on nor off"
 
@@ -705,7 +705,7 @@ def _parse_capture_bytes(data: bytes) -> _CaptureRecord:
     if not isinstance(parsed, dict):
         raise _InvalidCapture(_REASON_NOT_AN_OBJECT)
     if set(parsed) == {"loops"}:
-        raise _InvalidCapture(_REASON_EARLIER_LAYOUT)
+        raise _InvalidCapture(_REASON_LOOPS_ONLY)
     if set(parsed) != {"loops", *_KeyStates._fields}:
         raise _InvalidCapture(_REASON_WRONG_KEYS)
     for field_name in _KeyStates._fields:
@@ -757,7 +757,7 @@ def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
     """The validated record of the capture file at `path`, or why there is none.
 
     ABSENT means the name does not exist. A file that opens but fails the validator is INVALID, or
-    EARLIER_LAYOUT when it holds loops and no key states.
+    LOOPS_ONLY when it holds loops and no key states.
     """
     standing = _read_standing_capture(path)
     if isinstance(standing, _StandingFile):
@@ -765,7 +765,7 @@ def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
     try:
         return _parse_capture_bytes(standing)
     except _InvalidCapture as invalid:
-        return _StandingFile.EARLIER_LAYOUT if invalid.reason == _REASON_EARLIER_LAYOUT else _StandingFile.INVALID
+        return _StandingFile.LOOPS_ONLY if invalid.reason == _REASON_LOOPS_ONLY else _StandingFile.INVALID
 
 
 # --- the session config-keys log -----------------------------------------------
@@ -863,7 +863,7 @@ def _read_session_config_keys_log(path: Path, wanted_session_ids: Collection[str
                     log.earliest_logged_at = row.logged_at
                 if row.keys.get(_ROUTING_KEY) == _LOG_VALUE_OFF:
                     log.routing_off_seen = True
-                # Rows per scanned session are not capped; a real log holds a few per session.
+                # Rows per scanned session are not capped: the recorder adds a row per startup, resume, /clear and compaction.
                 if session_id in wanted_session_ids:
                     log.rows_by_session.setdefault(session_id, []).append(row)
         return log
@@ -1042,8 +1042,6 @@ def _hook_denials_in_record(rec: dict) -> Iterable[tuple[str, str, str]]:
         if denial is None:
             return
         tool_use_id, attachment = denial
-        if not isinstance(attachment, dict):
-            return
         normalized = denials._normalize_blocking_error(attachment.get("blockingError"))
         if isinstance(normalized, dict):
             message = normalized.get("blockingError") or normalized.get("message") or str(normalized)
@@ -1075,9 +1073,6 @@ def _main_thread_tool_use_ids(records: list[dict]) -> tuple[set[str], set[str]]:
             ):
                 continue
             tool_use_ids.add(block["id"])
-            skill_input = block.get("input")
-            if block.get("name") == "Skill" and not (isinstance(skill_input, dict) and isinstance(skill_input.get("skill"), str)):
-                continue  # _skill_block_round_skill raises on a Skill block whose input or skill is not the expected type
             if review_rounds._skill_block_round_skill([block]) == author_outcome._CODE_REVIEW_SKILL:
                 code_review_skill_ids.add(block["id"])
     return tool_use_ids, code_review_skill_ids
@@ -1092,10 +1087,13 @@ def _record_session_id(rec: dict) -> str | None:
 def _record_routing_denies(scan: _ScanFacts, records: list[dict], record_branches: list[str]) -> set[str]:
     """Add this session's routing-gate denies to `scan`, deduped by non-empty tool_use_id, and return those ids.
 
-    A tool_use_id that is not a string counts as empty. A deny identified only by its text signature counts
-    only when its id joins a `Skill(code-review)` tool_use of the same session, so an ordinary tool error that
-    carries the gate's wording does not. When that rule drops a deny whose id matches no tool_use of the session,
-    `scan.dropped_deny_without_tool_use` is set, because the deny may be real with its tool_use elsewhere.
+    The rules, in the order the code tests them:
+
+    1. A tool_use_id that is not a string counts as empty.
+    2. A deny identified only by its text signature counts only when its id joins a `Skill(code-review)` tool_use of
+       the same session, so an ordinary tool error that carries the gate's wording does not.
+    3. When rule 2 drops a deny whose id matches no tool_use of the session, `scan.dropped_deny_without_tool_use`
+       is set, because the deny may be real with its tool_use elsewhere.
     """
     tool_use_ids, code_review_skill_ids = _main_thread_tool_use_ids(records)
     denied_tool_use_ids: set[str] = set()
@@ -1481,8 +1479,8 @@ def _captured_line(line_no: int, built: _BuiltRow, earliest_record_ts: float | N
 
 def _standing_line(line_no: int, standing: _CaptureRecord | _StandingFile) -> tuple[str, bool]:
     """The per-row line for an existing file, and whether the row is good."""
-    if standing is _StandingFile.EARLIER_LAYOUT:
-        return _row_line(line_no, f"invalid ({_EARLIER_LAYOUT_NOTE})"), False
+    if standing is _StandingFile.LOOPS_ONLY:
+        return _row_line(line_no, f"invalid ({_LOOPS_ONLY_NOTE})"), False
     if isinstance(standing, _StandingFile):
         return _row_line(line_no, "invalid"), False
     growth_defined = sum(1 for loop in standing.loops if loop["growth_tokens"] is not None)
@@ -1646,7 +1644,7 @@ def _summary_lines(
     if merged_row_count == 0:
         next_action = _NEXT_ACTION_NO_MERGED_ROW
     elif counts[_RowKind.MISSING] or counts[_RowKind.INVALID]:
-        next_action = _NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT if pricing_drift else _NEXT_ACTION_ACT_ON_LINES
+        next_action = _NEXT_ACTION_ACT_ON_LINES_AND_RESOLVE_DRIFT if pricing_drift else _NEXT_ACTION_ACT_ON_LINES
     elif pricing_drift:
         next_action = _NEXT_ACTION_RESOLVE_PRICING_DRIFT
     else:
@@ -2010,11 +2008,7 @@ def _arm_totals(branches: Iterable[_BranchScalars]) -> _ArmTotals:
 
 
 def _net_from_totals(on: _ArmTotals, off: _ArmTotals) -> _NetFigures | None:
-    """The net per loop, or None when an arm has no loop whose growth is defined, which leaves no gap.
-
-    The net is the key-on overhead per loop less the key-off overhead per loop, less the growth gap
-    times the key-off carry rate sum per loop.
-    """
+    """The net per loop, or None when an arm has no loop whose growth is defined, which leaves no gap."""
     if on.growth_defined_loops == 0 or off.growth_defined_loops == 0:
         return None
     overhead_difference = on.overhead_dollars / on.loop_count - off.overhead_dollars / off.loop_count

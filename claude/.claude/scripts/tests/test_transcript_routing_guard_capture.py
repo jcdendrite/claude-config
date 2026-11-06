@@ -3,6 +3,7 @@ import argparse
 import errno
 import gc
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -41,11 +42,14 @@ from ._routing_guard_helpers import (
     _JQ_ABSENT_SKIP_REASON,
     _LOG_FILE_NAME,
     _NO_ROW_PAYLOAD,
+    _NOISY_CONFIG_MALFORMED_TOKEN,
+    _NOISY_CONFIG_UNKNOWN_KEY,
     _VALID_STATES,
     _append_log_rows,
     _assert_git_failure_diagnostic_precedes_note_refusal,
     _capture_file_text,
     _capture_loop,
+    _config_enabled_stub,
     _digest_name,
     _environment_unchanged,
     _install_git_not_found,
@@ -55,6 +59,7 @@ from ._routing_guard_helpers import (
     _log_row,
     _note_line,
     _note_row,
+    _opt_in_faults,
     _Outcome,
     _path_that_resolve_rejects_as_nul,
     _real_no_row_stdout,
@@ -66,6 +71,7 @@ from ._routing_guard_helpers import (
     _strings_the_output_must_not_name,
     _symlink_loop_that_resolve_rejects,
     _write_log,
+    _write_noisy_config_state_file,
 )
 from .conftest import (
     _agent_use,
@@ -93,6 +99,8 @@ _CAPTURES_DIR_MODE = 0o700
 _WORKTREE_INFIX = "--claude-worktrees-"
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees this read.
 _TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
+# Module-level for the same reason.
+_SESSION_CONFIG_KEYS_LOG_DOC = REPO_ROOT / "docs" / "session-config-keys-log.md"
 
 
 class _World(NamedTuple):
@@ -317,7 +325,7 @@ def _refusal_notes(config_dir: str) -> list[_RefusalCase]:
         _RefusalCase("trailing-tab", note(row() + "\t"), "wrong column count", 2, note(row())),
         _RefusalCase("unknown-status", note(row(status="maybe")), "unknown status", 2, note(row())),
         _RefusalCase("config-path-in-status-column", note(row(status=config_dir)), "unknown status", 2, note(row())),
-        _RefusalCase("the-earlier-unmerged-value", note(row(status="unmerged")), "unknown status", 2, note(row())),
+        _RefusalCase("unmerged-value", note(row(status="unmerged")), "unknown status", 2, note(row())),
         _RefusalCase(
             "relative-dir", note(row(dir_cell="relative/dir")), "the config directory is not absolute", 2, note(row()),
         ),
@@ -400,7 +408,7 @@ class TestNoteParser:
         assert outcome.code == 2
         assert outcome.err.strip().splitlines()[-1] == f"routing-guard: note line 1: {routing_guard._WRONG_COLUMN_COUNT_REASON}"
         assert "three columns: config dir, branch and merged or excluded" in outcome.err
-        assert "arm and pilot columns are gone" in outcome.err
+        assert "session config-keys log supplies the arm and pilot states" in outcome.err
         assert "session config-keys log" in outcome.err
         assert _published_files(world) == []
 
@@ -418,9 +426,6 @@ class TestNoteParser:
         rows = routing_guard._parse_note(f"{tmp_path}\tone\tmerged\n{tmp_path}\ttwo\texcluded\n")
 
         assert [(row.branch, row.status) for row in rows] == [("one", "merged"), ("two", "excluded")]
-
-    def test_a_note_row_has_no_arm_or_pilot_field(self):
-        assert routing_guard._NoteRow._fields == ("line_no", "resolved_config_dir", "branch", "status")
 
     def test_refuses_a_config_dir_cell_through_a_symlink_loop_naming_the_line_and_no_path(self, world, capsys, tmp_path):
         loop = _symlink_loop_that_resolve_rejects(tmp_path)
@@ -595,35 +600,15 @@ class TestFlagsAndStepOne:
         assert "--note" in capsys.readouterr().err
 
 
-_OPT_IN_FAULTS = [
-    ("not-opted-in", False, routing_guard._OptInOutcome.NOT_OPTED_IN, "not opted in"),
-    ("config-dir-unresolved", None, routing_guard._OptInOutcome.CONFIG_DIR_UNRESOLVED, "could not resolve"),
-    (
-        "schema-empty", _config.ConfigSchemaEmptyError("pr_cost_recording"),
-        routing_guard._OptInOutcome.SCHEMA_EMPTY, "empty or malformed",
-    ),
-    (
-        "row-truncated", _config.ConfigSchemaRowTruncatedError("pr_cost_recording"),
-        routing_guard._OptInOutcome.ROW_TRUNCATED, "truncated",
-    ),
-    ("unknown-key", KeyError("pr_cost_recording"), routing_guard._OptInOutcome.UNKNOWN_KEY, "unknown config key"),
-]
-
-
 class TestOptInFunction:
     def test_reports_opted_in_for_an_account_with_the_key_on(self, world):
         assert routing_guard._classify_capture_opt_in(world.config_dir) is routing_guard._OptInOutcome.OPTED_IN
 
-    @pytest.mark.parametrize(("case_id", "reader_result", "expected_outcome", "message_fragment"), _OPT_IN_FAULTS)
+    @pytest.mark.parametrize(("case_id", "reader_result", "expected_outcome", "message_fragment"), _opt_in_faults())
     def test_classifies_each_non_opted_in_outcome_and_capture_exits_1_with_its_message(
         self, world, capsys, monkeypatch, case_id, reader_result, expected_outcome, message_fragment,
     ):
-        def config_enabled(_key, config_dir_override=None):
-            if isinstance(reader_result, Exception):
-                raise reader_result
-            return reader_result
-
-        monkeypatch.setattr(_config, "config_enabled", config_enabled)
+        monkeypatch.setattr(_config, "config_enabled", _config_enabled_stub(reader_result))
         _write_session(world, _clean_loop(), log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
         spies = _install_path_spies(monkeypatch)
@@ -649,10 +634,7 @@ class TestOptInFunction:
         assert str(world.config_dir / _LOG_FILE_NAME) in gated_paths
 
     def test_an_unknown_key_is_told_apart_from_an_unreadable_schema(self, world, monkeypatch):
-        def raise_unknown_key(_key, config_dir_override=None):
-            raise KeyError("pr_cost_recording")
-
-        monkeypatch.setattr(_config, "config_enabled", raise_unknown_key)
+        monkeypatch.setattr(_config, "config_enabled", _config_enabled_stub(KeyError("pr_cost_recording")))
 
         assert routing_guard._classify_capture_opt_in(world.config_dir) is routing_guard._OptInOutcome.UNKNOWN_KEY
 
@@ -662,17 +644,11 @@ class TestOptInFunction:
 
 
 class TestConfigReaderStderr:
-    @staticmethod
-    def _write_noisy_state_file(config_dir: Path) -> None:
-        (config_dir / "claude-config.toml").write_text(
-            "malformed-line-sentinel without an equals sign\nunknown_key_sentinel = true\n",
-        )
-
     def test_a_malformed_and_an_unknown_line_leave_neither_the_path_nor_the_line_in_any_stream(self, world, capsys, tmp_path):
         second_account = tmp_path / "acct-b"
         (second_account / "projects").mkdir(parents=True)
-        self._write_noisy_state_file(world.config_dir)
-        self._write_noisy_state_file(second_account)
+        _write_noisy_config_state_file(world.config_dir)
+        _write_noisy_config_state_file(second_account)
         _write_session(world, _clean_loop(), log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH), _note_line(second_account, "branch-on-b"))
 
@@ -680,8 +656,8 @@ class TestConfigReaderStderr:
 
         combined = outcome.out + outcome.err
         assert outcome.code == 0, outcome.err
-        assert "malformed-line-sentinel" not in combined
-        assert "unknown_key_sentinel" not in combined
+        assert _NOISY_CONFIG_MALFORMED_TOKEN not in combined
+        assert _NOISY_CONFIG_UNKNOWN_KEY not in combined
         assert str(world.config_dir) not in combined
         assert str(second_account) not in combined
         assert routing_guard._CONFIG_READER_NOTICE in outcome.err
@@ -697,6 +673,16 @@ class TestConfigReaderStderr:
         assert "no-such-schema" not in outcome.err + outcome.out
         failure_lines = [line for line in outcome.err.splitlines() if "could not read config-keys.psv" in line]
         assert not any(ch.isdigit() for line in failure_lines for ch in line)
+
+    # Positive control: the `not in` assertions above go vacuous if the reader stops printing these tokens.
+    def test_the_config_reader_itself_prints_the_malformed_and_unknown_tokens_to_stderr(self, capsys, tmp_path):
+        _write_noisy_config_state_file(tmp_path)
+
+        _config.config_enabled("pr_cost_recording", tmp_path)
+
+        reader_stderr = capsys.readouterr().err
+        assert _NOISY_CONFIG_MALFORMED_TOKEN in reader_stderr
+        assert _NOISY_CONFIG_UNKNOWN_KEY in reader_stderr
 
 
 # --- the whole verdict -------------------------------------------------------
@@ -865,6 +851,16 @@ def _round(branch: str, tag: str, minute: int, *, marker: bool, input_tokens: in
     ]
 
 
+def _round_with_marker_after_prompt(branch: str, tag: str, minute: int, *, input_tokens: int = 1_000) -> list[dict]:
+    """One code-review round whose marker write follows a fresh user prompt, outside the round's window."""
+    return [
+        _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute), content=[_skill_block(f"sk-{tag}", "code-review")]),
+        _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute + 1)),
+        _user_msg(f"prompt inside {tag}", branch=branch, ts=_ts(minute + 2)),
+        _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute + 3), content=[_marker_write_use(f"mk-{tag}")]),
+    ]
+
+
 class TestLoops:
     def test_two_rounds_ending_at_a_marker_write_form_one_loop_whose_overhead_covers_both(
         self, world, capsys, assembled_loops,
@@ -882,6 +878,41 @@ class TestLoops:
         assert _round_counts_per_loop(assembled_loops) == [2]
         assert len(loops) == 1
         assert loops[0]["overhead_tokens"][_SONNET]["standard"]["input"] == 2 * 1_000 + 2 * 2_000
+
+    def test_a_marker_write_after_a_user_prompt_closes_its_own_round_and_not_the_next_one(
+        self, world, capsys, assembled_loops,
+    ):
+        records = _round_with_marker_after_prompt(_BRANCH, "a", 0) + _round(_BRANCH, "b", 10, marker=True)
+        _write_session(world, records, log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [1, 1]
+
+    def test_an_orchestrator_spawn_after_a_user_prompt_closes_its_own_round_and_not_the_previous_one(
+        self, world, capsys, assembled_loops,
+    ):
+        records = _round(_BRANCH, "a", 0, marker=False) + [
+            _orchestrator_spawn_record("o1", ts=_ts(10), branch=_BRANCH),
+            _orchestrator_return_record("o1", ts=_ts(11), branch=_BRANCH),
+        ]
+        project_dir = _write_session(world, records, log=_KEYS_OFF)
+        _write_marker_writing_orchestrator(project_dir)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [2]
+
+    def test_a_marker_write_after_the_next_rounds_open_belongs_to_that_round(self, world, capsys, assembled_loops):
+        records = _round(_BRANCH, "a", 0, marker=False) + _round_with_marker_after_prompt(_BRANCH, "b", 10)
+        _write_session(world, records, log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [2]
 
     def test_two_marker_writes_give_two_loops(self, world, capsys, assembled_loops):
         records = _round(_BRANCH, "a", 0, marker=True) + _round(_BRANCH, "b", 10, marker=True)
@@ -1730,6 +1761,58 @@ class TestReconcileDenies:
         assert "unlisted-branch" not in result.refusals[0]
         assert "merged if the branch belongs in the sample, else excluded" in result.refusals[0]
 
+    def test_two_unlisted_branches_each_get_a_refusal_in_the_order_of_their_first_deny(self):
+        later_minute = datetime(2026, 8, 1, 11, 30, tzinfo=UTC).timestamp()
+        earlier_minute = datetime(2026, 8, 1, 9, 5, tzinfo=UTC).timestamp()
+        denies = [
+            routing_guard._DenyFact("unlisted-one", later_minute, "sess-1"),
+            routing_guard._DenyFact("unlisted-two", earlier_minute, "sess-1"),
+        ]
+
+        result = self._reconcile(denies, [_STATE_ON, _STATE_ON], [])
+
+        assert len(result.refusals) == 2
+        assert "2026-08-01 11:30 UTC" in result.refusals[0]
+        assert "2026-08-01 09:05 UTC" in result.refusals[1]
+
+    def test_an_unlisted_branch_with_two_denies_gets_one_refusal_naming_the_earlier_minute(self):
+        later_minute = datetime(2026, 8, 1, 11, 30, tzinfo=UTC).timestamp()
+        earlier_minute = datetime(2026, 8, 1, 9, 5, tzinfo=UTC).timestamp()
+        denies = [
+            routing_guard._DenyFact("unlisted-branch", later_minute, "sess-1"),
+            routing_guard._DenyFact("unlisted-branch", earlier_minute, "sess-2"),
+        ]
+
+        result = self._reconcile(denies, [_STATE_ON, _STATE_ON], [])
+
+        assert len(result.refusals) == 1
+        assert "2026-08-01 09:05 UTC" in result.refusals[0]
+        assert "2026-08-01 11:30 UTC" not in result.refusals[0]
+
+    def test_an_unlisted_branch_with_a_timed_and_an_untimed_deny_gets_one_refusal_naming_the_timed_minute(self):
+        timed_minute = datetime(2026, 8, 1, 9, 5, tzinfo=UTC).timestamp()
+        denies = [
+            routing_guard._DenyFact("unlisted-branch", None, "sess-1"),
+            routing_guard._DenyFact("unlisted-branch", timed_minute, "sess-2"),
+        ]
+
+        result = self._reconcile(denies, [_STATE_ON, _STATE_ON], [])
+
+        assert len(result.refusals) == 1
+        assert "2026-08-01 09:05 UTC" in result.refusals[0]
+        assert "an unknown time" not in result.refusals[0]
+
+    def test_an_unlisted_branch_whose_denies_are_all_untimed_gets_one_refusal_naming_an_unknown_time(self):
+        denies = [
+            routing_guard._DenyFact("unlisted-branch", None, "sess-1"),
+            routing_guard._DenyFact("unlisted-branch", None, "sess-2"),
+        ]
+
+        result = self._reconcile(denies, [_STATE_ON, _STATE_ON], [])
+
+        assert len(result.refusals) == 1
+        assert "a routing deny at an unknown time falls on a branch the note does not list" in result.refusals[0]
+
     def test_a_deny_on_an_empty_or_default_branch_prints_a_notice_and_does_not_refuse(self):
         denies = [routing_guard._DenyFact("", 1.0, "sess-1"), routing_guard._DenyFact("main", 2.0, "sess-1")]
 
@@ -2380,20 +2463,20 @@ class TestStore:
         if fault == "dangling-symlink":
             assert not target.exists()
 
-    def test_a_loops_only_file_at_the_current_revision_reads_invalid_with_the_layout_note_and_is_not_rebuilt(
+    def test_a_loops_only_file_at_the_current_revision_reads_invalid_with_the_loops_only_note_and_is_not_rebuilt(
         self, world, capsys,
     ):
         _write_session(world, _clean_loop(_BRANCH))
-        earlier_layout_text = json.dumps({"loops": [_DEFAULT_LOOP]})
-        standing = _plant_standing_file(world, _BRANCH, earlier_layout_text)
+        loops_only_text = json.dumps({"loops": [_DEFAULT_LOOP]})
+        standing = _plant_standing_file(world, _BRANCH, loops_only_text)
         before = (standing.read_bytes(), standing.stat().st_mtime_ns)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
 
         outcome = _run(capsys, world)
 
         assert outcome.code == 3
-        assert f"routing-guard: note line 1: invalid ({routing_guard._EARLIER_LAYOUT_NOTE})" in outcome.out.splitlines()
-        assert "earlier layout" in outcome.out
+        assert f"routing-guard: note line 1: invalid ({routing_guard._LOOPS_ONLY_NOTE})" in outcome.out.splitlines()
+        assert "the file holds loops and no key states" in outcome.out
         assert (standing.read_bytes(), standing.stat().st_mtime_ns) == before
 
     def test_a_planted_orphaned_temp_file_is_never_opened_and_stays(self, world, capsys, monkeypatch):
@@ -2719,7 +2802,7 @@ def _loop_json(**overrides) -> bytes:
 
 _REASON_NOT_VALID_JSON = "not valid JSON"
 _REASON_NOT_AN_OBJECT = "the file is not a JSON object"
-_REASON_EARLIER_LAYOUT = "the file holds loops and no key states"
+_REASON_LOOPS_ONLY = "the file holds loops and no key states"
 _REASON_WRONG_KEYS = "the file does not hold exactly the loops and the three key states"
 _REASON_KEY_STATE_VALUE = "a key state is neither on nor off"
 _REASON_LOOPS_EMPTY = "loops is not a non-empty list"
@@ -2771,7 +2854,7 @@ _INVALID_CAPTURES = [
         _REASON_NOT_VALID_JSON,
     ),
     ("nesting-past-the-recursion-limit", b"[" * 500_000, _REASON_NOT_VALID_JSON),
-    ("the-earlier-loops-only-layout", json.dumps({"loops": [_DEFAULT_LOOP]}).encode(), _REASON_EARLIER_LAYOUT),
+    ("loops-only", json.dumps({"loops": [_DEFAULT_LOOP]}).encode(), _REASON_LOOPS_ONLY),
     *[
         (
             f"{missing_key}-missing",
@@ -3077,12 +3160,11 @@ class TestRowLines:
         assert "routing-guard: note line 2: missing (no-records)" in outcome.out.splitlines()
         assert routing_guard._PRICING_INTEGRITY_LINE in outcome.out.splitlines()
         last_line = outcome.out.splitlines()[-1]
-        assert last_line == routing_guard._NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT
+        assert last_line == routing_guard._NEXT_ACTION_ACT_ON_LINES_AND_RESOLVE_DRIFT
         assert routing_guard._NEXT_ACTION_ACT_ON_LINES in last_line
         assert routing_guard._PRICING_DRIFT_REMEDY in last_line
         assert "delete the capture file" in last_line
-        assert 'docs/transcript-analysis.md routing-guard "The captures directory"' in last_line
-        assert not any(ch.isdigit() for ch in routing_guard._NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT)
+        assert not any(ch.isdigit() for ch in routing_guard._NEXT_ACTION_ACT_ON_LINES_AND_RESOLVE_DRIFT)
         assert outcome.code == 3, outcome.err
 
 
@@ -3111,7 +3193,7 @@ class TestGoldenFile:
         branch_digest = hashlib.sha256(_BRANCH.encode("utf-8")).hexdigest()
         assert [p.name for p in published] == [f"{branch_digest}.r1.json"], (
             "The file name changed. Bump _CAPTURE_REVISION only when the change alters what a stored row means;"
-            " otherwise update this literal, because a bump leaves every earlier file unpoolable."
+            " otherwise update this literal, because a bump strands every standing file."
         )
         assert published[0].read_text() == (
             '{"architect_fix_plan_pilot": "off", "loops": [{"degraded": false, "growth_tokens": 30000,'
@@ -3120,7 +3202,7 @@ class TestGoldenFile:
             ' "round_consult_round2_pilot": "off", "routing": "off"}'
         ), (
             "The stored text changed. Bump _CAPTURE_REVISION only when the change alters what a stored row means;"
-            " otherwise update this literal, because a bump leaves every earlier file unpoolable."
+            " otherwise update this literal, because a bump strands every standing file."
         )
 
 
@@ -3363,7 +3445,7 @@ class TestOutput:
     ):
         outcome = _capture_one_branch(world, capsys)
 
-        assert outcome.out.splitlines()[:4][-1] == _BANNER_PROVENANCE_SENTENCE
+        assert _BANNER_PROVENANCE_SENTENCE in outcome.out.splitlines()
         assert not any(ch.isdigit() for ch in _BANNER_PROVENANCE_SENTENCE)
 
     def test_the_banner_is_ascii_so_it_encodes_the_same_under_any_locale(self):
@@ -4692,7 +4774,7 @@ class TestSummaryAndDate:
         ("drift_detected", "expected_next_action"),
         [
             (False, routing_guard._NEXT_ACTION_ACT_ON_LINES),
-            (True, routing_guard._NEXT_ACTION_ACT_ON_LINES_THEN_RESOLVE_DRIFT),
+            (True, routing_guard._NEXT_ACTION_ACT_ON_LINES_AND_RESOLVE_DRIFT),
         ],
         ids=["no-drift", "drift"],
     )
@@ -4896,11 +4978,50 @@ def _message_citations() -> set[tuple[str, str]]:
     }
 
 
+# Messages cite the routing-guard doc section as `<path> routing-guard "<heading>"`, a form `_MESSAGE_CITATION_RE` misses.
+_ROUTING_GUARD_CITATION_RE = re.compile(r'docs/transcript-analysis\.md routing-guard "(?P<heading>[^"\n]+)"')
+
 # The banner cites its doc as `<path>` section "<heading>", a form `_MESSAGE_CITATION_RE` does not match.
 _BANNER_CITATION_RE = re.compile(r'`(?P<doc_path>[\w./-]+\.md)` section "(?P<heading>[^"\n]+)"')
 
 
+def _routing_guard_section_citation_headings() -> set[str]:
+    """Every heading cited as `routing-guard "<heading>"` by a message constant or by the unlisted-deny refusal.
+
+    The refusal is built inside `_reconcile_denies`, so it is produced by calling that function."""
+    unlisted_deny_refusals = routing_guard._reconcile_denies(
+        [routing_guard._DenyFact("unlisted-branch", 1.0, "sess-1")], [_STATE_ON], [],
+        Path("/placeholder/account-a"), set(), {}, {},
+    ).refusals
+    texts = [*_message_constant_texts(), *unlisted_deny_refusals]
+    return {match["heading"] for text in texts for match in _ROUTING_GUARD_CITATION_RE.finditer(text)}
+
+
+def _select_tests_module():
+    script = Path(__file__).parent.parent / "select-tests.py"
+    spec = importlib.util.spec_from_file_location("select_tests", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestMessageCitations:
+    def test_every_doc_a_section_citation_selects_the_scripts_tests(self):
+        """Scope: docs cited as `<path> § "<heading>"` plus the banner's doc; other citation forms are not read."""
+        select_tests = _select_tests_module()
+        banner_match = _BANNER_CITATION_RE.search(routing_guard._DO_NOT_PUBLISH_BANNER)
+        assert banner_match
+        cited_doc_paths = {doc_path for doc_path, _heading in _message_citations()} | {banner_match["doc_path"]}
+
+        not_selecting_scripts_tests = {
+            doc_path: selection.target_paths
+            for doc_path in sorted(cited_doc_paths)
+            for selection in [select_tests.select_pytest_targets([doc_path])]
+            if not selection.is_full_suite and select_tests.SCRIPTS_TESTS_DIR not in selection.target_paths
+        }
+        assert _message_citations()
+        assert not_selecting_scripts_tests == {}
+
     def test_the_lost_event_next_step_cites_the_notice_section_of_the_log_doc(self):
         assert ("docs/session-config-keys-log.md", "Notice") in _message_citations()
 
@@ -4920,10 +5041,15 @@ class TestMessageCitations:
         assert match["doc_path"] == "docs/private-project-redaction.md"
         assert normalize_heading(match["heading"]) in heading_texts((REPO_ROOT / match["doc_path"]).read_text())
 
-    def test_the_routing_guard_section_holds_the_captures_directory_heading_the_drift_remedy_cites(self):
+    def test_the_routing_guard_section_holds_every_heading_a_printed_message_cites(self):
+        cited_headings = _routing_guard_section_citation_headings()
         section_headings = heading_texts("\n".join(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text())))
 
-        assert normalize_heading("The captures directory") in section_headings
+        assert {"The captures directory", "Deny reconciliation"} <= cited_headings
+        assert [heading for heading in sorted(cited_headings) if normalize_heading(heading) not in section_headings] == []
+
+    def test_the_log_doc_holds_the_notice_heading_the_lost_event_next_step_cites(self):
+        assert normalize_heading("Notice") in heading_texts(_SESSION_CONFIG_KEYS_LOG_DOC.read_text())
 
     def test_every_doc_section_a_printed_message_cites_exists(self):
         citations = _message_citations()

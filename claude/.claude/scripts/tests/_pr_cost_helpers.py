@@ -249,6 +249,32 @@ def _make_mkstemp_create_0644(monkeypatch) -> None:
     monkeypatch.setattr(tempfile, "mkstemp", mkstemp_creating_0644)
 
 
+_TEMP_FILE_PREFIX = ".pr-cost-export-"
+
+
+def _record_temp_file_paths(monkeypatch) -> list[Path]:
+    """Record the full path of every temp file the publish step creates."""
+    created_paths: list[Path] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, temp_path = real_mkstemp(*args, **kwargs)
+        created_paths.append(Path(temp_path))
+        return fd, temp_path
+
+    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
+    return created_paths
+
+
+def _assert_one_temp_file_in_directory_with_command_prefix_and_removed(
+    created_paths: list[Path], directory: Path,
+) -> None:
+    assert len(created_paths) == 1, created_paths
+    assert created_paths[0].name.startswith(_TEMP_FILE_PREFIX), created_paths[0].name
+    assert created_paths[0].parent == directory, (created_paths[0].parent, directory)
+    assert not created_paths[0].exists(), created_paths[0]
+
+
 def _pr_cost_args(
     *,
     projects: str = "*",

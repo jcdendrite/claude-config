@@ -404,9 +404,7 @@ def _price_session_rounds(
 
     `records` must already be deduped (pricing.dedup_turns_by_request_id) and
     `windows` and `record_branches` computed from them. Returns one entry per
-    window, in window order, holding branch_key, skill, ts, main_dollars,
-    agent_dollars, agents, unpriced_turns, dangling, main_tokens, agent_tokens,
-    unpriced_tokens, invalid_usage_records, open_idx and window_end.
+    window, in window order.
     With `collect_tokens`, each entry also holds `tokens`: the class token
     counts of its window's main-thread turns and dispatches, nested model,
     then pricing variant, by _record_turn_tokens' rule.

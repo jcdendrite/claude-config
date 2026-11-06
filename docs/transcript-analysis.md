@@ -1706,7 +1706,7 @@ The note says which branches are in the sample. Capture derives each branch's ar
 <config-dir> <TAB> <branch> <TAB> <merged|excluded>
 ```
 
-- `merged` is a branch in the sample: a merged key-on branch, or a merged key-off branch. An account lists as many key-off branches as it has key-on ones.
+- `merged` is a branch in the sample: a merged key-on branch, or a merged key-off branch. Each account lists as many `merged` key-off branches as `merged` key-on ones.
 - `excluded` is a branch not in the sample: one that has not merged, or one that merged but cannot be sampled. It is never captured, and a routing deny on it passes deny reconciliation.
 - `#` lines and blank lines are skipped. A leading `~/` in the config directory expands to `$HOME`. Any other config directory must be absolute.
 
@@ -1726,7 +1726,11 @@ Keep the note as an owner-only file outside any git work tree and any cloud-sync
    - Run capture only when the checkout whose script is running (the stowed checkout, for the `~/.claude/scripts` copy) has this subcommand merged, never from a branch whose capture logic may still change.
    - Run it with its cwd in a worktree of that checkout.
 
-   This bash loop runs one capture per config directory in the note. It prints each run's exit code and nothing that names an account. It continues past exit 3 and stops on any other nonzero exit. The loop's own exit status is the gate for step 4, and it is the first exit code that is neither 0 nor 3, else 3 when any run exited 3, else 0:
+   This bash loop runs one capture per config directory in the note. It prints each run's exit code and nothing that names an account. It continues past exit 3 and stops on any other nonzero exit. The loop's own exit status is the gate for step 4, and it is:
+
+   - the first exit code that is neither 0 nor 3,
+   - else 3, when any run exited 3,
+   - else 0.
 
    ```bash
    awk -F '\t' '{ sub(/\r$/, "") } !/^#/ && NF { print $1 }' <note-path> | sort -u | (
@@ -1782,9 +1786,9 @@ python3 -c 'import hashlib; print(hashlib.sha256(input("branch: ").encode("utf-8
 
 ### Output
 
-- Capture prints one line per `merged` row of the `--config-dir` account, then a summary line and a fixed next action. A `captured` row ends with the date of the earliest surviving record, the earliest timestamped main-thread record of the branch that still exists among the scanned sessions. A date near the `cleanupPeriodDays` limit means older sessions may already be gone and the write-once file will read low, and a recent date does not show that none were lost.
+- Capture prints one line per `merged` row of the `--config-dir` account, then a summary line and a fixed next action. A `captured` row ends with the date of the earliest surviving record. That is the earliest timestamped main-thread record of the branch that still exists among the scanned sessions. A date near the `cleanupPeriodDays` limit means older sessions may already be gone and the write-once file will read low. A recent date does not show that none were lost.
 - Compute prints one status line, or one NOT RUN line per reason and note line. FAILED means the interval's lower bound is above zero, PASSED means it is not, and NOT RUN means the guard could not be computed.
-- `--out PATH` writes the figures to a new owner-only file outside any git work tree, which opens with the `DO NOT PUBLISH` banner. A NOT RUN run writes no file. Delete the file once its figures are read.
+- `--out PATH` writes the figures to a new owner-only file outside any git work tree, which opens with the `DO NOT PUBLISH` banner. A NOT RUN run writes no file. Delete the file once its figures are read. The git-tree check does not cover a cloud-sync folder or a bare-repo dotfile manager; see `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
 
 Exit codes:
 
@@ -1804,7 +1808,7 @@ No quantity the guard computes is published. `docs/private-project-redaction.md`
 
 ### Known gaps
 
-- Both arms fill only from branches worked after the recorder landed, key-on branches included. The design record's key-off sample, each key-on account's most recent branches from before its key went on, cannot be met on an account whose key predates its log.
+- Both arms fill only from branches worked after the recorder landed, key-on branches included. The design record's key-off sample, each key-on account's most recent branches from before its key went on, cannot be met on an account whose key predates its log. Filling the key-off arm takes merged branches every one of whose sessions started with the key already off. List the most recent such branches, as many as under "The note", each worked under the same two pilot states as the account's key-on branches.
 - A log row is a SessionStart snapshot, so a mid-session flip is invisible.
 - An excluded branch is a selection effect on the arm.
 
@@ -1815,7 +1819,7 @@ Records stay as history, and the retirement adds its own, as `docs/design-decisi
 - Delete `routing_guard.py`, its tests and test helper, and every registration, test case and citation test that names it.
 - Remove this section, the routing-guard entries in `docs/transcript-analysis-architecture.md`, the routing-guard sentences about the `pr_cost_recording` key in `docs/pr-cost.md` and `config-keys.psv`, and the routing-guard call sites in the config schema audit.
 - Edit the routing-guard mentions in this file outside this section, including the count of subcommands that skip `--this-repo` under "Scoping to this repo".
-- At retirement time, not before, edit the sentence in `docs/design-decisions/review-orchestrator-routing-gate.md` that begins "`transcript-analysis.py routing-guard --capture`" and cites this section. Replace it with the retirement record, so the record does not point at a removed section.
+- At retirement time, not before, edit the paragraph in `docs/design-decisions/review-orchestrator-routing-gate.md` that begins "`transcript-analysis.py routing-guard --capture`" and cites this section. Replace it with the retirement record, so the record does not point at a removed section.
 - Keep the shared helpers: the `ledger_common` publish core, the `pr-cost-export` refactor onto it and the review-round fixtures in `_review_round_helpers.py`.
 - Remove the token-sink plumbing `review_rounds.py` gained for this subcommand, reached from `_record_turn_tokens`, with its tests and the sentence about it in `pricing._token_counts`'s docstring. The public round dict's keys must stay as they are; `TestComputeReviewRoundCostsRoundKeys` guards them.
 - Keep the `CHANGELOG.md` entry for the subcommand and add a `Removed` entry. The `routing-guard-captures/` directories remain on disk, and that entry is the only notice that they exist.

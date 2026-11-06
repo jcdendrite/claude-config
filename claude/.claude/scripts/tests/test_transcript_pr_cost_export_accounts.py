@@ -16,6 +16,7 @@ from ._pr_cost_helpers import (
     _DROPPED_LINE_PREFIX,
     _PRE_HOST_HEADER_LINE,
     _PRE_MODEL_HEADER_LINE,
+    _assert_one_temp_file_in_directory_with_command_prefix_and_removed,
     _dropped_keys_line,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
@@ -24,6 +25,7 @@ from ._pr_cost_helpers import (
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
     _pre_model_row_line,
+    _record_temp_file_paths,
     _review_rounds_cell_dropping,
     _sample_model_breakdown,
     _sample_pr_cost_row,
@@ -108,6 +110,7 @@ class TestPrCostExportOptIn:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
+        created_paths = _record_temp_file_paths(monkeypatch)
 
         pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
@@ -126,6 +129,7 @@ class TestPrCostExportOptIn:
         out = capsys.readouterr().out
         assert str(out_path) in out
         assert "wrote 2 row(s) from 3 of 4 declared account(s)" in out
+        _assert_one_temp_file_in_directory_with_command_prefix_and_removed(created_paths, tmp_path)
 
     def test_fully_skipped_run_with_no_opted_in_account_exits_0_with_header_only_file(
         self, tmp_path, fake_projects, monkeypatch,

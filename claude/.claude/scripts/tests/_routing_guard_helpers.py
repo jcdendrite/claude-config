@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+import _config
 import pytest
 from transcript_analysis import denials
 
@@ -46,10 +47,11 @@ def _routing_deny_record(
     every deny test passing for the wrong reason.
     """
     message = f"Blocked by {_ROUTING_DENY_LABEL_TEXT} gate: {body}"
-    assert denials._denial_hook_label("", message) == _ROUTING_DENY_LABEL_TEXT
+    denial_label = denials._denial_hook_label("", message)
+    assert denial_label == _ROUTING_DENY_LABEL_TEXT, denial_label
     if shape == "current":
         return _hook_deny_current(message, tool_id=tool_use_id, ts=ts, branch=branch)
-    assert shape == "legacy"
+    assert shape == "legacy", shape
     record: dict = {
         "type": "attachment",
         "gitBranch": branch,
@@ -156,14 +158,14 @@ class _RecorderPositiveControls:
 
         subprocess.run(["gh", "pr", "list"], check=False)
 
-        assert recorder.executables() == {"gh"}
+        assert recorder.executables() == {"gh"}, recorder.executables()
 
     def test_the_subprocess_recorder_records_a_popen_argv(self, monkeypatch):
         recorder = _install_subprocess_recorder(monkeypatch)
 
         subprocess.Popen([sys.executable, "-c", "pass"]).wait()
 
-        assert recorder.executables() == {sys.executable}
+        assert recorder.executables() == {sys.executable}, recorder.executables()
 
 
 @contextlib.contextmanager
@@ -171,7 +173,12 @@ def _environment_unchanged() -> Iterator[None]:
     """Fail when the body adds, removes or changes an environment variable."""
     before = dict(os.environ)
     yield
-    assert dict(os.environ) == before
+    after = dict(os.environ)
+    assert after == before, {
+        "added": sorted(after.keys() - before.keys()),
+        "removed": sorted(before.keys() - after.keys()),
+        "changed": sorted(name for name in before.keys() & after.keys() if before[name] != after[name]),
+    }
 
 
 class _Outcome(NamedTuple):
@@ -194,6 +201,49 @@ def _note_row(line_no: int, account: Path, branch: str, status: str = "merged") 
     from transcript_analysis import routing_guard
 
     return routing_guard._NoteRow(line_no, account, branch, status)
+
+
+# --- the opt-in read ---------------------------------------------------------
+
+_NOISY_CONFIG_MALFORMED_TOKEN = "malformed-line-sentinel"
+_NOISY_CONFIG_MALFORMED_LINE = f"{_NOISY_CONFIG_MALFORMED_TOKEN} without an equals sign"
+_NOISY_CONFIG_UNKNOWN_KEY = "unknown_key_sentinel"
+
+
+def _opt_in_faults() -> list[tuple[str, object, routing_guard._OptInOutcome, str]]:
+    """(case id, what the config reader returns or raises, the classified outcome, a fragment of the refusal) for each
+    outcome of the `pr_cost_recording` read that is not opted in."""
+    from transcript_analysis import routing_guard
+
+    return [
+        ("not-opted-in", False, routing_guard._OptInOutcome.NOT_OPTED_IN, "not opted in"),
+        ("config-dir-unresolved", None, routing_guard._OptInOutcome.CONFIG_DIR_UNRESOLVED, "could not resolve"),
+        (
+            "schema-empty", _config.ConfigSchemaEmptyError("pr_cost_recording"),
+            routing_guard._OptInOutcome.SCHEMA_EMPTY, "empty or malformed",
+        ),
+        (
+            "row-truncated", _config.ConfigSchemaRowTruncatedError("pr_cost_recording"),
+            routing_guard._OptInOutcome.ROW_TRUNCATED, "truncated",
+        ),
+        ("unknown-key", KeyError("pr_cost_recording"), routing_guard._OptInOutcome.UNKNOWN_KEY, "unknown config key"),
+    ]
+
+
+def _config_enabled_stub(reader_result: object) -> Callable[..., object]:
+    """A stand-in for `_config.config_enabled` that raises `reader_result` when it is an exception, else returns it."""
+
+    def config_enabled(_key, config_dir_override=None):
+        if isinstance(reader_result, Exception):
+            raise reader_result
+        return reader_result
+
+    return config_enabled
+
+
+def _write_noisy_config_state_file(config_dir: Path) -> None:
+    """A config state file with one malformed line and one unknown key, which the config reader reports on stderr."""
+    (config_dir / "claude-config.toml").write_text(f"{_NOISY_CONFIG_MALFORMED_LINE}\n{_NOISY_CONFIG_UNKNOWN_KEY} = true\n")
 
 
 # --- provenance statement -------------------------------------------------------
@@ -507,13 +557,14 @@ def _assert_git_failure_diagnostic_precedes_note_refusal(
 
     `exempt_prefixes` is the calling module's digit-scan exemption list, which the diagnostic line must match.
     """
+    assert outcome.code == 2, outcome.code
+    assert len(outcome.err.splitlines()) >= 2, outcome.err
     diagnostic_line, refusal_line = outcome.err.splitlines()[:2]
-    assert outcome.code == 2
-    assert diagnostic_line.startswith("routing-guard: git-tracked check failed")
-    assert diagnostic_line.startswith(tuple(exempt_prefixes))
-    assert "git working tree" in refusal_line
-    assert refusal_line.startswith("routing-guard: --note")
-    assert str(tmp_path) not in outcome.out + outcome.err
+    assert diagnostic_line.startswith("routing-guard: git-tracked check failed"), diagnostic_line
+    assert diagnostic_line.startswith(tuple(exempt_prefixes)), (diagnostic_line, exempt_prefixes)
+    assert "git working tree" in refusal_line, refusal_line
+    assert refusal_line.startswith("routing-guard: --note"), refusal_line
+    assert str(tmp_path) not in outcome.out + outcome.err, (outcome.out, outcome.err)
 
 
 def _routing_guard_section_lines(doc_text: str) -> list[str]:

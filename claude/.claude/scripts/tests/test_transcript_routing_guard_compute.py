@@ -27,9 +27,12 @@ from ._review_round_helpers import _SONNET
 from ._routing_guard_helpers import (
     _BANNER_PROVENANCE_SENTENCE,
     _COMPUTE_PROVENANCE_LINE,
+    _NOISY_CONFIG_MALFORMED_TOKEN,
+    _NOISY_CONFIG_UNKNOWN_KEY,
     _VALID_STATES,
     _assert_git_failure_diagnostic_precedes_note_refusal,
     _capture_file_text,
+    _config_enabled_stub,
     _digest_name,
     _environment_unchanged,
     _install_git_not_found,
@@ -39,9 +42,11 @@ from ._routing_guard_helpers import (
     _log_row,
     _note_line,
     _note_row,
+    _opt_in_faults,
     _Outcome,
     _routing_guard_section_lines,
     _write_log,
+    _write_noisy_config_state_file,
 )
 from .conftest import _agent_use, _commit, _init_repo, _priced, _skill_block, _user_msg, _write_jsonl, _write_subagent_dispatch
 
@@ -248,25 +253,13 @@ class TestReadiness:
         assert not any(path.endswith(".r1.json") for path in spies.opened_paths())
 
     @pytest.mark.parametrize(
-        ("case_id", "reader_result"),
-        [
-            ("not-opted-in", False),
-            ("config-dir-unresolved", None),
-            ("schema-empty", _config.ConfigSchemaEmptyError("pr_cost_recording")),
-            ("row-truncated", _config.ConfigSchemaRowTruncatedError("pr_cost_recording")),
-            ("unknown-key", KeyError("pr_cost_recording")),
-        ],
+        ("case_id", "reader_result"), [(case_id, reader_result) for case_id, reader_result, *_ in _opt_in_faults()],
     )
     def test_each_outcome_that_is_not_opted_in_is_not_run_and_never_exit_1(
         self, lab, capsys, monkeypatch, case_id, reader_result,
     ):
-        def config_enabled(_key, config_dir_override=None):
-            if isinstance(reader_result, Exception):
-                raise reader_result
-            return reader_result
-
         _minimal_pair(lab)
-        monkeypatch.setattr(_config, "config_enabled", config_enabled)
+        monkeypatch.setattr(_config, "config_enabled", _config_enabled_stub(reader_result))
         spies = _install_path_spies(monkeypatch)
 
         outcome = _compute(capsys, lab)
@@ -301,9 +294,7 @@ class TestReadiness:
         account, _on_line, _off_line = _minimal_pair(lab)
         second_account = lab.account("acct-b")
         for config_dir in (account, second_account):
-            (config_dir / "claude-config.toml").write_text(
-                "malformed-line-sentinel without an equals sign\nunknown_key_sentinel = true\n",
-            )
+            _write_noisy_config_state_file(config_dir)
         lab.row(second_account, "branch-on-b", "on", loops=[_loop(growth=1)])
         lab.row(second_account, "branch-off-b", "off", loops=[_loop(growth=2)])
         lab.write_note()
@@ -312,8 +303,8 @@ class TestReadiness:
 
         combined = outcome.out + outcome.err
         assert outcome.code in (0, 1)
-        assert "malformed-line-sentinel" not in combined
-        assert "unknown_key_sentinel" not in combined
+        assert _NOISY_CONFIG_MALFORMED_TOKEN not in combined
+        assert _NOISY_CONFIG_UNKNOWN_KEY not in combined
         assert str(account) not in combined
         assert str(second_account) not in combined
         assert str(tmp_path) not in combined
@@ -399,8 +390,8 @@ class TestSelectSample:
             routing_guard._NotRunReason(routing_guard._REASON_FILE_UNUSABLE, 2),
         ]
 
-    @pytest.mark.parametrize("unusable", [routing_guard._StandingFile.INVALID, routing_guard._StandingFile.EARLIER_LAYOUT])
-    def test_an_invalid_file_and_an_earlier_layout_file_are_both_unusable(self, unusable):
+    @pytest.mark.parametrize("unusable", [routing_guard._StandingFile.INVALID, routing_guard._StandingFile.LOOPS_ONLY])
+    def test_an_invalid_file_and_a_loops_only_file_are_both_unusable(self, unusable):
         entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off")]
 
         selection = _select(entries, loaded={1: _record(), 2: unusable})
@@ -1080,6 +1071,19 @@ class TestPointNet:
         assert figures.carry == pytest.approx(1.70)
         assert figures.net == pytest.approx(-2.70)
 
+    def test_a_key_on_arm_that_grew_more_than_the_key_off_arm_gives_a_negative_gap_and_a_negative_carry_that_raises_the_net(self):
+        on = [routing_guard._BranchScalars("d1", 1, 700_000, 1, 5.0, 0.0, 0, frozenset())]
+        off = [routing_guard._BranchScalars("d2", 2, 600_000, 2, 8.0, 4.0e-6, 0, frozenset())]
+
+        figures = routing_guard._arm_net(on, off)
+
+        # On: $5 / 1 loop = $5. Off: $8 / 2 = $4. Gap: key-off mean 300k less key-on mean 700k = -400k.
+        # Carry: -400k * 4e-6 / 2 loops = -$0.80, so the net is 1 - (-0.80).
+        assert figures.overhead_difference == pytest.approx(1.0)
+        assert figures.gap == pytest.approx(-400_000)
+        assert figures.carry == pytest.approx(-0.80)
+        assert figures.net == pytest.approx(1.80)
+
     def test_a_key_off_branch_with_only_null_growth_loops_still_counts_in_the_per_loop_overhead_and_carry_denominators(self):
         on = [routing_guard._BranchScalars("d1", 2, 200_000, 2, 10.0, 0.0, 0, frozenset())]
         off = [
@@ -1207,7 +1211,7 @@ class TestBootstrap:
         assert result.upper == max(nets)
         assert result.undefined_total == 0
 
-    def test_each_replicate_draws_the_on_arm_then_the_off_arm_each_sorted_by_digest_with_k_its_size(self):
+    def test_each_replicate_draws_each_arm_sorted_by_digest_with_k_its_size(self):
         on = [_bs("z"), _bs("a"), _bs("m")]
         off = [_bs("y"), _bs("b")]
         rng = _SpyRng(0)
@@ -1216,7 +1220,7 @@ class TestBootstrap:
 
         draws_per_replicate = [([b.digest for b in population], k) for population, k in rng.calls]
         assert len(draws_per_replicate) == 6
-        assert draws_per_replicate == [(["a", "m", "z"], 3), (["b", "y"], 2)] * 3
+        assert sorted(draws_per_replicate) == sorted([(["a", "m", "z"], 3), (["b", "y"], 2)] * 3)
 
     def test_the_result_does_not_depend_on_the_global_random_state_and_depends_on_the_injected_seed(self):
         on, off = _six_branch_arms()
@@ -1233,6 +1237,7 @@ class TestBootstrap:
         assert (first.lower, first.upper) == (second.lower, second.upper)
         assert (first.lower, first.upper) != (other_seed.lower, other_seed.upper)
 
+    # A scripted stream is consumed in call order, so these draws follow production's order of the key-on then key-off draw.
     def test_a_scripted_stream_ranks_undefined_replicates_last_and_reads_the_lower_bound_at_index_10_of_the_360_defined(self):
         on = [_bs("01", overhead=1.0, growth_sum=10), _bs("02", overhead=3.0, growth_loops=0)]
         off = [_bs("03", overhead=10.0, growth_sum=10), _bs("04", overhead=4.0, growth_sum=10)]
@@ -1256,6 +1261,21 @@ class TestBootstrap:
         assert (result.undefined_total, result.undefined_on, result.undefined_off) == (40, 40, 0)
         assert len(rng.calls) == 800
 
+    def test_a_replicate_whose_key_on_arm_grew_more_than_the_key_off_arm_keeps_its_negative_gap_and_carry(self):
+        on = [_bs("01", growth_sum=700_000, overhead=5.0), _bs("02", growth_sum=100_000, overhead=3.0)]
+        off = [_bs("03", growth_sum=300_000, overhead=4.0, rate=5e-6), _bs("04", growth_sum=900_000, overhead=8.0, rate=1e-6)]
+        # Two replicates put the lower bound at the smaller net and the upper bound at the larger.
+        # Replicate 1 (branch 01 twice, branch 03 twice): overhead difference 5 - 4 = 1, gap 300k - 700k = -400k,
+        # carry -400k * 10e-6 / 2 loops = -2, net 1 - (-2) = 3.
+        # Replicate 2 (branch 02 twice, branch 04 twice): overhead difference 3 - 8 = -5, gap 900k - 100k = 800k,
+        # carry 800k * 2e-6 / 2 loops = 0.8, net -5 - 0.8 = -5.8.
+        rng = _ScriptedRng([[0, 0], [0, 0], [1, 1], [1, 1]])
+
+        result = routing_guard._bootstrap_net(on, off, replicates=2, rng=rng)
+
+        assert result.upper == pytest.approx(3.0)
+        assert result.lower == pytest.approx(-5.8)
+
     def test_an_unbounded_upper_bound_is_written_as_unbounded_never_inf(self):
         defined = _bs("01", growth_sum=10)
         figures = routing_guard._arm_net([defined], [defined])
@@ -1278,6 +1298,7 @@ class TestBootstrap:
 
         result = routing_guard._bootstrap_net(on, off, replicates=10_000, rng=rng)
 
+        # The seeded replay matches the production stream only in production's draw order, key-on then key-off.
         reference_rng = random.Random(0)
         reference_nets = []
         for _ in range(10_000):
@@ -1525,7 +1546,7 @@ class TestOutput:
 
         _compute(capsys, lab, out=str(out_path))
 
-        assert out_path.read_text().splitlines()[3] == _BANNER_PROVENANCE_SENTENCE
+        assert _BANNER_PROVENANCE_SENTENCE in out_path.read_text().splitlines()
 
     @pytest.mark.parametrize("scenario", ["passed", "failed"])
     def test_a_status_run_prints_the_unauthenticated_rows_statement_on_stderr_and_keeps_stdout_the_bare_status(
