@@ -10,7 +10,6 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `comment-discipline-reviewer` gains a "False or unsourced claim" angle for added or modified prose. It flags a settleable claim its subject contradicts, citing the subject's `file:line`. It runs in `/ready-for-review`'s cumulative pass, like the agent's other angles.
   - Step 1.5 gains a "Stale claim in unchanged prose" tripwire. When a diff renames, removes or redefines a name, it searches for unchanged comments and docs still describing the old contract. It runs inline in every round, and skips preserved records, plans and dated design-decision records.
   - A claim the reviewer cannot settle by reading the repository draws a finding only when it is a number or cause-and-effect claim naming no source. The fix names the source, marks the claim unverified, or deletes it.
-  - Item 12a's index gains the angle, and its question now names the "Quantitative or causal claims in prose" and "Be precise" bullets.
   - The change is live on `git pull`.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.

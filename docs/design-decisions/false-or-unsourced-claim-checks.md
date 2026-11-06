@@ -20,7 +20,7 @@ The reviewer holds `Read`, `Grep`, `Glob` and `Write`, with no `Bash` or network
 
 ## Why the reviewer stays one agent at `effort: high`
 
-The reviewer stays one agent because the angle's boundary with Prose restating the code is a precedence clause, not a judgment that needs its own context. The clause is like the restating angle's precedence over the altitude angle in `prose-restating-code-is-deleted.md`. That file also says the judgment at the boundary between angles is what needs `effort: high`. The clause is the last bullet of the `False or unsourced claim` block in `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles". A passage both angles could flag then draws one finding, not two with opposite fixes. The precedence cell in `.claude/plans/prose-claim-truth-check.md` § "Verification" measures that a comment both false and restating draws the Prose restating the code finding, not a `False or unsourced claim` finding.
+The reviewer stays one agent because the angle's boundary with Prose restating the code is a precedence clause, not a judgment that needs its own context. A passage both angles could flag draws one finding, not two with opposite fixes. The precedence cell in `.claude/plans/prose-claim-truth-check.md` § "Verification" measures that a comment both false and restating draws the Prose restating the code finding, not a `False or unsourced claim` finding. The precedence clause is like the restating angle's precedence over the altitude angle in `prose-restating-code-is-deleted.md`. That file also says the judgment at the boundary between angles is what needs `effort: high`.
 
 ## Why a mechanical reference checker is deferred
 
@@ -36,7 +36,7 @@ The tripwire cells apply the bullet alone, outside a real `/code-review` run, so
 
 ### Measured rates
 
-Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell. The bars are must-flag at least 4 of 5 and must-pass at most 1 of 5. No cell needed the K=10 re-run.
+Measured 2026-11-05 on Sonnet 5.5, one fresh general-purpose subagent per run, K=5 per cell. No cell needed the K=10 re-run.
 
 **Angle.** Every cell met its bar:
 - Must-flag, each 5 of 5: a false default, a false count, the quantified claim found by search, an unsourced number, and an unsourced causal claim.

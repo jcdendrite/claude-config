@@ -183,10 +183,12 @@ or causal claims in prose" bullet and §Working Style's "Be precise" bullet.
 - Not a claim: a rule or instruction (a number inside one included), a design
   judgment or rationale, a record's account of past events, and quoted text.
 - A claim is settleable when reading the repository confirms or refutes it:
-  what a named file, symbol, flag, config key, heading, script, hook or test
-  is, contains or does; a count or other number about the repository; or a
-  cause and effect in the code. A settleable claim's subject is its source.
-  Every other claim is unsettleable, whatever it concerns.
+  - What a named file, symbol, flag, config key, heading, script, hook or
+    test is, contains or does.
+  - A count or other number about the repository.
+  - A cause and effect in the code.
+- A settleable claim's subject is its source.
+- Every other claim is unsettleable, whatever it concerns.
 - False: a settleable claim its subject, read at the diff's state, contradicts
   or supports only in part.
   - `Read` the subject the claim names.
