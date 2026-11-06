@@ -244,7 +244,7 @@ WRITTEN_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 printf 'fired session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 2>/dev/null || true
 
-REASON="$SHIPPING_STATEMENT Unless the engineer has stated a hold, or you cannot tell whether a line is one (then ask, or say what is blocked), continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
+REASON="$SHIPPING_STATEMENT If the statement above lets you ship this work, continue now: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this on this machine: printf 'commit_stall_block = false\n' >> \"$CONFIG_DIR/claude-config.toml\". To disable it for this repo: add .claude/autonomous-shipping-optout."
 
 # Mirrors _lib_emit_allow_with_context's gated-encode shape:
 # an empty REASON_JSON exits before printing, avoiding the malformed

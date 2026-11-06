@@ -1133,8 +1133,9 @@ def test_reason_opens_with_the_shared_shipping_statement(armed_home, dirty_repo,
     assert "/ready-for-review" in result["reason"]
 
 
-def test_reason_tail_conditions_the_continue_directive_on_no_stated_hold(armed_home, dirty_repo):
-    """A closing question can itself be the hold check, so the directive must not be unconditional."""
+def test_reason_tail_conditions_the_continue_directive_on_the_statement(armed_home, dirty_repo):
+    """A closing question can itself be the hold check, so the directive must not be unconditional.
+    The statement owns the conditions, so the tail defers to it."""
     result = _fire(
         stop_input(
             ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
@@ -1143,11 +1144,7 @@ def test_reason_tail_conditions_the_continue_directive_on_no_stated_hold(armed_h
         home=armed_home,
     )
     assert result is not None
-    hold_condition = (
-        "Unless the engineer has stated a hold, or you cannot tell whether a line is one "
-        "(then ask, or say what is blocked)"
-    )
-    assert f"{hold_condition}, continue now" in result["reason"]
+    assert "If the statement above lets you ship this work, continue now:" in result["reason"]
 
 
 # ------------------------------------------------------------------ #
