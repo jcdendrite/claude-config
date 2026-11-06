@@ -4683,8 +4683,9 @@ _lib_sum_numstat_changed_lines() {
 # Returns 1 with no stdout when the commit is not measurable.
 # _lib_configured_stack_base's one stderr line reaches the caller's stderr.
 # BRANCH must be the branch HEAD names, because _lib_configured_stack_base and the merge-base read HEAD themselves.
-# No `gh pr view`: it would add a network call to every commit, so a branch on a non-default base with no
-# stack-base key overcounts.
+# BRANCH is the output of `git symbolic-ref -q --short HEAD`, which can carry a `heads/` prefix.
+# No `gh pr view`, because it would add a network call to every commit.
+# A branch on a non-default base with no stack-base key therefore overcounts.
 # Counting the index equals the diff the commit lands only because deny-invisible-commit-content.sh denies a chained
 # `git add`, a `-a` commit and a pathspec commit, except where that hook's header lists Known gaps.
 _lib_diff_size_measure() {
@@ -4698,7 +4699,8 @@ _lib_diff_size_measure() {
     1) base=$(_lib_default_branch_or_guess "$repo_root") || return 1 ;;
     *) return 1 ;;
   esac
-  [ -n "$base" ] && [ "$base" != "$branch" ] || return 1
+  # `symbolic-ref --short` prints `heads/<name>` when another ref, such as a tag, shares the branch's name.
+  [ -n "$base" ] && [ "$base" != "${branch#heads/}" ] || return 1
   merge_base=$(_lib_capped git -C "$repo_root" merge-base "refs/remotes/origin/$base" HEAD 2>/dev/null) || return 1
   [ -n "$merge_base" ] || return 1
   # Captured, not piped, so a failed git call is not masked by the sum's own status.

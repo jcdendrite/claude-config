@@ -6,6 +6,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
 from helpers import HOOKS_DIR
 
 # Path to _lib.sh: this module lives in hooks/tests/, _lib.sh is in hooks/.
@@ -26,10 +27,17 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
     )
 
 
-def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
+def _gh_shim_dir(
+    tmp_path: Path, call_log: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int = 0
+) -> Path:
     """PATH dir holding a fake `gh` that records argv and
     GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
-    exit_code."""
+    exit_code. Deletes every ambient GH_*/GITHUB_* variable through
+    monkeypatch first, so no real credential reaches the recorded file. The
+    deletion mutates os.environ, so a caller must build its subprocess env
+    from os.environ after calling this, not before."""
+    for ambient_name in [key for key in os.environ if key.startswith(("GH_", "GITHUB_"))]:
+        monkeypatch.delenv(ambient_name)
     shim_dir = tmp_path / "gh-shim"
     shim_dir.mkdir()
     gh_shim = shim_dir / "gh"

@@ -480,13 +480,10 @@ class TestLibDiffSizeMeasureLazyFetch:
 
 class TestLibDiffSizeMeasureNeverRunsGh:
     def test_a_measured_call_never_runs_gh(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The shim records GH_ENTERPRISE_TOKEN, so no ambient credential may reach it.
-        for ambient_name in [key for key in os.environ if key.startswith(("GH_", "GITHUB_"))]:
-            monkeypatch.delenv(ambient_name)
         _bare, clone = _clone_with_trunk_files(tmp_path)
         _stage_file(clone, "work.txt", _lines("work", 5))
         gh_call_log = tmp_path / "gh-calls.jsonl"
-        env_overrides = {"PATH": f"{_gh_shim_dir(tmp_path, gh_call_log)}{os.pathsep}{os.environ['PATH']}"}
+        env_overrides = {"PATH": f"{_gh_shim_dir(tmp_path, gh_call_log, monkeypatch)}{os.pathsep}{os.environ['PATH']}"}
 
         result = _measure(clone, env_overrides=env_overrides)
 
@@ -679,3 +676,14 @@ class TestLibDiffSizeGateStateRefusals:
         result = _gate_state(clone, tmp_path, start_dir=start_dir, env_overrides=env_overrides)
 
         assert (result.returncode, result.stdout, result.stderr) == (1, "", "")
+
+    def test_head_on_the_base_branch_returns_1_when_a_tag_shares_the_branch_name(self, tmp_path: Path) -> None:
+        # With the tag, `git symbolic-ref --short HEAD` prints `heads/trunk`, which would not equal the base `trunk`.
+        clone = _clone_with_staged_lines(tmp_path, 400)
+        _run_git(clone, "checkout", "-q", "trunk")
+        _run_git(clone, "tag", "trunk")
+        assert _run_git(clone, "symbolic-ref", "-q", "--short", "HEAD").strip() == "heads/trunk"
+
+        result = _gate_state(clone, tmp_path)
+
+        assert (result.returncode, result.stdout) == (1, "")

@@ -18,9 +18,11 @@ class TestLibGh:
     """Direct unit coverage for _lib_gh -- the one call every review-pr
     script routes its own `gh` invocations through."""
 
-    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(self, tmp_path: Path) -> None:
+    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         call_log = tmp_path / "calls.jsonl"
-        shim_dir = _gh_shim_dir(tmp_path, call_log)
+        shim_dir = _gh_shim_dir(tmp_path, call_log, monkeypatch)
         env = {
             **os.environ,
             "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
@@ -34,12 +36,13 @@ class TestLibGh:
         assert record["GH_HOST"] == "ghe.example.com"
         assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
 
-    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path) -> None:
+    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         call_log = tmp_path / "calls.jsonl"
-        shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
+        shim_dir = _gh_shim_dir(tmp_path, call_log, monkeypatch, exit_code=7)
         env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
         result = _run_lib_call('_lib_gh 5 pr view 42', env=env)
-        assert result.returncode == 1
+        assert result.returncode == 7
+        assert call_log.exists()
 
 
 # --- _lib_origin_owner_repo ----------------------------------------------
