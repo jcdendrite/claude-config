@@ -8,6 +8,7 @@
 # runs ~/.claude/scripts/diff-size-ack.sh, which writes the per-branch latch this
 # gate honors; this hook never writes it. Any commit made while a merge, rebase,
 # cherry-pick or revert is paused, a `--continue` form included, is allowed unmeasured.
+# The next ordinary commit is measured.
 #
 # The count is the cumulative diff /ready-for-review reviews, minus files under
 # the repository root's .claude/plans/. _lib.sh's _lib_diff_size_gate_state owns
@@ -22,7 +23,9 @@
 #
 # The count reads the index at PreToolUse time. That equals the landed commit only
 # because deny-invisible-commit-content.sh denies a chained `git add`, a `-a`
-# commit and a pathspec commit; docs/hooks.md's deny-invisible-commit-content.sh bullet lists this gate as a dependent.
+# commit and a pathspec commit.
+# docs/hooks.md's deny-invisible-commit-content.sh bullet lists this gate as a
+# dependent.
 #
 # Cost: one extra hook bootstrap on every Bash call, before the `*git*` prefilter;
 # .claude/plans/hook-bootstrap-cost.md holds the measured per-hook bootstrap cost.
@@ -34,8 +37,7 @@
 #   - Deny on payload failure (malformed JSON, empty stdin, non-object tool_input,
 #     missing _lib.sh, missing jq), as every gate does.
 #   - Allow on every state failure: an unresolvable config dir, repository or
-#     branch, a detached HEAD, a paused merge/rebase/cherry-pick/revert, an
-#     unresolvable base, and a cap kill on any git call.
+#     branch, a detached HEAD, an unresolvable base, and a cap kill on any git call.
 #   - Allow on a commit-parse tool failure: `sed` or `tr` missing from PATH.
 #   - Deny again, writing nothing, until diff-size-ack.sh writes the branch's latch.
 #     A deny another gate's reason hid therefore repeats on the next attempt.
@@ -45,6 +47,9 @@
 # Roster bar: a review-only, plan-writer or code-writer agent running the bare ack
 # command is denied here, before any repository read, because the ack script has no
 # caller identity. The bar keeps roles consistent and is not a security control.
+# The bar covers one spelling of the ack command, so
+# `bash ~/.claude/scripts/diff-size-ack.sh`, an absolute-path form or a `cd . &&`
+# prefix passes it. A subagent outside the roster is not barred.
 #
 # Known gaps, stated rather than left implicit:
 #   - A branch based on a non-default branch with no stack key set counts against
@@ -59,18 +64,15 @@
 #   - The .claude/plans/ carve-out excludes every file type under it, not only Markdown.
 #   - Plans kept anywhere other than the repository root's .claude/plans/ count.
 #   - A file moved into or out of that directory counts as a whole-file add or delete.
-#   - The count runs below the diff /ready-for-review reviews by the lines of files
-#     under the repository root's .claude/plans/.
-#   - For the same reason the count runs below the additions-plus-deletions size the
-#     400 edge was taken from, which includes plan files.
+#   - The count runs below the diff /ready-for-review reviews, and below the
+#     additions-plus-deletions size the 400 edge was taken from, by the lines of
+#     files under the repository root's .claude/plans/.
 #   - A shallow clone whose history lacks the common ancestor leaves the branch
 #     unmeasured, because `merge-base` fails.
 #   - With no stack key set, a remote not named `origin` leaves the branch unmeasured,
 #     because the default-branch guess finds no origin/* ref.
 #   - With a stack key set, a remote not named `origin` leaves the branch unmeasured,
 #     because `merge-base` fails on the missing refs/remotes/origin/<parent> ref.
-#   - A commit made while a merge, rebase, cherry-pick or revert is paused is not
-#     measured. The next ordinary commit is.
 #   - `git -C <dir> commit` and `cd <dir> && git commit` are measured in the payload
 #     cwd's repository, not <dir>.
 #   - A GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE prefix on the commit redirects only
@@ -87,14 +89,11 @@
 #     and is never gated.
 #   - The latch records an approved run of the exact bare ack command. The harness
 #     prompt shows the engineer the command, not their AskUserQuestion answer.
-#   - The roster bar and the ack's `permissions.ask` entry each cover one spelling of
-#     the ack command. A roster agent running `bash ~/.claude/scripts/diff-size-ack.sh`,
-#     an absolute-path form or a `cd . &&` prefix passes the bar.
-#   - Whether the ask entry matches any other spelling is documented, not observed.
-#     Under `bypassPermissions` a spelling the entry misses writes the latch with no
+#   - The ack's `permissions.ask` entry covers one spelling of the ack command.
+#     Whether it matches any other spelling is documented, not observed.
+#   - Under `bypassPermissions` a spelling the entry misses writes the latch with no
 #     prompt, and under auto mode the classifier decides.
-#   - A roster agent is barred from the ack while any other subagent is not. The deny
-#     text tells a non-roster subagent to report to its dispatcher instead.
+#   - The deny text tells a non-roster subagent to report to its dispatcher instead.
 #   - When the ack call is declined, or `dontAsk` mode denies it, the agent cannot
 #     release the gate and the engineer runs the ack in their own terminal.
 #   - In the documented flow the prompt comes after the /code-review round, because
@@ -111,22 +110,16 @@
 #     acknowledgment. A deny is countable from transcripts through denials.py's label
 #     while they are retained. The label is shared, so the count mixes size denies with
 #     roster-bar denies.
-#   - The latch is a plain file the gate honors, so a direct write releases the gate
-#     with no trace line and no measurement.
-#   - The marker-shape guard in enforce-marker-script-shape.sh covers `*-markers/*` and
-#     `.*-active.d/*`, not `*-latch.d`.
-#   - The ack costs a prompt and a direct write costs none, so the latch is not
-#     tamper-evident.
-#   - The base ref name is shape-checked before it is printed, and a name that fails
-#     prints as a placeholder. A name that passes prints verbatim, and the gate imposes
-#     no length bound on it. The check bounds the character set ([A-Za-z0-9._/-]) and
-#     nothing more. The default-branch arm takes the name from origin/HEAD's target
-#     with no shape check of its own.
+#   - The latch is not tamper-evident. The ack costs a prompt, but a direct write to
+#     the plain file the gate honors releases the gate with no trace line and no
+#     measurement, because enforce-marker-script-shape.sh's marker-shape guard covers
+#     `*-markers/*` and `.*-active.d/*`, not `*-latch.d`.
+#   - The base ref name is shape-checked against [A-Za-z0-9._/-] before it is printed,
+#     and a name that fails prints as a placeholder. A name that passes prints verbatim
+#     with no length bound. The default-branch arm takes the name from origin/HEAD's
+#     target with no shape check of its own.
 #   - The ack's stderr can print the stack key's value and the branch name %q-quoted.
 #     _lib_diff_size_gate_state passes that stderr through and this hook discards it.
-#     The ack's hostile-text test in claude/.claude/scripts/tests/test_diff_size_ack.py
-#     pins that neither raw bidi nor tag code points appear in it, so a platform whose
-#     `printf %q` passes them raw fails that test.
 
 set -uo pipefail
 
