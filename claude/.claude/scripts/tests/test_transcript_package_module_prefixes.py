@@ -109,7 +109,7 @@ TEST_FILES = (
     "test_transcript_cache_efficiency.py",
     "test_transcript_edit_format.py",
     "test_transcript_instrument_authoring.py",
-    "test_transcript_analysis.py",
+    "test_transcript_cli.py",
     "test_transcript_cost.py",
     "test_transcript_review_rounds.py",
     "test_transcript_cache_rebuild_ttl_rules.py",
@@ -125,6 +125,8 @@ TEST_FILES = (
     "test_transcript_scope.py",
     "test_transcript_scope_scan.py",
     "test_transcript_corpus.py",
+    "test_transcript_analysis_multi_root_scope.py",
+    "test_transcript_subagents_format_drift.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

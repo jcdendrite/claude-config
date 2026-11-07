@@ -1,4 +1,5 @@
 """Tests for transcript_analysis/read_cost.py (read-cost)."""
+import argparse
 import dataclasses
 import os
 from collections import Counter
@@ -1174,6 +1175,17 @@ class TestReadSubagentWindows:
             os.chmod(subagent_dir / "agent-a.jsonl", 0o644)
         assert [records[0]["message"]["id"] for _agent_type, records in windows] == ["m2"]
         assert scan_gaps == Counter({read_cost._GAP_SUBAGENT_FILE: 1})
+
+
+class TestReadCostArgparseWiring:
+    """Round-trips the real registrar; a hand-built Namespace misses `dest=` typos, missing `set_defaults`, and flag drift."""
+
+    def test_read_cost_wires_to_cmd_read_cost_with_this_repo(self):
+        parser = argparse.ArgumentParser()
+        read_cost._add_read_cost_subparser(parser.add_subparsers())
+        parsed = parser.parse_args(["read-cost", "--this-repo"])
+        assert parsed.func is read_cost.cmd_read_cost
+        assert parsed.this_repo is True
 
 
 class TestScopeRefusal:

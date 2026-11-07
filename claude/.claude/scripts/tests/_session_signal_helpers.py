@@ -1,5 +1,5 @@
 """Test helpers shared by the session-signal test files (test_transcript_buckets.py,
-test_transcript_fail_seq.py, test_transcript_user_input.py) and by test_transcript_analysis.py's
+test_transcript_fail_seq.py, test_transcript_user_input.py) and by test_transcript_analysis_branch_attribution.py's
 per-record attribution classes.
 """
 

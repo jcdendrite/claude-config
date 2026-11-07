@@ -2988,6 +2988,47 @@ _lib_autonomous_shipping_active() {
   return 0
 }
 
+# _lib_autonomous_shipping_root_for_cwd CWD
+# Prints the repo root a hook payload's CWD resolves to, or returns 1 when that
+# root may not carry the autonomous-shipping statement. Every hook that prints
+# the statement resolves its root here, so they agree on which roots are eligible.
+# Fails closed, because a grant must not rest on a guess:
+#   - CWD is empty or not absolute, so there is no fallback to the process's $PWD
+#   - CWD is not inside a git repository
+#   - HOME is empty or unresolvable
+#   - the root is HOME or one of its ancestors, since a work tree there would
+#     otherwise grant every project beneath it
+_lib_autonomous_shipping_root_for_cwd() {
+  [ "$#" -eq 1 ] || return 1
+  local cwd="$1" root home_dir
+  case "$cwd" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "${HOME:-}" ] || return 1
+  home_dir=$(cd -P -- "$HOME" 2>/dev/null && pwd -P) || return 1
+  root=$(cd -- "$cwd" 2>/dev/null && _lib_repo_root) || return 1
+  [ -n "$root" ] || return 1
+  # -ef compares resolved files rather than path strings.
+  while :; do
+    [ "$root" -ef "$home_dir" ] && return 1
+    [ "$home_dir" = / ] && break
+    home_dir=${home_dir%/*}
+    home_dir=${home_dir:-/}
+  done
+  printf '%s' "$root"
+}
+
+# _lib_autonomous_shipping_statement REPO_ROOT
+# Prints the agent-facing statement of the resolved shipping state and returns 0 only when
+# _lib_autonomous_shipping_active holds; otherwise prints nothing and returns 1.
+_lib_autonomous_shipping_statement() {
+  [ "$#" -eq 1 ] || return 1
+  _lib_autonomous_shipping_active "$1" || return 1
+  # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the printed text, not command substitution.
+  printf '%s' 'Autonomous shipping is active for this repository: `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 here (checked when this message was generated). Re-run that script before pushing to confirm. In this repository, the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. A line recording any engineer-originated restriction on shipping, however paraphrased or summarized, is such a hold, so when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding. The override applies only to a line recording absence of authorization with no engineer wait behind it. It covers only committing, a plain push of the current branch (never to the default branch), and opening a PR: merging stays human-only, and force-pushing and every other irreversible action still need the engineer'\''s in-session confirmation. A fork or subagent returns its work to its dispatcher and does not ship. In a different repository, run that script there before relying on this.'
+}
+
 # _lib_permission_prompt_tracking_active
 # Returns 0 (true) when this machine has opted into permission-prompt
 # tracking — gates track-permission-prompts.sh. Delegates to

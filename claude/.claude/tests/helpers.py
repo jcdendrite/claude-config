@@ -816,6 +816,116 @@ def run_hook_session_start(
     return hook_specific_output["sessionTitle"]
 
 
+def run_additional_context_session_start_hook(
+    hook: Path,
+    payload: dict | None,
+    home: Path,
+    *,
+    process_cwd: Path | None = None,
+    extra_env: dict | None = None,
+    raw_stdin: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    """Runs a SessionStart hook that emits advisory `additionalContext`, which run_hook_session_start cannot parse.
+
+    `raw_stdin` replaces the JSON-encoded payload, for malformed and empty stdin.
+    `extra_env` is applied after the HOME override, so it can also override HOME.
+    """
+    stdin = raw_stdin if raw_stdin is not None else json.dumps(payload).encode()
+    return subprocess.run(
+        [str(hook)],
+        input=stdin,
+        capture_output=True,
+        cwd=process_cwd,
+        env=_build_subprocess_env(home, extra_env),
+        check=False,
+    )
+
+
+def session_start_additional_context(result: subprocess.CompletedProcess) -> str:
+    """Returns the `additionalContext` of a SessionStart hook's output, asserting its event name."""
+    hook_specific_output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert hook_specific_output["hookEventName"] == "SessionStart"
+    return hook_specific_output["additionalContext"]
+
+
+def session_start_registrations() -> list[tuple[str, dict]]:
+    """Returns (matcher, hook entry) for every settings.json SessionStart hook, with "" for a matcher-less group."""
+    groups = json.loads((CLAUDE_DIR / "settings.json").read_text())["hooks"]["SessionStart"]
+    return [(group.get("matcher", ""), hook) for group in groups for hook in group["hooks"]]
+
+
+def session_start_registered_timeouts(script_name: str) -> list[int | None]:
+    """Returns the `timeout` of every settings.json SessionStart entry whose command ends in `/script_name`."""
+    return [
+        hook.get("timeout")
+        for _, hook in session_start_registrations()
+        if hook.get("command", "").endswith(f"/{script_name}")
+    ]
+
+
+def session_start_matchers_registering(script_name: str) -> list[str]:
+    """Returns the matcher of every settings.json SessionStart entry whose command ends in `/script_name`."""
+    return [
+        matcher
+        for matcher, hook in session_start_registrations()
+        if hook.get("command", "").endswith(f"/{script_name}")
+    ]
+
+
+# The opening words of _lib_autonomous_shipping_statement's text.
+AUTONOMOUS_SHIPPING_STATEMENT_LEAD = "Autonomous shipping is active for this repository"
+
+
+def run_autonomous_shipping_statement(home: Path, *args: str) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_statement ARGS` with HOME set to `home` and nothing else inherited but PATH."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_statement "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+
+
+def run_autonomous_shipping_root_for_cwd(
+    home: Path | str | None, *args: str, process_cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_root_for_cwd ARGS` with nothing inherited but PATH, plus HOME unless `home` is None."""
+    env = {"PATH": os.environ["PATH"]}
+    if home is not None:
+        env["HOME"] = str(home)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_root_for_cwd "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=process_cwd,
+        env=env,
+        check=False,
+    )
+
+
+def add_linked_worktree(repo: Path, destination: Path, *, branch: str = "feature") -> Path:
+    """Adds `destination` as a linked worktree of `repo` on a new `branch`."""
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(destination)],
+        cwd=repo,
+        check=True,
+    )
+    return destination
+
+
 def posttooluse_input(file_path: str) -> dict:
     """Build a PostToolUse Write event payload for consume-migration-token tests.
 
@@ -2321,6 +2431,32 @@ def symlink_hooks_lib_chain(hooks_dir: Path) -> None:
     _symlink_if_absent(hooks_dir / "_lib.sh", HOOKS_DIR / "_lib.sh")
     _symlink_if_absent(hooks_dir / "_config.sh", HOOKS_DIR / "_config.sh")
     _symlink_if_absent(hooks_dir / "config-keys.psv", HOOKS_DIR / "config-keys.psv")
+
+
+def config_schema_text_without_key(key: str) -> str:
+    """Returns the real config-keys.psv text with `key`'s row removed.
+    Raises when `key` has no row, so a renamed key cannot leave the schema intact."""
+    all_rows = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+    kept_rows = [line for line in all_rows if not line.startswith(f"{key}|")]
+    assert len(kept_rows) < len(all_rows), f"config-keys.psv has no row for {key}"
+    return "\n".join(kept_rows) + "\n"
+
+
+def hook_beside_degraded_schema(tmp_path: Path, hook: Path, *, schema_without_key: str | None = None) -> Path:
+    """Returns a symlink to `hook` in a fresh dir whose sibling config-keys.psv is degraded.
+    That is the interrupted stow-relink or git-pull shape.
+    With `schema_without_key` None the schema file is absent, so it reads as unreadable.
+    Otherwise the real schema is copied with that key's row removed.
+    Removing a key the hook never reads gives a positive control for the same directory shape."""
+    degraded_hooks_dir = tmp_path / "degraded-schema-hooks"
+    degraded_hooks_dir.mkdir()
+    (degraded_hooks_dir / hook.name).symlink_to(hook)
+    symlink_hooks_lib_chain(degraded_hooks_dir)
+    degraded_schema = degraded_hooks_dir / "config-keys.psv"
+    degraded_schema.unlink()
+    if schema_without_key is not None:
+        degraded_schema.write_text(config_schema_text_without_key(schema_without_key))
+    return degraded_hooks_dir / hook.name
 
 
 def install_marker_script(isolated_home: Path) -> Path:
