@@ -707,7 +707,11 @@ def test_resume_context_verdict_matrix(state: str, root: str, file_target: str, 
 
 
 def _is_pending_continuity_file(config_dir: Path, candidate: str) -> bool:
-    script = f'set -euo pipefail\n. {_LIB_SH}\n_lib_is_pending_continuity_file "$1" "$2"\n'
+    script = (
+        "set -euo pipefail\n"
+        f". {_LIB_SH}\n"
+        'if _lib_is_pending_continuity_file "$1" "$2"; then printf pending; else printf not-pending; fi\n'
+    )
     result = subprocess.run(
         ["bash", "-c", script, "bash", str(config_dir), candidate],
         capture_output=True,
@@ -715,8 +719,9 @@ def _is_pending_continuity_file(config_dir: Path, candidate: str) -> bool:
         env=dict(os.environ),
         check=False,
     )
-    assert result.returncode in (0, 1), result.stderr
-    return result.returncode == 0
+    assert result.returncode == 0, result.stderr
+    assert result.stdout in ("pending", "not-pending"), f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    return result.stdout == "pending"
 
 
 class TestLibIsPendingContinuityFile:

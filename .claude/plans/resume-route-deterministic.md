@@ -172,7 +172,6 @@ In handoff §4 (:121), "name that path and direct the resuming session to re-ent
    - A payload `.cwd` that differs from the script's `$PWD` can split them either way, and when the script refuses, it prints `SHELL_COMMAND:` (row 10). A session whose `.cwd` drifted out of the worktree its file names gets the shell route, which the header's drift gap (:74-76) does not cover.
 7. `[verified: claude-skills/skills/handoff/SKILL.md:121, :133; claude-skills/skills/brief/SKILL.md:97; claude/.claude/hooks/announce-resume-command.sh:178-185]` Today handoff §7 takes its `--cwd` from §4, the worktree this session's files were in, not where the next step runs. A next step in another worktree therefore gets the `load` verdict, against row 1. Brief §7.5 keys on §3's worktree, the brief's own work, but writes the bare form when §3 names none. From a linked session, that bare form gets the session's own worktree as `--cwd` through the announce's fallback, not the checkout the work starts in.
 8. `[engineer-verified: "Nudge fired"]` and `[engineer-verified: "After handoff write"]`: the labels selected when asked at which moment the model's explanation went wrong.
-   - `[unverified]` The dispatching session's small transcript sample, summarized qualitatively and not re-run here: after handoff writes, relays never fenced a command and never chose a route by worktree. After nudges, replies rarely said anything about resuming. The exact phrase in the engineer's report was not found in that sample.
 9. `[verified: claude/.claude/hooks/announce-resume-command.sh:163-164]` The `load` announce today offers the slash command "after /clear, or in a new session started here" and a shell command "in a new process" side by side, with no recommendation.
    - `[unverified]` That this pairing produced the relayed "if you want to start in a new session" is an inference.
 10. `[verified: claude-skills/skills/resume-context/SKILL.md:41-53]` When the slash route cannot load, the script prints `SHELL_COMMAND:` and the skill relays it for a new terminal. Candidates outside this worktree get their shell command too. Dropping the shell command from a same-worktree announce therefore leaves no route unreachable.
@@ -205,7 +204,7 @@ In handoff §4 (:121), "name that path and direct the resuming session to re-ent
 19. `[engineer-verified: "Keep (Recommended)"]` The label selected when `/plan-review` asked whether to keep the consume hook's fenced reload command and its test assertion (M6), which the `Ask:` line does not name.
     - Its "fenced reload command" wording predates the single-backtick shape. Row 36's second label, `"Yes, same shape (Recommended)"`, now covers the shape.
 20. `[engineer-verified: "Keep (Recommended)"]` The label selected when asked whether to keep the one fence sentence in `resume-context/SKILL.md` (M6), which the `Ask:` line does not name.
-21. `[engineer-verified: "Keep (Recommended)"]` The label selected when asked whether to keep the `HANDOFF_RESUME_ROUTE` nudge sentence, its test and its `docs/handoff-nudge.md` quote (M4), after being told the transcript sample did not confirm the nudge half.
+21. `[engineer-verified: "Keep (Recommended)"]` The label selected when asked whether to keep the `HANDOFF_RESUME_ROUTE` nudge sentence, its test and its `docs/handoff-nudge.md` quote (M4).
 22. `[engineer-verified: "Keep (Recommended)"]` The label selected when asked whether to keep the `brief/SKILL.md` §7.5 change (M3), which the `Ask:` line does not name.
 23. `[verified: claude/.claude/settings.json:274, :554, :594, :622; CLAUDE.md "claude/ is stowed into $HOME"]` The nudge, consume and announce hooks are registered by their `~/.claude/hooks/` paths, which stow links into the main checkout. A session in the feature worktree therefore runs today's hooks until merge.
     - `[unverified]` The link's target comes from the platform reviewer's `readlink`, not re-run here.
@@ -235,14 +234,18 @@ In handoff §4 (:121), "name that path and direct the resuming session to re-ent
     - `[engineer-verified: "Yes, same shape (Recommended)"]` The label selected when `/plan-review` asked whether the consume hook's reload message (M6) gets the same single-backtick, own-line shape. The reply above concerns the announce, so this label is what covers M6. A fenced consume message would meet row 38's prefix the same way.
 37. `[engineer-verified: "And then make sure that when the model does output it in chat that it’s fenced just like the full resume-context command"]` The model's relay in chat keeps the command in a triple-backtick fenced block. Row 36's "fences like the three backs" is the engineer's word for that form, so the relay fence M2 and `resume-context/SKILL.md` prescribe stays as it is.
 38. `[verified: the engineer's phone screenshot, seen by the dispatching session in this session]` With a `systemMessage` in the three-backtick shape, the phone client prefixed every line of the message with `PostToolUse:Write says:` and drew it as a warning block. The fence lines showed as stray prefixed fragments around a code block whose one line read `PostToolUse:Write says: /resume-context probe-handoff.md`. The model's own text in the same screenshot rendered an inline code span cleanly. The terminal result is not known.
+39. `[engineer-verified: "Keep the script fix (Recommended)"]` The label selected when `/plan-review` asked whether to keep the `resume_with_argument` match-narrowing in `resume-context-same-session.sh` (added after code review), which the `Ask:` line does not name. The alternatives offered were documenting the gap and splitting the change to a follow-up PR.
 
 ## Critical files
 
 **Added after code review, one shared definition of the pending set** [engineer-verified: "Add the files, do the refactor (Recommended)"]. A separate `code-writer` dispatch after Dispatch 2 carried these files, and they have landed:
 - `claude/.claude/hooks/_lib.sh`: `_lib_collect_pending_continuity_files` and `_lib_is_pending_continuity_file`, beside `_lib_resume_context_verdict`. The announce hook uses them to name the slash form only for a file the slash script lists.
-- `claude/.claude/scripts/resume-context-same-session.sh`: `collect_pending` calls the collector.
+- `claude/.claude/scripts/resume-context-same-session.sh`:
+  - `collect_pending` calls the collector.
+  - `resume_with_argument` applies the `<arg>-handoff.md` and `<arg>-task.md` slug matches only to an argument that ends in neither suffix.
 - `claude/.claude/hooks/tests/test_lib_resume_context.py`: the input matrix for the helper.
-- `docs/scripts.md`: one parenthetical naming the helper.
+- `claude/.claude/scripts/tests/test_resume_context_same_session.py`: allow and deny round-trip tests for the same-kind and cross-kind suffix-doubled decoys.
+- `docs/scripts.md`: one parenthetical naming the helper, and the slug-match limit on an argument that ends in a continuity suffix.
 
 **Dispatch 1, rule prose, nudge and skill pins** (run first):
 - `claude/.claude/hooks/nudge-handoff-near-context-cap.sh`: M4, per "Nudge sentence".

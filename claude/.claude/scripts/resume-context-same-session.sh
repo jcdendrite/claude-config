@@ -364,12 +364,16 @@ resume_without_argument() {
 
 # resume_with_argument ARG: loads the one pending file ARG names exactly.
 resume_with_argument() {
-  local arg="$1" file name matches="" match_count=0
+  local arg="$1" file name matches="" match_count=0 match_slug=1
+  # An argument that is already a full file name is never also a slug, so `x-handoff.md` cannot match `x-handoff.md-handoff.md`.
+  case "$arg" in
+    *-handoff.md | *-task.md) match_slug=0 ;;
+  esac
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     name="${file##*/}"
     if [ "$file" = "$arg" ] || [ "$name" = "$arg" ] \
-      || [ "$name" = "$arg-handoff.md" ] || [ "$name" = "$arg-task.md" ]; then
+      || { [ "$match_slug" -eq 1 ] && { [ "$name" = "$arg-handoff.md" ] || [ "$name" = "$arg-task.md" ]; }; }; then
       matches="$matches$file"$'\n'
       match_count=$((match_count + 1))
     fi

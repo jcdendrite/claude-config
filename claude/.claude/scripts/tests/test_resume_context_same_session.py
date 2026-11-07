@@ -559,6 +559,21 @@ class TestExplicitArgument:
         assert outcome.first("SOURCE") == str(brief)
         assert outcome.first("FILE_TARGET") == str(sandbox.worktree_a.resolve())
 
+    @pytest.mark.parametrize(
+        ("kind", "slug"),
+        [("handoff", "deploy-handoff"), ("brief", "deploy-task")],
+        ids=["handoff-slug-ending-in-handoff", "brief-slug-ending-in-task"],
+    )
+    def test_a_slug_ending_in_the_suffix_word_without_md_still_loads_by_slug(
+        self, sandbox: _Sandbox, kind: str, slug: str
+    ) -> None:
+        """Allow: only an argument ending in the full `-handoff.md` / `-task.md` is a file name rather than a slug."""
+        wanted = sandbox.write_pending(slug, sandbox.worktree_a, kind=kind)
+
+        outcome = sandbox.run(slug, cwd=sandbox.worktree_a)
+
+        assert outcome.first("SOURCE") == str(wanted)
+
     def test_recently_written_file_reports_the_fresh_bucket(self, sandbox: _Sandbox) -> None:
         sandbox.write_pending("fresh", sandbox.worktree_a, age_days=_AGE_FRESH_DAYS)
 
@@ -1296,6 +1311,39 @@ class TestRoundTrip:
         assert announced == f"{_SHELL_COMMAND_PREFIX}{nested}"
         assert decoy.read_text() == decoy_body
         assert sandbox.run(decoy.name, cwd=sandbox.main_checkout).first("SOURCE") == str(decoy)
+
+    @pytest.mark.parametrize("announced_kind", ["handoff", "brief"])
+    @pytest.mark.parametrize("decoy_kind", ["handoff", "brief"], ids=["handoff-decoy", "brief-decoy"])
+    def test_an_announced_file_name_never_also_matches_a_suffix_doubled_decoy(
+        self, sandbox: _Sandbox, announced_kind: str, decoy_kind: str
+    ) -> None:
+        """Allow: the announced file loads and the decoy named `<announced file name>-handoff.md` or `-task.md` stays pending."""
+        announced_file = sandbox.write_pending("x", kind=announced_kind)
+        decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
+
+        announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
+        assert announced == f"{_SLASH_COMMAND_PREFIX}{announced_file.name}"
+        outcome = sandbox.run(announced[len(_SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+
+        assert outcome.first("SOURCE") == str(announced_file)
+        assert decoy.exists()
+
+    @pytest.mark.parametrize("announced_kind", ["handoff", "brief"])
+    @pytest.mark.parametrize("decoy_kind", ["handoff", "brief"], ids=["handoff-decoy", "brief-decoy"])
+    def test_a_consumed_announced_file_name_does_not_load_a_suffix_doubled_decoy(
+        self, sandbox: _Sandbox, announced_kind: str, decoy_kind: str
+    ) -> None:
+        """Deny: with the announced file consumed, the decoy is not the single match and the script stops."""
+        announced_file = sandbox.write_pending("x", kind=announced_kind)
+        decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
+        announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
+        assert announced == f"{_SLASH_COMMAND_PREFIX}{announced_file.name}"
+        announced_file.unlink()
+
+        outcome = sandbox.run(announced[len(_SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+
+        assert outcome.stop_code == "not-pending"
+        sandbox.assert_nothing_moved(decoy)
 
     @pytest.mark.parametrize(
         ("session", "file_target"),

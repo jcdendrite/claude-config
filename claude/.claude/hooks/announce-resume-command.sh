@@ -19,7 +19,8 @@
 # linked worktree, or names no --cwd in a main checkout
 # (_lib_resume_context_verdict) and the file name is one the slash script accepts
 # (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with neither a dash nor a dot).
-# Otherwise it advertises only the shell command, with one of four reasons:
+# A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
+# In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
 #   - a file the slash script refuses by name or cannot list;
 #   - a linked session whose file does not name this worktree as an absolute --cwd;
@@ -31,18 +32,17 @@
 # this worktree) becomes the --cwd of the advertised shell command, and the
 # reason names it. Without a usable target, the command keeps this worktree's
 # --cwd (linked) or has none (outside a linked worktree).
-# A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
-# `systemMessage` puts the announced command alone on its second line in single backticks, not in a fenced block, because the phone client prefixes every `systemMessage` line, fence lines included.
+# `systemMessage` puts the announced command alone on its second line in single backticks.
+# `additionalContext` is one line telling the model to relay that one route, its command fenced, and run nothing.
 # A file-sourced --cwd is the file's own text, not a measurement by this hook,
 # and additionalContext labels it so and carries the reason.
-# `additionalContext` is one line; it tells the model to relay that one route, its command fenced, and run nothing.
 # When the --cwd is file-sourced, the command equals the one
 # resume-context-same-session.sh prints as SHELL_COMMAND for the same file,
 # except that the script spells the target by its canonical path (symlinks and
 # `.` and `..` components resolved).
 # A session outside a linked worktree is also what a removed or git-refused
 # worktree looks like (see _lib_linked_worktree_root), so such a session
-# advertises /resume-context for a file that names no --cwd.
+# announces /resume-context for a file that names no --cwd.
 #
 # Fail posture: fail-silent, never blocks. Each of the following falls
 # through to exit 0 with no output:
@@ -74,6 +74,7 @@
 # from the `case "$FILE_PATH" in` arm of consume-durable-continuity-file-on-read.sh.
 # The brief glob (`briefs/*-task.md`) is copied again in the load arm's wording switch below,
 # which selects brief wording; a glob change reaches that copy too.
+# _lib_collect_pending_continuity_files in _lib.sh defines the same two globs as the pending set; a glob change reaches it too.
 #
 # Known gaps:
 #   - A session whose .cwd has drifted out of the worktree where the work
@@ -96,10 +97,8 @@
 #     shell-only announce (its reason names that spelling) while /resume-context loads it.
 #   - A session whose `.cwd` drifted out of its worktree gets the shell route for a file naming
 #     that worktree, because the hook compares the payload `.cwd`, not where the work lives.
-#   - The slash argument is the bare file name and the script also resolves a name by its slug rule,
-#     so a second pending file named like the announced name with `-handoff.md` or `-task.md`
-#     appended makes the script print a candidate list instead of loading.
-#     No wrong file loads, and the `/handoff` and `/brief` slug naming guidance does not call for such a name.
+#   - A file name with a leading `@` passes the allowlist and is announced as `/resume-context @name`.
+#     Whether the client treats a leading `@` in a slash argument as a file mention is unverified.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.

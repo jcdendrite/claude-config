@@ -6,9 +6,9 @@ argument-hint: "[<slug> | <file name> | <absolute path>]"
 
 # Resume context
 
-`/resume-context` loads a pending `/handoff` or `/brief` file into this session's conversation. The shell command `resume-context` is a different thing: it starts a new `claude` process, and it is the route for a file that belongs to another worktree.
+`/resume-context` loads a pending `/handoff` or `/brief` file into this session's conversation. The shell command `resume-context` is a different thing: it starts a new `claude` process, and it is the route for a file that names another directory or whose worktree this session cannot confirm.
 
-Give the engineer each command this skill has you relay or suggest alone in its own fenced code block.
+Give the engineer each command this skill has you relay or suggest alone in its own fenced code block (chat replies only).
 
 0. Gate the run.
 

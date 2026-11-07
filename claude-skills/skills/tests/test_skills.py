@@ -6006,7 +6006,7 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     ),
     "fence_each_relayed_command": (
         "Give the engineer each command this skill has you relay or suggest alone in "
-        "its own fenced code block."
+        "its own fenced code block (chat replies only)."
     ),
 }
 

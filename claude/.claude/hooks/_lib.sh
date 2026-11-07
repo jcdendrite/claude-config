@@ -5578,7 +5578,8 @@ _lib_resume_context_verdict() {
 # _lib_collect_pending_continuity_files CONFIG_DIR
 # Sets _LIB_PENDING_CONTINUITY_FILES to the pending /handoff and /brief files, handoffs first.
 # This glob is the single definition of the pending set.
-# It never matches a leading-dot name or a nested path.
+# It matches no nested path.
+# Call it directly in the current shell, not in `$(...)` or a pipeline, with the noglob, dotglob, nullglob and failglob options unset.
 # A pending file is a regular file, not a symlink.
 _lib_collect_pending_continuity_files() {
   local path

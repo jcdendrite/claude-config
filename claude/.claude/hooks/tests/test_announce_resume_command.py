@@ -474,6 +474,7 @@ class TestAnnounceResumeCommand:
         assert code_span_command(message) == "/resume-context example-handoff.md"
         for channel in (message, context):
             assert f"resume-context --cwd {linked_worktree.resolve()} {fixture}" not in channel
+        assert "`/resume-context example-handoff.md`" in context
 
     def test_linked_worktree_cwd_reached_through_a_symlink_gets_the_shell_only_announce(
         self, isolated_home, linked_worktree, tmp_path
@@ -523,6 +524,7 @@ class TestAnnounceResumeCommand:
         for channel in (message, context):
             assert f"resume-context {fixture}" not in channel
             assert "--cwd" not in channel
+        assert "`/resume-context example-task.md`" in context
 
     def test_file_name_with_dots_and_digits_is_advertised_whole(self, isolated_home, git_repo):
         fixture = _write_continuity_file(isolated_home, ".claude/handoffs/v2.1-step-3.4-handoff.md", None)
