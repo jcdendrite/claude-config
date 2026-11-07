@@ -118,8 +118,6 @@
 #     and a name that fails prints as a placeholder. A name that passes prints verbatim
 #     with no length bound. The default-branch arm takes the name from origin/HEAD's
 #     target with no shape check of its own.
-#   - The ack's stderr can print the stack key's value and the branch name %q-quoted.
-#     _lib_diff_size_gate_state passes that stderr through and this hook discards it.
 
 set -uo pipefail
 

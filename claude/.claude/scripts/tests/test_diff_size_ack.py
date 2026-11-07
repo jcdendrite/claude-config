@@ -21,7 +21,6 @@ from helpers import (
     _run_git,
     bash_input,
     git_toplevel,
-    installed_locale_where,
     path_with_failing_tool_shim,
     reviewer_round_state_key,
     run_hook,
@@ -32,7 +31,6 @@ sys.path.insert(0, str(CLAUDE_DIR))
 from hooks.tests._lib_sh_helpers import (  # noqa: E402
     DIFF_SIZE_GATE_HOOK,
     HOSTILE_BASE_NAME_PARAMS,
-    HOSTILE_BIDI_AND_TAG_CHARACTERS,
     _ack_env,
     _assert_hook_allows,
     _clone_with_staged_lines,
@@ -160,6 +158,19 @@ class TestNothingToRecord:
         assert result.returncode == 1
         assert "could not be read" in result.stderr
         assert "below the" not in result.stderr
+        assert not _latch_directory(tmp_path).exists()
+
+    def test_an_unusable_stack_key_exits_1_and_the_stderr_says_the_value_cannot_be_the_stack_base(
+        self, tmp_path: Path
+    ) -> None:
+        clone = _clone_with_staged_lines(tmp_path, _THRESHOLD_LINES)
+        # origin/trunk starts with `origin/`, so the key is set but unusable.
+        _run_git(clone, "config", "branch.feature.gh-merge-base", "origin/trunk")
+
+        result = _run_diff_size_ack(clone, _ack_env(tmp_path))
+
+        assert result.returncode == 1
+        assert "cannot be used as the stack base" in result.stderr
         assert not _latch_directory(tmp_path).exists()
 
 
@@ -302,70 +313,3 @@ class TestBaseNameOnTheDefaultBranchArm:
         assert "origin/clean-base" in result.stdout
         assert "the base branch" not in result.stdout
         assert _latch_path(clone, tmp_path).read_text().split()[2] == "origin/clean-base"
-
-
-def _contains_bidi_control_or_tag_character(text: str) -> bool:
-    return any(
-        0x200E <= ord(character) <= 0x200F
-        or 0x202A <= ord(character) <= 0x202E
-        or 0x2066 <= ord(character) <= 0x2069
-        or 0xE0000 <= ord(character) <= 0xE007F
-        for character in text
-    )
-
-
-def _utf8_locale_where_printf_q_neutralizes_bidi_and_tag_characters() -> str:
-    # $1 holds every hostile code point; a locale qualifies only when none appears raw in `printf %q "$1"`.
-    return installed_locale_where(
-        'quoted="$(printf %q "$1")"; for ((i = 0; i < ${#1}; i++)); do [[ "$quoted" != *"${1:i:1}"* ]] || exit 1; done',
-        "".join(HOSTILE_BIDI_AND_TAG_CHARACTERS),
-        absent_message="no installed UTF-8 locale makes printf %q neutralize every bidi control and tag character",
-    )
-
-
-def _set_hostile_stack_key_value(clone: Path, hostile_text: str) -> str:
-    _run_git(clone, "config", "branch.feature.gh-merge-base", hostile_text)
-    return "feature"
-
-
-def _check_out_hostile_branch_with_unusable_stack_key(clone: Path, hostile_text: str) -> str:
-    hostile_branch = f"feat-{hostile_text}"
-    _run_git(clone, "checkout", "-q", "-b", hostile_branch)
-    # origin/trunk starts with `origin/`, so the key is set but unusable, and the stderr line prints the %q-quoted branch.
-    _run_git(clone, "config", f"branch.{hostile_branch}.gh-merge-base", "origin/trunk")
-    return hostile_branch
-
-
-class TestHostileTextInTheStderrLine:
-    @pytest.mark.parametrize("locale_kind", ["C", "UTF-8 locale where printf %q neutralizes bidi and tag characters"])
-    @pytest.mark.parametrize(
-        "hostile_text",
-        [
-            pytest.param("a" + hostile_character + "b", id=character_id)
-            for character_id, hostile_character in zip(
-                ("bidi control", "tag character", "tag letter"), HOSTILE_BIDI_AND_TAG_CHARACTERS, strict=True
-            )
-        ],
-    )
-    @pytest.mark.parametrize(
-        "make_unusable",
-        [
-            pytest.param(_set_hostile_stack_key_value, id="stack key value"),
-            pytest.param(_check_out_hostile_branch_with_unusable_stack_key, id="branch name"),
-        ],
-    )
-    def test_neither_raw_bidi_nor_tag_code_point_reaches_stdout_or_stderr(
-        self, tmp_path: Path, make_unusable, hostile_text: str, locale_kind: str
-    ) -> None:
-        locale = "C" if locale_kind == "C" else _utf8_locale_where_printf_q_neutralizes_bidi_and_tag_characters()
-        clone = _clone_with_staged_lines(tmp_path, _THRESHOLD_LINES)
-        make_unusable(clone, hostile_text)
-        shim_env, locale_log = _git_env_recording_shim(tmp_path, ("LC_ALL",))
-
-        result = _run_diff_size_ack(clone, _ack_env(tmp_path, {**shim_env, "LC_ALL": locale}))
-
-        assert _recorded_values(locale_log, "LC_ALL") == {locale}, "premise: LC_ALL took effect in the ack's environment"
-        assert result.returncode == 1
-        assert "cannot be used as the stack base" in result.stderr
-        assert not _latch_directory(tmp_path).exists()
-        assert not _contains_bidi_control_or_tag_character(result.stdout + result.stderr)

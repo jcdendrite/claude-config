@@ -215,11 +215,9 @@ def _default_branch_arm_base(clone: Path, base_name: str) -> None:
     _run_git(clone, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{base_name}")
 
 
-# Each hostile code point is built with chr(), so this source carries no literal bidi or tag character. The ack's locale
-# probe and its hostile-text cases read this tuple, so the probe qualifies a locale on every code point the cases use.
+# Each hostile code point is built with chr(), so this source carries no literal bidi or tag character.
 # U+E0001 is the language tag, and U+E0041 is a tag letter in U+E0020-E007F.
-HOSTILE_BIDI_AND_TAG_CHARACTERS = (chr(0x202E), chr(0xE0001), chr(0xE0041))
-_BIDI_CONTROL, _TAG_CHARACTER, _TAG_LETTER = HOSTILE_BIDI_AND_TAG_CHARACTERS
+_BIDI_CONTROL, _TAG_CHARACTER, _TAG_LETTER = chr(0x202E), chr(0xE0001), chr(0xE0041)
 
 HOSTILE_BASE_NAME_PARAMS = [
     pytest.param("a" + _BIDI_CONTROL + "b", id="bidi control"),
