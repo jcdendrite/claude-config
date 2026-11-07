@@ -241,9 +241,9 @@ corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 `corpus`, `scope`, `redaction`, `pricing`, `render`, and `session_pricing` all by module (attribute access), matching
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
 is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'s own
-`_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read, not
-the `cli.py` back-import exception, which is closed for by-name imports (see
-`test_transcript_analysis_cost_import_direction.py`).
+`_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read.
+`cli.py` imports no public (non-underscore, non-`cmd_`) name from `cost.py` by name;
+`test_transcript_analysis_cost_import_direction.py` pins that.
 
 ### `reviewer_yield.py`
 

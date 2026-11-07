@@ -6,8 +6,11 @@ import cost` followed by `cost.X` are not detected.
 Part (a) below guards cost.py's public *function* surface only, not top-level
 constants/classes -- safe, since part (b) independently checks cli.py's actual
 imported names regardless of what kind of object each one denotes, so the
-by-name import boundary itself stays covered either way. This guard pins the
-production import-direction exception only. Test files' own `from
+by-name import boundary itself stays covered either way.
+The package reads cost.py's public names as `cost.<name>` (attribute access), so
+a later patch of `cost.<name>` reaches every reader. A bare by-name import of
+one in cli.py would bind it at import time and bypass that. cli.py's by-name
+imports from other modules are not pinned. Test files' own `from
 transcript_analysis import cost` imports reach cost.py's private helpers for
 patching and are left unguarded on purpose.
 """
@@ -26,7 +29,7 @@ CLI_BACK_IMPORTED_COST_NAMES: set[str] = set()
 
 
 def _is_guarded_name(name: str) -> bool:
-    """A name counts toward the exception's surface unless it's `_`-prefixed
+    """A name counts toward the guarded surface unless it's `_`-prefixed
     (private) or `cmd_`-prefixed. The `cmd_` names are the subcommand handlers
     cli.py binds via `set_defaults(func=...)`, a sanctioned crossing."""
     return not name.startswith("_") and not name.startswith("cmd_")
@@ -73,8 +76,8 @@ def test_cost_module_public_function_surface_matches_sanctioned_set():
     assert actual == COST_PUBLIC_FUNCTION_NAMES, (
         f"cost.py's public (non-`_`, non-`cmd_`) function surface is {actual}, expected "
         f"{COST_PUBLIC_FUNCTION_NAMES} -- a new function leaked onto the surface cli.py's "
-        f"back-import can reach (update docs/transcript-analysis-architecture.md's exception "
-        f"language to match if this is deliberate)"
+        f"back-import can reach (update the cost.py section of "
+        f"docs/transcript-analysis-architecture.md to match if this is deliberate)"
     )
 
 
@@ -84,7 +87,7 @@ def test_cli_back_import_from_cost_matches_sanctioned_set():
         f"cli.py imports {actual} (non-`_`, non-`cmd_` names, by cost.py's "
         f"own export name) from transcript_analysis.cost, expected {CLI_BACK_IMPORTED_COST_NAMES} "
         f"-- a new name leaked backward across the cli.py/cost.py boundary (update "
-        f"docs/transcript-analysis-architecture.md's exception language to match if this is "
+        f"the cost.py section of docs/transcript-analysis-architecture.md to match if this is "
         f"deliberate)"
     )
 
