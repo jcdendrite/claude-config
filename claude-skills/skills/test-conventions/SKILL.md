@@ -153,10 +153,11 @@ For endpoints or functions that handle concurrent writes:
 
 ### Stated boundary rules require a mechanical check
 When a plan or change states or alters a module-boundary, layering, or dependency-direction rule, a test enforces it. Enforce only stated rules; never infer rules from the current dependency graph.
-- Derive edges by parsing imports (the language's AST or the project's existing graph tooling), not by substring or regex over source text (§9). Where no parser exists, such as shell `source` edges, a text match is acceptable only as a tripwire, with the gap named
-- Extend the enforcement the codebase already has before proposing a dedicated tool, and check that the tool models the rule's granularity (module, import form, imported name) before relying on it
+- Derive edges by parsing imports (the language's AST or the project's existing graph tooling), not by substring or regex over source text (§9). Where no parser exists (shell `source` edges, for instance), a text match is acceptable only as a tripwire. Name the gap
+- Extend the enforcement the codebase already has before proposing a dedicated tool
+- Before relying on a tool, check that it models the rule's granularity (module, import form, imported name)
 - Give each rule shape (deny, allow) its own controls, kept as permanent tests: assert the modules the rule names are in the scanned set, and feed the detector a seeded violation
-- A passing import-graph check says nothing about subprocess calls, file-path reads, or dynamic and function-local imports it does not model. Name the residual gap in the plan
+- Name the residual gap in the plan: a passing import-graph check says nothing about subprocess calls, file-path reads, or dynamic and function-local imports it does not model
 
 ### Happy path alone is insufficient when:
 - The function has validation logic (test invalid inputs)
