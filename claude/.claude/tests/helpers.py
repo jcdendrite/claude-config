@@ -252,6 +252,68 @@ def review_ledger_non_agent_lanes() -> list[str]:
     )
 
 
+# A dispatch-prompt field token: a lowercase name with underscores, ending in a colon (`plan_path:`).
+_INPUT_CONTRACT_FIELD_TOKEN = r"[a-z][a-z0-9_]*:"
+# Only the exact bullet shape "- `token:`" enrolls an agent; a near-miss shape does not.
+_INPUT_CONTRACT_FIELD_BULLET_RE = re.compile(
+    rf"^- `({_INPUT_CONTRACT_FIELD_TOKEN})`", re.MULTILINE
+)
+_BACKTICKED_FIELD_TOKEN_RE = re.compile(rf"`({_INPUT_CONTRACT_FIELD_TOKEN})`")
+
+
+def heading_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """`lines` must keep its newlines (`splitlines(keepends=True)`). Returns None when the heading is absent."""
+    start_index = next(
+        (index for index, line in enumerate(lines) if line.rstrip("\n") == heading),
+        None,
+    )
+    if start_index is None:
+        return None
+    end_index = next(
+        (
+            index
+            for index in range(start_index + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return start_index, end_index
+
+
+def input_contract_section(agent_path: Path) -> str:
+    """The '## Input contract' section of an agent file, or '' when it has none.
+
+    A near-miss heading deliberately yields no section, so it enrolls no agent.
+    """
+    lines = agent_path.read_text().splitlines(keepends=True)
+    bounds = heading_section_bounds(lines, "## Input contract")
+    if bounds is None:
+        return ""
+    start_index, end_index = bounds
+    return "".join(lines[start_index:end_index])
+
+
+def input_contract_field_tokens(section_text: str) -> set[str]:
+    """Tokens that lead a top-level bullet of an Input contract section.
+
+    Anchored at line start, so an indented sub-bullet and a bullet led by a
+    bold name do not count.
+    """
+    return set(_INPUT_CONTRACT_FIELD_BULLET_RE.findall(section_text))
+
+
+def backticked_field_tokens(text: str) -> set[str]:
+    return set(_BACKTICKED_FIELD_TOKEN_RE.findall(text))
+
+
+def prompt_contract_agent_names(agents_dir: Path) -> set[str]:
+    return {
+        agent_path.name
+        for agent_path in agents_dir.glob("*.md")
+        if input_contract_field_tokens(input_contract_section(agent_path))
+    }
+
+
 def _build_subprocess_env(
     home: Path | None,
     extra_env: dict | None,

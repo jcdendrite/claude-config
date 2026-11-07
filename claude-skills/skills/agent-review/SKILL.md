@@ -173,3 +173,9 @@ Do not duplicate this section into `subagent-delegation` or `skill-review` — t
 17. **`effort` field discipline** — check against `~/.claude/CLAUDE.md` "Model & Effort Routing" for the current per-agent effort-tier policy, not this line — that policy can change independently of this checklist. `Explore`'s `low` pin is the canonical fast-lookup case; an agent with no `effort:` pin at all silently inherits whatever effort the invoking session runs at, so every agent in the roster should carry an explicit pin unless a documented reason exists to leave it unset.
 
 18. **Existence test** — if the agent's only dispatch site is one skill's one step, apply §7. Fold it into the calling skill unless both §7 questions answer yes, with the surviving exception recorded as a `docs/design-decisions/<slug>.md` file.
+
+19. **Input contract** (agents whose `## Input contract` leads a bullet with a backticked `token:`) — the agent's `## Input contract` is the one home for what a dispatch prompt may carry:
+    - One bullet per field, led by its backticked token and marked derived (computed by a procedure the dispatching skill names), free-form (the dispatcher's own words) or fixed (copied verbatim from one named home in the dispatching skill).
+    - Text only this agent needs lives in its body, never in a fixed field.
+    - The agent states the shared sentences `claude/.claude/hooks/tests/test_agent_roster.py` pins. They make the agent's own file decide what it reviews and have the agent name prompt text it sets aside.
+    - Each dispatching skill site names only these tokens and cites this section, and the dispatching skill keeps each derived value's procedure. The dispatch-site list in `claude-skills/skills/tests/test_skills.py` names every such site.

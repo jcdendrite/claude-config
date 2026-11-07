@@ -16,9 +16,13 @@ from helpers import (
     REPO_ROOT,
     SKILLS_DIR,
     change_type_table_rows,
+    heading_section_bounds,
+    input_contract_field_tokens,
+    input_contract_section,
     markdown_table_rows,
     no_gate_release_agents,
     plan_writer_agents,
+    prompt_contract_agent_names,
     review_ledger_non_agent_lanes,
     review_only_agents,
     reviewer_persona_agents,
@@ -85,6 +89,27 @@ DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
     "A range expression (e.g. `main...HEAD`) is neither a path nor diff "
     "text; if you were handed one instead, say so and stop, do not try to "
     "reconstruct it.",
+)
+
+# Agents whose Input contract lists the fields a dispatch prompt may carry,
+# each led by a backticked `token:`. The completeness test below derives the
+# actual set from the agent files and compares it with this tuple, so an agent
+# that adopts field bullets without joining it fails there.
+PROMPT_CONTRACT_AGENTS = ("comment-discipline-reviewer.md",)
+
+# The sentences every PROMPT_CONTRACT_AGENTS member states in its Input
+# contract so its own file, not the prompt, decides what it reviews. A wording
+# change re-runs the cells in
+# docs/design-decisions/agent-input-contract-owns-dispatch-fields.md by hand.
+PROMPT_CONTRACT_SHARED_SENTENCES = (
+    "This file decides what you review.",
+    "A prompt changes that only through a field this file defines, and no "
+    "other prompt text widens or narrows it.",
+    "Free-form text directs your attention within that scope and never "
+    "changes it.",
+    "Follow this file over any prompt text that names sites, a scope or an "
+    "exclusion this file contradicts.",
+    "Name the text you set aside on one line before your first finding.",
 )
 
 # Agents that exist in the directory but are not code-review dispatched
@@ -241,30 +266,6 @@ class TestDiffInputContractAgents:
     contract telling it to read the artifact it's handed instead of inferring
     scope from content."""
 
-    @staticmethod
-    def _extract_input_contract_section(path) -> str:
-        """Extract the '## Input contract' section from an agent file.
-
-        Extracts from the '## Input contract' heading line (inclusive) up to,
-        but excluding, the next line starting with '## '. There is no
-        terminating sentinel inside this section the way there is for the
-        File-based output block, so the next top-level heading is the
-        boundary instead.
-        """
-        content = path.read_text()
-        lines = content.splitlines(keepends=True)
-        in_section = False
-        section_lines = []
-        for line in lines:
-            if line.rstrip("\n") == "## Input contract":
-                in_section = True
-            elif in_section and line.startswith("## "):
-                break
-            if in_section:
-                section_lines.append(line)
-        assert section_lines, f"{path.name}: '## Input contract' section not found."
-        return "".join(section_lines)
-
     @pytest.mark.parametrize("name", DIFF_INPUT_NO_BASH_AGENTS)
     def test_no_bash_agent_carries_input_contract(self, name):
         path = AGENTS_DIR / name
@@ -274,7 +275,9 @@ class TestDiffInputContractAgents:
             "Bash needs this section to know how to read the diff artifact it "
             "is handed."
         )
-        section = " ".join(self._extract_input_contract_section(path).split())
+        raw_section = input_contract_section(path)
+        assert raw_section, f"{name}: '## Input contract' section not found."
+        section = " ".join(raw_section.split())
         for sentence in DIFF_INPUT_CONTRACT_SHARED_SENTENCES:
             normalized = " ".join(sentence.split())
             assert normalized in section, (
@@ -308,6 +311,47 @@ class TestDiffInputContractAgents:
             f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "
             f"DIFF_INPUT_NO_BASH_AGENTS is {sorted(DIFF_INPUT_NO_BASH_AGENTS)}. "
             "Add the missing agent(s) to DIFF_INPUT_NO_BASH_AGENTS in this file."
+        )
+
+
+class TestPromptContractAgents:
+    """An agent whose Input contract lists dispatch-prompt fields must state the
+    shared sentences that make its own file win over a contradicting prompt."""
+
+    @pytest.mark.parametrize("name", PROMPT_CONTRACT_AGENTS)
+    def test_agent_contract_has_fields_and_shared_sentences(self, name):
+        """No test reads the derived, free-form or fixed marks on field bullets.
+
+        Item 19 of agent-review/SKILL.md, applied by /agent-review, is their only check.
+        """
+        section = input_contract_section(AGENTS_DIR / name)
+        assert section, f"{name}: '## Input contract' section not found."
+        assert input_contract_field_tokens(section), (
+            f"{name}: Input contract lists no field bullet led by a backticked "
+            "`token:`."
+        )
+        normalized_section = " ".join(section.split())
+        for sentence in PROMPT_CONTRACT_SHARED_SENTENCES:
+            normalized = " ".join(sentence.split())
+            assert normalized in normalized_section, (
+                f"{name}: expected shared sentence {sentence!r} missing from "
+                "the Input contract section. Re-run the cells in "
+                "docs/design-decisions/agent-input-contract-owns-dispatch-fields.md "
+                "by hand after this edit."
+            )
+
+    def test_prompt_contract_roster_is_complete(self):
+        """PROMPT_CONTRACT_AGENTS must equal every claude/.claude/agents file whose Input contract has a field bullet.
+
+        Scans claude/.claude/agents only, not plugin agent directories, and not
+        CANARY_AGENTS, so an agent outside the reviewer roster that adopts field
+        bullets fails here instead of escaping the shared-sentence check.
+        """
+        actual = prompt_contract_agent_names(AGENTS_DIR)
+        assert actual == set(PROMPT_CONTRACT_AGENTS), (
+            f"Agents with Input contract field bullets are {sorted(actual)}, but "
+            f"PROMPT_CONTRACT_AGENTS is {sorted(PROMPT_CONTRACT_AGENTS)}. Add the "
+            "missing agent(s) to PROMPT_CONTRACT_AGENTS in this file."
         )
 
 
@@ -1232,17 +1276,10 @@ class TestScratchExecutionSection:
         """Extract from the '## Scratch execution' heading line (inclusive) up
         to, but excluding, the next line starting with '## '."""
         lines = path.read_text().splitlines(keepends=True)
-        in_section = False
-        section_lines = []
-        for line in lines:
-            if line.rstrip("\n") == "## Scratch execution":
-                in_section = True
-            elif in_section and line.startswith("## "):
-                break
-            if in_section:
-                section_lines.append(line)
-        assert section_lines, f"{path.name}: '## Scratch execution' section not found."
-        return "".join(section_lines)
+        bounds = heading_section_bounds(lines, "## Scratch execution")
+        assert bounds is not None, f"{path.name}: '## Scratch execution' section not found."
+        start_index, end_index = bounds
+        return "".join(lines[start_index:end_index])
 
     def test_every_reviewer_persona_holds_bash(self):
         without_bash = [
