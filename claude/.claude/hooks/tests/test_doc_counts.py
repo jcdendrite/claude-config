@@ -185,6 +185,8 @@ _GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
 _GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 _NUDGE_HOOK_REL_PATH = "claude/.claude/hooks/nudge-handoff-near-context-cap.sh"
 _CLAUDE_MD_LENGTH_HOOK_REL_PATH = "claude/.claude/hooks/check-claude-md-length.sh"
+_LIB_SH_REL_PATH = "claude/.claude/hooks/_lib.sh"
+_DIFF_SIZE_PROMPT_HOOK_REL_PATH = "claude/.claude/hooks/require-diff-size-prompt.sh"
 
 
 def _count_ground_every_choice_categories() -> int:
@@ -245,6 +247,22 @@ def _count_claude_md_length_hook_limit() -> int:
             rel_path=_CLAUDE_MD_LENGTH_HOOK_REL_PATH,
             pattern=pattern,
             description="check-claude-md-length.sh: limit_for()'s wildcard-arm default",
+        ),
+    )
+    return int(matches[0])
+
+
+def _count_diff_size_prompt_threshold_lines() -> int:
+    """Return the diff-size prompt threshold from its one assignment in _lib.sh."""
+    text = (REPO_ROOT / _LIB_SH_REL_PATH).read_text()
+    pattern = r"^_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES=(\d+)$"
+    matches = re.findall(pattern, text, re.MULTILINE)
+    _assert_exactly_one_match(
+        matches,
+        Occurrence(
+            rel_path=_LIB_SH_REL_PATH,
+            pattern=pattern,
+            description="_lib.sh: the _LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES assignment",
         ),
     )
     return int(matches[0])
@@ -554,6 +572,47 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 # "first 200 lines or 25KB of `MEMORY.md`" sentence.
                 pattern=r"under (\d+) lines per CLAUDE\.md file",
                 description="ai-instruction-and-memory-files/SKILL.md: N lines per CLAUDE.md file",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_diff_size_prompt_threshold_lines,
+        label=f"_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES in {_LIB_SH_REL_PATH}",
+        occurrences=[
+            Occurrence(
+                rel_path="claude-skills/skills/plan-review/SKILL.md",
+                pattern=r"`Projected diff:` line states (\d+) or more changed lines",
+                description="plan-review/SKILL.md: Projected diff line states N or more changed lines",
+            ),
+            Occurrence(
+                rel_path="claude-skills/skills/plan-review/SKILL.md",
+                pattern=r"an estimate; threshold (\d+)\)",
+                description="plan-review/SKILL.md: question wording's threshold N",
+            ),
+            Occurrence(
+                rel_path="claude-skills/skills/plan-review/SKILL.md",
+                pattern=r"cut to a `Projected diff:` below (\d+) changed lines",
+                description="plan-review/SKILL.md: Split now row's below N changed lines",
+            ),
+            Occurrence(
+                rel_path="docs/hooks.md",
+                pattern=r"brings the branch's diff against its base to (\d+) or more changed lines",
+                description="docs/hooks.md: require-diff-size-prompt.sh trigger at N or more changed lines",
+            ),
+            Occurrence(
+                rel_path="README.md",
+                pattern=r"brings the branch's diff to (\d+) or more changed lines",
+                description="README.md: require-diff-size-prompt.sh trigger at N or more changed lines",
+            ),
+            Occurrence(
+                rel_path=_DIFF_SIZE_PROMPT_HOOK_REL_PATH,
+                pattern=r"origin/<base> to (\d+) or more changed lines",
+                description="require-diff-size-prompt.sh header: trigger at N or more changed lines",
+            ),
+            Occurrence(
+                rel_path=_DIFF_SIZE_PROMPT_HOOK_REL_PATH,
+                pattern=r"size the (\d+) edge was taken from",
+                description="require-diff-size-prompt.sh: the size the N edge was taken from",
             ),
         ],
     ),
