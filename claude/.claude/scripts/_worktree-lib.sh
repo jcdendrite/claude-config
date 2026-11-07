@@ -311,7 +311,8 @@ worktree_is_clean() {
 
 # worktree_has_populated_submodules <path>
 #
-# Returns 0 when <path> has a populated submodule, 1 when it has none, and 2
+# Returns 0 when <path> has a populated submodule or its own git dir holds a
+# `modules` directory, 1 when it has neither, and 2
 # when the check cannot run: the worktree has no `.git`, or `git rev-parse` or
 # `git submodule status` fails. A path whose directory is gone returns 1.
 # Sets WORKTREE_PROBE_REASON to a one-line reason on a 2, empty otherwise.
