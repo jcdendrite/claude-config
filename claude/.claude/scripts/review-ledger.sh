@@ -37,7 +37,7 @@ _LEDGER_ROUND_MAX_DIGITS=4
 _LEDGER_LINE_MAX_BYTES=4095
 # Ledger row schema version -- unread today, lets a future migration
 # distinguish row shapes without re-deriving them from optional-key presence.
-_LEDGER_SCHEMA_VERSION=4
+_LEDGER_SCHEMA_VERSION=5
 
 usage() {
   cat >&2 <<'EOF'
@@ -50,11 +50,13 @@ Subcommands:
       [--enforcement-invariant] [--carry-forward] [--defer-criterion <name>] \
       [--ref <id>] [--cited-line <path>:<line>[-<line>]] \
       [--authoring-agent code-writer|inline|mixed|unknown] \
-      [--authoring-effort low|medium|high|xhigh]
+      [--authoring-effort low|medium|high|xhigh] \
+      [--reviewer <lane>]... [--relog]
              Append one finding-disposition event to this branch's ledger
              (this session's ledger on a detached HEAD or the default branch).
              --finding/--rationale are required for ADDRESS|DEFER|SETTLED;
-             --finding/--rationale/--source must be omitted for CLEAN.
+             --finding/--rationale/--source/--reviewer/--relog must be omitted
+             for CLEAN.
              --round is the 1-based review round number for this
              /code-review run on this branch.
              DEFER and SETTLED require --source as <repo-relative path> with an
@@ -97,9 +99,23 @@ Subcommands:
              characters (zero-width, bidi, line separators) shown as spaces.
              A --ref is checked against this branch's ledger file only (this
              session's file in session scope).
+             Lanes: --reviewer names a lane that raised the finding, and repeats
+             once per lane. A lane is a reviewer persona from
+             _LIB_REVIEWER_PERSONA_AGENTS in hooks/_lib.sh, or orchestrator (a
+             finding no reviewer agent or Skill-tool review raised), skill-tool
+             (a Skill-tool review's finding) or unrostered-agent (a spawned
+             reviewer agent outside the roster). CLEAN takes no lanes; every
+             other disposition takes at least one lane (--reviewer) or --relog,
+             never both. Use --relog only when this row records no raise of its
+             own and only re-logs its --ref decision, whose raise an earlier row
+             records. A reopen, a gate-denial recovery and a --carry-forward
+             withdrawal are such rows. --relog copies the --ref decision's lanes. It
+             needs --ref and is rejected on a carry. The row stores its lanes
+             sorted and duplicate-free as reviewers.
              No-ops (exit 0) if the identical line (by round, finding,
              disposition, rationale, source, authoring_agent,
-             authoring_effort, session_id and every field above) already exists.
+             authoring_effort, reviewers, session_id and every field above)
+             already exists.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
   show [--out <path> [--trend]]
@@ -351,6 +367,8 @@ case "$SUBCOMMAND" in
     # "1" when the boolean flag was given, "" otherwise.
     ENFORCEMENT_INVARIANT=""
     CARRY_FORWARD=""
+    REVIEWERS=()
+    RELOG=""
     DEFER_CRITERION=""
     REF=""
     CITED_LINE=""
@@ -359,7 +377,7 @@ case "$SUBCOMMAND" in
     EMPTY_VALUE_FLAGS=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --finding|--disposition|--rationale|--source|--round|--authoring-agent|--authoring-effort|--decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line)
+        --finding|--disposition|--rationale|--source|--round|--authoring-agent|--authoring-effort|--decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line|--reviewer)
           if [ $# -lt 2 ]; then
             printf "review-ledger.sh: %s requires a value\n" "$1" >&2
             exit 2
@@ -367,7 +385,7 @@ case "$SUBCOMMAND" in
           ;;
       esac
       case "$1" in
-        --decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line)
+        --decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line|--reviewer)
           [ -n "$2" ] || EMPTY_VALUE_FLAGS="${EMPTY_VALUE_FLAGS:+$EMPTY_VALUE_FLAGS }$1"
           ;;
       esac
@@ -379,16 +397,18 @@ case "$SUBCOMMAND" in
         --round) ROUND="$2"; shift 2 ;;
         --authoring-agent) AUTHORING_AGENT="$2"; shift 2 ;;
         --authoring-effort) AUTHORING_EFFORT="$2"; shift 2 ;;
+        --reviewer) REVIEWERS+=("$2"); shift 2 ;;
         --decided-by) DECIDED_BY="$2"; shift 2 ;;
         --engineer-quote) ENGINEER_QUOTE="$2"; shift 2 ;;
         --enforcement-invariant) ENFORCEMENT_INVARIANT=1; shift ;;
         --carry-forward) CARRY_FORWARD=1; shift ;;
+        --relog) RELOG=1; shift ;;
         --defer-criterion) DEFER_CRITERION="$2"; shift 2 ;;
         --ref) REF="$2"; shift 2 ;;
         --cited-line) CITED_LINE="$2"; shift 2 ;;
-        # Unrecognized flags hard-reject (exit 2): this repo's stow model
-        # keeps SKILL.md and this script co-committed, so cross-version
-        # skew doesn't arise in practice.
+        # Unrecognized flags hard-reject (exit 2). Co-committing SKILL.md and this
+        # script keeps a checkout consistent, but not a running session that loaded
+        # the skill before a pull.
         *)
           printf "review-ledger.sh: unknown argument '%s'\n" "$1" >&2
           usage
@@ -467,6 +487,7 @@ case "$SUBCOMMAND" in
     fi
     _review_ledger_validate_flags "$DISPOSITION" "$DECIDED_BY" "$ENGINEER_QUOTE" "$ENFORCEMENT_INVARIANT" \
       "$CARRY_FORWARD" "$DEFER_CRITERION" "$REF" "$CITED_LINE" "$SOURCE" "$EMPTY_VALUE_FLAGS" || exit 2
+    _review_ledger_validate_lanes "$DISPOSITION" "$DECIDED_BY" "$REF" "$RELOG" "${REVIEWERS[@]}" || exit 2
 
     SESSION_ID=$(_resolve_session_id) || exit 2
     REPO_ROOT=$(_resolve_repo_root) || exit 2
@@ -492,6 +513,12 @@ case "$SUBCOMMAND" in
     if [ -n "$REF" ]; then
       # The trailing 1 defers a retired --ref to _review_ledger_check_not_retired below, which needs the built row.
       _review_ledger_check_ref "$LEDGER_SCOPE" "$LEDGER_FILE" "$DISPOSITION" "$DECIDED_BY" "$ENFORCEMENT_INVARIANT" "$REF" 1 || exit 2
+    fi
+    # The literal null selects the --reviewer values in the build below. --relog
+    # replaces them with the --ref decision's lanes.
+    COPIED_REVIEWERS_JSON=null
+    if [ -n "$RELOG" ]; then
+      COPIED_REVIEWERS_JSON=$(_review_ledger_ref_reviewers "$LEDGER_FILE" "$REF") || exit 2
     fi
     if [ "$DECIDED_BY" = carry ]; then
       SITE_HASH=$(_review_ledger_check_carry "$REPO_ROOT" "$DISPOSITION" "$DEFER_CRITERION" "$SOURCE" "$CITED_LINE" "$_REVIEW_LEDGER_REF_INFO") || exit 2
@@ -528,20 +555,26 @@ case "$SUBCOMMAND" in
     [ -n "$ENFORCEMENT_INVARIANT" ] && INVARIANT_JSON=true
     CARRY_FORWARD_JSON=false
     [ -n "$CARRY_FORWARD" ] && CARRY_FORWARD_JSON=true
-    # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
-    # jq's own --arg-bound variables, and double-quoting would expand them in
-    # the shell before jq sees them.
+    # The newline join is safe because the lane check admits no name holding a newline.
+    REVIEWERS_TEXT=$(printf '%s\n' "${REVIEWERS[@]}")
+    # shellcheck disable=SC2016 # single-quoted on purpose: $finding,
+    # $reviewers_text, $copied_reviewers etc. are jq's own --arg-bound variables,
+    # and double-quoting would expand them in the shell before jq sees them.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
       --arg session_id "$SESSION_ID" --arg decided_by "$DECIDED_BY" --arg engineer_quote "$ENGINEER_QUOTE" \
       --argjson enforcement_invariant "$INVARIANT_JSON" --argjson carry_forward "$CARRY_FORWARD_JSON" \
       --arg defer_criterion "$DEFER_CRITERION" --arg ref "$REF" --arg cited_line "$CITED_LINE" \
-      --arg site_hash "$SITE_HASH" \
+      --arg site_hash "$SITE_HASH" --arg reviewers_text "$REVIEWERS_TEXT" \
+      --argjson copied_reviewers "$COPIED_REVIEWERS_JSON" \
       --argjson round "$ROUND" --argjson schema_version "$_LEDGER_SCHEMA_VERSION" --arg event_time "$EVENT_TIME" \
       '{schema_version: $schema_version, round: $round, finding: $finding, disposition: $disposition,
         rationale: $rationale, source: $source, authoring_agent: $authoring_agent,
-        authoring_effort: $authoring_effort, session_id: $session_id, decided_by: $decided_by,
+        authoring_effort: $authoring_effort,
+        reviewers: (if $copied_reviewers != null then $copied_reviewers
+                    else ($reviewers_text | split("\n") | map(select(. != ""))) end | unique),
+        session_id: $session_id, decided_by: $decided_by,
         engineer_quote: $engineer_quote, enforcement_invariant: $enforcement_invariant,
         carry_forward: $carry_forward, defer_criterion: $defer_criterion, ref: $ref,
         cited_line: $cited_line, site_hash: $site_hash, event_time: $event_time}')
@@ -572,7 +605,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     if [ "$LINE_BYTES" -gt "$_LEDGER_LINE_MAX_BYTES" ]; then
-      printf 'review-ledger.sh: the ledger line is %d bytes, over the %d-byte limit — shorten --finding, --rationale, --source, --cited-line, and --engineer-quote (control and non-ASCII characters take more bytes than they count as characters). Abort without writing.\n' "$LINE_BYTES" "$_LEDGER_LINE_MAX_BYTES" >&2
+      printf 'review-ledger.sh: the ledger line is %d bytes, over the %d-byte limit — shorten --finding, --rationale, --source, --cited-line, and --engineer-quote (control and non-ASCII characters take more bytes than they count as characters). The row'\''s lane list (the --reviewer values, or the lanes --relog copies) counts toward the bytes but must not be trimmed to fit, and shortening those free-text fields always clears the overflow. Abort without writing.\n' "$LINE_BYTES" "$_LEDGER_LINE_MAX_BYTES" >&2
       exit 2
     fi
 
@@ -584,6 +617,8 @@ case "$SUBCOMMAND" in
     # raising an identical finding both land as separate rows.
     # The dedup key includes session_id, so two sessions on one branch file each
     # keep their own copy.
+    # A row written before schema 5 has no reviewers key, so it never dedups
+    # against a schema-5 row.
 
     # Call tally: the jq, awk and git calls that can run without a timeout,
     # which are the points where an append can hang.
@@ -597,6 +632,7 @@ case "$SUBCOMMAND" in
     # A --ref adds capped _lib_jq passes over the resolved file (read, then look
     # up), and a retired --ref adds a read and a compare. A --ref naming a carry
     # repeats the read and look-up once for its rejection advice.
+    # A --relog repeats the read and look-up once to copy the --ref row's lanes.
     # A range-form source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and the candidate rev-parse probes.
@@ -607,7 +643,7 @@ case "$SUBCOMMAND" in
     # The primitive returns nonzero only when the row was neither written nor
     # deduplicated, so the row is lost unless the caller retries.
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
-      '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort, session_id, decided_by, engineer_quote, enforcement_invariant, carry_forward, defer_criterion, ref, cited_line, site_hash}'
+      '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort, reviewers, session_id, decided_by, engineer_quote, enforcement_invariant, carry_forward, defer_criterion, ref, cited_line, site_hash}'
     APPEND_STATUS=$?
     if [ "$APPEND_STATUS" -ne 0 ]; then
       printf 'review-ledger.sh: could not write the ledger row to %s. The row was not recorded.\n' "$LEDGER_FILE" >&2

@@ -1002,6 +1002,7 @@ class TestReviewLedgerSubprocessIntegration:
                 "--disposition", "ADDRESS",
                 "--rationale", "fixed inline",
                 "--round", "1",
+                "--reviewer", "staff-sdet",
                 "--authoring-agent", "code-writer",
             ],
             cwd=repo, home=home,
@@ -1031,7 +1032,7 @@ class TestReviewLedgerSubprocessIntegration:
 
         result = self._run_append(
             ["--finding", "Missing error handling in foo()", "--disposition", "ADDRESS",
-             "--rationale", "fixed inline", "--round", "1"],
+             "--rationale", "fixed inline", "--round", "1", "--reviewer", "staff-sdet"],
             cwd=repo, home=home,
         )
         assert result.returncode == 0, result.stderr
@@ -1072,7 +1073,7 @@ class TestReviewLedgerSubprocessIntegration:
         settled = self._run_append(
             ["--finding", "Missing error handling in foo()", "--disposition", "SETTLED",
              "--rationale", "kept as written", "--decided-by", "engineer", "--engineer-quote", "keep it",
-             "--carry-forward", "--source", "file.txt:1", "--round", "1"],
+             "--carry-forward", "--source", "file.txt:1", "--round", "1", "--reviewer", "staff-sdet"],
             cwd=repo, home=home,
         )
         assert settled.returncode == 0, settled.stderr
@@ -1082,7 +1083,7 @@ class TestReviewLedgerSubprocessIntegration:
         carry = self._run_append(
             ["--finding", "foo() still lacks error handling", "--disposition", "SETTLED",
              "--rationale", "same failure mode", "--decided-by", "carry", "--ref", decision_id,
-             "--cited-line", "file.txt:1", "--source", "file.txt:1", "--round", "2"],
+             "--cited-line", "file.txt:1", "--source", "file.txt:1", "--round", "2", "--reviewer", "staff-sdet"],
             cwd=repo, home=home,
         )
         assert carry.returncode == 0, carry.stderr
