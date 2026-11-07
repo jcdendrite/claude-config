@@ -1,4 +1,7 @@
-"""scope.py's scan-traversal, scan-gap and glob-selection classes; test_transcript_scope.py holds scope.py's other tests."""
+"""scope.py's scan-traversal, scan-gap and glob-selection classes.
+
+test_transcript_scope.py and test_transcript_scope_symlinks.py hold scope.py's other tests.
+"""
 import argparse
 import errno
 import os

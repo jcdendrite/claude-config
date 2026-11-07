@@ -1,8 +1,18 @@
-"""Free-text, token and malformed-usage corpus builders shared by test_transcript_review_rounds.py and
-test_transcript_pr_cost.py."""
+"""Free-text, token and malformed-usage corpus builders, the review-round-cost args builder, and the pooled two-root
+fixture, shared by the test_transcript_review_rounds* files and test_transcript_pr_cost.py."""
 from pathlib import Path
 
-from .conftest import _agent_use, _asst, _priced, _tool_result, _user_msg, _write_jsonl, _write_subagent_dispatch
+from .conftest import (
+    _agent_use,
+    _asst,
+    _priced,
+    _skill_block,
+    _tool_result,
+    _two_declared_roots,
+    _user_msg,
+    _write_jsonl,
+    _write_subagent_dispatch,
+)
 
 _ORCHESTRATOR_AGENT_TYPE = "review-orchestrator"
 
@@ -152,3 +162,72 @@ def _write_orchestrator_free_text_corpus(
         ]
     _write_jsonl(proj / f"{session_id}.jsonl", records)
     _write_orchestrator_subagent_tree(proj, session_id, branch=branch)
+
+
+def _review_round_cost_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    branches: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    skill: str | None = None,
+    pooled: bool = False,
+    show_withheld: bool = False,
+    config_dir: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "branches": branches,
+        "since": since,
+        "until": until,
+        "skill": skill,
+        "pooled": pooled,
+        "show_withheld": show_withheld,
+        "config_dir": config_dir,
+    })()
+
+
+def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
+    """Two declared roots, two branches each (four total), one
+    distinctively named. Reused by the grammar, totals-absence,
+    banner-suppression, branch-name-leak, header, and stderr-diagnostic
+    tests in test_transcript_review_rounds.py and the alias-refusal tests
+    in test_transcript_review_rounds_pooled_alias.py, all of which need the
+    same non-degenerate, >1-root, >1-branch shape.
+    """
+    roots = _two_declared_roots(tmp_path, monkeypatch)
+    proj_a = roots[0] / "-home-user-repo-a"
+    proj_a.mkdir(parents=True)
+    _write_jsonl(proj_a / "sess-a1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a1-secret-branch", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _user_msg("thanks", branch="feat-a1-secret-branch", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    _write_jsonl(proj_a / "sess-a2.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s2", "plan-review")],
+        ),
+        _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    proj_b = roots[1] / "-home-user-repo-b"
+    proj_b.mkdir(parents=True)
+    _write_jsonl(proj_b / "sess-b1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-b1", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s3", "ready-for-review")],
+        ),
+        _user_msg("thanks", branch="feat-b1", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    _write_jsonl(proj_b / "sess-b2.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-b2", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s4", "code-review")],
+        ),
+        _user_msg("thanks", branch="feat-b2", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    return roots

@@ -22,7 +22,9 @@ from ._review_round_corpus_helpers import (
     _malformed_usage_turn,
     _orchestrator_return_record,
     _orchestrator_spawn_record,
+    _pooled_two_root_fixture,
     _priced_with_classes,
+    _review_round_cost_args,
     _token_classes,
     _write_orchestrator_free_text_corpus,
     _write_orchestrator_subagent_tree,
@@ -58,31 +60,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _review_round_cost_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    branches: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
-    skill: str | None = None,
-    pooled: bool = False,
-    show_withheld: bool = False,
-    config_dir: str | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "branches": branches,
-        "since": since,
-        "until": until,
-        "skill": skill,
-        "pooled": pooled,
-        "show_withheld": show_withheld,
-        "config_dir": config_dir,
-    })()
 
 
 def _session_iter(fake_projects):
@@ -3083,49 +3060,6 @@ class TestBootstrapShareIntervals:
             assert review_rounds._pooled_shares(positive._replace(**{other_field: 0}))[key] is not None
 
 
-def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
-    """Two declared roots, two branches each (four total), one
-    distinctively named. Reused by the grammar, totals-absence,
-    banner-suppression, branch-name-leak, header, and stderr-diagnostic
-    tests below, all of which need the same non-degenerate, >1-root,
-    >1-branch shape.
-    """
-    roots = _two_declared_roots(tmp_path, monkeypatch)
-    proj_a = roots[0] / "-home-user-repo-a"
-    proj_a.mkdir(parents=True)
-    _write_jsonl(proj_a / "sess-a1.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-a1-secret-branch", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s1", "code-review")],
-        ),
-        _user_msg("thanks", branch="feat-a1-secret-branch", ts="2026-08-01T10:01:00.000Z"),
-    ])
-    _write_jsonl(proj_a / "sess-a2.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s2", "plan-review")],
-        ),
-        _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
-    ])
-    proj_b = roots[1] / "-home-user-repo-b"
-    proj_b.mkdir(parents=True)
-    _write_jsonl(proj_b / "sess-b1.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-b1", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s3", "ready-for-review")],
-        ),
-        _user_msg("thanks", branch="feat-b1", ts="2026-08-01T10:01:00.000Z"),
-    ])
-    _write_jsonl(proj_b / "sess-b2.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-b2", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s4", "code-review")],
-        ),
-        _user_msg("thanks", branch="feat-b2", ts="2026-08-01T10:01:00.000Z"),
-    ])
-    return roots
-
-
 def _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch) -> list[Path]:
     """Root A mostly code-review (3 branches) plus one plan-review branch,
     root B the mirror image, so the correct pooled share (50%) differs
@@ -4759,49 +4693,93 @@ class TestCmdReviewRoundCostPooled:
         assert not any(c.isdigit() for c in err)
         assert str(sealed_target_parent) not in err
 
-    @pytest.mark.parametrize("linked_entry", ["project-dir", "transcript"])
-    def test_entry_symlinked_outside_every_declared_root_aborts_with_the_generic_message(
-        self, tmp_path, monkeypatch, capsys, linked_entry,
-    ):
-        """Single-root scans keep a project directory or transcript symlinked
-        outside the scan root in scope. Under --pooled (always multi-root)
-        the session's real path matches no declared root, so root attribution
-        raises. The abort backstop turns that into the generic refusal: exit
-        2, no figure, no traceback, and neither the link name nor the target
-        path in the output.
-        """
-        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        outside_proj = tmp_path / "outside-every-root" / "-home-user-repo-elsewhere"
-        outside_proj.mkdir(parents=True)
-        outside_transcript = outside_proj / "sess-outside.jsonl"
-        _write_jsonl(outside_transcript, [
+    @staticmethod
+    def _write_outside_session(project_dir: Path, *, with_subagent_files: bool) -> Path:
+        """One review round on its own branch that dispatches one subagent; the dispatch's files are written beside
+        the transcript only when with_subagent_files."""
+        session_id = "sess-outside"
+        transcript = project_dir / f"{session_id}.jsonl"
+        _write_jsonl(transcript, [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat-outside", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s5", "code-review")],
+                content=[_skill_block("s5", "code-review"), _agent_use("a5", "staff-sdet")],
             ),
             _user_msg("thanks", branch="feat-outside", ts="2026-08-01T10:01:00.000Z"),
         ])
+        if with_subagent_files:
+            _write_subagent_dispatch(
+                project_dir, session_id, "agent-5", "a5",
+                [_priced("claude-sonnet-5", input=500_000, branch="feat-outside", ts="2026-08-01T10:00:30.000Z")],
+            )
+        return transcript
+
+    @staticmethod
+    def _pooled_figures(capsys) -> tuple[str, str]:
+        """(stdout, stderr) of a pooled run with --show-withheld, so the output carries numeric figures."""
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        return capsys.readouterr()
+
+    def test_project_dir_symlinked_outside_every_declared_root_is_followed_like_a_real_entry(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A project directory symlinked outside every declared root is attributed to the root it is listed under, and
+        the subagent files under it are read, so the pooled run equals the same project directory as a real entry."""
         link_name = "-home-user-repo-linked-outside"
-        if linked_entry == "project-dir":
-            (roots[1] / link_name).symlink_to(outside_proj, target_is_directory=True)
-        else:
-            (roots[1] / "-home-user-repo-b" / f"{link_name}.jsonl").symlink_to(outside_transcript)
+        _pooled_two_root_fixture(tmp_path / "without-session", monkeypatch)
+        without_session_out, _ = self._pooled_figures(capsys)
 
-        with pytest.raises(SystemExit) as exc:
-            review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        real_roots = _pooled_two_root_fixture(tmp_path / "real-entry", monkeypatch)
+        (real_roots[1] / link_name).mkdir()
+        self._write_outside_session(real_roots[1] / link_name, with_subagent_files=True)
+        real_entry_out, _ = self._pooled_figures(capsys)
 
-        assert exc.value.code == 2
-        out, err = capsys.readouterr()
-        assert out == ""
-        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
-        assert "Traceback" not in err
-        assert link_name not in err
-        assert str(outside_proj) not in err
+        linked_roots = _pooled_two_root_fixture(tmp_path / "linked-entry", monkeypatch)
+        outside_proj = tmp_path / "outside-every-root" / "-home-user-repo-elsewhere"
+        outside_proj.mkdir(parents=True)
+        self._write_outside_session(outside_proj, with_subagent_files=True)
+        (linked_roots[1] / link_name).symlink_to(outside_proj, target_is_directory=True)
+        linked_entry_out, linked_entry_err = self._pooled_figures(capsys)
+
+        assert real_entry_out != without_session_out
+        assert linked_entry_out == real_entry_out
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE not in linked_entry_err
+        assert "Traceback" not in linked_entry_err
+
+    def test_transcript_symlinked_outside_every_declared_root_is_followed_but_not_its_subagent_files(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The subagent directory is derived from the listed transcript name, so a transcript symlinked to a target
+        outside every root is counted while the target's subagent files are not read: the run equals a real entry
+        listed without them, and differs from one listed with them."""
+        link_name = "link-outside"
+        _pooled_two_root_fixture(tmp_path / "without-session", monkeypatch)
+        without_session_out, _ = self._pooled_figures(capsys)
+
+        with_files_roots = _pooled_two_root_fixture(tmp_path / "real-entry-with-subagent-files", monkeypatch)
+        self._write_outside_session(with_files_roots[1] / "-home-user-repo-b", with_subagent_files=True)
+        with_subagent_files_out, _ = self._pooled_figures(capsys)
+
+        without_files_roots = _pooled_two_root_fixture(tmp_path / "real-entry-without-subagent-files", monkeypatch)
+        self._write_outside_session(without_files_roots[1] / "-home-user-repo-b", with_subagent_files=False)
+        without_subagent_files_out, _ = self._pooled_figures(capsys)
+
+        linked_roots = _pooled_two_root_fixture(tmp_path / "linked-entry", monkeypatch)
+        outside_proj = tmp_path / "outside-every-root" / "-home-user-repo-elsewhere"
+        outside_proj.mkdir(parents=True)
+        outside_transcript = self._write_outside_session(outside_proj, with_subagent_files=True)
+        (linked_roots[1] / "-home-user-repo-b" / f"{link_name}.jsonl").symlink_to(outside_transcript)
+        linked_entry_out, linked_entry_err = self._pooled_figures(capsys)
+
+        assert without_subagent_files_out != without_session_out
+        assert with_subagent_files_out != without_subagent_files_out
+        assert linked_entry_out == without_subagent_files_out
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE not in linked_entry_err
+        assert "Traceback" not in linked_entry_err
 
     def test_project_dir_symlinked_to_another_directory_inside_a_declared_root_still_completes(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """Paired with the outside-every-root abort above: an alias whose
+        """Paired with the outside-every-root test above: an alias whose
         real path stays under a declared root dedups against its target, so
         the run completes with the same figures as without the alias. Runs
         with --show-withheld so the compared output carries numeric figures.

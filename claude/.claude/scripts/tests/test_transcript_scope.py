@@ -627,8 +627,8 @@ class TestSingleLevelProjectsGlob:
         """Only a '..' in the raw glob is rejected. With a single scan root,
         a project directory symlinked to a readable location outside the
         root stays in scope with the default glob. Under more than one root
-        the same input has no owning root, so consumers that attribute each
-        session to a root abort."""
+        the session is attributed to the root it is listed under
+        (test_transcript_scope_symlinks.py)."""
         root = tmp_path / "acct-a"
         root.mkdir()
         outside = tmp_path / "elsewhere" / "-repo-relocated"

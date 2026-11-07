@@ -116,11 +116,12 @@ re-run and check.
   a blended total when more than one resolves. `--all-accounts` opts
   into a per-account loop, whose output publishes nothing — see the
   next section.
-- `transcript-analysis.py period-cost` reads one account only, but its
-  output is never publishable. It covers every repository that account
-  worked in, so every figure is per-account and per-project, even on this
-  repository's own account. It is built for private delivery to the owner
-  of the projects that account works on.
+- `transcript-analysis.py period-cost` reads one account's projects
+  directory, plus any symlink target outside it (counted in its `SCOPE`
+  line), but its output is never publishable. It covers every repository
+  that account worked in, so every figure is per-account and per-project,
+  even on this repository's own account. It is built for private delivery
+  to the owner of the projects that account works on.
 - `transcript-analysis.py review-cost-by-size --this-repo`, run from
   this repository's checkout, refuses `--projects` and a top-level
   `--config-dir` and reads the active config directory alone. A new

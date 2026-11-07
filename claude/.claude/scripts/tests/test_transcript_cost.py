@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from transcript_analysis import audit_routing, cost, pricing, redaction, render, scope
 
+from ._cost_report_helpers import _extract_account_totals
 from .conftest import (
     _agent_use,
     _asst,
@@ -109,19 +110,6 @@ def _extract_md_grand_total(out: str) -> float:
     match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", out, re.MULTILINE)
     assert match is not None, "markdown grand total row not found in output"
     return float(match.group(1).replace(",", ""))
-
-
-def _extract_account_totals(out: str) -> dict[int, float]:
-    """Map account ordinal -> that account's own token-class 'total' row
-    dollar figure, by splitting cost's '## Cost by account' section on its
-    own '### account-N' sub-headers."""
-    totals: dict[int, float] = {}
-    for block in out.split("### account-")[1:]:
-        ordinal_str, _, rest = block.partition("\n")
-        match = re.search(r"^total\s+([\d,]+\.\d\d)\s*$", rest, re.MULTILINE)
-        assert match is not None, f"no total row found for account-{ordinal_str.strip()}"
-        totals[int(ordinal_str.strip())] = float(match.group(1).replace(",", ""))
-    return totals
 
 
 def _extract_excluded_spend_summary(out: str) -> tuple[int, int]:
@@ -1216,29 +1204,6 @@ class TestCostMultiRootRedaction:
         with pytest.raises(AssertionError) as exc_info:
             cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a])
         assert "-home-user-secret-clientname" not in str(exc_info.value)
-
-    def test_root_index_lookup_failure_omits_raw_path(self, tmp_path):
-        """_root_index_for_path's own 'no known scan root' AssertionError is a
-        structural sibling of the redact-map-miss assertion above — found by
-        cumulative-diff review to still embed the raw jsonl path (f"cost:
-        {jsonl} matched...") after the redact-map-miss sibling was fixed.
-        Reproduces the real trigger: a project dir under a declared
-        --config-dir root that is a symlink resolving OUTSIDE every declared
-        root (not just aliasing another declared root, which is the already-
-        covered, already-deduped case)."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
-                                   [_priced("claude-sonnet-5", input=1_000_000)])
-        external = tmp_path / "external-unrelated-secret-clientname"
-        external.mkdir()
-        _write_jsonl(external / "sess-escaped.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        root_b = tmp_path / "acct-b"
-        root_b.mkdir()
-        (root_b / "-home-user-escaped").symlink_to(external)
-
-        with pytest.raises(AssertionError) as exc_info:
-            cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
-        assert "external-unrelated-secret-clientname" not in str(exc_info.value)
-        assert "-home-user-escaped" not in str(exc_info.value)
 
     def test_no_redact_refused_by_cost_report_itself_even_when_called_directly(self, tmp_path, capsys):
         """Defense-in-depth: _cost_report is the function that actually prints

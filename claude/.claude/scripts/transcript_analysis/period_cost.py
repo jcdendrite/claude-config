@@ -601,23 +601,29 @@ def _period_stream_totals(
 
 @dataclass
 class _ScanTally:
-    """What the transcript scan saw, for SCOPE and NO ACTIVITY. `dropped` counts transcripts left out for resolving
-    outside the root or failing to resolve."""
+    """What the transcript scan saw, for SCOPE and NO ACTIVITY. `dropped` counts transcripts left out for failing to
+    resolve. `outside_root_transcripts` counts yielded transcripts whose resolved path is outside the resolved root."""
 
     project_directories: set[Path] = field(default_factory=set)
     transcripts: int = 0
     dropped: int = 0
+    outside_root_transcripts: int = 0
 
 
-def _contained_sessions(
+def _resolve_or_given(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
+def _distinct_sessions(
     sessions: Iterable[tuple[Path, list[dict]]], projects_root: Path, tally: _ScanTally,
 ) -> Iterator[tuple[Path, list[dict]]]:
-    """Yield each session whose transcript resolves inside the root, once per resolved path. Subagent files are not
-    checked: they live under their parent session's directory."""
-    try:
-        resolved_root = projects_root.resolve()
-    except (OSError, RuntimeError):
-        resolved_root = projects_root
+    """Yield each session once per resolved transcript path, following symlinks out of the root and counting each
+    transcript read that way. The count is per transcript because the scan already resolves each one for the dedup.
+    Subagent files are not checked: they live under their parent session's directory."""
+    resolved_root = _resolve_or_given(projects_root)
     seen: set[Path] = set()
     for jsonl, records in sessions:
         try:
@@ -625,13 +631,12 @@ def _contained_sessions(
         except (OSError, RuntimeError):
             tally.dropped += 1
             continue
-        if not resolved.is_relative_to(resolved_root):
-            tally.dropped += 1
-            continue
         if resolved in seen:
             continue
         seen.add(resolved)
         tally.transcripts += 1
+        if not resolved.is_relative_to(resolved_root):
+            tally.outside_root_transcripts += 1
         tally.project_directories.add(jsonl.parent)
         yield jsonl, records
 
@@ -1244,16 +1249,21 @@ class _ReportFlags:
 
     coverage_date: str | None = None
     read_failures: bool = False
+    outside_root_sources: bool = False
     excluded_spend: bool = False
     stale_date: str | None = None
     directories_not_checked: bool = False
     dated_usage_in_period: bool = True
 
 
-_NOTE_SCOPE = (
-    "_Counts one Claude Code account's spend across every repository its sessions worked in. Other accounts and other"
-    " people's work are not included._"
-)
+_NOTE_SCOPE_COUNTS = "Counts one Claude Code account's spend across every repository its sessions worked in."
+_NOTE_SCOPE_EXCLUSIONS = " Other accounts and other people's work are not included."
+
+
+def _scope_note(flags: _ReportFlags) -> str:
+    """Drops the exclusivity sentence when the outside-root note is shown, since that note says the figures may include
+    work from outside the account's directory."""
+    return f"_{_NOTE_SCOPE_COUNTS}{'' if flags.outside_root_sources else _NOTE_SCOPE_EXCLUSIONS}_"
 
 
 def _repository_count_phrase(count: int) -> str:
@@ -1329,8 +1339,8 @@ def _table_widths(shown: Sequence[tuple[_ReportRow, Decimal]]) -> tuple[int, int
 
 
 def _flag_notes(flags: _ReportFlags) -> list[str]:
-    """The coverage, read-failure, excluded-spend, and stale-rate notes: the conditions that can make the figures understate or
-    rest on stale rates."""
+    """The coverage, read-failure, outside-root-source, excluded-spend, and stale-rate notes: the conditions that can make the
+    figures understate, include work from outside the account's directory, or rest on stale rates."""
     notes: list[str] = []
     if flags.coverage_date is not None:
         notes.append(
@@ -1340,6 +1350,11 @@ def _flag_notes(flags: _ReportFlags) -> list[str]:
     if flags.read_failures:
         notes.append(
             "_Note: some session records could not be read and are left out, so these figures may understate the spend._"
+        )
+    if flags.outside_root_sources:
+        notes.append(
+            "_Note: some sessions were read through symlinks that lead outside this account's directory, so these figures"
+            " may include work from outside it._"
         )
     if flags.excluded_spend:
         notes.append("_Note: some usage could not be priced or dated and is left out, so these figures understate the spend._")
@@ -1406,7 +1421,7 @@ def _render_slack_report(groups: Iterable[_ReportGroup], flags: _ReportFlags, wi
         lines.append(f"*Total: {_dollar_text(total)}*")
         leading, trailing = _table_notes(displayed, omitted, flags)
         lines.extend(leading)
-        lines.append(_NOTE_SCOPE)
+        lines.append(_scope_note(flags))
         lines.extend(_flag_notes(flags))
         lines.extend(trailing)
     else:
@@ -1415,7 +1430,7 @@ def _render_slack_report(groups: Iterable[_ReportGroup], flags: _ReportFlags, wi
             if not flags.dated_usage_in_period
             else "Claude Code usage was found in this period, but no row's priced spend reaches $0.01."
         )
-        lines.append(_NOTE_SCOPE)
+        lines.append(_scope_note(flags))
         lines.extend(_flag_notes(flags))
     lines.append(f"_{cost._LIST_PRICE_CAVEAT}_")
     return "\n".join(line.rstrip() for line in lines)
@@ -1477,6 +1492,7 @@ class _NoticeFacts:
     account_source: str
     project_directories: int
     transcripts: int
+    outside_root_transcripts: int
     read_failure_floor: int
     table_shown: bool
     dated_usage_in_period: bool
@@ -1562,13 +1578,14 @@ def _scope_notice_lines(facts: _NoticeFacts) -> list[str]:
     lines = [
         _notice(
             _NOTICE_SCOPE,
-            f"only the active account's projects directory is read, taken from {facts.account_source}; the declared-roots"
+            f"only the active account's projects directory is listed, taken from {facts.account_source}; the declared-roots"
             " file is not read",
         ),
         _notice(
             _NOTICE_SCOPE,
             f"project directories: {facts.project_directories}; transcripts: {facts.transcripts}; read failures: at least"
-            f" {facts.read_failure_floor} (subagent files are not counted in that floor)",
+            f" {facts.read_failure_floor} (subagent files are not counted in that floor); transcripts resolving outside the"
+            f" projects directory: {facts.outside_root_transcripts} (subagent files are not checked)",
         ),
     ]
     repositories = _capped_entries(dict(facts.displayed_repositories))
@@ -1759,7 +1776,7 @@ def _period_cost_report(
     tally = _ScanTally()
     sessions = scope._iter_glob_scoped_sessions([projects_root], "*", True, scan_gaps=scan_gaps)
     totals = _period_stream_totals(
-        _contained_sessions(sessions, projects_root, tally), since_ts=window.since_ts, until_epoch=window.until_epoch,
+        _distinct_sessions(sessions, projects_root, tally), since_ts=window.since_ts, until_epoch=window.until_epoch,
     )
     if scan_gaps[scope._SCAN_GAP_ROOT]:
         print(_ROOT_LISTING_FAILURE_MESSAGE, file=sys.stderr)
@@ -1774,6 +1791,7 @@ def _period_cost_report(
     flags = _ReportFlags(
         coverage_date=_coverage_gap_date(totals.earliest_ts, window.since_ts),
         read_failures=read_failure_floor > 0,
+        outside_root_sources=tally.outside_root_transcripts > 0,
         excluded_spend=bool(reportable_unpriced) or totals.undated_turns > 0 or totals.invalid_usage_records > 0,
         stale_date=min(due for _model, due in stale_models).isoformat() if stale_models else None,
         directories_not_checked=assembly.directories_not_checked,
@@ -1787,6 +1805,7 @@ def _period_cost_report(
     }
     facts = _NoticeFacts(
         account_source=account_source, project_directories=len(tally.project_directories), transcripts=tally.transcripts,
+        outside_root_transcripts=tally.outside_root_transcripts,
         read_failure_floor=read_failure_floor, table_shown=bool(displayed), dated_usage_in_period=totals.dated_usage_in_period,
         displayed_repositories=displayed_repositories,
         unresolved_directories=len(assembly.undetermined.unresolved_directory_dollars),

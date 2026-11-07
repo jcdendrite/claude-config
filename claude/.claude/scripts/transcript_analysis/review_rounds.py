@@ -407,7 +407,7 @@ def compute_review_round_costs(
     mid-window. A record outside every window still carries forward the
     last non-empty gitBranch, unaffected by any window. root_idx is None
     under a single scan root, else the 0-based index into resolved_roots
-    the session's own jsonl resolves under (scope._root_index_for_path).
+    of the root the session's own jsonl is listed under (scope._root_index_for_path).
     This keying keeps two different roots' identically-named branches from
     merging into one row, mirroring subagent-mix's own (root_idx, branch)
     keying. resolved_roots is only consulted when it has more than one
@@ -686,6 +686,17 @@ _POOLED_SCAN_GAP_REFUSAL = (
     f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
 )
 
+# The dedup attributes a project directory reachable from two declared roots to whichever root is
+# scanned first, which follows the active profile, so the pooled count and dominance floors would
+# shift with it. The message carries a count only, never a path or name.
+_POOLED_CROSS_ROOT_ALIAS_REFUSAL = (
+    "review-round-cost --pooled refuses a project directory reachable from more than one declared"
+    " root ({count} such director{plural}): a symlink from one declared root into another, or one"
+    " directory listed under two roots, would be attributed to whichever root is scanned first. Remove"
+    " the link, or remove that account from {config_dirs_label} if it is a declared entry you no"
+    " longer need."
+)
+
 # Defense-in-depth backstop for cmd_review_round_cost's pooled scan-and-render sequence,
 # printed only when an exception the scan-gap accounting above doesn't anticipate escapes it.
 # Never interpolates the caught exception's str(), which may embed a raw filesystem path.
@@ -811,6 +822,21 @@ def _pooled_scope_refusal(
     if scan_gaps:
         return _POOLED_SCAN_GAP_REFUSAL + _POOLED_REFUSAL_DOC_POINTER
     return None
+
+
+def _pooled_cross_root_alias_refusal(roots: Sequence[Path]) -> str | None:
+    """The cross-root alias refusal message, or None when no project directory is claimed by two declared roots.
+
+    Separate from `_pooled_scope_refusal` because it lists every root's project directories, so cmd_review_round_cost
+    calls it once, after the root-count check and before the corpus scan.
+    """
+    alias_count = scope._cross_root_alias_project_dir_count(roots)
+    if not alias_count:
+        return None
+    return _POOLED_CROSS_ROOT_ALIAS_REFUSAL.format(
+        count=alias_count, plural="y" if alias_count == 1 else "ies",
+        config_dirs_label=scope.TRANSCRIPT_CONFIG_DIRS_LABEL,
+    ) + _POOLED_REFUSAL_DOC_POINTER
 
 
 def _pooled_branch_aggregates(per_branch: Sequence[_PooledBranchTotals]) -> _PooledBranchTotals:
@@ -1334,7 +1360,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             # Post-resolution refusal: must return before any print side effect
             # below, including the banner-suppression and header-suppression
             # branches this same `pooled` flag gates.
-            refusal = _pooled_scope_refusal(args, roots=roots)
+            refusal = _pooled_scope_refusal(args, roots=roots) or _pooled_cross_root_alias_refusal(roots)
             if refusal is not None:
                 print(refusal, file=sys.stderr)
                 sys.exit(2)
