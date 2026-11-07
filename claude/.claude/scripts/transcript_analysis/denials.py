@@ -155,6 +155,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "no-op-dispatch",  # deny-no-op-dispatch.sh
     "review-orchestrator routing",  # require-review-orchestrator-routing.sh
     "plan-writer-scope",  # deny-plan-writer-off-plan-writes.sh
+    "diff-size",  # require-diff-size-prompt.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
@@ -305,7 +306,7 @@ def _denial_command_shape(command: str) -> str:
 
     Normalizes before matching, in order: strips a leading NAME=VALUE
     environment assignment, basenames the first token (an absolute script
-    path is a home-rooted path, one of this repo's six always-on structural
+    path is a home-rooted path, one of this repo's always-on structural
     redaction detectors), and drops the values of git's repo-selection flags
     (see _drop_denial_command_flag_values). Only a multiplexer command
     (_DENIAL_COMMAND_MULTIPLEXERS) gets a command+subcommand shape, and only

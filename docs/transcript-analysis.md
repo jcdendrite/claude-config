@@ -1,6 +1,6 @@
 # transcript-analysis.py reference
 
-`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to this repository on the active account only, and `period-cost`, which reads the active account's whole projects directory only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
+`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except the subcommands that read the active account only, which "Corpus scope: the declared-roots file" below lists. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
 All subcommands are local-only reads except the ones that call `gh` and the ones that write to disk.
 
@@ -10,6 +10,7 @@ Subcommands that call `gh`:
 - `pr-cost`
 - `workstream-cost --check-pr-status`
 - `period-cost`
+- `review-cost-by-size`
 
 Subcommands that write to disk:
 
@@ -30,8 +31,8 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
 - **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
-  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled` abort the whole invocation with an uncaught error, with the path stripped from the message.
-  - `review-round-cost --pooled` records it as a scan gap instead.
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `review-cost-by-size` and `read-cost` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled`, `review-cost-by-size` and `read-cost` record it as a scan gap instead.
   - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
   - `cost`'s per-root scan diagnostic also skips it silently.
   - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
@@ -73,7 +74,24 @@ The four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ## Corpus scope: the declared-roots file
 
-Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below); `period-cost`, which reads the active account's whole projects directory only (see its section below); `cost-counts`, which reads the active account's `projects` directory only (see its section below); and `user-input`, which reads the active account's `projects` directory only, narrowed by `--projects GLOB`. List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+Most subcommands' default scan corpus is a **union**, not a single account. The active-account-only exceptions are:
+
+- `cost --summary`: resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below).
+- `period-cost`: reads the active account's whole projects directory only (see its section below).
+- `cost-counts`: reads the active account's `projects` directory only (see its section below).
+- `review-cost-by-size` without `--all-accounts`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
+- `read-cost`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
+- `user-input`: reads the active account's `projects` directory only, narrowed by `--projects GLOB`.
+
+List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's.
+
+The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except these three, which print no root count:
+
+- `cost --summary`: prints no header at all and states its repository-and-account scope on its own `Scope:` line instead.
+- `review-cost-by-size`: its header names the scope label and whether it read the active account or every declared account.
+- `read-cost`: its header names the scope label, the active account and this repository, and states that the declared-roots file was not consulted.
+
+`review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
 
 This union amplifies two costs, both linearly in the number of declared roots:
 
@@ -295,7 +313,7 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 
 ## reviewer-yield
 
-**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558). A reviewer that `review-orchestrator` dispatches is not a main-thread dispatch, so it never appears here.
+**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text (a text block, or a `SubagentHandback` tool call's message) as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558). A reviewer that `review-orchestrator` dispatches is not a main-thread dispatch, so it never appears here.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -479,11 +497,16 @@ CLASSIFICATION SUMMARY
 - `--deny-only` — restrict to sessions containing at least one hook denial
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
 - `--skill NAME` — restrict skill-invocation matching to one skill name
+- `--omit-plan-review-spawns` — leave out reviewer rows whose `round=` reads `plan-review`, and print the rest without `round=`. `/ready-for-review`'s fidelity check reads this view through `skill-fidelity-report.sh`, because a spawn `/plan-review` made never satisfies a `/code-review` dispatch row. A run without the flag shows what the view left out.
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. A carried default-branch value recorded before the session's first real branch is credited to that branch, per the "Pre-branch default-branch attribution" block under `cost`. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
+
+Each reviewer row prints `round=<skill>` between the subagent type and the parenthetical, naming the review skill whose round window holds the spawn; the `review-round-cost` section below defines the window. A `plan-review` window here also ends at that run's own `marker.sh deactivate plan-review` call, so a spawn after the call reads `round=?`. `review-round-cost`'s window does not end there, so it charges that spawn to the `plan-review` round. Only a main-thread spawn takes a label, and a nested invocation takes over the window. A `thread=sidechain` spawn, or a spawn outside every window, prints `round=?`.
+
+For a session holding a reviewer spawn, `review-trace` can print pricing's `WARNING:` and `NOTICE:` lines on stderr. These are tooling diagnostics, not timeline rows.
 
 **Sample output.**
 ```
@@ -493,14 +516,14 @@ REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcrip
 branches=my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
   [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=my-feature model=opus)
   [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=my-feature model=opus)
-  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
-  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
-  [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
+  [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  round=plan-review  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  round=plan-review  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  round=?  (branch=my-feature model=sonnet thread=sidechain)
   [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
-The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
+The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside a dispatched subagent, which is why it reads `round=?`. Its `line` prints `n/a` rather than a number. Its timestamp still sorts chronologically alongside the main-thread rows around it.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has two limits:
 
@@ -711,11 +734,11 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 - **Window.** The leading run is found from the session's full records, before any `--since`/`--until` filter.
 
 These subcommands apply this block, except where the last bullet says otherwise, and this is the only list. Those in the first two bullets also apply "Subagent attribution":
-- `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation.
+- `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation. The `pr-cost` `review_rounds` column is the exception: it applies only this block, and "Subagent attribution" does not reach it.
 - `subagents`, `skill-invocation --include-subagents`, `skill-pair` and `cost-counts` spawn counts apply both blocks. The `cost-counts` spawn counts read sidechain records. `cost-counts` reads the direct `subagents/*.jsonl` files of the sessions it scopes, with no flag to turn that off. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
 - `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
-- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
-- Round attribution (`review-round-cost`, `cost-counts` round counts, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
+- `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. `review-cost-by-size` reuses `review-round-cost`'s round detection, so the same applies. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
+- Round attribution (`review-round-cost`, `review-cost-by-size`, `cost-counts` round counts, the `pr-cost` `review_rounds` column, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
 - Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
 The full `cost` report under `--branches` prints one extra line, `Pre-branch default-branch records credited to this --branches filter: <N> turns, $<X>`. It counts only the turns this block moved into the filter set from outside it, so a filter that holds both the default branch and its successor prints nothing for that session. Unpriced turns count toward the turns but not the dollars. It never prints under `--summary` or `--share-only`. The shift from "Subagent attribution" has no audit line.
@@ -1169,10 +1192,15 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Write-time check failures".
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). The run reads the transcripts a second time to capture each PR's `review_rounds` cell. See `docs/pr-cost.md` § "`--record`'s capture" for when. A completed run exits 1 when any of these holds:
+  - a row was recorded without its per-model breakdown;
+  - the review-round pass or a cell's write-time check failed;
+  - a `--force` re-capture was refused because it would lose captured review rounds.
+
+  See `docs/pr-cost.md` § "Write-time check failures" and § "The re-record contract".
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
 - `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
-- `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
+- `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing, unless the guard detects a loss of captured review rounds (see `docs/pr-cost.md` § "The re-record contract").
 - `--asof-window-days DAYS` — close-out window a merged PR must clear before it's eligible for capture (default `3`, a provisional placeholder — see `docs/pr-cost.md`).
 - `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
 - `--risk-surface-glob GLOB` — glob pattern considered risk surface for the `risk_surface_flag` proxy (repeatable; replaces the claude-config defaults entirely when given).
@@ -1222,7 +1250,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 ## review-round-cost
 
-**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (the `Skill` tool_use path and the `/slash` path) and at every main-thread `Agent`/`Task` dispatch of a `review-orchestrator` (which runs `code-review` in its own transcript). It closes each round at the next round-open or the next fresh user prompt (see Terms). It prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
+**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (the `Skill` tool_use path and the `/slash` path, which opens a round only on a fresh user prompt) and at every main-thread `Agent`/`Task` dispatch of a `review-orchestrator` (which runs `code-review` in its own transcript). It closes each round at the next round-open or the next fresh user prompt (see Terms). It prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
@@ -1235,13 +1263,25 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Round detection caveats.**
 - **A dispatch spawned from inside another subagent prices into its round.** The session's one flat `subagents/` index resolves it.
 - **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
+- **A review `/slash` tag opens a round only in a fresh human prompt.** "Fresh user prompt" is defined in Terms. The check is heuristic, so a tag carried as text inside a fresh prompt can still open a round.
+- **A malformed `Skill` block opens no round and does not abort detection.** A `Skill` tool_use whose `input` is not an object, or whose `skill` is not a string, is skipped, as a malformed spawn block is.
 - **A main-thread `review-orchestrator` dispatch is a round.** `review-orchestrator` is the only agent type the code recognizes as running a review inside a subagent, and the dispatch itself opens a `code-review` round. Its reviewers and `code-writer` dispatches are priced into that round. Its own `Skill` call is never a second round. The dispatch counts as a round whether or not it invoked a review skill; see "Orchestrator rounds" under `author-outcome` for the halted and never-ran cases.
 - **A round's dollars are attributed to its own opening branch across its whole window.** Every dollar inside a round's window -- not only the opening record's own turn -- is attributed to the branch the round opened on, even when the session's own `gitBranch` changes partway through the window (e.g. a worktree switch mid-review). A record outside every window carries forward the last main-thread branch, unaffected by any window.
 - **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
 - **A task notification does not close the window.** A round keeps pricing the main thread's response to a background reviewer or CI watch, and any dispatch after it. The window runs to the next human prompt, the next round-open or the end of the session, so it can include unrelated main-thread work, and `main $` is an upper bound on what the review itself cost the main thread.
 - **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
+- **A malformed-usage turn is excluded, not priced.** A usage-bearing turn whose usage is not an object, or whose token fields are not non-negative integers, is excluded from the round's dollars, tokens and unpriced counts and from the branch totals, and its spawn blocks are still followed. The exclusion applies inside round windows and inside dispatches alike. Inside a round window it is counted and shown on the `MALFORMED USAGE` footer line below.
+- **One malformed-usage shape crashes the command.** A truthy non-object `usage` in a run of records sharing one `requestId` raises `AttributeError` in the dedup step, before the exclusion runs. The dedup-step limit is stated once, in `docs/pr-cost.md` § "The `review_rounds` cell".
 
 **Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. The "Subagent-dispatch dollars" footer is the subagent-only component of round dollars (`agent $`, summed across every round in scope), expressed as a share of that same branch-dollars denominator. It counts every Agent/Task dispatch spawned in a round window, nested dispatches included, whatever the agent type. It is narrower than "round $" above, which also includes each round's own main-thread turns. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted inside round windows only. What falls outside them is listed under "Coverage the scan-gap refusal does not give" in "Pooled mode" below.
+
+**`MALFORMED USAGE` line.** When any usage-bearing turn inside a round window was excluded as malformed (see "Round detection caveats"), the footer prints one more line after the unpriced-turns line, once per root block under more than one root:
+
+```
+MALFORMED USAGE — <n> usage-bearing turns inside round windows had non-numeric or negative token fields and were excluded from this report's dollars
+```
+
+It counts inside round windows only, as the unpriced and dangling lines do, and prints nothing when the count is zero. A malformed turn outside every round window is excluded from the branch figures and from the "Non-round dollars" line without being counted, so branch totals omit such turns even when no `MALFORMED USAGE` line prints. `--pooled` prints no such line.
 
 **PR numbers.** This subcommand prints branch names only, never a PR number -- compose with `pr-link --branches B1,B2,...` (against this command's own `--this-repo` output) to map a reported branch to its GitHub PR, rather than embedding a `gh` join here (see the architecture doc's package/shim import-direction note for why).
 
@@ -1330,6 +1370,7 @@ Unpriced turns inside round windows: 0
 - An unreadable `subagents/` directory, `*.meta.json`, or dispatch transcript counts as a dangling dispatch instead of refusing.
 - Inside a round window, that shows in the dangling-dispatch share, which prints only under `--show-withheld`.
 - Outside every round window, those dollars drop out of the branch-spend denominator. Dollars of turns on an unpriced model drop out the same way. Both inflate the inside-round share.
+- Turns excluded as malformed usage (see "Round detection caveats") are excluded from the pooled shares' dollars, inside a round window and outside every window alike, and have no share of their own.
 - A declared account skipped as invalid or unreadable is a stderr-only notice, not a refusal. This fail-open behavior is deliberate: `declared_roots_matching`'s own docstring makes a stale `~/.claude/transcript-config-dirs` line non-fatal, since a config-file problem must never break every invocation. The notice names neither the entry nor a count. A pool missing an account still prints, and the missing account changes the dominance weights.
 - Lines that fail UTF-8 or JSON decoding are dropped individually. A transcript with no decodable line reads as empty, and a dispatch transcript with none prices as a resolved $0 dispatch rather than a dangling one. A dropped record can move spend between rounds and branches, so the skew has no fixed direction.
 - A dangling symlink at the project-directory or transcript level reads as absent, not as a gap. The same holds under the invoking profile's own `projects/` root, where it also prints no skipped-account notice.
@@ -1393,7 +1434,169 @@ coverage is lower when few branches are in scope.
 
 A withheld block prints `(95% CI not computed — too few branches in scope)` for every share. A share with a zero-dollar denominator (a branch with a round but no priced spend) prints `(95% CI not computed — no priced branch spend)` for that share alone. Neither wording's own reason clause contains a digit. Under `--show-withheld`, a "Rounds affected by a data-quality gap" section with `dangling dispatch` and `unpriced turn` lines follows the last section above.
 
-**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
+**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` records one figure per branch, plus a round-level `review_rounds` cell in rows recorded after that column was added, which read mode does not print. `review-round-cost` stays the way to read rounds from live transcripts. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
+
+---
+
+## review-cost-by-size
+
+**Purpose.** How `code-review` round count and round cost vary with merged-PR size. It prices `code-review` rounds with `review-round-cost`'s own round detection and joins each branch to its merged PR by exact head-branch name, then prints aggregates, join diagnostics and one row per PR.
+
+**Requires `gh`.** A `gh auth status` preflight, a `gh repo view` repo pin that must match this checkout's `origin` remote, then one bulk `gh pr list --state merged` call (limit 1000). The pin and discovery messages carry a `pr-cost:` prefix, because they come from the helpers `pr-cost` shares.
+
+**Exit codes.**
+- 2 -- a refused flag scope, an unresolvable config directory, or `gh repo view` naming a different repository or host than `origin`.
+- 1 -- any other failure before a report prints:
+  - `gh` auth.
+  - The `origin` remote.
+  - The repo pin, including a `GH_HOST` that matches none of this repo's remotes.
+  - The discovery call.
+  - Running outside a listed worktree.
+
+**Flags.**
+- `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
+- `--all-accounts` -- read every declared account as one merged scan instead of the active account alone. A private view; see "Publication" below.
+
+Both modes refuse a top-level `--config-dir` (exit 2). The command has no `--config-dir` flag of its own.
+
+**Join.**
+- A round's branch follows the "Pre-branch default-branch attribution" block under `cost`.
+- A branch joins the merged PR whose `headRefName` equals it exactly, and the PR number keys the record.
+- One PR's rounds sum across every project directory and root the scan reads, so a branch worked on in two checkouts is one record.
+- A branch matching no merged PR counts as an unmatched branch. So does a default-branch name (`main`, `master`, `develop`), a detached head and a `worktree-agent-*` branch, which never join, even when a merged PR carries that head name.
+- A branch matching more than one merged PR counts as an ambiguous branch and is excluded. The check sees only merged PRs, so it does not detect a name reused by a merged PR and a later PR that is open, closed unmerged or not yet opened. That later PR's rounds join the merged PR.
+- Rounds opened after a PR's merge still count toward it, as `pr-cost` counts a branch's later activity.
+- The scan does not attribute sessions to a root, so a project directory symlinked outside every root does not abort it.
+
+**What a record measures.** A PR's size is `additions + deletions`. Each round's dollars are its main-thread turns plus every subagent dispatched inside it, as in `review-round-cost`. A record yields three values: rounds per PR, total dollars per PR, and mean dollars per round (total over rounds).
+
+**Aggregates.** An aggregate that cannot be computed prints `n/a`.
+- Spearman rho of lines against each of the three values, with tied values taking the mean of their ranks. Each prints as `rho (n=N)`, or `n/a (n=N)` when rho is undefined. Every PR is ranked, so N is the number of PRs joined, which can exceed an elasticity's count.
+- Log-log elasticity of each value against lines: the slope of the natural log of the value on the natural log of lines, over PRs with lines above 0 and that value above 0. Each value prints its own PR count, because a zero-dollar PR drops out of the two dollar values only. A value that is the same for every PR counted for it gives slope 0.0 when those PRs' sizes differ.
+- Size-bucket medians. Buckets are half-open on lines: 0-149, 150-399, 400-799 and 800 or more. Each prints its PR count and the median of the three values.
+- Within-PR trend, over PRs with at least 4 `code-review` rounds: Spearman's rho of round index against round dollars. The line prints how many PRs yielded a rho, their median rho, and the share above zero. A PR whose rounds all cost the same has no rho and is skipped.
+
+**Diagnostics.** Counts only, never a branch name.
+- Merged PRs listed, PRs joined, and unmatched and ambiguous branches count the join's outcome.
+- Unpriced turns and dangling dispatches inside the joined rounds are spend missing from the dollar figures, so nonzero counts mean those figures read low. The **Reconciliation line.** paragraph under `review-round-cost` defines both.
+- A `MALFORMED USAGE` line prints after the dangling-dispatches line, only when nonzero: `MALFORMED USAGE — <n> usage-bearing turns inside joined rounds had non-numeric or negative token fields and were excluded from this report's dollars`. Those turns are missing from the dollar figures too. The **Round detection caveats.** list under `review-round-cost` defines the exclusion.
+- Unreadable sources skipped counts the session files, project directories and roots the scan could not read. A nonzero count means the rounds and dollars those sources held are missing.
+- When the merged-PR list reaches the `gh pr list` limit, a note says older merged PRs may count as unmatched branches, and that a branch name reused by a PR beyond the limit can join the wrong PR. That wrong join is possible because the ambiguity check sees only the listed PRs.
+
+**Known limits.**
+- A PR's size is its final merged size, not the size each round read, so an early round's dollars are set against changes made after it ran.
+- Bucket medians resolve only at the bucket edges above, so a threshold inside a bucket reads from the per-PR rows.
+- A round's dollars are `review-round-cost`'s window dollars, an upper bound on review cost (see "Round detection caveats" under `review-round-cost`): fix and other main-thread work inside the window, and every subagent dispatch in it, are priced in.
+- A fork PR whose head branch matches a local feature branch joins to it, so that record carries the fork PR's size. No diagnostic counts such a join.
+- A PR enters only with at least one in-scope `code-review` round, so its round count floors at 1 and a PR that skipped review is absent.
+- A PR whose early sessions aged out of Claude Code's transcript retention shows fewer rounds and dollars than it had, and is absent when every session aged out.
+- A PR whose worktree was removed is absent. `--this-repo` reads only live worktrees' project directories (see the "An orphaned project directory" bullet under "Scoping to this repo"), and this command refuses `--projects`, so there is no glob fallback.
+- The scan reads this machine's transcripts only, so a PR worked partly or wholly on another machine shows fewer rounds and dollars than it had, or is absent.
+- The gap between merged PRs listed and PRs joined mixes the four causes above with reused branch names and unreadable sources. The diagnostics count only the last two: reused names by branch on the `Ambiguous branches (excluded)` line, and unreadable sources by source on the `Unreadable sources skipped` line.
+
+**Publication.**
+- Default mode publishes under `docs/private-project-redaction.md` § "This repository, one account".
+  - Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout, so a run from another checkout reports that checkout's repository instead.
+  - It reads the active config directory's `projects/` alone, and any symlink under that directory is followed.
+  - A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
+- `--all-accounts` is a private view. It prints a DO NOT PUBLISH line on stdout and stderr, and its output is never proposed for publication. Under it stderr also carries a `scanning root K/N` line per root, printed only when more than one root resolves.
+
+**Sample output** (every figure below is illustrative filler, not derived from any real run; default mode, stdout only):
+```
+REVIEW COST BY SIZE SOURCES (this repo (3 project dirs); active account only)
+
+Aggregates -- code-review rounds per merged PR; size is additions + deletions
+Spearman rho of lines against (rho; PRs used):
+  rounds per PR: 0.94 (n=6)
+  total dollars per PR: 0.94 (n=6)
+  mean dollars per round: 0.94 (n=6)
+Log-log elasticity against lines (slope; PRs used):
+  rounds per PR: 0.34 (n=6)
+  total dollars per PR: 0.85 (n=6)
+  mean dollars per round: 0.51 (n=6)
+Size buckets, median per PR:
+  0-149 lines: n=2; rounds per PR 1.5; total dollars per PR $0.75; mean dollars per round $0.48
+  150-399 lines: n=1; rounds per PR 3.0; total dollars per PR $2.80; mean dollars per round $0.93
+  400-799 lines: n=1; rounds per PR 4.0; total dollars per PR $6.10; mean dollars per round $1.52
+  800+ lines: n=2; rounds per PR 5.5; total dollars per PR $18.80; mean dollars per round $3.41
+Within-PR trend, rho of round index against round dollars, PRs with at least 4 rounds:
+  PRs with a rho: 3; median rho 0.90; share above zero 100.0%
+
+Join diagnostics
+  Merged PRs listed: 40
+  PRs joined: 6
+  Unmatched branches: 5
+  Ambiguous branches (excluded): 0
+  Unpriced turns inside joined rounds: 2
+  Dangling dispatches inside joined rounds: 0
+  Unreadable sources skipped: 0
+
+Per-PR rows, sorted by lines then PR number
+       PR     lines  rounds     total $      mean $
+     9101        42       2       $1.10       $0.55
+     9102        87       1       $0.40       $0.40
+     9104       260       3       $2.80       $0.93
+     9107       610       4       $6.10       $1.52
+     9110     1,480       5      $16.60       $3.32
+     9113     3,720       6      $21.00       $3.50
+```
+
+**When to reach for it.** Answer "does the spend in code-review rounds grow with a PR, and by how much", for example to ground a diff-size threshold on a measurement of round spend. Reach for `review-round-cost` instead for one branch's round-by-round cost, and for `pr-cost` for a PR's whole-branch cost.
+
+---
+
+## read-cost
+
+**Purpose.** What share of spend whole-file `Read` results account for, split by main thread and subagent agent type, and how much of that a hook denying large whole-file reads could reach (see `docs/design-decisions/large-read-gate-declined.md`). It is a measurement of where read tokens sit in the cache, not of what any one read cost to produce.
+
+**Flags.**
+- `--this-repo` -- required. The command exits 2 without it and refuses any `--projects` scope.
+
+The command refuses a top-level `--config-dir` (exit 2). It has no `--config-dir` flag of its own and ignores `~/.claude/transcript-config-dirs`. It reads the active config dir's `projects/` directory (`$CLAUDE_CONFIG_DIR` when set, else `~/.claude`).
+
+**Unit.** Cache-read-token equivalents. A read's weight is its estimated tokens (result characters // 4) times one 5-minute cache write plus one cache read per remaining turn in its context window. The class weights are `pricing.py`'s base multipliers divided by its cache-read multiplier (cache write 5m 12.5, cache write 1h 20, input 10, output 50), printed in the report header. One ratio applies to every model: `pricing.py`'s per-model cache-read exceptions, fast-mode multiplier and inference-geo multiplier are not applied, and there is no per-model price level. Billed spend uses the same weights on each turn's usage fields. Every share the command prints is therefore a share of token equivalents, not of dollars, so the main/subagent split moves with model mix.
+
+**Windows and turns.**
+- A context window is one transcript file: the main thread, or one `subagents/*.jsonl`.
+- A turn whose usage has a token field that is not a non-negative integer is excluded from billing and counted as an invalid-usage turn. A later invalid record never replaces valid usage for the same `message.id`, so a turn whose last streaming record is invalid keeps the earlier record's usage, understates its output weight and is not counted as invalid. The invalid-usage count covers the turns billed in no window, whichever window is scanned first.
+- A turn is one distinct assistant `message.id`. A subagent transcript counts as an agent, with its turns, only for turns the main window and no earlier subagent file counted, so a transcript repeated in a second file adds neither. A read's remaining turns run from its own turn to the end of the window, or to the first `system`/`compact_boundary` record at or after its turn.
+- A read is edited later when an `Edit`, `Write`, `MultiEdit` or `NotebookEdit` names its path in the same turn or any later turn of its window.
+- Tool ids and `message.id` usage are counted once across all files, so a resumed or forked session that repeats earlier records does not count twice. A tool id counts as seen only once its result is kept.
+
+**Output.** Aggregates only: no path, session id or project name prints.
+- A scope header naming the scope label, the active account and the working directory's repository, and stating that `~/.claude/transcript-config-dirs` was not consulted.
+- Sessions, API calls, and the billed share of main thread versus subagents.
+- A `skipped input:` line with the count of each unreadable input and of invalid-usage turns. A missing sidecar is not counted.
+- The count of main-thread whole-file reads scanned.
+- `repeated_reads_skipped`, on the `sessions=` line: Read calls skipped because their tool id was already seen. A re-read of a path is a new call, so it never counts here.
+- Main-thread whole-file reads over 350 and over 800 lines, counted as numbered lines in the Read result text, not the file's own line count. A read of exactly 351 or 801 numbered lines is inside the 350-line or 800-line cohort. Each cohort is split by edited later or not: count, estimated tokens, median remaining turns, and share of total and of main-thread billed spend.
+- Whole-file read calls and estimated tokens by size bucket (under 2000, 2000-4999, 5000 or more), main thread versus subagent.
+- One row per tracked subagent agent type that has at least one scanned subagent transcript, read from the transcript's sibling `.meta.json` `agentType`, plus a `TOTAL` row. The first line of each row gives agent count, mean turns, share of total spend, whole-file read count and estimated tokens, `whole_file_weight_share`, and `all_read_weight_share`, which counts every kept Read result in the agent type's windows, partial reads included. A second line gives shares of the whole-file weight: reads of 2000 tokens or more (large), large reads never edited later, repeats of a path the same agent already read whole-file, paths the main thread read whole-file at any point in the session or a subagent window scanned before this one read whole-file (seen elsewhere), and the file kind (`instruction` for `skills/`, `agents/`, `rules/` paths and `CLAUDE.md`; `other_prose` for `.md`, `.mdx`, `.txt`; `code/other` otherwise).
+- An agent type prints by name only when this repo's `agents/` directory tracks it or it is a built-in agent type. Every other type, and a transcript with no readable `agentType`, folds into one `(withheld — untracked agent type)` row. The `TOTAL` row includes the folded types.
+- The `(withheld — untracked agent type)` row also holds agents whose `.meta.json` is missing, unreadable or has no `agentType`. It is followed by a line counting the unreadable ones.
+- Subagent windows scan in file-name order, so when two subagent types read a path the main thread did not, file names, not which ran first, decide which one is credited `seen_elsewhere`. A read counted in `repeat_in_agent` is never also counted in `seen_elsewhere`.
+- The `TOTAL` row sums subagent windows only, so its share of total spend is below 100%. The remainder is the main thread.
+
+**Known limits.**
+- Every read is weighted as one 5-minute cache write followed by cache reads, whatever tier or hit rate the turns actually had, so a read written to the 1-hour tier or written again after a cache miss is understated.
+- A read first reaches the API on the turn after it is issued, as a cache write, and is a cache read only from the turn after that. The weight charges one cache read for the write turn as well, so it overstates each read with a remaining turn by one cache-read token per token. A read with no remaining turn is never sent in its window and is still charged a full cache write.
+- Whole-file means no `offset` and no `limit`. `read-scope` also files a read with no `file_path` and a `pages` read in their own cohorts. `read-cost` drops a read with no path and judges a `pages` read by `offset` and `limit` alone, so the two commands can disagree on the whole-file count.
+- `read-scope` and `read-cost` both skip `api-request-blob` records, which carry copies of request content. `read-scope`'s prompt-token growth never counted them, while every other `read-scope` figure did before the filter.
+- A main transcript with no records is skipped without being counted, and its `subagents/` directory is not read, which understates the session count and every subagent figure under it.
+- A subagent's partial read (with `offset` or `limit`) counts toward `all_read_weight_share` only, and a main-thread partial read counts toward no printed figure.
+- A Read whose result is not plain text, such as an image, is left out of every figure, which understates read weight.
+- A subagent file that repeats only some of an earlier subagent file's turns still counts as an agent, so the agent count and mean turns depend on file order in that case.
+- When files repeat records, the first-visited copy (files visit in sorted path order) sets a read's remaining turns and edited-later, and, when its usage is valid, a turn's billed usage. A shorter copy understates read weight and can mark a later-edited read as never edited. A copy cut mid-turn understates that turn's billed weight. `repeated_reads_skipped` bounds how many reads are exposed, not how much weight is understated. A `seen_elsewhere` credit omits main-thread reads that a repeated copy skipped, so it is a floor.
+- Edited-later counts an edit tool call whether or not it succeeded, so failed edits understate never-edited reads. It cannot see edits made through Bash or by another window, which overstates them.
+- Main-file records flagged `isSidechain` are dropped from the main window, and no other window receives them. Their reads and billed spend appear in no figure. Because these are subagent records, the drop understates the subagent figures and the total-spend denominator but not the main-thread counts.
+- Repeats and edited-later span the whole transcript file, while remaining turns stop at a compaction.
+  - An edit after a compaction marks an earlier read as edited later, which understates never-edited reads.
+  - A re-read after a compaction counts as a repeat.
+  - A re-read after an edit of the same path counts as a repeat, and the re-read itself reads as never edited.
+
+**Publication.** Publishes under `docs/private-project-redaction.md` § "This repository, one account". Publish only from this repository's own checkout, because `--this-repo` takes its worktrees from the working directory's checkout. It reads the active config directory's `projects/` alone, and any symlink under that directory is followed. Cite the command beside any figure. A new figure from it still takes the check in `docs/private-project-redaction.md` § "New figures against the grandfathered set".
+
+**When to reach for it.** Answer "how much of spend sits in large whole-file reads, and in which agent types", for example to re-check whether the cost reopens `docs/design-decisions/large-read-gate-declined.md`'s decision. A run that reports `sessions=0` measured nothing and does not count toward that re-check, for example when the run was under an account that does not hold this repository's transcripts. `read-cost` has no date filter. Its figures cover every in-scope transcript Claude Code still retains. Claude Code deletes transcripts after `cleanupPeriodDays`, default 30 days, so the reopen check's 1% test is evaluated on the corpus retained when the command runs. The section "Scoping to this repo: `--this-repo`" states what that scope leaves out. It scans every retained transcript for this repository's worktrees, prints nothing between the header and the report, and can take several minutes. Reach for `read-scope` instead for the Read-call census by `offset`/`limit` shape.
 
 ---
 
@@ -1437,7 +1640,7 @@ A round with zero matching ledger rows but a marker-write call is inferred clean
 | `DEFER` alone, only `DEFER` carries, or `CLEAN` alone | PASS | no |
 | Any `ADDRESS` row, an `ADDRESS --ref` that reopens a decision included | FAILURE | no |
 
-The classification rule is unchanged, and an `ADDRESS` row still makes a round a `FAILURE`. The review skill now logs a consult's keep as `SETTLED`, which counts as a PASS, and rows from this schema onward carry `schema_version` 4. A failure share can therefore step down at the first corpus session holding a `SETTLED` row, because of how the keep is logged and not a change in `code-writer` quality. Re-running the analysis over a window before that row shows no step.
+The classification rule is unchanged, and an `ADDRESS` row still makes a round a `FAILURE`. The review skill now logs a consult's keep as `SETTLED`, which counts as a PASS, and rows from this schema onward carry a `schema_version` of at least 4. A failure share can therefore step down at the first corpus session holding a `SETTLED` row, because of how the keep is logged and not a change in `code-writer` quality. Re-running the analysis over a window before that row shows no step.
 
 A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see the ledger runbook in `docs/scripts.md`'s `review-ledger.sh` entry) also classifies as `FAILURE`. That rare over-count is accepted.
 

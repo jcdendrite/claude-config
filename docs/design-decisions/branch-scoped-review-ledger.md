@@ -2,6 +2,10 @@
 
 *2026-09-30.*
 
+**Partially superseded by [One consult process re-arms every three reviewed states](round-cap-consult-rearm.md) (2026-10-29):** the disposition record is no longer canonical for the Cap's pass accounting, and it carries no cap rows. It stays for the pass kind, reviewer and Outcome the ledger lacks.
+
+**Partially superseded by [the `review-ledger.sh` entry in the scripts runbook](../scripts.md) (2026-11-06):** ledger rows now record the lanes the caller declared, which retires this record's reviewer-column clauses, and a reopen is now `ADDRESS --ref <id> --relog`.
+
 The `/code-review` ledger (`claude/.claude/scripts/review-ledger.sh`) is keyed by branch, so a new session on the same branch can read the branch's earlier findings and dispositions.
 A session-keyed ledger loses them at every handoff, next-day session, and `/clear`.
 `show` prints the rows, and the session dashboard prints counts and a date span, never finding text.

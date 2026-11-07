@@ -14,6 +14,7 @@ from helpers import (
     build_path_without,
     edit_input,
     multiedit_input,
+    review_only_agents,
     run_hook,
     run_hook_reason,
     write_input,
@@ -1493,24 +1494,11 @@ class TestFailClosedJqReads:
         assert "could not parse tool-input JSON" in reason
 
 
-def _review_only_roster() -> list[str]:
-    """Read the closed review-only set from _lib.sh — the single source of
-    truth — so a persona rename/drop in _LIB_REVIEW_ONLY_AGENTS is caught."""
-    lib = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f". {lib} && _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
 class TestFullRoster:
     def test_every_review_only_agent_denies_a_mutation(self):
         """Every member of _LIB_REVIEW_ONLY_AGENTS must deny a representative
         mutation — catches an untested member and future array drift."""
-        roster = _review_only_roster()
+        roster = review_only_agents()
         assert len(roster) == 12, f"roster changed: {roster}"
         for agent in roster:
             decision = run_hook(HOOK, bash_input("sed -i s/a/b/ src/x.ts", agent_type=agent))
@@ -1532,7 +1520,7 @@ class TestFullRoster:
         test_doc_counts) but forgotten in _LIB_REVIEW_ONLY_AGENTS would be
         un-gated and free to mutate the tree under review. This test turns
         that omission into a loud failure."""
-        gate_roster = set(_review_only_roster())
+        gate_roster = set(review_only_agents())
         file_backed_reviewers = {name.removesuffix(".md") for name in CANARY_AGENTS}
         missing = file_backed_reviewers - gate_roster
         assert not missing, (

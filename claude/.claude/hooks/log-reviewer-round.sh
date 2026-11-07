@@ -11,30 +11,32 @@
 # Two independent write paths, both keyed on the gate's own
 # "<repo-hash>.<branch-hash>" state key (_lib_reviewer_round_state_key):
 #   - A reviewer-persona dispatch appends "<head-sha> <staged-diff-sha256>"
-#     to <config-dir>/.reviewer-round-state.d/<key>, capped at the resolved
-#     round-state cap (_lib.sh's _lib_reviewer_round_state_cap), and
-#     skipped once a latch already exists for this branch -- further
-#     tracking has zero marginal value once the gate has gone permanently
-#     silent. The cap is 2 by default, 1 when the round_consult_round2_pilot
-#     config key is enabled.
+#     to <config-dir>/.reviewer-round-state.d/<key>, capped at the gate's
+#     threshold (see _lib.sh's _lib_architect_consult_threshold).
 #   - A `plan-architect` dispatch whose prompt's first line is neither
-#     `MODE=plan-sections` nor `MODE=challenge` writes a content-free,
+#     `MODE=plan-sections` nor `MODE=challenge` first deletes that branch's
+#     state file, restarting the gate's count, then writes a content-free,
 #     presence-only latch to <config-dir>/.architect-consult-latch.d/<key>.
 #     As in plan-architect.md's own mode selection, any other first line, an
 #     absent one included, is a consult.
 #
 # exits 0 on every path -- an informational hook never denies, and every
-# failure here (no jq, no _lib.sh, unresolvable session id/config
-# dir/repo root, detached HEAD) is a reason to stay quiet rather than
+# failure here (no jq, no _lib.sh, unresolvable config dir/repo root,
+# detached HEAD) is a reason to stay quiet rather than
 # interfere with the tool call already in flight.
 #
 # Known gaps, same list as the gate's own header:
 #   - Reviewer-persona-only scope: a code-writer/general-purpose/Explore/Plan
 #     dispatch is never recorded.
-#   - Once-per-branch, non-rearming: recording stops for good once the
-#     latch exists (see the short-circuit above).
 #   - Zero-start residual: a branch already in flight when this hook ships
 #     starts its round count from zero.
+#   - Consult-reset residuals:
+#       - A state file the consult reset cannot delete can leave the gate
+#         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
+#       - The 30-day latch sweep re-applies the first-firing threshold.
+#       - Any `plan-architect` dispatch led by neither `MODE=plan-sections`
+#         nor `MODE=challenge` restarts the count, whether or not it returns
+#         a verdict.
 
 set -uo pipefail
 
@@ -71,43 +73,37 @@ _resolve_round_context() {
 _record_reviewer_round() {
   local session_id
   session_id=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
-  # A live /plan-review or /ready-for-review fan-out must not consume a
-  # round-counting slot. An empty or unusable session_id makes both checks
-  # report "not live" (the function's own arity/validity guard), which
-  # correctly falls through to the ordinary recording logic.
+  # A live /plan-review fan-out must not consume a round-counting slot. An
+  # empty or unusable session_id makes the check report "not live" (the
+  # function's own arity/validity guard), which correctly falls through to
+  # the ordinary recording logic.
   if [ -n "$session_id" ]; then
     _lib_active_bypass_marker_live ".plan-review-active.d" "$session_id" && return 0
-    _lib_active_bypass_marker_live ".ready-for-review-active.d" "$session_id" && return 0
   fi
 
   _resolve_round_context || return 0
 
-  local latch_file="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
-  # Once a consult has run for this branch, the gate never re-arms, so
-  # further round tracking has zero marginal value -- short-circuit instead
-  # of growing the state file needlessly.
-  [ -f "$latch_file" ] && return 0
-
   local state_value
   state_value=$(_lib_reviewer_round_state_value "$REPO_ROOT") || return 0
 
-  local state_dir="$CONFIG_DIR/.reviewer-round-state.d"
-  local state_file="$state_dir/$STATE_KEY"
+  local state_file
+  state_file=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+  local state_dir="${state_file%/*}"
   mkdir -p "$state_dir" 2>/dev/null || return 0
 
-  local cap
-  cap=$(_lib_reviewer_round_state_cap)
+  local threshold
+  threshold=$(_lib_architect_consult_threshold "$CONFIG_DIR" "$STATE_KEY")
 
-  # Never grows past the cap. This pre-check runs outside the lock
+  # Never grows past the threshold. This pre-check runs outside the lock
   # _lib_append_line_locked holds below. Two concurrent dispatches racing
-  # at two different new states could each read "under cap" and both
+  # at two different new states could each read "under threshold" and both
   # append. This is an accepted, narrow residual: cross-state concurrency
-  # at the cap boundary isn't the scenario this lock targets -- same-state
-  # fan-out is.
+  # at the threshold boundary isn't the scenario this lock targets --
+  # same-state fan-out is.
   if [ -f "$state_file" ] && ! grep -qFx -e "$state_value" -- "$state_file" 2>/dev/null; then
     local existing_count
     existing_count=$(wc -l < "$state_file" | tr -d ' ')
-    [ "$existing_count" -ge "$cap" ] && return 0
+    [ "$existing_count" -ge "$threshold" ] && return 0
   fi
 
   _lib_append_line_locked "$state_file" "$state_file.lock" "$state_value"
@@ -132,9 +128,18 @@ _maybe_write_consult_latch() {
 
   _resolve_round_context || return 0
 
-  local latch_dir="$CONFIG_DIR/.architect-consult-latch.d"
+  local state_file latch_file
+  state_file=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+  latch_file=$(_lib_architect_consult_latch_file "$CONFIG_DIR" "$STATE_KEY") || return 0
+
+  # Restarts the gate's count at this consult. A failed delete is tolerated
+  # and no lock is taken: a reviewer append racing the delete only moves the
+  # next denial by one state.
+  rm -f -- "$state_file" 2>/dev/null
+
+  local latch_dir="${latch_file%/*}"
   mkdir -p "$latch_dir" 2>/dev/null || return 0
-  touch -- "$latch_dir/$STATE_KEY" 2>/dev/null
+  touch -- "$latch_file" 2>/dev/null
 
   find "$latch_dir" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
   return 0

@@ -77,15 +77,18 @@ def _fmt_usd(amount: float) -> str:
     return f"-${-amount:,.2f}" if amount < 0 else f"${amount:,.2f}"
 
 
+def _fmt_pct(pct: float) -> str:
+    return f"{pct:.1f}%"
+
+
 def _pct_of(value: float, total: float) -> str:
     """value/total as a percentage string; 0.0% (not an undefined dash) when total is zero."""
-    return f"{100 * value / total:.1f}%" if total else "0.0%"
+    return _fmt_pct(_pct_value(value, total))
 
 
 def _pct_value(value: float, total: float) -> float:
-    """value/total as a percentage float, matching _pct_of's 0.0-when-zero
-    convention -- for a caller (cost-ledger) that stores the number rather
-    than printing it."""
+    """value/total as a percentage float, for a caller that stores or further
+    processes the number rather than printing it."""
     return 100 * value / total if total else 0.0
 
 
@@ -128,7 +131,8 @@ def _sanitize_table_cell(value: str) -> str:
     return _CONTROL_CHAR_RE.sub("", value)
 
 
-_TASK_NOTIFICATION_RE = re.compile(r"<task-notification>.*?</task-notification>", re.DOTALL)
+_TASK_NOTIFICATION_CLOSER = "</task-notification>"
+_TASK_NOTIFICATION_RE = re.compile(rf"<task-notification>.*?{re.escape(_TASK_NOTIFICATION_CLOSER)}", re.DOTALL)
 
 
 def _strip_task_notifications(text: str) -> str:
@@ -140,7 +144,12 @@ def _strip_task_notifications(text: str) -> str:
     """
     # Replaced with a space, not "", so a removed span can't weld the words on either side into a phrase nobody wrote.
     # An unterminated or self-quoting envelope is left partially or fully in place rather than swallowing the rest of the turn.
-    return _TASK_NOTIFICATION_RE.sub(" ", text)
+    # Openers after the last closer are never scanned, so the lazy match stays linear in the text's length.
+    closer_end = text.rfind(_TASK_NOTIFICATION_CLOSER)
+    if closer_end < 0:
+        return text
+    closer_end += len(_TASK_NOTIFICATION_CLOSER)
+    return _TASK_NOTIFICATION_RE.sub(" ", text[:closer_end]) + text[closer_end:]
 
 
 def _pretty_tool_call(tool_call: dict) -> str:

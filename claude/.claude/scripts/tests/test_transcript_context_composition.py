@@ -10,7 +10,17 @@ from pathlib import Path
 import pytest
 from transcript_analysis import context_composition, corpus, read_scope, scope, subagents
 
-from .conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
+from .conftest import (
+    _NON_CONVERSATION_CONTENT_RECORD_TYPES,
+    _agent_use,
+    _api_request_blob_rec,
+    _asst,
+    _bash_use,
+    _non_boundary_system_rec,
+    _tool_result,
+    _user_msg,
+    _write_jsonl,
+)
 
 
 def _context_composition_args(
@@ -261,6 +271,15 @@ class TestCompaction:
         assert len(sequences[0]) == 2
         assert len(sequences[1]) == 2
 
+    def test_non_boundary_system_record_does_not_split_sequence(self):
+        user_record = _user_msg("a", ts="2026-05-19T10:00:00.000Z")
+        non_boundary_record = _non_boundary_system_rec()
+        assistant_record = _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:05.000Z")
+        sequences = context_composition._split_context_sequences(
+            [user_record, non_boundary_record, assistant_record]
+        )
+        assert sequences == [[user_record, assistant_record]]
+
     def test_large_context_drop_without_compact_boundary_is_not_misclassified(self):
         """Compaction detection is purely structural (the compact_boundary marker), never
         magnitude-based -- a huge turn-to-turn context drop with no such marker stays one
@@ -304,11 +323,28 @@ class TestCompaction:
         assert all(bool(rec.get("isSidechain")) for rec in sequences[1])
         assert not any(bool(rec.get("isSidechain")) for rec in sequences[2])
 
+    @pytest.mark.parametrize("record_type", _NON_CONVERSATION_CONTENT_RECORD_TYPES)
+    def test_api_request_blob_between_sidechain_records_does_not_split_the_sequence(self, record_type):
+        """A blob record carries no isSidechain key, so reading it as a toggle would cut one subagent
+        context into fragments."""
+        sidechain_user = _user_msg("b")
+        sidechain_user["isSidechain"] = True
+        sidechain_asst = _asst("claude-sonnet-5", content=[], ts="2026-05-19T10:00:10.000Z")
+        sidechain_asst["isSidechain"] = True
+        sidechain_asst["message"]["usage"] = {"input_tokens": 5}
+        blob = _api_request_blob_rec(
+            [{"type": "text", "text": "request copy"}], agent_id="agent-a", record_type=record_type,
+        )
+
+        sequences = context_composition._split_context_sequences([sidechain_user, blob, sidechain_asst])
+
+        assert sequences == [[sidechain_user, sidechain_asst]]
+
 
 class TestRequestIdMerge:
     def test_consecutive_same_request_id_assistant_records_merge_into_one_turn(self):
         """Mirrors the run-merge shape _dedup_turns_by_request_id relies on (see
-        test_transcript_analysis.py's representative usage record at TestPriceTurnArity): two
+        test_transcript_pricing.py's representative usage record at TestPriceTurnArity): two
         consecutive assistant records sharing one requestId are one API call, not two turns.
         Without the merge, turns_scanned would be 2 and only the first record's own content
         block would drive the residency/weighting math."""
@@ -413,7 +449,7 @@ class TestRateWeighting:
 
     def test_mixed_class_turn_prices_per_item_not_one_blended_rate(self):
         """Item A (user text, 10 tok) is introduced at turn0 (cache-write, both TTL tiers present
-        at once -- mirrors test_transcript_analysis.py's own 'representative usage record'
+        at once -- mirrors test_transcript_pricing.py's own 'representative usage record'
         shape), then read at turns 1 and 2. Item B (a tool_result, 20 tok) is introduced at turn1
         -- the turn that ALSO carries item A's cache-read, genuinely mixing read and write
         classes on one turn's usage. Asserting each item's own weighted total separately (not

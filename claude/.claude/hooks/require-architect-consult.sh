@@ -2,34 +2,41 @@
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse: deny a reviewer-persona Agent/Task spawn when this branch is
-# entering a new reviewed state beyond the round-state cap without a
-# recent `plan-architect MODE=consult`. The cap is resolved by _lib.sh's
-# _lib_reviewer_round_state_cap (2 by default, 1 when the
-# round_consult_round2_pilot config key is enabled). "Entry to round 3" --
-# the default cap's trigger point -- is the measured, discontinuous jump in
-# the case study this gate exists to interrupt
-# (docs/case-studies/opus-frontload-review-rounds.md lines 158-269). See
-# docs/design-decisions/round3-plan-architect-consult-gate.md for the full
-# design rationale.
+# entering a new reviewed state beyond the round-state threshold without a
+# recent `plan-architect MODE=consult`. The threshold is resolved by _lib.sh's
+# _lib_architect_consult_threshold. "Entry to round 3" -- the gate's first
+# trigger by default -- is the measured, discontinuous jump in the case study
+# this gate exists to interrupt (docs/case-studies/opus-frontload-review-rounds.md
+# lines 158-269). See docs/design-decisions/round3-plan-architect-consult-gate.md
+# for the full design rationale.
 #
 # Failure direction:
 #   - Deny on payload failure (malformed JSON, empty stdin, non-object
 #     tool_input, missing _lib.sh, missing jq) -- TestGateHookBehavior
 #     requires this uniformly of every gate.
-#   - Allow on state failure (unusable session id, unresolvable config dir,
-#     unresolvable repo root, detached HEAD) -- this is a cost-and-quality
+#   - Allow on state failure (unresolvable config dir, unresolvable repo
+#     root, detached HEAD) -- this is a cost-and-quality
 #     interruption, not a security control, and an over-firing deny on
 #     unresolvable git state would block legitimate reviewer fan-out.
+#   - A state file absent at the existence check allows.
+#   - A state file that exists there but fails the later read (unreadable,
+#     or deleted by a concurrent consult) allows with a latch and denies
+#     without one (docs/hooks.md § "Gate hooks").
 #
 # Known gaps, stated rather than left implicit (repo hook-review
 # convention):
 #   - Reviewer-persona-only scope: a code-writer/general-purpose/Explore/Plan
 #     dispatch is never gated.
-#   - Once-per-branch, non-rearming: after one consult, this gate goes
-#     permanently silent for the branch, even at round 5, 7, 9.
 #   - Zero-start residual: a branch already in flight when this gate ships
 #     starts its round count from zero, since transcript retention is a
 #     rolling 30 days and this state file is written forward only.
+#   - Consult-reset residuals:
+#       - A state file the consult reset cannot delete can leave the gate
+#         denying again (repair: docs/hooks.md § "Gate deadlock recovery").
+#       - The 30-day latch sweep re-applies the first-firing threshold.
+#       - Any `plan-architect` dispatch led by neither `MODE=plan-sections`
+#         nor `MODE=challenge` restarts the count, whether or not it returns
+#         a verdict.
 
 set -uo pipefail
 
@@ -71,16 +78,15 @@ _lib_is_reviewer_persona "$SUBAGENT_TYPE" || exit 0
 # Machine-wide kill switch, checked before any git call.
 _lib_round_consult_gate_disabled && exit 0
 
-# A live /plan-review or /ready-for-review fan-out must not consume a
-# round-counting slot -- without this, 115 plan-driven branches in the
-# measured window (docs/case-studies/opus-frontload-review-rounds.md line
-# 36) would drop the effective trigger to code-review round 2.
-# An empty or unusable SESSION_ID makes both checks report "not live" (the
+# A live /plan-review fan-out must not consume a round-counting slot --
+# without this, 115 plan-driven branches in the measured window
+# (docs/case-studies/opus-frontload-review-rounds.md line 36) would drop the
+# effective trigger to code-review round 2.
+# An empty or unusable SESSION_ID makes the check report "not live" (the
 # function's own arity/validity guard), which correctly falls through to
 # the ordinary round-count logic below rather than granting a bypass.
 if [ -n "$SESSION_ID" ]; then
   _lib_active_bypass_marker_live ".plan-review-active.d" "$SESSION_ID" && exit 0
-  _lib_active_bypass_marker_live ".ready-for-review-active.d" "$SESSION_ID" && exit 0
 fi
 
 # An unresolvable config dir leaves "how many rounds so far" undecidable --
@@ -94,33 +100,45 @@ REPO_ROOT=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 
 STATE_KEY=$(_lib_reviewer_round_state_key "$REPO_ROOT") || exit 0
 
-STATE_FILE="$CONFIG_DIR/.reviewer-round-state.d/$STATE_KEY"
+STATE_FILE=$(_lib_reviewer_round_state_file "$CONFIG_DIR" "$STATE_KEY") || exit 0
 
-CAP=$(_lib_reviewer_round_state_cap)
+LATCH_FILE=$(_lib_architect_consult_latch_file "$CONFIG_DIR" "$STATE_KEY") || exit 0
 
-# Below the cap (fewer than CAP distinct reviewed states recorded so far):
-# allow without paying for the current state's own hash. See _lib.sh's
-# _lib_reviewer_round_state_cap for the cap's resolution and citation.
-if [ ! -f "$STATE_FILE" ] || [ "$(wc -l < "$STATE_FILE" | tr -d ' ')" -lt "$CAP" ]; then
+THRESHOLD=$(_lib_architect_consult_threshold "$CONFIG_DIR" "$STATE_KEY")
+LATCH_PRESENT=0
+[ -f "$LATCH_FILE" ] && LATCH_PRESENT=1
+
+# Below the threshold (fewer than THRESHOLD distinct reviewed states recorded
+# since the branch's last consult): allow without paying for the current
+# state's own hash. See _lib.sh's _lib_architect_consult_threshold for the
+# threshold's resolution.
+if [ ! -f "$STATE_FILE" ] || [ "$(wc -l < "$STATE_FILE" | tr -d ' ')" -lt "$THRESHOLD" ]; then
   exit 0
 fi
 
-# At the cap. Only now is it worth paying for `git diff --cached | sha256sum`
-# plus `rev-parse HEAD`.
+# At the threshold. Only now is it worth paying for `git diff --cached |
+# sha256sum` plus `rev-parse HEAD`.
 CURRENT_STATE=$(_lib_reviewer_round_state_value "$REPO_ROOT") || exit 0
 
 # The current state is already one of the recorded rounds (a repeated
 # reviewer fan-out against the same commit/diff, or a whole parallel batch)
-# -- allow.
-grep -qFx -e "$CURRENT_STATE" -- "$STATE_FILE" 2>/dev/null && exit 0
-
-# A genuinely new state beyond the cap. Allow if the latch already shows a
-# consult ran recently on this branch -- otherwise deny.
-LATCH_FILE="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
-[ -f "$LATCH_FILE" ] && exit 0
+# -- allow. grep's error status (2, unreadable or vanished file) defers to
+# the latch, since a consult's reset deletes the state file and a latch
+# shows one ran.
+grep -qFx -e "$CURRENT_STATE" -- "$STATE_FILE" 2>/dev/null
+GREP_STATUS=$?
+[ "$GREP_STATUS" -eq 0 ] && exit 0
+if [ "$GREP_STATUS" -gt 1 ]; then
+  [ "$LATCH_PRESENT" -eq 1 ] && exit 0
+fi
 
 STATE_NOUN="states"
-[ "$CAP" -eq 1 ] && STATE_NOUN="state"
-emit_deny "this branch has already recorded $CAP distinct reviewed $STATE_NOUN without a recent architect consult, and the current one is new. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then route its return by the three verdicts in code-review/SKILL.md's 'Round-cap architect consult' section before retrying this reviewer spawn. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
+[ "$THRESHOLD" -eq 1 ] && STATE_NOUN="state"
+if [ "$LATCH_PRESENT" -eq 1 ]; then
+  RECORDED_CLAUSE="this branch has recorded $THRESHOLD distinct reviewed $STATE_NOUN since the branch's last architect consult"
+else
+  RECORDED_CLAUSE="this branch has already recorded $THRESHOLD distinct reviewed $STATE_NOUN and no architect consult is recorded for this branch"
+fi
+emit_deny "$RECORDED_CLAUSE, and the current one is new. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then route its return by the three verdicts in code-review/SKILL.md's 'Round-cap architect consult' section before retrying this reviewer spawn. If you already dispatched that consult for this denial, report this block to the engineer instead of consulting again. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
 
 exit 0

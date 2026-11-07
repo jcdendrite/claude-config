@@ -23,6 +23,7 @@ from helpers import (
     init_git_repo_with_commit,
     install_shell_exec_guard,
     live_process,
+    run_autonomous_shipping_statement,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -481,6 +482,41 @@ def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home
+
+
+@pytest.fixture
+def armed_home(isolated_home):
+    """isolated_home plus the machine-level autonomous-shipping sentinel."""
+    marker = isolated_home / ".claude" / "autonomous-shipping-required"
+    marker.write_text("# machine sentinel\n")
+    return isolated_home
+
+
+@pytest.fixture
+def shipping_repo(tmp_path):
+    """A committed git repo for tests of hooks that resolve a repo from a payload `.cwd`."""
+    return init_git_repo_with_commit(tmp_path / "shipping-repo", branch="main")
+
+
+@pytest.fixture
+def non_repo_dir(tmp_path):
+    """An existing directory outside any git repo, for a process cwd or payload `.cwd` that resolves to no repo."""
+    directory = tmp_path / "not-a-repo"
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
+def shipping_statement(armed_home):
+    """Returns a callable that returns the text _lib_autonomous_shipping_statement emits for a repo root.
+    Hook tests compare emitted text against it, so a hook whose text drifts from the helper's fails."""
+
+    def statement_for(repo_root: Path) -> str:
+        result = run_autonomous_shipping_statement(armed_home, str(repo_root))
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    return statement_for
 
 
 @pytest.fixture

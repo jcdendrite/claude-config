@@ -42,6 +42,7 @@
       "Bash(cleanup-merged-branches --all-projects --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
       "Bash(cleanup-idle-open-pr-worktrees)",
+      "Bash(~/.claude/scripts/diff-size-ack.sh)",
       "Edit(//**/.claude/settings*.json)"
     ],
     "deny": [
@@ -180,11 +181,30 @@
         ]
       },
       {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-autonomous-shipping.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh"
+            "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/record-session-config-keys.sh"
           }
         ]
       }
@@ -205,6 +225,18 @@
             "type": "command",
             "command": "~/.claude/hooks/announce-branch-review-history.sh",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "code-writer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/send-back-skipped-self-review.sh",
+            "timeout": 20
           }
         ]
       }
@@ -265,6 +297,12 @@
             "command": "~/.claude/hooks/require-code-review.sh",
             "onFailure": "block",
             "statusMessage": "Checking code review..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-diff-size-prompt.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking diff size..."
           },
           {
             "type": "command",
@@ -507,6 +545,16 @@
             "command": "~/.claude/hooks/require-review-orchestrator-routing.sh",
             "onFailure": "block",
             "statusMessage": "Checking review-orchestrator-routing gate..."
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/send-back-skipped-self-review.sh",
+            "timeout": 20
           }
         ]
       }

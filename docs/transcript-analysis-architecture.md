@@ -18,17 +18,19 @@ circular import is possible. `cost.py`, `reviewer_yield.py`, `review_rounds.py`,
 `skill_invocation.py`, `skill_pair.py`, `period_cost.py`, `buckets.py`, `fail_seq.py`, `struggle.py`,
 `user_input.py`, `duration.py`, `friction_count.py`, `turn_shape.py`, `commit_gate.py`, `pr_link.py`,
 `sessions.py`, `context_distribution.py`, `context_composition.py`, `cache_efficiency.py`,
-`edit_format.py`, and `instrument_authoring.py` are the only
+`edit_format.py`, `instrument_authoring.py`, `review_cost_by_size.py`, and `read_cost.py` are the only
 modules the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 A command-group module may import another by module (attribute access). Among the review modules,
 `reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
 is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
-`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`), and
-`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
-`_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
-`_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
+`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
+`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`),
+`review_cost_by_size.py` (for `compute_review_round_costs`), `pr_cost.py` (for `compute_review_round_costs`, `REVIEW_SKILLS` and
+`REVIEW_ROUND_RULE`), and `pr_cost_export.py` (for `REVIEW_SKILLS`). `review_trace.py` imports `reviewer_yield.py` (for
+`_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
+`review_rounds.py` for the reads listed in the `review_trace.py` section below.
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
 `STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
@@ -50,8 +52,8 @@ is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_
 from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
-turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format, and
-instrument-authoring by calling each owning
+turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
+instrument-authoring, review-cost-by-size, and read-cost by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -62,7 +64,8 @@ handler reads at call time, not the shim.
 ### `corpus.py`
 
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
-`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
+`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention),
+`CONVERSATION_RECORD_TYPES` (the record types a walk over `message.content` must filter to), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
 join). The harness writes every nested dispatch's `.meta.json` into the session's own flat
 `subagents/` directory. One session's index therefore also resolves a dispatch spawned from inside
@@ -70,9 +73,7 @@ another subagent. `review_rounds.py`'s nested-dispatch descent reuses it. No dep
 resolution, redaction, or pricing — every other module (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
-as the single source of truth for two consumers: `turn_shape.py`'s mutating-git classifier
-(`_bash_command_is_mutating_git`), and
-`author_outcome.py`'s clean-marker-write matcher (`_is_clean_marker_write`).
+as the shared command segmenter.
 
 ### `scope.py`
 
@@ -136,6 +137,7 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 it deduplicates one session's records and returns its subagent-spawn count, its sidechain
 assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
 the re-verify-by staleness rule both apply.
+`read_cost.py` consumes `_cache_read_equivalent_weights`.
 
 ### `session_pricing.py`
 
@@ -248,7 +250,7 @@ The cost command family: `cmd_cost`, `cmd_cost_trend`, and every helper used onl
 corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 (`_cost_report`), and per-ISO-week cost-trend accumulation (`compute_cost_trend_data`,
 `_cost_trend_report`). The first command-group module in the package, not a leaf: it imports
-`corpus`, `scope`, `redaction`, `pricing`, and `render` all by module (attribute access), matching
+`corpus`, `scope`, `redaction`, `pricing`, `render`, and `session_pricing` all by module (attribute access), matching
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
 is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'s own
 `_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read, not
@@ -276,23 +278,40 @@ subagent dollar attribution via `corpus._index_subagent_dispatches`' toolUseId j
 count-only sibling reusing the same detection helpers to produce per-skill round counts with no
 pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_counts` calls it as
 `review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
-and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
+`scope`, and `session_pricing` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
-main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, `detect_round_windows`, `spawn_round_skill`,
-and `round_opened_by_spawn` are the public names here. `spawn_round_skill` maps a spawn block to the
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RULE`, `compute_review_round_costs`, `compute_review_round_counts`, `detect_round_windows`,
+`spawn_round_skill`, and `round_opened_by_spawn` are the public names here. `compute_review_round_costs`
+is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
-miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
-judgment-pair's `--skills` default, and by the shim's `build_parser()`, for review-round-cost's
-`--skill` choices. `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
+miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
+
+- `judgment_pair.py`: judgment-pair's `--skills` default.
+- `pr_cost.py` and `pr_cost_export.py`: the skills a `review_rounds` cell holds.
+- The shim's `build_parser()`: review-round-cost's `--skill` choices.
+- `subagent_mix.py`: its round filter and the round-count table keys.
+
+`_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
 `_round_skill_name` for its `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison, and
 `_SLASH_COMMAND_RE` to extract a `/slash`-invoked skill name before `_round_skill_name` normalizes it.
 `_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
-window's own `open_idx`/`skill`.
+window's own `open_idx`/`skill`. `review_trace.py` is a further one.
+
+### `review_cost_by_size.py`
+
+The review-cost-by-size command: `cmd_review_cost_by_size`, its `_add_review_cost_by_size_subparser`
+registration, and every helper used only by it. It prices `code-review` rounds with
+`review_rounds.compute_review_round_costs`, joins each branch to its merged PR by exact `headRefName`,
+and prints aggregates, join diagnostics and per-PR rows. Imports `gh_cli`, `render`, `review_rounds`, and
+`scope` all by module (attribute access). The shim reads `_add_review_cost_by_size_subparser` bare. The
+module reads `scope._DEFAULT_BRANCH_CANDIDATES` and `scope._names_no_pr_branch` to keep default-branch and
+no-PR branches from joining. The scan, the join and the aggregation are separate functions so tests can
+feed each one literals.
 
 ### `author_outcome.py`
 
@@ -342,11 +361,16 @@ The review-trace command family: `cmd_review_trace` and every helper used only b
 `--deny-summary`'s grouped denial/friction accumulation and report (`compute_deny_summary_data`,
 promoted from a shim-private `_compute_deny_summary_data`), and the per-session event-timeline
 detector both the default output and `--deny-summary` share (`_review_trace_session_events`).
-Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, `scope`, and
+Imports `corpus`, `denials`, `pricing`, `render`, `reviewer_yield`, `review_rounds`, `scope`, and
 `skill_invocation` all by module (attribute access), matching `cost.py`'s convention; calls
 `reviewer_yield._is_reviewer_subagent_type` for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
 `review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see the intro for the
-cross-command-group import rule.
+cross-command-group import rule. It also calls `pricing.dedup_turns_by_request_id` and
+`review_rounds.detect_round_windows`, to label each reviewer spawn with its review round, and
+`review_rounds._assistant_content_blocks`, to read an assistant record's content blocks. It ends a
+`plan-review` round at that run's `marker.sh deactivate plan-review` call. It finds the call with its own
+line-by-line `shlex` segmenter, not `corpus.split_command_segments`, which splits at neither an attached
+operator nor a newline.
 `_review_trace_session_events` reads `skill_invocation._normalize_skill_name` for the emitted display
 label's directory-only strip.
 `cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
@@ -362,6 +386,14 @@ per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render
 by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` is the one name
 reached bare from the shim — see the exception noted above. `context_composition.py` reads
 `_READ_SCOPE_CHARS_PER_TOKEN` as `read_scope._READ_SCOPE_CHARS_PER_TOKEN`.
+
+### `read_cost.py`
+
+The read-cost command: `cmd_read_cost`, its `_add_read_cost_subparser` registration, and every helper
+used only by it. Imports `corpus`, `pricing`, `redaction`, `render`, `scope`, `session_pricing`, and `subagent_mix`
+all by module (attribute access). The shim reads `_add_read_cost_subparser` bare. Cross-module private
+reads include `session_pricing._usage_is_invalid`, `redaction._repo_tracked_agent_type_names`, and
+`subagent_mix._WITHHELD_AGENT_TYPE_LABEL`.
 
 ### `ledger_common.py`
 
@@ -380,8 +412,8 @@ through this one binding. `cost_ledger.py` reads the other six names by attribut
 
 ### `gh_cli.py`
 
-gh and git-remote access shared by pr-link, pr-cost, workstream-cost, and period-cost: origin
-host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
+gh and git-remote access shared by pr-link, pr-cost, workstream-cost, period-cost, and review-cost-by-size:
+origin host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module — `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
 (`_PR_COST_STATUS_DEGRADED_RATE_LIMIT`/`_PR_COST_STATUS_DEGRADED_NETWORK`), keeping the ledger's own
@@ -391,7 +423,8 @@ status enum a single source of truth rather than a duplicated pair of strings. `
 `workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
-discipline.
+discipline. `review_cost_by_size.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
+`_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_PR_COST_GH_PR_LIST_LIMIT` the same way.
 
 The period-cost command shares four pieces of this module:
 
@@ -425,7 +458,7 @@ The pr-cost command family: `cmd_pr_cost` and every helper used only by it — t
 join, per-PR gh enrichment, mechanical review-surface proxies, and the read/`--record` report. Every
 stdout/stderr path routes branch and repo values through `redaction._assign_root_scoped_redact_label`,
 never raw. Imports `corpus`, `cost`, `gh_cli`, `ledger_common`, `pr_cost_ledger`, `pricing`,
-`redaction`, `render`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
+`redaction`, `render`, `review_rounds`, and `scope` all by module. The `cost` import reaches `cost.py`'s own
 `_compute_pr_cost_branch_totals` and `_new_pr_cost_agg` — the pr-cost command group depending on the
 cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`, and
 `_DEFAULT_PR_COST_PLAN_FILE_GLOB` are the three names reached bare from the shim.
@@ -435,7 +468,7 @@ cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_D
 The pr-cost-export command family: `cmd_pr_cost_export` and every helper used only by it —
 collapsing every declared account's pr-cost ledger to current rows, redacting them, and publishing
 one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common`, `pr_cost_ledger`,
-`redaction`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
+`pricing`, `redaction`, `review_rounds`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
 shim.
 
 ### `cache_rebuild_rules.py`
@@ -604,7 +637,7 @@ repository resolver, the per-repository PR join, the Slack report renderer, and 
 The stream assignment runs the PR-cost attribution and pricing primitives per record
 (`pricing.dedup_turns_by_request_id`, `scope._attributed_branch`, `pricing._price_turn`) instead of
 calling `cost._compute_pr_cost_branch_totals`, which takes no time window. Imports `corpus`, `cost`,
-`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, and `scope` all by module (attribute
+`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, `scope`, and `session_pricing` all by module (attribute
 access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_PRICE_CAVEAT` and
 `_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS`. It reads its one root, `scope.config_dir() / "projects"`,
 as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
@@ -734,7 +767,7 @@ name `build_parser()` reaches bare.
 The edit-format command: `cmd_edit_format`, the Edit/Write/MultiEdit call census with per-tool failure
 classification, governance-hook re-bucketing, not_found cause attribution, and
 old_string/new_string/Write token overhead, with a per-account breakdown above one root, and the
-`_add_edit_format_subparser` registration. Imports `pricing`, `render`, and `scope` all by module
+`_add_edit_format_subparser` registration. Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `_add_edit_format_subparser` is the one name
 `build_parser()` reaches bare.
 
@@ -757,8 +790,29 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
-`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`). `pricing.py`'s
+`.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
+the existing tests live.
+
+`tests/test_transcript_cli.py` holds seven tests that are exceptions to the rule's bullet on one command's
+CLI wiring. Each belongs in its command's file:
+
+- `TestCacheEfficiencyArgparseWiring`'s two tests, in `tests/test_transcript_cache_efficiency.py`
+- `TestBuildParser`'s `test_this_repo_and_projects_mutually_exclusive_on_skill_invocation` and
+  `test_bare_skill_invocation_leaves_projects_unset`, in `tests/test_transcript_skill_invocation.py`
+- `TestBuildParser`'s `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts`, in
+  `tests/test_transcript_review_cost_by_size.py`
+- `TestBuildParser`'s `test_pr_link_without_repo_flag_defaults_to_none` and
+  `test_pr_link_with_repo_flag_parses_value`, in `tests/test_transcript_pr_link.py`
+
+`corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
+`tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
+`tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `scope.py`'s
+scan-traversal, scan-gap, and glob-selection classes are tested in
+`tests/test_transcript_scope_scan.py`, and the rest of `scope.py` in
+`tests/test_transcript_scope.py`. `TestProjectsFlagHasNoArgparseType` lives in `tests/test_transcript_cli.py`
+because it walks every subparser `build_parser()` registers. `TestSkillFilesQuoteRootCountDescLiteral` lives
+in `tests/test_transcript_analysis_multi_root_scope.py`, which `select-tests.py` selects as a `SKILL.md`
+reader. `pricing.py`'s
 shared per-session step, staleness rule, and canary return values, and
 `cost.py`'s accumulation of that step's counts, also have direct tests in
 `tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
@@ -784,7 +838,7 @@ only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
 only the shim has — `build_parser` or `main` — loads
 its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
-boilerplate `test_transcript_analysis.py` uses. Such a file imports every package module it reads
+boilerplate `tests/test_transcript_cli.py` uses. Such a file imports every package module it reads
 directly. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
@@ -801,7 +855,8 @@ shim copy is reserved for the argparse-wiring tests.
 
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
-`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
+`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim. It also holds
+`TestTableColsHelper`, the tests of `conftest.py`'s `_table_cols`.
 
 `tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
 map applied to code only, what remains of each source file, byte-compared CLI captures under a pinned
@@ -830,12 +885,9 @@ All six share
 `tests/_cache_rebuild_helpers.py` (a plain module, not a test file itself — see
 `.claude/rules/test-tree-packaging.md` for why its own consumers import it as
 `from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
-itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
-`tests/test_transcript_analysis.py` rather than moving with the rest of the family: it spans both
-cache-rebuild and cache-efficiency.
-`.claude/plans/transcript-analysis-decomposition.md`'s rule for a cross-group test (stated there for
-`_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the legacy file at least until every group it
-references has moved.
+itself. `TestCacheRebuildCrossInstrumentReconciliation` lives in `tests/test_transcript_cache_rebuild.py`:
+it tests cache-rebuild's sidechain W5m accumulator, and runs cache-efficiency only as the oracle that
+accumulator must agree with.
 
 The audit-routing family splits along its three subcommands rather than one file per module:
 `tests/test_transcript_audit_routing.py` (`cmd_audit_routing`),
@@ -844,9 +896,9 @@ The audit-routing family splits along its three subcommands rather than one file
 `tests/_audit_routing_helpers.py`, a plain module, not a test file itself. Its own consumers
 import it as `from ._audit_routing_helpers import ...` — see
 `.claude/rules/test-tree-packaging.md` for why. Each file keeps its own family-only helpers
-local to itself. `TestMultiRootFormatOutliers` stays in `tests/test_transcript_analysis.py`
-rather than moving with the rest of the family: it spans cost, audit-routing-samples, and
-judgment-pair.
+local to itself. `TestMultiRootFormatOutliers` lives in
+`tests/test_transcript_analysis_multi_root_scope.py` rather than with the rest of the family: it spans
+cost, audit-routing-samples, and judgment-pair.
 
 The cost-ledger command family splits at the `--record` refusal-gate seam rather than one file per
 module: `tests/test_transcript_cost_ledger.py` covers path resolution, read mode, serialization,
@@ -873,6 +925,7 @@ The subagent command family splits at command seams rather than one file per mod
 
 - `tests/test_transcript_subagents.py` covers `cmd_subagents`, plus the declared-roots multi-root class
   for both `cmd_subagents` and `cmd_subagent_mix`
+- `tests/test_transcript_subagents_format_drift.py` covers `cmd_subagents`'s format-drift canary
 - `tests/test_transcript_subagent_mix.py` covers `cmd_subagent_mix`'s spawn table, model-mix columns,
   declared-pin path safety, `--since`, and multi-root disclosure
 - `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and `Counterfactual $` columns
@@ -880,15 +933,17 @@ The subagent command family splits at command seams rather than one file per mod
 - `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, nested-spawn counting and
   attribution, disclosure allowlist, and the agent-type charset pin
 
-The first three share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
-`tests/test_transcript_analysis.py` imports it too. All four consumers import it relatively, as
+The first four share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
+`tests/test_transcript_analysis_multi_root_scope.py` imports it too. All its consumers import it relatively, as
 `from ._subagent_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why. It holds
-only helpers used by more than one file, or by `tests/test_transcript_analysis.py` as well:
+only helpers used by more than one file:
 `_sum_column_across_rows`, `_subagent_mix_args`, and `_subagents_args`. Each file keeps its other
 family-only helpers local to itself.
-`TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
-family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
-there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
+Each command's format-drift canary tests live with that command: `cmd_skill_pair`'s in
+`tests/test_transcript_skill_pair.py` and `cmd_cache_efficiency`'s in `tests/test_transcript_cache_efficiency.py`.
+`TestSubagentFormatContract` lives
+in `tests/test_transcript_corpus.py`: it checks the subagent record shape `corpus.iter_sessions`
+reads back from fixture files and reads no name from the family.
 
 The handoff-nudge command family splits at module seams, and handoff-signal-response's tests split
 again at its detection/reporting seam:
@@ -918,7 +973,7 @@ again at its detection/reporting seam:
 `tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the six helpers more
 than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,
 `_ramp_curve_from_records`, `_check_result_json`, `_handoff_advisory_attachment`, and
-`_check_call_turn`. `tests/test_transcript_analysis.py` imports only `_spend_over_threshold_args` and
+`_check_call_turn`. `tests/test_transcript_analysis_multi_root_scope.py` imports only `_spend_over_threshold_args` and
 `_rearm_backtest_args`, for its cross-subcommand table. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
 — see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
 local to itself.
@@ -930,9 +985,10 @@ default, and the `/slash` `<command-args>` exclusion), `tests/test_transcript_sk
 `cmd_skill_pair`, and `tests/test_transcript_judgment_pair.py` covers `cmd_judgment_pair`. None of the
 three loads the shim: each imports its package module directly and relies on the loader-free
 `fake_projects` fixture. `tests/_skill_helpers.py`, a plain module, not a test file itself, holds the
-helpers more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file
-imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
-why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
+helpers more than one of those files, `tests/test_transcript_analysis_multi_root_scope.py`, or
+`tests/test_transcript_analysis_branch_attribution.py` reads. Each imports it as
+`from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
+why. `TestIsFreshUserPrompt` lives in `tests/test_transcript_render.py` because it tests
 `render.py`, not the judgment-pair command.
 
 The session-signal command group splits at command seams, one test file per module:
@@ -943,9 +999,9 @@ loads the shim: each imports its package module directly and relies on the loade
 `fake_projects` fixture. `TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration`
 covers buckets and duration from `tests/test_transcript_buckets.py`. `tests/_session_signal_helpers.py`,
 a plain module, not a test file itself, holds the helpers more than one of those files, or
-`tests/test_transcript_analysis.py`, reads. The legacy file imports it too, as
+`tests/test_transcript_analysis_branch_attribution.py`, reads. Each imports it as
 `from ._session_signal_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
-`TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays in `tests/test_transcript_analysis.py`
+`TestPerRecordConsumersCreditPrefixToTheBranchEntered` lives in `tests/test_transcript_analysis_branch_attribution.py`
 because it also spans judgment-pair and pr-link.
 
 The turn-shape, commit-gate, and pr-link commands each have one test file:
@@ -953,9 +1009,9 @@ The turn-shape, commit-gate, and pr-link commands each have one test file:
 `tests/test_transcript_pr_link.py`. None of the three loads the shim: each imports its package modules
 directly and relies on the loader-free `fake_projects` fixture. `tests/_commit_gate_helpers.py`, a plain
 module, not a test file itself, holds `_gate_args`, which the commit-gate file and
-`tests/test_transcript_analysis.py`'s cross-subcommand header table both read. The legacy file imports it
-too, as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
-`sessions.py` has no test file of its own. The cross-subcommand header table covers its header.
+`tests/test_transcript_analysis_multi_root_scope.py`'s cross-subcommand header table both read. Both import it
+as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
+`sessions.py` has no test file of its own: that header table covers its header.
 `tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
 emission. No test covers the `--paths` refusal. The pr-link method of
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).
@@ -964,14 +1020,14 @@ The context-distribution, context-composition, and cache-efficiency commands eac
 `tests/test_transcript_context_distribution.py`, `tests/test_transcript_context_composition.py`, and
 `tests/test_transcript_cache_efficiency.py`. None of the three loads the shim: each imports its package
 modules directly. `tests/_cache_efficiency_helpers.py`, a plain module, not a test file itself, holds
-`_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_analysis.py` both
-read. The legacy file imports it too, as `from ._cache_efficiency_helpers import ...` — see
-`.claude/rules/test-tree-packaging.md` for why. `TestCacheEfficiencyArgparseWiring` and
-`TestConfigDirRouting` stay in `tests/test_transcript_analysis.py` because they read `build_parser` and
-`main`, which only the shim has.
+`_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_cache_rebuild.py` both
+read. Both import it as `from ._cache_efficiency_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. `TestConfigDirRouting` lives in `tests/test_transcript_cli.py`
+with `main()`'s other `--config-dir` tests. `TestCacheEfficiencyArgparseWiring` is there too, one of the
+exceptions named at the start of this section.
 
 The edit-format and instrument-authoring commands each have one test file:
 `tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither
 loads the shim: each imports its package modules directly. `_UNCONDITIONAL_HEADER_CASES` in
-`tests/test_transcript_analysis.py` reads `edit_format.cmd_edit_format` and
+`tests/test_transcript_analysis_multi_root_scope.py` reads `edit_format.cmd_edit_format` and
 `instrument_authoring.cmd_instrument_authoring` directly.

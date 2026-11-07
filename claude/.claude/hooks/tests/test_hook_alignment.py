@@ -86,6 +86,7 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from ._lib_sh_helpers import DIFF_SIZE_ACK_COMMAND
 from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 # ------------------------------------------------------------------ #
@@ -474,8 +475,9 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     main-hooks-dir hook, that plugin's own hooks/hooks.json for a
     plugin-dir hook.
 
-    hook-class: gate declares intent to fire on PreToolUse (see
-    TestHookClassHeader.test_hook_class_value_valid's docstring above), and
+    hook-class: gate declares intent to fire on PreToolUse (see the
+    hook-class bullets under the "**`# hook-class:` header**" bullet in
+    plugins/claude-hook-review/skills/claude-hook-review/SKILL.md), and
     Layer 2's behavior checks (TestGateHookBehavior) assume the hook
     actually receives a PreToolUse payload — neither catches a gate hook
     left unregistered after a rename or a config edit that drops its entry.
@@ -571,6 +573,38 @@ def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() ->
         f"'{_SETTINGS_FILE_ASK_RULE}' missing from permissions.ask in "
         f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — settings-file edits would no longer ask "
         f"through the harness's own rule matching"
+    )
+
+
+_DIFF_SIZE_ACK_ASK_RULE = f"Bash({DIFF_SIZE_ACK_COMMAND})"
+
+
+def test_diff_size_ack_ask_rule_stays_declared_in_stow_source_settings() -> None:
+    """The declared `permissions.ask` entry backing the diff-size ack's forced prompt.
+
+    This proves the *declared* config state, not that the harness prompts at
+    runtime: the ask rule's behavior in auto mode and `bypassPermissions` is
+    documented in `docs/security-hardening.md`, not observed here.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    ask_rules = settings.get("permissions", {}).get("ask", [])
+    assert isinstance(ask_rules, list) and _DIFF_SIZE_ACK_ASK_RULE in ask_rules, (
+        f"'{_DIFF_SIZE_ACK_ASK_RULE}' missing from permissions.ask in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the ack would no longer force a prompt"
+    )
+
+
+@pytest.mark.parametrize("settings_path", _TREE_SETTINGS_PATHS, ids=lambda path: str(path.relative_to(_REPO_ROOT)))
+def test_no_permissions_allow_entry_names_the_diff_size_ack(settings_path: Path) -> None:
+    """No `permissions.allow` entry, in any spelling, pre-authorizes the diff-size ack.
+
+    This proves the *declared* config state, not that the harness prompts at
+    runtime. An allow entry would release the gate with no engineer approval.
+    """
+    allow_rules = json.loads(settings_path.read_text()).get("permissions", {}).get("allow", [])
+    offending = [rule for rule in allow_rules if "diff-size-ack.sh" in rule]
+    assert not offending, (
+        f"{settings_path.relative_to(_REPO_ROOT)}: permissions.allow names the diff-size ack: {offending!r}"
     )
 
 
@@ -876,6 +910,7 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
     "deny-invisible-commit-content.sh",
+    "require-diff-size-prompt.sh",
     # Carry no "Bash(git commit *)" `if`; each self-filters on its own
     # in-body commit-shape matcher.
     "require-code-review.sh",
@@ -1831,21 +1866,16 @@ class TestHookClassHeader:
     def test_hook_class_value_valid(self, hook: Path) -> None:
         """hook-class value must be 'gate', 'informational', 'turn-gate', or 'batch-gate'.
 
-        'gate' fires PreToolUse and may deny a tool call. 'informational'
-        fires PostToolUse/SessionStart/SessionEnd/etc. and never denies.
-        'turn-gate' fires on Stop and may block the *turn* from ending
-        (decision: "block") rather than a tool call from running — a
-        distinct contract from 'gate', which is why it is a separate value
-        rather than a Stop hook being mislabeled 'gate' (Layer 2's
-        PreToolUse-specific behavior checks, e.g.
-        test_emit_deny_defined_before_lib_source, do not apply to it) or
-        'informational' (which would be a false label on a hook that
-        blocks). 'batch-gate' fires on PostToolBatch and may stop the
-        agentic loop before the next model call (exit 2, reason on stderr)
-        — PostToolBatch's own native block, distinct from both 'gate'
-        (PreToolUse deny, JSON envelope) and 'turn-gate' (Stop
-        block-to-force-continuation); Layer 2's PreToolUse-specific
-        behavior checks don't apply to it either.
+        The hook-class bullets in plugins/claude-hook-review/skills/claude-hook-review/SKILL.md
+        define 'gate', 'informational' and 'turn-gate'.
+
+        'batch-gate' fires on PostToolBatch and may stop the agentic loop
+        before the next model call (exit 2, reason on stderr).
+
+        It is PostToolBatch's own native block, distinct from 'gate'
+        (PreToolUse deny, JSON envelope) and 'turn-gate' (end-of-run
+        send-back). Layer 2's PreToolUse-specific behavior checks don't apply
+        to it either.
         """
         value = _hook_class(hook)
         if value is None:
@@ -3463,10 +3493,10 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 33
+_GATE_HOOK_COUNT = 34
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 34
+_SETTINGS_GATE_HANDLER_COUNT = 35
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"

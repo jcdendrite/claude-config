@@ -1,12 +1,7 @@
 """Tests for transcript_analysis/subagent_mix.py's cmd_cost_counts: refusals, rendering,
 nested-spawn counting and attribution, disclosure allowlist, charset pin.
-
-One exception: test_top_level_config_dir_message_omits_flag_recommendation drives the shim's main(),
-so it pins the CLI layer's shared top-level --config-dir refusal rather than cmd_cost_counts.
 """
-import importlib.util
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,15 +18,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _cost_counts_args(
@@ -859,22 +845,3 @@ class TestCostCounts:
         ))
         out = capsys.readouterr().out
         assert "| staff-sdet | 1 |" in out
-
-    @pytest.mark.parametrize("subcommand", ["cost-counts", "period-cost"])
-    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
-        """cost-counts and period-cost register no --config-dir flag of their
-        own, unlike every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
-        member -- the shared refusal message must not recommend a flag that
-        doesn't exist on their own parsers."""
-        other_account = tmp_path / "other-account"
-        (other_account / "projects").mkdir(parents=True)
-        monkeypatch.setattr(
-            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert subcommand in err
-        assert "use that instead" not in err
-        assert "with no override" in err

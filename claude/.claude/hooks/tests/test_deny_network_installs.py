@@ -314,7 +314,7 @@ class TestDenyNetworkInstalls:
         assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow"
 
     def test_install_dev_sh_own_invocation_allowed(self, isolated_home):
-        """install-dev.sh:78 runs `.venv/bin/pip install --quiet -r
+        """install-dev.sh runs `.venv/bin/pip install --quiet -r
         requirements-dev.txt` — this repo's own contributor-setup command.
         A regression here breaks every contributor's first run.
         `.venv/bin/pip` resolves to manager `pip` via the `*/NAME` match, so

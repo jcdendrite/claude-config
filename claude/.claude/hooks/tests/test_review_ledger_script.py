@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,8 @@ from helpers import (
     isolated_git_config_env,
     path_with_failing_tool_shim,
     plant_traversal_canary,
+    review_ledger_non_agent_lanes,
+    reviewer_persona_agents,
 )
 from transcript_analysis import author_outcome as ao
 
@@ -147,8 +150,9 @@ def _row_envelope_bytes(session_id: str, **row_overrides) -> int:
     order, for a round-1 ADDRESS append with no authoring flags. row_overrides
     replace fields, for a row of another disposition."""
     row = {
-        "schema_version": 4, "round": 1, "finding": "", "disposition": "ADDRESS", "rationale": "",
-        "source": "", "authoring_agent": "", "authoring_effort": "", "session_id": session_id,
+        "schema_version": 5, "round": 1, "finding": "", "disposition": "ADDRESS", "rationale": "",
+        "source": "", "authoring_agent": "", "authoring_effort": "", "reviewers": ["staff-sdet"],
+        "session_id": session_id,
         "decided_by": "", "engineer_quote": "", "enforcement_invariant": False, "carry_forward": False,
         "defer_criterion": "", "ref": "", "cited_line": "", "site_hash": "",
         "event_time": "2026-01-01T00:00:00Z", "id": "0" * 12,
@@ -189,6 +193,8 @@ def _append_args(
     cited_line: str | None = None,
     enforcement_invariant: bool = False,
     carry_forward: bool = False,
+    reviewers: Sequence[str] = ("staff-sdet",),
+    relog: bool = False,
 ) -> list[str]:
     args = [
         "append",
@@ -214,10 +220,14 @@ def _append_args(
     for flag, value in optional_valued_flags:
         if value is not None:
             args += [flag, value]
+    for lane in reviewers:
+        args += ["--reviewer", lane]
     if enforcement_invariant:
         args.append("--enforcement-invariant")
     if carry_forward:
         args.append("--carry-forward")
+    if relog:
+        args.append("--relog")
     return args
 
 
@@ -302,7 +312,7 @@ class TestReviewLedgerAppendHappyPath:
         event_time = record.pop("event_time")
         id_ = record.pop("id")
         assert record == {
-            "schema_version": 4,
+            "schema_version": 5,
             "round": 1,
             "finding": "Missing error handling in foo()",
             "disposition": "ADDRESS",
@@ -310,6 +320,7 @@ class TestReviewLedgerAppendHappyPath:
             "source": "foo.py:12",
             "authoring_agent": "",
             "authoring_effort": "",
+            "reviewers": ["staff-sdet"],
             "session_id": SID,
             "decided_by": "",
             "engineer_quote": "",
@@ -704,7 +715,26 @@ class TestReviewLedgerRoundScopedDedup:
 
         assert result.returncode == 0, result.stderr
         rows = [json.loads(line) for line in ledger.read_text().splitlines()]
-        assert [row["schema_version"] for row in rows] == [2, 4]
+        assert [row["schema_version"] for row in rows] == [2, 5]
+
+    def test_clean_row_matching_an_existing_v4_row_on_every_other_field_lands_as_a_second_row(
+        self, isolated_home, git_repo
+    ):
+        """A v4 row carries a session_id but no reviewers key, so the reviewers
+        field in the dedup key keeps a current-schema CLEAN from collapsing into it."""
+        _seed_session(isolated_home, SID)
+        clean_args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        assert _run(clean_args, cwd=git_repo, home=isolated_home).returncode == 0
+        ledger = _ledger_path(isolated_home, git_repo)
+        (row,) = _ledger_rows(ledger)
+        del row["reviewers"]
+        row["schema_version"] = 4
+        ledger.write_text(json.dumps(row) + "\n")
+
+        result = _run(clean_args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert [stored.get("schema_version") for stored in _ledger_rows(ledger)] == [4, 5]
 
     def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -1657,8 +1687,10 @@ class TestReviewLedgerUsageStatesTheCarryRules:
             "A DEFER carry restates the decision's --defer-criterion.",
             "These two lines and show print it with control and format characters (zero-width, bidi, line separators) "
             "shown as spaces.",
+            "CLEAN takes no lanes; every other disposition takes at least one lane (--reviewer) or --relog, never both.",
+            "--relog copies the --ref decision's lanes",
         ],
-        ids=["shape", "acceptance", "defer-criterion", "display-cleaning"],
+        ids=["shape", "acceptance", "defer-criterion", "display-cleaning", "lane-rule", "relog-copy"],
     )
     def test_help_states_the_rule(self, isolated_home, tmp_path, phrase):
         usage = _run(["--help"], cwd=tmp_path, home=isolated_home).stderr
@@ -2125,6 +2157,7 @@ class TestReviewLedgerRejectsAnEmptyValueFlag:
             pytest.param("--engineer-quote", {"engineer_quote": ""}, id="engineer-quote on ADDRESS"),
             pytest.param("--defer-criterion", {"defer_criterion": ""}, id="defer-criterion on ADDRESS"),
             pytest.param("--cited-line", {"cited_line": ""}, id="cited-line on ADDRESS"),
+            pytest.param("--reviewer", {"reviewers": ("",)}, id="reviewer on ADDRESS"),
         ],
     )
     def test_the_empty_value_is_rejected_by_flag_name_with_nothing_written(
@@ -2149,11 +2182,329 @@ class TestReviewLedgerRejectsAnEmptyValueFlag:
         assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
 
 
+def _accepted_lanes() -> list[str]:
+    """Every lane --reviewer accepts, read from the libraries as review-ledger.sh sources them."""
+    return sorted([*reviewer_persona_agents(), *review_ledger_non_agent_lanes()])
+
+
+class TestReviewLedgerLanes:
+    """One subprocess case per wiring branch of --reviewer and --relog. The
+    accepted-value and flag-combination matrices live in
+    scripts/tests/test_review_ledger_lib.py."""
+
+    # The first sentence of the hint every lane rejection ends with.
+    _LANE_HINT_MARKER = "Pass --reviewer <lane> once for each lane"
+
+    def _log_defer(self, isolated_home, git_repo, **overrides) -> str:
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        result = _run(_defer_args(**overrides), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        return _logged_id(isolated_home, git_repo)
+
+    def _rewrite_decision(self, isolated_home, git_repo, **changes) -> None:
+        """Rewrites the ledger's one row with `changes`; a None value removes the key."""
+        ledger = _ledger_path(isolated_home, git_repo)
+        (decision,) = _ledger_rows(ledger)
+        for key, value in changes.items():
+            if value is None:
+                del decision[key]
+            else:
+                decision[key] = value
+        ledger.write_text(json.dumps(decision) + "\n")
+
+    def test_repeated_and_unordered_lanes_are_stored_sorted_and_duplicate_free(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(
+            _append_args(reviewers=("staff-sdet", "ciso-reviewer", "staff-sdet")), cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert row["reviewers"] == ["ciso-reviewer", "staff-sdet"]
+
+    def test_the_same_lanes_in_another_order_dedup_to_one_ref_less_row(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        first = _run(_append_args(reviewers=("ciso-reviewer", "staff-sdet")), cwd=git_repo, home=isolated_home)
+        retry = _run(_append_args(reviewers=("staff-sdet", "ciso-reviewer")), cwd=git_repo, home=isolated_home)
+
+        assert (first.returncode, retry.returncode) == (0, 0), retry.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    def test_other_lanes_on_a_ref_less_finding_land_a_second_row(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        first = _run(_append_args(reviewers=("staff-sdet",)), cwd=git_repo, home=isolated_home)
+        other_lanes = _run(_append_args(reviewers=("ciso-reviewer",)), cwd=git_repo, home=isolated_home)
+
+        assert (first.returncode, other_lanes.returncode) == (0, 0), other_lanes.stderr
+        rows = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert [row["reviewers"] for row in rows] == [["staff-sdet"], ["ciso-reviewer"]]
+
+    def test_a_clean_row_stores_an_empty_lane_list(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(
+            ["append", "code-review", "--disposition", "CLEAN", "--round", "1"], cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert row["reviewers"] == []
+
+    def test_a_relog_copies_the_decisions_lanes_and_its_retry_adds_no_row(self, isolated_home, git_repo):
+        decision_id = self._log_defer(isolated_home, git_repo, reviewers=("ciso-reviewer", "staff-sdet"))
+        reopen = _append_args(ref=decision_id, round="2", reviewers=(), relog=True)
+
+        first = _run(reopen, cwd=git_repo, home=isolated_home)
+        retry = _run(reopen, cwd=git_repo, home=isolated_home)
+
+        assert (first.returncode, retry.returncode) == (0, 0), retry.stderr
+        decision, reopened = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert reopened["reviewers"] == decision["reviewers"] == ["ciso-reviewer", "staff-sdet"]
+
+    def test_an_engineer_settled_relog_withdrawal_with_no_lane_stores_the_decisions_lanes(
+        self, isolated_home, git_repo
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        decision = _run(_engineer_args(reviewers=("ciso-reviewer",)), cwd=git_repo, home=isolated_home)
+        assert decision.returncode == 0, decision.stderr
+        decision_id = _logged_id(isolated_home, git_repo)
+
+        withdrawal = _run(
+            _engineer_args(ref=decision_id, round="2", reviewers=(), relog=True, carry_forward=False),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert withdrawal.returncode == 0, withdrawal.stderr
+        _decision_row, withdrawal_row = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert withdrawal_row["ref"] == decision_id
+        assert withdrawal_row["reviewers"] == ["ciso-reviewer"]
+
+    def test_a_relog_of_a_decision_without_the_key_stores_an_empty_list(self, isolated_home, git_repo):
+        decision_id = self._log_defer(isolated_home, git_repo)
+        self._rewrite_decision(isolated_home, git_repo, reviewers=None)
+
+        result = _run(
+            _append_args(ref=decision_id, round="2", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _ledger_rows(_ledger_path(isolated_home, git_repo))[1]["reviewers"] == []
+
+    def test_a_hostile_lane_copied_by_a_relog_never_renders_and_shows_cleaned(self, isolated_home, git_repo):
+        """The copy skips the roster check, so `reviewers` is untrusted text.
+
+        `render` never prints a lane, and `show` prints it cleaned.
+        """
+        hostile_lane = "evil|lane<!-- x\nnext\u202eend"
+        decision_id = self._log_defer(isolated_home, git_repo)
+        self._rewrite_decision(isolated_home, git_repo, reviewers=[hostile_lane])
+        reopen = _run(
+            _defer_args(ref=decision_id, round="2", reviewers=(), relog=True, finding="reopened finding"),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        render = _run(["render"], cwd=git_repo, home=isolated_home)
+        show = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert reopen.returncode == 0, reopen.stderr
+        assert render.returncode == 0, render.stderr
+        assert "reopened finding" in render.stdout
+        for fragment in ("evil", "<!-- x", "next", "\u202e"):
+            assert fragment not in render.stdout
+        assert show.returncode == 0, show.stderr
+        assert "\u202e" not in show.stdout
+        copied = _shown_rows(show)[-1]
+        assert copied["finding"] == "reopened finding"
+        assert copied["reviewers"] == [hostile_lane.replace("\u202e", " ")]
+
+    def test_a_relog_copy_is_not_rechecked_against_the_roster(self, isolated_home, git_repo):
+        decision_id = self._log_defer(isolated_home, git_repo)
+        self._rewrite_decision(isolated_home, git_repo, reviewers=["retired-persona"])
+
+        result = _run(
+            _append_args(ref=decision_id, round="2", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _ledger_rows(_ledger_path(isolated_home, git_repo))[1]["reviewers"] == ["retired-persona"]
+
+    def test_a_relog_reopen_named_in_the_carry_advice_runs_without_a_lane_and_retires_the_decision_and_its_carry(
+        self, isolated_home, git_repo
+    ):
+        carry_result, decision_id = _decide_then_carry_as_another_session(
+            isolated_home, git_repo, _engineer_args(reviewers=("ciso-reviewer",)),
+            {"disposition": "SETTLED", "defer_criterion": None},
+        )
+        assert carry_result.returncode == 0, carry_result.stderr
+        assert f"ADDRESS --ref {decision_id} --relog" in carry_result.stdout
+        before_reopen = _run(["render"], cwd=git_repo, home=isolated_home)
+        assert before_reopen.returncode == 0, before_reopen.stderr
+        assert f"orchestrator-matched carry of {decision_id}" in before_reopen.stdout
+        assert f"| {decision_id} |" in before_reopen.stdout
+        decision, carry = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert (decision["reviewers"], carry["reviewers"]) == (["ciso-reviewer"], ["staff-sdet"])
+
+        reopen = _run(
+            _append_args(ref=decision_id, round="3", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,
+        )
+        after_reopen = _run(["render"], cwd=git_repo, home=isolated_home)
+
+        assert reopen.returncode == 0, reopen.stderr
+        assert _ledger_rows(_ledger_path(isolated_home, git_repo))[-1]["reviewers"] == ["ciso-reviewer"]
+        assert after_reopen.returncode == 0, after_reopen.stderr
+        assert after_reopen.stdout.strip() == ""
+
+    def test_a_second_non_carry_ref_row_with_other_lanes_is_rejected_as_no_longer_live(self, isolated_home, git_repo):
+        decision_id = self._log_defer(isolated_home, git_repo)
+        landed = _run(
+            _append_args(ref=decision_id, round="2", reviewers=("staff-sdet",)), cwd=git_repo, home=isolated_home,
+        )
+
+        other_lanes = _run(
+            _append_args(ref=decision_id, round="2", reviewers=("ciso-reviewer",)), cwd=git_repo, home=isolated_home,
+        )
+
+        assert landed.returncode == 0, landed.stderr
+        assert other_lanes.returncode == 2
+        assert "no longer live" in other_lanes.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 2
+
+    @pytest.mark.parametrize(
+        ("args", "expected_reason"),
+        [
+            pytest.param(_append_args(reviewers=("not-a-lane",)), "is not an accepted lane", id="unknown lane"),
+            pytest.param(
+                _append_args(reviewers=("orchestrator\nskill-tool",)), "is not an accepted lane",
+                id="two lanes joined by a newline",
+            ),
+            pytest.param(
+                ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--reviewer", "staff-sdet"],
+                "not accepted with --disposition CLEAN", id="CLEAN with a lane",
+            ),
+            pytest.param(_append_args(reviewers=(), relog=True), "--relog needs --ref", id="--relog without --ref"),
+        ],
+    )
+    def test_a_rejected_lane_call_exits_2_writes_no_row_and_prints_the_hint(
+        self, isolated_home, git_repo, args, expected_reason
+    ):
+        _seed_session(isolated_home, SID)
+
+        result = _run(args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert expected_reason in result.stderr
+        assert self._LANE_HINT_MARKER in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_a_trailing_reviewer_flag_is_rejected_as_missing_its_value(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_append_args(reviewers=()) + ["--reviewer"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "--reviewer requires a value" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_a_reviewer_value_that_is_another_flag_is_rejected_as_a_lane_and_writes_no_row(
+        self, isolated_home, git_repo
+    ):
+        decision_id = self._log_defer(isolated_home, git_repo)
+
+        result = _run(
+            _append_args(reviewers=(), round="2") + ["--reviewer", "--relog", "--ref", decision_id],
+            cwd=git_repo, home=isolated_home,
+        )
+
+        assert result.returncode == 2
+        assert "'--relog' is not an accepted lane" in result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    def test_a_settled_with_neither_flag_is_rejected_with_the_whole_hint_for_stderr_only_recovery(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_consult_args(reviewers=()), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "needs at least one lane" in result.stderr
+        for lane in _accepted_lanes():
+            assert lane in result.stderr
+        for phrase in ("CLEAN takes neither --reviewer nor --relog", "a reopen, a gate-denial recovery"):
+            assert phrase in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    @pytest.mark.parametrize(
+        ("overrides", "expected_reason"),
+        [
+            pytest.param({"reviewers": ("staff-sdet",), "relog": True}, "cannot be combined", id="--reviewer with --relog"),
+            pytest.param(
+                {"reviewers": (), "relog": True, "decided_by": "carry", "cited_line": "file.txt:1"},
+                "not accepted on a carry", id="--relog on a carry",
+            ),
+        ],
+    )
+    def test_a_relog_rule_violation_against_a_live_decision_is_rejected_with_nothing_written(
+        self, isolated_home, git_repo, overrides, expected_reason
+    ):
+        decision_id = self._log_defer(isolated_home, git_repo)
+
+        result = _run(_defer_args(ref=decision_id, round="2", **overrides), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert expected_reason in result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    @requires_jq
+    def test_a_relog_whose_copy_lookup_fails_names_the_copy_not_the_ref_check(self, isolated_home, git_repo, tmp_path):
+        """`.reviewers` appears only in the copy's look-up program, so the earlier read and look-up passes succeed."""
+        decision_id = self._log_defer(isolated_home, git_repo)
+        copy_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "*.reviewers*")
+
+        result = _run(
+            _append_args(ref=decision_id, round="2", reviewers=(), relog=True), cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": copy_failing_path},
+        )
+
+        assert result.returncode == 2
+        assert "could not read the ledger to copy the --ref decision's lanes" in result.stderr
+        assert "could not read the ledger to check --ref" not in result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
+
+    @pytest.mark.parametrize(("final_row_bytes", "accepted"), [(4095, True), (4096, False)])
+    def test_the_size_check_counts_the_widest_lane_list(self, isolated_home, git_repo, final_row_bytes, accepted):
+        """The list holds every accepted lane, so a new persona widens it and the pair keeps testing the real maximum."""
+        _seed_session(isolated_home, SID)
+        lanes = _accepted_lanes()
+        finding, rationale, source = _fields_for_row_of_bytes(final_row_bytes, reviewers=lanes)
+
+        result = _run(
+            _append_args(finding=finding, rationale=rationale, source=source, reviewers=lanes),
+            cwd=git_repo, home=isolated_home,
+        )
+
+        if accepted:
+            assert result.returncode == 0, result.stderr
+            assert len(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0].encode()) == final_row_bytes
+        else:
+            assert result.returncode == 2
+            assert f"is {final_row_bytes} bytes" in result.stderr
+            assert "counts toward the bytes" in result.stderr
+            assert "must not be trimmed" in result.stderr
+            assert not _ledger_path(isolated_home, git_repo).exists()
+
+
 # The fields the append's dedup key names, and a value for each that differs from
 # the engineer SETTLED row _engineer_args logs.
 _DEDUP_KEY_CHANGES = {
     "round": 99, "finding": "other", "disposition": "DEFER", "rationale": "other", "source": "other.txt:1",
-    "authoring_agent": "mixed", "authoring_effort": "high", "session_id": "other-session",
+    "authoring_agent": "mixed", "authoring_effort": "high", "reviewers": ["ciso-reviewer"],
+    "session_id": "other-session",
     "decided_by": "plan-architect", "engineer_quote": "other quote", "enforcement_invariant": True,
     "carry_forward": False, "defer_criterion": _DEFER_CRITERION, "ref": "f" * 12, "cited_line": "file.txt:1",
     "site_hash": "f" * 12,
@@ -2220,6 +2571,23 @@ class TestReviewLedgerRefRetry:
         assert result.returncode == 2
         assert "no longer live" in result.stderr
         assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 2
+
+    def test_a_retry_whose_landed_retirer_has_no_reviewers_key_is_rejected_as_no_longer_live(
+        self, isolated_home, git_repo
+    ):
+        decision_id = self._log_decision(isolated_home, git_repo)
+        ledger = _ledger_path(isolated_home, git_repo)
+        retirer_args = _engineer_args(ref=decision_id, round="2")
+        assert _run(retirer_args, cwd=git_repo, home=isolated_home).returncode == 0
+        decision, retirer = _ledger_rows(ledger)
+        del retirer["reviewers"]
+        ledger.write_text("".join(json.dumps(row) + "\n" for row in (decision, retirer)))
+
+        result = _run(retirer_args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "no longer live" in result.stderr
+        assert len(_ledger_rows(ledger)) == 2
 
     def test_the_same_content_from_another_session_is_still_rejected(self, isolated_home, git_repo):
         decision_id = self._log_decision(isolated_home, git_repo)
@@ -2936,7 +3304,7 @@ class TestReviewLedgerShow:
         result = _run(["show"], cwd=git_repo, home=isolated_home)
 
         rows = _shown_rows(result)
-        assert [(row["schema_version"], row["finding"]) for row in rows] == [(2, "v2 row"), (4, "current row")]
+        assert [(row["schema_version"], row["finding"]) for row in rows] == [(2, "v2 row"), (5, "current row")]
         assert "session_id" not in rows[0]
         assert rows[1]["session_id"] == SID
         assert _show_header(result)["rows"] == "2"
@@ -3349,6 +3717,54 @@ class TestReviewLedgerShowOut:
         assert result.stdout == ""
         assert stale.read_text() == self.STALE
 
+    def test_trend_prints_the_series_after_the_changed_line_and_counts_a_branch_row_and_a_session_row(
+        self, isolated_home, seeded_repo
+    ):
+        session_file = _session_ledger_path(isolated_home, seeded_repo)
+        session_row = {"round": 1, "disposition": "ADDRESS", "finding": "session finding", "event_time": "2000-01-01T00:00:00Z"}
+        session_file.write_text(json.dumps(session_row) + "\n")
+
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=seeded_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\ntrend: round 1: 2\n"
+
+    def test_trend_with_no_ledger_prints_unchanged_alone(self, isolated_home, feature_repo):
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unchanged\n"
+
+    def test_trend_with_rows_but_no_counted_round_prints_the_changed_line_alone(self, isolated_home, feature_repo):
+        session_file = _session_ledger_path(isolated_home, feature_repo)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text(json.dumps({"finding": "session finding", "event_time": "2000-01-01T00:00:00Z"}) + "\n")
+
+        result = _run(["show", "--out", self.OUT, "--trend"], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\n"
+
+    @requires_jq
+    def test_a_failed_trend_computation_omits_the_trend_line_and_keeps_the_written_file_and_exit_status(
+        self, isolated_home, seeded_repo, tmp_path
+    ):
+        """`group_by` appears only in the trend program, so only that jq call fails."""
+        trend_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "*group_by*")
+        target = seeded_repo / self.OUT
+        control = _run(["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home)
+        assert control.returncode == 0, control.stderr
+        rows_without_the_flag = target.read_text()
+
+        result = _run(
+            ["show", "--out", self.OUT, "--trend"], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": trend_failing_path},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\n"
+        assert target.read_text() == rows_without_the_flag
+
     @pytest.mark.parametrize(
         "args",
         [
@@ -3356,6 +3772,8 @@ class TestReviewLedgerShowOut:
             pytest.param(["--out", ""], id="--out with an empty value"),
             pytest.param(["--out", OUT, "--out", OUT], id="--out twice"),
             pytest.param(["--bogus"], id="an unknown flag"),
+            pytest.param(["--trend"], id="--trend without --out"),
+            pytest.param(["--out", OUT, "--trend", "--trend"], id="--trend twice"),
         ],
     )
     def test_a_malformed_argument_list_prints_usage_and_exits_2_without_touching_the_target(

@@ -2740,7 +2740,7 @@ class TestCostSummary:
         helper reaches the table's Of those, unreadable cell. Monkeypatches
         scope._scan_root_transcripts directly rather than chmod'ing a real
         file -- that helper's own permission-probe behavior is already
-        unit-tested (test_transcript_analysis.py's
+        unit-tested (test_transcript_scope_scan.py's
         test_skipped_counts_unreadable_file_separately_from_scanned), so
         this test only needs to prove cost.py's accumulator threads the
         scanned/skipped counts through to the table."""
@@ -3541,7 +3541,7 @@ class TestPricingIntegrityBanner:
 
 class TestMalformedUsageBanner:
     """MALFORMED USAGE: cost.py's own validate-before-price gate
-    (_usage_is_invalid), mirroring period_cost.py's invalid_usage_records
+    (session_pricing._usage_is_invalid), mirroring period_cost.py's invalid_usage_records
     counter -- a negative or non-numeric usage token field must never reach
     pricing._price_turn's arithmetic."""
 
@@ -4389,9 +4389,7 @@ class TestCostTrendConfigDir:
 
 
 # ---------------------------------------------------------------------------
-# format-drift canary (cost side; see TestFormatDriftCanary in
-# test_transcript_analysis.py for the subagents/skill-pair/cache-efficiency
-# siblings)
+# format-drift canary (cost side)
 # ---------------------------------------------------------------------------
 
 

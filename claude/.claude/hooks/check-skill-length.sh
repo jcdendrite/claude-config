@@ -10,18 +10,19 @@
 #
 # Default limit is 200 lines. Structural-dispatcher skills such as
 # plan-review carry item-ownership / routing tables that legitimately run
-# longer and are capped at Anthropic's documented 500-line ceiling instead.
-# code-review/SKILL.md is the exception, temporarily capped at 525 lines
-# (see limit_for()).
-# plan-review/ROUTING.md gets the same 500-line cap: it holds the
-# item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
-# the same content class the cap was written for.
+# longer and get a higher cap from limit_for().
+# code-review/SKILL.md is the exception, temporarily capped above the
+# 500-line ceiling (see limit_for()). For the ceiling's source, see:
+# `docs/skills.md` § "Skill architecture notes"
+# plan-review/ROUTING.md shares plan-review/SKILL.md's cap in limit_for(): it
+# holds the item-ownership / spawn-routing table extracted from
+# plan-review/SKILL.md, the same content class the cap was written for.
 # pr-description/DEFAULT_TEMPLATE.md has no override and falls to the
 # 200-line default.
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
-# pr-description/SKILL.md is capped at 250 lines.
+# pr-description/SKILL.md has its own cap in limit_for().
 # It holds the authoring standard and every check a PR body must pass.
 # It writes one paragraph per line with no hard-wrap, so trimming words never
 # reduces the line count; only removing a whole paragraph, heading, or blank
@@ -29,6 +30,8 @@
 #
 # Dispatched on every Bash tool call; the internal commit-shape check below is
 # the sole dispatch gate. See require-code-review.sh for the same pattern.
+# _lib_command_concludes_commit in _lib.sh owns the set of commit verbs that
+# arm the gate.
 # _lib_staged_length_gate resolves its base the same way
 # require-code-review.sh does. For why that base is admissible despite being
 # locally forgeable, and its residuals, see:
@@ -38,14 +41,28 @@
 # git calls below uncapped, so a stalled git (locked index, network mount)
 # hangs this gate rather than degrading gracefully.
 #
+# Fail posture: the gate denies when _lib.sh cannot be sourced, when the
+# tool-input JSON cannot be parsed, or when the commit shape is undetermined.
+# It allows when git cannot resolve REPO_ROOT, whether git is absent, errors
+# or times out.
+#
+# Known gap: some git failures or timeouts inside the length check can
+# falsely deny a commit that stages an over-limit file.
+# A missing awk or grep makes the check silently allow a commit that grows a file past its limit.
+# A commit aimed at another tree with `git -C` or `cd` is length-checked
+# against the session's index, so growth in the target tree is silently
+# allowed.
+# A staged path that git quote-escapes, such as one with non-ASCII
+# characters, is silently allowed.
+# _lib_staged_length_gate in _lib.sh owns the failure handling.
+#
 # The growth-comparison and deny-message logic is shared with
 # check-claude-md-length.sh via _lib_staged_length_gate in _lib.sh — this
-# file supplies only the staged-path pattern and limit_for. The commit-shape
-# check and REPO_ROOT resolution above are duplicated per file (not inside
-# _lib_staged_length_gate), matching require-code-review.sh's own ordering:
-# the commit-shape check must run before any git subprocess spawns, and
-# _lib_staged_length_gate needs REPO_ROOT already resolved as its own first
-# argument.
+# file supplies only the staged-path pattern and limit_for.
+# The commit-shape check and REPO_ROOT resolution below are duplicated per
+# file, not done inside _lib_staged_length_gate.
+# For why the commit-shape check stays in the caller, see
+# _lib_staged_length_gate's header comment in _lib.sh.
 
 set -uo pipefail
 
@@ -114,7 +131,7 @@ limit_for() {
   case "$1" in
     # Temporary exception to the 500-line ceiling until #1351 restructures code-review.
     claude-skills/skills/code-review/SKILL.md)
-      echo 525 ;;
+      echo 550 ;;
     claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)

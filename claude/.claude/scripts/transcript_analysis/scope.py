@@ -694,16 +694,17 @@ _DO_NOT_PUBLISH_BANNER = (
 # Subcommands for which main() refuses a top-level --config-dir outright,
 # so the flag can never validate against a different account than the one
 # the subcommand itself resolves. Most members resolve their own multi-root
-# scan via their own subcommand-level --config-dir (_resolve_cost_roots);
-# cost-counts and period-cost are the two exceptions, each constructing its
-# single root directly with no --config-dir flag of its own at all (see
-# _resolve_cost_roots's own docstring).
+# scan via their own subcommand-level --config-dir (_resolve_cost_roots).
+# The exceptions register no --config-dir flag of their own:
+# - cost-counts, period-cost and read-cost build their own single root.
+# - review-cost-by-size builds its own single root by default and calls
+#   resolve_scan_roots under --all-accounts.
 _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
     "instrument-authoring", "pr-cost", "cost-counts", "rearm-backtest",
-    "pr-cost-export", "period-cost",
+    "pr-cost-export", "period-cost", "review-cost-by-size", "read-cost",
 )
 
 
@@ -741,14 +742,14 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     defines `--summary` today -- a bare `summary` check would silently
     narrow a future subcommand adding a same-named flag. This function is
     shared by every `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR` member
-    except `cost-counts` and `period-cost`, which bypass it and build their
-    own single root directly.
+    except the members that bypass it and build their own roots; the
+    comment above that tuple names them.
     """
     try:
         resolved_config_dir = config_dir()
     except ValueError as exc:
-        # Every one of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR's ~15 cmd_* handlers
-        # reaches this transitively with no try/except of its own -- catch
+        # Every _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member that does not build its
+        # own root reaches this transitively with no try/except of its own -- catch
         # here, once, matching this function's own --config-dir-extra
         # refusals' stderr+exit(2) convention above.
         print(f"{subcommand}: {exc}", file=sys.stderr)

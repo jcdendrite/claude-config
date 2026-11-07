@@ -111,6 +111,10 @@ from transcript_analysis.pr_link import (
     # Read bare by this file's own build_parser (the pr-link subparser's registration).
     _add_pr_link_subparser,
 )
+from transcript_analysis.read_cost import (
+    # Read bare by this file's own build_parser (the read-cost subparser's registration).
+    _add_read_cost_subparser,
+)
 from transcript_analysis.read_scope import (
     # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
@@ -119,6 +123,10 @@ from transcript_analysis.rearm_backtest import (
     # Read bare by this file's own build_parser (the rearm-backtest
     # subcommand's own set_defaults).
     cmd_rearm_backtest,
+)
+from transcript_analysis.review_cost_by_size import (
+    # Read bare by this file's own build_parser (the review-cost-by-size subparser's registration).
+    _add_review_cost_by_size_subparser,
 )
 from transcript_analysis.review_rounds import (
     # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
@@ -349,6 +357,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
         help="Restrict skill-invocation matching to one skill name.",
     )
+    p_review_trace.add_argument(
+        "--omit-plan-review-spawns", action="store_true",
+        help=(
+            "Leave out reviewer spawns made inside a /plan-review round, and print reviewer rows without round=. "
+            "Applies to the default timeline only; --deny-summary ignores it."
+        ),
+    )
     p_review_trace.set_defaults(func=cmd_review_trace)
 
     _add_judgment_pair_subparser(sub)
@@ -477,6 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_read_scope.set_defaults(func=cmd_read_scope)
+
+    _add_read_cost_subparser(sub)
 
     _add_instrument_authoring_subparser(sub)
 
@@ -737,6 +754,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    _add_review_cost_by_size_subparser(sub)
+
     p_author_outcome = sub.add_parser(
         "author-outcome",
         help=(
@@ -976,14 +995,14 @@ def main() -> None:
         # rather than let it silently diverge from whatever scan roots the
         # subcommand actually resolves (this top-level one would validate
         # one account while the subcommand scans another). Most resolve
-        # their own scan roots via their own --config-dir (scope._resolve_cost_roots);
-        # cost-counts and period-cost are the two exceptions, each registering no
-        # --config-dir flag of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        # their own scan roots via their own --config-dir (scope._resolve_cost_roots).
+        # The comment above scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        # names the members that register no --config-dir flag of their own.
         if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
             # hasattr, not a hardcoded subcommand list: True only when the
             # invoked subparser itself registered --config-dir (dest
             # extra_config_dirs), so the hint never recommends a flag that
-            # doesn't exist on cost-counts's or period-cost's own parser.
+            # doesn't exist on the invoked subcommand's own parser.
             if hasattr(parsed, "extra_config_dirs"):
                 own_scope_clause = (
                     "this subcommand resolves its own scan roots via its own --config-dir "
@@ -992,7 +1011,7 @@ def main() -> None:
                 )
             else:
                 own_scope_clause = (
-                    "this subcommand is scoped to the active account's config dir with no override"
+                    "this subcommand resolves its scan roots itself"
                 )
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "

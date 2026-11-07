@@ -1,6 +1,6 @@
 """Test helpers shared by the skill-group test files (test_transcript_skill_invocation.py,
-test_transcript_skill_pair.py, test_transcript_judgment_pair.py) and by test_transcript_analysis.py's
-cross-subcommand tables."""
+test_transcript_skill_pair.py, test_transcript_judgment_pair.py) and by test_transcript_analysis_multi_root_scope.py's
+cross-subcommand tables and test_transcript_analysis_branch_attribution.py's per-record attribution classes."""
 import argparse
 
 from transcript_analysis import review_rounds

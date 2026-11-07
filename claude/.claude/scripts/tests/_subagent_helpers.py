@@ -1,5 +1,5 @@
-"""Test helpers shared by the subagent family's test files (test_transcript_subagents.py,
-test_transcript_subagent_mix*.py) and by test_transcript_analysis.py's cross-subcommand tables."""
+"""Test helpers shared by the subagent family's test files (test_transcript_subagents*.py,
+test_transcript_subagent_mix*.py) and by test_transcript_analysis_multi_root_scope.py's cross-subcommand tables."""
 
 
 def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_prefix: str) -> int:

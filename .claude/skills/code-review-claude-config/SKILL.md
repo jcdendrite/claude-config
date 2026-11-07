@@ -47,7 +47,7 @@ So is any of:
   per-account, per-project, or per-branch split on any line, conditional or
   not)
 
-Give a rounded or generalized figure more scrutiny, not less. The six
+Give a rounded or generalized figure more scrutiny, not less. The five
 always-on structural detectors already catch raw pastes, so what reaches
 this item is disproportionately content already generalized enough to
 clear them.

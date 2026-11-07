@@ -6,11 +6,76 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`/code-review` now checks whether a factual claim in a comment or durable doc is true.** The design is in `docs/design-decisions/false-or-unsourced-claim-checks.md`.
+  - `comment-discipline-reviewer` gains a "False or unsourced claim" angle for added or modified prose. It flags a settleable claim its subject contradicts, citing the subject's `file:line`. It runs in `/ready-for-review`'s cumulative pass, like the agent's other angles.
+  - Step 1.5 gains a "Stale claim in unchanged prose" tripwire. When a diff renames, removes or redefines a name, it searches for unchanged comments and docs still describing the old contract. It runs inline in every round, and skips preserved records, plans and dated design-decision records.
+  - A claim the reviewer cannot settle by reading the repository draws a finding only when it is a number or cause-and-effect claim naming no source. The fix names the source, marks the claim unverified, or deletes it.
+  - The change is live on `git pull`.
+- **`restore-authorization-boundary-on-compact.sh` now emits the boundary text and, when autonomous shipping is active, the shipping statement in one message, and its kill switch silences only the boundary text.**
+  - **Statement:** the statement is resolved for the repo the payload's `.cwd` names. With `~/.claude/.authorization-boundary-disabled` set, the hook emits the statement alone, and it stays silent when shipping is not active.
+  - **Migration:** if you relied on that kill switch to silence everything the hook says, turn off `autonomous_shipping`, or add `.claude/autonomous-shipping-optout` in the repo, to silence the statement.
+  - **Timeout:** the `settings.json` registration now sets `"timeout": 10`, against the harness default of 600 s.
+- **`/handoff` and `/brief` now file a plain commit, a plain `git push` of the current branch and `gh pr create` under the safe-to-execute section (§3 and §6), not under "Pending engineer authorization" (§3.5 and §6.5), when the filed step names the resumer's own `autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold.** The exception is one sentence in each skill's "Underlying principle" paragraph.
+- **`review-ledger.sh append` now records the declared reviewer lane for each finding.**
+  - `/code-review`'s disposition table column is now `Lane`.
+  - `review-ledger.sh append` now requires every new ADDRESS, DEFER and SETTLED row that raises a finding to carry a declared lane, by `--reviewer`, or `--relog` on a row that re-logs a decision.
+  - A reopen is now `ADDRESS --ref <id> --relog`.
+  - Restart any session that loaded `/code-review` before the pull: a restart avoids a rejected first call and a lane guessed from the rejection hint.
+  - Any caller of `review-ledger.sh append` outside the stowed `/code-review` skill, such as a wrapper, must now pass `--reviewer <lane>` or `--relog` on a non-CLEAN row.
+- **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
+  - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
+  - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
+  - Most tests that check the error path for too-deeply-nested input now inject a `RecursionError` instead of building input deep enough to overflow, because the overflow depth differs between 3.12 and 3.14 and with the host's stack size.
+  - A canary in `evals/test_review_bench_cli.py` still builds input deep enough to overflow, to confirm CPython raises `RecursionError` instead of crashing.
+  - The README's Python floor for stow users stays 3.11, and CI exercises only 3.14. Code that needs a newer stdlib API or newer behavior than 3.11 passes CI and can fail on a stow user's Python.
+- **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
+  - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
+  - `/ready-for-review` reviews now count and can trip the gate. A consult interrupts a run at a denied reviewer spawn. It routinely does so once the run needs a fix. It can also land on a pass that would have come out clean.
+  - Every `plan-architect` dispatch now receives the findings raised in each review round, as `round <N>: <count>` entries. A round with no findings reads `clean`. Carries count as findings. `review-ledger.sh show --out <path> --trend` prints that series as a second stdout line, and `announce-branch-review-history.sh` appends it to its history line. The consult is also told to judge the foundation from the series, the plan's `Ask:` line and the branch's SETTLED and DEFER rows.
+  - `/ready-for-review`'s Cap is retired, and a run loses two stops. A foundation-wrong verdict inside a run is an ADDRESS finding whose fix revises the plan inside the run's fix loop. A dirty streak reaches the human only when a consult sends it there, and no rule sends a long one there by its length.
+  - The `round_consult_gate` kill switch now silences the consult inside `/ready-for-review` runs too. The Cap ignored it.
+  - A branch already latched at pull time meets its first re-armed consult two states early, one under the round-2 pilot. Its deny text counts its earlier states as recorded since the last consult.
+  - A `/ready-for-review` run already under way at pull time keeps the old Cap text while the hooks already count its reviews, so it can run both consults until it ends.
+- **`read-scope`, `edit-format`, `cache-rebuild` and `context-composition` now skip `api-request-blob` records, and a new `read-cost` subcommand prices reads across their context windows.**
+  - `read-scope` main-thread read figures can drop where these records exist, because each blob copied a tool call that was already counted.
+  - `context-composition` no longer reads such a record as an `isSidechain` toggle, so a subagent context it split into several sequences stays whole.
+  - `read-cost` reads the active account alone, refuses `--projects` and a top-level `--config-dir`, and requires `--this-repo`. `docs/transcript-analysis.md` § "read-cost" states when its figures are publishable.
+- **The `pr-cost` ledger gains a trailing `review_rounds` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds, for each review skill, the PR's rounds in round order, so the round history outlives transcript retention. The cell is recorded only: no report reads it yet, and it is reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
+  - **Ledger:** each round carries main-thread and subagent micro-dollars, tokens per model, pricing variant and token class, and completeness counts. A `rule` integer versions round detection. An empty cell means not captured, and rows recorded earlier read as not captured. See `docs/pr-cost.md` § "The `review_rounds` cell".
+  - **Ledger:** the upgrade rewrites the file under the new header, prints a stderr notice, and has no supported downgrade. It applies only with `pr_cost_recording` on.
+  - **Ledger:** every pre-existing row now ends in a tab, so do not whitespace-strip ledger or export lines, and read export columns by header name.
+  - **Capture:** a `--record` run that reaches a row write for a branch with local transcript activity, a refused `--force` included, now prints a start line and reads the transcripts a second time, pricing only sessions that open a round.
+  - **Exit code:** `--record` can now exit 1 after finishing every branch, when the review-round pass or a cell's write-time check failed. The end-of-run line says which PRs; a scheduled caller that treats any non-zero exit as a failure should expect it. A rerun without `--pr` does not retry those PRs, because a recorded row counts as captured, so the rerun skips them. Only `--record --force --pr N`, with the run's account flags, once the cause is fixed and inside `cleanupPeriodDays`, refills them. A failed round pass records the row with an empty `review_rounds` cell, a later unforced run counts it as captured. A failure on a record outside the transcript format that stays inside `cleanupPeriodDays` repeats until the session ages out, and the only supported way to stop it is the `pr_cost_recording` off switch, which also stops scalar capture. See `docs/pr-cost.md` § "Write-time check failures".
+  - **Exit code:** a `--force` re-capture that would replace captured rounds with none, fewer or less complete ones is refused and exits 1, under `--all-accounts` too after its summary. See `docs/pr-cost.md` § "The re-record contract".
+  - **Export:** `pr-cost-export` files gain a trailing `review_rounds` column, empty for rows recorded earlier. The export keeps only vocabulary the exporting checkout knows, adds a `review_rounds_dropped_keys` count to the provenance line, and prints one stderr line when that count is nonzero. The column is DO-NOT-PUBLISH like the rest of the file.
+  - **Migration:** a checkout from before this change prints `missing or mismatched pr-cost ledger header row` on read mode, `--record`, and `pr-cost-export` once its ledger is upgraded.
+  - **Migration:** update every checkout that shares this ledger, including the checkout each cron job runs from, before the next `--record`. Do not delete or recreate the ledger.
+  - **Migration:** roll forward; do not revert. For recovery, the cost of delay and the `pr_cost_recording` off switch, see `docs/pr-cost.md` § "Upgrading an existing ledger".
+  - **Migration:** the end-of-run count line's stem changes from `row(s) recorded without a per-model breakdown` to `row(s) recorded with failed cells`, and each entry names its cells. Update any wrapper that matches the old stem.
+  - **Migration:** a row the count line lists with `review_rounds` carries an empty cell. `--record --force --pr N` refills it only while every session of that PR is inside `cleanupPeriodDays`, at the cost `docs/pr-cost.md` § "The re-record contract" states.
+- **Bare tool names now resolve from the main checkout's `.venv/bin` first for children of `scripts/venv-run.sh` commands.**
+  - The wrapper prepends the main checkout's absolute `.venv/bin` to the tool's `PATH`, so a pinned `shellcheck` or `python3` wins over a system copy.
+  - The wrapper exits 127 when the main checkout's path contains `:`.
+  - `:` is `PATH`'s separator, so the prepended entry would split into two or more `PATH` elements, which can name an unrelated directory or resolve against the cwd.
+- **`claude-hook-review` 2.6.0 now defines `turn-gate` as firing where an agent's run ends, on `Stop`, `SubagentStop` or PreToolUse `SubagentHandback`, with an output shape that follows its event.**
+  - The bump is minor because the `turn-gate` definition widens and nothing is reversed.
+  - The checklist now flags any `updatedInput` other than the `SubagentHandback` prefix rewrite.
+  - Run `claude plugin update claude-hook-review@claude-config --scope project` from the consuming repository's root directory, then `/reload-plugins` (or restart Claude Code), to refresh it.
 - **The `/period-cost-report` Slack report now separates its groups with a blank line, sizes each group's table on its own rows, and cuts titles at 32 code points instead of 40.**
   - A blank line now precedes each repository name and the Total.
   - Each group's table column widths come from that group's own displayed rows.
   - A title cell over 32 code points is cut to its first 31 plus "…" (was 40 and 39). A review row's cell starts with "Review: ", so a review title of 24 code points or fewer shows in full and a longer one shows its first 23 plus "…".
   - Two spaces now precede the `+`/`?` marker slot.
+  - The change is live on `git pull`.
+- **`deny-private-project-refs.sh` no longer detects the Slack-channel shape (a hash-prefixed channel name).** A channel name is now caught only by the `~/.claude/private-projects.md` blocklist when it is populated, and only if distinctive enough to list as a bare word (see `docs/private-project-redaction.md`). The change is live on `git pull`.
+- **`/plan-review` now spawns `comment-discipline-reviewer` on every round to review the plan's prose before approval.**
+  - It reviews the plan file and checks only Comment verbosity, Multi-fact comment structure, and Paragraph readability.
+  - Its findings never by themselves make the verdict Request changes, and they are applied with the round's other changes.
+  - It no longer reviews a plan file inside a `/code-review` or `/ready-for-review` diff.
+  - The change is live on `git pull`.
+- **`review-trace` now prints `round=` on each reviewer row, naming the review round a main-thread spawn ran in, or `?`.**
+  - The new `--omit-plan-review-spawns` flag leaves out `/plan-review`'s spawns.
+  - `/ready-for-review`'s skill-fidelity check passes it, so a `/plan-review` spawn no longer counts toward a `/code-review` dispatch row.
   - The change is live on `git pull`.
 - **Prose that restates the code is now a named defect whose fix is deletion, not a corrected rewrite.**
   - `claude/.claude/CLAUDE.md` § "Durable text" gains a "Don't restate the code" bullet whose remedy is deletion.
@@ -20,7 +85,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) are no longer exempt from `comment-discipline-reviewer`'s "Prose at the wrong altitude" angle.
   - `ai-instruction-and-memory-files` gains a placement row for content that isn't a rule.
   - The change is live on `git pull`.
-- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 525.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
+- **`check-skill-length.sh` temporarily raises `code-review/SKILL.md`'s line cap from 500 to 550.** In-flight branches could not land against the old cap. #1351 restructures the skill and restores the 500-line cap. `plan-review/SKILL.md` and `plan-review/ROUTING.md` stay at 500.
 - **`cost-counts` "Subagent spawns" now counts reviewer agents spawned inside a `review-orchestrator` transcript, and any other subagent's, not only main-thread dispatches.** Figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure.
 - **`/code-review` Step 1 and `/plan-review` Step 4 now declare each change's user surface and threat tier from a closed list, and every reviewer they spawn receives it whenever a value is declared.**
   - The tag reads `declared: <surface>, <tier>`, with surface `dev-only` or `production` and tier `cooperative`, `untrusted-input` or `adversarial`, or `declared: undeclared`. Code, config, the engineer's words, loaded instruction files and project layers settle it. A comment, doc, plan, PR body or ticket the change's author wrote, or an instruction-file line added or edited anywhere since the merge base, can only raise it.
@@ -78,6 +143,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - It passes `--no-color --no-ext-diff`, `--ignore-submodules=none` and a context width pinned to 3 lines by an inline `GIT_DIFF_OPTS=-u3`.
     - A `.gitmodules` `ignore` setting no longer drops a gitlink change from the text.
     - `textconv` no longer applies: a text file with a `textconv` driver now prints its raw diff, unconverted, and a binary file with one prints `Binary files ... differ`.
+- **`pr-diff-against-base.sh` now prints `DIFF_EMPTY: no changes against base` on stderr when the cumulative diff is empty, and `/ready-for-review` step 3 halts on that line instead of on "exit 0 with no output".** The exit status stays 0 and stdout is unchanged, so a script that tests the exit status or reads stdout sees no difference. A script that treated an empty stdout as the empty-diff signal can match the stderr line instead.
+  - `marker.sh write cumulative-review` now answers an empty recorded subject by telling the caller to halt as step 3 says and naming the `DIFF_EMPTY:` line. It keeps the advice to re-run `pr-diff-against-base.sh --record` for a stale empty subject only.
+- **`/ready-for-review` step 3 now discards `pr-diff-against-base.sh`'s stdout, so the cumulative diff no longer prints into the session.** The session reads the diff from the file the `DIFF_FILE:` stderr line names. The script is unchanged, and step 3 still halts on the `DIFF_EMPTY:` line.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
@@ -460,6 +528,36 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new SessionStart hook, `announce-autonomous-shipping.sh`, states the resolved autonomous-shipping state to the agent at startup, resume and `/clear`.**
+  - On a machine with `autonomous_shipping` on, in a repo without `.claude/autonomous-shipping-optout`, the agent is told the engineer's request to make a change authorizes committing it, pushing the current branch and opening a PR without asking. Merging stays human-only.
+  - It has no kill switch of its own: `autonomous_shipping` and the repo optout silence it. It is advisory context, so the model may still ask.
+  - The text lives in `_lib_autonomous_shipping_statement` in `_lib.sh`, which the hook, the compact hook and the Stop hook's block reason all print. See `docs/design-decisions/autonomous-shipping-state-in-hook-context.md`.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the registration points at a script that is not linked, which does not block session start, and the hook does not run.
+- **A new gate, `require-diff-size-prompt.sh`, denies a commit that brings the branch's cumulative diff to the diff-size threshold, and a new script, `diff-size-ack.sh`, releases it once per branch.** The deny has the agent ask the engineer through `AskUserQuestion` whether to split now or proceed anyway. On `Proceed anyway` the agent runs `~/.claude/scripts/diff-size-ack.sh`, which is listed under `permissions.ask` (see the `require-diff-size-prompt.sh` entry in `docs/hooks.md` and the hook's header for what that does), and re-runs the commit.
+  - Every in-flight branch already at or past the threshold is asked once at its next commit, in every repository.
+  - A headless or scheduled session stops at the deny and reports.
+  - The gate counts the diff `/ready-for-review` reviews, minus files under the repository root's `.claude/plans/`. `docs/hooks.md` states the threshold and the allow conditions.
+  - If `~/.claude/hooks` or `~/.claude/scripts` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. The two directories fail differently.
+    - A real `~/.claude/hooks` directory leaves the registered hook script missing. The hook is registered with `onFailure: "block"` and no `if`. Until `./install.sh` runs, every Bash call is blocked on Claude Code 2.1.295 or later (not verified against the harness). An agent's attempt to run `./install.sh` is also blocked, which is why the engineer runs it from a separate terminal.
+    - A real `~/.claude/scripts` directory leaves the ack missing. The hook still runs and denies at 400 lines, and no sanctioned command the agent can run releases that deny until `./install.sh` runs.
+    - The engineer runs `./install.sh` from a separate terminal in either case (`docs/hooks.md` § "Gate deadlock recovery").
+- **A new hook, `send-back-skipped-self-review.sh`, with its evaluator `evaluate-code-writer-self-review.py`, sends a `code-writer` return back once when it is missing any part of the self-review evidence `code-writer.md` mandates.** A second return that is still incomplete goes through, prefixed with a `SELF-REVIEW INCOMPLETE (hook-verified)` line in auto permission mode. In `acceptEdits` mode no hook-written line reaches the parent, so a missing `SELF-REVIEW INCOMPLETE` line there is not evidence of a completed self-review. The hook is fail-open and registers under PreToolUse `SubagentHandback` and SubagentStop `code-writer`.
+  - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix. Its domain table routes build tooling and environment config to `staff-platform-engineer`, and any other file to `staff-backend-engineer`.
+  - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. Until then each subagent handback and each `code-writer` stop runs a registration whose script is missing, which does not block the call, and the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
+  - The harness behavior the hook relies on was probed on Claude Code 2.1.310 only. Versions 2.1.295 through 2.1.309 are unverified and fail open (see `docs/design-decisions/code-writer-self-review-send-back.md` § "Known degradations and unverified paths").
+- **`transcript-analysis.py review-cost-by-size` reports how `code-review` round count and round cost vary with merged-PR size.**
+  - It joins each branch's rounds to its merged PR by exact head-branch name, then prints rank correlations, log-log elasticities, size-bucket medians, a within-PR round-cost trend, join diagnostics and per-PR rows.
+  - It requires `--this-repo` and `gh`, and reads the active account only by default.
+  - `--all-accounts` reads every declared account as one scan. That output is a private view that prints DO NOT PUBLISH and is never proposed for publication.
+- **A new SessionStart hook, `record-session-config-keys.sh`, records every config key's value for each session, always on.** At each startup, `/clear`, compaction and resume, it appends one row to `<config-dir>/.session-config-keys-log.jsonl`. Each row carries the session id, so a later analysis can tell which keys were on for a session. `docs/session-config-keys-log.md` says how to read and trim the log.
+  - It prints nothing when it writes the row.
+  - When it runs and cannot write the row, it prints a short notice and asks the agent to tell the engineer, unless the harness kills the hook first. The notice repeats at every event until the cause is fixed.
+  - In a `claude -p` run, the agent's report can land in the run's output.
+  - The log holds a session id and time for every session on the account.
+  - Nothing trims the log, and it outlives transcript cleanup.
+  - The hook has no config key and no off switch other than removing its `settings.json` entry. `docs/session-config-keys-log.md` § "Notice" says what removal costs.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then a real hooks directory leaves the new hook unlinked while `settings.json` already registers it.
+  - Whether IDE and desktop sessions record a row is untested.
 - **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **A new SessionStart hook, `bootstrap-project-plugins.sh`, installs a trusted repo's missing `enabledPlugins` in the background, on by default.**
   - In a terminal `claude` session in a repo whose trust dialog you accepted, it runs `claude plugin install <id> -s local` for each enabled plugin that is missing from the plugin registry and whose marketplace is already registered on your account. It never auto-installs a credential-bearing plugin on its denylist.
@@ -551,12 +649,33 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
+- **`advance-past-commit-stall.sh` no longer misses a permission question on a later line of a multi-line final message.**
+  - **Cause:** it read only the first line of `last_assistant_message`.
+  - **Judgment:** it now reads the whole message and judges the last sentence of the last non-blank line, so a heading, bullets, then a closing "Should I push and open a PR?" fires.
+  - **Block reason:** it now opens with the shared autonomous-shipping statement.
+  - **Scan window:** it scans only the last 2048 characters of the message.
+  - **Repo resolution:** it resolves the repo from the payload's `cwd` alone, with no `$PWD` fallback.
+  - **Rooted at `$HOME`:** the hook no longer fires for a repo rooted at `$HOME` or above it, because no statement is printed for such a repo.
+  - **Kill switch:** the block reason names the `commit_stall_block = false` config row as the switch, because the legacy `.commit-stall-block-disabled` file does nothing once `claude-config.toml` holds a `commit_stall_block` row.
+  - **Newline in `cwd`:** a payload whose `cwd` contains a newline fails closed, so the hook does not fire.
+  - **Log:** a fire that the repo-root rule denies writes a `root-denied` line to `.commit-stall-block.log`.
+- **`review-round-cost` and `review-cost-by-size` now exclude a turn whose usage is not an object or whose token fields are not non-negative integers.**
+  - **Excluded:** before, such a turn raised, priced negative, or had a float, boolean or numeric-string count coerced to an integer.
+  - **Unpriced:** a turn whose `message.model` is a JSON array or object is now priced as unpriced instead of raising.
+  - **Still raises:** a truthy non-object `usage` still raises `AttributeError` in the dedup step when it sits on the first record of a run sharing one `requestId`, or on a record before the run's first record with different input or cache usage; see `docs/pr-cost.md` § "Write-time check failures".
+  - **Output:** both commands, except `review-round-cost --pooled`, print a `MALFORMED USAGE` line when a turn was excluded inside a round window (`review-cost-by-size`: inside a round joined to a merged PR).
+  - **Re-runs:** a re-run over the same transcripts can give different figures than one made before this fix.
 - **`review-round-cost`, `judgment-pair` and `period-cost` no longer end a window at a task notification.** A `<task-notification>` record is the harness reporting a finished background task or subagent, not the human speaking, so it no longer counts as a fresh user prompt. A re-run over the same transcripts gives different figures than one made before this fix.
   - **`review-round-cost`:** a round's `total $` can rise, because only a round a notification used to close changes. Its window now runs to the next human prompt, the next round-open or the end of the session, so it can include unrelated main-thread work. Widening a window moves records out of the carried-branch bucket into the round's own branch, so a branch's `branch $` can rise or fall. On a default run (no `--skill`, `--since` or `--until`) the non-round dollars and the footer's non-round share only fall. With `--skill`, `--since` or `--until`, a branch's non-round dollars can rise. `main $`, `agent $` and the mean-per-round figures only rise.
   - **`period-cost`:** dollars move from branch and Other rows to the review row, with the period total unchanged. A finished review window now runs to the next human prompt, the next invocation or session end, so the review row can include unrelated main-thread and subagent work. No `?` marker or note 3 flags that, because only a window that closed without a finish call is marked. A window with no identity sends its dollars to an Other row.
   - **`judgment-pair`:** REVIEW OUTPUT can follow a notification, and the end-of-session label now reaches loops a notification used to cut short. USER RESPONSE used to print the notification envelope when a notification followed the review. It now prints the next fresh user prompt as recorded (a prompt that carries an envelope beside human text prints both), or `(no user response — end of session)` when the window ends at end of file or at the next skill invocation. An `--out` file saved before the fix can hold notification text as the response.
   - **Unchanged:** `rearm-backtest` and `user-input` count a task notification as before.
   - **Review-bench miner:** it follows the wider windows, so a re-run can add candidates as well as change `main_thread_edited_between`. On this change a regenerated `main_thread_edited_between` can only move from True to False, and a re-run ORs the prior value back in (`merge_prior_candidate`), so entries mined before and after are not comparable for that flag.
+- **`review-round-cost`, `review-cost-by-size`, `review-trace`, `author-outcome`, `cost-counts`, `pr-cost --record` and the review-bench miner no longer open a round on a /slash tag outside a fresh human prompt.** See "Round detection caveats" in docs/transcript-analysis.md for what counts.
+  - **Skill blocks:** `review-round-cost`, `review-cost-by-size`, `author-outcome`, `cost-counts`, `pr-cost --record` and the review-bench miner also no longer raise on a `Skill` tool_use whose `input` is not an object or whose `skill` is not a string. A malformed `Skill` block opens no round, as a malformed spawn block already did.
+  - **Windows:** a round opened by a `Skill` tool_use or a `review-orchestrator` dispatch still opens at the same assistant record, but its window now continues past a record that used to close it, so its figures can change.
+  - **Unchanged:** `review-trace`'s own event pass still raises on a tool_use block whose `input` is a non-empty non-object, or on a `Skill` block whose `skill` is a non-empty non-string. `review-trace`, `skill-invocation` and `period-cost` still count such a tag in their own skill-event matching.
+  - **Re-runs:** a re-run of the commands other than `pr-cost --record` over the same transcripts can give different figures than one made before this fix. The `pr-cost --record` round capture is new in this release, so it has no earlier figure to differ from.
 - **`deny-reviewer-tree-mutation.sh` now runs its later checks on a fragment it reads as an allowed read-only git command.**
   - **The fix, for a fragment led by git:** the fragment gains the `>`/`>>` redirect-target check, so a review-only agent's `git show <ref>:<path> > src/x` now denies like `cp scratch src/x`.
   - **The fix, for a fragment that only mentions a git word beside an allowed subcommand,** such as `sed -i 's/git log/x/' file`: the fragment gains every later check. Those checks cover `cp`/`mv`/`tee` targets, in-place edits (`sed -i`, `perl -i`, `ruff --fix`, `eslint --fix`), formatters, `terraform`/`tofu fmt`, and `worktree-ensure.sh`.

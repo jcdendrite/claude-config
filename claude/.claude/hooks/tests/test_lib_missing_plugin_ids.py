@@ -500,14 +500,8 @@ class TestLibMissingPluginIdsInputShape:
 class TestLibMissingPluginIdsLocalOptOut:
     """A sibling settings.local.json `false` is a per-repo opt-out.
 
-    Shape policy: an absent, empty, or whitespace-only file, a top-level
-    `null`, and an object whose `enabledPlugins` is absent or `null` mean no
-    opt-outs, so ids stay eligible, as does an `enabledPlugins` object. A
-    malformed or wrong-shaped file is unreadable (the full definition is in
-    the `_lib_missing_plugin_ids` header in `_lib.sh`) and fails closed with
-    exit status 3, but only when an id would otherwise be
-    reported; a registry that already holds every enabled id never reads the
-    local file.
+    The shape policy is defined in the `_lib_missing_plugin_ids_for_content`
+    header in `_lib.sh`.
     """
 
     @staticmethod

@@ -62,6 +62,7 @@ from helpers import (
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    change_type_table_rows,
     extract_skill_command,
     heading_texts,
     normalize_heading,
@@ -723,6 +724,25 @@ class TestReviewLedgerAuthoringEffortLiteral:
             "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
             "main finding append, main-flow CLEAN append) -- found "
             f"{skill_body.count(literal)}"
+        )
+
+
+class TestReviewLedgerReviewerLaneLiteral:
+    """The per-finding append template carries `--reviewer '<lane>'` once, in the
+    code span that also names the ADDRESS|DEFER|SETTLED dispositions, so moving
+    the flag onto the CLEAN template, or duplicating it, fails."""
+
+    def test_reviewer_flag_sits_once_on_the_per_finding_append_template(self):
+        skill_body = _skill_body("code-review")
+        literal = "--reviewer '<lane>'"
+
+        assert skill_body.count(literal) == 1, (
+            f"code-review/SKILL.md must carry {literal!r} exactly once, on the per-finding append "
+            f"template -- found {skill_body.count(literal)}"
+        )
+        template_span = re.search(r"`([^`\n]*" + re.escape(literal) + r"[^`\n]*)`", skill_body)
+        assert template_span is not None and "--disposition ADDRESS|DEFER|SETTLED" in template_span.group(1), (
+            f"{literal!r} must sit in the inline code span of the ADDRESS|DEFER|SETTLED append template"
         )
 
 
@@ -1940,6 +1960,47 @@ class TestContinuityFileBucketCrosscheck:
     def test_brief_prewrite_checklist_crosschecks_section6(self):
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
         assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
+
+    def test_handoff_section3_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """handoff §3.5 must carve out commit, push and PR creation when the
+        resolver exits 0 and names the resumer's own resolver exit as the
+        filed step's precondition, so a handoff does not file them as pending
+        authorization on a machine where autonomous shipping is active."""
+        match = re.search(r"## §3\.5.*?(?=\n## §4)", _skill_file("handoff").read_text(), re.DOTALL)
+        assert match, "handoff/SKILL.md §3.5 section not found — has it been renamed?"
+        assert "Exception:" in match.group(0), "handoff/SKILL.md §3.5 'Exception:' clause not found — has it been renamed?"
+        exception = match.group(0).split("Exception:", 1)[1]
+        assert "autonomous-shipping-active.sh" in exception
+        assert "exit 0" in exception
+        assert "only when" in exception, "the exception must be conditional, not unconditional"
+        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
+        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
+        assert "no hold" in exception
+        assert "never to the default branch" in exception
+        assert "§3.5" in exception, "a stated hold must be filed under §3.5"
+
+    def test_brief_section6_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """brief §6.5 carries the same exception as handoff §3.5."""
+        match = re.search(r"## §6\.5.*?(?=\n## §7 )", _skill_file("brief").read_text(), re.DOTALL)
+        assert match, "brief/SKILL.md §6.5 section not found — has it been renamed?"
+        assert "Exception:" in match.group(0), "brief/SKILL.md §6.5 'Exception:' clause not found — has it been renamed?"
+        exception = match.group(0).split("Exception:", 1)[1]
+        assert "autonomous-shipping-active.sh" in exception
+        assert "exit 0" in exception
+        assert "only when" in exception, "the exception must be conditional, not unconditional"
+        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
+        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
+        assert "no hold" in exception
+        assert "never to the default branch" in exception
+        assert "§6.5" in exception, "a stated hold must be filed under §6.5"
+
+    def test_handoff_prewrite_checklist_points_at_section3_5_for_the_principle(self):
+        """The checklist must send the reader to §3.5 for the principle rather than restate it, so it
+        cannot contradict §3.5's exception."""
+        anchor = "A §3 step the script did *not* warn on"
+        checklist_lines = [line for line in _skill_file("handoff").read_text().splitlines() if anchor in line]
+        assert checklist_lines, f"handoff/SKILL.md checklist line starting {anchor!r} not found — has it been renamed?"
+        assert "including its exception" in checklist_lines[0]
 
     def test_handoff_prewrite_checklist_crosschecks_section2_6(self):
         """handoff's pre-write checklist must verify §2.6 was populated before writing."""
@@ -5041,29 +5102,6 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_rows(skill_md_path: Path) -> list[str]:
-    """Raw row-line strings of every data row in the Change-type table.
-
-    Shared header-lookup-and-row-walk for every reader of the Change-type
-    table — `_change_type_table_left_columns` and
-    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    both build on this instead of re-walking the table themselves.
-    """
-    lines = skill_md_path.read_text().splitlines()
-    header_index = next(
-        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
-        None,
-    )
-    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
-
-    rows = []
-    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
-        if not line.startswith("|"):
-            break
-        rows.append(line)
-    return rows
-
-
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 
@@ -5074,7 +5112,7 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     `test_scope_exempt_row_excludes_security_controls_row`), a resulting
     mismatch surfaces as a loud assertion failure, not silently.
     """
-    return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
+    return [row.split("|")[1].strip() for row in change_type_table_rows(skill_md_path)]
 
 
 def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
@@ -5086,7 +5124,7 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     shorthand `_change_type_table_left_columns` returns.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-    for line in _change_type_table_rows(skill_md_path):
+    for line in change_type_table_rows(skill_md_path):
         # line.split("|")[1] truncates at an embedded pipe in the left cell,
         # same caveat as _change_type_table_left_columns's identical parse.
         if line.split("|")[1].strip() == exempt_shorthand:
@@ -5233,6 +5271,37 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
         f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
         "--cached) review basis — that's the commit-gate pass's job, not the "
         "cumulative sweep's"
+    )
+
+
+def test_ready_for_review_step3_discards_the_diff_stdout() -> None:
+    """GH-1296: step 3 hands the diff on by its `DIFF_FILE:` path, so printing
+    it to stdout only adds its bytes to the session's context. The command
+    must end at `> /dev/null` with no further redirect, because an appended
+    `2>&1` would discard the `DIFF_EMPTY:` and `DIFF_FILE:` stderr signals
+    step 3 acts on. Step 3 must contain no other invocation line, since a
+    bare second one would print the diff again.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --record --diff-file > /dev/null"
+    invocation_lines = [
+        line
+        for line in section_text.splitlines()
+        if line.startswith("~/.claude/scripts/pr-diff-against-base.sh")
+    ]
+    assert invocation_lines == [discarding_command], (
+        f"{skill_md_path}: step 3's only pr-diff-against-base.sh invocation line must be "
+        f"exactly {discarding_command!r}, ending at '> /dev/null' with no further "
+        "redirect, so the diff stays out of the session and stderr still reaches it; "
+        f"found {invocation_lines!r}"
+    )
+    assert "Read the diff only from the file at that path" in section_text, (
+        f"{skill_md_path}: step 3 no longer tells the session to read the diff "
+        "from the DIFF_FILE: path now that stdout is discarded"
     )
 
 
@@ -5410,7 +5479,10 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     inside the row itself and not in Step 0. A file-wide `in` check would
     pass just as well if a later edit moved the instruction back into the
     row or into Step 0, so this locates the note's own text before also
-    checking the file-wide occurrence count.
+    checking the file-wide occurrence count. It also pins the note's
+    `> /dev/null` redirect, with no further redirect after it, so the staged
+    diff stays out of the session's context while the script's stderr signals
+    still reach it.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
@@ -5437,6 +5509,13 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert text.count(staged_diff_literal) == 1, (
         f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
         "the resolution note only -- not duplicated into Step 0 or the row"
+    )
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --staged --diff-file > /dev/null"
+    assert discarding_command + "`" in note_text, (
+        f"{skill_md_path}: the resolution note must run {discarding_command!r} "
+        "as a code span that ends right after the redirect, so the diff stays "
+        "out of the session and stderr still reaches it"
     )
 
     for literal in (
@@ -5506,6 +5585,80 @@ def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
     ):
         assert literal in section_text, (
             f"{skill_md_path}: Step 0.6 no longer carries the exact literal {literal!r}"
+        )
+
+
+def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
+    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip."""
+    routing_roles_text = _heading_section_text(_ROUTING_MD_PATH, "## Reviewer roles")
+    agent_input_contract_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Input contract"
+    )
+    for literal in (
+        "`plan_path:`",
+        "on every round that reaches Step 5 with a plan file",
+        "Skip it under `/review-pr`'s standing override",
+    ):
+        assert literal in routing_roles_text, (
+            f"{_ROUTING_MD_PATH}: Reviewer roles no longer carries {literal!r}"
+        )
+    assert "`plan_path:`" in agent_input_contract_text, (
+        "comment-discipline-reviewer.md: Input contract no longer names `plan_path:`"
+    )
+
+
+def test_plan_prose_findings_never_block_and_plan_diffs_stay_out_of_lane() -> None:
+    """These sentences keep plan prose non-blocking and reviewed once, before approval.
+
+    The plan rule is pinned because a plan may cite its own review rounds without being flagged.
+    """
+    plan_review_skill_path = _skill_file("plan-review")
+    output_format_text = _heading_section_text(plan_review_skill_path, "## Output format")
+    agent_scope_text = _heading_section_text(
+        _AGENTS_DIR / "comment-discipline-reviewer.md", "## Scope"
+    )
+    rerun_note = (
+        "Re-run the cells in docs/design-decisions/plan-prose-reviewed-inside-plan-review.md "
+        "by hand after this edit."
+    )
+    non_blocking_literal = (
+        "A plan prose finding never makes the verdict **Request changes**, "
+        "whatever severity the reviewer gave it, so plan prose alone never adds a review round."
+    )
+    approve_with_changes_literal = (
+        "A round whose only findings are plan prose ends **Approve with changes** "
+        "when you accept any of them. It ends **Approve** otherwise."
+    )
+    diff_exclusion_literal = (
+        "A plan file under `.claude/plans/` that appears in a diff is out of scope"
+    )
+    review_rounds_literal = "references to its own review rounds and findings"
+    assert non_blocking_literal in output_format_text, (
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{non_blocking_literal!r}. {rerun_note}"
+    )
+    assert approve_with_changes_literal in output_format_text, (
+        f"{plan_review_skill_path}: Output format no longer carries "
+        f"{approve_with_changes_literal!r}. {rerun_note}"
+    )
+    assert diff_exclusion_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer carries {diff_exclusion_literal!r}. "
+        f"{rerun_note}"
+    )
+    assert review_rounds_literal in agent_scope_text, (
+        f"comment-discipline-reviewer.md: Scope no longer lists {review_rounds_literal!r}. "
+        f"{rerun_note}"
+    )
+
+
+def test_ready_for_review_step_4_has_the_rerun_that_recovers_omitted_plan_review_rows() -> None:
+    """Step 4 must name the rerun that recovers the plan-review rows the omit flag drops."""
+    step_4_text = _heading_section_text(
+        _skill_file("ready-for-review"), "## 4. Skill-procedural-fidelity review (halt on findings)"
+    )
+    for literal in ("without `--omit-plan-review-spawns`", "`round=plan-review`"):
+        assert literal in step_4_text, (
+            f"ready-for-review step 4 no longer carries {literal!r}"
         )
 
 
@@ -6351,43 +6504,30 @@ class TestReadyForReviewFixLoopRule:
         )
 
 
-# Step 3's loop cap: each clause binds a condition to its outcome.
-_PINNED_STEP3_CAP_CLAUSE = (
-    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
-    "records newer than its newest clean one, in suffix-timestamp order, "
-    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
-    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
-    "number two or more, first dispatch `plan-architect` with "
-    "`MODE=consult`, carrying the records' paths and the plan path if one "
-    "exists, to judge whether the loop is converging (*proceed*) or its "
-    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
-    "table row whose finding cell reads `cap` and whose Outcome is the "
-    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
-    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
-    "row, or an orchestrator disagreement with the return, is a blocking "
-    "stop-and-ask to the human."
+# Pinned as one contiguous clause so a sentence inserted between them fails.
+_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE = (
+    "A step-4 spawn the gate denied reviewed nothing, so step 4 runs again "
+    "after the fix loop. "
+    "A re-plan verdict is an ADDRESS row in the disposition record of the "
+    "step-3 pass under review or whose fix is under review, or a step-4 "
+    "finding, and the fix loop takes it like any other finding."
 )
 
-# Step 3's clean/dirty definition for a disposition record: the Cap counts
-# records newer than the newest clean one, and the closing sentence keeps the
-# record from granting a review skip while disclosing that it can relax the Cap.
+# Step 3's clean/dirty definition.
 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
-    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
-    '§ "Step — Record review completion" counts it (a `none` row counts as '
-    "resolved), and dirty otherwise. No record grants a review skip and the "
-    "`cumulative-review` marker stays the sole authorization, but the Cap "
-    "counts records, so a record's clean or dirty status can relax the Cap; "
-    "later reviews otherwise read it only as context."
+    "The pass is clean when every reviewer its *Spawn decisions:* line lists "
+    "as spawned has returned and every row is resolved as "
+    '`code-review/SKILL.md` § "Step — Record review completion" counts it (a '
+    "`none` row counts as resolved), and dirty otherwise. No record grants a "
+    "review skip and the `cumulative-review` marker stays the sole "
+    "authorization; later reviews read it only as context."
 )
 
-# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
-# gate, then the Overview's fix-loop rule returns the loop to a full pass of
-# step 3 over the fixed bytes, bounded by the Cap.
+# Step 3's loop-back sentence.
 _PINNED_STEP3_LOOP_BACK_CLAUSE = (
     "Its fix commit goes through the standard staged-diff `/code-review` + "
     "marker gate, and the Overview's fix-loop rule then brings the loop back "
-    "through step 2 to a full pass of this step over the fixed bytes, within "
-    "the cap below."
+    "through step 2 to a full pass of this step over the fixed bytes."
 )
 
 # Step 3 must re-review a fix's own output in full. This phrase is the tail of
@@ -6396,19 +6536,30 @@ _PINNED_STEP3_LOOP_BACK_CLAUSE = (
 _STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
 
 
-class TestReadyForReviewStep3LoopCapPins:
-    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
-    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
-    rule, the cap consult, the statement that a record grants no review skip,
-    or the fix-loop return to a full pass fails a test instead of drifting
-    silently. One test also asserts step 3 carries no sentence forbidding a
-    re-review of a fix's own output.
+class TestReadyForReviewRunExitAndStep3Pins:
+    """Pin the Overview's run-exit sentences and step 3's clean/dirty and
+    loop-back sentences verbatim, so dropping one fails a test instead of
+    drifting silently.
     """
+
+    def test_overview_denied_step4_rerun_and_re_plan_address_clause_match_live_text(
+        self,
+    ) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        _assert_pinned_clause_right_bounded(
+            " ".join(_PINNED_STEP4_RERUN_AND_RE_PLAN_ADDRESS_CLAUSE.split()),
+            raw_section,
+            context=(
+                "ready-for-review/SKILL.md: Overview's denied-step-4 re-run and "
+                "re-plan ADDRESS-finding sentences no longer match."
+            ),
+        )
 
     @pytest.mark.parametrize(
         ("pinned_clause", "site"),
         [
-            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
             pytest.param(
                 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
                 "step 3's clean/dirty definition",
@@ -6590,7 +6741,7 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
     "row retires; another finding at the site leaves it live. The "
     "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id>`, which retires the decision and its "
+    "is logged `ADDRESS --ref <id> --relog`, which retires the decision and its "
     "carries from the PR block."
 )
 
@@ -7495,8 +7646,30 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "--defer-criterion '<name>' --ref '<id>' --cited-line '<file:line>']",
+        "--defer-criterion '<name>' --ref '<id>' --relog --cited-line '<file:line>']",
         id="append-template-quotes-criterion-ref-and-cited-line",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "Finding | Lane | Disposition | Rationale",
+        id="disposition-table-names-the-lane-column",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "`skill-tool` marks a Skill-tool review's finding, `unrostered-agent` marks a finding a spawned reviewer "
+        "agent outside the roster raised, and `orchestrator` marks any finding no reviewer agent or Skill-tool "
+        "review raised.",
+        id="lane-cell-defines-the-three-non-roster-literals",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "CLEAN takes no lanes",
+        id="clean-append-takes-no-lanes",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "as a reopen, a gate-denial recovery and a `--carry-forward` withdrawal do",
+        id="relog-is-for-a-row-that-only-re-logs-its-decision",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",

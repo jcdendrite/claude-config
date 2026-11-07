@@ -191,6 +191,67 @@ def heading_texts(markdown_text: str) -> set[str]:
     return headings
 
 
+def markdown_table_rows(markdown_path: Path, header_line: str) -> list[str]:
+    """Raw lines of a Markdown table's data rows, found by its exact header line."""
+    lines = markdown_path.read_text().splitlines()
+    header_index = next((i for i, line in enumerate(lines) if line.strip() == header_line), None)
+    assert header_index is not None, f"{markdown_path}: table header {header_line!r} not found."
+
+    rows = []
+    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
+        if not line.startswith("|"):
+            break
+        rows.append(line)
+    return rows
+
+
+def change_type_table_rows(skill_md_path: Path) -> list[str]:
+    """Raw lines of every data row in a SKILL.md's Change-type table."""
+    return markdown_table_rows(skill_md_path, "| Change type | Spawn / invoke |")
+
+
+def _nonempty_shell_lines(shell_body: str, what: str) -> list[str]:
+    """Non-empty stdout lines of `bash -c shell_body`, asserting a zero exit and at least one line.
+
+    The emptiness assertion stops a renamed or emptied shell value from reading as an empty list,
+    which would leave every test iterating it passing with zero iterations or skipped.
+    """
+    result = subprocess.run(["bash", "-c", shell_body], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"reading {what} exited {result.returncode}: {result.stderr}"
+    lines = [line for line in result.stdout.splitlines() if line]
+    assert lines, f"reading {what} printed nothing: a renamed or emptied shell value"
+    return lines
+
+
+def reviewer_persona_agents() -> list[str]:
+    """`_LIB_REVIEWER_PERSONA_AGENTS` from _lib.sh -- the lanes review-ledger.sh accepts by agent name."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_reviewer_persona_agents", "_lib_reviewer_persona_agents")
+
+
+def review_only_agents() -> list[str]:
+    """`_LIB_REVIEW_ONLY_AGENTS` from _lib.sh -- the reviewer agents deny-reviewer-tree-mutation.sh covers."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_review_only_agents", "_lib_review_only_agents")
+
+
+def no_gate_release_agents() -> list[str]:
+    """`_LIB_NO_GATE_RELEASE_AGENTS` from _lib.sh -- the agent identities barred from releasing a gate."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_no_gate_release_agents", "_lib_no_gate_release_agents")
+
+
+def plan_writer_agents() -> list[str]:
+    """`_LIB_PLAN_WRITER_AGENTS` from _lib.sh -- the agents confined to writing plan files."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_plan_writer_agents", "_lib_plan_writer_agents")
+
+
+def review_ledger_non_agent_lanes() -> list[str]:
+    """`_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing _lib.sh then the library as review-ledger.sh does."""
+    ledger_lib = SCRIPTS_DIR / "_review-ledger-lib.sh"
+    return _nonempty_shell_lines(
+        f'. {_LIB_SH}; . {ledger_lib}; printf "%s\\n" "${{_REVIEW_LEDGER_NON_AGENT_LANES[@]}}"',
+        "_REVIEW_LEDGER_NON_AGENT_LANES",
+    )
+
+
 def _build_subprocess_env(
     home: Path | None,
     extra_env: dict | None,
@@ -814,6 +875,116 @@ def run_hook_session_start(
         'expected "SessionStart"'
     )
     return hook_specific_output["sessionTitle"]
+
+
+def run_additional_context_session_start_hook(
+    hook: Path,
+    payload: dict | None,
+    home: Path,
+    *,
+    process_cwd: Path | None = None,
+    extra_env: dict | None = None,
+    raw_stdin: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    """Runs a SessionStart hook that emits advisory `additionalContext`, which run_hook_session_start cannot parse.
+
+    `raw_stdin` replaces the JSON-encoded payload, for malformed and empty stdin.
+    `extra_env` is applied after the HOME override, so it can also override HOME.
+    """
+    stdin = raw_stdin if raw_stdin is not None else json.dumps(payload).encode()
+    return subprocess.run(
+        [str(hook)],
+        input=stdin,
+        capture_output=True,
+        cwd=process_cwd,
+        env=_build_subprocess_env(home, extra_env),
+        check=False,
+    )
+
+
+def session_start_additional_context(result: subprocess.CompletedProcess) -> str:
+    """Returns the `additionalContext` of a SessionStart hook's output, asserting its event name."""
+    hook_specific_output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert hook_specific_output["hookEventName"] == "SessionStart"
+    return hook_specific_output["additionalContext"]
+
+
+def session_start_registrations() -> list[tuple[str, dict]]:
+    """Returns (matcher, hook entry) for every settings.json SessionStart hook, with "" for a matcher-less group."""
+    groups = json.loads((CLAUDE_DIR / "settings.json").read_text())["hooks"]["SessionStart"]
+    return [(group.get("matcher", ""), hook) for group in groups for hook in group["hooks"]]
+
+
+def session_start_registered_timeouts(script_name: str) -> list[int | None]:
+    """Returns the `timeout` of every settings.json SessionStart entry whose command ends in `/script_name`."""
+    return [
+        hook.get("timeout")
+        for _, hook in session_start_registrations()
+        if hook.get("command", "").endswith(f"/{script_name}")
+    ]
+
+
+def session_start_matchers_registering(script_name: str) -> list[str]:
+    """Returns the matcher of every settings.json SessionStart entry whose command ends in `/script_name`."""
+    return [
+        matcher
+        for matcher, hook in session_start_registrations()
+        if hook.get("command", "").endswith(f"/{script_name}")
+    ]
+
+
+# The opening words of _lib_autonomous_shipping_statement's text.
+AUTONOMOUS_SHIPPING_STATEMENT_LEAD = "Autonomous shipping is active for this repository"
+
+
+def run_autonomous_shipping_statement(home: Path, *args: str) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_statement ARGS` with HOME set to `home` and nothing else inherited but PATH."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_statement "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+
+
+def run_autonomous_shipping_root_for_cwd(
+    home: Path | str | None, *args: str, process_cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Runs `_lib_autonomous_shipping_root_for_cwd ARGS` with nothing inherited but PATH, plus HOME unless `home` is None."""
+    env = {"PATH": os.environ["PATH"]}
+    if home is not None:
+        env["HOME"] = str(home)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_root_for_cwd "$@"',
+            "bash",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=process_cwd,
+        env=env,
+        check=False,
+    )
+
+
+def add_linked_worktree(repo: Path, destination: Path, *, branch: str = "feature") -> Path:
+    """Adds `destination` as a linked worktree of `repo` on a new `branch`."""
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(destination)],
+        cwd=repo,
+        check=True,
+    )
+    return destination
 
 
 def posttooluse_input(file_path: str) -> dict:
@@ -2254,6 +2425,25 @@ def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
     return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
 
 
+def write_architect_consult_latch(config_dir: Path, repo: Path) -> Path:
+    """Create only the branch's consult latch, bypassing the recorder.
+    Unlike a real consult, which deletes the state file first, this leaves the
+    branch's state file untouched."""
+    latch = architect_consult_latch_path(config_dir, repo)
+    latch.parent.mkdir(parents=True, exist_ok=True)
+    latch.touch()
+    return latch
+
+
+def enable_round2_pilot(config_dir: Path) -> Path:
+    """Create the round-2 pilot sentinel, which lowers the no-latch round-state
+    cap from 2 to 1."""
+    sentinel = config_dir / ".round-consult-round2-pilot"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    return sentinel
+
+
 def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
     """Seed the round-state file directly with `values` (each already a
     "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
@@ -2302,6 +2492,32 @@ def symlink_hooks_lib_chain(hooks_dir: Path) -> None:
     _symlink_if_absent(hooks_dir / "_lib.sh", HOOKS_DIR / "_lib.sh")
     _symlink_if_absent(hooks_dir / "_config.sh", HOOKS_DIR / "_config.sh")
     _symlink_if_absent(hooks_dir / "config-keys.psv", HOOKS_DIR / "config-keys.psv")
+
+
+def config_schema_text_without_key(key: str) -> str:
+    """Returns the real config-keys.psv text with `key`'s row removed.
+    Raises when `key` has no row, so a renamed key cannot leave the schema intact."""
+    all_rows = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+    kept_rows = [line for line in all_rows if not line.startswith(f"{key}|")]
+    assert len(kept_rows) < len(all_rows), f"config-keys.psv has no row for {key}"
+    return "\n".join(kept_rows) + "\n"
+
+
+def hook_beside_degraded_schema(tmp_path: Path, hook: Path, *, schema_without_key: str | None = None) -> Path:
+    """Returns a symlink to `hook` in a fresh dir whose sibling config-keys.psv is degraded.
+    That is the interrupted stow-relink or git-pull shape.
+    With `schema_without_key` None the schema file is absent, so it reads as unreadable.
+    Otherwise the real schema is copied with that key's row removed.
+    Removing a key the hook never reads gives a positive control for the same directory shape."""
+    degraded_hooks_dir = tmp_path / "degraded-schema-hooks"
+    degraded_hooks_dir.mkdir()
+    (degraded_hooks_dir / hook.name).symlink_to(hook)
+    symlink_hooks_lib_chain(degraded_hooks_dir)
+    degraded_schema = degraded_hooks_dir / "config-keys.psv"
+    degraded_schema.unlink()
+    if schema_without_key is not None:
+        degraded_schema.write_text(config_schema_text_without_key(schema_without_key))
+    return degraded_hooks_dir / hook.name
 
 
 def install_marker_script(isolated_home: Path) -> Path:
@@ -2355,6 +2571,19 @@ def extract_ci_detect_step_run_block() -> str:
         "the step move or get renamed?"
     )
     return detect_steps[0]["run"]
+
+
+SETUP_PYTHON_ACTION = "actions/setup-python"
+
+
+def setup_python_steps(workflow: dict) -> list[tuple[str, dict]]:
+    """Return each `actions/setup-python` step of a parsed workflow with a label naming its job and position."""
+    labelled_steps = []
+    for job_id, job in (workflow.get("jobs") or {}).items():
+        for position, step in enumerate(job.get("steps") or [], start=1):
+            if isinstance(step, dict) and str(step.get("uses", "")).split("@")[0] == SETUP_PYTHON_ACTION:
+                labelled_steps.append((f"job {job_id!r} step {position} ({step['uses']})", step))
+    return labelled_steps
 
 
 def substitute_ci_detect_step_expressions(script: str, base_sha: str, head_sha: str) -> str:
@@ -2456,6 +2685,51 @@ def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: 
     shim = bin_dir / "git"
     _write_arg_matching_exit_shim(shim, '"$REAL_GIT"', arg_pattern, exit_status)
     return shim
+
+
+def _timeout_binary_present() -> bool:
+    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
+
+
+def _make_git_blocking_on_arg(
+    bin_dir: Path, arg_pattern: str, stdout_before_block: str = "partialline"
+) -> Path:
+    """When an argument matches the shell `case` pattern `arg_pattern`, the shim
+    writes `stdout_before_block` (nothing when empty) and then blocks past the
+    5s cap.
+
+    Callers must set `$REAL_GIT` to a real git binary path.
+
+    The 20s sleep is well past the cap yet bounded, so a cap regression fails
+    the test instead of hanging it.
+
+    `stdout_before_block` is spliced unescaped into a `printf` format string,
+    so pass plain alphanumeric text."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      printf "{stdout_before_block}"\n'
+        '      sleep 20\n'
+        '      exit 0\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    return _make_git_blocking_on_arg(bin_dir, "merge-tree")
+
+
+def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
+    return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 
 def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:

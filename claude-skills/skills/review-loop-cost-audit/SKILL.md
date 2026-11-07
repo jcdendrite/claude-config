@@ -61,7 +61,7 @@ The table is date-only. Take round instants from the event timeline, which print
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch>
 ```
-A round is one skill invocation, not one review pass. Its window is the one `docs/transcript-analysis.md` § "review-round-cost" defines. Non-review work such as a handoff write-up, a `pr-description` run, or a `code-writer` dispatch stays inside that window, so a round's main-thread dollars are an upper bound on its review cost. A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
+A round is one skill invocation, not one review pass. Its window is the one `docs/transcript-analysis.md` § "review-round-cost" defines. Non-review work such as a handoff write-up, a `pr-description` run, or a `code-writer` dispatch stays inside that window, so a round's main-thread dollars are an upper bound on its review cost. The timeline's `round=` label uses a shorter `plan-review` window than this step's, so count a round's reviewer spawns by instant and window, not by that label (`docs/transcript-analysis.md` § "review-trace"). A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
 
 **(c) Cost decomposition.** Arithmetic on the Step (b) table, then the checks below.
 
