@@ -26,9 +26,6 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 | **E2E** (real external APIs) | Seconds | Third-party APIs, real infra | Complete user flows work end-to-end | Few per critical flow, run pre-merge or scheduled |
 | **Smoke** (post-deploy health) | Seconds | Production/staging infra | Critical paths are up after deployment | 1-2 per service, run on deploy only |
 
-**Contract tests** verify that service-to-service API schemas stay compatible without requiring a running instance of the other service. Use them at any service boundary where teams deploy independently.
-**Smoke tests** are lightweight post-deploy checks that verify critical paths are functional — they answer "is it up?" not "does every flow work?"
-
 ## 2. Test-first invariant
 
 **PRODUCTION CODE REQUIRES A FAILING TEST FIRST.**
@@ -64,9 +61,6 @@ Use the narrowest double that covers the test's intent. Prefer stubs for unit te
 - **Cross-domain reach via subprocess call or direct file-path read:** Declare the edge explicitly in whatever mechanism the codebase uses to map changed files to affected tests (a rule table, CI path filter, or similar). Import- or directory-based selection tooling can't see it
 
 ## 4. Test isolation
-
-### Avoid global state in tests when possible
-Prefer designs that pass dependencies explicitly rather than relying on global state. When global state is unavoidable, follow the rules below.
 
 ### Global state must be saved and restored
 When tests modify global state (env vars, global functions, singletons, replaced doubles such as HTTP clients, fetch, or clocks), always save the original and restore in a guaranteed cleanup block (teardown, `finally`, `defer`, etc.) — even if the test fails or throws. **Never** unconditionally delete or overwrite global state — a test that removes a value without saving it first will break every subsequent test that needs it.
@@ -157,6 +151,13 @@ For endpoints or functions that handle concurrent writes:
 - Test with parallel requests to verify idempotency and conflict resolution
 - Test for expected behavior under contention (optimistic locking failures, retry semantics, deadlock avoidance)
 
+### Stated boundary rules require a mechanical check
+When a plan or change states or alters a module-boundary, layering, or dependency-direction rule, a test enforces it. Enforce only stated rules; never infer rules from the current dependency graph.
+- Derive edges by parsing imports (the language's AST or the project's existing graph tooling), not by substring or regex over source text (§9). Where no parser exists, such as shell `source` edges, a text match is acceptable only as a tripwire, with the gap named
+- Extend the enforcement the codebase already has before proposing a dedicated tool, and check that the tool models the rule's granularity (module, import form, imported name) before relying on it
+- Give each rule shape (deny, allow) its own controls, kept as permanent tests: assert the modules the rule names are in the scanned set, and feed the detector a seeded violation
+- A passing import-graph check says nothing about subprocess calls, file-path reads, or dynamic and function-local imports it does not model. Name the residual gap in the plan
+
 ### Happy path alone is insufficient when:
 - The function has validation logic (test invalid inputs)
 - The function has auth/authorization (test unauthorized callers)
@@ -190,10 +191,8 @@ If an assertion checks a value that was set up directly in the test double rathe
 |---|---|
 | Assertion-free tests (code runs but nothing is asserted) | Every test must assert on a specific expected outcome |
 | Sleep-based synchronization (`sleep(2)` for async work) | Use polling with timeout, await, or synchronization primitives |
-| Hardcoded colliding test data (`id=1`, `email=test@example.com`) | Generate unique identifiers per test |
 | Over-mocking (test encodes implementation, not behavior) | Mock only direct dependencies; let integration tests cover wiring |
 | Mocking third-party internals (library's private API) | Use the library's test utilities or mock at your own abstraction boundary |
-| Testing the test double (asserting stub's own return value) | Assert on values the code computed or transformed |
 | Source-scanning the file under test (reading it as a string and asserting substrings) instead of executing it | Reading source only proves the text exists, not that it runs — execute the function/hook/component with mocked dependencies and assert on observable behavior instead. Acceptable narrowly as a wiring-presence tripwire, never as a substitute for the behavioral assertion. |
 | Regex-parsing specific field values from runtime output (log lines, JSON, XML) in a test assertion instead of parsing with a library or calling the production parser | Parse with the same library the code uses (or call the production parser) and assert on the result — a regex re-implements logic the production code owns, masking broken parsing and breaking on benign format changes. Exception: asserting only that the output is valid JSON or matches a line-format envelope, without checking specific field values, is a format-contract test, not this anti-pattern. |
 | Stub or vacuous assertion when blocked by credentials/env/external state | Mock or fake the credential boundary; don't commit a permanently-passing assertion. |
