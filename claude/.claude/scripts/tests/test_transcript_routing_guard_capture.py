@@ -320,8 +320,8 @@ class _RefusalCase(NamedTuple):
 def _refusal_notes(config_dir: str) -> list[_RefusalCase]:
     """Each refused note, the fixed reason its refusal prints and the note line it names.
 
-    The bad row sits on line 2, below a comment line. Each case is a three-cell row whose one named defect is its only
-    defect, so each asserts its own reason. `control_text` repairs that one defect and parses.
+    Each note's one named defect is its only defect, so each asserts its own reason. `control_text` repairs that one
+    defect and parses.
     """
     def note(*rows: str) -> str:
         return "# comment\n" + "\n".join(rows) + "\n"
