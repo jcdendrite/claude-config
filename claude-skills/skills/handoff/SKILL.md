@@ -130,9 +130,13 @@ A live marker whose reconciliation flag fired means finished work is one inciden
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
 
 ## §7 Resume command
-Name the directory the resumed session starts in: the root of the worktree or checkout where §3's first step runs, or that directory itself outside any repository; for a step that creates a worktree, the existing directory it runs from; and for a first step that names no directory or is only a question, this session's own directory, as §4's header names it; then write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`, unless that directory is the one this session runs in outside any linked worktree and §4's header names it too, in which case write `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone.
+Name the directory the resumed session starts in, then write the command for it:
 
-The announce message after the write picks the resume route by comparing this directory with the session's worktree. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so nothing depends on the resuming session remembering to read or delete the file. Can be aliased for convenience.
+- The directory is the root of the worktree or checkout where §3's first step runs, or that directory itself outside any repository. For a step that creates a worktree it is the existing directory the step runs from. For a first step that names no directory or is only a question it is this session's own directory, as §4's header names it.
+- Write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`.
+- Write the bare form `resume-context <config-dir>/handoffs/<slug>-handoff.md` instead only when that directory is the one this session runs in outside any linked worktree and §4's header names it too. In every other case write the first form alone.
+
+After the write, the announce hook names the resume route; relay it to the engineer. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so nothing depends on the resuming session remembering to read or delete the file.
 
 ## You may drop
 

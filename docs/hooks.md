@@ -198,7 +198,6 @@ A new gate registers every handler with `"onFailure": "block"` and ends its scri
   - the announced path differs from the written path when the raw `file_path` contains a NUL byte or a trailing newline, because command substitution strips them before the allowlist check (e.g. `a-handoff.md` plus a trailing LF announces `a-handoff.md`)
   - a worktree root whose directory name ends in a newline is announced in `--cwd` without it, because command substitution strips trailing newlines before the byte check
   - the file's `--cwd` is compared raw, with no canonicalization (symlinks and `.` and `..` components), so a non-canonical spelling of this worktree gets the shell-only announce (its reason names that spelling) while `/resume-context` loads it
-  - a file name with a leading `@` passes the allowlist and is announced as `/resume-context @name`; whether the client treats a leading `@` in a slash argument as a file mention is unverified
   - a handoff/brief filename or the file's own `--cwd` directory spelled as an English directive from allowlisted bytes is echoed into `additionalContext` verbatim (an accepted residual)
 
   Carries no kill switch — an informational hook firing only on the deliberate, infrequent act of writing a continuity file.

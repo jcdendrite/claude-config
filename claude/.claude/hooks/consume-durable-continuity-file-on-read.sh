@@ -121,6 +121,7 @@ TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/nul
 FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 [ -n "$FILE_PATH" ] || exit 0
 
+# Glob copy: announce-resume-command.sh's case arm and _lib_collect_pending_continuity_files define the same set.
 case "$FILE_PATH" in
   "$CONFIG_DIR"/handoffs/*-handoff.md | "$CONFIG_DIR"/briefs/*-task.md) ;;
   *) exit 0 ;;

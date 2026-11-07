@@ -6005,8 +6005,8 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "command. The file is still pending. Stop."
     ),
     "fence_each_relayed_command": (
-        "Give the engineer each command this skill has you relay or suggest alone in "
-        "its own fenced code block (chat replies only)."
+        "In chat replies, put each command this skill has you relay or suggest alone "
+        "in its own fenced code block."
     ),
 }
 
@@ -6041,53 +6041,71 @@ class TestResumeContextSkill:
 # Clauses of the handoff §7 and brief §7.5 resume-command sections that make the
 # written `--cwd` the directory the resumed session starts in, which the announce
 # message compares with the session's worktree to pick the resume route. Each
-# section is a first line (the directory rule and the command forms) and a second
-# paragraph. The second paragraph holds the `cd <path> &&` prohibition and the only
-# sentence telling the writer why the directory matters, so a trim at the line cap
-# must fail here. Each entry is (skill name, section heading, pinned text).
+# section states the directory rule and the command forms (three bullets), then a
+# second paragraph. The second paragraph holds the `cd <path> &&` prohibition and
+# the only sentence telling the writer why the directory matters, so a trim at the
+# line cap must fail here. Each entry is (skill name, section heading, pinned text).
 _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
-    "handoff_first_line": (
+    "handoff_directory_bullet": (
         "handoff",
         "## §7 Resume command",
-        "Name the directory the resumed session starts in: the root of the worktree or "
-        "checkout where §3's first step runs, or that directory itself outside any "
-        "repository; for a step that creates a worktree, the existing directory it runs "
-        "from; and for a first step that names no directory or is only a question, this "
-        "session's own directory, as §4's header names it; then write `resume-context "
-        "--cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`, unless that "
-        "directory is the one this session runs in outside any linked worktree and "
-        "§4's header names it too, in which case write "
-        "`resume-context <config-dir>/handoffs/<slug>-handoff.md` alone.",
+        "The directory is the root of the worktree or checkout where §3's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a question it is this session's own "
+        "directory, as §4's header names it.",
+    ),
+    "handoff_cwd_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`.",
+    ),
+    "handoff_bare_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write the bare form `resume-context <config-dir>/handoffs/<slug>-handoff.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §4's header names it too. In every other case write the "
+        "first form alone.",
     ),
     "handoff_second_paragraph": (
         "handoff",
         "## §7 Resume command",
-        "The announce message after the write picks the resume route by comparing this "
-        "directory with the session's worktree. `--cwd` makes the launched session start "
+        "After the write, the announce hook names the resume route; relay it to the "
+        "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
         "happens to already be positioned to run it. Moves the file to a fresh temp path "
         "and launches a new session with it loaded, so nothing depends on the resuming "
-        "session remembering to read or delete the file. Can be aliased for convenience.",
+        "session remembering to read or delete the file.",
     ),
-    "brief_first_line": (
+    "brief_directory_bullet": (
         "brief",
         "## §7.5 Resume command",
-        "Name the directory the session picking up this brief starts in: the root of the "
-        "worktree or checkout where §6's first step runs, or that directory itself outside "
-        "any repository; for a step that creates a worktree, the existing directory it "
-        "runs from; and for a first step that names no directory or is only a decision, "
-        "the worktree §3 names, else this session's own directory; then write "
-        "`resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`, unless "
-        "that directory is the one this session runs in outside any linked worktree and "
-        "§3 names no other directory, in which case write `resume-context "
-        "<config-dir>/briefs/<slug>-task.md` alone.",
+        "The directory is the root of the worktree or checkout where §6's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a decision it is the worktree §3 names, "
+        "else this session's own directory.",
+    ),
+    "brief_cwd_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`.",
+    ),
+    "brief_bare_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write the bare form `resume-context <config-dir>/briefs/<slug>-task.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §3 names no other directory. In every other case write the "
+        "first form alone.",
     ),
     "brief_second_paragraph": (
         "brief",
         "## §7.5 Resume command",
-        "The announce message after the write picks the resume route by comparing this "
-        "directory with the session's worktree. `--cwd` makes the launched session start "
+        "After the write, the announce hook names the resume route; relay it to the "
+        "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
         "happens to already be positioned to run it. Moves the file to a fresh temp path "
@@ -6122,15 +6140,27 @@ class TestResumeCommandDirectoryClauses:
             context=f"{skill_name}/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
         )
 
-    @pytest.mark.parametrize("clause_key", ["handoff_first_line", "brief_first_line"])
-    def test_first_line_is_one_unwrapped_line(self, clause_key: str) -> None:
-        """A hard wrap inside the first line splits the command, and the template
-        contract's scan joins lines only on a trailing backslash.
+    @pytest.mark.parametrize(
+        "clause_key",
+        [
+            "handoff_directory_bullet",
+            "handoff_cwd_form_bullet",
+            "handoff_bare_form_bullet",
+            "brief_directory_bullet",
+            "brief_cwd_form_bullet",
+            "brief_bare_form_bullet",
+        ],
+    )
+    def test_directory_rule_clause_is_one_unwrapped_line(self, clause_key: str) -> None:
+        """A hard wrap inside a clause that holds a command splits the command, and the
+        template contract's scan joins lines only on a trailing backslash.
         """
-        skill_name, heading, first_line = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
-        section_lines = _raw_heading_section_text(_skill_file(skill_name), heading).splitlines()
-        assert first_line in section_lines, (
-            f"{skill_name}/SKILL.md: the resume-directory first line is not one unwrapped line of its section."
+        skill_name, heading, clause = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
+        section_lines = [
+            line.removeprefix("- ") for line in _raw_heading_section_text(_skill_file(skill_name), heading).splitlines()
+        ]
+        assert clause in section_lines, (
+            f"{skill_name}/SKILL.md: the {clause_key!r} clause is not one unwrapped line of its section."
         )
 
     def test_handoff_section4_directs_reentry_to_the_resume_directory(self) -> None:

@@ -14,11 +14,14 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     _make_git_exiting_with_status,
+    announced_route,
     assert_cap_engaged,
     code_span_command,
     edit_input,
+    install_resume_context_stub,
     multiedit_input,
     read_input,
+    resume_context_stub_invocations,
     write_continuity_file,
     write_input,
 )
@@ -42,25 +45,6 @@ def _registered_post_tool_use_event_name() -> str:
     raise AssertionError(f"{ANNOUNCE_HOOK.name} not found in {_SETTINGS_PATH}")
 
 
-def _install_resume_context_stub(home: Path) -> Path:
-    """A `resume-context` that only records its argv, placed first on the hook's PATH so
-    a dropped backtick escape in the hook's message assembly cannot run a real launcher."""
-    stub_bin = home / ".resume-context-stub-bin"
-    stub_bin.mkdir(exist_ok=True)
-    stub = stub_bin / "resume-context"
-    stub.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n"
-    )
-    stub.chmod(0o755)
-    return stub_bin
-
-
-def _resume_context_stub_invocations(home: Path) -> str:
-    log = home / ".resume-context-stub-bin" / "invocations.log"
-    return log.read_text() if log.exists() else ""
-
-
 def _run_hook_raw(
     hook: Path, tool_input: dict, home: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -72,7 +56,7 @@ def _run_hook_raw(
     env["HOME"] = str(home)
     if extra_env:
         env.update(extra_env)
-    env["PATH"] = f"{_install_resume_context_stub(home)}:{env['PATH']}"
+    env["PATH"] = f"{install_resume_context_stub(home)}:{env['PATH']}"
     return subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
@@ -126,7 +110,7 @@ _RELAY_SENTENCE = (
 _RELAY_INSTRUCTION = f"{_USE_VERBATIM_CLAUSE}. {_RELAY_SENTENCE}"
 _REFUSED_NAME_REASON = (
     "/resume-context cannot load this file by name, because the name is not one the slash form accepts "
-    "(it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash or a dot)."
+    "(it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash, a dot or an @)."
 )
 
 
@@ -770,13 +754,13 @@ class TestAnnounceResumeCommand:
             payload = write_input(str(fixture), cwd=str(linked_worktree if arm.session == "linked" else git_repo))
         result = _run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
         assert result.returncode == 0
-        assert _resume_context_stub_invocations(isolated_home) == ""
+        assert resume_context_stub_invocations(isolated_home) == ""
         message, context = _both_channels(result)
 
         values = {"name": fixture.name, "root": linked_worktree, "elsewhere": elsewhere, "fixture": fixture}
         expected_command = arm.command.format(**values)
         reason = arm.reason.format(**values)
-        is_load = arm.command.startswith("/resume-context ")
+        is_load = announced_route(arm.command) == "load"
         scope = "this worktree" if arm.session == "linked" else "this directory"
         if not is_load:
             lead, route = _SHELL_LEAD.format(reason=reason), (
@@ -858,13 +842,15 @@ class TestAnnounceResumeCommand:
         assert message.split("\n")[0] == _SHELL_LEAD.format(reason=_REFUSED_NAME_REASON)
         assert f"`resume-context {announced_path}`" in context
         assert "`/resume-context" not in context
-        assert _resume_context_stub_invocations(isolated_home) == ""
+        assert resume_context_stub_invocations(isolated_home) == ""
 
     @pytest.mark.parametrize(
         ("written_rel_path", "announced_rel_path"),
         [
             pytest.param(".claude/handoffs/-handoff.md", None, id="leading-dash"),
             pytest.param(".claude/briefs/-task.md", None, id="leading-dash-brief"),
+            pytest.param(".claude/handoffs/@mention-handoff.md", None, id="leading-at-sign"),
+            pytest.param(".claude/briefs/@mention-task.md", None, id="leading-at-sign-brief"),
             pytest.param(".claude/handoffs/nested/example-handoff.md", None, id="nested-path"),
             pytest.param(
                 ".claude/handoffs/example-handoff.md",
@@ -886,8 +872,9 @@ class TestAnnounceResumeCommand:
     def test_file_name_the_slash_form_refuses_falls_back_to_the_shell_route(
         self, isolated_home, git_repo, written_rel_path, announced_rel_path
     ):
-        """The slash script refuses a leading dash and lists only _lib_is_pending_continuity_file paths, so a name
-        the slash form refuses gets the shell route even though the file's verdict is load.
+        """The slash script refuses a leading dash and lists only _lib_is_pending_continuity_file paths, and the hook
+        also withholds the slash form from a leading `@`, so a name the slash form refuses gets the shell route
+        even though the file's verdict is load.
         A spelling row announces a non-literal spelling of the written, pending file: the hook must test the
         spelled FILE_PATH, not a normalized one.
         The pending-path matrix is in test_lib_resume_context.py."""

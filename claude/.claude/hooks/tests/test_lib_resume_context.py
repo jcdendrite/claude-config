@@ -1,7 +1,8 @@
 """Unit tests for _lib.sh's resume-context helpers (_lib_resume_context_tmpdir_root,
 _lib_resume_context_index_dir, _lib_print_recovery_hint, _lib_linked_worktree_root,
 _lib_continuity_file_resume_cwd, _lib_resume_context_verdict,
-_lib_is_pending_continuity_file and _lib_sanitize_for_terminal).
+_lib_is_pending_continuity_file, _lib_collect_pending_continuity_files and
+_lib_sanitize_for_terminal).
 """
 from __future__ import annotations
 
@@ -706,10 +707,12 @@ def test_resume_context_verdict_matrix(state: str, root: str, file_target: str, 
     assert _resume_context_verdict(state, root, file_target) == expected
 
 
-def _is_pending_continuity_file(config_dir: Path, candidate: str) -> bool:
+def _is_pending_continuity_file(config_dir: Path, candidate: str, *, caller_shell_state: str = "") -> bool:
+    """`caller_shell_state` is bash run after sourcing the lib and before the call."""
     script = (
         "set -euo pipefail\n"
         f". {_LIB_SH}\n"
+        f"{caller_shell_state}\n"
         'if _lib_is_pending_continuity_file "$1" "$2"; then printf pending; else printf not-pending; fi\n'
     )
     result = subprocess.run(
@@ -722,6 +725,38 @@ def _is_pending_continuity_file(config_dir: Path, candidate: str) -> bool:
     assert result.returncode == 0, result.stderr
     assert result.stdout in ("pending", "not-pending"), f"stdout={result.stdout!r} stderr={result.stderr!r}"
     return result.stdout == "pending"
+
+
+def _glob_state(
+    *, noglob: int = 0, dotglob: int = 0, nullglob: int = 0, failglob: int = 0, globignore: str = "unset"
+) -> str:
+    return f"noglob={noglob} dotglob={dotglob} nullglob={nullglob} failglob={failglob} globignore={globignore}"
+
+
+def _glob_state_after_collect(config_dir: Path, caller_shell_state: str, after_collect: str = "") -> str:
+    """Runs the collector from `caller_shell_state` (bash run after sourcing the lib), then `after_collect`,
+    and reports the glob state in `_glob_state`'s format."""
+    script = (
+        "set -euo pipefail\n"
+        f". {_LIB_SH}\n"
+        f"{caller_shell_state}\n"
+        '_lib_collect_pending_continuity_files "$1"\n'
+        f"{after_collect}\n"
+        "case \"$-\" in *f*) printf 'noglob=1 ' ;; *) printf 'noglob=0 ' ;; esac\n"
+        "for option in dotglob nullglob failglob; do\n"
+        "  if shopt -q \"$option\"; then printf '%s=1 ' \"$option\"; else printf '%s=0 ' \"$option\"; fi\n"
+        "done\n"
+        "printf 'globignore=%s' \"${GLOBIGNORE-unset}\"\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(config_dir)],
+        capture_output=True,
+        text=True,
+        env={name: value for name, value in os.environ.items() if name != "GLOBIGNORE"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
 
 
 class TestLibIsPendingContinuityFile:
@@ -814,6 +849,60 @@ class TestLibIsPendingContinuityFile:
 
     def test_a_config_dir_with_no_handoffs_or_briefs_directories_has_nothing_pending(self, tmp_path: Path) -> None:
         assert not _is_pending_continuity_file(tmp_path, f"{tmp_path}/handoffs/example-handoff.md")
+
+    @pytest.mark.parametrize(
+        "caller_shell_state",
+        ["set -f", "GLOBIGNORE=x", "shopt -s dotglob nullglob failglob", "GLOBIGNORE='*' ; set -f"],
+        ids=["noglob", "globignore", "dotglob-nullglob-failglob", "globignore-and-noglob"],
+    )
+    def test_the_pending_set_does_not_depend_on_the_callers_glob_options(
+        self, config_dir: Path, caller_shell_state: str
+    ) -> None:
+        """Allow and deny under the same caller state: a regular direct child stays pending and a dot-name stays not pending."""
+        (config_dir / "handoffs" / "example-handoff.md").write_text("body\n")
+        (config_dir / "handoffs" / ".hidden-handoff.md").write_text("body\n")
+        assert _is_pending_continuity_file(
+            config_dir, f"{config_dir}/handoffs/example-handoff.md", caller_shell_state=caller_shell_state
+        )
+        assert not _is_pending_continuity_file(
+            config_dir, f"{config_dir}/handoffs/.hidden-handoff.md", caller_shell_state=caller_shell_state
+        )
+
+    @pytest.mark.parametrize(
+        ("caller_shell_state", "after_collect", "expected_state"),
+        [
+            ("", "", _glob_state()),
+            ("set -f", "", _glob_state(noglob=1)),
+            ("shopt -s dotglob", "", _glob_state(dotglob=1)),
+            ("shopt -s nullglob", "", _glob_state(nullglob=1)),
+            ("shopt -s failglob", "", _glob_state(failglob=1)),
+            ("GLOBIGNORE=''", "", _glob_state(globignore="")),
+            ("shopt -s dotglob; GLOBIGNORE=''", "", _glob_state(dotglob=1, globignore="")),
+            ("GLOBIGNORE=x", "", _glob_state(dotglob=1, globignore="x")),
+            ("GLOBIGNORE=x", "unset GLOBIGNORE", _glob_state()),
+            (
+                "set -f; shopt -s dotglob nullglob failglob; GLOBIGNORE=x",
+                "",
+                _glob_state(noglob=1, dotglob=1, nullglob=1, failglob=1, globignore="x"),
+            ),
+        ],
+        ids=[
+            "defaults-stay-defaults",
+            "noglob-alone",
+            "dotglob-alone",
+            "nullglob-alone",
+            "failglob-alone",
+            "globignore-empty-stays-empty",
+            "dotglob-with-empty-globignore",
+            "globignore-non-empty-stays-non-empty",
+            "globignore-leaves-dotglob-off-once-unset",
+            "every-option-at-once",
+        ],
+    )
+    def test_the_collector_restores_the_callers_glob_options(
+        self, config_dir: Path, caller_shell_state: str, after_collect: str, expected_state: str
+    ) -> None:
+        assert _glob_state_after_collect(config_dir, caller_shell_state, after_collect) == expected_state
 
 
 # _lib_sanitize_for_terminal — direct unit coverage of all three documented

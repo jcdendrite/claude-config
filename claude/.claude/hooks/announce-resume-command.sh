@@ -18,7 +18,7 @@
 # resume command (_lib_continuity_file_resume_cwd) names this session's
 # linked worktree, or names no --cwd in a main checkout
 # (_lib_resume_context_verdict) and the file name is one the slash script accepts
-# (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with neither a dash nor a dot).
+# (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with none of a dash, a dot or an @).
 # A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
 # In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
@@ -32,7 +32,7 @@
 # this worktree) becomes the --cwd of the advertised shell command, and the
 # reason names it. Without a usable target, the command keeps this worktree's
 # --cwd (linked) or has none (outside a linked worktree).
-# `systemMessage` puts the announced command alone on its second line in single backticks.
+# `systemMessage` puts the announced command alone on its second line in single backticks, not in a fenced block, because the phone client prefixes every `systemMessage` line, fence lines included (observed once; Claude Code does not document it).
 # `additionalContext` is one line telling the model to relay that one route, its command fenced, and run nothing.
 # A file-sourced --cwd is the file's own text, not a measurement by this hook,
 # and additionalContext labels it so and carries the reason.
@@ -72,9 +72,9 @@
 #
 # Paired glob sites: the continuity-path case glob below is copied verbatim
 # from the `case "$FILE_PATH" in` arm of consume-durable-continuity-file-on-read.sh.
-# The brief glob (`briefs/*-task.md`) is copied again in the load arm's wording switch below,
-# which selects brief wording; a glob change reaches that copy too.
 # _lib_collect_pending_continuity_files in _lib.sh defines the same two globs as the pending set; a glob change reaches it too.
+# The suffixes are spelled again in resume-context-same-session.sh's argument matching; a suffix change reaches it too.
+# test_continuity_glob_parity.py pins the announce, consume and helper sets to one another.
 #
 # Known gaps:
 #   - A session whose .cwd has drifted out of the worktree where the work
@@ -97,8 +97,6 @@
 #     shell-only announce (its reason names that spelling) while /resume-context loads it.
 #   - A session whose `.cwd` drifted out of its worktree gets the shell route for a file naming
 #     that worktree, because the hook compares the payload `.cwd`, not where the work lives.
-#   - A file name with a leading `@` passes the allowlist and is announced as `/resume-context @name`.
-#     Whether the client treats a leading `@` in a slash argument as a file mention is unverified.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.
@@ -120,6 +118,7 @@ esac
 FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 [ -n "$FILE_PATH" ] || exit 0
 
+# Glob copy: consume-durable-continuity-file-on-read.sh's case arm and _lib_collect_pending_continuity_files define the same set.
 case "$FILE_PATH" in
   "$CONFIG_DIR"/handoffs/*-handoff.md | "$CONFIG_DIR"/briefs/*-task.md) ;;
   *) exit 0 ;;
@@ -148,9 +147,10 @@ fi
 
 FILE_NAME="${FILE_PATH##*/}"
 # The slash script refuses a leading-dash argument and lists only _lib_is_pending_continuity_file paths.
+# This hook also refuses a leading `@` (the slash script accepts it), because the client may treat it in a slash argument as a file mention.
 SLASH_NAME_ACCEPTED=false
 case "$FILE_NAME" in
-  -*) ;;
+  -* | @*) ;;
   *)
     if _lib_is_pending_continuity_file "$CONFIG_DIR" "$FILE_PATH"; then
       SLASH_NAME_ACCEPTED=true
@@ -180,8 +180,9 @@ if [ "$VERDICT" = "load" ] && [ "$SLASH_NAME_ACCEPTED" = true ]; then
     LOAD_REASON="the file's resume command names no directory, and this session is not in a linked worktree"
   fi
   PROVENANCE="The command names the written file by its file name, and the route compares the working directory of this session with the file's own resume command"
+  # _lib_is_pending_continuity_file already fixed the suffix, so the directory alone picks the wording.
   case "$FILE_PATH" in
-    "$CONFIG_DIR"/briefs/*-task.md)
+    "$CONFIG_DIR"/briefs/*)
       LEAD="Resume in a session in $SCOPE_NAME, because $LOAD_REASON. Start a new claude session there, or run /clear in this one once its work is done, then:"
       ROUTE="in a session in $SCOPE_NAME: the engineer starts a new claude session there, or runs /clear in this one once its work is done, then runs \`$CMD\`, because $LOAD_REASON."
       ;;
@@ -195,7 +196,7 @@ else
   if [ "$SESSION_STATE" = "unknown" ]; then
     REASON="/resume-context cannot confirm this file belongs to this worktree, because this session's worktree could not be determined."
   elif [ "$VERDICT" = "load" ]; then
-    REASON="/resume-context cannot load this file by name, because the name is not one the slash form accepts (it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash or a dot)."
+    REASON="/resume-context cannot load this file by name, because the name is not one the slash form accepts (it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash, a dot or an @)."
   else
     if [ "$FILE_TARGET_USABLE" = true ]; then
       CMD="resume-context --cwd $FILE_TARGET $FILE_PATH"

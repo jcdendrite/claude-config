@@ -106,7 +106,7 @@ COMPACT_TIE_BREAK_HARD = (
     "If all three clauses hold, the user can run a bare /compact instead, and a focus line is optional."
 )
 HANDOFF_RESUME_ROUTE_SENTENCE = (
-    "After /handoff, the resume route depends only on whether the next step runs in this worktree: "
+    "After /handoff, the resume route depends on whether the next step runs in this worktree: "
     "if it does, the user resumes in this session with /clear and then /resume-context; "
     "if not, the user resumes outside this session with the shell resume-context command in a new terminal. "
     "A next step that creates a new worktree counts as running in the directory it is created from. "

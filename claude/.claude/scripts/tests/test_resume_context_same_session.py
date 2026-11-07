@@ -22,12 +22,17 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
+    SHELL_COMMAND_PREFIX,
     SKILLS_DIR,
+    SLASH_COMMAND_PREFIX,
     _make_git_exiting_with_status,
+    announced_route,
     code_span_command,
     continuity_resume_section,
     init_git_repo_with_commit,
+    install_resume_context_stub,
     read_input,
+    resume_context_stub_invocations,
     write_continuity_body,
     write_input,
 )
@@ -561,10 +566,15 @@ class TestExplicitArgument:
 
     @pytest.mark.parametrize(
         ("kind", "slug"),
-        [("handoff", "deploy-handoff"), ("brief", "deploy-task")],
-        ids=["handoff-slug-ending-in-handoff", "brief-slug-ending-in-task"],
+        [("handoff", "deploy-handoff"), ("brief", "deploy-task"), ("handoff", "notes.md"), ("brief", "notes.md")],
+        ids=[
+            "handoff-slug-ending-in-handoff",
+            "brief-slug-ending-in-task",
+            "handoff-slug-ending-in-dot-md",
+            "brief-slug-ending-in-dot-md",
+        ],
     )
-    def test_a_slug_ending_in_the_suffix_word_without_md_still_loads_by_slug(
+    def test_a_slug_that_does_not_end_in_a_full_suffix_still_loads_by_slug(
         self, sandbox: _Sandbox, kind: str, slug: str
     ) -> None:
         """Allow: only an argument ending in the full `-handoff.md` / `-task.md` is a file name rather than a slug."""
@@ -1201,18 +1211,6 @@ class TestConsume:
             assert not legacy_copy.exists()
 
 
-_SLASH_COMMAND_PREFIX = "/resume-context "
-_SHELL_COMMAND_PREFIX = "resume-context "
-
-
-def _route_of_announced_command(command: str) -> str:
-    """`load` for the slash command and `shell` for the shell command. No command starts with both prefixes."""
-    if command.startswith(_SLASH_COMMAND_PREFIX):
-        return "load"
-    assert command.startswith(_SHELL_COMMAND_PREFIX), f"announced command is neither route: {command!r}"
-    return "shell"
-
-
 class TestRoundTrip:
     def _announced_command(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
         result = subprocess.run(
@@ -1220,10 +1218,11 @@ class TestRoundTrip:
             input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
             capture_output=True,
             text=True,
-            env=sandbox.env(),
+            env=sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"}),
             check=False,
         )
         assert result.returncode == 0, result.stderr
+        assert resume_context_stub_invocations(sandbox.home) == ""
         return code_span_command(json.loads(result.stdout)["systemMessage"])
 
     def test_the_file_name_the_announce_hook_advertises_loads_exactly_that_file(self, sandbox: _Sandbox) -> None:
@@ -1231,8 +1230,8 @@ class TestRoundTrip:
         decoy = sandbox.write_pending("v1.2-step-3", sandbox.worktree_a)
 
         announced = self._announced_command(sandbox, pending, sandbox.worktree_a)
-        assert announced.startswith(_SLASH_COMMAND_PREFIX)
-        argument = announced[len(_SLASH_COMMAND_PREFIX) :]
+        assert announced.startswith(SLASH_COMMAND_PREFIX)
+        argument = announced[len(SLASH_COMMAND_PREFIX) :]
         outcome = sandbox.run(argument, cwd=sandbox.worktree_a)
 
         assert argument == pending.name
@@ -1267,10 +1266,10 @@ class TestRoundTrip:
         outcome = sandbox.run(written.name, cwd=sandbox.main_checkout)
 
         if stop_code is None:
-            assert announced == f"{_SLASH_COMMAND_PREFIX}{written.name}"
+            assert announced == f"{SLASH_COMMAND_PREFIX}{written.name}"
             assert outcome.first("LOAD")
         else:
-            assert announced == f"{_SHELL_COMMAND_PREFIX}{written}"
+            assert announced == f"{SHELL_COMMAND_PREFIX}{written}"
             assert outcome.stop_code == stop_code
 
     def test_the_brief_file_name_the_announce_hook_advertises_loads_exactly_that_brief(
@@ -1281,7 +1280,7 @@ class TestRoundTrip:
         announced = self._announced_command(sandbox, brief, sandbox.main_checkout)
         outcome = sandbox.run(brief.name, cwd=sandbox.main_checkout)
 
-        assert announced == f"{_SLASH_COMMAND_PREFIX}{brief.name}"
+        assert announced == f"{SLASH_COMMAND_PREFIX}{brief.name}"
         assert outcome.first("SOURCE") == str(brief)
 
     def test_a_symlink_leaf_is_announced_as_the_shell_command_because_the_script_does_not_list_it(
@@ -1295,7 +1294,7 @@ class TestRoundTrip:
         announced = self._announced_command(sandbox, link, sandbox.main_checkout)
         outcome = sandbox.run(link.name, cwd=sandbox.main_checkout)
 
-        assert announced == f"{_SHELL_COMMAND_PREFIX}{link}"
+        assert announced == f"{SHELL_COMMAND_PREFIX}{link}"
         assert outcome.stop_code == "nothing-pending"
 
     def test_a_nested_file_with_a_direct_child_of_the_same_name_never_gets_the_slash_argument(
@@ -1308,7 +1307,7 @@ class TestRoundTrip:
 
         announced = self._announced_command(sandbox, nested, sandbox.main_checkout)
 
-        assert announced == f"{_SHELL_COMMAND_PREFIX}{nested}"
+        assert announced == f"{SHELL_COMMAND_PREFIX}{nested}"
         assert decoy.read_text() == decoy_body
         assert sandbox.run(decoy.name, cwd=sandbox.main_checkout).first("SOURCE") == str(decoy)
 
@@ -1322,8 +1321,8 @@ class TestRoundTrip:
         decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
 
         announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
-        assert announced == f"{_SLASH_COMMAND_PREFIX}{announced_file.name}"
-        outcome = sandbox.run(announced[len(_SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+        assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
+        outcome = sandbox.run(announced[len(SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
 
         assert outcome.first("SOURCE") == str(announced_file)
         assert decoy.exists()
@@ -1337,10 +1336,10 @@ class TestRoundTrip:
         announced_file = sandbox.write_pending("x", kind=announced_kind)
         decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
         announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
-        assert announced == f"{_SLASH_COMMAND_PREFIX}{announced_file.name}"
+        assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
         announced_file.unlink()
 
-        outcome = sandbox.run(announced[len(_SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+        outcome = sandbox.run(announced[len(SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
 
         assert outcome.stop_code == "not-pending"
         sandbox.assert_nothing_moved(decoy)
@@ -1381,7 +1380,7 @@ class TestRoundTrip:
     def _announced_and_scripted_routes(self, sandbox: _Sandbox, session: str, file_target: str) -> tuple[str, str]:
         session_cwd = getattr(sandbox, session)
         pending = self._write_pending_naming(sandbox, file_target)
-        announced = _route_of_announced_command(self._announced_command(sandbox, pending, session_cwd))
+        announced = announced_route(self._announced_command(sandbox, pending, session_cwd))
         outcome = sandbox.run(pending.name, cwd=session_cwd)
         return announced, self._route_of_scripted_outcome(outcome)
 
