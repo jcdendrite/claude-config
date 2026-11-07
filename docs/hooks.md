@@ -179,7 +179,7 @@ Cites are to quoted header text, not line numbers, since the tier line's own ins
   - A branch already at or past the threshold when the gate is installed is asked at its next commit, in every repository.
   - A headless or scheduled session stops at the deny and reports, because the deny text says to.
   - The gate has no off switch, because the ack releases it once per branch.
-  - The ack is listed under `permissions.ask` and in no `permissions.allow` entry, as the `cleanup-merged-branches.sh` bullet in [`docs/scripts.md`](scripts.md) states of its entry. The forced prompt in auto mode and `bypassPermissions` is documented, not observed; [`docs/security-hardening.md`](security-hardening.md) lists the documented ask-rule behavior.
+  - The ack is listed under `permissions.ask` and in no `permissions.allow` entry. The forced prompt in auto mode and `bypassPermissions` is documented, not observed; [`docs/security-hardening.md`](security-hardening.md) lists the documented ask-rule behavior.
   - A review-only, plan-writer or `code-writer` agent running the bare ack command is denied by this gate. Other subagents are not barred, and the deny text tells them to report to their dispatcher.
   - Running the ack tells an unreadable state from a below-threshold one, and at or over the threshold the same run writes the latch.
   - An ack run from a terminal must use the session's `CLAUDE_CONFIG_DIR`, unset included, or it writes a latch the gate never reads. Committing from a terminal outside the session is the existing escape (see [Gate deadlock recovery](#gate-deadlock-recovery)).

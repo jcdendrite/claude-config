@@ -84,7 +84,7 @@
 #   - With neither `timeout` nor `gtimeout` on PATH, every capped call runs uncapped,
 #     so a stalled git call holds the commit until the harness's hook timeout.
 #   - A count call the 30-second cap kills leaves the commit unmeasured. The next
-#     commit measures again, and the largest refactors are the likeliest to reach it.
+#     commit measures again.
 #   - A repo whose count always reaches the cap pays up to that wait on every commit
 #     and is never gated.
 #   - The latch records an approved run of the exact bare ack command. The harness
