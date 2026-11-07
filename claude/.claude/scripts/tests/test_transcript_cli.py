@@ -273,7 +273,7 @@ def test_read_cost_with_a_projects_glob_is_refused_through_main(monkeypatch, cap
 def test_read_cost_this_repo_runs_to_a_report_through_main(
     fake_projects, stub_repo_tracked_agent_types, monkeypatch, capsys,
 ):
-    """Only test that drives a parsed --this-repo through main(); the direct-call tests hand-build their Namespace."""
+    """Only read-cost test reaching _resolve_project_scope from parsed --this-repo; any other pre-seeds args._this_repo_slugs."""
     monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])
     stub_repo_tracked_agent_types()
     _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6")])
