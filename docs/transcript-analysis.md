@@ -1775,7 +1775,7 @@ Each account's store is `<config-dir>/routing-guard-captures/`, holding one file
 
 The store follows the pr-cost ledger rules: it is local, untracked, per account, and opt-in per account through the same `pr_cost_recording` key. See `docs/pr-cost.md` § "Data" and `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close". Capture refuses to use the directory when it sits inside a git work tree or is a symlink. Keep it at `0700`, and delete the whole directory when the guard concludes.
 
-A file is never rebuilt once it exists. To **re-capture** a branch, delete that branch's file, then run capture again while every session of the branch is still inside `cleanupPeriodDays`. Find the file name with one `hashlib` command run in a terminal outside any agent session. The command prompts for the branch name, so the shell never parses it and shell history never records it:
+A file is never rebuilt once it exists. To **re-capture** a branch, delete that branch's file, then run capture again while every session of the branch is still inside `cleanupPeriodDays`. One `hashlib` command, run in a terminal outside any agent session, prints the branch's digest. The branch's capture file is the one in the captures directory whose name begins with that digest. The command prompts for the branch name, so the shell never parses it and shell history never records it:
 
 ```bash
 python3 -c 'import hashlib; print(hashlib.sha256(input("branch: ").encode("utf-8")).hexdigest())'

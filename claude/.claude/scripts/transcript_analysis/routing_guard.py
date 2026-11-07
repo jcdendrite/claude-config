@@ -18,7 +18,7 @@ OUTPUT INVARIANT, each clause pinned by the tests it names:
 - A transcript `requestId` can reach stderr, and nothing else, through pricing.dedup_turns_by_request_id's rate-limited
   prints. The DO NOT PUBLISH banner covers it. Pinned by `TestFreeText` in test_transcript_routing_guard_capture.py.
 - Compute writes no string read from a capture file, a model string included, to stdout, stderr or the `--out` file.
-  `TestPricing` and `TestCaptureFiles` in test_transcript_routing_guard_compute.py.
+  Pinned by `TestPricing` and `TestCaptureFiles` in test_transcript_routing_guard_compute.py.
 """
 from __future__ import annotations
 
