@@ -1562,7 +1562,6 @@ def _capture_account_rows(
     key_states_by_line: Mapping[int, _BranchKeyStates], contradicted_line_nos: Collection[int],
     scan: _ScanFacts, account_dir: Path,
 ) -> _AccountReport:
-    """Build, publish and report each merged row."""
     captures_dir = account_dir / _CAPTURES_DIR_NAME
     report = _AccountReport()
     published_count = 0
@@ -1817,7 +1816,6 @@ def _ready_accounts(note_rows: Sequence[_NoteRow]) -> set[Path]:
 def _load_sample_files(
     note_rows: Sequence[_NoteRow], ready: Collection[Path],
 ) -> dict[int, _CaptureRecord | _StandingFile]:
-    """Each `merged` row's file, opened by its exact name, for the rows of a ready account only."""
     return {
         row.line_no: _load_capture_file(
             row.resolved_config_dir / _CAPTURES_DIR_NAME / _capture_file_name(row.branch, _CAPTURE_REVISION),
