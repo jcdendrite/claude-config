@@ -193,7 +193,6 @@ def _digest_name(branch: str, revision: int = 1) -> str:
 
 
 def _note_line(config_dir: Path | str, branch: str, status: str = "merged") -> str:
-    """One tab-separated note row as the note file holds it."""
     return "\t".join([str(config_dir), branch, status])
 
 

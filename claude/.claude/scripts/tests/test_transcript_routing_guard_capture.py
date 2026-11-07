@@ -3365,10 +3365,10 @@ class TestGoldenFile:
         )
 
 
-# --- criterion 3: the reads a capture makes ----------------------------------
+# --- the reads a capture makes -----------------------------------------------
 
 
-class TestCriterionThreeInCaptureMode:
+class TestReadsMadeInCaptureMode:
     @staticmethod
     def _is_allowed(path: str, world: _World) -> bool:
         resolved = Path(path)

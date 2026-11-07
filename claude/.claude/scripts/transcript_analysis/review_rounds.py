@@ -341,9 +341,10 @@ def _price_dispatch(
     own Dangling column. tally.resolved is this dispatch plus every nested one
     successfully priced — review-round-cost's own "agents" column.
 
-    `token_sink`, when given, receives every non-synthetic, valid-usage turn's
-    class token counts nested model, then pricing variant, priced or not,
-    recursion included (_record_turn_tokens). It does not change `tally`.
+    `token_sink`, when given, receives the class token counts of every
+    non-synthetic turn with valid usage, priced or not. It nests them model,
+    then pricing variant (`_record_turn_tokens`). Nested dispatches add to it
+    too, and it never changes `tally`.
     """
     if tool_use_id in visited:
         return
@@ -403,11 +404,10 @@ def _price_session_rounds(
     """Price one session's round windows and add every priced turn's and dispatch's dollars to `branch_totals`.
 
     `records` must already be deduped (pricing.dedup_turns_by_request_id) and
-    `windows` and `record_branches` computed from them. Returns one entry per
-    window, in window order.
-    With `collect_tokens`, each entry also holds `tokens`: the class token
-    counts of its window's main-thread turns and dispatches, nested model,
-    then pricing variant, by _record_turn_tokens' rule.
+    `windows` and `record_branches` computed from them.
+    With `collect_tokens`, each round entry of the returned list also holds `tokens`: the class token
+    counts of its window's main-thread turns and dispatches. It nests them
+    model, then pricing variant (`_record_turn_tokens`).
     """
     dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
     visited: set[str] = set()

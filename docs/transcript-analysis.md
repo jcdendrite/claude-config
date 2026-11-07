@@ -33,8 +33,8 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
 - **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
-  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled` and `review-cost-by-size` abort the whole invocation with an uncaught error, with the path stripped from the message.
-  - `review-round-cost --pooled` and `review-cost-by-size` record it as a scan gap instead.
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `review-cost-by-size` and `routing-guard --capture` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled`, `review-cost-by-size` and `routing-guard --capture` record it as a scan gap instead. `routing-guard --capture` then refuses with exit 2 (see the exit-code table under "routing-guard").
   - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
   - `cost`'s per-root scan diagnostic also skips it silently.
   - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.

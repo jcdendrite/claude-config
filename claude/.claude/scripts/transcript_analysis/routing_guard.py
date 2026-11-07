@@ -2191,9 +2191,6 @@ def cmd_routing_guard(args: argparse.Namespace) -> None:
 
 
 def _add_routing_guard_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register the routing-guard subparser on build_parser()'s subparsers action,
-    binding cmd_routing_guard through set_defaults(func=...).
-    """
     p_routing_guard = subparsers.add_parser(
         "routing-guard",
         help=(

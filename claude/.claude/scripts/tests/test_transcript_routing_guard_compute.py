@@ -1900,10 +1900,10 @@ class TestUnlistedDenyRemedyCommand:
             assert [path for path, _records in corpus.iter_sessions(projects_root, args.projects)] == [session_file]
 
 
-# --- criterion 3 in compute mode ---------------------------------------------
+# --- the reads compute makes -------------------------------------------------
 
 
-class TestCriterionThreeInComputeMode:
+class TestReadsMadeInComputeMode:
     @staticmethod
     def _is_allowed(path: str, lab: _Lab, accounts: Sequence[Path]) -> bool:
         if path in (str(lab.note), str(_config._SCHEMA_FILE)):
