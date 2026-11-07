@@ -6,6 +6,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`comment-discipline-reviewer` now lists the fields its dispatch prompt may carry, and follows its own scope when a prompt contradicts it.**
+  - Its `## Input contract` marks each field derived, free-form or fixed. When prompt text names sites, a scope or an exclusion its file contradicts, it follows its file and names the text it set aside.
+  - `/code-review` and `/plan-review` name its fields and cite that section. `/code-review` no longer sends it a diff scope, a specific question or the declaration block.
+  - `/agent-review` checks the same contract shape on any agent that adopts it.
+  - The change is live on `git pull`.
 - **`/code-review` now checks whether a factual claim in a comment or durable doc is true.** The design is in `docs/design-decisions/false-or-unsourced-claim-checks.md`.
   - `comment-discipline-reviewer` gains a "False or unsourced claim" angle for added or modified prose. It flags a settleable claim its subject contradicts, citing the subject's `file:line`. It runs in `/ready-for-review`'s cumulative pass, like the agent's other angles.
   - Step 1.5 gains a "Stale claim in unchanged prose" tripwire. When a diff renames, removes or redefines a name, it searches for unchanged comments and docs still describing the old contract. It runs inline in every round, and skips preserved records, plans and dated design-decision records.
