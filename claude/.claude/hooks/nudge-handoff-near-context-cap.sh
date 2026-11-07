@@ -189,13 +189,15 @@ read_fired_marker() {
   esac
 }
 
-# Criteria and timing text both nudge messages carry; docs/handoff-nudge.md
-# "Compaction as an alternative to /handoff" restates them beside their
-# vendor quotes, and test_nudge_handoff_near_context_cap.py pins the match.
+# Criteria, timing and resume-route text both nudge messages carry;
+# docs/handoff-nudge.md "Compaction as an alternative to /handoff" restates
+# them, the compaction text beside its vendor quotes, and
+# test_nudge_handoff_near_context_cap.py pins the match.
 COMPACT_CRITERIA="the next step continues the current task without switching to another worktree or repository, it needs files already read or edited in this conversation, and Claude has not been corrected more than twice on the same issue"
 COMPACT_TIMING="Run /compact now rather than after a break: once the prompt cache expires, /compact reprocesses the full history as uncached input, which is when it costs the most."
 COMPACT_TIE_BREAK_SOFT="Recommend /compact only if all three clauses hold; otherwise, or if any is unclear, recommend /handoff."
 COMPACT_TIE_BREAK_HARD="If all three clauses hold, the user can run a bare /compact instead, and a focus line is optional."
+HANDOFF_RESUME_ROUTE="After /handoff, the resume route depends only on whether the next step runs in this worktree: if it does, the user resumes in this session with /clear and then /resume-context; if not, the user resumes outside this session with the shell resume-context command in a new terminal. A next step that creates a new worktree counts as running in the directory it is created from. The message shown after the handoff file is written gives the exact command and is authoritative where it differs from a route named earlier."
 
 # Escalation-block threshold: an absolute token position past which a
 # further re-arm hard-blocks instead of advising, independent of how many
@@ -714,8 +716,8 @@ if [ "$ESTIMATE" -ge "$BLOCK_AT" ] 2>/dev/null && [ -n "$LAST_FIRED_AT" ] \
   printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s action=block\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" "$IGNORED_COUNT" "$SKILLS_FIELD" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
-  printf 'Context (%s tokens) is past this session'\''s handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s), after %s re-arms. Blocking rather than advising: run /handoff now. Only the user can run /compact. The /compact criteria: %s. %s If you choose /compact: %s Next %s at %s tokens.\n' \
-    "$ESTIMATE" "$BLOCK_AT" "$IGNORED_COUNT" "$COMPACT_CRITERIA" "$COMPACT_TIE_BREAK_HARD" "$COMPACT_TIMING" "$NEXT_FIRE_KIND" "$NEXT_FIRE_AT" >&2
+  printf 'Context (%s tokens) is past this session'\''s handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s), after %s re-arms. Blocking rather than advising: run /handoff now. %s Only the user can run /compact. The /compact criteria: %s. %s If you choose /compact: %s Next %s at %s tokens.\n' \
+    "$ESTIMATE" "$BLOCK_AT" "$IGNORED_COUNT" "$HANDOFF_RESUME_ROUTE" "$COMPACT_CRITERIA" "$COMPACT_TIE_BREAK_HARD" "$COMPACT_TIMING" "$NEXT_FIRE_KIND" "$NEXT_FIRE_AT" >&2
   exit 2
 fi
 
@@ -726,10 +728,10 @@ fi
 # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq --arg/--argjson binding, not a shell variable; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" \
   --arg criteria "$COMPACT_CRITERIA" --arg tieBreak "$COMPACT_TIE_BREAK_SOFT" --arg timing "$COMPACT_TIMING" \
-  --argjson nextFireAt "$NEXT_FIRE_AT" --arg nextFireKind "$NEXT_FIRE_KIND" '{
+  --arg route "$HANDOFF_RESUME_ROUTE" --argjson nextFireAt "$NEXT_FIRE_AT" --arg nextFireKind "$NEXT_FIRE_KIND" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
-    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, recommend one exit to the user and name the other as the alternative. The /compact criteria: " + $criteria + ". " + $tieBreak + " Only the user can run /compact, so end the recommendation with a ready-to-paste line `/compact <focus>` on one line, where <focus> names the task, the next step, the skill in flight and its current step, the files to re-read first, the open decisions quoted in the words the user used, and the irreversible actions not yet authorized. Pass this on with it, as applying if the user chooses /compact: " + $timing + " Next " + $nextFireKind + " at " + ($nextFireAt|tostring) + " tokens. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish — judge that by what the remaining work costs, not by how many steps are left.")
+    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, recommend one exit to the user and name the other as the alternative. The /compact criteria: " + $criteria + ". " + $tieBreak + " If you recommend /handoff, tell the user which resume route applies, and run no resume command yourself. " + $route + " Only the user can run /compact, so end the recommendation with a ready-to-paste line `/compact <focus>` on one line, where <focus> names the task, the next step, the skill in flight and its current step, the files to re-read first, the open decisions quoted in the words the user used, and the irreversible actions not yet authorized. Pass this on with it, as applying if the user chooses /compact: " + $timing + " Next " + $nextFireKind + " at " + ($nextFireAt|tostring) + " tokens. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish — judge that by what the remaining work costs, not by how many steps are left.")
   }
 }' 2>/dev/null) && [ -n "$OUTPUT" ] && {
   printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s\n' \

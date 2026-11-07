@@ -1474,6 +1474,31 @@ def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: st
     return write_continuity_body(path, continuity_resume_section(kind, path, resume_cwd))
 
 
+def code_span_command(message: str) -> str:
+    """The command of a two-line hook `systemMessage`: a one-line lead, a newline, then the
+    command alone in single backticks. Each clause fails with its own message, because
+    pytest does not rewrite asserts in this module."""
+    lines = message.split("\n")
+    assert len(lines) == 2, f"code_span_command line count: expected exactly two lines, got {len(lines)}: {message!r}"
+    lead, command_line = lines
+    assert lead, f"code_span_command non-empty LEAD: the first line is empty: {message!r}"
+    assert lead.count("`") % 2 == 0, (
+        f"code_span_command even LEAD backticks: the LEAD holds an odd number, so a span it opens "
+        f"could close on the command line: {message!r}"
+    )
+    assert command_line.startswith("`"), (
+        f"code_span_command opening backtick: the second line does not start with one: {message!r}"
+    )
+    assert command_line.endswith("`"), (
+        f"code_span_command closing backtick: the second line does not end with one: {message!r}"
+    )
+    command = command_line[1:-1]
+    assert command, f"code_span_command non-empty command: nothing sits between the backticks: {message!r}"
+    assert "`" not in command, f"code_span_command no backtick in the command: the command holds one: {message!r}"
+    assert command not in lead, f"code_span_command command absent from the LEAD: the LEAD repeats the command: {message!r}"
+    return command
+
+
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
 

@@ -5575,6 +5575,34 @@ _lib_resume_context_verdict() {
   esac
 }
 
+# _lib_collect_pending_continuity_files CONFIG_DIR
+# Sets _LIB_PENDING_CONTINUITY_FILES to the pending /handoff and /brief files, handoffs first.
+# This glob is the single definition of the pending set.
+# It never matches a leading-dot name or a nested path.
+# A pending file is a regular file, not a symlink.
+_lib_collect_pending_continuity_files() {
+  local path
+  _LIB_PENDING_CONTINUITY_FILES=()
+  for path in "$1"/handoffs/*-handoff.md "$1"/briefs/*-task.md; do
+    if [ -f "$path" ] && [ ! -L "$path" ]; then
+      _LIB_PENDING_CONTINUITY_FILES+=("$path")
+    fi
+  done
+}
+
+# _lib_is_pending_continuity_file CONFIG_DIR PATH
+# Exits 0 when PATH is, spelled exactly, a member of _lib_collect_pending_continuity_files.
+_lib_is_pending_continuity_file() {
+  local pending_path
+  _lib_collect_pending_continuity_files "$1"
+  for pending_path in "${_LIB_PENDING_CONTINUITY_FILES[@]}"; do
+    if [ "$pending_path" = "$2" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # _lib_sanitize_for_terminal VALUE
 # Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) stripped.
 # Tab (0x09) is preserved: it is a legitimate field separator in at least

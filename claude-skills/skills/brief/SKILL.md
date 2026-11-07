@@ -94,13 +94,9 @@ Steps from §6 that require explicit in-session confirmation from the engineer b
 Adjacent work that must NOT be bundled into this change. Name the temptation explicitly — refactors in the same area, parallel cleanups, "while we're here" additions — so the reader knows what to leave alone.
 
 ## §7.5 Resume command
-If §3 named a worktree, `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`; otherwise (work happened in the main checkout) `resume-context <config-dir>/briefs/<slug>-task.md` alone. `--cwd` makes the launched
-session start in that directory regardless of where the resume command is
-actually run from — do not use a `cd <path> &&` prefix instead, which only
-works if the invoker happens to already be positioned to run it. Moves the
-file to a fresh temp path and launches a new session with it loaded, so
-picking up the brief doesn't depend on the fresh session remembering to read
-or delete the file. Can be aliased for convenience.
+Name the directory the session picking up this brief starts in: the root of the worktree or checkout where §6's first step runs, or that directory itself outside any repository; for a step that creates a worktree, the existing directory it runs from; and for a first step that names no directory or is only a decision, the worktree §3 names, else this session's own directory; then write `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`, unless that directory is the one this session runs in outside any linked worktree and §3 names no other directory, in which case write `resume-context <config-dir>/briefs/<slug>-task.md` alone.
+
+The announce message after the write picks the resume route by comparing this directory with the session's worktree. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so picking up the brief doesn't depend on the fresh session remembering to read or delete the file. Can be aliased for convenience.
 
 ## Cold-start readability rules
 

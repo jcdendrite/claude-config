@@ -118,7 +118,7 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 **Underlying principle:** if the action mutates shared state that cannot be put back by running a different command, or has externally-observable side effects outside the repo (writes to production data, package publications, infra mutations, public release artifacts), it belongs in §3.5, not §3. Exception: a commit, a plain `git push`, and `gh pr create` belong in §3, not here, only when the filed step names the resumer's own `~/.claude/scripts/autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold on them. A push is always of the current branch, never `--force` and never to the default branch. A hold the engineer stated goes in §3.5 as a quote of the engineer's words.
 
 ## §4 Files modified this session
-Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path and direct the resuming session to re-enter it before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
+Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path as where these changes live, and direct the resuming session to re-enter the directory §7's command starts in (its `--cwd`, or this header's directory when §7 is bare) before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
 
 ## §5 Gates / markers
 
@@ -130,13 +130,9 @@ A live marker whose reconciliation flag fired means finished work is one inciden
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
 
 ## §7 Resume command
-If §4 named a worktree, `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`; otherwise (work happened in the main checkout) `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone. `--cwd` makes the
-launched session start in that directory regardless of where the resume
-command is actually run from — do not use a `cd <path> &&` prefix instead,
-which only works if the invoker happens to already be positioned to run it.
-Moves the file to a fresh temp path and launches a new session with it
-loaded, so nothing depends on the resuming session remembering to read or
-delete the file. Can be aliased for convenience.
+Name the directory the resumed session starts in: the root of the worktree or checkout where §3's first step runs, or that directory itself outside any repository; for a step that creates a worktree, the existing directory it runs from; and for a first step that names no directory or is only a question, this session's own directory, as §4's header names it; then write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`, unless that directory is the one this session runs in outside any linked worktree and §4's header names it too, in which case write `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone.
+
+The announce message after the write picks the resume route by comparing this directory with the session's worktree. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so nothing depends on the resuming session remembering to read or delete the file. Can be aliased for convenience.
 
 ## You may drop
 

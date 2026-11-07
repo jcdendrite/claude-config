@@ -24,6 +24,7 @@ from helpers import (
     SCRIPTS_DIR,
     SKILLS_DIR,
     _make_git_exiting_with_status,
+    code_span_command,
     continuity_resume_section,
     init_git_repo_with_commit,
     read_input,
@@ -1185,8 +1186,20 @@ class TestConsume:
             assert not legacy_copy.exists()
 
 
+_SLASH_COMMAND_PREFIX = "/resume-context "
+_SHELL_COMMAND_PREFIX = "resume-context "
+
+
+def _route_of_announced_command(command: str) -> str:
+    """`load` for the slash command and `shell` for the shell command. No command starts with both prefixes."""
+    if command.startswith(_SLASH_COMMAND_PREFIX):
+        return "load"
+    assert command.startswith(_SHELL_COMMAND_PREFIX), f"announced command is neither route: {command!r}"
+    return "shell"
+
+
 class TestRoundTrip:
-    def _announced_slash_argument(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
+    def _announced_command(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
         result = subprocess.run(
             [str(_ANNOUNCE_HOOK)],
             input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
@@ -1196,36 +1209,93 @@ class TestRoundTrip:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        message = json.loads(result.stdout)["systemMessage"]
-        found = re.search(r"/resume-context (\S+?)\. ", message)
-        assert found, f"no slash form in {message!r}"
-        return found.group(1)
+        return code_span_command(json.loads(result.stdout)["systemMessage"])
 
     def test_the_file_name_the_announce_hook_advertises_loads_exactly_that_file(self, sandbox: _Sandbox) -> None:
         pending = sandbox.write_pending("v1.2-step-3.4", sandbox.worktree_a)
         decoy = sandbox.write_pending("v1.2-step-3", sandbox.worktree_a)
 
-        argument = self._announced_slash_argument(sandbox, pending, sandbox.worktree_a)
+        announced = self._announced_command(sandbox, pending, sandbox.worktree_a)
+        assert announced.startswith(_SLASH_COMMAND_PREFIX)
+        argument = announced[len(_SLASH_COMMAND_PREFIX) :]
         outcome = sandbox.run(argument, cwd=sandbox.worktree_a)
 
         assert argument == pending.name
         assert outcome.first("SOURCE") == str(pending)
         assert decoy.exists()
 
-    def _announced_shell_command(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
-        result = subprocess.run(
-            [str(_ANNOUNCE_HOOK)],
-            input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
-            capture_output=True,
-            text=True,
-            env=sandbox.env(),
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        message = json.loads(result.stdout)["systemMessage"]
-        found = re.search(r"Resume \(run in your shell\): `([^`]+)`", message)
-        assert found, f"no shell-only command in {message!r}"
-        return found.group(1)
+    @pytest.mark.parametrize(
+        ("relative_path", "stop_code"),
+        [
+            ("handoffs/v1.2-step-3.4-handoff.md", None),
+            ("handoffs/-handoff.md", "argument-not-allowed"),
+            ("handoffs/nested/example-handoff.md", "nothing-pending"),
+            ("handoffs/.hidden-handoff.md", "nothing-pending"),
+            ("briefs/.hidden-task.md", "nothing-pending"),
+        ],
+        ids=[
+            "dotted-name-loads",
+            "leading-dash-name-is-refused",
+            "nested-path-is-not-listed",
+            "leading-dot-name-is-not-listed",
+            "leading-dot-brief-is-not-listed",
+        ],
+    )
+    def test_the_slash_form_is_announced_only_for_a_file_name_the_script_accepts(
+        self, sandbox: _Sandbox, relative_path: str, stop_code: str | None
+    ) -> None:
+        """Allow/deny pair: a name the script refuses or cannot list gets the shell command, so no
+        announce advertises a slash argument that ends in a STOP_REASON."""
+        written = sandbox.write_named(sandbox.config_dir / relative_path, None)
+
+        announced = self._announced_command(sandbox, written, sandbox.main_checkout)
+        outcome = sandbox.run(written.name, cwd=sandbox.main_checkout)
+
+        if stop_code is None:
+            assert announced == f"{_SLASH_COMMAND_PREFIX}{written.name}"
+            assert outcome.first("LOAD")
+        else:
+            assert announced == f"{_SHELL_COMMAND_PREFIX}{written}"
+            assert outcome.stop_code == stop_code
+
+    def test_the_brief_file_name_the_announce_hook_advertises_loads_exactly_that_brief(
+        self, sandbox: _Sandbox
+    ) -> None:
+        brief = sandbox.write_pending("example", None, kind="brief")
+
+        announced = self._announced_command(sandbox, brief, sandbox.main_checkout)
+        outcome = sandbox.run(brief.name, cwd=sandbox.main_checkout)
+
+        assert announced == f"{_SLASH_COMMAND_PREFIX}{brief.name}"
+        assert outcome.first("SOURCE") == str(brief)
+
+    def test_a_symlink_leaf_is_announced_as_the_shell_command_because_the_script_does_not_list_it(
+        self, sandbox: _Sandbox
+    ) -> None:
+        real = sandbox.write_named(sandbox.tmp_path / "elsewhere" / "real-handoff.md", None)
+        sandbox.handoffs.mkdir()
+        link = sandbox.handoffs / "linked-handoff.md"
+        link.symlink_to(real)
+
+        announced = self._announced_command(sandbox, link, sandbox.main_checkout)
+        outcome = sandbox.run(link.name, cwd=sandbox.main_checkout)
+
+        assert announced == f"{_SHELL_COMMAND_PREFIX}{link}"
+        assert outcome.stop_code == "nothing-pending"
+
+    def test_a_nested_file_with_a_direct_child_of_the_same_name_never_gets_the_slash_argument(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """The slash argument is a bare file name, so announcing it for the nested file would load the direct child."""
+        nested = sandbox.write_named(sandbox.handoffs / "nested" / "example-handoff.md", None)
+        decoy = sandbox.write_named(sandbox.handoffs / "example-handoff.md", None)
+        decoy_body = decoy.read_text()
+
+        announced = self._announced_command(sandbox, nested, sandbox.main_checkout)
+
+        assert announced == f"{_SHELL_COMMAND_PREFIX}{nested}"
+        assert decoy.read_text() == decoy_body
+        assert sandbox.run(decoy.name, cwd=sandbox.main_checkout).first("SOURCE") == str(decoy)
 
     @pytest.mark.parametrize(
         ("session", "file_target"),
@@ -1239,11 +1309,80 @@ class TestRoundTrip:
         session_cwd = getattr(sandbox, session)
         pending = sandbox.write_pending("parity", getattr(sandbox, file_target).resolve())
 
-        announced = self._announced_shell_command(sandbox, pending, session_cwd)
+        announced = self._announced_command(sandbox, pending, session_cwd)
         outcome = sandbox.run(pending.name, cwd=session_cwd)
 
         assert announced == outcome.first("SHELL_COMMAND")
         assert f"--cwd {getattr(sandbox, file_target).resolve()} " in announced
+
+    def _write_pending_naming(self, sandbox: _Sandbox, file_target: str) -> Path:
+        """A pending handoff whose resume command names `file_target`: a sandbox tree, a spelling of
+        this worktree, an unreadable `--cwd` from `_UNREADABLE_CWD_BODIES`, or no `--cwd` at all."""
+        if file_target in ("none", "worktree_a", "worktree_b"):
+            resume_cwd = None if file_target == "none" else getattr(sandbox, file_target).resolve()
+            return sandbox.write_pending("route", resume_cwd)
+        if file_target == "symlink-to-worktree_a":
+            link = sandbox.tmp_path / "worktree-link"
+            link.symlink_to(sandbox.worktree_a.resolve())
+            return sandbox.write_pending("route", link)
+        if file_target == "dotted-worktree_a":
+            dotted = f"{sandbox.worktree_a.resolve()}/../{sandbox.worktree_a.name}"
+            return sandbox.write_pending("route", dotted)
+        return sandbox.write_body(sandbox.handoffs / "route-handoff.md", _UNREADABLE_CWD_BODIES[file_target])
+
+    def _announced_and_scripted_routes(self, sandbox: _Sandbox, session: str, file_target: str) -> tuple[str, str]:
+        session_cwd = getattr(sandbox, session)
+        pending = self._write_pending_naming(sandbox, file_target)
+        announced = _route_of_announced_command(self._announced_command(sandbox, pending, session_cwd))
+        outcome = sandbox.run(pending.name, cwd=session_cwd)
+        return announced, self._route_of_scripted_outcome(outcome)
+
+    @staticmethod
+    def _route_of_scripted_outcome(outcome: _Outcome) -> str:
+        """`load` for a LOAD token and `shell` for a SHELL_COMMAND token. A STOP_REASON or CANDIDATE is neither route."""
+        if outcome.has("LOAD"):
+            return "load"
+        assert outcome.has("SHELL_COMMAND"), f"the script served neither route: {outcome.pairs}"
+        return "shell"
+
+    @pytest.mark.parametrize(
+        ("session", "file_target", "route"),
+        [
+            ("worktree_a", "worktree_a", "load"),
+            ("worktree_a", "worktree_b", "shell"),
+            ("worktree_a", "none", "shell"),
+            ("main_checkout", "none", "load"),
+            ("main_checkout", "worktree_b", "shell"),
+            ("main_checkout", "tilde", "shell"),
+            ("main_checkout", "two-disagreeing-commands", "shell"),
+        ],
+        ids=[
+            "linked-session-file-names-this-worktree",
+            "linked-session-file-names-another-worktree",
+            "linked-session-file-names-no-cwd",
+            "main-checkout-file-names-no-cwd",
+            "main-checkout-file-names-a-worktree",
+            "main-checkout-file-has-an-unreadable-cwd",
+            "main-checkout-file-has-two-disagreeing-commands",
+        ],
+    )
+    def test_the_route_the_announce_hook_names_equals_the_scripts_outcome(
+        self, sandbox: _Sandbox, session: str, file_target: str, route: str
+    ) -> None:
+        """Routes only: for a file naming no usable `--cwd` the script's SHELL_COMMAND is the bare command, while
+        the announce gives a linked session its own root as `--cwd`."""
+        announced, scripted = self._announced_and_scripted_routes(sandbox, session, file_target)
+
+        assert announced == scripted == route
+
+    @pytest.mark.parametrize("file_target", ["symlink-to-worktree_a", "dotted-worktree_a"])
+    def test_a_non_canonical_spelling_of_this_worktree_is_announced_as_shell_though_the_script_loads_it(
+        self, sandbox: _Sandbox, file_target: str
+    ) -> None:
+        """Expected divergence: the announce compares the file's raw `--cwd`, the script canonicalizes it first."""
+        announced, scripted = self._announced_and_scripted_routes(sandbox, "worktree_a", file_target)
+
+        assert (announced, scripted) == ("shell", "load")
 
     def test_every_listed_candidate_file_name_resolves_to_exactly_that_candidate(self, sandbox: _Sandbox) -> None:
         sandbox.write_pending("alpha-1.0")

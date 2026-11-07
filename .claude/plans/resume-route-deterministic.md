@@ -238,6 +238,12 @@ In handoff §4 (:121), "name that path and direct the resuming session to re-ent
 
 ## Critical files
 
+**Added after code review, one shared definition of the pending set** [engineer-verified: "Add the files, do the refactor (Recommended)"]. A separate `code-writer` dispatch after Dispatch 2 carried these files, and they have landed:
+- `claude/.claude/hooks/_lib.sh`: `_lib_collect_pending_continuity_files` and `_lib_is_pending_continuity_file`, beside `_lib_resume_context_verdict`. The announce hook uses them to name the slash form only for a file the slash script lists.
+- `claude/.claude/scripts/resume-context-same-session.sh`: `collect_pending` calls the collector.
+- `claude/.claude/hooks/tests/test_lib_resume_context.py`: the input matrix for the helper.
+- `docs/scripts.md`: one parenthetical naming the helper.
+
 **Dispatch 1, rule prose, nudge and skill pins** (run first):
 - `claude/.claude/hooks/nudge-handoff-near-context-cap.sh`: M4, per "Nudge sentence".
 - `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py`:
@@ -376,7 +382,8 @@ In handoff §4 (:121), "name that path and direct the resuming session to re-ent
 ## Out of scope
 
 - **Canonicalizing the file's `--cwd` (a symlink or `..` spelling) in the announce:** a documented known gap (`announce-resume-command.sh:89-91`, `docs/hooks.md:199`), unrelated to which route is named.
-- **`_lib.sh`, which is outside this change's files:** `_lib_resume_context_verdict` itself, for example loading a file whose `--cwd` names this main checkout's own path, where M3 writes the bare form instead. Also the verdict's comment (`_lib.sh:5404-5407`), which says both inputs arrive canonicalized though the announce compares raw (row 6).
+- **`_lib.sh` beyond the pending-set helpers:** `_lib_resume_context_verdict` itself. One example is loading a file whose `--cwd` names this main checkout's own path, where M3 writes the bare form instead. Also out of scope is the verdict's comment (`_lib.sh:5404-5407`), which says both inputs arrive canonicalized though the announce compares raw (row 6).
+- **Splitting `_lib.sh` into topic files:** the new helpers sit in `_lib.sh` beside their sibling verdict function. The split is a structural refactor with its own plan, for a follow-up PR.
 - **The announce's fallback** that gives a linked session its own `--cwd` when the file names no usable directory (:178-185): M3 makes a linked session always write a `--cwd`, so only a hand-written or malformed file reaches it.
 - **The slash skill's header check** (`resume-context/SKILL.md:31`): M3's bare-form conditions keep a rule-following file from reaching it (row 26).
 - **`README.md:507`, knowingly left:** it keys the resume form on what the file names and gives the shell command first, coarser than M3's rule. Both routes it names still work, and its last sentence defers to `docs/skills.md` for which applies. The :515 table row already says the announce names the route.

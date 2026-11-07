@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from helpers import (
     HOOKS_DIR,
     _make_git_exiting_with_status,
     assert_cap_engaged,
+    code_span_command,
     edit_input,
     multiedit_input,
     read_input,
@@ -40,6 +42,25 @@ def _registered_post_tool_use_event_name() -> str:
     raise AssertionError(f"{ANNOUNCE_HOOK.name} not found in {_SETTINGS_PATH}")
 
 
+def _install_resume_context_stub(home: Path) -> Path:
+    """A `resume-context` that only records its argv, placed first on the hook's PATH so
+    a dropped backtick escape in the hook's message assembly cannot run a real launcher."""
+    stub_bin = home / ".resume-context-stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    stub = stub_bin / "resume-context"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n"
+    )
+    stub.chmod(0o755)
+    return stub_bin
+
+
+def _resume_context_stub_invocations(home: Path) -> str:
+    log = home / ".resume-context-stub-bin" / "invocations.log"
+    return log.read_text() if log.exists() else ""
+
+
 def _run_hook_raw(
     hook: Path, tool_input: dict, home: Path, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -51,6 +72,7 @@ def _run_hook_raw(
     env["HOME"] = str(home)
     if extra_env:
         env.update(extra_env)
+    env["PATH"] = f"{_install_resume_context_stub(home)}:{env['PATH']}"
     return subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
@@ -83,16 +105,37 @@ def _both_channels(result: subprocess.CompletedProcess) -> tuple[str, str]:
     return payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]
 
 
+_LOAD_PROVENANCE = (
+    "The command names the written file by its file name, "
+    "and the route compares the working directory of this session with the file's own resume command"
+)
+# Each substring is a fact a test asserts alone; the sentence constant composes it, so one edit moves both.
 _SESSION_MEASURED_PROVENANCE = "computed from the resolved config dir and the working directory of this session"
 _FILE_SOURCED_CWD_PROVENANCE = "the --cwd directory comes from the written file's own resume command"
+_NOT_MEASURED_CLAUSE = "this hook did not measure it"
+_SESSION_MEASURED_PROVENANCE_SENTENCE = f"The command was {_SESSION_MEASURED_PROVENANCE}"
+_FILE_SOURCED_PROVENANCE_SENTENCE = (
+    "The command was computed from the resolved config dir, except that "
+    f"{_FILE_SOURCED_CWD_PROVENANCE} (it passed the path-character allowlist; {_NOT_MEASURED_CLAUSE})"
+)
+_USE_VERBATIM_CLAUSE = "use the command verbatim instead of reconstructing it"
+_RELAY_SENTENCE = (
+    "Relay this one route and its reason to the engineer "
+    "with the command alone in its own fenced code block, name no other resume route, and run nothing yourself."
+)
+_RELAY_INSTRUCTION = f"{_USE_VERBATIM_CLAUSE}. {_RELAY_SENTENCE}"
+_REFUSED_NAME_REASON = (
+    "/resume-context cannot load this file by name, because the name is not one the slash form accepts "
+    "(it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash or a dot)."
+)
 
 
 def _assert_context_labels_the_cwd_as_file_sourced(context: str) -> None:
     """The model-facing text must not present a file-written --cwd as session-derived."""
     assert _FILE_SOURCED_CWD_PROVENANCE in context
-    assert "this hook did not measure it" in context
+    assert _NOT_MEASURED_CLAUSE in context
     assert _SESSION_MEASURED_PROVENANCE not in context
-    assert "use them verbatim instead of reconstructing them" in context
+    assert _USE_VERBATIM_CLAUSE in context
 
 
 def _run_hook_with_stubbed_file_target(
@@ -154,6 +197,83 @@ def _stub_git_linked_worktree(tmp_path: Path, toplevel: str) -> tuple[dict, Path
     )
     fake_git.chmod(0o755)
     return {"PATH": f"{stub_bin}:{os.environ['PATH']}"}, stub_bin
+
+@dataclass(frozen=True)
+class _AnnounceArm:
+    """One announce outcome. `{name}`, `{root}`, `{elsewhere}` and `{fixture}` in the strings
+    stand for the file name, the linked worktree, the other directory the file names, and the file's path."""
+
+    session: str  # "linked", "main" or "unknown"
+    kind: str  # "handoff" or "brief"
+    file_cwd: str | None  # "this-worktree", "elsewhere", "unusable" (an unreadable --cwd), or None for no --cwd
+    command: str
+    reason: str
+    provenance: str
+    relative_path: str | None = None  # the file's path under HOME; defaults to the kind's ordinary file name
+
+
+_ANNOUNCE_ARMS = {
+    "load-linked-handoff": _AnnounceArm(
+        "linked", "handoff", "this-worktree", "/resume-context {name}",
+        "the file's resume command targets this worktree (`{root}`)", _LOAD_PROVENANCE,
+    ),
+    "load-linked-brief": _AnnounceArm(
+        "linked", "brief", "this-worktree", "/resume-context {name}",
+        "the file's resume command targets this worktree (`{root}`)", _LOAD_PROVENANCE,
+    ),
+    "load-not-linked-handoff": _AnnounceArm(
+        "main", "handoff", None, "/resume-context {name}",
+        "the file's resume command names no directory, and this session is not in a linked worktree", _LOAD_PROVENANCE,
+    ),
+    "load-not-linked-brief": _AnnounceArm(
+        "main", "brief", None, "/resume-context {name}",
+        "the file's resume command names no directory, and this session is not in a linked worktree", _LOAD_PROVENANCE,
+    ),
+    "unknown": _AnnounceArm(
+        "unknown", "handoff", None, "resume-context {fixture}",
+        "/resume-context cannot confirm this file belongs to this worktree, "
+        "because this session's worktree could not be determined.",
+        _SESSION_MEASURED_PROVENANCE_SENTENCE,
+    ),
+    "mismatch-linked-usable-target": _AnnounceArm(
+        "linked", "handoff", "elsewhere", "resume-context --cwd {elsewhere} {fixture}",
+        "/resume-context cannot confirm this file belongs to this worktree, "
+        "because its resume command targets `{elsewhere}`, not this worktree (`{root}`).",
+        _FILE_SOURCED_PROVENANCE_SENTENCE,
+    ),
+    "mismatch-linked-unusable-target": _AnnounceArm(
+        "linked", "handoff", None, "resume-context --cwd {root} {fixture}",
+        "/resume-context cannot confirm this file belongs to this worktree, "
+        "because its resume command does not name this worktree (`{root}`) as an absolute --cwd.",
+        _SESSION_MEASURED_PROVENANCE_SENTENCE,
+    ),
+    "mismatch-not-linked-usable-target": _AnnounceArm(
+        "main", "handoff", "elsewhere", "resume-context --cwd {elsewhere} {fixture}",
+        "/resume-context cannot confirm this file belongs to this directory, "
+        "because its resume command targets `{elsewhere}`, and this session is not in a linked worktree.",
+        _FILE_SOURCED_PROVENANCE_SENTENCE,
+    ),
+    "mismatch-not-linked-unusable-target": _AnnounceArm(
+        "main", "handoff", "unusable", "resume-context {fixture}",
+        "/resume-context cannot confirm this file belongs to this directory, "
+        "because its resume target could not be resolved to one directory, and this session is not in a linked worktree.",
+        _SESSION_MEASURED_PROVENANCE_SENTENCE,
+    ),
+    "load-verdict-refused-name-linked": _AnnounceArm(
+        "linked", "handoff", "this-worktree", "resume-context --cwd {root} {fixture}",
+        _REFUSED_NAME_REASON, _SESSION_MEASURED_PROVENANCE_SENTENCE, ".claude/handoffs/-handoff.md",
+    ),
+    "load-verdict-refused-name-not-linked": _AnnounceArm(
+        "main", "handoff", None, "resume-context {fixture}",
+        _REFUSED_NAME_REASON, _SESSION_MEASURED_PROVENANCE_SENTENCE, ".claude/handoffs/-handoff.md",
+    ),
+}
+_HANDOFF_LOAD_LEAD = "Resume in this session, because {reason}. Run /clear, then:"
+_BRIEF_LOAD_LEAD = (
+    "Resume in a session in {scope}, because {reason}. "
+    "Start a new claude session there, or run /clear in this one once its work is done, then:"
+)
+_SHELL_LEAD = "{reason} Resume outside this session instead, in a new terminal on the machine that holds this file:"
 
 
 @pytest.fixture
@@ -276,11 +396,12 @@ class TestAnnounceResumeCommand:
             home=isolated_home,
         )
         assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        assert "--cwd" not in payload["systemMessage"]
-        assert f"resume-context {fixture}" in payload["systemMessage"]
-        assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+        message, context = _both_channels(result)
+        assert code_span_command(message) == "/resume-context example-handoff.md"
+        for channel in (message, context):
+            assert "--cwd" not in channel
+            assert f"resume-context {fixture}" not in channel
+        assert "`/resume-context example-handoff.md`" in context
 
     def test_cwd_absent_omits_cwd_flag_but_still_announces(self, isolated_home):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
@@ -325,13 +446,15 @@ class TestAnnounceResumeCommand:
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(non_repo)),
             home=isolated_home,
+            extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)},
         )
         assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        assert "--cwd" not in payload["systemMessage"]
-        assert f"resume-context {fixture}" in payload["systemMessage"]
-        assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
-        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+        message, context = _both_channels(result)
+        assert code_span_command(message) == "/resume-context example-handoff.md"
+        for channel in (message, context):
+            assert "--cwd" not in channel
+            assert f"resume-context {fixture}" not in channel
+        assert "`/resume-context example-handoff.md`" in context
 
     # -----------------------------------------------------------------------
     # /resume-context advertisement
@@ -347,16 +470,10 @@ class TestAnnounceResumeCommand:
             ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
         )
         assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        shell_command = f"resume-context --cwd {linked_worktree.resolve()} {fixture}"
-        for channel in (payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]):
-            assert "/resume-context example-handoff.md" in channel
-            assert shell_command in channel
-        assert "(in this worktree)" in payload["hookSpecificOutput"]["additionalContext"]
-        assert _SESSION_MEASURED_PROVENANCE in payload["hookSpecificOutput"]["additionalContext"]
-        assert "Resume in this worktree" in payload["systemMessage"]
-        assert "Resume in a new process (from any shell)" in payload["systemMessage"]
-        assert "; change --cwd to resume in a different worktree" in payload["systemMessage"]
+        message, context = _both_channels(result)
+        assert code_span_command(message) == "/resume-context example-handoff.md"
+        for channel in (message, context):
+            assert f"resume-context --cwd {linked_worktree.resolve()} {fixture}" not in channel
 
     def test_linked_worktree_cwd_reached_through_a_symlink_gets_the_shell_only_announce(
         self, isolated_home, linked_worktree, tmp_path
@@ -401,16 +518,11 @@ class TestAnnounceResumeCommand:
         fixture = _write_continuity_file(isolated_home, ".claude/briefs/example-task.md", None, kind="brief")
         result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
         assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        for channel in (payload["systemMessage"], payload["hookSpecificOutput"]["additionalContext"]):
-            assert "/resume-context example-task.md" in channel
-            assert f"resume-context {fixture}" in channel
+        message, context = _both_channels(result)
+        assert code_span_command(message) == "/resume-context example-task.md"
+        for channel in (message, context):
+            assert f"resume-context {fixture}" not in channel
             assert "--cwd" not in channel
-        assert "(in this directory)" in payload["hookSpecificOutput"]["additionalContext"]
-        assert "Resume in this directory" in payload["systemMessage"]
-        assert "Resume in a new process (run it from this directory)" in payload["systemMessage"]
-        assert "from any shell" not in payload["systemMessage"]
-        assert "change --cwd" not in payload["systemMessage"]
 
     def test_file_name_with_dots_and_digits_is_advertised_whole(self, isolated_home, git_repo):
         fixture = _write_continuity_file(isolated_home, ".claude/handoffs/v2.1-step-3.4-handoff.md", None)
@@ -560,20 +672,32 @@ class TestAnnounceResumeCommand:
             assert expected_command in channel
         assert _SESSION_MEASURED_PROVENANCE in context
 
+    @pytest.mark.parametrize(
+        "wrongly_usable_target",
+        ["/elsewhere;touch-pwned", "/elsewhere\ntouch-pwned", "/elsewhere`touch-pwned"],
+        ids=["semicolon", "embedded-newline", "backtick"],
+    )
     @pytest.mark.parametrize("session", ["linked", "main"])
     def test_file_cwd_the_helper_wrongly_reports_usable_is_still_not_interpolated(
-        self, isolated_home, git_repo, linked_worktree, tmp_path, session
+        self, isolated_home, git_repo, linked_worktree, tmp_path, session, wrongly_usable_target
     ):
-        """The hook re-checks the helper's answer against the allowlist: a stand-in
-        _lib_continuity_file_resume_cwd that returns a metacharacter-bearing path
-        (a future helper regression) must not reach either channel."""
+        """Seam: the hook's re-check of the helper's answer through `_lib_passes_path_char_allowlist`.
+        A stand-in _lib_continuity_file_resume_cwd that returns a path with a byte outside the
+        allowlist (a future helper regression) must not reach either channel, and the message stays well formed.
+        The newline sits inside the value, because `$(...)` strips a trailing one before the
+        gate and a stripped value would be usable. The byte-class matrix is owned by
+        `test_single_byte_sweep_accepts_exactly_the_allowlisted_class` in test_lib_path_char_allowlist.py."""
         session_cwd = linked_worktree if session == "linked" else git_repo
         fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
         result = _run_hook_with_stubbed_file_target(
-            tmp_path, isolated_home, fixture, session_cwd, "/elsewhere;touch-pwned"
+            tmp_path, isolated_home, fixture, session_cwd, wrongly_usable_target
         )
         assert result.returncode == 0
         message, context = _both_channels(result)
+        expected_command = (
+            f"resume-context --cwd {linked_worktree} {fixture}" if session == "linked" else f"resume-context {fixture}"
+        )
+        assert code_span_command(message) == expected_command
         assert "touch-pwned" not in result.stdout
         assert "/resume-context example-handoff.md" not in message
         expected_reason = (
@@ -619,13 +743,74 @@ class TestAnnounceResumeCommand:
         assert "/resume-context example-handoff.md" in message
         assert "/resume-context example-handoff.md" in context
 
-    def test_additional_context_tells_the_model_to_relay_and_run_none(self, isolated_home, git_repo):
-        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
+    @pytest.mark.parametrize("arm_id", list(_ANNOUNCE_ARMS))
+    def test_each_announce_arm_owns_its_lead_route_reason_and_provenance_wording(
+        self, isolated_home, git_repo, linked_worktree, tmp_path, arm_id
+    ):
+        """The one owner of every announce outcome's wording: the other announce tests assert what their
+        scenario guards, not these strings."""
+        arm = _ANNOUNCE_ARMS[arm_id]
+        elsewhere = tmp_path / "some-other-directory"
+        elsewhere.mkdir()
+        is_brief = arm.kind == "brief"
+        rel_path = arm.relative_path or (
+            ".claude/briefs/example-task.md" if is_brief else ".claude/handoffs/example-handoff.md"
+        )
+        file_cwd = {
+            None: None,
+            "this-worktree": str(linked_worktree.resolve()),
+            "elsewhere": str(elsewhere),
+            "unusable": "~/some-worktree",
+        }[arm.file_cwd]
+        fixture = _write_continuity_file(isolated_home, rel_path, file_cwd, kind=arm.kind)
+        payload = write_input(str(fixture))
+        if arm.session != "unknown":
+            payload = write_input(str(fixture), cwd=str(linked_worktree if arm.session == "linked" else git_repo))
+        result = _run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
         assert result.returncode == 0
-        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        assert "Relay them to the engineer and run none of them yourself" in context
-        assert "use them verbatim instead of reconstructing them" in context
+        assert _resume_context_stub_invocations(isolated_home) == ""
+        message, context = _both_channels(result)
+
+        values = {"name": fixture.name, "root": linked_worktree, "elsewhere": elsewhere, "fixture": fixture}
+        expected_command = arm.command.format(**values)
+        reason = arm.reason.format(**values)
+        is_load = arm.command.startswith("/resume-context ")
+        scope = "this worktree" if arm.session == "linked" else "this directory"
+        if not is_load:
+            lead, route = _SHELL_LEAD.format(reason=reason), (
+                f"outside this session: the engineer runs `{expected_command}` "
+                f"in a new terminal on the machine that holds this file. {reason}"
+            )
+        elif is_brief:
+            lead = _BRIEF_LOAD_LEAD.format(scope=scope, reason=reason)
+            route = (
+                f"in a session in {scope}: the engineer starts a new claude session there, or runs /clear in this one "
+                f"once its work is done, then runs `{expected_command}`, because {reason}."
+            )
+        else:
+            lead = _HANDOFF_LOAD_LEAD.format(reason=reason)
+            route = f"in this session: the engineer runs /clear, then `{expected_command}`, because {reason}."
+
+        assert code_span_command(message) == expected_command
+        assert message.split("\n")[0] == lead
+        assert context == (
+            f"The resume route for the continuity file just written is {route} {arm.provenance} -- {_RELAY_INSTRUCTION}"
+        )
+        for channel in (message, context):
+            assert "``" not in channel
+        if is_load:
+            for channel in (message, context):
+                assert str(fixture) not in channel
+                assert "--cwd" not in channel
+                assert _SESSION_MEASURED_PROVENANCE not in channel
+            if is_brief:
+                first_line = message.split("\n")[0]
+                assert first_line.index("Start a new claude session there") < first_line.index("/clear")
+                assert "Run /clear, then:" not in message
+                assert "Run /clear, then:" not in context
+            else:
+                assert "new claude session" not in message
+                assert "new claude session" not in context
 
     def test_unknown_session_state_gives_bare_command_and_could_not_be_determined_reason(
         self, isolated_home, linked_worktree, tmp_path
@@ -662,6 +847,52 @@ class TestAnnounceResumeCommand:
             assert "--cwd" not in channel
         assert "because this session's worktree could not be determined." in message
 
+    def _assert_slash_form_refused_for(self, isolated_home, git_repo, announced_path: str) -> None:
+        """The hook is told `announced_path`; its verdict is load, yet only the shell route is announced."""
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(announced_path, cwd=str(git_repo)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        assert code_span_command(message) == f"resume-context {announced_path}"
+        assert message.split("\n")[0] == _SHELL_LEAD.format(reason=_REFUSED_NAME_REASON)
+        assert f"`resume-context {announced_path}`" in context
+        assert "`/resume-context" not in context
+        assert _resume_context_stub_invocations(isolated_home) == ""
+
+    @pytest.mark.parametrize(
+        ("written_rel_path", "announced_rel_path"),
+        [
+            pytest.param(".claude/handoffs/-handoff.md", None, id="leading-dash"),
+            pytest.param(".claude/briefs/-task.md", None, id="leading-dash-brief"),
+            pytest.param(".claude/handoffs/nested/example-handoff.md", None, id="nested-path"),
+            pytest.param(
+                ".claude/handoffs/example-handoff.md",
+                ".claude/handoffs/../handoffs/example-handoff.md",
+                id="dot-dot-spelling",
+            ),
+            pytest.param(
+                ".claude/handoffs/example-handoff.md",
+                ".claude/handoffs//example-handoff.md",
+                id="double-slash-spelling",
+            ),
+            pytest.param(
+                ".claude/handoffs/example-handoff.md",
+                ".claude/handoffs/./example-handoff.md",
+                id="dot-segment-spelling",
+            ),
+        ],
+    )
+    def test_file_name_the_slash_form_refuses_falls_back_to_the_shell_route(
+        self, isolated_home, git_repo, written_rel_path, announced_rel_path
+    ):
+        """The slash script refuses a leading dash and lists only _lib_is_pending_continuity_file paths, so a name
+        the slash form refuses gets the shell route even though the file's verdict is load.
+        A spelling row announces a non-literal spelling of the written, pending file: the hook must test the
+        spelled FILE_PATH, not a normalized one.
+        The pending-path matrix is in test_lib_resume_context.py."""
+        written = _write_continuity_file(isolated_home, written_rel_path, None)
+        announced_path = str(written) if announced_rel_path is None else f"{isolated_home}/{announced_rel_path}"
+        self._assert_slash_form_refused_for(isolated_home, git_repo, announced_path)
+
     # -----------------------------------------------------------------------
     # Allowlist gate on the interpolated file_path
     # -----------------------------------------------------------------------
@@ -674,14 +905,20 @@ class TestAnnounceResumeCommand:
         payload = json.loads(result.stdout)
         assert f"resume-context {fixture}" in payload["systemMessage"]
 
-    def test_file_path_with_embedded_newline_emits_nothing(self, isolated_home):
-        """Bash `case` globs match across embedded newlines, so this path
-        clears the continuity-path glob and must be caught by the allowlist
-        gate instead — the adversarial case that would otherwise leak an
-        injected sentinel into model-visible additionalContext."""
+    @pytest.mark.parametrize(
+        "malicious_name",
+        ["notes\n\nSENTINEL-INJECT\n\nx-handoff.md", "notes`SENTINEL-INJECT-x-handoff.md"],
+        ids=["newline", "backtick"],
+    )
+    def test_file_path_with_a_byte_outside_the_allowlist_emits_nothing(self, isolated_home, malicious_name):
+        """Seam: the FILE_PATH call to `_lib_passes_path_char_allowlist`. Bash `case` globs match
+        across embedded newlines, so a newline path clears the continuity-path glob and
+        must be caught by the allowlist gate instead -- the adversarial case that would
+        otherwise leak an injected sentinel into model-visible additionalContext. A
+        backtick would close the command's code span. The byte-class matrix is owned by
+        `test_single_byte_sweep_accepts_exactly_the_allowlisted_class` in test_lib_path_char_allowlist.py."""
         handoffs_dir = isolated_home / ".claude" / "handoffs"
         handoffs_dir.mkdir(parents=True)
-        malicious_name = "notes\n\nSENTINEL-INJECT\n\nx-handoff.md"
         fixture = handoffs_dir / malicious_name
         fixture.write_text("fixture content\n")
         result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
@@ -707,27 +944,32 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         message = payload["systemMessage"]
-        assert f"resume-context {stripped_path}" in message
+        assert code_span_command(message) == f"resume-context {stripped_path}"
         additional_context = payload["hookSpecificOutput"]["additionalContext"]
         assert "\x00" not in message
         assert "\x00" not in additional_context
-        assert "\n" not in message
         assert "\n" not in additional_context
 
-    def test_worktree_root_with_embedded_newline_falls_back_to_bare_command(
-        self, isolated_home, tmp_path
+    @pytest.mark.parametrize(
+        "malicious_root",
+        ["linked\n\nSENTINEL-INJECT\n\nwt", "linked`SENTINEL-INJECT-wt"],
+        ids=["newline", "backtick"],
+    )
+    def test_worktree_root_with_a_byte_outside_the_allowlist_falls_back_to_bare_command(
+        self, isolated_home, tmp_path, malicious_root
     ):
-        """The WORKTREE_ROOT gate's counterpart to
-        test_file_path_with_embedded_newline_emits_nothing: a worktree root
-        containing an embedded newline fails the allowlist, so the session
-        state is unknown, --cwd and the slash form are dropped, and none of the
-        root's text, including any injected sentinel, reaches the output.
+        """Seam: the WORKTREE_ROOT allowlist call, the counterpart to
+        test_file_path_with_a_byte_outside_the_allowlist_emits_nothing: a worktree root
+        holding a newline or a backtick fails the allowlist, so the session
+        state is unknown, --cwd and the slash form are dropped, the message stays
+        well formed, and none of the root's text, including any injected sentinel,
+        reaches the output. The byte-class matrix is owned by
+        `test_single_byte_sweep_accepts_exactly_the_allowlisted_class` in test_lib_path_char_allowlist.py.
 
         Uses a PATH-stubbed git because the CANDIDATE_ROOT call site never validates
         the path is a real directory, so it is platform-independent.
         A real `git worktree add` with a newline in the path depends on the local git
         accepting such paths, so the stub avoids that dependency."""
-        malicious_root = "linked\n\nSENTINEL-INJECT\n\nwt"
         stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, malicious_root)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         result = _run_hook_raw(
@@ -740,6 +982,7 @@ class TestAnnounceResumeCommand:
         assert not (stub_bin / "unexpected-argv").exists()
         assert (stub_bin / "show-toplevel-called").exists()
         message, context = _both_channels(result)
+        assert code_span_command(message) == f"resume-context {fixture}"
         for channel in (message, context):
             assert "--cwd" not in channel
             assert f"resume-context {fixture}" in channel

@@ -76,10 +76,8 @@ stop_nothing_pending() {
 # collect_pending: fills PENDING, PENDING_COUNT and SKIPPED_UNPRINTABLE.
 collect_pending() {
   local path
-  for path in "$CONFIG_DIR"/handoffs/*-handoff.md "$CONFIG_DIR"/briefs/*-task.md; do
-    if [ ! -f "$path" ] || [ -L "$path" ]; then
-      continue
-    fi
+  _lib_collect_pending_continuity_files "$CONFIG_DIR"
+  for path in "${_LIB_PENDING_CONTINUITY_FILES[@]}"; do
     if _lib_passes_path_char_allowlist "$path"; then
       PENDING="$PENDING$path"$'\n'
       PENDING_COUNT=$((PENDING_COUNT + 1))

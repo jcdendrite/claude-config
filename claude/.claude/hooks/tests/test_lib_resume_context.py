@@ -1,7 +1,7 @@
 """Unit tests for _lib.sh's resume-context helpers (_lib_resume_context_tmpdir_root,
 _lib_resume_context_index_dir, _lib_print_recovery_hint, _lib_linked_worktree_root,
-_lib_continuity_file_resume_cwd, _lib_resume_context_verdict and
-_lib_sanitize_for_terminal).
+_lib_continuity_file_resume_cwd, _lib_resume_context_verdict,
+_lib_is_pending_continuity_file and _lib_sanitize_for_terminal).
 """
 from __future__ import annotations
 
@@ -704,6 +704,111 @@ def _resume_context_verdict(state: str, root: str, file_target: str) -> str:
 )
 def test_resume_context_verdict_matrix(state: str, root: str, file_target: str, expected: str) -> None:
     assert _resume_context_verdict(state, root, file_target) == expected
+
+
+def _is_pending_continuity_file(config_dir: Path, candidate: str) -> bool:
+    script = f'set -euo pipefail\n. {_LIB_SH}\n_lib_is_pending_continuity_file "$1" "$2"\n'
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(config_dir), candidate],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+        check=False,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    return result.returncode == 0
+
+
+class TestLibIsPendingContinuityFile:
+    """A path is pending only when it is, spelled exactly, a regular non-symlink direct child glob match."""
+
+    @pytest.fixture
+    def config_dir(self, tmp_path: Path) -> Path:
+        (tmp_path / "handoffs" / "nested").mkdir(parents=True)
+        (tmp_path / "briefs").mkdir()
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        ["handoffs/example-handoff.md", "briefs/example-task.md", "handoffs/-handoff.md"],
+        ids=["direct-child-handoff", "direct-child-brief", "leading-dash-name"],
+    )
+    def test_a_regular_direct_child_is_pending(self, config_dir: Path, relative_path: str) -> None:
+        (config_dir / relative_path).write_text("body\n")
+        assert _is_pending_continuity_file(config_dir, f"{config_dir}/{relative_path}")
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "handoffs/.hidden-handoff.md",
+            "briefs/.hidden-task.md",
+            "handoffs/nested/example-handoff.md",
+            "handoffs/example-task.md",
+            "briefs/example-handoff.md",
+            "handoffs/example-handoff.txt",
+        ],
+        ids=[
+            "leading-dot-handoff",
+            "leading-dot-brief",
+            "nested",
+            "task-suffix-in-handoffs",
+            "handoff-suffix-in-briefs",
+            "wrong-suffix",
+        ],
+    )
+    def test_a_name_the_glob_never_matches_is_not_pending(self, config_dir: Path, relative_path: str) -> None:
+        (config_dir / relative_path).write_text("body\n")
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/{relative_path}")
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["handoffs/../handoffs/example-handoff.md", "handoffs//example-handoff.md", "handoffs/./example-handoff.md"],
+        ids=["dot-dot", "double-slash", "dot-segment"],
+    )
+    def test_a_non_literal_spelling_of_a_pending_file_is_not_pending(self, config_dir: Path, spelling: str) -> None:
+        (config_dir / "handoffs" / "example-handoff.md").write_text("body\n")
+        assert _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/example-handoff.md")
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/{spelling}")
+
+    @pytest.mark.parametrize(
+        "target_rel_path",
+        ["handoffs/first-handoff.md", "handoffs/second-handoff.md", "briefs/only-task.md"],
+        ids=["first-handoff", "second-handoff", "brief-after-handoffs"],
+    )
+    def test_each_of_several_pending_files_is_pending(self, config_dir: Path, target_rel_path: str) -> None:
+        for relative_path in ("handoffs/first-handoff.md", "handoffs/second-handoff.md", "briefs/only-task.md"):
+            (config_dir / relative_path).write_text("body\n")
+        assert _is_pending_continuity_file(config_dir, f"{config_dir}/{target_rel_path}")
+
+    @pytest.mark.parametrize(
+        "sibling_rel_path",
+        ["handoffs/.hidden-handoff.md", "handoffs/nested/inner-handoff.md", "briefs/.hidden-task.md"],
+        ids=["dot-prefixed-handoff", "nested-handoff", "dot-prefixed-brief"],
+    )
+    def test_a_non_pending_sibling_does_not_change_the_answer_for_a_pending_target(
+        self, config_dir: Path, sibling_rel_path: str
+    ) -> None:
+        (config_dir / sibling_rel_path).write_text("body\n")
+        (config_dir / "handoffs" / "example-handoff.md").write_text("body\n")
+        assert _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/example-handoff.md")
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/{sibling_rel_path}")
+
+    def test_a_symlink_leaf_is_not_pending(self, config_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+        real = tmp_path_factory.mktemp("elsewhere") / "real-handoff.md"
+        real.write_text("body\n")
+        link = config_dir / "handoffs" / "linked-handoff.md"
+        link.symlink_to(real)
+        assert not _is_pending_continuity_file(config_dir, str(link))
+
+    def test_a_missing_file_is_not_pending(self, config_dir: Path) -> None:
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/absent-handoff.md")
+
+    def test_a_directory_with_a_pending_name_is_not_pending(self, config_dir: Path) -> None:
+        (config_dir / "handoffs" / "x-handoff.md").mkdir()
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/x-handoff.md")
+
+    def test_a_config_dir_with_no_handoffs_or_briefs_directories_has_nothing_pending(self, tmp_path: Path) -> None:
+        assert not _is_pending_continuity_file(tmp_path, f"{tmp_path}/handoffs/example-handoff.md")
 
 
 # _lib_sanitize_for_terminal — direct unit coverage of all three documented
