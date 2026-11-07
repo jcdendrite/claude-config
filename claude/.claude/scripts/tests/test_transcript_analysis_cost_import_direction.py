@@ -1,10 +1,12 @@
 """Pins cost.py's public function surface to exactly its sanctioned set, and pins
-cli.py's back-import channel from transcript_analysis.cost fully closed -- no
-`_`-non-prefixed, non-`cmd_`-prefixed name crosses back from cost.py into cli.py.
+that no `_`-non-prefixed, non-`cmd_`-prefixed name crosses back from cost.py into
+cli.py by a by-name import (`from transcript_analysis.cost import X`, or its
+level-1 relative form). Module-attribute reads such as `from transcript_analysis
+import cost` followed by `cost.X` are not detected.
 Part (a) below guards cost.py's public *function* surface only, not top-level
 constants/classes -- safe, since part (b) independently checks cli.py's actual
 imported names regardless of what kind of object each one denotes, so the
-reverse-import boundary itself stays covered either way. This guard pins the
+by-name import boundary itself stays covered either way. This guard pins the
 production import-direction exception only. Test files' own `from
 transcript_analysis import cost` imports reach cost.py's private helpers for
 patching and are left unguarded on purpose.
@@ -114,7 +116,7 @@ def test_cli_still_imports_from_cost_module():
         pytest.param("from other.cost import x", False, id="other-package"),
     ],
 )
-def test_is_cost_module_import_accepts_only_the_two_sanctioned_forms(snippet, expected):
+def test_is_cost_module_import_detects_the_two_by_name_import_forms(snippet, expected):
     assert _is_cost_module_import(ast.parse(snippet).body[0]) is expected
 
 

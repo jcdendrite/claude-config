@@ -6,7 +6,7 @@ from pathlib import Path
 
 from transcript_analysis import scope
 from transcript_analysis.audit_routing import (
-    # All three names below are read bare by this file's own still-monolithic build_parser
+    # All three names below are read bare by this file's own build_parser
     # (each audit-routing subcommand's own set_defaults).
     cmd_audit_routing,
     cmd_audit_routing_samples,
@@ -22,7 +22,7 @@ from transcript_analysis.cache_efficiency import (
     _add_cache_efficiency_subparser,
 )
 from transcript_analysis.cache_rebuild import (
-    # Both names below are read bare by this file's own still-monolithic code:
+    # Both names below are read bare by this file's own code:
     #   _CACHE_REBUILD_DEFAULT_SINCE/_CACHE_REBUILD_DEFAULT_THRESHOLD -> build_parser's own
     #     --since/--threshold defaults
     #   cmd_cache_rebuild                                             -> p_cache_rebuild.set_defaults
@@ -47,7 +47,7 @@ from transcript_analysis.cost import (
     cmd_cost_trend,
 )
 from transcript_analysis.cost_ledger import (
-    # Read bare by this file's own still-monolithic build_parser (the cost-ledger
+    # Read bare by this file's own build_parser (the cost-ledger
     # subcommand's own set_defaults).
     cmd_cost_ledger,
 )
@@ -99,7 +99,7 @@ from transcript_analysis.pr_cost import (
     cmd_pr_cost,
 )
 from transcript_analysis.pr_cost_export import (
-    # Read bare by this file's own still-monolithic build_parser (the pr-cost-export
+    # Read bare by this file's own build_parser (the pr-cost-export
     # subcommand's own set_defaults).
     cmd_pr_cost_export,
 )
@@ -126,13 +126,13 @@ from transcript_analysis.review_rounds import (
     cmd_review_round_cost,
 )
 from transcript_analysis.review_trace import (
-    # Both names below are read bare by this file's own still-monolithic
+    # Both names below are read bare by this file's own
     # build_parser (the review-trace subcommand's set_defaults).
     REVIEW_TRACE_SKILLS,
     cmd_review_trace,
 )
 from transcript_analysis.reviewer_yield import (
-    # Read bare by this file's own still-monolithic code, via
+    # Read bare by this file's own code, via
     # p_reviewer_yield.set_defaults.
     cmd_reviewer_yield,
 )
@@ -163,7 +163,7 @@ from transcript_analysis.struggle import (
     _add_struggle_subparser,
 )
 from transcript_analysis.subagent_mix import (
-    # Both names below are read bare by this file's own still-monolithic build_parser
+    # Both names below are read bare by this file's own build_parser
     # (the subagent-mix and cost-counts subcommands' own set_defaults).
     cmd_cost_counts,
     cmd_subagent_mix,
@@ -183,7 +183,7 @@ from transcript_analysis.user_input import (
     _add_user_input_subparser,
 )
 from transcript_analysis.workstream_cost import (
-    # Read bare by this file's own still-monolithic build_parser (the workstream-cost
+    # Read bare by this file's own build_parser (the workstream-cost
     # subcommand's own set_defaults).
     cmd_workstream_cost,
 )

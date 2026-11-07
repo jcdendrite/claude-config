@@ -242,7 +242,7 @@ corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
 is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'s own
 `_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read, not
-the `cli.py` back-import exception, which is fully closed (see
+the `cli.py` back-import exception, which is closed for by-name imports (see
 `test_transcript_analysis_cost_import_direction.py`).
 
 ### `reviewer_yield.py`
@@ -254,8 +254,7 @@ verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit 
 (attribute access), matching `cost.py`'s convention. `compute_reviewer_yield_data` is the one
 public name here, read by `cost_ledger.py`'s own `_cost_ledger_report` as
 `reviewer_yield.compute_reviewer_yield_data`. `_is_reviewer_subagent_type` is read by `review_trace.py`, via
-`reviewer_yield._is_reviewer_subagent_type` (attribute access) — no longer reached bare from the
-shim, since review-trace's own detection moved into the package.
+`reviewer_yield._is_reviewer_subagent_type` (attribute access). `cli.py` does not import it.
 
 ### `review_rounds.py`
 
