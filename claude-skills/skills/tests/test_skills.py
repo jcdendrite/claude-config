@@ -5968,8 +5968,10 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "slash_form_only_for_matching_candidates": (
         "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
         "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
-        "when either is `unknown`. Any other candidate needs the shell command on its "
-        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+        "when either is `unknown`. A candidate whose file name starts with `-` or `@` is "
+        "never suggested as `/resume-context <name>`. Every candidate not suggested that way "
+        "needs the shell command on its `CANDIDATE:` line, which you relay as a command for "
+        "a new terminal."
     ),
     "unreadable_or_absent_candidate_target_caveat": (
         "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
@@ -6117,9 +6119,8 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
 
 _HANDOFF_SECTION4_HEADING = "## §4 Files modified this session"
 _HANDOFF_SECTION4_REENTER_PHRASE = (
-    "name that path as where these changes live, and direct the resuming session to "
-    "re-enter the directory §7's command starts in (its `--cwd`, or this header's "
-    "directory when §7 is bare) before"
+    "Direct the resuming session to re-enter §7's directory (its `--cwd`, or this "
+    "header's directory when §7 is bare) before"
 )
 
 

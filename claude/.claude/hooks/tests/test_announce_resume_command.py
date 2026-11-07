@@ -109,8 +109,9 @@ _RELAY_SENTENCE = (
 )
 _RELAY_INSTRUCTION = f"{_USE_VERBATIM_CLAUSE}. {_RELAY_SENTENCE}"
 _REFUSED_NAME_REASON = (
-    "/resume-context cannot load this file by name, because the name is not one the slash form accepts "
-    "(it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash, a dot or an @)."
+    "/resume-context cannot load this file by name, because the slash form accepts only a regular file directly in "
+    "handoffs/ or briefs/ whose name does not start with a dash or a dot, "
+    "and this hook does not announce it for a name starting with an @."
 )
 
 
@@ -872,9 +873,9 @@ class TestAnnounceResumeCommand:
     def test_file_name_the_slash_form_refuses_falls_back_to_the_shell_route(
         self, isolated_home, git_repo, written_rel_path, announced_rel_path
     ):
-        """The slash script refuses a leading dash and lists only _lib_is_pending_continuity_file paths, and the hook
-        also withholds the slash form from a leading `@`, so a name the slash form refuses gets the shell route
-        even though the file's verdict is load.
+        """The slash script refuses a leading dash and lists only `_lib_is_pending_continuity_file` paths.
+        The hook also withholds the slash form from a leading `@`.
+        A name in either class gets the shell route even though the file's verdict is load.
         A spelling row announces a non-literal spelling of the written, pending file: the hook must test the
         spelled FILE_PATH, not a normalized one.
         The pending-path matrix is in test_lib_resume_context.py."""

@@ -17,12 +17,14 @@
 # It announces only /resume-context <file name> when the written file's own
 # resume command (_lib_continuity_file_resume_cwd) names this session's
 # linked worktree, or names no --cwd in a main checkout
-# (_lib_resume_context_verdict) and the file name is one the slash script accepts
-# (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with none of a dash, a dot or an @).
+# (_lib_resume_context_verdict), the file name is one the slash script accepts
+# (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with neither a dash nor a dot),
+# and the name does not start with an @.
+# The slash script accepts a leading @, and the hook withholds the slash form for it anyway.
 # A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
 # In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
-#   - a file the slash script refuses by name or cannot list;
+#   - a file the slash script refuses by name or cannot list, or whose name starts with an @;
 #   - a linked session whose file does not name this worktree as an absolute --cwd;
 #   - a session outside a linked worktree whose file names a target directory
 #     (or whose resume target could not be resolved to one directory, which
@@ -196,7 +198,7 @@ else
   if [ "$SESSION_STATE" = "unknown" ]; then
     REASON="/resume-context cannot confirm this file belongs to this worktree, because this session's worktree could not be determined."
   elif [ "$VERDICT" = "load" ]; then
-    REASON="/resume-context cannot load this file by name, because the name is not one the slash form accepts (it must be a regular file directly in handoffs/ or briefs/, and its name must not start with a dash, a dot or an @)."
+    REASON="/resume-context cannot load this file by name, because the slash form accepts only a regular file directly in handoffs/ or briefs/ whose name does not start with a dash or a dot, and this hook does not announce it for a name starting with an @."
   else
     if [ "$FILE_TARGET_USABLE" = true ]; then
       CMD="resume-context --cwd $FILE_TARGET $FILE_PATH"

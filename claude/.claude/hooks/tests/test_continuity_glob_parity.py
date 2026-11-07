@@ -1,8 +1,9 @@
 """Parity of the three definitions of the continuity-file set.
 
 announce-resume-command.sh and consume-durable-continuity-file-on-read.sh each spell the set as a
-`case` pattern, and _lib_is_pending_continuity_file defines it as a filesystem glob. Each test runs
-the real hooks and the real helper over one name matrix, so a change to one definition alone fails here.
+`case` pattern, and _lib_is_pending_continuity_file defines it as a filesystem glob. The parity tests
+run the real hooks and the real helper over one name matrix, so a change to one definition alone fails
+here. The last test covers the leading-`@` slash-form precaution on its own rows.
 """
 from __future__ import annotations
 
@@ -126,7 +127,7 @@ def test_announce_fires_exactly_when_the_consume_hook_fires(isolated_home: Path,
     )
 
 
-@pytest.mark.parametrize("relative_path", _NAME_MATRIX)
+@pytest.mark.parametrize("relative_path", sorted(_EXPECTED_PENDING))
 def test_every_name_the_pending_helper_accepts_is_accepted_by_both_hooks(
     isolated_home: Path, relative_path: str
 ) -> None:
@@ -134,11 +135,8 @@ def test_every_name_the_pending_helper_accepts_is_accepted_by_both_hooks(
     consume_log = _install_recording_consume_script(config_dir)
     path = _create(config_dir, relative_path)
 
-    if _is_pending_continuity_file(config_dir, str(path)):
-        assert _announce_fires(isolated_home, path), f"the announce case pattern refuses pending {relative_path}"
-        assert _consume_fires(isolated_home, consume_log, path), (
-            f"the consume case pattern refuses pending {relative_path}"
-        )
+    assert _announce_fires(isolated_home, path), f"the announce case pattern refuses pending {relative_path}"
+    assert _consume_fires(isolated_home, consume_log, path), f"the consume case pattern refuses pending {relative_path}"
 
 
 def test_the_matrix_holds_both_pending_and_non_pending_names(isolated_home: Path) -> None:

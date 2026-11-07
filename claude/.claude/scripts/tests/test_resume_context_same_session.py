@@ -1456,6 +1456,20 @@ class TestSkillContract:
 
         assert sorted(header_keys) == sorted(_EMITTED_KEYS)
 
+    def test_the_skill_withholds_the_slash_form_from_every_first_byte_the_announce_hook_refuses(self) -> None:
+        """Both advertisers of `/resume-context <file name>` must refuse the same leading bytes."""
+        refused_arm = re.search(r'case "\$FILE_NAME" in\n\s*([^)\n]+)\) ;;', _ANNOUNCE_HOOK.read_text())
+        assert refused_arm, "announce-resume-command.sh no longer opens its slash-name check with a refused-prefix arm"
+        refused_first_bytes = [pattern.strip().removesuffix("*") for pattern in refused_arm.group(1).split("|")]
+        assert refused_first_bytes == ["-", "@"], f"the hook's refused first bytes changed: {refused_first_bytes}"
+        step_four_sentence = (
+            "A candidate whose file name starts with "
+            + " or ".join(f"`{byte}`" for byte in refused_first_bytes)
+            + " is never suggested as `/resume-context <name>`."
+        )
+
+        assert step_four_sentence in _SKILL_MD.read_text()
+
     def test_the_skill_argument_charset_equals_the_scripts_allowlist(self) -> None:
         """The skill refuses before the script runs, so the two must accept the same characters."""
         found = re.search(r"character outside `(\[[^`]+\])`", _SKILL_MD.read_text())

@@ -52,7 +52,7 @@ In chat replies, put each command this skill has you relay or suggest alone in i
 
 4. On `CANDIDATE:`, `MORE:`, `SKIPPED_UNPRINTABLE:` or `STOP_REASON:` lines, relay them and stop.
 
-   - Suggest `/resume-context <file name>` only for a candidate whose `target` is the same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never when either is `unknown`. Any other candidate needs the shell command on its `CANDIDATE:` line, which you relay as a command for a new terminal.
+   - Suggest `/resume-context <file name>` only for a candidate whose `target` is the same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never when either is `unknown`. A candidate whose file name starts with `-` or `@` is never suggested as `/resume-context <name>`. Every candidate not suggested that way needs the shell command on its `CANDIDATE:` line, which you relay as a command for a new terminal.
 
    - Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when that line appears, and, for each candidate with `target none` or `target unknown`, the caveat for that `FILE_TARGET:` value beside its shell command.
 
