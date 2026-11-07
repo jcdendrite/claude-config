@@ -87,6 +87,8 @@ Placing the rule in `subagent-delegation/SKILL.md` was also declined. That skill
 - Whole-file reads of 2,000+ tokens exceed **90%** of whole-file-read tokens, against today's 87.2% — the mass concentrating further into the addressable tail.
 - The locate step's mean cost exceeds **500 tokens/call**, against today's 191, which would erode the gross-to-net gap the ceiling depends on.
 
+The `read-scope` figures in this file predate the `api-request-blob` filter, so a fresh run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
+
 ### Revisit trigger resolution — 2026-09-05
 
 The third trigger fired: whole-file reads of 2,000+ tokens grew from 87.2% to 90.6% of whole-file-read tokens, crossing the 90% threshold. See [`markdown-context-ingestion.md`](markdown-context-ingestion.md) for that measurement and its confirmed-trigger-fire verdict. The two numbers are not re-derived here.

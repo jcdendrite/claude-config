@@ -1,5 +1,5 @@
 """Test helpers shared by the cache-rebuild family's test files
-(test_transcript_cache_rebuild*.py) and by test_transcript_analysis.py's
+(test_transcript_cache_rebuild*.py) and by test_transcript_analysis_multi_root_scope.py's
 cross-subcommand tables."""
 from __future__ import annotations
 

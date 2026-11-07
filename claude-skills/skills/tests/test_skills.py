@@ -62,6 +62,7 @@ from helpers import (
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    change_type_table_rows,
     extract_skill_command,
     heading_texts,
     normalize_heading,
@@ -723,6 +724,25 @@ class TestReviewLedgerAuthoringEffortLiteral:
             "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
             "main finding append, main-flow CLEAN append) -- found "
             f"{skill_body.count(literal)}"
+        )
+
+
+class TestReviewLedgerReviewerLaneLiteral:
+    """The per-finding append template carries `--reviewer '<lane>'` once, in the
+    code span that also names the ADDRESS|DEFER|SETTLED dispositions, so moving
+    the flag onto the CLEAN template, or duplicating it, fails."""
+
+    def test_reviewer_flag_sits_once_on_the_per_finding_append_template(self):
+        skill_body = _skill_body("code-review")
+        literal = "--reviewer '<lane>'"
+
+        assert skill_body.count(literal) == 1, (
+            f"code-review/SKILL.md must carry {literal!r} exactly once, on the per-finding append "
+            f"template -- found {skill_body.count(literal)}"
+        )
+        template_span = re.search(r"`([^`\n]*" + re.escape(literal) + r"[^`\n]*)`", skill_body)
+        assert template_span is not None and "--disposition ADDRESS|DEFER|SETTLED" in template_span.group(1), (
+            f"{literal!r} must sit in the inline code span of the ADDRESS|DEFER|SETTLED append template"
         )
 
 
@@ -1940,6 +1960,47 @@ class TestContinuityFileBucketCrosscheck:
     def test_brief_prewrite_checklist_crosschecks_section6(self):
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
         assert "re-checked against the §6.5 categorization rule" in _skill_file("brief").read_text()
+
+    def test_handoff_section3_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """handoff §3.5 must carve out commit, push and PR creation when the
+        resolver exits 0 and names the resumer's own resolver exit as the
+        filed step's precondition, so a handoff does not file them as pending
+        authorization on a machine where autonomous shipping is active."""
+        match = re.search(r"## §3\.5.*?(?=\n## §4)", _skill_file("handoff").read_text(), re.DOTALL)
+        assert match, "handoff/SKILL.md §3.5 section not found — has it been renamed?"
+        assert "Exception:" in match.group(0), "handoff/SKILL.md §3.5 'Exception:' clause not found — has it been renamed?"
+        exception = match.group(0).split("Exception:", 1)[1]
+        assert "autonomous-shipping-active.sh" in exception
+        assert "exit 0" in exception
+        assert "only when" in exception, "the exception must be conditional, not unconditional"
+        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
+        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
+        assert "no hold" in exception
+        assert "never to the default branch" in exception
+        assert "§3.5" in exception, "a stated hold must be filed under §3.5"
+
+    def test_brief_section6_5_excepts_plain_ship_steps_when_shipping_is_active(self):
+        """brief §6.5 carries the same exception as handoff §3.5."""
+        match = re.search(r"## §6\.5.*?(?=\n## §7 )", _skill_file("brief").read_text(), re.DOTALL)
+        assert match, "brief/SKILL.md §6.5 section not found — has it been renamed?"
+        assert "Exception:" in match.group(0), "brief/SKILL.md §6.5 'Exception:' clause not found — has it been renamed?"
+        exception = match.group(0).split("Exception:", 1)[1]
+        assert "autonomous-shipping-active.sh" in exception
+        assert "exit 0" in exception
+        assert "only when" in exception, "the exception must be conditional, not unconditional"
+        assert "precondition" in exception, "the filed step must carry the exit as a precondition"
+        assert "resumer's own" in exception, "the resumer, not the writer, must evaluate the exit"
+        assert "no hold" in exception
+        assert "never to the default branch" in exception
+        assert "§6.5" in exception, "a stated hold must be filed under §6.5"
+
+    def test_handoff_prewrite_checklist_points_at_section3_5_for_the_principle(self):
+        """The checklist must send the reader to §3.5 for the principle rather than restate it, so it
+        cannot contradict §3.5's exception."""
+        anchor = "A §3 step the script did *not* warn on"
+        checklist_lines = [line for line in _skill_file("handoff").read_text().splitlines() if anchor in line]
+        assert checklist_lines, f"handoff/SKILL.md checklist line starting {anchor!r} not found — has it been renamed?"
+        assert "including its exception" in checklist_lines[0]
 
     def test_handoff_prewrite_checklist_crosschecks_section2_6(self):
         """handoff's pre-write checklist must verify §2.6 was populated before writing."""
@@ -5041,29 +5102,6 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_rows(skill_md_path: Path) -> list[str]:
-    """Raw row-line strings of every data row in the Change-type table.
-
-    Shared header-lookup-and-row-walk for every reader of the Change-type
-    table — `_change_type_table_left_columns` and
-    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    both build on this instead of re-walking the table themselves.
-    """
-    lines = skill_md_path.read_text().splitlines()
-    header_index = next(
-        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
-        None,
-    )
-    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
-
-    rows = []
-    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
-        if not line.startswith("|"):
-            break
-        rows.append(line)
-    return rows
-
-
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 
@@ -5074,7 +5112,7 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     `test_scope_exempt_row_excludes_security_controls_row`), a resulting
     mismatch surfaces as a loud assertion failure, not silently.
     """
-    return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
+    return [row.split("|")[1].strip() for row in change_type_table_rows(skill_md_path)]
 
 
 def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
@@ -5086,7 +5124,7 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     shorthand `_change_type_table_left_columns` returns.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-    for line in _change_type_table_rows(skill_md_path):
+    for line in change_type_table_rows(skill_md_path):
         # line.split("|")[1] truncates at an embedded pipe in the left cell,
         # same caveat as _change_type_table_left_columns's identical parse.
         if line.split("|")[1].strip() == exempt_shorthand:
@@ -5233,6 +5271,37 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
         f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
         "--cached) review basis — that's the commit-gate pass's job, not the "
         "cumulative sweep's"
+    )
+
+
+def test_ready_for_review_step3_discards_the_diff_stdout() -> None:
+    """GH-1296: step 3 hands the diff on by its `DIFF_FILE:` path, so printing
+    it to stdout only adds its bytes to the session's context. The command
+    must end at `> /dev/null` with no further redirect, because an appended
+    `2>&1` would discard the `DIFF_EMPTY:` and `DIFF_FILE:` stderr signals
+    step 3 acts on. Step 3 must contain no other invocation line, since a
+    bare second one would print the diff again.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --record --diff-file > /dev/null"
+    invocation_lines = [
+        line
+        for line in section_text.splitlines()
+        if line.startswith("~/.claude/scripts/pr-diff-against-base.sh")
+    ]
+    assert invocation_lines == [discarding_command], (
+        f"{skill_md_path}: step 3's only pr-diff-against-base.sh invocation line must be "
+        f"exactly {discarding_command!r}, ending at '> /dev/null' with no further "
+        "redirect, so the diff stays out of the session and stderr still reaches it; "
+        f"found {invocation_lines!r}"
+    )
+    assert "Read the diff only from the file at that path" in section_text, (
+        f"{skill_md_path}: step 3 no longer tells the session to read the diff "
+        "from the DIFF_FILE: path now that stdout is discarded"
     )
 
 
@@ -5410,7 +5479,10 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     inside the row itself and not in Step 0. A file-wide `in` check would
     pass just as well if a later edit moved the instruction back into the
     row or into Step 0, so this locates the note's own text before also
-    checking the file-wide occurrence count.
+    checking the file-wide occurrence count. It also pins the note's
+    `> /dev/null` redirect, with no further redirect after it, so the staged
+    diff stays out of the session's context while the script's stderr signals
+    still reach it.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
@@ -5437,6 +5509,13 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert text.count(staged_diff_literal) == 1, (
         f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
         "the resolution note only -- not duplicated into Step 0 or the row"
+    )
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --staged --diff-file > /dev/null"
+    assert discarding_command + "`" in note_text, (
+        f"{skill_md_path}: the resolution note must run {discarding_command!r} "
+        "as a code span that ends right after the redirect, so the diff stays "
+        "out of the session and stderr still reaches it"
     )
 
     for literal in (
@@ -6662,7 +6741,7 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
     "row retires; another finding at the site leaves it live. The "
     "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id>`, which retires the decision and its "
+    "is logged `ADDRESS --ref <id> --relog`, which retires the decision and its "
     "carries from the PR block."
 )
 
@@ -7567,8 +7646,30 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "--defer-criterion '<name>' --ref '<id>' --cited-line '<file:line>']",
+        "--defer-criterion '<name>' --ref '<id>' --relog --cited-line '<file:line>']",
         id="append-template-quotes-criterion-ref-and-cited-line",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "Finding | Lane | Disposition | Rationale",
+        id="disposition-table-names-the-lane-column",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "`skill-tool` marks a Skill-tool review's finding, `unrostered-agent` marks a finding a spawned reviewer "
+        "agent outside the roster raised, and `orchestrator` marks any finding no reviewer agent or Skill-tool "
+        "review raised.",
+        id="lane-cell-defines-the-three-non-roster-literals",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "CLEAN takes no lanes",
+        id="clean-append-takes-no-lanes",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "as a reopen, a gate-denial recovery and a `--carry-forward` withdrawal do",
+        id="relog-is-for-a-row-that-only-re-logs-its-decision",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",

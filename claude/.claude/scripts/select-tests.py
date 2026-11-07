@@ -110,8 +110,8 @@ CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 # collected.
 WORKTREES_DIR_NAME = "worktrees"
 
-# test_transcript_analysis.py (matched by the glob below, with its two
-# siblings) reads specific SKILL.md files by path, not by import.
+# test_transcript_analysis_multi_root_scope.py, one of the files the glob
+# below matches, reads specific SKILL.md files by path, not by import.
 # Domain-narrowing can't see that dependency, so it's declared here as a
 # cross-domain exception rather than folded into the scripts domain rule.
 # test_transcript_denials.py shells into specific hook scripts by path. It

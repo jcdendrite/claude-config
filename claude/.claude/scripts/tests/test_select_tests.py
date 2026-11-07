@@ -1632,6 +1632,17 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py" in result.target_paths
 
+    def test_skill_md_change_selects_the_multi_root_scope_test_file(self):
+        """The multi-root scope test file reads SKILL.md inside test bodies, which TestCrossDomainReadCompleteness
+        cannot see, so only the TRANSCRIPT_ANALYSIS_TEST_GLOB row selects it for a skill edit. The path is
+        hand-typed, so any rename of the file fails here and must update this pin."""
+        changed_path = "claude-skills/skills/transcript-analysis/SKILL.md"
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        expanded_paths = _mod.resolve_target_paths(list(result.target_paths), repo_root=_REPO_ROOT)
+        assert "claude/.claude/scripts/tests/test_transcript_analysis_multi_root_scope.py" in expanded_paths
+
     def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
         """test_config_lib.py is a HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
         member, so this change

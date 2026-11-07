@@ -1,4 +1,4 @@
-"""Test helpers shared by test_transcript_commit_gate.py and by test_transcript_analysis.py's
+"""Test helpers shared by test_transcript_commit_gate.py and by test_transcript_analysis_multi_root_scope.py's
 cross-subcommand tables.
 """
 

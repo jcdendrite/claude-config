@@ -10,6 +10,13 @@ import os
 import subprocess
 from pathlib import Path
 
+from helpers import (
+    AUTONOMOUS_SHIPPING_STATEMENT_LEAD,
+    init_git_repo_with_commit,
+    run_autonomous_shipping_root_for_cwd,
+    run_autonomous_shipping_statement,
+)
+
 from ._lib_sh_helpers import _LIB_SH
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
@@ -625,6 +632,229 @@ class TestAutonomousShippingActive:
             check=False,
         )
         assert result.returncode != 0
+
+
+# _lib_autonomous_shipping_statement — the one home of the agent-facing text
+# that states the resolved shipping state. It prints only when
+# _lib_autonomous_shipping_active holds, so the arity, unarmed and optout arms
+# of that gate are silent-return-1 cases here.
+
+
+class TestAutonomousShippingStatement:
+    def _armed_home_and_repo(self, tmp_path: Path) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo.mkdir()
+        return home, repo
+
+    def test_armed_repo_prints_statement_naming_scope_and_limits(self, tmp_path: Path) -> None:
+        home, repo = self._armed_home_and_repo(tmp_path)
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.returncode == 0
+        for expected_phrase in (
+            "Autonomous shipping is active",
+            "autonomous-shipping-active.sh",
+            "without asking",
+            "outranks",
+            "specific hold",
+            "even when that hold survives only as summary text",
+            "an instruction the engineer gives in this session still wins",
+            "exits 0 here",
+            "Re-run that script before pushing to confirm",
+            "never to the default branch",
+            "merging stays human-only",
+            "force-pushing",
+            "returns its work to its dispatcher and does not ship",
+            "however paraphrased or summarized, is such a hold",
+            'when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding',
+            "no engineer wait behind it",
+            "every other irreversible action still need the engineer's in-session confirmation",
+            "In a different repository, run that script there before relying on this",
+        ):
+            assert expected_phrase in result.stdout
+        assert "gh pr merge" not in result.stdout
+
+    def test_statement_opens_with_the_shared_lead_constant(self, tmp_path: Path) -> None:
+        """The hook tests search for the constant, so it must track the emitted text."""
+        home, repo = self._armed_home_and_repo(tmp_path)
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.stdout.startswith(AUTONOMOUS_SHIPPING_STATEMENT_LEAD)
+
+    def test_statement_has_no_trailing_newline(self, tmp_path: Path) -> None:
+        home, repo = self._armed_home_and_repo(tmp_path)
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.stdout != ""
+        assert not result.stdout.endswith("\n")
+
+    def test_silent_when_machine_file_absent(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        (home / ".claude").mkdir(parents=True)
+        repo.mkdir()
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_silent_when_repo_has_optout(self, tmp_path: Path) -> None:
+        home, repo = self._armed_home_and_repo(tmp_path)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "autonomous-shipping-optout").touch()
+        result = run_autonomous_shipping_statement(home, str(repo))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_silent_on_wrong_argument_count(self, tmp_path: Path) -> None:
+        home, repo = self._armed_home_and_repo(tmp_path)
+        for args in ((), ("",), (str(repo), "extra")):
+            result = run_autonomous_shipping_statement(home, *args)
+            assert result.returncode == 1, args
+            assert result.stdout == "", args
+
+
+# _lib_autonomous_shipping_root_for_cwd — the one rule for which payload cwd may
+# carry the statement. test_autonomous_shipping_grant_boundary.py covers the
+# same cases through each hook; these pin the function's own contract.
+
+
+class TestAutonomousShippingRootForCwd:
+    @staticmethod
+    def _home_and_repo(tmp_path: Path) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
+        return home, repo
+
+    def test_prints_the_repo_root_for_a_subdirectory(self, tmp_path: Path) -> None:
+        home, repo = self._home_and_repo(tmp_path)
+        subdirectory = repo / "pkg" / "inner"
+        subdirectory.mkdir(parents=True)
+        result = run_autonomous_shipping_root_for_cwd(home, str(subdirectory))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == repo.resolve()
+
+    def test_rejects_wrong_argument_count(self, tmp_path: Path) -> None:
+        home, repo = self._home_and_repo(tmp_path)
+        for args in ((), (str(repo), "extra")):
+            result = run_autonomous_shipping_root_for_cwd(home, *args)
+            assert result.returncode == 1, args
+            assert result.stdout == "", args
+
+    def test_rejects_empty_cwd(self, tmp_path: Path) -> None:
+        home, _ = self._home_and_repo(tmp_path)
+        result = run_autonomous_shipping_root_for_cwd(home, "")
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_relative_cwd_that_resolves_to_a_repo(self, tmp_path: Path) -> None:
+        home, repo = self._home_and_repo(tmp_path)
+        result = run_autonomous_shipping_root_for_cwd(home, ".", process_cwd=repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_cwd_outside_a_repo(self, tmp_path: Path) -> None:
+        home, _ = self._home_and_repo(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        result = run_autonomous_shipping_root_for_cwd(home, str(outside))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_unset_and_empty_home(self, tmp_path: Path) -> None:
+        _, repo = self._home_and_repo(tmp_path)
+        unset_home = run_autonomous_shipping_root_for_cwd(None, str(repo))
+        assert unset_home.returncode == 1
+        assert unset_home.stdout == ""
+        empty_home = run_autonomous_shipping_root_for_cwd("", str(repo))
+        assert empty_home.returncode == 1
+        assert empty_home.stdout == ""
+
+    def test_rejects_home_naming_a_nonexistent_directory(self, tmp_path: Path) -> None:
+        """An unresolvable HOME must not degrade to a walk that ends at / and finds no ancestor to refuse."""
+        _, repo = self._home_and_repo(tmp_path)
+        result = run_autonomous_shipping_root_for_cwd(tmp_path / "no-such-home", str(repo))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_root_equal_to_home(self, tmp_path: Path) -> None:
+        home, _ = self._home_and_repo(tmp_path)
+        init_git_repo_with_commit(home, branch="main")
+        project = home / "project"
+        project.mkdir()
+        for cwd in (home, project):
+            result = run_autonomous_shipping_root_for_cwd(home, str(cwd))
+            assert result.returncode == 1, cwd
+            assert result.stdout == "", cwd
+
+    def test_rejects_root_that_is_an_ancestor_of_home(self, tmp_path: Path) -> None:
+        home, _ = self._home_and_repo(tmp_path)
+        init_git_repo_with_commit(tmp_path, branch="main")
+        result = run_autonomous_shipping_root_for_cwd(home, str(home))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_removed_cwd_instead_of_resolving_the_process_cwd_repo(
+        self, tmp_path: Path
+    ) -> None:
+        home, repo = self._home_and_repo(tmp_path)
+        removed_worktree = tmp_path / "removed-worktree"
+        removed_worktree.mkdir()
+        removed_worktree.rmdir()
+        result = run_autonomous_shipping_root_for_cwd(home, str(removed_worktree), process_cwd=repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_root_above_a_symlinked_home_by_resolving_home_physically(
+        self, tmp_path: Path
+    ) -> None:
+        work_tree = init_git_repo_with_commit(tmp_path / "work-tree", branch="main")
+        physical_home = work_tree / "home"
+        physical_home.mkdir()
+        home_link = tmp_path / "home-link"
+        home_link.symlink_to(physical_home, target_is_directory=True)
+        result = run_autonomous_shipping_root_for_cwd(home_link, str(work_tree))
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_accepts_a_repo_strictly_beneath_home(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
+        result = run_autonomous_shipping_root_for_cwd(home, str(repo))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == repo.resolve()
+
+    def test_accepts_a_nested_own_repo_beneath_a_home_rooted_work_tree(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        init_git_repo_with_commit(home, branch="main")
+        nested_repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
+        result = run_autonomous_shipping_root_for_cwd(home, str(nested_repo))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == nested_repo.resolve()
+
+    def test_accepts_a_cwd_that_is_a_symlink_to_a_repo_beneath_home(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = init_git_repo_with_commit(home / "projects" / "repo", branch="main")
+        cwd_link = tmp_path / "repo-link"
+        cwd_link.symlink_to(repo, target_is_directory=True)
+        result = run_autonomous_shipping_root_for_cwd(home, str(cwd_link))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == repo.resolve()
+
+    def test_accepts_a_root_that_merely_shares_a_name_prefix_with_home(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        sibling_repo = init_git_repo_with_commit(tmp_path / "home-projects", branch="main")
+        result = run_autonomous_shipping_root_for_cwd(home, str(sibling_repo))
+        assert result.returncode == 0
+        assert Path(result.stdout).resolve() == sibling_repo.resolve()
 
 
 # _lib_permission_prompt_tracking_active — direct unit coverage, mirroring

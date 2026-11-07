@@ -2988,6 +2988,47 @@ _lib_autonomous_shipping_active() {
   return 0
 }
 
+# _lib_autonomous_shipping_root_for_cwd CWD
+# Prints the repo root a hook payload's CWD resolves to, or returns 1 when that
+# root may not carry the autonomous-shipping statement. Every hook that prints
+# the statement resolves its root here, so they agree on which roots are eligible.
+# Fails closed, because a grant must not rest on a guess:
+#   - CWD is empty or not absolute, so there is no fallback to the process's $PWD
+#   - CWD is not inside a git repository
+#   - HOME is empty or unresolvable
+#   - the root is HOME or one of its ancestors, since a work tree there would
+#     otherwise grant every project beneath it
+_lib_autonomous_shipping_root_for_cwd() {
+  [ "$#" -eq 1 ] || return 1
+  local cwd="$1" root home_dir
+  case "$cwd" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "${HOME:-}" ] || return 1
+  home_dir=$(cd -P -- "$HOME" 2>/dev/null && pwd -P) || return 1
+  root=$(cd -- "$cwd" 2>/dev/null && _lib_repo_root) || return 1
+  [ -n "$root" ] || return 1
+  # -ef compares resolved files rather than path strings.
+  while :; do
+    [ "$root" -ef "$home_dir" ] && return 1
+    [ "$home_dir" = / ] && break
+    home_dir=${home_dir%/*}
+    home_dir=${home_dir:-/}
+  done
+  printf '%s' "$root"
+}
+
+# _lib_autonomous_shipping_statement REPO_ROOT
+# Prints the agent-facing statement of the resolved shipping state and returns 0 only when
+# _lib_autonomous_shipping_active holds; otherwise prints nothing and returns 1.
+_lib_autonomous_shipping_statement() {
+  [ "$#" -eq 1 ] || return 1
+  _lib_autonomous_shipping_active "$1" || return 1
+  # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the printed text, not command substitution.
+  printf '%s' 'Autonomous shipping is active for this repository: `~/.claude/scripts/autonomous-shipping-active.sh` exits 0 here (checked when this message was generated). Re-run that script before pushing to confirm. In this repository, the engineer'\''s request to make a change is their authorization to commit it, push the current branch to its own remote branch, and open a PR for it, so do those without asking. This outranks a generic "not authorized" line in a compaction summary, handoff or brief file, or authorization reminder. It does not outrank a specific hold the engineer gave, such as "don'\''t push until I check", even when that hold survives only as summary text, and an instruction the engineer gives in this session still wins. A line recording any engineer-originated restriction on shipping, however paraphrased or summarized, is such a hold, so when a line could be either a generic "not authorized" line or such a hold, ask instead of proceeding. The override applies only to a line recording absence of authorization with no engineer wait behind it. It covers only committing, a plain push of the current branch (never to the default branch), and opening a PR: merging stays human-only, and force-pushing and every other irreversible action still need the engineer'\''s in-session confirmation. A fork or subagent returns its work to its dispatcher and does not ship. In a different repository, run that script there before relying on this.'
+}
+
 # _lib_permission_prompt_tracking_active
 # Returns 0 (true) when this machine has opted into permission-prompt
 # tracking — gates track-permission-prompts.sh. Delegates to
@@ -4636,6 +4677,15 @@ _lib_architect_consult_latch_file() {
   printf '%s\n' "$config_dir/.architect-consult-latch.d/$state_key"
 }
 
+# _lib_diff_size_latch_file CONFIG_DIR STATE_KEY
+# Prints the path of the branch's diff-size acknowledgment latch, with the same
+# empty-argument contract as _lib_architect_consult_latch_file.
+_lib_diff_size_latch_file() {
+  local config_dir="${1:-}" state_key="${2:-}"
+  [ -n "$config_dir" ] && [ -n "$state_key" ] || return 1
+  printf '%s\n' "$config_dir/.diff-size-prompt-latch.d/$state_key"
+}
+
 # _lib_architect_consult_threshold CONFIG_DIR STATE_KEY
 # Prints the number of distinct reviewed states at which the gate demands the
 # next consult: $_LIB_ARCHITECT_CONSULT_REARM_INTERVAL when this branch's
@@ -4652,6 +4702,101 @@ _lib_architect_consult_threshold() {
   else
     _lib_reviewer_round_state_cap
   fi
+}
+
+# Lower edge of the 400-799 bucket in review_cost_by_size.py's _SIZE_BUCKET_LOWER_EDGES.
+_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES=400
+
+# A chosen ceiling, not a measured figure, set above _lib_capped's 5 seconds because the count's cost grows with the diff.
+_LIB_DIFF_SIZE_COUNT_CAP_SECONDS=30
+
+# _lib_sum_numstat_changed_lines
+# Reads `git diff --numstat` text on stdin and prints the changed-line total.
+# A row whose first two columns are not both digit strings adds zero: a binary row (`-`), a path with the `-diff` or `binary` attribute, or any other non-numeric count.
+# A total past the awk's integer range prints an awk-dependent value.
+_lib_sum_numstat_changed_lines() {
+  LC_ALL=C awk -F '\t' '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { printf "%d\n", total }'
+}
+
+# _lib_diff_size_measure REPO_ROOT GITDIR BRANCH
+# Prints "<count> <base>" and returns 0, where <count> is the changed lines (additions plus deletions) the commit
+# being made leaves in the branch's diff against origin/<base>, not counting files under REPO_ROOT's .claude/plans/.
+# Returns 1 with no stdout when the commit is not measurable.
+# _lib_configured_stack_base's one stderr line reaches the caller's stderr.
+# BRANCH must be the branch HEAD names, because _lib_configured_stack_base and the merge-base read HEAD themselves.
+# BRANCH is the output of `git symbolic-ref -q --short HEAD`, which can carry a `heads/` prefix.
+# No `gh pr view`, because it would add a network call to every commit.
+# A branch on a non-default base with no stack-base key therefore overcounts.
+# Counting the index equals the diff the commit lands only because deny-invisible-commit-content.sh denies a chained
+# `git add`, a `-a` commit and a pathspec commit, except where that hook's header lists Known gaps.
+_lib_diff_size_measure() {
+  local repo_root="$1" gitdir="$2" branch="$3"
+  local inprogress_status=0 stack_status=0 stack_line base merge_base numstat count
+  _lib_git_inprogress_state "$repo_root" "$gitdir" >/dev/null || inprogress_status=$?
+  [ "$inprogress_status" -eq 1 ] || return 1
+  stack_line=$(_lib_configured_stack_base "diff-size" "$repo_root") || stack_status=$?
+  case "$stack_status" in
+    0) base="${stack_line#* }" ;;
+    1) base=$(_lib_default_branch_or_guess "$repo_root") || return 1 ;;
+    *) return 1 ;;
+  esac
+  # `symbolic-ref --short` prints `heads/<name>` when another ref, such as a tag, shares the branch's name.
+  [ -n "$base" ] && [ "$base" != "${branch#heads/}" ] || return 1
+  merge_base=$(_lib_capped git -C "$repo_root" merge-base "refs/remotes/origin/$base" HEAD 2>/dev/null) || return 1
+  [ -n "$merge_base" ] || return 1
+  # Captured, not piped, so a failed git call is not masked by the sum's own status.
+  # The unset keeps an inherited pathspec variable from reading the exclude as a literal name, which empties the diff at exit 0.
+  # deny-private-project-refs.sh unsets the same four names before its staged-diff read, so edit both together.
+  numstat=$(
+    unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+    # git.adoc documents GIT_NO_LAZY_FETCH as stopping the count from fetching a missing blob from a promisor remote.
+    # Its option form, `git --no-lazy-fetch`, is in the 2.45.0 release notes.
+    # Older git ignores GIT_NO_LAZY_FETCH, so only the count cap bounds the count there, and only under GNU timeout (see _lib_capped_for's header).
+    export GIT_NO_LAZY_FETCH=1
+    # Inherited GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE stay set, because the commit being made inherits the same ones.
+    _lib_capped_for "$_LIB_DIFF_SIZE_COUNT_CAP_SECONDS" git -C "$repo_root" diff-index --cached --numstat -M --ignore-submodules=none "$merge_base" -- ':(top,exclude).claude/plans/' 2>/dev/null
+  ) || return 1
+  count=$(printf '%s\n' "$numstat" | _lib_sum_numstat_changed_lines)
+  [ -n "$count" ] || return 1
+  printf '%s %s\n' "$count" "$base"
+}
+
+# _lib_diff_size_gate_state START_DIR
+# The one read sequence the diff-size gate and its acknowledgment script share, so they agree on the config dir,
+# repository, branch, latch path and count.
+# Only status 0 writes stdout: the latch path, then the "<count> <base>" line of _lib_diff_size_measure.
+# Only status 1 can write stderr: _lib_configured_stack_base's stack-base line, plus incidental shell errors such as a
+# missing `sha256sum` or `awk`.
+# Statuses:
+#   - 0: the branch is unlatched and at or over _LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES
+#   - 1: state that could not be read, or a deliberately unmeasured commit
+#   - 2: the count is below the threshold
+#   - 3: the branch's latch path is a regular file
+# Only 1 is a failure, unlike _lib_git_inprogress_state and _lib_configured_stack_base, where 2 means unreadable state.
+# Callers capture with `rc=0; out=$(_lib_diff_size_gate_state ...) || rc=$?`, because statuses 1, 2 and 3 are answers
+# and a bare call aborts a `set -e` script.
+# The latch test precedes the measurement because a latched branch is already at the threshold and would otherwise
+# pay for a measurement on every later commit.
+# Cost: about 8 git processes in the common case, each under a timeout wrapper, plus two sha256sum | awk pipelines.
+# Upper bound on wall time: 102 seconds, summing every call's cap and its 2-second kill grace on the
+# no-stack-base-key, dangling-origin/HEAD path.
+_lib_diff_size_gate_state() {
+  local start_dir="${1:-}"
+  local config_dir paths repo_root gitdir branch state_key latch_file measurement count
+  [ -n "$start_dir" ] || return 1
+  config_dir=$(_lib_config_dir) || return 1
+  paths=$(_lib_capped git -C "$start_dir" rev-parse --show-toplevel --absolute-git-dir 2>/dev/null) || return 1
+  { IFS= read -r repo_root; IFS= read -r gitdir; } <<<"$paths"
+  [ -n "$repo_root" ] && [ -n "$gitdir" ] || return 1
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
+  [ -n "$branch" ] || return 1
+  state_key=$(_lib_reviewer_round_state_key_for_branch "$repo_root" "$branch") || return 1
+  latch_file=$(_lib_diff_size_latch_file "$config_dir" "$state_key") || return 1
+  [[ -f "$latch_file" ]] && return 3
+  measurement=$(_lib_diff_size_measure "$repo_root" "$gitdir" "$branch") || return 1
+  count="${measurement%% *}"
+  [ "$count" -ge "$_LIB_DIFF_SIZE_PROMPT_THRESHOLD_LINES" ] || return 2
+  printf '%s\n%s\n' "$latch_file" "$measurement"
 }
 
 # _lib_reviewer_round_state_key REPO_ROOT

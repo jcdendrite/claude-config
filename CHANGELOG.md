@@ -22,6 +22,17 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Where the git common dir is not `<main>/.git` (a bare repository, `--separate-git-dir`), the main worktree is no longer listed as if it were a removable linked worktree.
 - **`cleanup-idle-open-pr-worktrees.sh` no longer lists an idle open-PR branch checked out in the main worktree as "Would remove" when run from a linked worktree.** `git worktree remove` refuses the main worktree, so the real run printed "remove failed" for it.
   - The script now skips that branch silently. It no longer prints "Skipped (worktree in use, or its idle state could not be verified): <branch>" for it, and it no longer counts it under `skipped-in-use`. Before, that line and that count appeared whenever a live process, such as the shell the script was started from in a nested linked worktree, had its cwd inside the main checkout. "Would remove" and "remove failed" were the outcome only when the main checkout was idle.
+- **`restore-authorization-boundary-on-compact.sh` now emits the boundary text and, when autonomous shipping is active, the shipping statement in one message, and its kill switch silences only the boundary text.**
+  - **Statement:** the statement is resolved for the repo the payload's `.cwd` names. With `~/.claude/.authorization-boundary-disabled` set, the hook emits the statement alone, and it stays silent when shipping is not active.
+  - **Migration:** if you relied on that kill switch to silence everything the hook says, turn off `autonomous_shipping`, or add `.claude/autonomous-shipping-optout` in the repo, to silence the statement.
+  - **Timeout:** the `settings.json` registration now sets `"timeout": 10`, against the harness default of 600 s.
+- **`/handoff` and `/brief` now file a plain commit, a plain `git push` of the current branch and `gh pr create` under the safe-to-execute section (§3 and §6), not under "Pending engineer authorization" (§3.5 and §6.5), when the filed step names the resumer's own `autonomous-shipping-active.sh` exit 0 as its precondition and the engineer stated no hold.** The exception is one sentence in each skill's "Underlying principle" paragraph.
+- **`review-ledger.sh append` now records the declared reviewer lane for each finding.**
+  - `/code-review`'s disposition table column is now `Lane`.
+  - `review-ledger.sh append` now requires every new ADDRESS, DEFER and SETTLED row that raises a finding to carry a declared lane, by `--reviewer`, or `--relog` on a row that re-logs a decision.
+  - A reopen is now `ADDRESS --ref <id> --relog`.
+  - Restart any session that loaded `/code-review` before the pull: a restart avoids a rejected first call and a lane guessed from the rejection hint.
+  - Any caller of `review-ledger.sh append` outside the stowed `/code-review` skill, such as a wrapper, must now pass `--reviewer <lane>` or `--relog` on a non-CLEAN row.
 - **CI now runs Python 3.14, and a test fails when the suite's interpreter differs from CI's pin.**
   - CI ran 3.12 while a contributor's `.venv` built from Homebrew's Python ran 3.14, so three `evals/` tests failed locally and passed in CI.
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
@@ -36,6 +47,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The `round_consult_gate` kill switch now silences the consult inside `/ready-for-review` runs too. The Cap ignored it.
   - A branch already latched at pull time meets its first re-armed consult two states early, one under the round-2 pilot. Its deny text counts its earlier states as recorded since the last consult.
   - A `/ready-for-review` run already under way at pull time keeps the old Cap text while the hooks already count its reviews, so it can run both consults until it ends.
+- **`read-scope`, `edit-format`, `cache-rebuild` and `context-composition` now skip `api-request-blob` records, and a new `read-cost` subcommand prices reads across their context windows.**
+  - `read-scope` main-thread read figures can drop where these records exist, because each blob copied a tool call that was already counted.
+  - `context-composition` no longer reads such a record as an `isSidechain` toggle, so a subagent context it split into several sequences stays whole.
+  - `read-cost` reads the active account alone, refuses `--projects` and a top-level `--config-dir`, and requires `--this-repo`. `docs/transcript-analysis.md` § "read-cost" states when its figures are publishable.
 - **The `pr-cost` ledger gains a trailing `review_rounds` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds, for each review skill, the PR's rounds in round order, so the round history outlives transcript retention. The cell is recorded only: no report reads it yet, and it is reachable through `pr-cost-export` or a direct parse of the ledger's TSV and JSON.
   - **Ledger:** each round carries main-thread and subagent micro-dollars, tokens per model, pricing variant and token class, and completeness counts. A `rule` integer versions round detection. An empty cell means not captured, and rows recorded earlier read as not captured. See `docs/pr-cost.md` § "The `review_rounds` cell".
   - **Ledger:** the upgrade rewrites the file under the new header, prints a stderr notice, and has no supported downgrade. It applies only with `pr_cost_recording` on.
@@ -141,6 +156,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - `textconv` no longer applies: a text file with a `textconv` driver now prints its raw diff, unconverted, and a binary file with one prints `Binary files ... differ`.
 - **`pr-diff-against-base.sh` now prints `DIFF_EMPTY: no changes against base` on stderr when the cumulative diff is empty, and `/ready-for-review` step 3 halts on that line instead of on "exit 0 with no output".** The exit status stays 0 and stdout is unchanged, so a script that tests the exit status or reads stdout sees no difference. A script that treated an empty stdout as the empty-diff signal can match the stderr line instead.
   - `marker.sh write cumulative-review` now answers an empty recorded subject by telling the caller to halt as step 3 says and naming the `DIFF_EMPTY:` line. It keeps the advice to re-run `pr-diff-against-base.sh --record` for a stale empty subject only.
+- **`/ready-for-review` step 3 now discards `pr-diff-against-base.sh`'s stdout, so the cumulative diff no longer prints into the session.** The session reads the diff from the file the `DIFF_FILE:` stderr line names. The script is unchanged, and step 3 still halts on the `DIFF_EMPTY:` line.
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.**
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
@@ -536,6 +552,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Real-run change: when a removal is refused after a stale lock was released, the lock is restored with a reason naming the same pid, so the next run still sees a dead pid and unlocks it again. The original reason text is not preserved, as before. Before, the lock came back with no reason, so later runs treated it as a pid-less live lock and skipped it until someone unlocked it by hand.
   - Real-run change: after the "remove failed" lines, the real run prints "worktree: re-locked (pid N)" when the lock was restored and "worktree: re-lock failed (manual step needed)" when it could not be. Before, a failed re-lock was silent.
   - Real-run change: the "remove failed" diagnostic lists the worktree's own changes, submodule changes included, and no longer lists an enclosing repo's files when the worktree has no `.git`.
+- **A new SessionStart hook, `announce-autonomous-shipping.sh`, states the resolved autonomous-shipping state to the agent at startup, resume and `/clear`.**
+  - On a machine with `autonomous_shipping` on, in a repo without `.claude/autonomous-shipping-optout`, the agent is told the engineer's request to make a change authorizes committing it, pushing the current branch and opening a PR without asking. Merging stays human-only.
+  - It has no kill switch of its own: `autonomous_shipping` and the repo optout silence it. It is advisory context, so the model may still ask.
+  - The text lives in `_lib_autonomous_shipping_statement` in `_lib.sh`, which the hook, the compact hook and the Stop hook's block reason all print. See `docs/design-decisions/autonomous-shipping-state-in-hook-context.md`.
+  - **Re-run `./install.sh` (or `stow`) after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the registration points at a script that is not linked, which does not block session start, and the hook does not run.
 - **A new hook, `send-back-skipped-self-review.sh`, with its evaluator `evaluate-code-writer-self-review.py`, sends a `code-writer` return back once when it is missing any part of the self-review evidence `code-writer.md` mandates.** A second return that is still incomplete goes through, prefixed with a `SELF-REVIEW INCOMPLETE (hook-verified)` line in auto permission mode. In `acceptEdits` mode no hook-written line reaches the parent, so a missing `SELF-REVIEW INCOMPLETE` line there is not evidence of a completed self-review. The hook is fail-open and registers under PreToolUse `SubagentHandback` and SubagentStop `code-writer`.
   - `code-writer.md` now asks for one ledger line per reviewer file Read, drops step 5's exemption for a trivial change and for a whitespace or typo fix, and adds a step 8 that re-reads the diff after the last fix. Its domain table routes build tooling and environment config to `staff-platform-engineer`, and any other file to `staff-backend-engineer`.
   - If `~/.claude/hooks` is a real directory rather than a symlink into this checkout, run `./install.sh` after pulling. Until then each subagent handback and each `code-writer` stop runs a registration whose script is missing, which does not block the call, and the send-back does not run. Confirm with `ls` on both files under `~/.claude/hooks/`.
@@ -644,6 +665,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
+- **`advance-past-commit-stall.sh` no longer misses a permission question on a later line of a multi-line final message.**
+  - **Cause:** it read only the first line of `last_assistant_message`.
+  - **Judgment:** it now reads the whole message and judges the last sentence of the last non-blank line, so a heading, bullets, then a closing "Should I push and open a PR?" fires.
+  - **Block reason:** it now opens with the shared autonomous-shipping statement.
+  - **Scan window:** it scans only the last 2048 characters of the message.
+  - **Repo resolution:** it resolves the repo from the payload's `cwd` alone, with no `$PWD` fallback.
+  - **Rooted at `$HOME`:** the hook no longer fires for a repo rooted at `$HOME` or above it, because no statement is printed for such a repo.
+  - **Kill switch:** the block reason names the `commit_stall_block = false` config row as the switch, because the legacy `.commit-stall-block-disabled` file does nothing once `claude-config.toml` holds a `commit_stall_block` row.
+  - **Newline in `cwd`:** a payload whose `cwd` contains a newline fails closed, so the hook does not fire.
+  - **Log:** a fire that the repo-root rule denies writes a `root-denied` line to `.commit-stall-block.log`.
 - **`review-round-cost` and `review-cost-by-size` now exclude a turn whose usage is not an object or whose token fields are not non-negative integers.**
   - **Excluded:** before, such a turn raised, priced negative, or had a float, boolean or numeric-string count coerced to an integer.
   - **Unpriced:** a turn whose `message.model` is a JSON array or object is now priced as unpriced instead of raising.
