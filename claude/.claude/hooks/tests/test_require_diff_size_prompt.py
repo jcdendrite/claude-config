@@ -53,6 +53,7 @@ _SIZE_REASON_FRAGMENTS = (
     str(_OVER_THRESHOLD_LINES),
     "origin/trunk",
     f"{_THRESHOLD_LINES}-line threshold",
+    "AskUserQuestion",
     "`Split now`",
     "`Proceed anyway`",
     DIFF_SIZE_ACK_COMMAND,
