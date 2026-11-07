@@ -76,9 +76,15 @@
 #   - idle, and not locked by a live pid or a pid-less lock;
 #   - clean, with no populated submodules;
 #   - neither the main worktree nor the worktree the script runs from.
+# That last exclusion holds in single-repo mode only. Under --all-projects
+# REPO_ROOT is each swept repo's own toplevel, so only the live-process scan
+# protects the invoker's worktree.
 # A worktree whose directory is gone is listed, because `git worktree remove`
 # removes it. Tier B is left out because the real run removes it only after a
 # `y` at a prompt.
+# The script puts no deadline on its `gh` calls or its fetch of the default
+# branch. A caller must impose its own and treat a timeout kill as a nonzero
+# exit.
 # A listed worktree can be locked by a holder this user cannot signal: a dead
 # pid, or another user's process. The real run unlocks it first, and a plain
 # `git worktree remove` is refused until `git worktree unlock`.
@@ -353,8 +359,8 @@ if [ "$(git rev-parse --show-toplevel)" != "$REPO_ROOT" ] \
   exit 1
 fi
 
-# REPO_ROOT is the checkout the script runs in, a linked worktree when run
-# from one; the main worktree is what `git worktree remove` never removes.
+# The main worktree is what `git worktree remove` never removes.
+# REPO_ROOT is a linked worktree when the script runs from one.
 # Outside list mode a failed listing falls back to REPO_ROOT, because
 # resolve_worktree_for_branch then finds no worktree to act on anyway.
 if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
@@ -1023,7 +1029,7 @@ for BRANCH in "${TO_DELETE[@]}"; do
 
   echo "  ${BRANCH}:"
 
-  # The dirty and submodule probes repeat what `git worktree remove` checks and their result is unused here (git decides).
+  # The dirty and submodule probes repeat what `git worktree remove` checks and their result is unused here.
   # The real run still computes the verdict so it shares one decision with --dry-run and --list-removable.
   worktree_removal_verdict "$BRANCH" "$MAIN_WORKTREE_PATH" "$REPO_ROOT"
 
@@ -1066,8 +1072,9 @@ for BRANCH in "${TO_DELETE[@]}"; do
       continue
       ;;
     *)
-      # Every verdict token the lib can return has its own arm in the list and the dry-run case.
       # A new skip token needs its own arm here, or the real run attempts its removal.
+      # It needs a dry-run arm too, or the dry run prints it with no skip tag.
+      # The list needs none: its `*` arm already omits a token it does not name.
       # dirty, submodules, the two unverifiable probes, unlock-remove and
       # remove: git decides, so a refusal is reported, not predicted.
       WORKTREE_UNLOCKED=0

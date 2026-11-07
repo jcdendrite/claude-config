@@ -502,6 +502,20 @@ class TestMainWorktreeExcluded:
         assert f"Worktree: {main_path}\n" not in result.stdout
         assert f"Worktree: {linked_path} (current)" in result.stdout
 
+    def test_bare_repository_path_excluded_when_run_from_its_linked_worktree(self, tmp_path):
+        """A bare repository's first `git worktree list` record is the bare git dir, which must not be reported."""
+        _, bare = _make_repo_with_remote(tmp_path)
+        linked_path = tmp_path / "linked-tree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feat/linked", str(linked_path), "main"], cwd=bare, check=True,
+        )
+
+        result = _run_script(linked_path)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Worktree: {bare}\n" not in result.stdout
+        assert f"Worktree: {linked_path} (current)" in result.stdout
+
 
 class TestNotAGitRepository:
     def test_exits_nonzero_with_message(self, tmp_path):

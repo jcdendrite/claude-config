@@ -899,6 +899,16 @@ echo "verdict:$WORKTREE_REMOVAL_VERDICT"
 
         assert verdict["verdict"] == "submodules-unverifiable"
 
+    def test_dirty_tree_outranks_a_failed_submodule_status(self, tmp_path):
+        local, wt_path = self._linked_worktree(tmp_path)
+        (wt_path / "untracked.txt").write_text("x")
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*submodule status*", exit_status=1)
+        env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+
+        verdict = self._verdict(local, local.resolve(), env=env)
+
+        assert verdict["verdict"] == "dirty"
+
     def test_a_populated_submodule_outranks_a_failed_status(self, tmp_path):
         """A definite refusal comes before an unknown."""
         wt_path = tmp_path / "populated-tree"
