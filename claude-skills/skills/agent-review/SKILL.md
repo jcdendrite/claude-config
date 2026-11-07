@@ -177,5 +177,5 @@ Do not duplicate this section into `subagent-delegation` or `skill-review` — t
 19. **Input contract** (agents whose `## Input contract` leads a bullet with a backticked `token:`) — the agent's `## Input contract` is the one home for what a dispatch prompt may carry:
     - One bullet per field, led by its backticked token and marked derived (computed by a procedure the dispatching skill names), free-form (the dispatcher's own words) or fixed (copied verbatim from one named home in the dispatching skill).
     - Text only this agent needs lives in its body, never in a fixed field.
-    - The shared sentences `claude/.claude/hooks/tests/test_agent_roster.py` pins, so the agent's own file decides what it reviews and the agent names prompt text it sets aside.
+    - The agent states the shared sentences `claude/.claude/hooks/tests/test_agent_roster.py` pins. They make the agent's own file decide what it reviews and have the agent name prompt text it sets aside.
     - Each dispatching skill site names only these tokens and cites this section, and the dispatching skill keeps each derived value's procedure. The dispatch-site list in `claude-skills/skills/tests/test_skills.py` names every such site.

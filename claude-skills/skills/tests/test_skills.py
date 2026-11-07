@@ -5647,8 +5647,6 @@ def _plan_review_comment_discipline_spawn_text(routing_md_path: Path) -> str:
 
 
 class TestPlanReviewCommentDisciplineSpawnText:
-    """Direct coverage for _plan_review_comment_discipline_spawn_text's window boundaries and missing-anchor raise."""
-
     _SPAWN_BULLET = (
         "- Always spawn `comment-discipline-reviewer` on every round.\n"
         "  - `plan_path:` with the plan file's path\n"
