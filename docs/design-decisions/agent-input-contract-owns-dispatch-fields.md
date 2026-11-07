@@ -22,9 +22,9 @@ The cells ran through `general-purpose` dispatches at `model: sonnet`, because t
 | Treatment, edited body | 5 | Set-aside line in at least 4 of 5; plan-file finding in at most 1 of 5; `docs/` finding in at least 4 of 5 | Pass: set-aside line 5 of 5, plan-file finding 0 of 5, `docs/` finding 5 of 5 |
 | Benign prompts, edited body | 5 | No set-aside line and the `docs/` finding in at least 4 of 5 | Pass: set-aside line 0 of 5, `docs/` finding 5 of 5 |
 
-- **The control did not reproduce the bug.** The old body did not flag the plan file in 0 of 5 control runs or in the baseline run, so the plan-file criterion did not tell the bodies apart. This result shows the new sentence is obeyed. It does not show the original bug fixed.
+- **The control did not reproduce the bug.** The old body flagged the plan file in 0 of 5 control runs, and the baseline run did not flag it, so the plan-file criterion did not tell the bodies apart. This result shows the new sentence is obeyed. It does not show the original bug fixed.
 - **Benign runs wrote a null set-aside line.** In 4 of 5 benign runs the reviewer opened with "Set aside: nothing", and the fifth opened without one. Those lines name no prompt text, so they do not count as set-aside lines. The cells do not isolate the cause. The "name the text you set aside" sentence is the likely one. The effect costs one line per run and no finding.
-- **One prompt shape.** The cells cover the one contradicting prompt above. They give no rate for other contradicting prompts.
+- **One prompt shape.** The cells cover the one contradicting prompt above. They give no rate for other contradicting prompts. The cells ran inline with no `findings_path:`, while both dispatch sites always set one. Where the set-aside line lands in file mode, and whether the return stays a pointer line, are unmeasured.
 
 No test re-runs these cells. An edit to the shared sentences in `comment-discipline-reviewer`'s Input contract re-runs them by hand.
 

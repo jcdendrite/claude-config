@@ -93,8 +93,8 @@ DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
 
 # Agents whose Input contract lists the fields a dispatch prompt may carry,
 # each led by a backticked `token:`. The completeness test below derives the
-# expected set from the agent files, so an agent that adopts field bullets
-# without joining this roster fails there.
+# actual set from the agent files and compares it with this tuple, so an agent
+# that adopts field bullets without joining it fails there.
 PROMPT_CONTRACT_AGENTS = ("comment-discipline-reviewer.md",)
 
 # The sentences every PROMPT_CONTRACT_AGENTS member states in its Input
