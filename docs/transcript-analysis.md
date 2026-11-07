@@ -1734,7 +1734,7 @@ Keep the note as an owner-only file outside any git work tree and any cloud-sync
      capture_count=0
      while IFS= read -r config_dir; do
        capture_count=$((capture_count + 1))
-       transcript-analysis.py --config-dir "${config_dir/#\~/$HOME}" routing-guard --note <note-path> --capture < /dev/null
+       python3 ~/.claude/scripts/transcript-analysis.py --config-dir "${config_dir/#\~/$HOME}" routing-guard --note <note-path> --capture < /dev/null
        capture_exit_code=$?
        echo "capture exit: $capture_exit_code"
        if [ "$capture_exit_code" -ne 0 ] && [ "$capture_exit_code" -ne 3 ]; then loop_exit_code=$capture_exit_code; break; fi
@@ -1747,7 +1747,7 @@ Keep the note as an owner-only file outside any git work tree and any cloud-sync
 4. Run capture again on every listed account, as under "Deny reconciliation". Run compute, with no `--config-dir`, only when every one of those captures exits 0:
 
    ```bash
-   transcript-analysis.py routing-guard --note <note-path> --out <new-file-path>
+   python3 ~/.claude/scripts/transcript-analysis.py routing-guard --note <note-path> --out <new-file-path>
    ```
 
 5. Read the `--out` file, then delete it.
@@ -1759,8 +1759,8 @@ Before any publish, capture checks the routing gate's denies on the account's ro
 **The deny lookups.** Run both in the owner's terminal outside any agent session, with the same top-level `--config-dir` given to capture. Each timeline prints a denial with its UTC timestamp and `branch=`. List every denial row whose `msg=` opens "Blocked by review-orchestrator routing gate" and whose `branch=` the note omits.
 
 ```bash
-transcript-analysis.py --config-dir <config-dir> review-trace --this-repo --deny-only
-transcript-analysis.py --config-dir <config-dir> review-trace --deny-only --projects='<main-project-slug>--claude-worktrees-*'
+python3 ~/.claude/scripts/transcript-analysis.py --config-dir <config-dir> review-trace --this-repo --deny-only
+python3 ~/.claude/scripts/transcript-analysis.py --config-dir <config-dir> review-trace --deny-only --projects='<main-project-slug>--claude-worktrees-*'
 ```
 
 `--this-repo` skips a removed worktree's project directory, which capture reads, so the second lookup covers it. `<main-project-slug>` is the main checkout's project slug, its path with `/` and `.` replaced by `-`. Attach the `--projects` value with `=`, because the slug starts with `-` and the parser reads a separate argument starting with `-` as an option.
@@ -1797,7 +1797,7 @@ Exit codes:
 | 3 | a row is `missing` or `invalid`, or the `PRICING INTEGRITY` line printed | NOT RUN |
 | 4 | an unexpected `OSError`, a failed publish, a built row that failed validation, or any other unexpected exception | an unexpected `OSError` or other unexpected exception |
 
-Files published in a capture run that exits 3 or 4 stay, and a re-run reports them `already captured`.
+Files published in a capture run that exits 3 or 4 stay, and a re-run reports each of them `already captured`.
 
 ### Publication
 

@@ -380,7 +380,7 @@ def _recorder_attachment(
 ) -> dict:
     """A transcript record for a recorder hook attachment. The default `stdout` is the real hook's no-row notice (a lost event).
 
-    The attachment carries the ten keys of a real hook_success record, with synthetic values for the ones the reader ignores.
+    Keys the reader ignores hold synthetic values.
     """
     return {
         "type": "attachment",

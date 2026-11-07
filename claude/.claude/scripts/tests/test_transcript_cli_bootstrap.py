@@ -1305,10 +1305,14 @@ def test_transcript_analysis_routing_guard_help_exits_zero():
 
 
 def test_transcript_analysis_routing_guard_capture_subprocess_publishes_one_file_from_the_running_checkout(tmp_path):
-    """Proves, in a fresh interpreter, that routing_guard.py resolves through sys.path[0] alone, that real
-    argparse dispatches routing-guard to cmd_routing_guard, and that _CHECKOUT_ROOT's parents[4] depth reaches
-    the checkout root: no _CHECKOUT_ROOT patch reaches this process, so the run passes the checkout check only
-    when that depth is right. The project directory's slug comes from `git worktree list`, as scope slugs it."""
+    """Proves, in a fresh interpreter:
+
+    - routing_guard.py resolves through sys.path[0] alone.
+    - Real argparse dispatches routing-guard to cmd_routing_guard.
+    - _CHECKOUT_ROOT's parents[4] depth reaches the checkout root. No _CHECKOUT_ROOT patch reaches this process,
+      so the run passes the checkout check only when that depth is right.
+    - The project directory's slug comes from `git worktree list`, as scope slugs it.
+    """
     # Same mapping as scope._path_to_project_slug; this file imports no transcript_analysis module.
     project_slug = re.sub(r"[/.]", "-", _listed_worktree_path(REPO_ROOT))
     account, note = _routing_guard_fixture(tmp_path, project_slug)

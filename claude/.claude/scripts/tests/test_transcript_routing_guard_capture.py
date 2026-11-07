@@ -2503,6 +2503,17 @@ class TestConfigDirSpelling:
 
 
 class TestStore:
+    @pytest.mark.parametrize(
+        ("published_count", "expected_text"),
+        [
+            (0, "this run published 0 files"),
+            (1, "this run published 1 file, and a re-run reports it already captured"),
+            (2, "this run published 2 files, and a re-run reports them already captured"),
+        ],
+    )
+    def test_the_published_files_text_agrees_noun_and_pronoun_with_the_count(self, published_count, expected_text):
+        assert routing_guard._published_files_text(published_count) == expected_text
+
     def test_a_second_run_reports_each_row_already_captured_and_leaves_every_file_untouched(self, world, capsys):
         _two_branch_sessions(world)
         _write_note(world, _note_line(world.config_dir, _BRANCH), _note_line(world.config_dir, _BETA))
@@ -2784,7 +2795,7 @@ class TestStore:
         assert outcome.code == 4
         assert "could not be written" in outcome.err
         assert "hard links" not in outcome.err
-        assert "published 1 files" in outcome.err
+        assert "published 1 file, and a re-run reports it already captured" in outcome.err
         assert "/sentinel/path" not in outcome.err + outcome.out
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
         assert list(world.captures_dir.glob(".routing-guard-*")) == []
@@ -2811,7 +2822,7 @@ class TestStore:
         assert outcome.code == 4
         assert "could not be linked into place" in outcome.err
         assert "(the captures directory's filesystem must support hard links and have free space)" in outcome.err
-        assert "published 1 files" in outcome.err
+        assert "published 1 file, and a re-run reports it already captured" in outcome.err
         assert "/sentinel/path" not in outcome.err + outcome.out
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
         assert list(world.captures_dir.glob(".routing-guard-*")) == []
@@ -2826,7 +2837,9 @@ class TestStore:
         outcome = _run(capsys, world)
 
         assert outcome.code == 4
-        assert "a capture file could not be published" in outcome.err
+        assert "a capture file could not be published; this run published 0 files" in outcome.err
+        # A run that published nothing has no already-captured files to promise.
+        assert "re-run" not in outcome.err
         assert "written" not in outcome.err
         assert "linked into place" not in outcome.err
         assert "hard links" not in outcome.err
@@ -2861,6 +2874,8 @@ class TestStore:
 
         assert outcome.code == 4
         assert "failed validation; this run published 0 files" in outcome.err
+        # A run that published nothing has no already-captured files to promise.
+        assert "re-run" not in outcome.err
         assert not world.captures_dir.exists()
 
     def test_a_built_row_the_validator_rejects_after_one_published_row_reports_that_one_file(
@@ -2882,7 +2897,7 @@ class TestStore:
         outcome = _run(capsys, world)
 
         assert outcome.code == 4
-        assert "failed validation; this run published 1 files" in outcome.err
+        assert "failed validation; this run published 1 file, and a re-run reports it already captured" in outcome.err
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
 
     def test_an_unexpected_exception_exits_4_with_the_fixed_message_and_no_sentinel_or_traceback(
@@ -3594,7 +3609,7 @@ _PERMITTED_COMPUTED_VALUES = re.compile("|".join([
     r" states: routing=(?:on|off)/consult-pilot=(?:on|off)/fix-plan-pilot=(?:on|off)\)",
     r"summary: \d+ captured, \d+ already captured, \d+ missing, \d+ invalid, \d+ excluded;"
     r" key-on files: \d+, key-off files: \d+",
-    r"published \d+ files",
+    r"published \d+ files?",
     r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC",
 ]))
 _CAPTURED_LINE = (
@@ -3620,7 +3635,7 @@ _OUTPUT_SCENARIOS = [
     ("unlisted-deny-refusal", 2, "falls on a branch the note does not list"),
     ("dropped-deny-notice", 0, "was not counted"),
     ("scan-gap", 2, "Nothing was published"),
-    ("publish-failure", 4, "published 1 files"),
+    ("publish-failure", 4, "published 1 file"),
     ("not-opted-in-refusal", 1, "not opted in"),
     ("unlisted-account-refusal", 2, "is not listed in the note"),
 ]
@@ -5283,14 +5298,31 @@ def _documented_capture_loop(note: Path) -> str:
     return textwrap.dedent("\n".join(fence_lines)).replace("<note-path>", shlex.quote(str(note)))
 
 
+def _install_stub_at_documented_path(home: Path, stub_script: str) -> None:
+    """Write `stub_script` where the doc's `python3 ~/.claude/scripts/transcript-analysis.py` resolves under `home`."""
+    scripts_dir = home / ".claude" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "transcript-analysis.py").write_text(stub_script)
+
+
 class TestDocumentedCaptureLoop:
-    # The stub is a POSIX shell script named like the tool, found through PATH the way the loop calls it.
+    # The stub is a Python script, since the loop runs the tool as `python3 <path>`.
     STUB_SCRIPT = """\
-#!/bin/sh
-[ "$1" = "--config-dir" ] && [ "$3" = "routing-guard" ] && [ "$4" = "--note" ] && [ "$6" = "--capture" ] || exit 98
-printf '%s\\n' "$2" >> "$STUB_INVOCATIONS"
-[ -f "$STUB_EXIT_CODES/$(basename "$2")" ] || exit 99
-exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
+import os
+import sys
+
+args = sys.argv[1:]
+if len(args) != 6 or (args[0], args[2], args[3], args[5]) != ("--config-dir", "routing-guard", "--note", "--capture"):
+    sys.exit(98)
+# Without the documented "< /dev/null", this read swallows the rest of the loop's account list, so later accounts never run.
+sys.stdin.read()
+with open(os.environ["STUB_INVOCATIONS"], "a") as invocations:
+    invocations.write(args[1] + "\\n")
+exit_code_file = os.path.join(os.environ["STUB_EXIT_CODES"], os.path.basename(args[1]))
+if not os.path.isfile(exit_code_file):
+    sys.exit(99)
+with open(exit_code_file) as exit_code_handle:
+    sys.exit(int(exit_code_handle.read()))
 """
 
     def _run_loop(
@@ -5302,13 +5334,10 @@ exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
         `acct-b`, `~/acct-c` under the C locale, and the note lists them out of order.
         """
         home = tmp_path / "home"
-        stub_bin = tmp_path / "bin"
         exit_codes_dir = tmp_path / "exit-codes"
-        for directory in (home, stub_bin, exit_codes_dir):
+        for directory in (home, exit_codes_dir):
             directory.mkdir()
-        stub = stub_bin / "transcript-analysis.py"
-        stub.write_text(self.STUB_SCRIPT)
-        stub.chmod(0o700)
+        _install_stub_at_documented_path(home, self.STUB_SCRIPT)
         account_a, account_b = tmp_path / "acct-a", tmp_path / "acct-b"
         accounts_by_sorted_order = [str(account_a), str(account_b), "~/acct-c"]
         for account, exit_code in zip(
@@ -5328,7 +5357,7 @@ exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
         note.write_text(note_text)
         invocations = tmp_path / "invocations"
         environment = {
-            **os.environ, "HOME": str(home), "LC_ALL": "C", "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}",
+            **os.environ, "HOME": str(home), "LC_ALL": "C",
             "STUB_INVOCATIONS": str(invocations), "STUB_EXIT_CODES": str(exit_codes_dir),
         }
 
@@ -5369,16 +5398,16 @@ exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
         ],
     )
     def test_the_loop_exits_nonzero_when_the_note_yields_no_config_directory(self, tmp_path, note_text):
-        stub_bin = tmp_path / "bin"
-        stub_bin.mkdir()
-        stub = stub_bin / "transcript-analysis.py"
+        home = tmp_path / "home"
+        home.mkdir()
         invocations = tmp_path / "invocations"
-        stub.write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(invocations))}\nexit 0\n")
-        stub.chmod(0o700)
+        _install_stub_at_documented_path(
+            home, f"with open({str(invocations)!r}, 'a') as invocations:\n    invocations.write('ran\\n')\n",
+        )
         note = tmp_path / "note.tsv"
         if note_text is not None:
             note.write_text(note_text)
-        environment = {**os.environ, "LC_ALL": "C", "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"}
+        environment = {**os.environ, "HOME": str(home), "LC_ALL": "C"}
 
         run = subprocess.run(
             ["bash", "-c", _documented_capture_loop(note)], env=environment, capture_output=True, text=True, check=False,

@@ -11,12 +11,12 @@ OUTPUT INVARIANT, each clause pinned by the tests it names:
   _routing_guard_helpers.py, which asserts, on every exit, that no note branch, note config-dir cell, absolute cell's
   final path segment or `--config-dir` argument appears in either stream.
 - A capture file stores `message.model` strings verbatim. Every other string it holds is a fixed label.
-  `TestGoldenFile` there.
+  Pinned by `TestGoldenFile` in test_transcript_routing_guard_capture.py.
 - The session config-keys log is read for a row's session id, `logged_at` and key values. A session id and a
   key value reach no capture file, stdout or stderr, and each key value reaches the file only as `on` or `off`.
-  Pinned by `TestKeyStateOutput` there.
+  Pinned by `TestKeyStateOutput` in test_transcript_routing_guard_capture.py.
 - A transcript `requestId` can reach stderr, and nothing else, through pricing.dedup_turns_by_request_id's rate-limited
-  prints. The DO NOT PUBLISH banner covers it. `TestFreeText` there.
+  prints. The DO NOT PUBLISH banner covers it. Pinned by `TestFreeText` in test_transcript_routing_guard_capture.py.
 - Compute writes no string read from a capture file, a model string included, to stdout, stderr or the `--out` file.
   `TestPricing` and `TestCaptureFiles` in test_transcript_routing_guard_compute.py.
 """
@@ -754,7 +754,6 @@ def _read_standing_capture(path: Path) -> bytes | _StandingFile:
 
 
 def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
-    """The validated record of the capture file at `path`, or why there is none."""
     standing = _read_standing_capture(path)
     if isinstance(standing, _StandingFile):
         return standing
@@ -1273,7 +1272,6 @@ def _merge_overhead_tokens(rounds: Sequence[_RoundFacts]) -> dict[str, dict[str,
 
 
 def _loop_growth_tokens(first_round: _RoundFacts, last_round: _RoundFacts) -> int | None:
-    """Context at the last round's window end less context at the first round's open, or None across sessions."""
     if first_round.session_key != last_round.session_key:
         return None
     if first_round.context_at_open is None or last_round.context_at_window_end is None:
@@ -1311,7 +1309,6 @@ def _rounds_in_loops(rounds: Sequence[_RoundFacts]) -> list[_RoundFacts]:
 
 
 def _assemble_loops(rounds: Sequence[_RoundFacts]) -> list[_Loop]:
-    """A branch's loops, built from the groups `_loop_groups` finds."""
     return [
         _Loop(
             overhead_tokens=_merge_overhead_tokens(group),
@@ -1460,7 +1457,6 @@ def _utc_date(ts: float | None) -> str:
 
 
 def _states_text(states: _KeyStates) -> str:
-    """Each state as `<label>=<on|off>`, routing first and then the two pilots."""
     return "/".join(f"{label}={state}" for label, state in zip(_STATE_LABELS, states, strict=True))
 
 
@@ -1492,6 +1488,13 @@ def _standing_line(line_no: int, standing: _CaptureRecord | _StandingFile) -> tu
     ), True
 
 
+def _published_files_text(published_count: int) -> str:
+    if published_count == 0:
+        return "this run published 0 files"
+    noun, pronoun = ("file", "it") if published_count == 1 else ("files", "them")
+    return f"this run published {published_count} {noun}, and a re-run reports {pronoun} already captured"
+
+
 def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count: int) -> NoReturn:
     """Exit 4 for any outcome that left no file published."""
     action = {
@@ -1500,8 +1503,7 @@ def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count
         + ledger_common._hard_link_requirement("the captures directory"),
     }.get(outcome, "published")
     _refuse(
-        f"{_COMMAND}: a capture file could not be {action}; this run published {published_count} files,"
-        " and a re-run reports them already captured",
+        f"{_COMMAND}: a capture file could not be {action}; {_published_files_text(published_count)}",
         4,
     )
 
@@ -1585,8 +1587,8 @@ def _capture_account_rows(
                 _parse_capture_bytes(text_bytes)
             except _InvalidCapture:
                 _refuse(
-                    f"{_COMMAND}: internal error: the built row failed validation; this run published"
-                    f" {published_count} files, and a re-run reports them already captured",
+                    f"{_COMMAND}: internal error: the built row failed validation; "
+                    f"{_published_files_text(published_count)}",
                     4,
                 )
             # The directory is created just before the first publish, so a run that publishes nothing creates nothing.
@@ -2020,7 +2022,6 @@ def _net_from_totals(on: _ArmTotals, off: _ArmTotals) -> _NetFigures | None:
 
 
 def _arm_net(on: Iterable[_BranchScalars], off: Iterable[_BranchScalars]) -> _NetFigures | None:
-    """The net per loop over two multisets of branches."""
     return _net_from_totals(_arm_totals(on), _arm_totals(off))
 
 
