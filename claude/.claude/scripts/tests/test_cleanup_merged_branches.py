@@ -35,6 +35,7 @@ from .conftest import (
     _git_shim_that_fails_on_subcommand,
     _git_shim_that_fails_on_worktree_subcommand,
     _init_repo,
+    _leave_modules_directory_in_worktree_git_dir,
     _live_process_in,
     _lock_worktree,
     _make_feature_branch,
@@ -4177,6 +4178,22 @@ class TestListRemovable:
         assert _local_branch_exists(local, "feat/populated")
         assert "worktree:       remove failed" in real.stdout
 
+    def test_leftover_modules_directory_worktree_excluded_and_really_refused(self, tmp_path, fake_gh):
+        """`git worktree remove` refuses a worktree whose own git dir holds a
+        `modules` directory even with no submodule initialized."""
+        local, wt_path, pr = _tier_a_branch_with_worktree(tmp_path, "feat/leftover-modules", "leftover-modules-tree", 823)
+        _leave_modules_directory_in_worktree_git_dir(wt_path)
+        env = fake_gh({"feat/leftover-modules": pr})
+
+        listed = _list_removable(local, env)
+        real = _run_script(local, env)
+
+        assert listed.returncode == 0, listed.stderr
+        assert listed.stdout == ""
+        assert real.returncode == 0
+        assert wt_path.exists()
+        assert "worktree:       remove failed" in real.stdout
+
     def test_uninitialized_submodule_worktree_listed_and_really_removed(self, tmp_path, fake_gh):
         """An uninitialized submodule (`-` in `git submodule status`) does not
         block `git worktree remove`, so the worktree is listed and the real run removes it."""
@@ -4338,7 +4355,7 @@ class TestRunnerWorktreeOnATierABranchIsNeverRemoved:
     """The script runs from a linked worktree whose own branch has a merged PR,
     the usual way it is run. The main checkout sits on main.
     These tests pin the detection loop's "currently checked out" skip. The
-    `current-worktree` verdict is pinned only by the `_worktree-lib.sh` rows."""
+    `current-worktree` verdict is pinned only by `TestWorktreeRemovalVerdict` in `test_worktree_lib.py`."""
 
     def _repo_with_runner_on_a_tier_a_branch(self, tmp_path):
         """Returns (local, runner_path, sibling_path, pr_data): a clean Tier A worktree

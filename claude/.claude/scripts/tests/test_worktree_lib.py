@@ -440,6 +440,14 @@ echo "exit:$RC"
         assert result.stdout == "exit:1\n"
 
 
+def _add_gitignored_file(wt_path: Path) -> None:
+    """Commit a `.gitignore` in the linked worktree, then leave a file it ignores."""
+    (wt_path / ".gitignore").write_text("ignored.log\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=wt_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "ignore logs"], cwd=wt_path, check=True)
+    (wt_path / "ignored.log").write_text("x")
+
+
 class TestWorktreeIsClean:
     def _rc(self, wt_path: Path) -> int:
         result = _run_bash(f'''
@@ -476,6 +484,12 @@ printf 'reason:%s\\n' "$WORKTREE_PROBE_REASON"
         (wt_path / "untracked.txt").write_text("x")
 
         assert self._rc(wt_path) == 1
+
+    def test_gitignored_file_is_clean(self, tmp_path):
+        _, wt_path = self._linked_worktree(tmp_path)
+        _add_gitignored_file(wt_path)
+
+        assert self._rc(wt_path) == 0
 
     def test_missing_directory_counts_as_clean(self, tmp_path):
         _, wt_path = self._linked_worktree(tmp_path)
@@ -890,6 +904,29 @@ echo "verdict:$WORKTREE_REMOVAL_VERDICT"
 
         assert verdict["verdict"] == "status-unverifiable"
 
+    def test_failed_status_outranks_a_dead_pid_lock(self, tmp_path):
+        """An unknown state is never reported as `unlock-remove`."""
+        local, wt_path = self._linked_worktree(tmp_path)
+        _lock_worktree(local, wt_path, f"test (pid {_dead_pid()})")
+        _break_worktree_git_link(wt_path)
+
+        verdict = self._verdict(local, local.resolve())
+
+        assert verdict["verdict"] == "status-unverifiable"
+        assert verdict["locked"] == "1"
+
+    def test_failed_submodule_status_outranks_a_dead_pid_lock(self, tmp_path):
+        """An unknown state is never reported as `unlock-remove`."""
+        local, wt_path = self._linked_worktree(tmp_path)
+        _lock_worktree(local, wt_path, f"test (pid {_dead_pid()})")
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*submodule status*", exit_status=1)
+        env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+
+        verdict = self._verdict(local, local.resolve(), env=env)
+
+        assert verdict["verdict"] == "submodules-unverifiable"
+        assert verdict["locked"] == "1"
+
     def test_failed_submodule_status_is_submodules_unverifiable(self, tmp_path):
         local, _ = self._linked_worktree(tmp_path)
         shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*submodule status*", exit_status=1)
@@ -940,6 +977,14 @@ echo "verdict:$WORKTREE_REMOVAL_VERDICT"
         assert verdict["verdict"] == "remove"
         assert verdict["path"] == str(wt_path.resolve())
         assert verdict["locked"] == "0"
+
+    def test_worktree_holding_only_a_gitignored_file_is_remove(self, tmp_path):
+        local, wt_path = self._linked_worktree(tmp_path)
+        _add_gitignored_file(wt_path)
+
+        verdict = self._verdict(local, local.resolve())
+
+        assert verdict["verdict"] == "remove"
 
     def test_a_later_branch_without_a_worktree_does_not_keep_the_previous_path(self, tmp_path):
         """A caller looping over branches reads WORKTREE_PATH after each call."""

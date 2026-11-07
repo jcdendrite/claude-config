@@ -371,8 +371,8 @@ if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
   MAIN_WORKTREE_PATH="$REPO_ROOT"
 fi
 
-# List mode exits 1 after printing when any branch it could not evaluate
-# was left out, so an incomplete list never reads as a complete one.
+# List mode exits 1 after printing when it failed to evaluate a branch.
+# Some omissions still exit 0; see the header.
 LIST_INDETERMINATE=0
 # note_list_indeterminate <branch> <reason> — list mode only.
 note_list_indeterminate() {
@@ -888,7 +888,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
         ;;
     esac
     # A newline in any worktree path is unsupported, because porcelain parsing is line-based.
-    # This guard catches only some of those cases.
     case "$MAIN_WORKTREE_PATH$REPO_ROOT" in
       *$'\n'*)
         note_list_indeterminate "$branch" "a newline in the repo path would break the line format"
