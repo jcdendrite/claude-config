@@ -1160,6 +1160,17 @@ def test_transcript_analysis_review_cost_by_size_subprocess_refuses_without_this
     assert result.stdout == ""
 
 
+def test_transcript_analysis_read_cost_subprocess_refuses_without_this_repo():
+    """Proves, in a fresh interpreter, that read_cost.py resolves through sys.path[0] alone and that real argparse
+    dispatches read-cost to cmd_read_cost through set_defaults(func=...). The stderr text is what separates the
+    command's own refusal from an argparse usage error, which also exits 2."""
+    result = _run("transcript-analysis.py", "read-cost")
+
+    assert result.returncode == 2
+    assert "requires --this-repo" in result.stderr
+    assert result.stdout == ""
+
+
 def test_transcript_analysis_period_cost_sample_subprocess_prints_the_report_between_its_fixed_lines(tmp_path):
     """The --sample run reads no transcript, so the config directory it is pointed at does not exist."""
     env = {**os.environ, "CLAUDE_CONFIG_DIR": str(tmp_path / "no-such-account"), "HOME": str(tmp_path)}
