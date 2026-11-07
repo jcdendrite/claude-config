@@ -1,23 +1,12 @@
 import argparse
-import importlib.util
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
-from transcript_analysis import cache_efficiency, review_cost_by_size, scope
+from transcript_analysis import cache_efficiency, cli, review_cost_by_size, scope
 
 from .conftest import _asst, _write_jsonl
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 class TestConfigDirFlag:
@@ -50,7 +39,7 @@ class TestConfigDirFlag:
         _write_jsonl(proj / "s.jsonl", [_asst("claude-sonnet-4-6", branch="feat-config-dir")])
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets"])
-        _mod.main()
+        cli.main()
 
         assert config_dir / "projects" == scope.PROJECTS_DIR
         out = capsys.readouterr().out
@@ -70,7 +59,7 @@ class TestConfigDirFlag:
         monkeypatch.setattr(scope, "PROJECTS_DIR", fixture_projects_dir)
 
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "buckets"])
-        _mod.main()
+        cli.main()
 
         assert fixture_projects_dir == scope.PROJECTS_DIR
 
@@ -98,7 +87,7 @@ class TestConfigDirFlag:
             ["transcript-analysis.py", "--config-dir", str(config_dir), "buckets", "--this-repo"],
         )
         with pytest.raises(SystemExit):
-            _mod.main()
+            cli.main()
 
         err = capsys.readouterr().err
         assert "--config-dir" in err
@@ -136,7 +125,7 @@ class TestConfigDirFlag:
             ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
+            cli.main()
 
         assert exc_info.value.code == 2
         assert other_account / "projects" != scope.PROJECTS_DIR  # refusal happens before reassignment
@@ -157,7 +146,7 @@ class TestConfigDirFlag:
             sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost"],
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
+            cli.main()
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
@@ -179,7 +168,7 @@ class TestConfigDirRouting:
             ["transcript-analysis.py", "--config-dir", str(other_account), "context-composition"],
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
+            cli.main()
 
         assert exc_info.value.code == 2
         assert other_account / "projects" != scope.PROJECTS_DIR
@@ -197,7 +186,7 @@ def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypat
     monkeypatch.setattr(subprocess, "run", fail_on_any_subprocess)
     monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "review-cost-by-size"])
     with pytest.raises(SystemExit) as exc_info:
-        _mod.main()
+        cli.main()
 
     assert exc_info.value.code == 2
     out, err = capsys.readouterr()
@@ -212,14 +201,14 @@ class TestCacheEfficiencyArgparseWiring:
     cannot catch a dest= typo or missing set_defaults in the real parser."""
 
     def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["cache-efficiency"])
         assert args.extra_config_dirs is None
         assert args.no_redact is False
         assert args.func == cache_efficiency.cmd_cache_efficiency
 
     def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
         assert args.func is cache_efficiency.cmd_cache_efficiency
         assert args.extra_config_dirs == ["X"]
@@ -231,18 +220,18 @@ class TestBuildParser:
     a subcommand against the real ~/.claude/projects."""
 
     def test_this_repo_and_projects_mutually_exclusive_on_generic_subcommand(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["buckets", "--this-repo", "--projects", "x"])
 
     def test_this_repo_and_projects_mutually_exclusive_on_skill_invocation(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
 
     def test_bare_skill_invocation_leaves_projects_unset(self):
         """None, not "*", is what makes skill-invocation default to this repo's worktrees."""
-        parsed = _mod.build_parser().parse_args(["skill-invocation"])
+        parsed = cli.build_parser().parse_args(["skill-invocation"])
         assert parsed.projects is None
 
     @staticmethod
@@ -254,17 +243,17 @@ class TestBuildParser:
     def test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions(self):
         """A subcommand silently losing --this-repo would drop out of the exclusivity walk
         below, so the set that has --projects without it is pinned explicitly."""
-        flags = self._subcommand_flags(_mod.build_parser())
+        flags = self._subcommand_flags(cli.build_parser())
         assert {name for name, opts in flags.items() if "--projects" in opts and "--this-repo" not in opts} == {"user-input"}
 
     def test_every_subcommand_with_both_scope_flags_refuses_them_together(self, capsys):
         """Walks the real registrar, so a subcommand registered later is covered automatically.
         Asserts argparse's own refusal text: a SystemExit from a missing required flag would
         otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
-        # One subcommand per registration path: the shim's helper call, the hand-rolled group
-        # in skill_invocation.py, and a module-registered subparser.
+        # One subcommand per registration path: `cli.py`'s `_add_project_scope_args` call, the
+        # hand-rolled group in skill_invocation.py, and a module-registered subparser.
         assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
         not_refused = []
         for name in both_flags:
@@ -279,13 +268,13 @@ class TestBuildParser:
         assert not not_refused, f"accepted both flags or exited for another reason: {not_refused}"
 
     def test_this_repo_alone_parses_without_error(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
 
     def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
         without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
         assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
@@ -295,17 +284,17 @@ class TestBuildParser:
 
     def test_review_trace_parses_omit_plan_review_spawns(self):
         """The flag is registered, and the default timeline keeps every row without it."""
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         assert parser.parse_args(["review-trace", "--omit-plan-review-spawns"]).omit_plan_review_spawns is True
         assert parser.parse_args(["review-trace"]).omit_plan_review_spawns is False
 
     def test_pr_link_without_repo_flag_defaults_to_none(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])
         assert parsed.repo is None
 
     def test_pr_link_with_repo_flag_parses_value(self):
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         parsed = parser.parse_args(["pr-link", "--branches", "feat-y", "--repo", "owner/repo"])
         assert parsed.repo == "owner/repo"
 
@@ -320,7 +309,7 @@ class TestProjectsFlagHasNoArgparseType:
         """No subcommand's --projects carries an argparse type=, so
         parsing alone never rejects a nested-directory value -- rejection, when
         it applies, happens later, only under multi-root scope."""
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(cli_args)
         assert args.projects == "a/b"
 
@@ -329,7 +318,7 @@ class TestProjectsFlagHasNoArgparseType:
         one-level restriction must stay runtime-validated, since whether it
         applies depends on how many roots this invocation resolves, not on
         the flag's syntax alone."""
-        parser = _mod.build_parser()
+        parser = cli.build_parser()
         subparsers_action = next(
             action for action in parser._actions
             if isinstance(action, argparse._SubParsersAction)
