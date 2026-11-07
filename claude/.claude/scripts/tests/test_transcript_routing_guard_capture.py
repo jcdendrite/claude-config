@@ -23,7 +23,7 @@ from typing import NamedTuple
 import _config
 import _config_dir
 import pytest
-from helpers import REPO_ROOT, heading_texts, normalize_heading
+from helpers import REPO_ROOT, add_linked_worktree, heading_texts, normalize_heading
 from transcript_analysis import ledger_common, pricing, review_trace, routing_guard, scope
 
 from ._pr_cost_helpers import _enable_pr_cost
@@ -69,7 +69,6 @@ from ._routing_guard_helpers import (
     _routing_guard_section_lines,
     _run_recorder_hook,
     _strings_the_output_must_not_name,
-    _symlink_loop_that_resolve_rejects,
     _write_log,
     _write_noisy_config_state_file,
 )
@@ -86,6 +85,7 @@ from .conftest import (
     _skill_block,
     _slash_user,
     _task_notification_msg,
+    _tool_result,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
@@ -117,6 +117,14 @@ class _World(NamedTuple):
 
 def _ts(minute: int, hour: int = 10) -> str:
     return f"2026-08-01T{hour:02d}:{minute:02d}:00.000Z"
+
+
+def _marker_write_result(
+    tool_id: str, *, minute: int, branch: str = _BRANCH, is_error: bool = False, text: str = "marker write output",
+) -> dict:
+    """The user record pairing a tool_result with the Bash call `tool_id`, an error result when `is_error`."""
+    result_block = {**_tool_result(tool_id, text), **({"is_error": True} if is_error else {})}
+    return _user_msg([result_block], branch=branch, ts=_ts(minute))
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -190,6 +198,7 @@ def _clean_loop(branch: str = _BRANCH, *, start: int = 0, tag: str = "a", later_
     return [
         _priced(_SONNET, input=100_000, branch=branch, ts=_ts(start), content=[_skill_block(f"sk-{tag}", "code-review")]),
         _priced(_SONNET, input=10_000, output=500, branch=branch, ts=_ts(start + 1), content=[_marker_write_use(f"mk-{tag}")]),
+        _marker_write_result(f"mk-{tag}", minute=start + 1, branch=branch),
         _user_msg("next task", branch=branch, ts=_ts(start + 2)),
         _priced(_SONNET, input=later_input, branch=branch, ts=_ts(start + 3)),
     ]
@@ -366,6 +375,34 @@ def _expected_refusal_fragment(reason: str) -> str:
     }.get(reason, reason)
 
 
+def _symlink_loop_runtime_error(failing_path: Path) -> Exception:
+    """The `RuntimeError` a symlink loop raises: its message embeds the path."""
+    return RuntimeError(f"Symlink loop from '{failing_path}'")
+
+
+def _symlink_loop_os_error(failing_path: Path) -> Exception:
+    """The `OSError` a failing `stat` raises: it carries the path as `filename`."""
+    return OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(failing_path))
+
+
+def _resolve_raising_for(monkeypatch, unresolvable_path: Path, build_error) -> None:
+    """Make `Path.resolve` raise `build_error(unresolvable_path)` for that path alone and resolve every other path for real."""
+    real_resolve = Path.resolve
+
+    def resolve_or_raise(self, *args, **kwargs):
+        if self == unresolvable_path:
+            raise build_error(unresolvable_path)
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_or_raise)
+
+
+_RESOLVE_ERROR_BUILDERS = [
+    pytest.param(_symlink_loop_runtime_error, id="runtime-error"),
+    pytest.param(_symlink_loop_os_error, id="os-error"),
+]
+
+
 class TestNoteParser:
     @pytest.mark.parametrize("case_id", [case.case_id for case in _refusal_notes("/placeholder")])
     def test_refuses_each_malformed_note_with_exit_2_naming_the_line_and_echoing_no_cell(self, world, capsys, case_id):
@@ -379,6 +416,22 @@ class TestNoteParser:
         assert _expected_refusal_fragment(case.reason) in outcome.err
         assert _SENTINEL_BRANCH not in outcome.err + outcome.out
         assert str(world.config_dir) not in outcome.err + outcome.out
+        assert _published_files(world) == []
+
+    @pytest.mark.parametrize("build_error", _RESOLVE_ERROR_BUILDERS)
+    def test_refuses_a_config_dir_cell_whose_resolve_raises_with_the_fixed_resolve_message(
+        self, world, capsys, tmp_path, monkeypatch, build_error,
+    ):
+        unresolvable_cell = tmp_path / "unresolvable-account"
+        _resolve_raising_for(monkeypatch, unresolvable_cell, build_error)
+        _write_note(world, text=f"# comment\n{_note_line(unresolvable_cell, _SENTINEL_BRANCH)}\n")
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 2
+        assert "note line 2: the config directory cannot be resolved" in outcome.err
+        assert str(unresolvable_cell) not in outcome.out + outcome.err
+        assert str(tmp_path) not in outcome.out + outcome.err
         assert _published_files(world) == []
 
     @pytest.mark.parametrize("case_id", [case.case_id for case in _refusal_notes("/placeholder")])
@@ -426,18 +479,6 @@ class TestNoteParser:
         rows = routing_guard._parse_note(f"{tmp_path}\tone\tmerged\n{tmp_path}\ttwo\texcluded\n")
 
         assert [(row.branch, row.status) for row in rows] == [("one", "merged"), ("two", "excluded")]
-
-    def test_refuses_a_config_dir_cell_through_a_symlink_loop_naming_the_line_and_no_path(self, world, capsys, tmp_path):
-        loop = _symlink_loop_that_resolve_rejects(tmp_path)
-        _write_note(world, text=f"# comment\n{_note_line(loop, _SENTINEL_BRANCH)}\n")
-
-        outcome = _run(capsys, world)
-
-        assert outcome.code == 2
-        assert "note line 2: the config directory cannot be resolved" in outcome.err
-        assert str(loop) not in outcome.out + outcome.err
-        assert str(tmp_path) not in outcome.out + outcome.err
-        assert _published_files(world) == []
 
     def test_refuses_a_tilde_dir_when_home_is_unset(self, world, capsys, monkeypatch):
         monkeypatch.delenv("HOME", raising=False)
@@ -509,16 +550,6 @@ class TestNoteLocation:
         assert str(world.repo) not in outcome.err
         assert _published_files(world) == []
 
-    def test_refuses_a_note_path_through_a_symlink_loop_with_the_fixed_resolve_message(self, world, capsys, tmp_path):
-        loop = _symlink_loop_that_resolve_rejects(tmp_path)
-
-        outcome = _run(capsys, world, note=str(loop))
-
-        assert outcome.code == 2
-        assert "--note cannot be resolved to a path" in outcome.err
-        assert str(loop) not in outcome.out + outcome.err
-        assert str(tmp_path) not in outcome.out + outcome.err
-
     def test_refuses_a_note_path_with_an_embedded_nul_with_the_fixed_resolve_message(self, world, capsys, tmp_path):
         note_with_nul = _path_that_resolve_rejects_as_nul(tmp_path)
 
@@ -528,17 +559,43 @@ class TestNoteLocation:
         assert "--note cannot be resolved to a path" in outcome.err
         assert str(tmp_path) not in outcome.out + outcome.err
 
+    @pytest.mark.parametrize("build_error", _RESOLVE_ERROR_BUILDERS)
+    def test_refuses_a_note_path_whose_resolve_raises_with_the_fixed_resolve_message(
+        self, world, capsys, tmp_path, monkeypatch, build_error,
+    ):
+        _write_session(world, _clean_loop())
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+        _resolve_raising_for(monkeypatch, world.note, build_error)
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 2
+        assert "--note cannot be resolved to a path" in outcome.err
+        assert str(world.note) not in outcome.out + outcome.err
+        assert str(tmp_path) not in outcome.out + outcome.err
+        assert _published_files(world) == []
+
     def test_accepts_a_note_outside_any_git_work_tree(self, world, capsys):
         _write_note(world, _note_line(world.config_dir, "excluded-elsewhere", "excluded"))
 
         assert _run(capsys, world).code == 0
 
-    def test_a_note_readable_by_others_prints_the_permission_notice(self, world, capsys):
-        _write_note(world, _note_line(world.config_dir, "excluded-one", "excluded"), mode=0o644)
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            pytest.param(0o644, id="group-and-other-readable"),
+            pytest.param(0o620, id="group-writable-not-readable"),
+            pytest.param(0o602, id="other-writable-not-readable"),
+            pytest.param(0o601, id="other-execute-only"),
+        ],
+    )
+    def test_a_note_with_any_group_or_other_permission_prints_the_permission_notice(self, world, capsys, mode):
+        _write_note(world, _note_line(world.config_dir, "excluded-one", "excluded"), mode=mode)
 
         outcome = _run(capsys, world)
 
         assert routing_guard._PERMISSIVE_NOTE_NOTICE in outcome.err
+        assert "the note has group or other permissions" in outcome.err
 
     def test_an_owner_only_note_prints_no_permission_notice(self, world, capsys):
         _write_note(world, _note_line(world.config_dir, "excluded-one", "excluded"), mode=0o600)
@@ -798,6 +855,7 @@ class TestWholeReason:
         spawn_without_transcript = [
             _orchestrator_spawn_record("o9", ts=_ts(10), branch="no-transcript"),
             _priced(_SONNET, input=1_000, branch="no-transcript", ts=_ts(11), content=[_marker_write_use("mk-u")]),
+            _marker_write_result("mk-u", minute=11, branch="no-transcript"),
         ]
         _write_session(world, no_marker, session_id="sess-1")
         _write_session(world, spawn_without_transcript, session_id="sess-2")
@@ -820,12 +878,17 @@ class TestWholeReason:
 # --- loops -------------------------------------------------------------------
 
 
-def _write_marker_writing_orchestrator(project_dir: Path, *, session_id: str = "sess-1", tool_use_id: str = "o1") -> None:
-    """The review-orchestrator's own transcript, holding the clean-marker write."""
-    records = [_as_sidechain(_priced(
-        _SONNET, input=5_000, branch=_BRANCH, ts=_ts(2),
-        content=[_marker_write_use(f"mk-{tool_use_id}")],
-    ))]
+def _write_marker_writing_orchestrator(
+    project_dir: Path, *, session_id: str = "sess-1", tool_use_id: str = "o1", orchestrator_write_is_error: bool = False,
+) -> None:
+    """The review-orchestrator's own transcript, holding the clean-marker write and its paired result."""
+    records = [
+        _as_sidechain(_priced(
+            _SONNET, input=5_000, branch=_BRANCH, ts=_ts(2),
+            content=[_marker_write_use(f"mk-{tool_use_id}")],
+        )),
+        _as_sidechain(_marker_write_result(f"mk-{tool_use_id}", minute=2, is_error=orchestrator_write_is_error)),
+    ]
     _write_subagent_dispatch(
         project_dir, session_id, f"agent-{tool_use_id}", tool_use_id, records, agent_type=_ORCHESTRATOR_AGENT_TYPE,
     )
@@ -841,12 +904,22 @@ def _key_on_loop(branch: str = _BRANCH) -> list[dict]:
     ]
 
 
-def _round(branch: str, tag: str, minute: int, *, marker: bool, input_tokens: int = 1_000) -> list[dict]:
-    """One code-review round opened by a Skill call, its outcome span holding a marker write or not."""
+def _round(
+    branch: str, tag: str, minute: int, *, marker: bool, input_tokens: int = 1_000, write_result: str | None = "ok",
+) -> list[dict]:
+    """One code-review round opened by a Skill call, its outcome span holding a marker write or not.
+
+    `write_result` is the paired result of the write: "ok", "error", or None for a write with no result.
+    """
     content = [_marker_write_use(f"mk-{tag}")] if marker else []
+    paired_result = (
+        [_marker_write_result(f"mk-{tag}", minute=minute + 1, branch=branch, is_error=write_result == "error")]
+        if marker and write_result is not None else []
+    )
     return [
         _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute), content=[_skill_block(f"sk-{tag}", "code-review")]),
         _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute + 1), content=content),
+        *paired_result,
         _user_msg(f"prompt after {tag}", branch=branch, ts=_ts(minute + 2)),
     ]
 
@@ -858,6 +931,7 @@ def _round_with_marker_after_prompt(branch: str, tag: str, minute: int, *, input
         _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute + 1)),
         _user_msg(f"prompt inside {tag}", branch=branch, ts=_ts(minute + 2)),
         _priced(_SONNET, input=input_tokens, branch=branch, ts=_ts(minute + 3), content=[_marker_write_use(f"mk-{tag}")]),
+        _marker_write_result(f"mk-{tag}", minute=minute + 3, branch=branch),
     ]
 
 
@@ -924,6 +998,66 @@ class TestLoops:
         assert _round_counts_per_loop(assembled_loops) == [1, 1]
         assert len(_stored_loops(world, _BRANCH)) == 2
 
+    def test_a_write_with_an_error_result_does_not_end_its_loop(self, world, capsys, assembled_loops):
+        records = (
+            _round(_BRANCH, "a", 0, marker=True, write_result="error")
+            + _round(_BRANCH, "b", 10, marker=True)
+        )
+        _write_session(world, records, log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [2]
+        assert len(_stored_loops(world, _BRANCH)) == 1
+
+    def test_a_write_with_no_result_as_the_only_write_leaves_no_complete_loop(self, world, capsys):
+        _write_session(world, _round(_BRANCH, "a", 0, marker=True, write_result=None), log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 3
+        assert "missing (no-complete-loop)" in outcome.out
+        assert _published_files(world) == []
+
+    def test_an_orchestrator_write_with_an_error_result_does_not_end_its_loop(self, world, capsys, assembled_loops):
+        records = [
+            _orchestrator_spawn_record("o1", ts=_ts(0), branch=_BRANCH),
+            _orchestrator_return_record("o1", ts=_ts(1), branch=_BRANCH),
+            _user_msg("prompt between the rounds", branch=_BRANCH, ts=_ts(5)),
+            _orchestrator_spawn_record("o2", ts=_ts(10), branch=_BRANCH),
+            _orchestrator_return_record("o2", ts=_ts(11), branch=_BRANCH),
+        ]
+        project_dir = _write_session(world, records, log=_KEYS_OFF)
+        _write_marker_writing_orchestrator(project_dir, tool_use_id="o1", orchestrator_write_is_error=True)
+        _write_marker_writing_orchestrator(project_dir, tool_use_id="o2")
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [2]
+        assert len(_stored_loops(world, _BRANCH)) == 1
+
+    def test_a_write_whose_ok_result_reports_nothing_to_review_still_ends_its_loop_characterization(
+        self, world, capsys, assembled_loops,
+    ):
+        # Pins the behavior docs/transcript-analysis.md § "routing-guard" states in its Purpose paragraph.
+        nothing_to_review = "marker.sh: staged diff is empty -- nothing to review. Exiting without writing a marker."
+        records = _round(_BRANCH, "a", 0, marker=False)
+        records += [
+            _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(10), content=[_skill_block("sk-b", "code-review")]),
+            _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(11), content=[_marker_write_use("mk-b")]),
+            _marker_write_result("mk-b", minute=11, text=nothing_to_review),
+            _user_msg("prompt after b", branch=_BRANCH, ts=_ts(12)),
+        ]
+        _write_session(world, records, log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        _run(capsys, world)
+
+        assert _round_counts_per_loop(assembled_loops) == [2]
+
     def test_a_marker_write_in_a_non_last_round_ends_its_loop_there_and_later_rounds_are_dropped(
         self, world, capsys, assembled_loops,
     ):
@@ -972,6 +1106,7 @@ class TestLoops:
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(0), content=[_skill_block("sk-a", "code-review")]),
             _task_notification_msg(branch=_BRANCH, ts=_ts(1)),
             _priced(_SONNET, input=2_000, branch=_BRANCH, ts=_ts(2), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=2),
             _user_msg("next task", branch=_BRANCH, ts=_ts(3)),
             _priced(_SONNET, input=9_000, branch=_BRANCH, ts=_ts(4)),
         ]
@@ -988,6 +1123,7 @@ class TestLoops:
         records = [
             _slash_user("code-review", branch=_BRANCH, ts=_ts(0)),
             _priced(_SONNET, input=3_000, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
         ]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -1113,7 +1249,7 @@ class TestGrowthAndLaterTurns:
         later_a = _priced(_SONNET, input=150_000, branch=_BRANCH, ts=_ts(5), request_id="req-later")
         later_b = _priced(_SONNET, input=150_000, output=50, branch=_BRANCH, ts=_ts(5), request_id="req-later")
         records = [open_a, open_b, _priced(_SONNET, input=1, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
-                   _user_msg("next", branch=_BRANCH, ts=_ts(4)), later_a, later_b]
+                   _marker_write_result("mk-a", minute=1), _user_msg("next", branch=_BRANCH, ts=_ts(4)), later_a, later_b]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
 
@@ -1129,6 +1265,7 @@ class TestGrowthAndLaterTurns:
             _priced(_SONNET, input=5, cache_read=60_000, ephemeral_1h=30_000, ephemeral_5m=10_000, branch=_BRANCH,
                     ts=_ts(0), content=[_skill_block("sk-a", "code-review")]),
             _priced(_SONNET, input=1, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
             _user_msg("next task", branch=_BRANCH, ts=_ts(2)),
             _priced(_SONNET, input=7, cache_read=70_000, ephemeral_1h=40_000, ephemeral_5m=20_000, branch=_BRANCH, ts=_ts(3)),
         ]
@@ -1154,6 +1291,7 @@ class TestGrowthAndLaterTurns:
         records = [
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(0), content=[_skill_block("sk-a", "code-review")]),
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
         ]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -1249,6 +1387,7 @@ class TestGrowthAndLaterTurns:
                 content=[_skill_block("sk-a", "code-review")],
             ),
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
         ]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -1264,6 +1403,7 @@ class TestGrowthAndLaterTurns:
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(0),
                     content=[_skill_block("sk-a", "code-review"), _agent_use("no-such-dispatch", "staff-sdet")]),
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
         ]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -1310,7 +1450,7 @@ class TestGrowthAndLaterTurns:
         self, world, capsys, non_string_model,
     ):
         records = _clean_loop(_BRANCH)
-        records[3]["message"]["model"] = non_string_model
+        records[-1]["message"]["model"] = non_string_model
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
 
@@ -1401,7 +1541,7 @@ class TestMalformedUsage:
         self, world, capsys, malformed_input_tokens,
     ):
         clean = _clean_loop()
-        records = [*clean[:3], _loop_turn_with_malformed_input_tokens(malformed_input_tokens, minute=2), clean[3]]
+        records = [*clean[:-1], _loop_turn_with_malformed_input_tokens(malformed_input_tokens, minute=2), clean[-1]]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
 
@@ -2219,8 +2359,7 @@ class TestSessionRecordsAreDroppedPerSession:
 
 
 def _add_linked_worktree(world: _World, branch: str) -> Path:
-    worktree = world.repo / ".claude" / "worktrees" / branch
-    subprocess.run(["git", "worktree", "add", "-q", "-b", branch, str(worktree)], cwd=world.repo, check=True)
+    worktree = add_linked_worktree(world.repo, world.repo / ".claude" / "worktrees" / branch, branch=branch)
     return worktree.resolve()
 
 
@@ -2644,13 +2783,15 @@ class TestStore:
 
         assert outcome.code == 4
         assert "could not be written" in outcome.err
+        assert "hard links" not in outcome.err
         assert "published 1 files" in outcome.err
         assert "/sentinel/path" not in outcome.err + outcome.out
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
         assert list(world.captures_dir.glob(".routing-guard-*")) == []
 
+    @pytest.mark.parametrize("link_errno", [errno.EXDEV, errno.EPERM], ids=["cross-device", "link-not-permitted"])
     def test_a_failed_link_after_one_published_file_exits_4_with_the_link_message_and_the_published_count(
-        self, world, capsys, monkeypatch,
+        self, world, capsys, monkeypatch, link_errno,
     ):
         _two_branch_sessions(world)
         _write_note(world, _note_line(world.config_dir, _BRANCH), _note_line(world.config_dir, _BETA))
@@ -2660,7 +2801,7 @@ class TestStore:
         def link_failing_on_the_second_publish(source, destination, *args, **kwargs):
             link_calls.append(1)
             if len(link_calls) == 2:
-                raise OSError(errno.EXDEV, "sentinel-strerror", "/sentinel/path")
+                raise OSError(link_errno, "sentinel-strerror", "/sentinel/path")
             return real_link(source, destination, *args, **kwargs)
 
         monkeypatch.setattr(os, "link", link_failing_on_the_second_publish)
@@ -2669,6 +2810,7 @@ class TestStore:
 
         assert outcome.code == 4
         assert "could not be linked into place" in outcome.err
+        assert "(the captures directory's filesystem must support hard links and have free space)" in outcome.err
         assert "published 1 files" in outcome.err
         assert "/sentinel/path" not in outcome.err + outcome.out
         assert [p.name for p in _published_files(world)] == [_digest_name(_BRANCH)]
@@ -2687,6 +2829,7 @@ class TestStore:
         assert "a capture file could not be published" in outcome.err
         assert "written" not in outcome.err
         assert "linked into place" not in outcome.err
+        assert "hard links" not in outcome.err
         assert _published_files(world) == []
 
     def test_a_directory_creation_failure_exits_4_printing_only_the_strerror(self, world, capsys, monkeypatch):
@@ -3087,6 +3230,7 @@ class TestRowLines:
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(0),
                     content=[_skill_block("sk-a", "code-review"), _agent_use("no-such-dispatch", "staff-sdet")]),
             _priced(_SONNET, input=1_000, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")]),
+            _marker_write_result("mk-a", minute=1),
         ]
         _write_session(world, records, log=_KEYS_OFF)
         _write_note(world, _note_line(world.config_dir, _BRANCH))
@@ -3176,7 +3320,7 @@ class TestGoldenFile:
         records = _clean_loop()
         # The later turn's context is the sum of its four token classes, so the literal growth below fails on a
         # context read from input_tokens alone.
-        records[3] = _priced(
+        records[-1] = _priced(
             _SONNET, input=10_000, cache_read=100_000, ephemeral_1h=15_000, ephemeral_5m=5_000, branch=_BRANCH, ts=_ts(3),
         )
         records[0]["message"]["content"].append(_agent_use("rev-1", "staff-sdet"))
@@ -3312,6 +3456,52 @@ class TestFreeText:
             assert sentinel not in outcome.out
             assert sentinel not in outcome.err
 
+    def test_a_non_ascii_and_a_lone_surrogate_model_string_are_published_as_ascii_and_read_back_unchanged(
+        self, world, capsys,
+    ):
+        non_ascii_model = "claude-mödel-模型"
+        lone_surrogate_model = "claude-\ud800-lone-surrogate"
+        records = _clean_loop(_BRANCH)
+        records[0]["message"]["content"].append(_agent_use("rev-1", "staff-sdet"))
+        records[1] = _priced(
+            non_ascii_model, input=10_000, output=500, branch=_BRANCH, ts=_ts(1), content=[_marker_write_use("mk-a")],
+        )
+        project_dir = _write_session(world, records, log=_KEYS_OFF)
+        reviewer_records = [_as_sidechain(_priced(
+            _SONNET, input=2_000, branch=_BRANCH, ts=_ts(0), content=[_agent_use("nested-1", "staff-sdet")],
+        ))]
+        nested_records = [_as_sidechain(_priced(lone_surrogate_model, input=3_000, branch=_BRANCH, ts=_ts(0)))]
+        _write_subagent_dispatch(project_dir, "sess-1", "agent-rev", "rev-1", reviewer_records, agent_type="staff-sdet")
+        _write_subagent_dispatch(
+            project_dir, "sess-1", "agent-nested", "nested-1", nested_records, agent_type="staff-sdet", spawn_depth=2,
+        )
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0, outcome.err
+        published_bytes = (world.captures_dir / _digest_name(_BRANCH)).read_bytes()
+        assert published_bytes.isascii()
+        stored_models = set(routing_guard._parse_capture_bytes(published_bytes).loops[0]["overhead_tokens"])
+        assert {non_ascii_model, lone_surrogate_model} <= stored_models
+        for model in (non_ascii_model, lone_surrogate_model):
+            assert model not in outcome.out
+            assert model not in outcome.err
+
+    @pytest.mark.parametrize(
+        "odd_model", ["claude-mödel-模型", "claude-\ud800-lone-surrogate"], ids=["non-ascii", "lone-surrogate"],
+    )
+    def test_serializing_a_loop_keyed_by_a_non_ascii_or_lone_surrogate_model_yields_ascii_text(self, odd_model):
+        loop = routing_guard._Loop(
+            {odd_model: {"standard": {"input": 5}}}, None, {odd_model: 1}, False, 1, 0,
+        )
+        states = routing_guard._KeyStates("off", "off", "off")
+
+        text = routing_guard._serialize_capture([loop], states)
+
+        assert text.isascii()
+        assert json.loads(text)["loops"][0]["overhead_tokens"] == loop.overhead_tokens
+
     def test_no_free_text_field_reaches_the_file_stdout_or_stderr(self, world, capsys):
         records = [
             _priced(_SONNET, input=40_000, branch=_BRANCH, ts=_ts(0), content=[
@@ -3325,10 +3515,13 @@ class TestFreeText:
             _user_msg(_leak_sentinel("user-prompt"), branch=_BRANCH, ts=_ts(4)),
         ]
         project_dir = _write_session(world, records, log=_ROUTING_ON)
-        orchestrator_records = [_as_sidechain(_priced(
-            _SONNET, input=5_000, branch=_BRANCH, ts=_ts(2),
-            content=[{"type": "text", "text": _leak_sentinel("orchestrator-text")}, _marker_write_use("mk-o")],
-        ))]
+        orchestrator_records = [
+            _as_sidechain(_priced(
+                _SONNET, input=5_000, branch=_BRANCH, ts=_ts(2),
+                content=[{"type": "text", "text": _leak_sentinel("orchestrator-text")}, _marker_write_use("mk-o")],
+            )),
+            _as_sidechain(_marker_write_result("mk-o", minute=2, text=_leak_sentinel("marker-write-result"))),
+        ]
         _write_subagent_dispatch(
             project_dir, "sess-1", "agent-o", "o1", orchestrator_records, agent_type=_ORCHESTRATOR_AGENT_TYPE,
             description=_leak_sentinel("orchestrator-meta-description"),
@@ -3639,13 +3832,13 @@ class TestOutput:
         assert sorted(strings) == sorted([str(link), "link-account", str(target), "real-account", "branch-link"])
 
     def test_the_strings_a_run_must_not_name_for_an_unresolvable_cell_omit_the_resolved_path_and_do_not_raise(self, tmp_path):
-        loop = _symlink_loop_that_resolve_rejects(tmp_path)
+        unresolvable_cell = _path_that_resolve_rejects_as_nul(tmp_path)
         note = tmp_path / "note.tsv"
-        note.write_text(_note_line(loop, "branch-loop") + "\n")
+        note.write_text(_note_line(unresolvable_cell, "branch-nul") + "\n")
 
         strings = _strings_the_output_must_not_name(str(note), None)
 
-        assert sorted(strings) == sorted([str(loop), loop.name, "branch-loop"])
+        assert sorted(strings) == sorted([unresolvable_cell, Path(unresolvable_cell).name, "branch-nul"])
 
     @pytest.mark.parametrize("blank_cell", [
         pytest.param("", id="an-empty-cell"),
@@ -5006,21 +5199,26 @@ def _select_tests_module():
 
 
 class TestMessageCitations:
-    def test_every_doc_a_section_citation_selects_the_scripts_tests(self):
+    def test_every_doc_a_section_citation_selects_this_module(self):
         """Scope: docs cited as `<path> § "<heading>"` plus the banner's doc; other citation forms are not read."""
         select_tests = _select_tests_module()
+        this_module_path = str(Path(__file__).resolve().relative_to(REPO_ROOT))
         banner_match = _BANNER_CITATION_RE.search(routing_guard._DO_NOT_PUBLISH_BANNER)
         assert banner_match
         cited_doc_paths = {doc_path for doc_path, _heading in _message_citations()} | {banner_match["doc_path"]}
 
-        not_selecting_scripts_tests = {
+        not_selecting_this_module = {
             doc_path: selection.target_paths
             for doc_path in sorted(cited_doc_paths)
             for selection in [select_tests.select_pytest_targets([doc_path])]
-            if not selection.is_full_suite and select_tests.SCRIPTS_TESTS_DIR not in selection.target_paths
+            if not selection.is_full_suite and not any(
+                select_tests._is_under(this_module_path, target)
+                or this_module_path in select_tests._expand_target(target, repo_root=REPO_ROOT)
+                for target in selection.target_paths
+            )
         }
         assert _message_citations()
-        assert not_selecting_scripts_tests == {}
+        assert not_selecting_this_module == {}
 
     def test_the_lost_event_next_step_cites_the_notice_section_of_the_log_doc(self):
         assert ("docs/session-config-keys-log.md", "Notice") in _message_citations()
@@ -5061,6 +5259,12 @@ class TestMessageCitations:
         ]
         assert citations
         assert not unresolved
+
+
+# The documented loop reads its short note and runs a stub per account: a few shell builtins and at most three stub
+# processes, so milliseconds. 30 seconds is far above that, and well below the 25-minute CI job cap
+# (.github/workflows/tests.yml) that a loop regressed to a blocking read would otherwise stall until.
+_DOCUMENTED_LOOP_TIMEOUT_SECONDS = 30
 
 
 def _documented_capture_loop(note: Path) -> str:
@@ -5130,6 +5334,7 @@ exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
 
         run = subprocess.run(
             ["bash", "-c", _documented_capture_loop(note)], env=environment, capture_output=True, text=True, check=False,
+            timeout=_DOCUMENTED_LOOP_TIMEOUT_SECONDS,
         )
 
         seen = invocations.read_text().splitlines() if invocations.exists() else []
@@ -5154,3 +5359,33 @@ exit "$(cat "$STUB_EXIT_CODES/$(basename "$2")")"
             f"capture exit: {exit_code}" for exit_code in exit_codes_in_sorted_order[:len(expected_accounts_run)]
         ]
         assert accounts_run == expected_accounts_run
+
+    @pytest.mark.parametrize(
+        "note_text",
+        [
+            pytest.param("", id="an-empty-note"),
+            pytest.param("# only a comment\n\n", id="a-note-of-comments-and-blank-lines"),
+            pytest.param(None, id="a-note-path-that-does-not-exist"),
+        ],
+    )
+    def test_the_loop_exits_nonzero_when_the_note_yields_no_config_directory(self, tmp_path, note_text):
+        stub_bin = tmp_path / "bin"
+        stub_bin.mkdir()
+        stub = stub_bin / "transcript-analysis.py"
+        invocations = tmp_path / "invocations"
+        stub.write_text(f"#!/bin/sh\necho ran >> {shlex.quote(str(invocations))}\nexit 0\n")
+        stub.chmod(0o700)
+        note = tmp_path / "note.tsv"
+        if note_text is not None:
+            note.write_text(note_text)
+        environment = {**os.environ, "LC_ALL": "C", "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"}
+
+        run = subprocess.run(
+            ["bash", "-c", _documented_capture_loop(note)], env=environment, capture_output=True, text=True, check=False,
+            timeout=_DOCUMENTED_LOOP_TIMEOUT_SECONDS,
+        )
+
+        assert run.returncode == 2
+        assert "no capture ran" in run.stderr
+        assert run.stdout == ""
+        assert not invocations.exists()

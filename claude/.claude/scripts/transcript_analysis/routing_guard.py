@@ -236,7 +236,7 @@ _NEXT_ACTION_CAPTURE_AGAIN = (
     f"{_COMMAND}: next: capture again after the last sampled branch's sessions end,"
     " then run compute once the note holds enough key-on files and each account has as many key-off files as key-on"
 )
-_PERMISSIVE_NOTE_NOTICE = "routing-guard: the note is readable by group or others; restrict it to the owner"
+_PERMISSIVE_NOTE_NOTICE = "routing-guard: the note has group or other permissions; restrict it to the owner"
 _COMPUTE_CONFIG_DIR_MESSAGE = (
     "routing-guard: compute reads no transcripts and takes no top-level --config-dir;"
     " the note names each config directory"
@@ -545,7 +545,7 @@ def _parse_note(text: str) -> list[_NoteRow]:
 
 
 def _load_note_rows(note_arg: str) -> list[_NoteRow]:
-    """Read and parse the note, exiting 2 on any refusal. Prints a notice for a note others can read."""
+    """Read and parse the note, exiting 2 on any refusal. Prints a notice for a note with any group or other permission."""
     if not os.path.isabs(note_arg):
         _refuse(f"{_COMMAND}: --note must be an absolute path", 2)
     note_path = Path(note_arg)
@@ -754,11 +754,7 @@ def _read_standing_capture(path: Path) -> bytes | _StandingFile:
 
 
 def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
-    """The validated record of the capture file at `path`, or why there is none.
-
-    ABSENT means the name does not exist. A file that opens but fails the validator is INVALID, or
-    LOOPS_ONLY when it holds loops and no key states.
-    """
+    """The validated record of the capture file at `path`, or why there is none."""
     standing = _read_standing_capture(path)
     if isinstance(standing, _StandingFile):
         return standing
@@ -1168,6 +1164,7 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
     if not code_review_spans:
         return
 
+    succeeded_tool_use_ids = author_outcome._succeeded_tool_use_ids(records)
     round_entries = review_rounds._price_session_rounds(
         jsonl, records, windows, record_branches, None, defaultdict(float), collect_tokens=True,
     )
@@ -1204,6 +1201,7 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
             open_ts=corpus._parse_ts(entry["ts"]),
             has_marker_write=author_outcome._round_has_marker_write(
                 records, open_idx, code_review_spans[open_idx], orchestrator_spawns,
+                succeeded_tool_use_ids=succeeded_tool_use_ids,
             ),
             context_at_open=turns[open_turn][2] if open_turn < len(turns) else None,
             context_at_window_end=turns[end_turn][2] if end_turn < len(turns) else None,
@@ -1221,7 +1219,8 @@ def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -
 def _scan_sessions(root: Path, capture_scope: _CaptureScope, scan_gaps: Counter[str]) -> _ScanFacts:
     scan = _ScanFacts()
     announced_project_dirs: set[Path] = set()
-    # include_subagents is False because every figure reads main-thread turns.
+    # include_subagents is False because subagent transcripts reach overhead_tokens through each round's dispatch
+    # index, and are never scanned as sessions of their own.
     for jsonl, raw_records in scope._iter_scoped_sessions(capture_scope.slugs, False, [root], scan_gaps=scan_gaps):
         if jsonl.parent not in announced_project_dirs:
             announced_project_dirs.add(jsonl.parent)
@@ -1291,8 +1290,9 @@ def _joined_denied_opens(rounds: Sequence[_RoundFacts]) -> int:
 
 
 def _loop_groups(rounds: Sequence[_RoundFacts]) -> list[list[_RoundFacts]]:
-    """A branch's loops as groups of rounds: each runs up to and including the first round whose span writes the marker.
+    """A branch's loops as groups of rounds: each runs up to and including the first round with a confirmed marker write.
 
+    A marker write is confirmed by a paired tool_result that is not an error.
     Rounds sort by open time, session path and open index, the order compute_review_round_costs uses.
     Rounds after the last marker write belong to no loop and are dropped.
     """
@@ -1493,10 +1493,11 @@ def _standing_line(line_no: int, standing: _CaptureRecord | _StandingFile) -> tu
 
 
 def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count: int) -> NoReturn:
-    """Exit 4 for any outcome that left no file published. An outcome this function does not name reads "published"."""
+    """Exit 4 for any outcome that left no file published."""
     action = {
         ledger_common._PublishOutcome.WRITE_FAILED: "written",
-        ledger_common._PublishOutcome.LINK_FAILED: "linked into place",
+        ledger_common._PublishOutcome.LINK_FAILED: "linked into place "
+        + ledger_common._hard_link_requirement("the captures directory"),
     }.get(outcome, "published")
     _refuse(
         f"{_COMMAND}: a capture file could not be {action}; this run published {published_count} files,"
@@ -1884,10 +1885,11 @@ def _select_sample(
 ) -> _SampleSelection:
     """The sampled rows of each arm and every NOT RUN reason the sample checks find.
 
-    Each `merged` row's arm and pilot states come from its file. `excluded` rows are ignored, and so are the
-    key-off files of an account with no key-on file. The count reasons run only when every account is ready and
-    every file loaded, and the growth check only when no other reason holds, since a row that failed to load
-    would otherwise read as an arm without growth.
+    - Each `merged` row's arm and pilot states come from its file.
+    - `excluded` rows are ignored, and so are the key-off files of an account with no key-on file.
+    - The count reasons run only when every account is ready and every file loaded.
+    - The growth check runs only when no other reason holds, since a row that failed to load would otherwise
+      read as an arm without growth.
     """
     rows_by_account: dict[Path, list[_NoteRow]] = {}
     for row in _merged_rows(note_rows):
@@ -2030,8 +2032,7 @@ def _bootstrap_net(
     Each arm is sorted by digest before drawing, so the result does not depend on note order. A
     replicate whose resample leaves an arm with no growth-defined loop has no net. It is never
     redrawn and ranks above every defined net as math.inf, so the replicate count is exact and the
-    lower bound can only rise. The replicate count and the RNG are required; every module constant
-    is read when the call runs.
+    lower bound can only rise.
     """
     on_sorted = sorted(on, key=lambda branch: branch.digest)
     off_sorted = sorted(off, key=lambda branch: branch.digest)
@@ -2083,8 +2084,8 @@ def _out_file_text(figures: _NetFigures, bootstrap: _BootstrapResult, on: _ArmTo
         _DO_NOT_PUBLISH_BANNER,
         f"net per loop: {render._fmt_usd(figures.net)}",
         f"{_GUARD_CI_LEVEL:.0%} interval: {render._fmt_usd(bootstrap.lower)} to {_format_upper_bound(bootstrap.upper)}",
-        f"overhead difference per loop: {render._fmt_usd(figures.overhead_difference)}",
-        f"carry per loop: {render._fmt_usd(figures.carry)}",
+        f"overhead difference (key-on minus key-off) per loop: {render._fmt_usd(figures.overhead_difference)}",
+        f"carry (subtracted) per loop: {render._fmt_usd(figures.carry)}",
         f"growth gap, key-off minus key-on, tokens per loop: {figures.gap:,.1f}",
         *_arm_figure_lines(_STATE_ON, on),
         *_arm_figure_lines(_STATE_OFF, off),

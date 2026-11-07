@@ -668,14 +668,26 @@ class TestFlags:
         assert args.out is None and args.capture is False
         assert capsys.readouterr().out.splitlines()[-1] in (routing_guard._STATUS_PASSED, routing_guard._STATUS_FAILED)
 
-    def test_a_note_readable_by_others_prints_the_permission_notice_and_an_owner_only_note_does_not(self, lab, capsys):
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            pytest.param(0o644, id="group-and-other-readable"),
+            pytest.param(0o620, id="group-writable-not-readable"),
+            pytest.param(0o602, id="other-writable-not-readable"),
+            pytest.param(0o601, id="other-execute-only"),
+        ],
+    )
+    def test_a_note_with_any_group_or_other_permission_prints_the_permission_notice_and_an_owner_only_note_does_not(
+        self, lab, capsys, mode,
+    ):
         _minimal_pair(lab)
-        lab.write_note(mode=0o644)
+        lab.write_note(mode=mode)
         permissive = _compute(capsys, lab)
         lab.write_note(mode=0o600)
         owner_only = _compute(capsys, lab)
 
         assert routing_guard._PERMISSIVE_NOTE_NOTICE in permissive.err
+        assert "the note has group or other permissions" in permissive.err
         assert routing_guard._PERMISSIVE_NOTE_NOTICE not in owner_only.err
 
 
@@ -949,6 +961,26 @@ class TestPricing:
         for stream_text in (outcome.out, outcome.err, out_path.read_text()):
             assert _UNLISTED_MODEL_SENTINEL not in stream_text
 
+    @pytest.mark.parametrize(
+        "odd_model", ["claude-mödel-模型", "claude-\ud800-lone-surrogate"], ids=["non-ascii", "lone-surrogate"],
+    )
+    def test_a_non_ascii_or_lone_surrogate_model_name_reaches_no_output_stream_and_the_run_completes_degraded(
+        self, lab, capsys, odd_model,
+    ):
+        account = lab.account()
+        lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=5, growth=1, model=odd_model)])
+        lab.row(account, "branch-off", "off", loops=[_loop(growth=2, later={odd_model: 4})])
+        lab.write_note()
+        out_path = lab.root / "figures.txt"
+
+        outcome = _compute(capsys, lab, out=str(out_path))
+
+        assert outcome.code in (0, 1)
+        assert routing_guard._DEGRADED_NOTICES["on"] in outcome.err.splitlines()
+        assert routing_guard._DEGRADED_NOTICES["off"] in outcome.err.splitlines()
+        for stream_text in (outcome.out, outcome.err, out_path.read_text()):
+            assert odd_model not in stream_text
+
     def test_a_model_unpriced_when_captured_is_priced_once_the_table_lists_it(self, lab, capsys, monkeypatch):
         account = lab.account()
         lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=1_000_000, growth=1, model="claude-future-1")])
@@ -1048,8 +1080,8 @@ class TestPointNet:
         # On: $20.00 / 5 loops = $4.00 per loop. Off: $18.00 / 3 loops = $6.00 per loop. Gap: 600k - 200k = 400k tokens.
         # Carry: 400k * (10*0.2 + 5*0.5 + 20*0.2 + 10*0.2 + 5*0.5)e-6 / 3 = 400k * 13e-6 / 3 = $1.7333 per loop.
         assert outcome.code in (0, 1)
-        assert "overhead difference per loop: -$2.00" in figure_lines
-        assert "carry per loop: $1.73" in figure_lines
+        assert "overhead difference (key-on minus key-off) per loop: -$2.00" in figure_lines
+        assert "carry (subtracted) per loop: $1.73" in figure_lines
         assert "growth gap, key-off minus key-on, tokens per loop: 400,000.0" in figure_lines
         assert "net per loop: -$3.73" in figure_lines
 
@@ -1119,8 +1151,8 @@ class TestPointNet:
         # Gap: key-off mean 600k over its 1 growth-defined loop, less key-on mean 200k ((100k + 300k) / 2 loops) = 400k tokens.
         # Carry: 400k * (10 + 10) * 0.2e-6 / 2 loops = $0.80.
         assert outcome.code in (0, 1)
-        assert "overhead difference per loop: -$4.00" in figure_lines
-        assert "carry per loop: $0.80" in figure_lines
+        assert "overhead difference (key-on minus key-off) per loop: -$4.00" in figure_lines
+        assert "carry (subtracted) per loop: $0.80" in figure_lines
         assert "growth gap, key-off minus key-on, tokens per loop: 400,000.0" in figure_lines
         assert "net per loop: -$4.80" in figure_lines
         assert "key-off loops: 2" in figure_lines
@@ -1531,7 +1563,7 @@ class TestOutput:
         assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
         assert text.startswith(routing_guard._DO_NOT_PUBLISH_BANNER + "\n")
         assert [line.split(":")[0] for line in text.splitlines()[len(routing_guard._DO_NOT_PUBLISH_BANNER.splitlines()):]] == [
-            "net per loop", "95% interval", "overhead difference per loop", "carry per loop",
+            "net per loop", "95% interval", "overhead difference (key-on minus key-off) per loop", "carry (subtracted) per loop",
             "growth gap, key-off minus key-on, tokens per loop",
             "key-on branches", "key-on loops", "key-on growth-defined branches", "key-on growth-defined loops",
             "key-off branches", "key-off loops", "key-off growth-defined branches", "key-off growth-defined loops",
@@ -1595,8 +1627,8 @@ class TestOutput:
         assert out_path.read_text().splitlines()[len(banner_lines):] == [
             "net per loop: -$9.73",
             "95% interval: -$10.67 to -$9.00",
-            "overhead difference per loop: -$9.33",
-            "carry per loop: $0.40",
+            "overhead difference (key-on minus key-off) per loop: -$9.33",
+            "carry (subtracted) per loop: $0.40",
             "growth gap, key-off minus key-on, tokens per loop: 300,000.0",
             "key-on branches: 2",
             "key-on loops: 3",

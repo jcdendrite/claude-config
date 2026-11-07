@@ -817,7 +817,11 @@ class TestOutPathHelpersNameTheCommand:
         [
             ("exists", "already exists -- refusing to overwrite; pass a new path"),
             ("write", "could not be written -- pass a new path"),
-            ("link", "could not be published; pass a new path"),
+            (
+                "link",
+                "could not be published (the --out directory's filesystem must support hard links and have free space);"
+                " pass a new path",
+            ),
         ],
     )
     def test_publish_new_owner_file_names_the_command_in_each_failure_message(

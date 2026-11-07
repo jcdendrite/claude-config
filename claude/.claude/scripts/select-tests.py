@@ -371,11 +371,13 @@ DOCS_DIR = "docs"
 # also reads it for the per-account state-path contract.
 # test_output_preferences_layering.py (HOOKS_TESTS_DIR) reads its Output
 # preferences section's template block and its pointer to GLOBAL_CLAUDE_MD.
-# test_transcript_routing_guard_capture.py (SCRIPTS_TESTS_DIR) reads it for a
-# heading a printed message cites, through a path built inside a test body that
-# TestCrossDomainReadCompleteness cannot resolve. TestMessageCitations guards
-# that mapping.
+# test_transcript_routing_guard_capture.py is the only test under
+# SCRIPTS_TESTS_DIR that reads it, for a heading a printed message cites,
+# through a path built inside a test body that TestCrossDomainReadCompleteness
+# cannot resolve. The README row therefore selects that file alone, not the
+# directory. TestMessageCitations guards that mapping.
 README_MD = "README.md"
+ROUTING_GUARD_CAPTURE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_routing_guard_capture.py"
 
 # The test_install_sh_*.py family and test_shellcheck.py, both in
 # HOOKS_TESTS_DIR, read this file by path.
@@ -892,7 +894,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         (SCRIPTS_TESTS_DIR,),
     ),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
+    (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, ROUTING_GUARD_CAPTURE_TEST_PATH)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
     (lambda p: p == INSTALL_DEV_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SCRIPTS_DIR), (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),

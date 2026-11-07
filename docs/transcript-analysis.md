@@ -21,7 +21,7 @@ Subcommands that write to disk:
 - `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`. It is gated on the `cost_ledger_recording` config key; see the `cost-ledger` section below.
 - `pr-cost --record` appends to `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default, overridable via `PR_COST_LEDGER_PATH`. It is gated on the `pr_cost_recording` config key; see the `pr-cost` section below.
 - `routing-guard --capture` publishes one write-once file for each captured branch into `<config-dir>/routing-guard-captures/`. It is gated on the `pr_cost_recording` config key of the account it writes to; see the `routing-guard` section below.
-- `routing-guard --out` writes the one file it names and never overwrites it. It is not gated on a config key of its own; see the `routing-guard` section below.
+- `routing-guard --out` writes the one file it names and never overwrites it. It is not gated on a config key of its own, and each listed account's `pr_cost_recording` key still decides whether compute reads that account's files; see the `routing-guard` section below.
 
 No other subcommand writes to disk.
 
@@ -1681,7 +1681,7 @@ Data quality
 
 ## routing-guard
 
-**Purpose.** Capture each sampled branch's review loops per account, then compute the cost guard of the review-orchestrator routing gate: the net cost per review loop, key-on minus key-off, with its 95% bootstrap interval. The guard's definitions are fixed in `docs/design-decisions/review-orchestrator-routing-gate.md`. The guard counts as failed until a compute run reaches PASSED.
+**Purpose.** Capture each sampled branch's review loops per account, then compute the cost guard of the review-orchestrator routing gate: the net cost per review loop, key-on minus key-off, with its 95% bootstrap interval. The guard's definitions are fixed in `docs/design-decisions/review-orchestrator-routing-gate.md`. The code reads "writes the code-review marker" as a write whose Bash call has a paired non-error result, so a write that returns exit 0 with nothing to review ends a loop too. The guard counts as failed until a compute run reaches PASSED.
 
 Capture and compute are two modes of one subcommand, like `pr-cost` and `pr-cost --record`:
 
@@ -1726,27 +1726,24 @@ Keep the note as an owner-only file outside any git work tree and any cloud-sync
    - Run capture only when the checkout whose script is running (the stowed checkout, for the `~/.claude/scripts` copy) has this subcommand merged, never from a branch whose capture logic may still change.
    - Run it with its cwd in a worktree of that checkout.
 
-   This bash loop runs one capture per config directory in the note. It prints each run's exit code and nothing that names an account. It continues past exit 3 and stops on any other nonzero exit. The loop's own exit status is the gate for step 4, and it is:
-
-   - the first exit code that is neither 0 nor 3,
-   - else 3, when any run exited 3,
-   - else 0.
+   This bash loop runs one capture per config directory in the note. It prints each run's exit code and nothing that names an account. It continues past exit 3 and stops on any other nonzero exit. The loop's own exit status is the gate for step 4.
 
    ```bash
    awk -F '\t' '{ sub(/\r$/, "") } !/^#/ && NF { print $1 }' <note-path> | sort -u | (
      loop_exit_code=0
+     capture_count=0
      while IFS= read -r config_dir; do
+       capture_count=$((capture_count + 1))
        transcript-analysis.py --config-dir "${config_dir/#\~/$HOME}" routing-guard --note <note-path> --capture < /dev/null
        capture_exit_code=$?
        echo "capture exit: $capture_exit_code"
        if [ "$capture_exit_code" -ne 0 ] && [ "$capture_exit_code" -ne 3 ]; then loop_exit_code=$capture_exit_code; break; fi
        if [ "$capture_exit_code" -eq 3 ]; then loop_exit_code=3; fi
      done
+     if [ "$capture_count" -eq 0 ]; then echo "no capture ran" >&2; exit 2; fi
      exit "$loop_exit_code"
    )
    ```
-
-   A run that printed no `capture exit:` line ran nothing, so a wrong note path or a note with no config directory is not a passed gate.
 4. Run capture again on every listed account, as under "Deny reconciliation". Run compute, with no `--config-dir`, only when every one of those captures exits 0:
 
    ```bash
@@ -1787,8 +1784,8 @@ python3 -c 'import hashlib; print(hashlib.sha256(input("branch: ").encode("utf-8
 ### Output
 
 - Capture prints one line per `merged` row of the `--config-dir` account, then a summary line and a fixed next action. A `captured` row ends with the date of the earliest surviving record. That is the earliest timestamped main-thread record of the branch that still exists among the scanned sessions. A date near the `cleanupPeriodDays` limit means older sessions may already be gone and the write-once file will read low. A recent date does not show that none were lost.
-- Compute prints one status line, or one NOT RUN line per reason and note line. FAILED means the interval's lower bound is above zero, PASSED means it is not, and NOT RUN means the guard could not be computed.
-- `--out PATH` writes the figures to a new owner-only file outside any git work tree, which opens with the `DO NOT PUBLISH` banner. A NOT RUN run writes no file. Delete the file once its figures are read. The git-tree check does not cover a cloud-sync folder or a bare-repo dotfile manager; see `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
+- Compute prints one status line, or one NOT RUN line per reason and note line. FAILED means the interval's lower bound is above zero, PASSED means it is not, and NOT RUN means the guard could not be computed. How a loop end is read is in the Purpose sentence above. A negative net in the `--out` file means key-on costs less per loop than key-off.
+- `--out PATH` writes the figures to a new owner-only file outside any git work tree, which opens with the `DO NOT PUBLISH` banner. The file's directory must be on a filesystem that supports hard links and has free space. A NOT RUN run writes no file. Delete the file once its figures are read. The git-tree check does not cover a cloud-sync folder or a bare-repo dotfile manager; see `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
 
 Exit codes:
 
@@ -1808,20 +1805,27 @@ No quantity the guard computes is published. `docs/private-project-redaction.md`
 
 ### Known gaps
 
-- Both arms fill only from branches worked after the recorder landed, key-on branches included. The design record's key-off sample, each key-on account's most recent branches from before its key went on, cannot be met on an account whose key predates its log. Filling the key-off arm takes merged branches every one of whose sessions started with the key already off. List the most recent such branches, as many as under "The note", each worked under the same two pilot states as the account's key-on branches.
+- To fill the key-off arm, list the most recent merged branches every one of whose sessions started with the key already off, as many as under "The note", each worked under the same two pilot states as the account's key-on branches. The design record's key-off sample, each key-on account's most recent branches from before its key went on, cannot be met on an account whose key predates its log. Both arms fill only from branches worked while the recorder was running, key-on branches included.
 - A log row is a SessionStart snapshot, so a mid-session flip is invisible.
 - An excluded branch is a selection effect on the arm.
+- A marker write with no result, or whose call was interrupted, does not end its loop. The loop then absorbs the next round, and a branch whose only write is unpaired has no complete loop.
+- The loop-end recognizer is shape-based and reads only the Bash call's result status, so it can over-confirm or under-confirm a write. It over-confirms matching text that never ran in a call that exits 0, such as `true || marker.sh write code-review` or heredoc body text, and a failed write whose status a later chain segment or a pipe masks. It under-confirms a stored write in a call that exits non-zero, such as one chained before a failing commit, and a write spelled through a variable or wrapper. The "Marker fallback" list under "Orchestrator rounds" in the author-outcome section names three shapes the matcher counts although the command never ran.
+- A round replayed into a second session file may form a second loop with the same overhead. Capture deduplicates denies across session files but not rounds, and whether a replay occurs is unverified.
+- Negative growth after a compaction is averaged at face value, and a loop's later turns run to the end of the session, across any compaction.
+- List every merged key-on branch in the note. Deny reconciliation sees only routing denies, so an unlisted key-on branch that left none shrinks its arm undetected.
+- Capture admits an orphaned project directory by the main checkout's name prefix plus the worktrees infix, so a foreign clone under the worktrees directory is read as this repo's.
 
 ### Retirement
 
 Records stay as history, and the retirement adds its own, as `docs/design-decisions/review-orchestrator-routing-gate.md` § "Withdrawal form" does for the gate. To retire the subcommand:
 
-- Delete `routing_guard.py`, its tests and test helper, and every registration, test case and citation test that names it.
-- Remove this section, the routing-guard entries in `docs/transcript-analysis-architecture.md`, the routing-guard sentences about the `pr_cost_recording` key in `docs/pr-cost.md` and `config-keys.psv`, and the routing-guard call sites in the config schema audit.
-- Edit the routing-guard mentions in this file outside this section, including the count of subcommands that skip `--this-repo` under "Scoping to this repo".
+- Delete `routing_guard.py` and every other site the verification `git grep` below finds, except the kept sites it lists.
+- Keep the `pr_cost_recording` key, which `pr-cost --record` also reads. Remove only the routing-guard sentences about it in `docs/pr-cost.md` and `config-keys.psv`.
+- Remove `ROUTING_GUARD_CAPTURE_TEST_PATH` and `SESSION_CONFIG_KEYS_LOG_DOC_MD`. The capture test is the only `SCRIPTS_TESTS_DIR` test that reads `docs/session-config-keys-log.md`.
 - At retirement time, not before, edit the paragraph in `docs/design-decisions/review-orchestrator-routing-gate.md` that begins "`transcript-analysis.py routing-guard --capture`" and cites this section. Replace it with the retirement record, so the record does not point at a removed section.
 - Keep the shared helpers: the `ledger_common` publish core, the `pr-cost-export` refactor onto it and the review-round fixtures in `_review_round_helpers.py`.
-- Remove the token-sink plumbing `review_rounds.py` gained for this subcommand, reached from `_record_turn_tokens`, with its tests and the sentence about it in `pricing._token_counts`'s docstring. The public round dict's keys must stay as they are; `TestComputeReviewRoundCostsRoundKeys` guards them.
+- Remove the token-sink plumbing `review_rounds.py` gained for this subcommand. The public round dict's keys must stay as they are; `TestComputeReviewRoundCostsRoundKeys` guards them.
+- Remove the author-outcome plumbing behind this subcommand's "confirmed" reading: `has_confirmed_marker_write`, `succeeded_tool_use_ids`, and the `is_error` clause in the `author_outcome.py` module docstring's field list. Keep `_is_clean_marker_write` and the "attempted" reading, which author-outcome uses.
 - Keep the `CHANGELOG.md` entry for the subcommand and add a `Removed` entry. The `routing-guard-captures/` directories remain on disk, and that entry is the only notice that they exist.
 
 Each account's captures directory is removed by hand. A code revert leaves those directories inert.
@@ -1832,7 +1836,12 @@ To verify the retirement, run this from the repository root. It should print onl
 git grep -nE 'routing[-_]guard|token_sink|collect_tokens'
 ```
 
-The grep does not find every piece of the `review_rounds.py` plumbing. Find the rest from `_record_turn_tokens`'s callers. Three more pieces are not reached from there: `_resample_percentile`'s `level` parameter and `TestResamplePercentileLevel`, the round entry's `window_end` key with the `del entry["window_end"]` in `compute_review_round_costs`, and the helper `_class_tokens` and constant `_UNPRICED_MODEL` in `test_transcript_review_rounds.py`, which ruff does not flag once their tests go.
+The grep does not match the upper-case constants or the author-outcome plumbing above, so grep for their names too, and for `_record_turn_tokens`. These pieces of the `review_rounds.py` plumbing carry none of those names:
+
+- `_resample_percentile`'s `level` parameter and `TestResamplePercentileLevel`.
+- The round entry's `window_end` key, with the `del entry["window_end"]` in `compute_review_round_costs`.
+- The helper `_class_tokens` and constant `_UNPRICED_MODEL` in `test_transcript_review_rounds.py`. Ruff does not flag them once their tests go.
+- The sentence about the token sink in `pricing._token_counts`'s docstring, which spells it "token sink" with a space.
 
 ### Sample output
 
@@ -1860,8 +1869,6 @@ Compute, the `--out` file (`routing_guard._out_file_text`):
 <DO NOT PUBLISH banner>
 <figure label>: <figure>
 ```
-
-A negative net means key-on costs less per loop than key-off.
 
 ---
 

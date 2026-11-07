@@ -1264,6 +1264,7 @@ def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Pat
                 content=[_skill_block("sk-1", "code-review")]),
         _priced("claude-sonnet-5", input=10_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:01:00.000Z",
                 content=[_marker_write_use("mk-1")]),
+        _user_msg([_tool_result("mk-1", "ok")], branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:01:00.000Z"),
         _user_msg("next task", branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:02:00.000Z"),
         _priced("claude-sonnet-5", input=130_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:03:00.000Z"),
     ]

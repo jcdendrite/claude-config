@@ -111,15 +111,11 @@ class _PublishOutcome(enum.Enum):
 def _publish_new_file(path: Path, text: str, temp_prefix: str, temp_suffix: str) -> _PublishOutcome:
     """Create `path` holding `text`, never replacing an existing entry at `path`, a dangling symlink included.
 
-    The text is written to a same-directory `mkstemp` file (mode `0600`),
-    flushed and fsynced, and then hard-linked to `path`. A crash mid-write
-    therefore leaves only a temp file, never a torn file at `path`, and
-    `os.link` lets exactly one of several racing writers claim the name.
-    `path` shares the temp file's inode, so it is `0600` with no separate
-    chmod. The temp file is removed on every outcome.
-
-    A failed `mkstemp`, write, flush or fsync is WRITE_FAILED. The OSError is
-    not returned, since its text embeds the temp file's full path.
+    A crash mid-write leaves only a temp file, never a torn file at `path`,
+    and `os.link` lets exactly one of several racing writers claim the name.
+    `path` shares the temp file's inode, which `mkstemp` creates at `0600`, so
+    it needs no separate chmod. The OSError is not returned, since its text
+    embeds the temp file's full path.
     """
     tmp_name: str | None = None
     try:
@@ -144,6 +140,14 @@ def _publish_new_file(path: Path, text: str, temp_prefix: str, temp_suffix: str)
         if tmp_name is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
+
+
+def _hard_link_requirement(directory_label: str) -> str:
+    """The parenthetical naming what `directory_label`'s filesystem must provide for a LINK_FAILED publish.
+
+    `os.link` fails on a filesystem without hard links or with no free space, and the errno is never returned.
+    """
+    return f"({directory_label}'s filesystem must support hard links and have free space)"
 
 
 def _resolve_machine_identity(
@@ -321,7 +325,14 @@ def _publish_new_owner_file(out: str, text: str, command: str) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    # LINK_FAILED, and any outcome not named above, fails closed.
+    if outcome is _PublishOutcome.LINK_FAILED:
+        print(
+            f"{command}: --out {out!r} could not be published {_hard_link_requirement('the --out directory')};"
+            " pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # Any outcome not named above fails closed.
     print(
         f"{command}: --out {out!r} could not be published; pass a new path",
         file=sys.stderr,

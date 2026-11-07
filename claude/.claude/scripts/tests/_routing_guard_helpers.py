@@ -494,23 +494,6 @@ def _strings_the_output_must_not_name(note_path: str, config_dir_argument: str |
     return strings
 
 
-def _symlink_loop_that_resolve_rejects(directory: Path) -> Path:
-    """Two symlinks in `directory` pointing at each other, and the path of one.
-
-    Skips the test when `Path.resolve()` tolerates the loop (Python 3.13 and later), so a test using this
-    never passes without reaching the arm that handles a resolve failure.
-    """
-    loop_a = directory / "loop-a"
-    loop_b = directory / "loop-b"
-    loop_a.symlink_to(loop_b)
-    loop_b.symlink_to(loop_a)
-    try:
-        loop_a.resolve()
-    except (OSError, RuntimeError):
-        return loop_a
-    pytest.skip("Path.resolve() does not raise on a symlink loop on this Python")
-
-
 def _path_that_resolve_rejects_as_nul(directory: Path) -> str:
     """An absolute path under `directory` with an embedded NUL, skipping the test when `Path.resolve()` accepts it."""
     path_with_nul = f"{directory}/nul\x00path"

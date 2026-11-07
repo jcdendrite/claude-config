@@ -1228,15 +1228,18 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
-    def test_readme_md_change_selects_hooks_skills_and_scripts_tests(self):
+    def test_readme_md_change_selects_hooks_skills_and_routing_guard_capture_tests(self):
         """test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and
         token-cap counts in README.md. test_skills.py's
         test_doc_has_no_state_path (SKILLS_TESTS_DIR) also reads it for the
         per-account state-path contract. test_transcript_routing_guard_capture.py
-        (SCRIPTS_TESTS_DIR) reads it for a heading a printed message cites."""
+        is the only SCRIPTS_TESTS_DIR test that reads it, for a heading a
+        printed message cites."""
         result = _mod.select_pytest_targets([_mod.README_MD])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.ROUTING_GUARD_CAPTURE_TEST_PATH,
+        }
 
     def test_install_sh_change_selects_hooks_tests(self):
         """The eleven test_install_sh_*.py modules and test_shellcheck.py,
@@ -2136,6 +2139,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,
     _mod.PLAN_SHAPE_TEST_PATH,
     _mod.TRANSCRIPT_REVIEW_TRACE_TEST_PATH,
+    _mod.ROUTING_GUARD_CAPTURE_TEST_PATH,
 })
 
 # Add a pair only for a SKILL.md path read from a HOOKS_TESTS_DIR test, a
