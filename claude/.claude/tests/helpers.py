@@ -1517,8 +1517,7 @@ SHELL_COMMAND_PREFIX = "resume-context "
 
 
 def announced_route(command: str) -> str:
-    """`load` for an announced slash command and `shell` for an announced shell command. No command
-    starts with both prefixes."""
+    """`load` for an announced slash command and `shell` for an announced shell command."""
     if command.startswith(SLASH_COMMAND_PREFIX):
         return "load"
     assert command.startswith(SHELL_COMMAND_PREFIX), f"announced command is neither route: {command!r}"

@@ -5913,8 +5913,8 @@ class TestPlanItStep7PushConsent:
 
 
 # Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
-# cannot match to this session, or from running on its own, and the one that has
-# it set each relayed command off as a fenced code block.
+# cannot match to this session, or from running on its own.
+# One clause has the skill set each relayed command off as a fenced code block.
 _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "run_only_when_asked": (
         "Run only when the engineer asked to resume in this session. Never run the "
@@ -6044,7 +6044,7 @@ class TestResumeContextSkill:
 # section states the directory rule and the command forms (three bullets), then a
 # second paragraph. The second paragraph holds the `cd <path> &&` prohibition and
 # the instruction to relay the announce hook's resume route, so a trim at the
-# line cap must fail here. Each entry is (skill name, section heading, pinned text).
+# line cap must fail here.
 _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
     "handoff_directory_bullet": (
         "handoff",
