@@ -5585,6 +5585,7 @@ _lib_resume_context_verdict() {
 # The same two globs are spelled in announce-resume-command.sh and consume-durable-continuity-file-on-read.sh as `case` patterns, and as suffixes in resume-context-same-session.sh.
 # The glob runs in a process substitution that resets the expansion options the result depends on, so the caller's settings neither change the result nor are changed.
 # A failure inside that subshell is not reported to the caller.
+# Entries are not filtered by the path-character allowlist and may hold any byte except NUL, so callers allowlist before interpolating.
 _lib_collect_pending_continuity_files() {
   local config_dir="$1" path
   _LIB_PENDING_CONTINUITY_FILES=()

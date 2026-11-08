@@ -279,15 +279,25 @@ class TestAnnounceResumeCommand:
     def test_runner_resolves_resume_context_to_the_recording_stub(self, isolated_home, tmp_path):
         """The deny-only "no launcher ran" assertions elsewhere in this file read the stub's log, so
         they stay green if `_run_hook_raw` stops putting the stub first on the hook's PATH. A
-        hook-like script that runs `resume-context` by bare name must reach the stub."""
+        hook-like script that runs `resume-context` by bare name must reach the stub, even with another
+        `resume-context` later on the PATH: a stub moved behind the decoy leaves the stub's log empty."""
         probe_hook = tmp_path / "probe-hook.sh"
         probe_hook.write_text("#!/bin/sh\nresume-context --path-probe\n")
         probe_hook.chmod(0o755)
+        decoy_ran_marker = tmp_path / "decoy-ran"
+        decoy_bin = tmp_path / "decoy-bin"
+        decoy_bin.mkdir()
+        decoy = decoy_bin / "resume-context"
+        decoy.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(decoy_ran_marker))}\n")
+        decoy.chmod(0o755)
 
-        result = _run_hook_raw(probe_hook, {}, home=isolated_home)
+        result = _run_hook_raw(
+            probe_hook, {}, home=isolated_home, extra_env={"PATH": f"{decoy_bin}:{os.environ['PATH']}"}
+        )
 
         assert result.returncode == 0
         assert resume_context_stub_invocations(isolated_home) == "--path-probe\n"
+        assert not decoy_ran_marker.exists()
 
     # -----------------------------------------------------------------------
     # Root-cause regression: config-dir resolution

@@ -396,6 +396,8 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - A path means every own command that carries a `--cwd` names that one absolute path, which the script symlink-resolves.
   - `unknown` means the script could not resolve one directory from the file.
 
+  A file-sourced `--cwd` may name any directory made of allowlisted bytes, and the command printed on the `SHELL_COMMAND:` and `CANDIDATE:` lines carries it without this script having checked the directory.
+
   The script parses each pending file at most once per run. With no argument, a linked session parses every pending file, because the target decides selection and order. Nothing sweeps pending files, so that cost grows with the pending count. A `not-linked` or `unknown` session parses only the at most 5 files it lists.
 
   `_lib_resume_context_verdict` decides `load` or `shell` by session state:

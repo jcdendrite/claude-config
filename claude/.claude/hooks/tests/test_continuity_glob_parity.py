@@ -11,12 +11,10 @@ covers the leading-`@` slash-form precaution on its own rows.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 from helpers import (
-    _build_subprocess_env,
     code_span_command,
     read_input,
     resume_context_stub_invocations,
@@ -26,6 +24,7 @@ from helpers import (
 
 from .test_announce_resume_command import _REFUSED_NAME_REASON, ANNOUNCE_HOOK, _run_hook_raw
 from .test_consume_durable_continuity_file_on_read import CONSUME_HOOK
+from .test_consume_durable_continuity_file_on_read import _run_hook_raw as _run_consume_hook_raw
 from .test_lib_resume_context import _is_pending_continuity_file
 
 _SYMLINK_LEAF = "handoffs/linked-handoff.md"
@@ -107,14 +106,7 @@ def _announce_fires(home: Path, path: Path) -> bool:
 
 def _consume_fires(home: Path, consume_log: Path, path: Path) -> bool:
     before = consume_log.read_text() if consume_log.exists() else ""
-    result = subprocess.run(
-        [str(CONSUME_HOOK)],
-        input=json.dumps(read_input(str(path))),
-        capture_output=True,
-        text=True,
-        env=_build_subprocess_env(home, None),
-        check=False,
-    )
+    result = _run_consume_hook_raw(CONSUME_HOOK, read_input(str(path)), home=home)
     assert result.returncode == 0, result.stderr
     after = consume_log.read_text() if consume_log.exists() else ""
     return after != before

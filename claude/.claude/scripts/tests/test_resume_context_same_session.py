@@ -1221,13 +1221,17 @@ class TestConsume:
             assert not legacy_copy.exists()
 
 
+def _env_with_resume_context_stub_first(sandbox: _Sandbox) -> dict[str, str]:
+    return sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"})
+
+
 def _announced_command(sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
     result = subprocess.run(
         [str(_ANNOUNCE_HOOK)],
         input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
         capture_output=True,
         text=True,
-        env=sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"}),
+        env=_env_with_resume_context_stub_first(sandbox),
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -1236,6 +1240,22 @@ def _announced_command(sandbox: _Sandbox, pending: Path, session_cwd: Path) -> s
 
 
 class TestRoundTrip:
+    def test_the_announce_runner_environment_resolves_resume_context_to_the_recording_stub(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """`_announced_command` asserts the stub's log is empty, which stays green if the stub is
+        not on the hook's PATH. A bare-name `resume-context` run in the same environment must reach it."""
+        result = subprocess.run(
+            ["sh", "-c", "resume-context --path-probe"],
+            capture_output=True,
+            text=True,
+            env=_env_with_resume_context_stub_first(sandbox),
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert resume_context_stub_invocations(sandbox.home) == "--path-probe\n"
+
     def test_the_file_name_the_announce_hook_advertises_loads_exactly_that_file(self, sandbox: _Sandbox) -> None:
         pending = sandbox.write_pending("v1.2-step-3.4", sandbox.worktree_a)
         decoy = sandbox.write_pending("v1.2-step-3", sandbox.worktree_a)

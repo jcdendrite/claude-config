@@ -209,6 +209,7 @@ has_usable_target() {
   [ -n "$1" ] && [ "$1" != "$_LIB_RESUME_CWD_UNUSABLE" ]
 }
 
+# A file-sourced --cwd may name any directory made of allowlisted bytes, and the command printed on the SHELL_COMMAND: and CANDIDATE: lines carries it without this script having checked the directory.
 shell_command() {
   if has_usable_target "$2"; then
     printf 'resume-context --cwd %s %s' "$2" "$1"
