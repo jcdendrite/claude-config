@@ -10,16 +10,20 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import bare_remote_with_default_branch, isolated_git_config_env
+from helpers import (
+    bare_remote_with_default_branch,
+    isolated_git_config_env,
+    path_with_failing_tool_shim,
+    set_origin_head,
+)
 
 from ._lib_sh_helpers import _run_lib_call
 
 # --- _lib_git_push_targets ------------------------------------------------
 #
-# The parser's records are the contract the default-branch push gate judges and a later
-# readiness-gate fix consumes. Most cases assert the whole record list, so a stray record fails
-# them; the cases parametrized over a cause, a config key or a not-a-push shape assert only the
-# one record or the exit status they name.
+# The parser's records are the contract the default-branch push gate judges. Most cases assert the
+# whole record list, so a stray record fails them; the cases parametrized over a cause, a config
+# key or a not-a-push shape assert only the one record or the exit status they name.
 
 CWD_REPO = ("repo", "cwd", "")
 ORIGIN = ("remote", "origin")
@@ -423,16 +427,14 @@ def _protected_branches(call_args: str, env: dict, cwd_prefix: str = "") -> tupl
 
 
 def _add_remote_with_head(clone: Path, remote_name: str, head_branch: str, env: dict) -> None:
-    """Add a remote and point its remote-tracking HEAD at `head_branch` without a network fetch."""
-    git_env = {**os.environ, **env}
-    subprocess.run(["git", "remote", "add", remote_name, str(clone)], cwd=clone, check=True, env=git_env)
+    """Add a remote and point its remote-tracking HEAD at `head_branch` without a network fetch.
+
+    `env` covers the `remote add` call only; `set_origin_head` runs its git calls under the process environment.
+    """
     subprocess.run(
-        ["git", "update-ref", f"refs/remotes/{remote_name}/{head_branch}", "HEAD"], cwd=clone, check=True, env=git_env
+        ["git", "remote", "add", remote_name, str(clone)], cwd=clone, check=True, env={**os.environ, **env}
     )
-    subprocess.run(
-        ["git", "symbolic-ref", f"refs/remotes/{remote_name}/HEAD", f"refs/remotes/{remote_name}/{head_branch}"],
-        cwd=clone, check=True, env=git_env,
-    )
+    set_origin_head(clone, head_branch, remote_name)
 
 
 class TestPushProtectedBranches:
@@ -556,11 +558,12 @@ class TestGhApiCallIsMutating:
         assert _gh_api_call_is_mutating(text) == 1
 
     def test_grep_failure_counts_as_mutating(self, tmp_path):
-        shim_dir = tmp_path / "grep-shim"
-        shim_dir.mkdir()
-        failing_grep = shim_dir / "grep"
-        failing_grep.write_text("#!/bin/sh\nexit 2\n")
-        failing_grep.chmod(0o755)
-        env = {**os.environ, "PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        grep_engine_error_status = 2
+        env = {
+            **os.environ,
+            "PATH": path_with_failing_tool_shim(
+                tmp_path / "grep-shim", "grep", exit_status=grep_engine_error_status
+            ),
+        }
 
         assert _gh_api_call_is_mutating("gh api repos/o/r/contents/f", env) == 0

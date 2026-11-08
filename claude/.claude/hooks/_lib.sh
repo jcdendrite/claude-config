@@ -2026,7 +2026,7 @@ _LIB_GIT_BUILTIN_SUBCOMMANDS=(
 # subcommand's own arguments.
 # Prints nothing when no subcommand word follows the flags (`git --version`).
 # The `--git-dir=<path>` form carries its value in the same word, so the
-# catch-all `-*` arm skips it rather than the value-consuming arm.
+# `-*` arm skips it like any other flag.
 # Globbing is disabled so a wildcard in the command text is not expanded.
 #
 # Caller contract: word comparisons here are quote-blind by design, same as
@@ -2435,7 +2435,8 @@ _lib_push_protected_branches() {
 # Keys on flags, not the endpoint.
 # Scans the whole TEXT rather than one fragment, leaning toward a match: a false
 # positive costs one redundant scan or deny, a false negative ships a leak.
-# Also exits 0 when grep itself fails, which both callers read as the safe side.
+# Also exits 0 when grep exits 2 or more (an engine error), which both callers read as the safe side.
+# A here-string redirect that fails before grep runs is not caught: it exits 1, which reads as no match.
 # `[^A-Za-z]` is the trailing method boundary, the grep-portable substitute for `\b`.
 _lib_gh_api_call_is_mutating() {
   local grep_status=0
@@ -5642,8 +5643,9 @@ _lib_review_ledger_session_path() {
 # Prints "<scope> <path>" for the review-ledger file this worktree appends to.
 # The path comes last so a CONFIG_DIR containing a space still parses:
 # scope is ${out%% *}, path is ${out#* }.
-# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the same per-branch key
+# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the per-branch key
 #   _lib_reviewer_round_state_key gives the round-3 gate.
+#   The two differ for a branch name a tag shares, because this key drops the `heads/` prefix.
 # - scope "session": _lib_review_ledger_session_path's file. It is used on a
 #   detached HEAD (mid-rebase included) and on the default branch, so a
 #   local-only main does not grow one unbounded file.

@@ -9,7 +9,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **The commit-stall Stop hook (`advance-past-commit-stall.sh`) no longer forces a continuation on the default branch or a detached HEAD.**
   - **Why:** the forced continuation commits and pushes, and from those states the push would land on a protected branch.
   - **What it reads:** the shared `_lib_head_detached_or_default` in `_lib.sh`, the same default-branch test `_lib_review_ledger_path` already applied. It fires only on a non-default branch, and a git failure while reading HEAD stays silent.
-  - **Rename:** `_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES` is now `_LIB_DEFAULT_BRANCH_FALLBACK_NAMES`. The review ledger's scoping is unchanged.
+  - **Rename:** `_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES` is now `_LIB_DEFAULT_BRANCH_FALLBACK_NAMES`. The review ledger's scoping is unchanged, except that a branch whose name a tag shares now keys on the branch name without the `heads/` prefix, so it no longer matches the round-3 gate's key for that name.
   - The change is live on `git pull`.
 - **`comment-discipline-reviewer` now lists the fields its dispatch prompt may carry, and follows its own scope when a prompt contradicts it.**
   - Its `## Input contract` marks each field derived, free-form or fixed. When prompt text names sites, a scope or an exclusion its file contradicts, it follows its file and names the text it set aside.

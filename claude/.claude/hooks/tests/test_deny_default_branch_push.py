@@ -1,19 +1,15 @@
 """Tests for deny-default-branch-push.sh.
 
-Each group pairs a deny with an allow control. The parser's per-key and per-arm record pins live
+Most groups pair a deny with an allow control. The parser's per-key and per-arm record pins live
 in test_lib_push_destinations.py, so a group here keeps one gate-level deny per distinct judge
 predicate.
 
 A test that only reads repository state uses `shared_scenario`, built once per module. A test that
 changes config, HEAD or the remotes builds its own `scenario`, so no change crosses tests. Both run
 under an isolated git config.
-
-A serial (`-n0`) run of this file took about 70 s of wall time and 53 s of CPU time (user plus system) with the
-machine's load average near 20, and takes longer under load.
 """
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -24,15 +20,18 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
-    _build_subprocess_env,
+    _make_git_recording_argv,
     _run_git,
     bare_remote_with_default_branch,
     bash_input,
     isolated_git_config_env,
+    path_with_failing_tool_shim,
     read_input,
     run_hook,
     run_hook_reason,
 )
+
+from ._lib_sh_helpers import _assert_hook_allows
 
 DENY_DEFAULT_BRANCH_PUSH_HOOK = HOOKS_DIR / "deny-default-branch-push.sh"
 
@@ -104,27 +103,12 @@ def trunk_scenario(tmp_path) -> Scenario:
     return _build_scenario(tmp_path, default_branch="trunk")
 
 
-def _assert_hook_allows_silently(payload: dict, process_cwd: Path, extra_env: dict | None = None) -> None:
-    """An allow is exit status 0 with empty stdout; `run_hook_reason` alone also reads a crash as an allow."""
-    completed = subprocess.run(
-        [str(DENY_DEFAULT_BRANCH_PUSH_HOOK)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        cwd=process_cwd,
-        env=_build_subprocess_env(None, extra_env),
-        check=False,
-    )
-    assert completed.returncode == 0 and not completed.stdout.strip(), (
-        f"expected {payload['tool_input']['command']!r} to be allowed, got exit {completed.returncode}: "
-        f"{completed.stdout}{completed.stderr}"
-    )
-
-
 def _assert_allowed(
     command: str, cwd: Path, extra_env: dict | None = None, process_cwd: Path | None = None
 ) -> None:
-    _assert_hook_allows_silently(bash_input(command, cwd=str(cwd)), process_cwd or cwd, extra_env)
+    _assert_hook_allows(
+        DENY_DEFAULT_BRANCH_PUSH_HOOK, bash_input(command, cwd=str(cwd)), process_cwd or cwd, extra_env
+    )
 
 
 def _assert_denied(
@@ -350,6 +334,13 @@ class TestRedirectingConfig:
             "git -c push.default=matching push", shared_scenario.feature_worktree, "'push.default'"
         )
 
+    def test_denies_a_bare_push_with_a_command_line_remote_push_refspec(self, shared_scenario):
+        _assert_denied(
+            "git -c remote.origin.push=HEAD:main push",
+            shared_scenario.feature_worktree,
+            "'remote.origin.push'",
+        )
+
     def test_allows_a_bare_push_with_a_command_line_config_override_of_an_unrelated_key(self, shared_scenario):
         _assert_allowed("git -c core.editor=true push", shared_scenario.feature_worktree)
 
@@ -357,6 +348,20 @@ class TestRedirectingConfig:
         _assert_allowed(
             "git -c push.default=matching push origin feature", shared_scenario.feature_worktree
         )
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching",
+            "GIT_CONFIG_PARAMETERS=\"'push.default=matching'\"",
+        ],
+        ids=["config-count", "config-parameters"],
+    )
+    def test_environment_config_prefix_denies_a_bare_push_and_allows_an_explicit_refspec(
+        self, shared_scenario, prefix
+    ):
+        _assert_denied(f"{prefix} git push", shared_scenario.feature_worktree)
+        _assert_allowed(f"{prefix} git push origin feature", shared_scenario.feature_worktree)
 
     def test_allows_the_plan_push_preflight_command_shape(self, shared_scenario):
         """Copies the command plan-push-preflight.py builds with shlex.join: its -c push.pushOption= push names a refspec."""
@@ -366,6 +371,36 @@ class TestRedirectingConfig:
             f"origin {commit}:refs/heads/feature"
         )
         _assert_allowed(command, shared_scenario.feature_worktree)
+
+
+class TestGlobalGitConfig:
+    """The developer's own global config reaches the hook, so these tests point GIT_CONFIG_GLOBAL at a file they write."""
+
+    @staticmethod
+    def _global_config_env(tmp_path: Path, config_text: str) -> dict[str, str]:
+        global_config = tmp_path / "global-gitconfig"
+        global_config.write_text(config_text)
+        return {"GIT_CONFIG_GLOBAL": str(global_config)}
+
+    def test_denies_a_bare_push_under_a_global_push_default_matching(self, shared_scenario, tmp_path):
+        extra_env = self._global_config_env(tmp_path, "[push]\n\tdefault = matching\n")
+        _assert_denied(
+            "git push", shared_scenario.feature_worktree, "push.default=matching", extra_env=extra_env
+        )
+
+    def test_expands_a_global_alias_of_push_before_judging(self, shared_scenario, tmp_path):
+        extra_env = self._global_config_env(tmp_path, "[alias]\n\tgp = push\n")
+        _assert_denied(
+            "git gp origin main", shared_scenario.feature_worktree, _protected("main"), extra_env=extra_env
+        )
+        _assert_allowed("git gp origin feature", shared_scenario.feature_worktree, extra_env=extra_env)
+
+    def test_allows_a_bare_feature_branch_push_under_a_global_push_default_current(
+        self, shared_scenario, tmp_path
+    ):
+        extra_env = self._global_config_env(tmp_path, "[push]\n\tdefault = current\n")
+        _assert_allowed("git push", shared_scenario.feature_worktree, extra_env=extra_env)
+        _assert_denied("git push", shared_scenario.main_checkout, _protected("main"), extra_env=extra_env)
 
 
 class TestComputedDestination:
@@ -462,6 +497,8 @@ class TestMovedFlag:
             "git checkout main && git push origin HEAD",
             "gh pr checkout 7 && git push -u origin HEAD",
             "pushd <FEATURE> && git push -u origin HEAD",
+            "popd && git push -u origin HEAD",
+            "git switch main && git push origin HEAD",
         ],
     )
     def test_denies_a_head_relative_push_after_a_fragment_that_moves_state(
@@ -638,6 +675,16 @@ class TestPinnedGaps:
         _assert_allowed('out="$(git push -u origin HEAD 2>&1)"', shared_scenario.main_checkout)
         _assert_denied("git push -u origin HEAD", shared_scenario.main_checkout, _protected("main"))
 
+    def test_dash_c_command_substitution_target_is_a_pinned_gap(self, shared_scenario):
+        """Pins the header's unquoted `-C $(...)` Known gap: the substitution cuts the fragment before the subcommand.
+
+        If the first assertion fails, a fix made the allow stop reproducing. Delete the header entry and flip
+        this test to a deny.
+        """
+        feature_worktree = shared_scenario.feature_worktree
+        _assert_allowed("git -C $(pwd) push origin main", feature_worktree)
+        _assert_denied("git -C . push origin main", feature_worktree, _protected("main"))
+
     @pytest.mark.skipif(
         sys.platform != "darwin" or not Path("/usr/bin/awk").exists(),
         reason="reproduces BSD/macOS awk's paragraph-mode masking, which only /usr/bin/awk on Darwin has",
@@ -723,20 +770,44 @@ class TestNonBashTools:
             "tool_input": {"command": command},
             "cwd": str(working_directory),
         }
-        _assert_hook_allows_silently(non_bash_payload, working_directory)
+        _assert_hook_allows(DENY_DEFAULT_BRANCH_PUSH_HOOK, non_bash_payload, working_directory)
+
+    def test_allows_a_bash_call_with_no_command(self, shared_scenario):
+        """A Bash payload whose tool_input holds no command has nothing to judge (header: fail-open)."""
+        payload = {"tool_name": "Bash", "tool_input": {}, "cwd": str(shared_scenario.main_checkout)}
+        _assert_hook_allows(DENY_DEFAULT_BRANCH_PUSH_HOOK, payload, shared_scenario.main_checkout)
+
+
+class TestPayloadWorkingDirectory:
+    def test_judges_the_process_cwd_when_the_payload_names_none(self, shared_scenario):
+        payload_without_cwd = {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}}
+        reason = run_hook_reason(
+            DENY_DEFAULT_BRANCH_PUSH_HOOK, payload_without_cwd, cwd=shared_scenario.main_checkout
+        )
+        assert reason is not None and _protected("main") in reason
+        _assert_hook_allows(
+            DENY_DEFAULT_BRANCH_PUSH_HOOK, payload_without_cwd, shared_scenario.feature_worktree
+        )
+
+    def test_judges_a_repository_whose_path_holds_a_space_and_a_non_ascii_character(self, tmp_path):
+        spaced_root = tmp_path / "wörk space"
+        spaced_root.mkdir()
+        spaced_scenario = _build_scenario(spaced_root)
+        _assert_denied("git push origin HEAD", spaced_scenario.main_checkout, _protected("main"))
+        _assert_allowed("git push origin HEAD", spaced_scenario.feature_worktree)
 
 
 class TestNoGitCallWithoutPushFragment:
     def test_forks_git_only_for_an_alias_lookup(self, shared_scenario, tmp_path):
         real_git = shutil.which("git")
         assert real_git is not None
-        shim_directory = tmp_path / "logging-shim-bin"
-        shim_directory.mkdir()
         call_log = tmp_path / "git-calls.log"
-        shim = shim_directory / "git"
-        shim.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{call_log}"\nexec "{real_git}" "$@"\n')
-        shim.chmod(0o755)
-        extra_env = {"PATH": f"{shim_directory}{os.pathsep}{os.environ['PATH']}"}
+        shim_directory = tmp_path / "logging-shim-bin"
+        _make_git_recording_argv(shim_directory, call_log)
+        extra_env = {
+            "PATH": f"{shim_directory}{os.pathsep}{os.environ['PATH']}",
+            "REAL_GIT": real_git,
+        }
 
         for command in ("ls", "git status", "git log --oneline", "gh pr view"):
             _assert_allowed(command, shared_scenario.feature_worktree, extra_env=extra_env)
@@ -747,19 +818,11 @@ class TestNoGitCallWithoutPushFragment:
         assert len(calls) == 1 and calls[0].endswith("config --get alias.st"), calls
 
 
-def _failing_binary_shim(directory: Path, name: str) -> dict[str, str]:
-    directory.mkdir(exist_ok=True)
-    shim = directory / name
-    shim.write_text("#!/bin/bash\nexit 3\n")
-    shim.chmod(0o755)
-    return {"PATH": f"{directory}{os.pathsep}{os.environ['PATH']}"}
-
-
 class TestFailClosed:
     """Each fail-closed site denies and names the step that failed."""
 
     def test_denies_when_stripping_quotes_fails(self, shared_scenario, tmp_path):
-        extra_env = _failing_binary_shim(tmp_path / "failing-tr", "tr")
+        extra_env = {"PATH": path_with_failing_tool_shim(tmp_path / "failing-tr", "tr", exit_status=3)}
         _assert_denied(
             "git push origin feature", shared_scenario.feature_worktree, "strip shell quotes", extra_env=extra_env
         )
@@ -781,7 +844,7 @@ class TestFailClosed:
         )
 
     def test_denies_when_masking_fails(self, shared_scenario, tmp_path):
-        extra_env = _failing_binary_shim(tmp_path / "failing-awk", "awk")
+        extra_env = {"PATH": path_with_failing_tool_shim(tmp_path / "failing-awk", "awk", exit_status=3)}
         _assert_denied(
             "git push origin feature", shared_scenario.feature_worktree, "mask quoted command text", extra_env=extra_env
         )

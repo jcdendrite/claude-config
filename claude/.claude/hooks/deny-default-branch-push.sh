@@ -15,8 +15,9 @@
 #
 # Protected set: the branch `refs/remotes/<remote>/HEAD` names, plus `main` and
 # `master`, plus `develop` when that HEAD does not resolve (_lib_push_protected_branches).
-# A default branch other than `main` or `master` is protected only where its
-# remote's HEAD is set locally, so a push to a URL or path remote protects `main` and `master` only.
+# A default branch other than `main`, `master` or `develop` is protected only
+# where its remote's HEAD is set locally.
+# A push to a URL or path remote protects `main`, `master` and `develop`.
 #
 # Judging: arguments are read from quote-masked text only, so a quoted mention
 # of a push stays inert. A `$(` or backtick ends its fragment in a cut marker,
@@ -26,9 +27,11 @@
 #
 # Fail posture: fail-closed on JSON parse error, on a failed quote-strip,
 # fragment split or quote-mask step, and on any git call that fails with a
-# status its caller does not document, a cap kill included. Because the gate has no `if`
-# matcher, a missing jq denies every Bash call. Fail-open only on a missing or
-# empty command field and on a non-Bash tool.
+# status its caller does not document.
+# A cap kill denies only where `timeout` or `gtimeout` is on PATH; without one, git and jq run uncapped.
+# Because the gate has no `if` matcher, a missing jq denies every Bash call.
+# A failed `sed` or `tr` fork, or a `timeout` that rejects `-k`, denies every Bash call the same way.
+# Fail-open on a missing or empty command field, on a non-Bash tool, and on every shape listed under Known gaps.
 #
 # Dispatch: no `if` in settings.json; the gate self-filters, since an `if`
 # pattern would miss aliased and dashed push forms.
@@ -38,17 +41,29 @@
 #   - An alias defined in the same command.
 #   - `gh api graphql`.
 #   - `gh repo sync` of a fork.
-#   - Encoding tricks, including `gh api`'s bundled `-iXPUT` and attached `-fmessage=m` spellings, which `_lib_gh_api_call_is_mutating` does not read as mutating.
+#   - `gh api`'s bundled `-iXPUT` and attached `-fmessage=m` spellings, which `_lib_gh_api_call_is_mutating` does not read as mutating.
 #   - The bare `&`, which `_lib_split_fragments` does not split on.
-# Known gaps found later, accepted as permanent debt (the commit message and PR body state each rationale):
-#   - A push whose text sits inside a quoted span that bash or another program executes: a double-quoted `$(…)` or backtick span, or a shell wrapper's string argument (`bash -c "…"`, `sh -c '…'`, `eval "…"`, `xargs … sh -c '…'`). Quote masking keeps a quoted mention of a push inert and cannot tell these executed spans apart from mentions.
-#   - A push that also pushes submodules, through `--recurse-submodules`, `push.recurseSubmodules` or `submodule.recurse`: only the superproject's refspecs are judged.
+# Known gaps found later, accepted as permanent debt under the "Existing debt" rule in docs/hooks.md § "Threat-model tiers".
+# The engineer accepted each when asked.
+# Server-side branch protection (docs/hooks.md § "Required server-side protection") is the only barrier for them.
+#   - A push inside a double-quoted `$(…)` or backtick span, which bash executes but quote masking treats as a mention.
+#   - A push inside a shell wrapper's string argument (`bash -c "…"`, `sh -c '…'`, `eval "…"`, `xargs … sh -c '…'`), which quote masking treats as a mention.
+#   - A push that also pushes submodules, through `--recurse-submodules`, `push.recurseSubmodules` or `submodule.recurse`, because only the superproject's refspecs are judged.
 #   - A fragment earlier in the same command that changes the branch, config or remote HEAD the gate reads, such as `git config remote.origin.push HEAD:main && git push`, `git branch -m` or `git remote set-head`.
-#   - A push over HTTP, such as `curl` with a token against the contents API.
+#   - A push over HTTP, such as `curl` with a token against the contents API, because no `git` or `gh` command is present.
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
-#   - On BSD/macOS awk, a blank line inside a quoted span, such as a multi-paragraph commit message, can hide a push chained later in the same command. This is permanent debt, tracked in `_lib_mask_shell_quotes`' Limits.
-#   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`, after a quoted multi-word flag value, or after a flag value holding a command substitution. The first two make the endpoint read take another word as the endpoint, so a computed endpoint after them passes, such as `gh api -X PUT -f message="add readme" $URL`. The third cuts the `gh api` fragment at the substitution, so a computed or literal ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
-#   - An unquoted command substitution in a `-C` path, such as `git -C $(…) push origin main`: the substitution cuts the fragment before the subcommand, so the push is never parsed. A cooperative agent rarely writes this shape, and parsing substitutions would add another defensive layer.
+#   - `gh api -X DELETE` against `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which removes the server-side barrier above.
+#   - On BSD/macOS awk, a blank line inside a quoted span, such as a multi-paragraph commit message, can hide a push chained later in the same command. This is tracked in `_lib_mask_shell_quotes`' Limits.
+#   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes, such as `gh api -X PUT -f message="add readme" $URL`.
+#   - A `gh api` endpoint written after a quoted multi-word flag value. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes.
+#   - A `gh api` endpoint written after a flag value holding a command substitution. The `gh api` fragment is cut at the substitution, so a ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
+#   - An unquoted command substitution in a `-C` path, such as `git -C $(…) push origin main`. The substitution cuts the fragment before the subcommand, so the push is never parsed.
+#     The cut-marker deny is unreachable for it because the parser returns first, and the engineer declined to extend the parser for this shape.
+#   - A push hidden by a backslash-quoted quote or by an apostrophe in a `#` comment, which the quote scanner reads as opening or closing a span, such as `echo \"; git push origin main; echo \"`.
+#   - A push whose command word carries an attached parenthesis or brace, such as `then (git push origin main)`, `{ (git push origin main); }` or `cat <(git push origin main)`.
+#   - A push whose destination carries an attached parenthesis, such as `(cd w && git push origin HEAD) 2>&1`, which reads the destination as `HEAD)`.
+#   - A git option negation or abbreviation the parser does not read, such as `--no-dry-run`, `--no-tags` or an abbreviated `--mirr`, where git accepts the spelling.
+#   - A spelling that relocates the config a refspec-less push reads, such as `GIT_CONFIG_GLOBAL=<file>`, `HOME=<dir>` or `-c include.path=<file>`.
 #   See `_lib_mask_shell_quotes`' Limits for the other residuals the masked pass inherits.
 #
 # Accepted over-denials (the irreversible tier names over-deny as the correct trade):

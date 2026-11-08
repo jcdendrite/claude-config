@@ -64,11 +64,10 @@ RAW_SPLIT_BY_DESIGN = {
         "MASKED_COMMAND",
     ),
     "deny-default-branch-push.sh": (
-        "split_with_cut_marker takes the quote-stripped buffer from one "
-        "caller and the quote-masked buffer from the other, so its "
-        "parameter cannot carry an _unquoted name; each caller passes the "
-        "buffer its pass needs, and the masked pass is the one that judges "
-        "a push.",
+        "split_with_cut_marker's parameter cannot be named _unquoted "
+        "because it receives the stripped buffer from one caller and the "
+        "masked buffer from the other. "
+        "The masked pass is the one that judges a push.",
         "text",
     ),
 }

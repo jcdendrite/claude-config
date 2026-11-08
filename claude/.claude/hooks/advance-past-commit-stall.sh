@@ -235,7 +235,8 @@ _commit_stall_work_pending "$REPO_ROOT" || exit 0
 # 11. Only a non-default branch fires. Status 0 (detached or default) and
 # status 2 (git could not read HEAD) both stay silent. The default branch is
 # whatever _lib_default_branch_or_guess resolves, else main/master/develop, so a
-# differently named default branch with no origin/HEAD is not recognised.
+# differently named default branch is not recognised when origin/HEAD is unset
+# or a transient git failure prevents reading it.
 HEAD_BRANCH_STATUS=0
 _lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
 [ "$HEAD_BRANCH_STATUS" -eq 1 ] || exit 0

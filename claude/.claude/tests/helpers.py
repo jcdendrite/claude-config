@@ -1502,15 +1502,15 @@ def init_git_repo_with_commit(
     return path
 
 
-def set_origin_head(repo: Path, default_branch: str) -> None:
-    """Point refs/remotes/origin/HEAD at origin/<default_branch> without a real remote."""
+def set_origin_head(repo: Path, default_branch: str, remote_name: str = "origin") -> None:
+    """Point refs/remotes/<remote_name>/HEAD at <remote_name>/<default_branch> without a real remote."""
     subprocess.run(
-        ["git", "update-ref", f"refs/remotes/origin/{default_branch}", "HEAD"], cwd=repo, check=True
+        ["git", "update-ref", f"refs/remotes/{remote_name}/{default_branch}", "HEAD"], cwd=repo, check=True
     )
     subprocess.run(
         [
-            "git", "symbolic-ref", "refs/remotes/origin/HEAD",
-            f"refs/remotes/origin/{default_branch}",
+            "git", "symbolic-ref", f"refs/remotes/{remote_name}/HEAD",
+            f"refs/remotes/{remote_name}/{default_branch}",
         ],
         cwd=repo, check=True,
     )
@@ -2808,20 +2808,23 @@ def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialli
     return _make_git_blocking_on_arg(bin_dir, "diff", stdout_before_block)
 
 
-def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:
+def path_with_failing_tool_shim(
+    bin_dir: Path, tool: str, arg_pattern: str | None = None, exit_status: int = 1
+) -> str:
     """PATH value that puts a `tool` shim in `bin_dir` ahead of `os.environ["PATH"]`. With no
-    `arg_pattern` the shim exits 1 on every call. With one, it exits 1 only when an argument matches
-    the shell `case` pattern (e.g. `-s`, `*sort_by*`) and proxies every other call to the real tool,
-    which isolates the failure to one call shape. The caller skips a test that needs a tool the host lacks."""
+    `arg_pattern` the shim exits `exit_status` on every call. With one, it exits `exit_status` only when an
+    argument matches the shell `case` pattern (e.g. `-s`, `*sort_by*`) and proxies every other call to the
+    real tool, which isolates the failure to one call shape. `exit_status` defaults to 1, which `grep` reads
+    as "no match"; pass 2 to fake a `grep` engine error. The caller skips a test that needs a tool the host lacks."""
     shim = bin_dir / tool
     if arg_pattern is None:
         bin_dir.mkdir(parents=True, exist_ok=True)
-        shim.write_text("#!/bin/bash\nexit 1\n")
+        shim.write_text(f"#!/bin/bash\nexit {exit_status}\n")
         shim.chmod(0o755)
     else:
         real_tool = shutil.which(tool)
         assert real_tool is not None, f"{tool} not found in PATH"
-        _write_arg_matching_exit_shim(shim, shlex.quote(real_tool), arg_pattern, 1)
+        _write_arg_matching_exit_shim(shim, shlex.quote(real_tool), arg_pattern, exit_status)
     return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
 
