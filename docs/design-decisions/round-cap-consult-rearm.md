@@ -2,6 +2,8 @@
 
 *2026-10-29.*
 
+**Partially superseded by [the `review-ledger.sh` entry in the scripts runbook](../scripts.md) (2026-11-06):** the ledger now records the lanes the caller declared, which retires the missing reviewer column below.
+
 One `plan-architect MODE=consult` process serves every code review, `/ready-for-review` passes included.
 `require-architect-consult.sh` triggers it, and `code-review/SKILL.md` § "Round-cap architect consult" routes its return.
 The gate fires at entry to a branch's third reviewed state, then re-arms: each consult restarts the branch's count, and the gate demands the next consult after three more reviewed states.

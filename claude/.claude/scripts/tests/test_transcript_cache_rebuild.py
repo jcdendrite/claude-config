@@ -5,8 +5,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from transcript_analysis import cache_rebuild, cache_rebuild_rules
+from transcript_analysis import cache_efficiency, cache_rebuild, cache_rebuild_rules
 
+from ._cache_efficiency_helpers import _cache_efficiency_args
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
     _extract_cache_rebuild_row,
@@ -553,3 +554,38 @@ class TestCacheRebuildArgparseWiring:
         assert args.extra_config_dirs == ["/tmp/acct-b"]
 
 
+class TestCacheRebuildCrossInstrumentReconciliation:
+    """cache-rebuild's sidechain W5m accumulator
+    must agree exactly with cache-efficiency's own sidechain Write5m column
+    on an identical fixture -- both dedup by requestId per group and
+    classify origin off the identical isSidechain expression, so a
+    disagreement means the accumulator has a bug, not that the corpus
+    is odd."""
+
+    def test_sidechain_w5m_matches_cache_efficiency_sidechain_write5m_on_identical_fixture(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-reconcile"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=75_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=125_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        rebuild_out = capsys.readouterr().out
+        rebuild_row = _table_cols(rebuild_out, header_contains="Ratio", row_contains="subagent")
+
+        cache_efficiency._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
+        efficiency_out = capsys.readouterr().out
+        efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
+
+        assert rebuild_row["W5m"] == efficiency_row["Write5m"]

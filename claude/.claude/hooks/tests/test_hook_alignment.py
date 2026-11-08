@@ -86,6 +86,7 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+from ._lib_sh_helpers import DIFF_SIZE_ACK_COMMAND
 from .test_bash_floor import HOOKS_DOC_GATE_DEADLOCK_RECOVERY
 
 # ------------------------------------------------------------------ #
@@ -575,6 +576,38 @@ def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() ->
     )
 
 
+_DIFF_SIZE_ACK_ASK_RULE = f"Bash({DIFF_SIZE_ACK_COMMAND})"
+
+
+def test_diff_size_ack_ask_rule_stays_declared_in_stow_source_settings() -> None:
+    """The declared `permissions.ask` entry backing the diff-size ack's forced prompt.
+
+    This proves the *declared* config state, not that the harness prompts at
+    runtime: the ask rule's behavior in auto mode and `bypassPermissions` is
+    documented in `docs/security-hardening.md`, not observed here.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    ask_rules = settings.get("permissions", {}).get("ask", [])
+    assert isinstance(ask_rules, list) and _DIFF_SIZE_ACK_ASK_RULE in ask_rules, (
+        f"'{_DIFF_SIZE_ACK_ASK_RULE}' missing from permissions.ask in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the ack would no longer force a prompt"
+    )
+
+
+@pytest.mark.parametrize("settings_path", _TREE_SETTINGS_PATHS, ids=lambda path: str(path.relative_to(_REPO_ROOT)))
+def test_no_permissions_allow_entry_names_the_diff_size_ack(settings_path: Path) -> None:
+    """No `permissions.allow` entry, in any spelling, pre-authorizes the diff-size ack.
+
+    This proves the *declared* config state, not that the harness prompts at
+    runtime. An allow entry would release the gate with no engineer approval.
+    """
+    allow_rules = json.loads(settings_path.read_text()).get("permissions", {}).get("allow", [])
+    offending = [rule for rule in allow_rules if "diff-size-ack.sh" in rule]
+    assert not offending, (
+        f"{settings_path.relative_to(_REPO_ROOT)}: permissions.allow names the diff-size ack: {offending!r}"
+    )
+
+
 def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     """The two config-value declarations backing plan-mode-entry discipline.
 
@@ -878,6 +911,7 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-default-branch-push.sh",
     "enforce-marker-script-shape.sh",
     "deny-invisible-commit-content.sh",
+    "require-diff-size-prompt.sh",
     # Carry no "Bash(git commit *)" `if`; each self-filters on its own
     # in-body commit-shape matcher.
     "require-code-review.sh",
@@ -3468,10 +3502,10 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 34
+_GATE_HOOK_COUNT = 35
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 35
+_SETTINGS_GATE_HANDLER_COUNT = 36
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"

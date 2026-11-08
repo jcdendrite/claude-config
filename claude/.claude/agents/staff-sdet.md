@@ -50,6 +50,8 @@ The global `test-conventions` skill defines how tests should be written. The glo
 
 **Security invariants as tests** — for every access-control boundary, is there BOTH an allow-path test (authorized caller succeeds) AND a deny-path test (unauthorized caller rejected)? Untested security controls are indistinguishable from absent ones.
 
+**Boundary rules without enforcement** — does the diff or plan state or change a module-boundary, layering, or dependency-direction rule with no test that fails when the rule is broken? Does the boundary test the diff adds or touches carry controls (rule's modules in the scanned set, seeded violation per rule shape), or can it pass vacuously? Cite `test-conventions` §7.
+
 ## How to work
 
 1. Read changed tests fully AND the code they test. A green test on wrong behavior is worse than no test.

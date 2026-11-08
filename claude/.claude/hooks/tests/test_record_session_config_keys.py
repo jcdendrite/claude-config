@@ -600,6 +600,7 @@ class TestHookWrittenStateStaysOutOfGit:
             pytest.param("session-end-records/123", id="session-end-records"),
             pytest.param("review-narrative-ledger/abc.session.jsonl", id="review-narrative-ledger"),
             pytest.param(".architect-consult-latch.d/state-key", id="architect-consult-latch"),
+            pytest.param(".diff-size-prompt-latch.d/state-key", id="diff-size-prompt-latch"),
             pytest.param(".plan-review-pending-read.d/session-id", id="plan-review-pending-read"),
             pytest.param(".reviewer-round-state.d/state-key", id="reviewer-round-state"),
             pytest.param(".activate-handoff-bypass.log", id="activate-handoff-bypass-log"),

@@ -5165,7 +5165,7 @@ _lib_diff_size_measure() {
 }
 
 # _lib_diff_size_gate_state START_DIR
-# The one read sequence the diff-size gate and its acknowledgment script share, so they agree on the config dir,
+# The one read sequence require-diff-size-prompt.sh and diff-size-ack.sh share, so they agree on the config dir,
 # repository, branch, latch path and count.
 # Only status 0 writes stdout: the latch path, then the "<count> <base>" line of _lib_diff_size_measure.
 # Only status 1 can write stderr: _lib_configured_stack_base's stack-base line, plus incidental shell errors such as a

@@ -3,7 +3,7 @@
 from transcript_analysis import skill_pair
 
 from ._skill_helpers import _TS_FIXED, _skill_pair_args
-from .conftest import _asst, _skill_use, _table_cols, _write_jsonl, _write_subagent_jsonl
+from .conftest import _agent_use, _asst, _skill_use, _table_cols, _write_jsonl, _write_subagent_jsonl
 
 # Boundary timestamps for the ISO week boundary (Sunday W20 to Monday W21).
 _TS_SUNDAY = "2026-05-17T23:59:59Z"   # ISO 2026-W20 (Sunday = last day of W20)
@@ -210,3 +210,41 @@ class TestSkillPairSubagentFile:
         assert cols["Lead"] == "1"
         assert cols["Main"] == "0"
         assert cols["Side"] == "1"
+
+
+class TestSkillPairFormatDriftCanary:
+    def test_drift_warning_also_fires_in_skill_pair(self, fake_projects, capsys):
+        """cmd_skill_pair also emits the drift warning when spawns have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_skill_pair_without_spawns(self, fake_projects, capsys):
+        """The negative counterpart for cmd_skill_pair: no spawns, no warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+            ]),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_skill_pair_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """A spawn paired with a sidechain turn in the subagents/ file is not drift."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
+                _skill_use("s1", "plan-it"),
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True),
+        ])
+        skill_pair.cmd_skill_pair(_skill_pair_args())
+        assert "WARNING" not in capsys.readouterr().err

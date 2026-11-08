@@ -1,5 +1,5 @@
-"""Test helpers shared by test_transcript_cache_efficiency.py and by test_transcript_analysis.py's
-cross-group cache-efficiency tests.
+"""Test helpers shared by test_transcript_cache_efficiency.py and by test_transcript_cache_rebuild.py's
+cross-instrument reconciliation test.
 """
 
 

@@ -42,6 +42,7 @@
       "Bash(cleanup-merged-branches --all-projects --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
       "Bash(cleanup-idle-open-pr-worktrees)",
+      "Bash(~/.claude/scripts/diff-size-ack.sh)",
       "Edit(//**/.claude/settings*.json)"
     ],
     "deny": [
@@ -296,6 +297,12 @@
             "command": "~/.claude/hooks/require-code-review.sh",
             "onFailure": "block",
             "statusMessage": "Checking code review..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-diff-size-prompt.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking diff size..."
           },
           {
             "type": "command",

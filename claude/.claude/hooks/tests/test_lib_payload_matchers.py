@@ -5,7 +5,13 @@ import os
 import subprocess
 
 import pytest
-from helpers import installed_locale_where
+from helpers import (
+    installed_locale_where,
+    no_gate_release_agents,
+    plan_writer_agents,
+    review_only_agents,
+    reviewer_persona_agents,
+)
 
 from ._lib_sh_helpers import _LIB_SH
 
@@ -202,43 +208,17 @@ def _is_no_gate_release_agent(agent_type: str) -> bool:
     return result.returncode == 0
 
 
-def _no_gate_release_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_no_gate_release_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def test_no_gate_release_set_covers_every_review_only_agent() -> None:
     """The set is a superset of the review-only roster, by derivation not by copy."""
-    review_only = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert review_only, "review-only roster must not be empty"
-    assert set(review_only) <= set(_no_gate_release_agents())
+    review_only = review_only_agents()
+    assert set(review_only) <= set(no_gate_release_agents())
 
 
 def test_no_gate_release_set_includes_code_writer() -> None:
     """code-writer is an implementer, so it is absent from the review-only roster —
     but it is exactly the identity that can release a gate it could not have
     earned, so the no-release set must name it separately."""
-    assert "code-writer" in _no_gate_release_agents()
-
-
-def _plan_writer_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_plan_writer_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
+    assert "code-writer" in no_gate_release_agents()
 
 
 def _is_plan_writer_agent(agent_type: str) -> bool:
@@ -253,13 +233,12 @@ def _is_plan_writer_agent(agent_type: str) -> bool:
 
 def test_no_gate_release_set_covers_every_plan_writer_agent() -> None:
     """The set is a superset of the plan-writer registry, by derivation not by copy."""
-    plan_writers = _plan_writer_agents()
-    assert plan_writers, "plan-writer registry must not be empty"
-    assert set(plan_writers) <= set(_no_gate_release_agents())
+    plan_writers = plan_writer_agents()
+    assert set(plan_writers) <= set(no_gate_release_agents())
 
 
 def test_plan_writer_predicate_accepts_every_registry_member() -> None:
-    for agent_type in _plan_writer_agents():
+    for agent_type in plan_writer_agents():
         assert _is_plan_writer_agent(agent_type), agent_type
 
 
@@ -295,16 +274,6 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
-def _reviewer_persona_agents() -> list[str]:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
-
-
 def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
     """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
 
@@ -312,14 +281,8 @@ def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> 
     this literal. A new harness built-in added to the review-only roster with
     the exclusion left untouched passes, since the name lands on both sides.
     """
-    review_only = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert review_only, "review-only roster must not be empty"
-    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+    review_only = review_only_agents()
+    assert set(reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
 
 
 def _is_reviewer_persona(agent_type: str) -> bool:
@@ -333,8 +296,7 @@ def _is_reviewer_persona(agent_type: str) -> bool:
 
 
 def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
-    roster = _reviewer_persona_agents()
-    assert roster, "reviewer-persona roster must not be empty"
+    roster = reviewer_persona_agents()
     rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
     assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
 

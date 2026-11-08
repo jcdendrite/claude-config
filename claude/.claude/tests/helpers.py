@@ -191,6 +191,129 @@ def heading_texts(markdown_text: str) -> set[str]:
     return headings
 
 
+def markdown_table_rows(markdown_path: Path, header_line: str) -> list[str]:
+    """Raw lines of a Markdown table's data rows, found by its exact header line."""
+    lines = markdown_path.read_text().splitlines()
+    header_index = next((i for i, line in enumerate(lines) if line.strip() == header_line), None)
+    assert header_index is not None, f"{markdown_path}: table header {header_line!r} not found."
+
+    rows = []
+    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
+        if not line.startswith("|"):
+            break
+        rows.append(line)
+    return rows
+
+
+def change_type_table_rows(skill_md_path: Path) -> list[str]:
+    """Raw lines of every data row in a SKILL.md's Change-type table."""
+    return markdown_table_rows(skill_md_path, "| Change type | Spawn / invoke |")
+
+
+def _nonempty_shell_lines(shell_body: str, what: str) -> list[str]:
+    """Non-empty stdout lines of `bash -c shell_body`, asserting a zero exit and at least one line.
+
+    The emptiness assertion stops a renamed or emptied shell value from reading as an empty list,
+    which would leave every test iterating it passing with zero iterations or skipped.
+    """
+    result = subprocess.run(["bash", "-c", shell_body], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"reading {what} exited {result.returncode}: {result.stderr}"
+    lines = [line for line in result.stdout.splitlines() if line]
+    assert lines, f"reading {what} printed nothing: a renamed or emptied shell value"
+    return lines
+
+
+def reviewer_persona_agents() -> list[str]:
+    """`_LIB_REVIEWER_PERSONA_AGENTS` from _lib.sh -- the lanes review-ledger.sh accepts by agent name."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_reviewer_persona_agents", "_lib_reviewer_persona_agents")
+
+
+def review_only_agents() -> list[str]:
+    """`_LIB_REVIEW_ONLY_AGENTS` from _lib.sh -- the reviewer agents deny-reviewer-tree-mutation.sh covers."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_review_only_agents", "_lib_review_only_agents")
+
+
+def no_gate_release_agents() -> list[str]:
+    """`_LIB_NO_GATE_RELEASE_AGENTS` from _lib.sh -- the agent identities barred from releasing a gate."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_no_gate_release_agents", "_lib_no_gate_release_agents")
+
+
+def plan_writer_agents() -> list[str]:
+    """`_LIB_PLAN_WRITER_AGENTS` from _lib.sh -- the agents confined to writing plan files."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_plan_writer_agents", "_lib_plan_writer_agents")
+
+
+def review_ledger_non_agent_lanes() -> list[str]:
+    """`_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing _lib.sh then the library as review-ledger.sh does."""
+    ledger_lib = SCRIPTS_DIR / "_review-ledger-lib.sh"
+    return _nonempty_shell_lines(
+        f'. {_LIB_SH}; . {ledger_lib}; printf "%s\\n" "${{_REVIEW_LEDGER_NON_AGENT_LANES[@]}}"',
+        "_REVIEW_LEDGER_NON_AGENT_LANES",
+    )
+
+
+# A dispatch-prompt field token: a lowercase name with underscores, ending in a colon (`plan_path:`).
+_INPUT_CONTRACT_FIELD_TOKEN = r"[a-z][a-z0-9_]*:"
+# Only the exact bullet shape "- `token:`" enrolls an agent; a near-miss shape does not.
+_INPUT_CONTRACT_FIELD_BULLET_RE = re.compile(
+    rf"^- `({_INPUT_CONTRACT_FIELD_TOKEN})`", re.MULTILINE
+)
+_BACKTICKED_FIELD_TOKEN_RE = re.compile(rf"`({_INPUT_CONTRACT_FIELD_TOKEN})`")
+
+
+def heading_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """`lines` must keep its newlines (`splitlines(keepends=True)`). Returns None when the heading is absent."""
+    start_index = next(
+        (index for index, line in enumerate(lines) if line.rstrip("\n") == heading),
+        None,
+    )
+    if start_index is None:
+        return None
+    end_index = next(
+        (
+            index
+            for index in range(start_index + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return start_index, end_index
+
+
+def input_contract_section(agent_path: Path) -> str:
+    """The '## Input contract' section of an agent file, or '' when it has none.
+
+    A near-miss heading deliberately yields no section, so it enrolls no agent.
+    """
+    lines = agent_path.read_text().splitlines(keepends=True)
+    bounds = heading_section_bounds(lines, "## Input contract")
+    if bounds is None:
+        return ""
+    start_index, end_index = bounds
+    return "".join(lines[start_index:end_index])
+
+
+def input_contract_field_tokens(section_text: str) -> set[str]:
+    """Tokens that lead a top-level bullet of an Input contract section.
+
+    Anchored at line start, so an indented sub-bullet and a bullet led by a
+    bold name do not count.
+    """
+    return set(_INPUT_CONTRACT_FIELD_BULLET_RE.findall(section_text))
+
+
+def backticked_field_tokens(text: str) -> set[str]:
+    return set(_BACKTICKED_FIELD_TOKEN_RE.findall(text))
+
+
+def prompt_contract_agent_names(agents_dir: Path) -> set[str]:
+    return {
+        agent_path.name
+        for agent_path in agents_dir.glob("*.md")
+        if input_contract_field_tokens(input_contract_section(agent_path))
+    }
+
+
 def _build_subprocess_env(
     home: Path | None,
     extra_env: dict | None,
