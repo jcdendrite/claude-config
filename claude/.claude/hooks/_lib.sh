@@ -5548,8 +5548,9 @@ _lib_normalize_resume_cwd_token() {
 # STATE is `linked`, `not-linked` or `unknown` (the three outcomes of
 # _lib_linked_worktree_root). ROOT is the linked root, FILE_TARGET the file's
 # own --cwd (_lib_continuity_file_resume_cwd, including its
-# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root), both already
-# canonicalized.
+# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root).
+# The comparison is a literal string equality, so a caller that passes a
+# non-canonical spelling of the same directory gets `shell`.
 #   - linked: load only when FILE_TARGET equals ROOT.
 #   - not-linked: load only when FILE_TARGET is empty.
 #   - unknown, or any other STATE: shell.
@@ -5601,6 +5602,7 @@ _lib_collect_pending_continuity_files() {
 
 # _lib_is_pending_continuity_file CONFIG_DIR PATH
 # Exits 0 when PATH is, spelled exactly, a member of _lib_collect_pending_continuity_files.
+# It overwrites _LIB_PENDING_CONTINUITY_FILES.
 _lib_is_pending_continuity_file() {
   local pending_path
   _lib_collect_pending_continuity_files "$1"
