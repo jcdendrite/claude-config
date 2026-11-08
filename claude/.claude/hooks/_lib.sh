@@ -5603,6 +5603,8 @@ _lib_collect_pending_continuity_files() {
 # _lib_is_pending_continuity_file CONFIG_DIR PATH
 # Exits 0 when PATH is, spelled exactly, a member of _lib_collect_pending_continuity_files.
 # It overwrites _LIB_PENDING_CONTINUITY_FILES.
+# Membership does not imply the slash script lists PATH, because the script also applies the path-character allowlist.
+# The caller allowlists PATH before this call.
 _lib_is_pending_continuity_file() {
   local pending_path
   _lib_collect_pending_continuity_files "$1"

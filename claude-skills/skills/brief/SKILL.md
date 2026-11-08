@@ -100,7 +100,7 @@ Name the directory the session picking up this brief starts in, then write the c
 - Write `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`.
 - Write the bare form `resume-context <config-dir>/briefs/<slug>-task.md` instead only when that directory is the one this session runs in outside any linked worktree and §3 names no other directory. In every other case write the first form alone.
 
-Relay the resume route the announce hook names after the write to the engineer. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so picking up the brief doesn't depend on the fresh session remembering to read or delete the file.
+Relay the resume route the announce hook names after the write to the engineer. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. The command moves the file to a fresh temp path and launches a new session with it loaded, so picking up the brief doesn't depend on the fresh session remembering to read or delete the file.
 
 ## Cold-start readability rules
 

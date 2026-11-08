@@ -136,7 +136,7 @@ Name the directory the resumed session starts in, then write the command for it:
 - Write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`.
 - Write the bare form `resume-context <config-dir>/handoffs/<slug>-handoff.md` instead only when that directory is the one this session runs in outside any linked worktree and §4's header names it too. In every other case write the first form alone.
 
-Relay the resume route the announce hook names after the write to the engineer. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. Moves the file to a fresh temp path and launches a new session with it loaded, so nothing depends on the resuming session remembering to read or delete the file.
+Relay the resume route the announce hook names after the write to the engineer. `--cwd` makes the launched session start in that directory regardless of where the resume command is actually run from — do not use a `cd <path> &&` prefix instead, which only works if the invoker happens to already be positioned to run it. The command moves the file to a fresh temp path and launches a new session with it loaded, so nothing depends on the resuming session remembering to read or delete the file.
 
 ## You may drop
 

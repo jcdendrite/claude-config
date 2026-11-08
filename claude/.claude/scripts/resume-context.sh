@@ -18,9 +18,9 @@
 #
 # --cwd <dir> launches the new session with <dir> as its working directory
 # instead of inheriting the invoking shell's. handoff/SKILL.md §7 and
-# brief/SKILL.md §7.5 write this flag into the resume command when the
-# continuity file names a worktree, so the target directory travels with the
-# command itself rather than depending on the invoker also running a
+# brief/SKILL.md §7.5 write this flag into the resume command with the
+# directory the resumed session starts in, so the target directory travels with
+# the command itself rather than depending on the invoker also running a
 # separate `cd` first — the failure mode this closes is a resume launched
 # from the wrong directory (main checkout, `~`, a different worktree)
 # silently landing set-session-title-from-branch.sh on the wrong branch or

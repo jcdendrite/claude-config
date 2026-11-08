@@ -1476,7 +1476,8 @@ def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: st
 
 def write_continuity_named_file(config_dir: Path, relative_path: str, *, symlink_leaf: bool = False) -> Path:
     """A file at `relative_path` under `config_dir`, creating parent directories. With `symlink_leaf`
-    the leaf is a symlink to a regular file outside `config_dir`, in a sibling directory unique to it."""
+    the leaf is a symlink to a regular file outside `config_dir`, in a sibling directory unique to it.
+    The file body is a fixed one-line `body` with no resume command, which the leading-`@` test relies on."""
     path = config_dir / relative_path
     if not symlink_leaf:
         return write_continuity_body(path, "body\n")

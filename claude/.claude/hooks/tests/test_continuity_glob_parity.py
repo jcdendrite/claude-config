@@ -47,6 +47,10 @@ _NAME_MATRIX = [
     "briefs/example-handoff.md",
     "handoffs/example-handoff.txt",
     "handoffs/example-handoff",
+    "handoffs/examplehandoff.md",
+    "briefs/exampletask.md",
+    "handoffs/example-handoff.md.bak",
+    "briefs/example-task.md.bak",
     _SYMLINK_LEAF,
 ]
 
@@ -70,6 +74,10 @@ _EXPECTED_NOT_PENDING = {
     "briefs/example-handoff.md",
     "handoffs/example-handoff.txt",
     "handoffs/example-handoff",
+    "handoffs/examplehandoff.md",
+    "briefs/exampletask.md",
+    "handoffs/example-handoff.md.bak",
+    "briefs/example-task.md.bak",
     _SYMLINK_LEAF,
 }
 

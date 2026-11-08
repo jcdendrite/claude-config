@@ -6075,8 +6075,8 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
         "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
-        "happens to already be positioned to run it. Moves the file to a fresh temp path "
-        "and launches a new session with it loaded, so nothing depends on the resuming "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so nothing depends on the resuming "
         "session remembering to read or delete the file.",
     ),
     "brief_directory_bullet": (
@@ -6108,8 +6108,8 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
         "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
-        "happens to already be positioned to run it. Moves the file to a fresh temp path "
-        "and launches a new session with it loaded, so picking up the brief doesn't depend "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so picking up the brief doesn't depend "
         "on the fresh session remembering to read or delete the file.",
     ),
 }
