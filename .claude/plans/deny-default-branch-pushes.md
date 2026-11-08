@@ -6,6 +6,8 @@ Goal: a `PreToolUse` Bash gate hard-denies agent pushes whose destination is a p
 
 Ask: GitHub issue 1407 ("Deny agent pushes to the default branch and name the gates in the autonomous-shipping statement"), read with `gh issue view 1407`. Its Proposal sections 1 and 2 and its acceptance criteria are the scope. Section 3 adds no statement sentence, and the optional "this waives no hook gate" clause is not added because the issue conditions it on a transcript that shows the misreading and cites none. The issue records the engineer's acceptance of the Known-gaps list: "Yes #1 gaps are accepted and I think they were pre-existing. They assume a non-cooperative agent threat model."
 
+Projected diff: about 2400 changed lines across three dispatches (an estimate; row 82).
+
 Why now: autonomous shipping tells agents to push without asking, so the engineer's permission prompt no longer backstops each push. The only barrier to a default-branch push is one prose clause in `_lib_autonomous_shipping_statement`. `require-ready-for-review.sh` exits 0 on the default branch and never reads a refspec destination, so `git push origin feature:main` lands on `main`.
 
 Intended outcome: every Covered shape in the issue is denied with an allow control beside it, the Stop hook stays silent on the default branch and detached HEAD, and the docs, README, changelog and test selection reflect the new gate.
@@ -71,8 +73,9 @@ Endpoints come from stripped text, because a quoted endpoint holding `{owner}` o
   - `glob` for a refspec holding `*`, and `matching` for `:` or `+:`.
   - `prune` for `--prune`.
   - `stdin` for send-pack's `--stdin`, and `no-refs` for send-pack with no ref.
-  - `remote` or `refspec` when that word is a masked span (it holds `"` or `'`) or holds `$` or a backtick.
+  - `remote` or `refspec` when that word is a masked span (it holds `"` or `'`) or holds `$`, a backtick, `<` or `>`. The same test applies to the `repo-path` values below.
   - `repo-path` for the same shapes in a `-C`, `--git-dir` or `GIT_DIR` value, or a leading `~` other than `~/`.
+  - The parser reads one single-line fragment; the gate's step 2 splits on newlines first.
   - `appended-args` when a word before the command word is `xargs`, `parallel`, `-exec`, `-execdir`, `-ok` or `-okdir`, or a path ending in `/xargs` or `/parallel` (rows 35 and 36).
 
 Word rules:
@@ -80,7 +83,8 @@ Word rules:
 - A value-taking flag that ends the fragment takes no value.
 - A short bundle is read per letter. `d` sets delete mode, `n` sets dry-run, and `o` takes the rest of the bundle or else the next word.
 - Words after `--` are positional.
-- The global-option walk reads `_LIB_GIT_GLOBAL_VALUE_FLAGS`. That constant replaces the value-taking flag list `_lib_git_argv_from_subcmd` hardcodes today, so the stowed `_lib.sh` keeps one list. The skill-management plugin's copy of that function keeps its own, an accepted second home (row 20).
+- A redirection word (`2>&1`, `>/dev/null`, `&>`, `<`) is skipped, including after `--`. A bare operator (`>`, `2>`, `&>`) also consumes the next word as its target.
+- The global-option walk reads `_LIB_GIT_GLOBAL_VALUE_FLAGS`. That constant replaces the value-taking flag list `_lib_git_argv_from_subcmd` hardcodes today, so the stowed `_lib.sh` keeps one list. The skill-management plugin's copy of that function reads the same constant, because a parity test pins the two bodies as identical (row 80, which supersedes row 20).
 - Subtree mode takes values for `-P`/`--prefix`, `-m`/`--message`, `-b`/`--branch`, `--onto` and `--annotate`. The repository and refspec follow `push`.
 
 **Protected set: `_lib_push_protected_branches FORM PATH REMOTE`.** It prints one name per line:
@@ -201,8 +205,8 @@ The header also points to `_lib_mask_shell_quotes`' Limits for the other residua
 18. The `-c push.*` rule applies to refspec-less pushes only, so `plan-push-preflight.py`'s `-c push.pushOption=` push stays allowed. `[verified: GH-1407 Covered list; plan-push-preflight.py:463-464]`
 19. Deleting a backslash-newline pair matches the shell, and 2 of 3 in-repo joins do the same. `[verified: deny-reviewer-tree-mutation.sh:536; enforce-marker-script-shape.sh:823; enforce-marker-script-shape.sh:725 joins with a space]`
 20. `_lib_git_argv_from_subcmd` hardcodes the value-taking global flags, so the parser shares one constant with it, and the stowed `_lib.sh` keeps one list. `[verified: _lib.sh:2015-2019]` `anchors: root`
-    - The skill-management plugin's `_lib.sh` carries its own copy of the function and its list, and no parity test pins it. `[verified: plugins/skill-management/hooks/_lib.sh:702-725; staff-platform-engineer-1794030998-GH-1407-deny-default.md R4]`
-    - The plan names that copy an accepted second home, the single-source rule's small-duplicated-value exception, rather than adding it to the parity pin. Pinning it would edit a plugin file, which then ships only with a plugin version bump, for a list that changes only when git adds a value-taking global flag. `[verified: .claude/rules/review-pipeline-dispatch.md, the plugin-directory bullet]` The choice is the architect's. `[unverified]`
+    - Superseded by row 80: the skill-management plugin's `_lib.sh` carries its own copy of the function and its list, and a parity test does pin it. `[verified: plugins/skill-management/hooks/_lib.sh:702-725; staff-platform-engineer-1794030998-GH-1407-deny-default.md R4]`
+    - Superseded by row 80: the plan named that copy an accepted second home, the single-source rule's small-duplicated-value exception, rather than adding it to the parity pin. Pinning it would edit a plugin file, which then ships only with a plugin version bump, for a list that changes only when git adds a value-taking global flag. `[verified: .claude/rules/review-pipeline-dispatch.md, the plugin-directory bullet]` The choice is the architect's. `[unverified]`
 21. The criterion "exits before any git call when the command has no push fragment" is read this way: no git call unless a fragment is push-family, an alias candidate or `gh api`. An unknown subcommand may be an alias, so its one alias lookup is the only call allowed. `[unverified]`: the architect's reading of the criterion.
 22. `_lib_review_ledger_path` inlines the detached-or-default test. Extracting it leaves the ledger's behavior unchanged and gives the Stop hook the same definition. `[verified: _lib.sh:5182-5254; GH-1407 Proposal §2]` `anchors: root`
 23. The Stop scenarios build on `main` with no origin, so they need a non-default branch. That branch cannot be `feature`: `add_linked_worktree` defaults to it, and two fixtures run `checkout -b feature`. `[verified: test_autonomous_shipping_grant_boundary.py:71, :127; test_advance_past_commit_stall.py:60-61, :87; claude/.claude/tests/helpers.py:919]`
@@ -369,7 +373,10 @@ The header also points to `_lib_mask_shell_quotes`' Limits for the other residua
       - Denying a mutating `gh api` fragment cut before its endpoint word also denies a flags-first call whose single-word field value holds a substitution, such as `gh api -X POST -f body="$(cat f)" repos/o/r/issues`. `[verified: ciso-reviewer-1794055402-GH-1407-deny-default.md R1, which names that cost]`
       - Reading the endpoint from masked text instead keeps a quoted multi-word value as one word, but a quoted endpoint holding `{owner}` or `$` masks to `""` and would pass (row 13). Reading both texts is a new layer, which the freeze rules out (row 53).
 78. The engineer accepted as permanent debt the two `gh api` gap shapes that row 76's widening added: a quoted multi-word flag value before the endpoint, and a flag value holding a command substitution. `[engineer-verified: "Accept both as permanent debt (Recommended)"]` This covers only that acceptance of those two shapes as permanent debt. `anchors: row68, row76`
-79. Code review of dispatch 1 found `_set_origin_head` copied across two test files and open-coded in a third, and the fix adds a shared helper to `claude/.claude/tests/helpers.py`, a file the plan did not name. `[engineer-verified: "Keep the helpers.py edit"]` This covers only adding that file to dispatch 1's Critical files. `anchors: row22`
+79. Code review of dispatch 1 found `_set_origin_head` copied across two test files and open-coded in a third. The fix adds a shared helper to `claude/.claude/tests/helpers.py`, which the plan had not named. `[engineer-verified: "Keep the helpers.py edit"]` This covers only adding that file to dispatch 1's Critical files. `anchors: row22`
+80. Row 20 was wrong: `test_require_skill_review.py` pins `_lib_git_argv_from_subcmd`'s body as text-identical to `plugins/skill-management/hooks/_lib.sh`, so the shared-constant refactor must edit both copies. `[verified: dispatch 2 run of test_require_skill_review.py, TestCommitShapeMatcherClosureDefinitionEquality]` The engineer chose to edit the plugin copy. `[engineer-verified: "Edit the plugin copy too"]` This covers only that choice, not the inline-loop shape or the patch bump level, which are the plan's own and `[unverified]`. It supersedes the plugin exclusion in Out of scope for this one function and constant. `anchors: row20`
+81. Shell redirection words were read as push arguments: `git push origin 2>&1` gave `remote origin` and `ref 2>&1 2>&1` with no `no-refspec` record, so the gate would judge destination `2>&1` and pass a refspec-less push. `_lib_split_fragments` and the quote masker do not remove redirections. The parser now skips redirection words. An unspaced `<` or `>` inside a word is `unresolvable`. `[verified: architect consult, _lib.sh trace]` `anchors: root`
+82. The plan projects about 2400 changed lines, over the 400-line threshold. One PR carries all three dispatches. The gate hook depends on the helpers from the first two. `[engineer-verified: "Proceed anyway"]` `anchors: root`
 
 ## Critical files
 
@@ -388,12 +395,14 @@ Implementation runs as three `code-writer` dispatches in sequence. Dispatches 1 
   - New silent cases: `main` with no origin, an origin/HEAD-named `trunk`, and a detached HEAD. Each repo is dirty, so only the branch decides.
   - A dirty repo on a non-default branch where only the `symbolic-ref` read fails stays silent (row 22). `git_timeout_shim`'s `exit_status` makes that one call fail, and the fixture skips without `timeout` or `gtimeout` (`claude/.claude/hooks/tests/conftest.py:311-312`).
 - `claude/.claude/hooks/tests/test_autonomous_shipping_grant_boundary.py`: one module constant names the scenario branch, and every `init_git_repo_with_commit` call in `_build_scenario` passes it. Each denied scenario is then still denied for its root reason, not for the branch.
-- `claude/.claude/tests/helpers.py`: a shared `set_origin_head`, imported by the three test files above in place of their private copies (row 79).
+- `claude/.claude/tests/helpers.py`: a shared `set_origin_head` (row 79).
+  - `test_lib_git_refs.py` and `test_lib_reviewer_round_state.py` each held a private copy, and import it instead.
+  - `test_advance_past_commit_stall.py` open-coded the same setup, and calls it instead.
 - `docs/commit-stall-block.md`: a firing-condition bullet after line 23 naming `_lib_head_detached_or_default`. Line 78's git-call list is reworded without a count.
 - `docs/hooks.md`: the `advance-past-commit-stall.sh` bullet (line 220) adds the condition.
 - `CHANGELOG.md`: a bullet in the `### Changed` section at line 7.
 
-**Dispatch 2: the push helpers in `_lib.sh` and their existing caller.** Verification: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_lib_push_destinations.py claude/.claude/hooks/tests/test_deny_private_project_refs.py`.
+**Dispatch 2: the push helpers in `_lib.sh` and their existing caller.** Verification: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_lib_push_destinations.py claude/.claude/hooks/tests/test_deny_private_project_refs.py claude/.claude/hooks/tests/test_require_skill_review.py claude/.claude/hooks/tests/test_lib_skill_management_plugin_lib.py`.
 - `claude/.claude/hooks/_lib.sh`:
   - `_LIB_GIT_GLOBAL_VALUE_FLAGS`, with `_lib_git_argv_from_subcmd` reading it.
   - `_LIB_GIT_BUILTIN_SUBCOMMANDS` beside it, authored from git 2.43's `git --list-cmds=builtins` (row 16). The list need not be complete, so a name the implementing session cannot confirm as a 2.43 builtin stays off it.
@@ -402,6 +411,10 @@ Implementation runs as three `code-writer` dispatches in sequence. Dispatches 1 
   - `_lib_gh_api_call_is_mutating`.
 
   Every regex is POSIX ERE.
+- `plugins/skill-management/hooks/_lib.sh`: carry the same `_LIB_GIT_GLOBAL_VALUE_FLAGS` constant and the same `_lib_git_argv_from_subcmd` body as the stowed copy (row 80).
+  - `test_require_skill_review.py` pins the two bodies as text-identical, and requires every `_lib_*` function the body calls to be defined in the plugin lib too.
+  - So the function body tests membership with an inline loop over the constant and calls no new `_lib_*` helper, and the plugin copy needs only the constant added.
+- `plugins/skill-management/.claude-plugin/plugin.json`: bump `version` from 5.0.1 to 5.0.2, a patch bump because the change is an internal refactor with no behavior change, and add no `version` key to the marketplace entry. `plugin.json` is the plugin's only version field.
 - `claude/.claude/hooks/deny-private-project-refs.sh`: lines 442-446 call `_lib_gh_api_call_is_mutating "$COMMAND_UNQUOTED"`. The comment above keeps its rationale and says where the regexes live.
 - `claude/.claude/hooks/tests/test_lib_push_destinations.py` (new) sources `_lib.sh` directly and covers:
   - parser records for each command form and each `unresolvable` reason;
@@ -414,7 +427,7 @@ Implementation runs as three `code-writer` dispatches in sequence. Dispatches 1 
   - `-c`, `--config-env` and env-prefix keys, a mixed-case key's lowercased section and variable name, and `--repo`;
   - short bundles (`-un`, `-fd`, `-oX`, `-o X`), `--`, delete mode and `tag <name>`;
   - masked-span and `$` words, and exit 1 for a fragment that is not a push;
-  - the protected set with origin/HEAD set, unset, a URL remote, a second remote with its own HEAD, and a git failure (status 2). Its repositories come from `bare_remote_with_default_branch` (`claude/.claude/tests/helpers.py:1482`), its calls go through `_run_lib_call` (`from ._lib_sh_helpers import`), and its env is `isolated_git_config_env` (`helpers.py:1446`);
+  - the protected set with origin/HEAD set, unset, a URL remote, a second remote with its own HEAD, and a git failure (status 2). Its repositories come from `bare_remote_with_default_branch` (`claude/.claude/tests/helpers.py`), its calls go through `_run_lib_call` (`from ._lib_sh_helpers import`), and its env is `isolated_git_config_env` (`helpers.py`);
   - the mutation predicate for each flag shape, a GET, and a failing `grep` through a PATH shim;
   - every name in `_LIB_GIT_BUILTIN_SUBCOMMANDS` appearing in `git --list-cmds=builtins`, skipping when git does not support that option. CI runs it against git 2.43.0 (row 16).
 
@@ -473,9 +486,9 @@ Implementation runs as three `code-writer` dispatches in sequence. Dispatches 1 
   - A `- **\`deny-default-branch-push.sh\`**` bullet goes after `require-ready-for-review.sh` (line 149). It says first that wrapped, scripted and HTTP pushes pass, and names server-side branch protection as the barrier against them. It then states the protected set with its local-HEAD caveat (row 62), the one masked pass, the `gh api` endpoints and the `!` prefix, and points to the header's Known gaps and over-denials.
   - The "Default branch" known gap (line 253) is rewritten to describe the hook and the Stop condition.
 - `README.md`: a Hook → Gates row after line 193. It says first that wrapped, scripted and HTTP pushes pass, and names server-side branch protection as the barrier. It then says the gate reads command text only, so a plain push also passes in three cases: after an earlier fragment in the same command changes the state the gate reads, after a multi-paragraph commit message on BSD/macOS awk, and through submodule recursion. It points to the header's Known gaps.
-- `CHANGELOG.md`: a bullet in the `### Added` section at line 518. Where `~/.claude/hooks` is a real directory, it tells the engineer to run `./install.sh` from a separate terminal after pulling, because until then the unlinked gate blocks every Bash call (row 28).
+- `CHANGELOG.md`: a bullet in the `### Added` section at line 518. It also notes the skill-management plugin's patch bump. Where `~/.claude/hooks` is a real directory, it tells the engineer to run `./install.sh` from a separate terminal after pulling, because until then the unlinked gate blocks every Bash call (row 28).
 
-This plan file, `.claude/plans/deny-default-branch-pushes.md`, ships in the same PR. `select-tests.py`, `require-ready-for-review.sh` and `plugins/skill-management/hooks/_lib.sh` are not edited (rows 26, 63, 4, 20 and G3).
+This plan file, `.claude/plans/deny-default-branch-pushes.md`, ships in the same PR. `select-tests.py` and `require-ready-for-review.sh` are not edited (rows 26, 63 and 4). The plugin's `_lib.sh` is edited only for the one function and constant of row 80.
 
 ## Verification
 
@@ -512,6 +525,6 @@ This plan file, `.claude/plans/deny-default-branch-pushes.md`, ships in the same
 - Fixing `_lib_mask_shell_quotes`' BSD/macOS awk limit or `_lib_split_fragments`' bare `&` (GH-1063). Both are shared helpers whose other callers would need their own review (rows 30, 57, 64 and 65).
 - Teaching `_lib_mask_shell_quotes` which quoted spans execute, for the same reason. That fix belongs in its own issue (row 34).
 - `deny-invisible-commit-content.sh` and its wrapper-token constant, which this plan does not reuse (row 10).
-- `plugins/skill-management/hooks/_lib.sh` (G3), including its copy of `_lib_git_argv_from_subcmd` (row 20), and the announce and compact hooks (issue Proposal §2).
+- The rest of `plugins/skill-management/hooks/_lib.sh` (G3), apart from the one function and constant of row 80, and the announce and compact hooks (issue Proposal §2).
 - `docs/hooks.md:227`, which stays accurate (row 29).
 - `cleanup-merged-branches.sh`, whose push runs inside a script, the first accepted Known gap.

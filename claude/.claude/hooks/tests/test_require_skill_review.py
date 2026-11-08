@@ -1874,6 +1874,24 @@ class TestCommitShapeMatcherClosureDefinitionEquality:
             f"plugin={plugin_result.stdout!r} stowed={stowed_result.stdout!r}"
         )
 
+    def test_global_value_flag_list_matches_stowed_lib_sh(self):
+        """`_lib_git_argv_from_subcmd`'s `declare -f` names the array, not its
+        elements, so the flag list needs its own comparison."""
+        harness = '. "{lib}" >/dev/null 2>&1; printf "%s\\n" "${{_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}}"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout.split(), "_LIB_GIT_GLOBAL_VALUE_FLAGS empty or undefined in the plugin's _lib.sh"
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "_LIB_GIT_GLOBAL_VALUE_FLAGS differs between the plugin's and the stowed _lib.sh: "
+            f"plugin={plugin_result.stdout!r} stowed={stowed_result.stdout!r}"
+        )
+
 
 def _build_conflicted_merge_via_origin(tmp_path):
     """Local copy of test_marker_script.py's fixture of the same name (DAMP

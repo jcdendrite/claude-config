@@ -437,11 +437,9 @@ while IFS= read -r fragment; do
       # leak path could be a new endpoint. The flag check is global to the
       # command string, not scoped to the gh-api fragment — intentionally
       # fail-toward-scan: a false positive costs one redundant scan, a
-      # false negative ships a leak. `[^A-Za-z]` is the trailing method
-      # boundary (grep-portable substitute for `\b`).
-      if grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)' <<< "$COMMAND_UNQUOTED"; then
-        IS_GH_API=1
-      elif grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)' <<< "$COMMAND_UNQUOTED"; then
+      # false negative ships a leak. The regexes live in
+      # _lib_gh_api_call_is_mutating (_lib.sh).
+      if _lib_gh_api_call_is_mutating "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
       fi
       ;;
