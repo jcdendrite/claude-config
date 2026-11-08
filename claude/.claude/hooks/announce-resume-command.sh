@@ -21,7 +21,8 @@
 #   - The file name is one the slash script accepts: a regular file directly in
 #     handoffs/ or briefs/, not a symlink, whose name starts with neither a dash
 #     nor a dot.
-#   - The name does not start with an @ (the slash script accepts one; the hook withholds the slash form anyway).
+#   - The name does not start with an @. The slash script accepts one, but the client may treat a leading @ in a slash argument as a file mention.
+#     That client behavior is assumed, not observed, and the hook withholds the slash form as a precaution.
 # A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
 # In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
@@ -153,8 +154,7 @@ fi
 
 FILE_NAME="${FILE_PATH##*/}"
 # The slash script refuses a leading-dash argument and lists only _lib_is_pending_continuity_file paths.
-# This hook also refuses a leading `@` (the slash script accepts it).
-# Assumed, not observed: the client treats a leading `@` in a slash argument as a file mention.
+# This hook also refuses a leading `@`; the header says why.
 SLASH_NAME_ACCEPTED=false
 case "$FILE_NAME" in
   -* | @*) ;;

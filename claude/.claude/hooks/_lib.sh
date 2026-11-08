@@ -5580,7 +5580,6 @@ _lib_resume_context_verdict() {
 # Sets _LIB_PENDING_CONTINUITY_FILES to the pending /handoff and /brief files, handoffs first.
 # This glob is the one definition the slash script and the announce hook's slash-form check consult.
 # The same two globs are spelled in announce-resume-command.sh and consume-durable-continuity-file-on-read.sh as `case` patterns, and as suffixes in resume-context-same-session.sh.
-# A pending file is a regular file, not a symlink.
 # The glob runs in a process substitution that resets the expansion options the result depends on, so the caller's settings neither change the result nor are changed.
 # A failure inside that subshell is not reported to the caller.
 _lib_collect_pending_continuity_files() {

@@ -423,10 +423,12 @@ class TestAnnounceResumeCommand:
         assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
         assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
 
-    def test_cwd_naming_non_repo_dir_omits_cwd_flag(self, isolated_home, tmp_path):
+    def test_directory_outside_any_repository_loads_a_file_naming_no_cwd(self, isolated_home, tmp_path):
+        """Accepted residual of reading git's exit 128 as "not linked": a directory git
+        cannot open advertises /resume-context for a file that names no --cwd."""
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
-        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
         result = _run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(non_repo)),
@@ -712,23 +714,6 @@ class TestAnnounceResumeCommand:
         for channel in (message, context):
             assert f"resume-context --cwd /elsewhere/clean-target {fixture}" in channel
         _assert_context_labels_the_cwd_as_file_sourced(context)
-
-    def test_directory_outside_any_repository_loads_a_file_naming_no_cwd(self, isolated_home, tmp_path):
-        """Accepted residual of reading git's exit 128 as "not linked": a directory git
-        cannot open advertises /resume-context for a file that names no --cwd."""
-        non_repo = tmp_path / "not-a-repo"
-        non_repo.mkdir()
-        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", None)
-        result = _run_hook_raw(
-            ANNOUNCE_HOOK,
-            write_input(str(fixture), cwd=str(non_repo)),
-            home=isolated_home,
-            extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)},
-        )
-        assert result.returncode == 0
-        message, context = _both_channels(result)
-        assert "/resume-context example-handoff.md" in message
-        assert "/resume-context example-handoff.md" in context
 
     @pytest.mark.parametrize("arm_id", list(_ANNOUNCE_ARMS))
     def test_each_announce_arm_owns_its_lead_route_reason_and_provenance_wording(

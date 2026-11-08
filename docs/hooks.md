@@ -199,7 +199,7 @@ A new gate registers every handler with `"onFailure": "block"` and ends its scri
   - a worktree root whose directory name ends in a newline is announced in `--cwd` without it, because command substitution strips trailing newlines before the byte check
   - the file's `--cwd` is compared raw, with no canonicalization (symlinks and `.` and `..` components), so a non-canonical spelling of this worktree gets the shell-only announce (its reason names that spelling) while `/resume-context` loads it
   - a handoff/brief filename or the file's own `--cwd` directory spelled as an English directive from allowlisted bytes is echoed into `additionalContext` verbatim (an accepted residual)
-  - a file name starting with `@` gets the shell route, because the hook withholds the slash form although `resume-context-same-session.sh` accepts that name
+  - a file name starting with `@` gets the shell route, a precaution against the client treating a leading `@` in a slash argument as a file mention (assumed, not observed; see the `announce-resume-command.sh` header)
   - a file-sourced `--cwd` may name any directory made of allowlisted bytes, and the engineer copies the command with it without this hook having checked the directory
 
   Carries no kill switch — an informational hook firing only on the deliberate, infrequent act of writing a continuity file.

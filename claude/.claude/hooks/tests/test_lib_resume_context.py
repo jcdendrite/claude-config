@@ -889,7 +889,6 @@ class TestLibIsPendingContinuityFile:
     def test_the_pending_set_does_not_depend_on_the_callers_glob_options(
         self, config_dir: Path, caller_shell_state: str
     ) -> None:
-        """Under one caller state a regular child stays pending; a dot-name and an upper-case suffix stay not pending."""
         (config_dir / "handoffs" / "example-handoff.md").write_text("body\n")
         (config_dir / "handoffs" / ".hidden-handoff.md").write_text("body\n")
         (config_dir / "handoffs" / "UPPER-HANDOFF.md").write_text("body\n")
