@@ -14,8 +14,10 @@ from pathlib import Path
 import pytest
 from helpers import (
     _build_subprocess_env,
+    code_span_command,
     read_input,
     resume_context_stub_invocations,
+    write_continuity_named_file,
     write_input,
 )
 
@@ -71,16 +73,7 @@ _EXPECTED_NOT_PENDING = {
 
 
 def _create(config_dir: Path, relative_path: str) -> Path:
-    path = config_dir / relative_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if relative_path == _SYMLINK_LEAF:
-        real = config_dir.parent / "elsewhere" / "real-handoff.md"
-        real.parent.mkdir(parents=True, exist_ok=True)
-        real.write_text("body\n")
-        path.symlink_to(real)
-    else:
-        path.write_text("body\n")
-    return path
+    return write_continuity_named_file(config_dir, relative_path, symlink_leaf=relative_path == _SYMLINK_LEAF)
 
 
 def _install_recording_consume_script(config_dir: Path) -> Path:
@@ -142,10 +135,11 @@ def test_every_name_the_pending_helper_accepts_is_accepted_by_both_hooks(
 def test_the_matrix_holds_both_pending_and_non_pending_names(isolated_home: Path) -> None:
     """Guards the parity tests against a matrix that stops exercising one side of the helper."""
     config_dir = isolated_home / ".claude"
-    verdicts = {
-        relative_path: _is_pending_continuity_file(config_dir, str(_create(config_dir, relative_path)))
+    paths = {
+        relative_path: _create(config_dir, relative_path)
         for relative_path in _NAME_MATRIX
     }
+    verdicts = {relative_path: _is_pending_continuity_file(config_dir, str(path)) for relative_path, path in paths.items()}
     assert {name for name, pending in verdicts.items() if pending} == _EXPECTED_PENDING
     assert {name for name, pending in verdicts.items() if not pending} == _EXPECTED_NOT_PENDING
 
@@ -163,9 +157,12 @@ def test_the_matrix_holds_both_pending_and_non_pending_names(isolated_home: Path
 def test_the_announce_hook_withholds_the_slash_form_from_a_leading_at_sign_only(
     isolated_home: Path, git_repo: Path, relative_path: str, slash_form_refused: bool
 ) -> None:
-    path = _create(isolated_home / ".claude", relative_path)
+    path = write_continuity_named_file(isolated_home / ".claude", relative_path)
 
     result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(path), cwd=str(git_repo)), home=isolated_home)
 
     assert result.returncode == 0, result.stderr
-    assert (_REFUSED_NAME_REASON in json.loads(result.stdout)["systemMessage"]) == slash_form_refused
+    message = json.loads(result.stdout)["systemMessage"]
+    assert (_REFUSED_NAME_REASON in message) == slash_form_refused
+    expected_command = f"resume-context {path}" if slash_form_refused else f"/resume-context {path.name}"
+    assert code_span_command(message) == expected_command

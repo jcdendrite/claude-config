@@ -18,6 +18,7 @@ from helpers import (
     _make_git_recording_argv,
     assert_cap_engaged,
     write_continuity_body,
+    write_continuity_named_file,
 )
 
 from ._lib_sh_helpers import _LIB_SH, _run_lib_call
@@ -833,11 +834,8 @@ class TestLibIsPendingContinuityFile:
         assert _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/example-handoff.md")
         assert not _is_pending_continuity_file(config_dir, f"{config_dir}/{sibling_rel_path}")
 
-    def test_a_symlink_leaf_is_not_pending(self, config_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
-        real = tmp_path_factory.mktemp("elsewhere") / "real-handoff.md"
-        real.write_text("body\n")
-        link = config_dir / "handoffs" / "linked-handoff.md"
-        link.symlink_to(real)
+    def test_a_symlink_leaf_is_not_pending(self, config_dir: Path) -> None:
+        link = write_continuity_named_file(config_dir, "handoffs/linked-handoff.md", symlink_leaf=True)
         assert not _is_pending_continuity_file(config_dir, str(link))
 
     def test_a_missing_file_is_not_pending(self, config_dir: Path) -> None:

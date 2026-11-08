@@ -1211,25 +1211,26 @@ class TestConsume:
             assert not legacy_copy.exists()
 
 
-class TestRoundTrip:
-    def _announced_command(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
-        result = subprocess.run(
-            [str(_ANNOUNCE_HOOK)],
-            input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
-            capture_output=True,
-            text=True,
-            env=sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"}),
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert resume_context_stub_invocations(sandbox.home) == ""
-        return code_span_command(json.loads(result.stdout)["systemMessage"])
+def _announced_command(sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
+    result = subprocess.run(
+        [str(_ANNOUNCE_HOOK)],
+        input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
+        capture_output=True,
+        text=True,
+        env=sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"}),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert resume_context_stub_invocations(sandbox.home) == ""
+    return code_span_command(json.loads(result.stdout)["systemMessage"])
 
+
+class TestRoundTrip:
     def test_the_file_name_the_announce_hook_advertises_loads_exactly_that_file(self, sandbox: _Sandbox) -> None:
         pending = sandbox.write_pending("v1.2-step-3.4", sandbox.worktree_a)
         decoy = sandbox.write_pending("v1.2-step-3", sandbox.worktree_a)
 
-        announced = self._announced_command(sandbox, pending, sandbox.worktree_a)
+        announced = _announced_command(sandbox, pending, sandbox.worktree_a)
         assert announced.startswith(SLASH_COMMAND_PREFIX)
         argument = announced[len(SLASH_COMMAND_PREFIX) :]
         outcome = sandbox.run(argument, cwd=sandbox.worktree_a)
@@ -1262,7 +1263,7 @@ class TestRoundTrip:
         announce advertises a slash argument that ends in a STOP_REASON."""
         written = sandbox.write_named(sandbox.config_dir / relative_path, None)
 
-        announced = self._announced_command(sandbox, written, sandbox.main_checkout)
+        announced = _announced_command(sandbox, written, sandbox.main_checkout)
         outcome = sandbox.run(written.name, cwd=sandbox.main_checkout)
 
         if stop_code is None:
@@ -1277,7 +1278,7 @@ class TestRoundTrip:
     ) -> None:
         brief = sandbox.write_pending("example", None, kind="brief")
 
-        announced = self._announced_command(sandbox, brief, sandbox.main_checkout)
+        announced = _announced_command(sandbox, brief, sandbox.main_checkout)
         outcome = sandbox.run(brief.name, cwd=sandbox.main_checkout)
 
         assert announced == f"{SLASH_COMMAND_PREFIX}{brief.name}"
@@ -1291,7 +1292,7 @@ class TestRoundTrip:
         link = sandbox.handoffs / "linked-handoff.md"
         link.symlink_to(real)
 
-        announced = self._announced_command(sandbox, link, sandbox.main_checkout)
+        announced = _announced_command(sandbox, link, sandbox.main_checkout)
         outcome = sandbox.run(link.name, cwd=sandbox.main_checkout)
 
         assert announced == f"{SHELL_COMMAND_PREFIX}{link}"
@@ -1305,7 +1306,7 @@ class TestRoundTrip:
         decoy = sandbox.write_named(sandbox.handoffs / "example-handoff.md", None)
         decoy_body = decoy.read_text()
 
-        announced = self._announced_command(sandbox, nested, sandbox.main_checkout)
+        announced = _announced_command(sandbox, nested, sandbox.main_checkout)
 
         assert announced == f"{SHELL_COMMAND_PREFIX}{nested}"
         assert decoy.read_text() == decoy_body
@@ -1320,7 +1321,7 @@ class TestRoundTrip:
         announced_file = sandbox.write_pending("x", kind=announced_kind)
         decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
 
-        announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
+        announced = _announced_command(sandbox, announced_file, sandbox.main_checkout)
         assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
         outcome = sandbox.run(announced[len(SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
 
@@ -1335,7 +1336,7 @@ class TestRoundTrip:
         """Deny: with the announced file consumed, the decoy is not the single match and the script stops."""
         announced_file = sandbox.write_pending("x", kind=announced_kind)
         decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
-        announced = self._announced_command(sandbox, announced_file, sandbox.main_checkout)
+        announced = _announced_command(sandbox, announced_file, sandbox.main_checkout)
         assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
         announced_file.unlink()
 
@@ -1356,7 +1357,7 @@ class TestRoundTrip:
         session_cwd = getattr(sandbox, session)
         pending = sandbox.write_pending("parity", getattr(sandbox, file_target).resolve())
 
-        announced = self._announced_command(sandbox, pending, session_cwd)
+        announced = _announced_command(sandbox, pending, session_cwd)
         outcome = sandbox.run(pending.name, cwd=session_cwd)
 
         assert announced == outcome.first("SHELL_COMMAND")
@@ -1380,7 +1381,7 @@ class TestRoundTrip:
     def _announced_and_scripted_routes(self, sandbox: _Sandbox, session: str, file_target: str) -> tuple[str, str]:
         session_cwd = getattr(sandbox, session)
         pending = self._write_pending_naming(sandbox, file_target)
-        announced = announced_route(self._announced_command(sandbox, pending, session_cwd))
+        announced = announced_route(_announced_command(sandbox, pending, session_cwd))
         outcome = sandbox.run(pending.name, cwd=session_cwd)
         return announced, self._route_of_scripted_outcome(outcome)
 
@@ -1456,19 +1457,36 @@ class TestSkillContract:
 
         assert sorted(header_keys) == sorted(_EMITTED_KEYS)
 
-    def test_the_skill_withholds_the_slash_form_from_every_first_byte_the_announce_hook_refuses(self) -> None:
-        """Both advertisers of `/resume-context <file name>` must refuse the same leading bytes."""
-        refused_arm = re.search(r'case "\$FILE_NAME" in\n\s*([^)\n]+)\) ;;', _ANNOUNCE_HOOK.read_text())
-        assert refused_arm, "announce-resume-command.sh no longer opens its slash-name check with a refused-prefix arm"
-        refused_first_bytes = [pattern.strip().removesuffix("*") for pattern in refused_arm.group(1).split("|")]
-        assert refused_first_bytes == ["-", "@"], f"the hook's refused first bytes changed: {refused_first_bytes}"
-        step_four_sentence = (
-            "A candidate whose file name starts with "
-            + " or ".join(f"`{byte}`" for byte in refused_first_bytes)
-            + " is never suggested as `/resume-context <name>`."
-        )
+    def test_the_skill_withholds_the_slash_form_from_exactly_the_listed_candidates_the_announce_hook_sends_to_the_shell(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """A first byte the skill step 4 names must be one the announce hook refuses the slash form for, and the
+        only such bytes among those a candidate listing can reach (a leading dot is never listed)."""
+        # Every non-alphanumeric first byte the path-character allowlist admits today.
+        # Widening the allowlist means widening this list.
+        non_alphanumeric_first_bytes = [".", "_", "-", "+", "@"]
+        for first_byte in non_alphanumeric_first_bytes:
+            sandbox.write_named(sandbox.handoffs / f"{first_byte}lead-handoff.md", None)
+        announced_shell_bytes = [
+            first_byte
+            for first_byte in non_alphanumeric_first_bytes
+            if announced_route(
+                _announced_command(sandbox, sandbox.handoffs / f"{first_byte}lead-handoff.md", sandbox.main_checkout)
+            )
+            == "shell"
+        ]
+        listed_names = sandbox.run(cwd=sandbox.main_checkout).candidate_names
+        listed_shell_bytes = [
+            first_byte for first_byte in announced_shell_bytes if f"{first_byte}lead-handoff.md" in listed_names
+        ]
 
-        assert step_four_sentence in _SKILL_MD.read_text()
+        step_four_sentence = re.search(
+            r"A candidate whose file name starts with (.+?) is never suggested as `/resume-context <name>`\.",
+            _SKILL_MD.read_text(),
+        )
+        assert step_four_sentence, "resume-context/SKILL.md no longer states which candidate names are never suggested"
+        named_bytes = re.findall(r"`(.)`", step_four_sentence.group(1))
+        assert sorted(named_bytes) == sorted(listed_shell_bytes)
 
     def test_the_skill_argument_charset_equals_the_scripts_allowlist(self) -> None:
         """The skill refuses before the script runs, so the two must accept the same characters."""

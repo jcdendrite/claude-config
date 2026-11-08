@@ -5953,11 +5953,9 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
         "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
         "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
-        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
-        "header (§3 in a brief) names if you read the file and it is an absolute path made "
-        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
-        "say the directory is unknown and must come from the session that wrote the file; "
-        "name none."
+        "(on `LOAD:` it equals `SESSION_TARGET:`). When `FILE_TARGET:` is `none`, the "
+        "script printed no directory for the file: say the directory is unknown and must "
+        "come from the session that wrote the file; name none."
     ),
     "unreadable_file_target_relay": (
         "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
@@ -6112,8 +6110,7 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
         "happens to already be positioned to run it. Moves the file to a fresh temp path "
         "and launches a new session with it loaded, so picking up the brief doesn't depend "
-        "on the fresh session remembering to read or delete the file. Can be aliased for "
-        "convenience.",
+        "on the fresh session remembering to read or delete the file.",
     ),
 }
 

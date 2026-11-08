@@ -1474,6 +1474,18 @@ def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: st
     return write_continuity_body(path, continuity_resume_section(kind, path, resume_cwd))
 
 
+def write_continuity_named_file(config_dir: Path, relative_path: str, *, symlink_leaf: bool = False) -> Path:
+    """A file at `relative_path` under `config_dir`, creating parent directories. With `symlink_leaf`
+    the leaf is a symlink to a regular file outside `config_dir`, in a sibling directory unique to it."""
+    path = config_dir / relative_path
+    if not symlink_leaf:
+        return write_continuity_body(path, "body\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    real = write_continuity_body(config_dir.with_name(f"{config_dir.name}-elsewhere") / "real-handoff.md", "body\n")
+    path.symlink_to(real)
+    return path
+
+
 def code_span_command(message: str) -> str:
     """The command of a two-line hook `systemMessage`: a one-line lead, a newline, then the
     command alone in single backticks. Each clause fails with its own message, because

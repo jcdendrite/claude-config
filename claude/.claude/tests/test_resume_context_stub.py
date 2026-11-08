@@ -1,5 +1,5 @@
 """Positive control for helpers.install_resume_context_stub, whose empty invocation log backs the deny-only
-"no launcher ran" assertions in the announce, consume and slash-script tests."""
+"no launcher ran" assertions on the announce hook's shell-route arms in the announce, glob-parity and slash-script tests."""
 from __future__ import annotations
 
 import os

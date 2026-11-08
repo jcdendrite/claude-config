@@ -14,13 +14,14 @@
 # On the shell route, a main-tree `.cwd` whose file names no usable target, or an unresolvable `.cwd`, gets the bare command.
 # The git -C calls run only after the path glob has matched, each capped
 # at 5s via _lib_capped.
-# It announces only /resume-context <file name> when the written file's own
-# resume command (_lib_continuity_file_resume_cwd) names this session's
-# linked worktree, or names no --cwd in a main checkout
-# (_lib_resume_context_verdict), the file name is one the slash script accepts
-# (a regular file directly in handoffs/ or briefs/, not a symlink, whose name starts with neither a dash nor a dot),
-# and the name does not start with an @.
-# The slash script accepts a leading @, and the hook withholds the slash form for it anyway.
+# It announces only /resume-context <file name> when all of these hold:
+#   - _lib_resume_context_verdict returns load: the written file's own resume
+#     command (_lib_continuity_file_resume_cwd) names this session's linked
+#     worktree, or names no --cwd in a main checkout.
+#   - The file name is one the slash script accepts: a regular file directly in
+#     handoffs/ or briefs/, not a symlink, whose name starts with neither a dash
+#     nor a dot.
+#   - The name does not start with an @ (the slash script accepts one; the hook withholds the slash form anyway).
 # A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
 # In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
@@ -94,6 +95,8 @@
 #     digits, and the allowed punctuation -- still passes the allowlist and is
 #     echoed verbatim into additionalContext. This is a known, accepted residual,
 #     not a bug.
+#   - The byte allowlist does not bound a file-sourced --cwd directory, which the
+#     announce now shows alone in a copy span.
 #   - The file's own --cwd is compared raw, with no canonicalization (symlinks and
 #     `.` and `..` components), so a non-canonical spelling of this worktree gets the
 #     shell-only announce (its reason names that spelling) while /resume-context loads it.
@@ -149,7 +152,8 @@ fi
 
 FILE_NAME="${FILE_PATH##*/}"
 # The slash script refuses a leading-dash argument and lists only _lib_is_pending_continuity_file paths.
-# This hook also refuses a leading `@` (the slash script accepts it), because the client may treat it in a slash argument as a file mention.
+# This hook also refuses a leading `@` (the slash script accepts it).
+# Assumed, not observed: the client treats a leading `@` in a slash argument as a file mention.
 SLASH_NAME_ACCEPTED=false
 case "$FILE_NAME" in
   -* | @*) ;;

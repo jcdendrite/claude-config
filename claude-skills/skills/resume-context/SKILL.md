@@ -32,7 +32,7 @@ In chat replies, put each command this skill has you relay or suggest alone in i
 
    - Then check the target. When the script printed `FILE_TARGET: none` and the file's §4 header (§3 in a brief) names a directory other than this session's, say so and stop without acting on the file. Give the recovery text below.
 
-   - Recovery text: the file is already consumed, so tell the engineer to `cd` to the directory named here and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` finds the copy later. The directory is the `FILE_TARGET:` path when it is a path (on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 header (§3 in a brief) names if you read the file and it is an absolute path made only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, say the directory is unknown and must come from the session that wrote the file; name none.
+   - Recovery text: the file is already consumed, so tell the engineer to `cd` to the directory named here and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` finds the copy later. The directory is the `FILE_TARGET:` path when it is a path (on `LOAD:` it equals `SESSION_TARGET:`). When `FILE_TARGET:` is `none`, the script printed no directory for the file: say the directory is unknown and must come from the session that wrote the file; name none.
 
    - Otherwise, continue from the file. Its artifact preamble governs.
 
