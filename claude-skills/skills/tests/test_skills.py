@@ -62,10 +62,15 @@ from helpers import (
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    backticked_field_tokens,
     change_type_table_rows,
     extract_skill_command,
+    heading_section_bounds,
     heading_texts,
+    input_contract_field_tokens,
+    input_contract_section,
     normalize_heading,
+    prompt_contract_agent_names,
     run_skill_command,
 )
 
@@ -5236,18 +5241,9 @@ def _section_between(
     inferred — a renamed or deleted heading would otherwise extract as empty
     and compare equal to another empty extraction.
     """
-    start_idx = next(
-        (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
-        None,
-    )
-    assert start_idx is not None, f"{path}: {start_heading!r} heading not found."
-
-    end_idx = len(lines)
-    for j in range(start_idx + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end_idx = j
-            break
-    return start_idx, end_idx
+    bounds = heading_section_bounds(lines, start_heading)
+    assert bounds is not None, f"{path}: {start_heading!r} heading not found."
+    return bounds
 
 
 _READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
@@ -5589,7 +5585,11 @@ def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
 
 
 def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
-    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip."""
+    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip.
+
+    Its `plan_path:` checks overlap `test_prompt_contract_site_matches_agent_contract`.
+    It stays for the spawn-condition literals: the Step 5 condition and the `/review-pr` skip.
+    """
     routing_roles_text = _heading_section_text(_ROUTING_MD_PATH, "## Reviewer roles")
     agent_input_contract_text = _heading_section_text(
         _AGENTS_DIR / "comment-discipline-reviewer.md", "## Input contract"
@@ -5604,6 +5604,221 @@ def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
         )
     assert "`plan_path:`" in agent_input_contract_text, (
         "comment-discipline-reviewer.md: Input contract no longer names `plan_path:`"
+    )
+
+
+class _PromptContractDispatchSite(NamedTuple):
+    label: str
+    agent_file: str
+    site_text: Callable[[], str]
+    sent_tokens: frozenset[str]
+    exclusion_sentence: str
+    forbidden_phrases: tuple[str, ...]
+
+
+_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR = "- Always spawn `comment-discipline-reviewer`"
+
+
+def _plan_review_comment_discipline_spawn_text(routing_md_path: Path) -> str:
+    """The comment-discipline-reviewer spawn bullet and its indented continuation paragraph in ROUTING.md.
+
+    An unindented continuation line ends the window, so a sentence added there
+    falls outside it.
+    """
+    lines = routing_md_path.read_text().splitlines()
+    start_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR)
+        ),
+        None,
+    )
+    assert start_index is not None, (
+        f"{routing_md_path}: no line starts with "
+        f"{_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR!r}"
+    )
+    end_index = start_index + 1
+    while end_index < len(lines) and (
+        not lines[end_index].strip() or lines[end_index].startswith(" ")
+    ):
+        end_index += 1
+    return "\n".join(lines[start_index:end_index]).rstrip()
+
+
+class TestPlanReviewCommentDisciplineSpawnText:
+    _SPAWN_BULLET = (
+        "- Always spawn `comment-discipline-reviewer` on every round.\n"
+        "  - `plan_path:` with the plan file's path\n"
+        "\n"
+        "  It gets no Item ownership routing. It keys its findings by angle name.\n"
+    )
+
+    def test_text_appended_after_the_paragraphs_last_sentence_is_inside_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(
+            self._SPAWN_BULLET.rstrip("\n") + " Also pass it `declared:`.\n"
+            "\n"
+            "- Next unindented bullet.\n"
+        )
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert window.endswith("Also pass it `declared:`.")
+        assert "It gets no Item ownership routing." in window
+
+    def test_next_unindented_bullet_is_outside_the_window(self, tmp_path: Path) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(self._SPAWN_BULLET + "\n- Always spawn `other-reviewer` for `declared:`.\n")
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert "other-reviewer" not in window
+        assert "declared:" not in window
+
+    @pytest.mark.parametrize("trailing_blank_lines", ["", "\n", "\n\n\n"])
+    def test_spawn_bullet_that_ends_the_file_returns_its_whole_paragraph(
+        self, tmp_path: Path, trailing_blank_lines: str
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text("- Earlier bullet.\n\n" + self._SPAWN_BULLET + trailing_blank_lines)
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert window == self._SPAWN_BULLET.rstrip("\n")
+
+    def test_reworded_start_anchor_raises_an_assertion_error_naming_the_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(
+            self._SPAWN_BULLET.replace("Always spawn", "Spawn")
+        )
+
+        with pytest.raises(AssertionError) as excinfo:
+            _plan_review_comment_discipline_spawn_text(path)
+        assert str(path) in str(excinfo.value)
+        assert _PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR in str(excinfo.value)
+
+
+# Every dispatch site that hands an agent with an Input contract field list its prompt.
+# A new site for a listed agent goes here, or it escapes test_prompt_contract_site_matches_agent_contract.
+_PROMPT_CONTRACT_DISPATCH_SITES = (
+    _PromptContractDispatchSite(
+        label="code-review",
+        agent_file="comment-discipline-reviewer.md",
+        site_text=lambda: _scope_exempt_change_type_row_text(_skill_file("code-review")),
+        sent_tokens=frozenset({"diff:", "findings_path:", "prior_decisions:"}),
+        exclusion_sentence=(
+            "Send it no diff scope, specific question, declared value or declaration "
+            'block from the "Spawn per question" paragraph, and no return budget from '
+            'the "Other spawned specialists" paragraph below this table.'
+        ),
+        forbidden_phrases=(
+            "declaration block",
+            "specific question",
+            "return budget",
+            "diff scope",
+            "declared value",
+            "declared:",
+        ),
+    ),
+    _PromptContractDispatchSite(
+        label="plan-review",
+        agent_file="comment-discipline-reviewer.md",
+        site_text=lambda: _plan_review_comment_discipline_spawn_text(_ROUTING_MD_PATH),
+        sent_tokens=frozenset({"plan_path:", "findings_path:", "prior_decisions:"}),
+        exclusion_sentence=(
+            "It gets no Item ownership routing and no Ledger cross-check instruction."
+        ),
+        forbidden_phrases=(
+            "declared:",
+            "Declaration block",
+            "Item ownership",
+            "Ledger cross-check",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "site", _PROMPT_CONTRACT_DISPATCH_SITES, ids=lambda site: site.label
+)
+def test_prompt_contract_site_matches_agent_contract(site: _PromptContractDispatchSite) -> None:
+    """A dispatching site cites the agent's Input contract and names exactly the fields it sends, each one the contract lists.
+
+    Each item the site's exclusion sentence names appears nowhere else in the site,
+    and the site carries the phrase "its prompt carries only". Other added prose goes
+    unchecked, and the agent's shared sentences set it aside at runtime.
+
+    The agent's Input contract is the one home for what its dispatch prompt may carry.
+    docs/design-decisions/agent-input-contract-owns-dispatch-fields.md records why the contract owns the fields.
+    """
+    site_text = site.site_text()
+    agent_contract_tokens = input_contract_field_tokens(
+        input_contract_section(_AGENTS_DIR / site.agent_file)
+    )
+    assert agent_contract_tokens, (
+        f"{site.agent_file}: '## Input contract' section not found or lists no field bullet."
+    )
+    citation = f'`claude/.claude/agents/{site.agent_file}` § "Input contract"'
+    assert citation in site_text, f"{site.label}: site no longer cites {citation}"
+    named_tokens = backticked_field_tokens(site_text)
+    assert named_tokens == site.sent_tokens, (
+        f"{site.label}: site names {sorted(named_tokens)}, but the fields it sends are "
+        f"{sorted(site.sent_tokens)}. A backticked mention of a field token counts as sending it, "
+        "even in a negation, so the exclusion sentence names the declared value without backticks."
+    )
+    assert site.sent_tokens <= agent_contract_tokens, (
+        f"{site.label}: {sorted(site.sent_tokens - agent_contract_tokens)} not in "
+        f"{site.agent_file}'s Input contract fields {sorted(agent_contract_tokens)}"
+    )
+    assert site_text.count(site.exclusion_sentence) == 1, (
+        f"{site.label}: site must carry its exclusion sentence exactly once: "
+        f"{site.exclusion_sentence!r}"
+    )
+    lowered_site_text = site_text.lower()
+    assert "its prompt carries only" in lowered_site_text, (
+        f"{site.label}: site no longer says its prompt carries only the fields it sends."
+    )
+    lowered_exclusion_sentence = site.exclusion_sentence.lower()
+    for phrase in site.forbidden_phrases:
+        lowered_phrase = phrase.lower()
+        allowed_count = lowered_exclusion_sentence.count(lowered_phrase)
+        assert lowered_site_text.count(lowered_phrase) == allowed_count, (
+            f"{site.label}: {phrase!r} appears {lowered_site_text.count(lowered_phrase)} time(s) "
+            f"in the site, but only {allowed_count} inside its exclusion sentence. The agent's "
+            "Input contract does not list that part of a prompt."
+        )
+
+
+def test_code_review_exclusion_sentence_cites_paragraphs_that_exist() -> None:
+    """The /code-review row's exclusion sentence names two paragraphs, so each must still open a line in the skill.
+
+    Both names also occur inside the exclusion sentence, so only a line-start match proves the paragraph exists.
+    """
+    skill_md_path = _skill_file("code-review")
+    lines = skill_md_path.read_text().splitlines()
+    for paragraph_name in ("Spawn per question", "Other spawned specialists"):
+        assert any(line.startswith(paragraph_name) for line in lines), (
+            f"{skill_md_path}: no line starts with {paragraph_name!r}, the paragraph the "
+            "comment-discipline row's exclusion sentence cites."
+        )
+
+
+def test_prompt_contract_sites_cover_every_contract_agent() -> None:
+    """An agent under claude/.claude/agents with Input contract field bullets and no listed dispatch site fails here.
+
+    Scans claude/.claude/agents only, not plugin agent directories.
+    """
+    agents_with_sites = {site.agent_file for site in _PROMPT_CONTRACT_DISPATCH_SITES}
+    agents_with_fields = prompt_contract_agent_names(_AGENTS_DIR)
+    assert agents_with_sites == agents_with_fields, (
+        f"Agents with Input contract field bullets are {sorted(agents_with_fields)}, but "
+        f"_PROMPT_CONTRACT_DISPATCH_SITES names {sorted(agents_with_sites)}. Add each dispatching "
+        "site of the missing agent(s) to _PROMPT_CONTRACT_DISPATCH_SITES."
     )
 
 
