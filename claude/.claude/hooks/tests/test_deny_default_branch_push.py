@@ -602,6 +602,23 @@ class TestQuotedMentionsAreInert:
     def test_allows_a_quoted_mention_of_a_push_on_the_default_branch(self, shared_scenario, command):
         _assert_allowed(command, shared_scenario.main_checkout)
 
+    @pytest.mark.parametrize(
+        ("command", "mention"),
+        [
+            ('git push origin "main"', _protected("main")),
+            ("git push origin 'main'", _protected("main")),
+            ('"git" push origin main', _protected("main")),
+            ('git push "origin" "main"', _protected("main")),
+            # `:` is outside [A-Za-z0-9._/-], so the masker blanks the span to "" (header, accepted over-denials).
+            # A masker that unquotes it would flip this case to _protected("main").
+            ('git push origin "HEAD:main"', _unresolved("refspec")),
+        ],
+        ids=["quoted-branch", "single-quoted-branch", "quoted-git-word", "quoted-remote-and-branch", "quoted-refspec"],
+    )
+    def test_denies_a_push_whose_words_are_quoted(self, shared_scenario, command, mention):
+        """Quote-splitting a push into words must not hide it from the masked pass that judges it."""
+        _assert_denied(command, shared_scenario.feature_worktree, mention)
+
 
 class TestRedirectionWordsAreNotPushArguments:
     def test_redirected_push_is_judged_like_the_same_push_without_a_redirect(self, shared_scenario):
