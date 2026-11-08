@@ -113,6 +113,8 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 | Extending `read-scope` to cover non-tool categories | Rejected | Its cohort model is `Read`-call-specific; every non-tool category (conversation-history replay, assistant text/thinking, the static system prefix) falls outside its frame. |
 | `context-distribution` as the host subcommand | Rejected | Buckets sessions by peak context without decomposing what filled it — a different question. Its redaction pattern (no redact map, no per-project label) was adopted anyway; see `docs/transcript-analysis.md`'s "Corpus scope" section. |
 
+The `read-scope` figures in the table above predate the `api-request-blob` filter, so a fresh run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
+
 ## From `pin-explore-to-sonnet.md` (this plan) — Step 1's superseded earlier draft
 
 | Lever | Verdict | Measured reason |
@@ -281,6 +283,9 @@ before citing them forward.
 | Symbol-level navigation as a token-reduction lever | Rejected, below the double-digit bar | Upper bound ≈3.8% of billed input tokens on the most code-dense account, ≈1.7% on the other measured. `Read` output is ≈11.7% of billed input tokens, and only the whole-file-indexable-code slice — 32.6% of all read volume — is addressable at all. Markdown is the largest read bucket at 42.6% and LSP does not touch it. Both bounds carry an unverified read-to-billed conversion that could move in either direction, and no discount for comprehension reads a symbol lookup cannot replace. The 11.7% is against billed input tokens; the `context-composition-analyzer.md` entry above measures the same content against cumulative prompt-token growth, which counts a chunk once on entry rather than on every subsequent turn — different denominators, not conflicting figures. |
 | Code-dense repositories as a proxy for code-dense reading | Refuted | The account with by far the most statically-analyzable source still read 42.6% Markdown against 40.8% code. Portfolio composition does not predict read composition; measure the transcripts, not the tree. |
 | Enabling the native code-intelligence plugins | Adopted for diagnostics, not for tokens | Post-edit type errors without a compiler or linter run (vendor-documented, unmeasured here). Installed at user scope per account, so `claude/.claude/settings.json` is untouched and adoption is deliberately unrecorded in-repo. Carries a documented memory cost on large projects and false-positive import diagnostics in misconfigured monorepos. |
+
+The read-volume figures in the symbol-navigation rows above (11.7%, 32.6%, 40.8%, 42.6%) predate the `api-request-blob` filter, so a fresh run is not directly comparable (see the Known limits in `docs/transcript-analysis.md` § "read-cost").
+
 ## From `background-slow-bash-calls.md` — "Default slow/network-bound Bash calls to `run_in_background`"
 
 | Lever | Verdict | Measured reason |
@@ -771,3 +776,9 @@ evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.j
 ```
 
 The fixture's own `pinned_commit` field names the exact commit to check out; the checkout must be clean (`git status --porcelain` empty) at that commit before any run.
+
+## From a 2026-11-01 measurement — "Gate large reads and redirect them to a cheaper worker"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Hook-deny large whole-file reads and redirect them to a worker model | Rejected (measured) | Never-edited main-thread whole-file reads over 350 lines are about 0.0% of total spend in cache-read-token equivalents, not dollars. See [`design-decisions/large-read-gate-declined.md`](design-decisions/large-read-gate-declined.md). |

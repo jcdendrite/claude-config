@@ -1709,6 +1709,14 @@ class TestSelectPytestTargets:
             *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
         }
 
+    def test_shared_lib_sh_test_helpers_change_selects_the_diff_size_ack_test(self):
+        """test_diff_size_ack.py imports its repository builders from hooks.tests._lib_sh_helpers.
+        The ack test is spelled as a literal rather than derived from
+        SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES, so dropping either set member fails here."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_lib_sh_helpers.py"])
+        assert result.is_full_suite is False
+        assert "claude/.claude/scripts/tests/test_diff_size_ack.py" in result.target_paths
+
 
 class TestResolveTargetPaths:
     """resolve_target_paths turns a selection's target_paths into the

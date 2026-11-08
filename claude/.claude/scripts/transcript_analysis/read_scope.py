@@ -219,6 +219,8 @@ def _read_scope_repeat_whole_file_reads(groups: list[list[dict]]) -> tuple[int, 
     for group_idx, group in enumerate(groups):
         read_calls: dict[str, dict] = {}  # tool_use_id -> {"file_path", "partition_key"}
         for rec in group:
+            if rec.get("type") not in corpus.CONVERSATION_RECORD_TYPES:
+                continue
             msg = rec.get("message") or {}
             content = msg.get("content")
             if not isinstance(content, list):
@@ -290,6 +292,8 @@ def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], sinc
     matched: set[str] = set()
 
     for rec in records:
+        if rec.get("type") not in corpus.CONVERSATION_RECORD_TYPES:
+            continue
         msg = rec.get("message") or {}
         content = msg.get("content")
         if not isinstance(content, list):

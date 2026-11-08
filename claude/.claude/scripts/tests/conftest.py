@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
 from helpers import TASK_NOTIFICATION_TEXT as _TASK_NOTIFICATION_TEXT
-from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
+from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, redaction, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -882,6 +882,43 @@ def _compact_boundary_rec() -> dict:
     return {"type": "system", "subtype": "compact_boundary"}
 
 
+def _non_boundary_system_rec() -> dict:
+    return {"type": "system", "subtype": "turn_duration"}
+
+
+# Non-conversation record types the record-type filters must skip.
+# attachment stands in for any such type that carries message.content,
+# so a filter that skips only api-request-blob fails the parametrized tests.
+_NON_CONVERSATION_CONTENT_RECORD_TYPES = ("api-request-blob", "attachment")
+
+
+def _api_request_blob_rec(
+    content: list, *, agent_id: str | None = None, ts: str | None = None, record_type: str = "api-request-blob",
+) -> dict:
+    """A request-content copy record: carries message.content blocks but, unlike a real
+    assistant/user record, has no isSidechain key. `record_type` is one of
+    `_NON_CONVERSATION_CONTENT_RECORD_TYPES`.
+
+    An observed blob record has the top-level keys hash and sessionId.
+    Its message has a role.
+    It has no timestamp or agentId key.
+    The `agent_id` and `ts` parameters add keys the observed blob record lacked.
+    """
+    rec: dict = {"type": record_type, "message": {"content": content}}
+    if agent_id is not None:
+        rec["agentId"] = agent_id
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _read_result(tool_id: str, content, *, is_error: bool = False) -> dict:
+    """A user-record tool_result for a Read call, shared by the read-scope and read-cost tests. `content` is
+    either a plain string (a real Read's text output) or a content-block list (e.g. an image result); the
+    string-versus-list split is how an image result is told apart from text."""
+    return _user_msg([{"type": "tool_result", "tool_use_id": tool_id, "content": content, "is_error": is_error}])
+
+
 def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
     return {
         "type": "tool_use",
@@ -1491,6 +1528,17 @@ def fake_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger_common, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
+
+
+@pytest.fixture()
+def stub_repo_tracked_agent_types(monkeypatch):
+    """Opt-in factory: calling it with agent type names makes redaction treat exactly those, plus the built-in
+    types, as this repo's tracked agent types, so a test needs no git repo or cache_clear to isolate the
+    allowlist."""
+    def _stub(*extra_names: str) -> None:
+        tracked = redaction._BUILT_IN_AGENT_TYPES | frozenset(extra_names)
+        monkeypatch.setattr(redaction, "_repo_tracked_agent_type_names", lambda: tracked)
+    return _stub
 
 
 @pytest.fixture()

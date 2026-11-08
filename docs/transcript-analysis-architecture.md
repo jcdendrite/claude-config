@@ -43,7 +43,7 @@ from `cli.py`.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
 turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
-instrument-authoring, and review-cost-by-size by calling each owning
+instrument-authoring, review-cost-by-size, and read-cost by calling each owning
 module's `_add_<command>_subparser` from `cli.py` at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -54,7 +54,8 @@ handler reads at call time, not `cli.py`.
 ### `corpus.py`
 
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
-`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
+`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention),
+`CONVERSATION_RECORD_TYPES` (the record types a walk over `message.content` must filter to), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
 join). The harness writes every nested dispatch's `.meta.json` into the session's own flat
 `subagents/` directory. One session's index therefore also resolves a dispatch spawned from inside
@@ -126,6 +127,7 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 it deduplicates one session's records and returns its subagent-spawn count, its sidechain
 assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
 the re-verify-by staleness rule both apply.
+`read_cost.py` consumes `_cache_read_equivalent_weights`.
 
 ### `session_pricing.py`
 
@@ -372,6 +374,14 @@ per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render
 by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` is the one name
 reached bare from `cli.py`. `context_composition.py` reads `_READ_SCOPE_CHARS_PER_TOKEN` as
 `read_scope._READ_SCOPE_CHARS_PER_TOKEN`.
+
+### `read_cost.py`
+
+The read-cost command: `cmd_read_cost`, its `_add_read_cost_subparser` registration, and every helper
+used only by it. Imports `corpus`, `pricing`, `redaction`, `render`, `scope`, `session_pricing`, and `subagent_mix`
+all by module (attribute access). `cli.py` reads `_add_read_cost_subparser` bare. Cross-module private
+reads include `session_pricing._usage_is_invalid`, `redaction._repo_tracked_agent_type_names`, and
+`subagent_mix._WITHHELD_AGENT_TYPE_LABEL`.
 
 ### `ledger_common.py`
 
@@ -745,7 +755,7 @@ name `build_parser()` reaches bare.
 The edit-format command: `cmd_edit_format`, the Edit/Write/MultiEdit call census with per-tool failure
 classification, governance-hook re-bucketing, not_found cause attribution, and
 old_string/new_string/Write token overhead, with a per-account breakdown above one root, and the
-`_add_edit_format_subparser` registration. Imports `pricing`, `render`, and `scope` all by module
+`_add_edit_format_subparser` registration. Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `_add_edit_format_subparser` is the one name
 `build_parser()` reaches bare.
 

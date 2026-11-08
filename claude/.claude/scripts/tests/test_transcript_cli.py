@@ -137,9 +137,8 @@ class TestConfigDirFlag:
         """Regression coverage for the other branch of main()'s hasattr
         check: a subcommand that DOES register its own --config-dir (e.g.
         "cost") must still get the "use that instead" recommendation --
-        test_transcript_cost_counts.py's
-        test_top_level_config_dir_message_omits_flag_recommendation only pins
-        the branch that omits it."""
+        TestConfigDirRouting.test_top_level_config_dir_message_omits_flag_recommendation
+        only pins the branch that omits it."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(
@@ -152,9 +151,48 @@ class TestConfigDirFlag:
         assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
 
 
+_REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG = (
+    "cost-counts", "period-cost", "review-cost-by-size", "read-cost",
+)
+
+
+def _subcommands_refusing_top_level_config_dir_without_their_own_flag() -> list[str]:
+    subparsers_action = next(
+        action for action in cli.build_parser()._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    return [
+        name for name in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        if "--config-dir" not in subparsers_action.choices[name]._option_string_actions
+    ]
+
+
 class TestConfigDirRouting:
     def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
         assert "context-composition" in scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+
+    def test_refusing_subcommands_without_their_own_config_dir_flag_are_exactly_the_expected_set(self):
+        assert set(_subcommands_refusing_top_level_config_dir_without_their_own_flag()) == set(
+            _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG
+        )
+
+    @pytest.mark.parametrize("subcommand", _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG)
+    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
+        """The members of scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        listed in _REFUSING_SUBCOMMANDS_WITHOUT_THEIR_OWN_CONFIG_DIR_FLAG register no
+        --config-dir flag of their own -- the shared refusal message must not
+        recommend a flag that doesn't exist on their own parsers."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert subcommand in err
+        assert "use that instead" not in err
+        assert "since this subcommand resolves its scan roots itself" in err
 
     def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
         other_account = tmp_path / "other-account"
@@ -192,6 +230,49 @@ def test_review_cost_by_size_without_this_repo_is_refused_through_main(monkeypat
     out, err = capsys.readouterr()
     assert out == ""
     assert "review-cost-by-size: requires --this-repo" in err
+
+
+def test_read_cost_without_this_repo_is_refused_through_main(monkeypatch, capsys):
+    """main() reaches cmd_read_cost, which refuses a scope without --this-repo before any scan."""
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost"])
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "read-cost: requires --this-repo" in err
+
+
+def test_read_cost_with_a_projects_glob_is_refused_through_main(monkeypatch, capsys):
+    """argparse accepts --projects alone, so the refusal comes from cmd_read_cost, not the parser.
+
+    The glob uses the --projects=GLOB form because argparse reads a separate "-home-*" token as an option.
+    """
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost", "--projects=-home-*"])
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "read-cost: requires --this-repo and refuses any --projects scope" in err
+
+
+def test_read_cost_this_repo_runs_to_a_report_through_main(
+    fake_projects, stub_repo_tracked_agent_types, monkeypatch, capsys,
+):
+    """Only read-cost test reaching _resolve_project_scope from parsed --this-repo; any other pre-seeds args._this_repo_slugs."""
+    monkeypatch.setattr(scope, "_repo_scoped_project_slugs", lambda *args, **kwargs: [fake_projects.name])
+    stub_repo_tracked_agent_types()
+    _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6")])
+    monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "read-cost", "--this-repo"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].startswith("READ COST SOURCES (this repo (1 project dirs);")
+    assert "sessions=1 " in out
 
 
 class TestCacheEfficiencyArgparseWiring:

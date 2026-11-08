@@ -54,6 +54,8 @@ PRODUCTION_MODULES = (
     "edit_format.py",
     "instrument_authoring.py",
     "review_cost_by_size.py",
+    "read_cost.py",
+    "read_scope.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -119,6 +121,11 @@ TEST_FILES = (
     "test_transcript_pricing.py",
     "test_transcript_redaction.py",
     "test_transcript_render.py",
+    "test_transcript_read_cost_scan_window.py",
+    "test_transcript_read_cost_accumulation.py",
+    "test_transcript_read_cost_subagent_reading.py",
+    "test_transcript_read_cost_command.py",
+    "test_transcript_read_cost_report.py",
     "test_transcript_scope.py",
     "test_transcript_scope_scan.py",
     "test_transcript_corpus.py",

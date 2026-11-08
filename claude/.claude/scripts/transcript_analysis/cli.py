@@ -107,6 +107,10 @@ from transcript_analysis.pr_link import (
     # Read bare by this file's own build_parser (the pr-link subparser's registration).
     _add_pr_link_subparser,
 )
+from transcript_analysis.read_cost import (
+    # Read bare by this file's own build_parser (the read-cost subparser's registration).
+    _add_read_cost_subparser,
+)
 from transcript_analysis.read_scope import (
     # Read bare by this file's own build_parser (the read-scope subcommand's own set_defaults).
     cmd_read_scope,
@@ -484,6 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_read_scope.set_defaults(func=cmd_read_scope)
+
+    _add_read_cost_subparser(sub)
 
     _add_instrument_authoring_subparser(sub)
 

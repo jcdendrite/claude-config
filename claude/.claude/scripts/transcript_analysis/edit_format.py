@@ -3,7 +3,7 @@ failure classification, governance-hook re-bucketing, not_found cause attributio
 old_string/new_string/Write token overhead, with a per-account breakdown above one root, and its
 subparser registration.
 
-Imports pricing, render, and scope by module (attribute access, not by name) -- see scope.py's own
+Imports corpus, pricing, render, and scope by module (attribute access, not by name) -- see scope.py's own
 top-of-file comment for why.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
-from transcript_analysis import pricing, render, scope
+from transcript_analysis import corpus, pricing, render, scope
 
 # Edit/Write/MultiEdit are the only tools whose call/failure counts
 # edit-format tracks; MultiEdit is kept as a member even though the tool no
@@ -194,6 +194,8 @@ def _scan_edit_format_session(records: list[dict]) -> dict:
     records = pricing.dedup_turns_by_request_id(records)
 
     for rec in records:
+        if rec.get("type") not in corpus.CONVERSATION_RECORD_TYPES:
+            continue
         msg = rec.get("message") or {}
         usage = msg.get("usage") or {}
         if isinstance(usage.get("output_tokens"), int):
