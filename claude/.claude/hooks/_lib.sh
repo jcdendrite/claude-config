@@ -5530,7 +5530,9 @@ _lib_resume_cwd_scan_line() {
 # _lib_normalize_resume_cwd_token TOKEN
 # Sets _LIB_RESUME_CWD_NORMALIZED to TOKEN minus one trailing `/` and exits 0
 # when it is an absolute path passing _lib_passes_path_char_allowlist; exits 1
-# otherwise. Sets a global instead of printing so no command substitution forks.
+# otherwise. Acceptance is judged after the one trailing `/` is stripped, so `/`
+# is rejected and `//` is accepted as `/`.
+# Sets a global instead of printing so no command substitution forks.
 _lib_normalize_resume_cwd_token() {
   local token="${1%/}"
   _LIB_RESUME_CWD_NORMALIZED=""

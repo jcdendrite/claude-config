@@ -26,7 +26,9 @@
 # A brief's `load` announce offers a new session before `/clear`, because a brief is work for another session.
 # In every other case it announces only the shell command, with one of four reasons:
 #   - the session's worktree could not be determined;
-#   - a file the slash script refuses by name or cannot list, or whose name starts with an @;
+#   - a file the slash script refuses by name or cannot list, or whose name starts with an @,
+#     given only when the verdict would otherwise be `load`, so an unknown-session reason or a
+#     mismatch reason takes precedence over it;
 #   - a linked session whose file does not name this worktree as an absolute --cwd;
 #   - a session outside a linked worktree whose file names a target directory
 #     (or whose resume target could not be resolved to one directory, which

@@ -276,6 +276,19 @@ def linked_worktree(git_repo, tmp_path):
 
 
 class TestAnnounceResumeCommand:
+    def test_runner_resolves_resume_context_to_the_recording_stub(self, isolated_home, tmp_path):
+        """The deny-only "no launcher ran" assertions elsewhere in this file read the stub's log, so
+        they stay green if `_run_hook_raw` stops putting the stub first on the hook's PATH. A
+        hook-like script that runs `resume-context` by bare name must reach the stub."""
+        probe_hook = tmp_path / "probe-hook.sh"
+        probe_hook.write_text("#!/bin/sh\nresume-context --path-probe\n")
+        probe_hook.chmod(0o755)
+
+        result = _run_hook_raw(probe_hook, {}, home=isolated_home)
+
+        assert result.returncode == 0
+        assert resume_context_stub_invocations(isolated_home) == "--path-probe\n"
+
     # -----------------------------------------------------------------------
     # Root-cause regression: config-dir resolution
     # -----------------------------------------------------------------------
