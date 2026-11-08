@@ -59,8 +59,7 @@ _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
 
-# _SONNET's cache-read rate is $0.20 per million tokens.
-_OPUS = "claude-opus-5"  # cache-read rate $0.50 per million tokens
+_OPUS = "claude-opus-5"
 _UNPRICED_MODEL = "claude-unlisted-model"
 _UNLISTED_MODEL_SENTINEL = "claude-unlisted-sentinel-model"
 # A model in the rate table that no fixture here samples, so only a scan of the whole table could find it expired.
@@ -103,7 +102,6 @@ def _loop(
 
 
 class _Lab:
-    """A temp directory holding accounts, their hand-written capture files and the note."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -124,10 +122,7 @@ class _Lab:
         self, account: Path, branch: str, arm: str = "on", *, loops: list[dict] | None = None,
         pilot_states: tuple[str, str] = ("off", "off"), status: str = "merged",
     ) -> int:
-        """Add a note row and, when `loops` is given, its capture file. Returns the row's note line.
-
-        `arm` and `pilot_states` are the states the capture file stores. The note holds only the branch and its status.
-        """
+        """`arm` and `pilot_states` are the states the capture file stores. The note holds only the branch and its status."""
         self.note_lines.append(_note_line(account, branch, status))
         if loops is not None:
             self.write_capture(account, branch, loops, routing=arm, round2=pilot_states[0], architect=pilot_states[1])
@@ -154,8 +149,7 @@ class _Lab:
 def lab(tmp_path, monkeypatch) -> _Lab:
     """A lab whose guard minimum is one key-on branch, so a test needs only the rows it is about.
 
-    The bootstrap runs a few hundred replicates. A test that asserts the real count or a position in it adds
-    `production_bootstrap_replicates`.
+    A test that asserts the real replicate count or a position in it adds `production_bootstrap_replicates`.
     """
     monkeypatch.setattr(routing_guard, "_MIN_ON_BRANCHES", 1)
     monkeypatch.setattr(routing_guard, "_BOOTSTRAP_REPLICATES", _TEST_BOOTSTRAP_REPLICATES)
@@ -185,7 +179,6 @@ def _compute(capsys, lab: _Lab, **overrides) -> _Outcome:
 
 
 def _minimal_pair(lab: _Lab, *, on_growth: int = 100, off_growth: int = 300) -> tuple[Path, int, int]:
-    """One account with a key-on and a key-off branch. Returns the account and the two note lines."""
     account = lab.account()
     on_line = lab.row(account, "branch-on", "on", loops=[_loop(input_tokens=2_000_000, growth=on_growth)])
     off_line = lab.row(
@@ -201,7 +194,6 @@ def _not_run_line(reason: str, line_no: int | None = None) -> str:
 
 
 def _digits_outside_locators(outcome: _Outcome) -> list[str]:
-    """Every output line holding a digit once `note line <n>` locators and the exempt --out lines are set aside."""
     lines = (outcome.out + outcome.err).splitlines()
     scanned = [line for line in lines if not line.startswith(_DIGIT_SCAN_EXEMPT_PREFIXES)]
     return [line for line in scanned if any(ch.isdigit() for ch in _LOCATOR.sub("", line))]
@@ -320,14 +312,13 @@ _UNDEFINED = [_loop(growth=None)]
 
 
 def _record(arm: str = "on", pilot_states: tuple[str, str] = ("off", "off"), loops: list[dict] | None = None):
-    """A loaded capture file: the loops and the three stored states."""
     return routing_guard._CaptureRecord(
         _DEFINED if loops is None else loops, routing_guard._KeyStates(arm, pilot_states[0], pilot_states[1]),
     )
 
 
 def _select(entries: list[tuple], ready=(_ACCOUNT_A, _ACCOUNT_B), loaded: dict | None = None):
-    """Run the sample selection. Each entry is (note row, the row's loaded file), the file a `_record`."""
+    """Each entry is (note row, the row's loaded file), the file a `_record`."""
     rows = [row for row, _file in entries]
     fetched = loaded if loaded is not None else {row.line_no: file for row, file in entries}
     return routing_guard._select_sample(rows, ready, fetched)
@@ -604,7 +595,7 @@ class TestSampleReasonsEndToEnd:
     ):
         lab = lab_at_the_real_minimum
         account = lab.account()
-        # Nine loaded key-on files plus the invalid one: counting only the loaded files would add the key-on minimum
+        # Counting only the loaded files would add the key-on minimum
         # and the arm-size reasons.
         for index in range(9):
             lab.row(account, f"on-{index}", "on", loops=[_loop(input_tokens=1_000_000, growth=10 + index)])
@@ -815,7 +806,6 @@ class TestCaptureFiles:
         key_states = routing_guard._BranchKeyStates(
             {key: "on" if key == routing_guard._ROUTING_KEY else "off" for key in routing_guard._STATE_KEYS}, (),
         )
-        # The published file goes through capture's own row publisher, then compute finds it by the branch's digest.
         report = routing_guard._capture_account_rows(
             [on_row], {1: routing_guard._StandingFile.ABSENT}, {1: key_states}, set(), scan, account,
         )
@@ -1191,7 +1181,6 @@ def _bs(digest: str, *, loops: int = 1, growth_sum: int = 0, growth_loops: int =
 
 
 class _ScriptedRng:
-    """Returns prearranged index draws and fails on any call past the script."""
 
     def __init__(self, draws: list[list[int]]):
         self._draws = iter(draws)
@@ -1269,7 +1258,6 @@ class TestBootstrap:
         assert (first.lower, first.upper) == (second.lower, second.upper)
         assert (first.lower, first.upper) != (other_seed.lower, other_seed.upper)
 
-    # A scripted stream is consumed in call order, so these draws follow production's order of the key-on then key-off draw.
     def test_a_scripted_stream_ranks_undefined_replicates_last_and_reads_the_lower_bound_at_index_10_of_the_360_defined(self):
         on = [_bs("01", overhead=1.0, growth_sum=10), _bs("02", overhead=3.0, growth_loops=0)]
         off = [_bs("03", overhead=10.0, growth_sum=10), _bs("04", overhead=4.0, growth_sum=10)]
@@ -1371,9 +1359,6 @@ class _PipelineSpy(NamedTuple):
 
 
 def _six_branch_lab(lab: _Lab, account_names: Sequence[str] = ("acct-a",)) -> list[int]:
-    """Six key-on and six key-off hand-written branches differing in loops, overhead and growth, spread over the accounts.
-
-    Returns each row's note line in creation order."""
     accounts = [lab.account(name) for name in account_names]
     lines = []
     for index in range(6):
@@ -1537,7 +1522,7 @@ class TestBootstrapThroughCompute:
 
 
 def _passed_fixture(lab: _Lab) -> Path:
-    """Two branches per arm, differing within each arm in loops, overhead, growth and carry. Key-on costs far less."""
+    """Key-on costs far less."""
     account = lab.account()
     lab.row(account, "on-1", "on", loops=[_loop(input_tokens=1_000_000, growth=100_000)])
     lab.row(account, "on-2", "on", loops=[

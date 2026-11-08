@@ -2482,8 +2482,6 @@ _UNPRICED_MODEL = "claude-unpriced-test-model"
 
 class TestPriceDispatchTokenSink:
     def _write_dispatch_tree(self, fake_projects: Path) -> Path:
-        """Dispatch a1 holds a standard turn that spawns n1 twice and a missing dispatch, an unpriced turn and a
-        <synthetic> turn. Dispatch n1 holds a fast US-geo turn and a standard turn."""
         session_jsonl = fake_projects / "sess-1.jsonl"
         _write_jsonl(session_jsonl, [])
         _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
@@ -2527,7 +2525,6 @@ class TestPriceDispatchTokenSink:
         review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink={})
 
         assert with_sink == without_sink
-        # The unpriced-model and <synthetic> turns, one missing dispatch, a1 plus n1 resolved.
         assert (with_sink.unpriced_turns, with_sink.dangling, with_sink.resolved) == (2, 1, 2)
 
     @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])
@@ -2581,8 +2578,6 @@ class TestRecordTurnTokens:
 
 class TestPriceSessionRoundsTokens:
     def _priced_session(self, fake_projects: Path):
-        """One code-review round: an opening standard turn with a 1h write that spawns a1, a fast US-geo turn, an
-        unpriced-model turn and a <synthetic> turn. Dispatch a1 spawns n1."""
         session_jsonl = fake_projects / "sess-1.jsonl"
         records = [
             _priced(
@@ -2633,8 +2628,6 @@ class TestPriceSessionRoundsTokens:
         assert "tokens" not in entries[0]
 
     def _collect_one_round_tokens(self, fake_projects: Path, *, main_turn: dict, dispatch_turn: dict) -> dict:
-        """One code-review round: a standard opening turn that spawns a1, `main_turn`, then a closing user message.
-        Dispatch a1 holds `dispatch_turn`. Returns the round's entry priced with collect_tokens."""
         session_jsonl = fake_projects / "sess-1.jsonl"
         records = [
             _priced(

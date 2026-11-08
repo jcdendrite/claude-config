@@ -1,4 +1,4 @@
-"""Fixture builders and spies used only by the tests of the routing-guard subcommand.
+"""Fixture builders and spies for the routing-guard subcommand's tests.
 
 `routing_guard` is imported inside the functions that need it, so importing this module for `_note_line` or
 `_digest_name` alone does not import the subcommand.
@@ -68,7 +68,6 @@ def _routing_deny_record(
 
 
 class _PathSpies:
-    """Every path the spied `open` and directory-listing entry points received while installed."""
 
     def __init__(self) -> None:
         self.opened: list[str] = []
@@ -89,10 +88,7 @@ class _PathSpies:
 
 
 def _install_path_spies(monkeypatch) -> _PathSpies:
-    """Record the path argument of builtins.open, io.open, os.open, os.scandir and os.listdir.
-
-    A file descriptor argument is not a path and is skipped. The spies delegate to the real functions.
-    """
+    """A file descriptor argument is not a path and is skipped."""
     spies = _PathSpies()
 
     def recorded(target: list[str], real: Callable) -> Callable:
@@ -119,9 +115,7 @@ class _SubprocessRecorder:
 
 
 def _install_subprocess_recorder(monkeypatch, delegate: Callable | None = None) -> _SubprocessRecorder:
-    """Record the argv of every subprocess.run call and every subprocess.Popen construction.
-
-    `delegate` replaces subprocess.run, else the real function runs. subprocess.run builds a Popen, so a real run
+    """`delegate` replaces subprocess.run, else the real function runs. subprocess.run builds a Popen, so a real run
     records its argv twice. A shell string is recorded as one element.
     """
     recorder = _SubprocessRecorder()
@@ -150,7 +144,7 @@ class _RecorderPositiveControls:
     """Tests that the subprocess recorder sees a `gh` run and a Popen, so a test asserting it saw no other
     executable cannot pass on a recorder that records nothing.
 
-    Not collected here. One test module subclasses it as a `Test...` class.
+    Not collected here; a test module subclasses it as a `Test...` class.
     """
 
     def test_the_subprocess_recorder_records_a_gh_argv(self, monkeypatch):
@@ -170,7 +164,6 @@ class _RecorderPositiveControls:
 
 @contextlib.contextmanager
 def _environment_unchanged() -> Iterator[None]:
-    """Fail when the body adds, removes or changes an environment variable."""
     before = dict(os.environ)
     yield
     after = dict(os.environ)
@@ -230,7 +223,6 @@ def _opt_in_faults() -> list[tuple[str, object, routing_guard._OptInOutcome, str
 
 
 def _config_enabled_stub(reader_result: object) -> Callable[..., object]:
-    """A stand-in for `_config.config_enabled` that raises `reader_result` when it is an exception, else returns it."""
 
     def config_enabled(_key, config_dir_override=None):
         if isinstance(reader_result, Exception):
@@ -241,7 +233,7 @@ def _config_enabled_stub(reader_result: object) -> Callable[..., object]:
 
 
 def _write_noisy_config_state_file(config_dir: Path) -> None:
-    """A config state file with one malformed line and one unknown key, which the config reader reports on stderr."""
+    """A config state file the config reader reports on stderr."""
     (config_dir / "claude-config.toml").write_text(f"{_NOISY_CONFIG_MALFORMED_LINE}\n{_NOISY_CONFIG_UNKNOWN_KEY} = true\n")
 
 
@@ -274,17 +266,14 @@ def _capture_loop(**overrides) -> dict:
 
 
 def _capture_file_text(loops: object, **state_overrides) -> str:
-    """A capture file's text holding `loops` and the three key states, `state_overrides` replacing a state.
-
-    `loops` is not checked, so a test can pass an invalid shape.
-    """
+    """`loops` is not checked, so a test can pass an invalid shape."""
     return json.dumps({"loops": loops, **_VALID_STATES, **state_overrides})
 
 
 # --- the session config-keys log ---------------------------------------------
 
 _LOG_FILE_NAME = ".session-config-keys-log.jsonl"
-# Before every fixture transcript timestamp, which sit on 2026-08-01 from 10:00.
+# Precedes the fixture transcript timestamps.
 _DEFAULT_LOG_AT = "2026-08-01T09:00:00Z"
 
 
@@ -294,7 +283,7 @@ def _log_row(
 ) -> dict:
     """One session config-keys log row. A value is the log's own token: `false` is off, `true` or any enum token is on.
 
-    `keys`, when given, replaces the three keys' entries entirely, so a test can omit one or add an unknown token.
+    `keys`, when given, replaces the default keys' entries entirely, so a test can omit one or add an unknown token.
     """
     return {
         "session_id": session_id,
@@ -327,7 +316,6 @@ def _write_log(config_dir: Path, *rows: dict | str | bytes, mode: int = 0o600, f
 
 
 def _append_log_rows(config_dir: Path, *rows: dict) -> Path:
-    """Append rows to a log that may already exist, creating it `0600`."""
     path = config_dir / _LOG_FILE_NAME
     existing = path.read_bytes() if path.exists() else b""
     path.write_bytes(existing + b"".join(b"\n" + json.dumps(row).encode() + b"\n" for row in rows))
@@ -447,8 +435,6 @@ def _texts_a_config_dir_cell_can_print(cell: str) -> list[str]:
     Production's own expansion and resolution produce the paths. A cell production refuses to expand (a relative
     one, or `~/` with no absolute HOME) contributes only its whole text, because its last segment is arbitrary
     text. A cell that expands but does not resolve contributes the expanded path only.
-
-    No returned text is empty, whitespace-only, or a dot segment (`.` or `..`).
     """
     from transcript_analysis import routing_guard
 
@@ -472,9 +458,6 @@ def _strings_the_output_must_not_name(note_path: str, config_dir_argument: str |
 
     The note is read the way production reads it: bytes decoded as UTF-8 and split on `\\n` only, so a bare
     carriage return does not start a line. A cell is read leniently, since a refused note still must not be echoed.
-    The --config-dir argument is treated as a config dir cell. See `_texts_a_config_dir_cell_can_print` for what a
-    config dir cell contributes. A branch cell contributes its text unless it is empty, whitespace-only, or a dot
-    segment.
     """
     strings: list[str] = _texts_a_config_dir_cell_can_print(config_dir_argument) if config_dir_argument else []
     strings.extend(_session_ids_in_account(config_dir_argument))
@@ -504,11 +487,7 @@ def _path_that_resolve_rejects_as_nul(directory: Path) -> str:
 
 
 def _invoke_routing_guard(capsys, args) -> _Outcome:
-    """Run cmd_routing_guard to its exit and return the exit code and both streams.
-
-    On every exit code, no branch name or config dir read from the note, no account directory name and no
-    `--config-dir` argument may appear in either stream.
-    """
+    """Run cmd_routing_guard to its exit and return the exit code and both streams."""
     from transcript_analysis import routing_guard
 
     with pytest.raises(SystemExit) as exit_info:
@@ -524,7 +503,6 @@ def _invoke_routing_guard(capsys, args) -> _Outcome:
 
 
 def _install_git_not_found(monkeypatch) -> None:
-    """Make every `subprocess.run` raise the error a missing `git` executable raises."""
 
     def git_not_found(*args, **kwargs):
         raise FileNotFoundError(errno.ENOENT, "No such file or directory", "git")
@@ -535,9 +513,7 @@ def _install_git_not_found(monkeypatch) -> None:
 def _assert_git_failure_diagnostic_precedes_note_refusal(
     outcome: _Outcome, exempt_prefixes: Sequence[str], tmp_path: Path,
 ) -> None:
-    """The first stderr line is the git diagnostic under the routing-guard label, and the second is the note refusal.
-
-    `exempt_prefixes` is the calling module's digit-scan exemption list, which the diagnostic line must match.
+    """`exempt_prefixes` is the calling module's digit-scan exemption list, which the diagnostic line must match.
     """
     assert outcome.code == 2, outcome.code
     assert len(outcome.err.splitlines()) >= 2, outcome.err
@@ -550,7 +526,6 @@ def _assert_git_failure_diagnostic_precedes_note_refusal(
 
 
 def _routing_guard_section_lines(doc_text: str) -> list[str]:
-    """The lines of the `## routing-guard` section, which ends at the next `## ` heading outside a code fence."""
     section: list[str] = []
     in_section = False
     in_fence = False

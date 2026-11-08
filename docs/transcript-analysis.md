@@ -1841,7 +1841,6 @@ The grep does not match the upper-case constants or the author-outcome plumbing 
 - `_resample_percentile`'s `level` parameter and `TestResamplePercentileLevel`.
 - The round entry's `window_end` key, with the `del entry["window_end"]` in `compute_review_round_costs`.
 - The helper `_class_tokens` and constant `_UNPRICED_MODEL` in `test_transcript_review_rounds.py`. Ruff does not flag them once their tests go.
-- The sentence about the token sink in `pricing._token_counts`'s docstring, which spells it "token sink" with a space.
 
 ### Sample output
 

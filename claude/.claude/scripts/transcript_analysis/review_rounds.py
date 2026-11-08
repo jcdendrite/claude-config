@@ -297,10 +297,7 @@ def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, u
 
 
 def _record_turn_tokens(token_sink: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
-    """Add one turn's per-class token counts to `token_sink`, nested model, then pricing variant, then token class.
-
-    A `<synthetic>` turn is skipped. A turn whose model the rate table does not price is recorded under its own model.
-    """
+    """A turn whose model the rate table does not price is still recorded, under its own model."""
     if model == pricing._SYNTHETIC_MODEL_ID:
         return
     _add_turn_tokens(token_sink, model, usage)
@@ -341,10 +338,8 @@ def _price_dispatch(
     own Dangling column. tally.resolved is this dispatch plus every nested one
     successfully priced — review-round-cost's own "agents" column.
 
-    `token_sink`, when given, receives the class token counts of every
-    non-synthetic turn with valid usage, priced or not. It nests them model,
-    then pricing variant (`_record_turn_tokens`). Nested dispatches add to it
-    too, and it never changes `tally`.
+    `token_sink`, when given, also receives the tokens of unpriced turns,
+    which `tally.tokens` excludes. It never changes `tally`.
     """
     if tool_use_id in visited:
         return
@@ -401,14 +396,7 @@ def _price_session_rounds(
     *,
     collect_tokens: bool = False,
 ) -> list[dict]:
-    """Price one session's round windows and add every priced turn's and dispatch's dollars to `branch_totals`.
-
-    `records` must already be deduped (pricing.dedup_turns_by_request_id) and
-    `windows` and `record_branches` computed from them.
-    With `collect_tokens`, each round entry of the returned list also holds `tokens`: the class token
-    counts of its window's main-thread turns and dispatches. It nests them
-    model, then pricing variant (`_record_turn_tokens`).
-    """
+    """`records` must already be deduped and `windows` and `record_branches` computed from them."""
     dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
     visited: set[str] = set()
 
@@ -909,8 +897,7 @@ def _pooled_shares(agg: _PooledBranchTotals) -> dict[str, float | None]:
 def _resample_percentile(sorted_values: Sequence[float], level: float | None = None) -> tuple[float, float]:
     """Percentile bounds by index into an already-sorted resample distribution:
     lo_idx = round(tail * (B - 1)), hi_idx = round((1 - tail) * (B - 1)),
-    tail = (1 - level) / 2. `level` None resolves to _CI_LEVEL when the call
-    runs (the 2.5th/97.5th percentiles at the default 0.95).
+    tail = (1 - level) / 2.
     """
     b = len(sorted_values)
     tail = (1 - (_CI_LEVEL if level is None else level)) / 2

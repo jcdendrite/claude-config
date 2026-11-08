@@ -371,11 +371,9 @@ DOCS_DIR = "docs"
 # also reads it for the per-account state-path contract.
 # test_output_preferences_layering.py (HOOKS_TESTS_DIR) reads its Output
 # preferences section's template block and its pointer to GLOBAL_CLAUDE_MD.
-# test_transcript_routing_guard_capture.py is the only test under
-# SCRIPTS_TESTS_DIR that reads it, for a heading a printed message cites,
-# through a path built inside a test body that TestCrossDomainReadCompleteness
-# cannot resolve. The README row therefore selects that file alone, not the
-# directory. TestMessageCitations guards that mapping.
+# test_transcript_routing_guard_capture.py reads it for a heading a printed
+# message cites, through a path built inside a test body that
+# TestCrossDomainReadCompleteness cannot resolve.
 README_MD = "README.md"
 ROUTING_GUARD_CAPTURE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_routing_guard_capture.py"
 

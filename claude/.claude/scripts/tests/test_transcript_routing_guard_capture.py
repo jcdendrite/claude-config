@@ -122,7 +122,6 @@ def _ts(minute: int, hour: int = 10) -> str:
 def _marker_write_result(
     tool_id: str, *, minute: int, branch: str = _BRANCH, is_error: bool = False, text: str = "marker write output",
 ) -> dict:
-    """The user record pairing a tool_result with the Bash call `tool_id`, an error result when `is_error`."""
     result_block = {**_tool_result(tool_id, text), **({"is_error": True} if is_error else {})}
     return _user_msg([result_block], branch=branch, ts=_ts(minute))
 
@@ -136,7 +135,6 @@ def _recorder_notice_captured_before_any_spy():
 
 @pytest.fixture
 def world(tmp_path, monkeypatch) -> _World:
-    """A temp repo as the cwd and the patched checkout root, one opted-in account, and an owner-only note."""
     repo = tmp_path / "checkout"
     _init_repo(repo)
     _commit(repo, "init")
@@ -157,7 +155,7 @@ def _write_note(world: _World, *lines: str, mode: int = 0o600, text: str | None 
     world.note.chmod(mode)
 
 
-# The log fields for a row with all three keys off, at a time before every fixture record. A test passes it as `log=`.
+# The log fields for a row with all keys off. A test passes it as `log=`.
 _KEYS_OFF: MappingProxyType = MappingProxyType({})
 _ROUTING_ON: MappingProxyType = MappingProxyType({"routing": "true"})
 
@@ -166,9 +164,7 @@ def _write_session(
     world: _World, records: list[dict], *, session_id: str = "sess-1", slug: str | None = None,
     log: MappingProxyType | dict | None = None,
 ) -> Path:
-    """Write one session file, stamping every record with `session_id`.
-
-    `log` holds the `_log_row` fields of the row to record for the session (key values and `logged_at`). The default
+    """`log` holds the `_log_row` fields of the row to record for the session (key values and `logged_at`). The default
     `None` records no row, so a test opts in to the state it means.
     """
     project_dir = world.projects / (slug or world.main_slug)
@@ -190,11 +186,6 @@ def _run(capsys, world: _World, **overrides) -> _Outcome:
 
 
 def _clean_loop(branch: str = _BRANCH, *, start: int = 0, tag: str = "a", later_input: int = 130_000) -> list[dict]:
-    """One key-off loop: a code-review round whose span writes the marker, a fresh prompt and one later turn.
-
-    Overhead is the round's two turns: 110,000 input and 500 output tokens. Growth is the later turn's context
-    less the opening turn's: 30,000.
-    """
     return [
         _priced(_SONNET, input=100_000, branch=branch, ts=_ts(start), content=[_skill_block(f"sk-{tag}", "code-review")]),
         _priced(_SONNET, input=10_000, output=500, branch=branch, ts=_ts(start + 1), content=[_marker_write_use(f"mk-{tag}")]),
@@ -205,7 +196,6 @@ def _clean_loop(branch: str = _BRANCH, *, start: int = 0, tag: str = "a", later_
 
 
 def _denied_skill_call(*tool_use_ids: str, branch: str = _BRANCH, minute: int = 0) -> dict:
-    """A main-thread assistant record holding one `Skill(code-review)` tool_use per id, the calls a routing deny answers."""
     return _asst(
         _SONNET, branch=branch, ts=_ts(minute),
         content=[_skill_block(tool_use_id, "code-review") for tool_use_id in tool_use_ids],
@@ -213,7 +203,6 @@ def _denied_skill_call(*tool_use_ids: str, branch: str = _BRANCH, minute: int = 
 
 
 def _legacy_routing_deny_with_hook_name(tool_use_id: str, hook_name: str) -> dict:
-    """A legacy attachment routing deny whose `hookName` is `hook_name`."""
     record = _routing_deny_record(tool_use_id, shape="legacy", branch=_BRANCH, ts=_ts(1))
     record["attachment"]["hookName"] = hook_name
     return record
@@ -239,7 +228,6 @@ def _stored_loops(world: _World, branch: str) -> list[dict]:
 
 @pytest.fixture
 def assembled_loops(monkeypatch) -> list[list[routing_guard._Loop]]:
-    """Each `_assemble_loops` result of the run, in call order."""
     results: list[list[routing_guard._Loop]] = []
     real_assemble_loops = routing_guard._assemble_loops
 
@@ -318,9 +306,7 @@ class _RefusalCase(NamedTuple):
 
 
 def _refusal_notes(config_dir: str) -> list[_RefusalCase]:
-    """Each refused note, the fixed reason its refusal prints and the note line it names.
-
-    Each note's one named defect is its only defect, so each asserts its own reason. `control_text` repairs that one
+    """Each note's one named defect is its only defect, so each asserts its own reason. `control_text` repairs that one
     defect and parses.
     """
     def note(*rows: str) -> str:
@@ -368,7 +354,6 @@ _WRONG_COLUMN_COUNT_ROWS = [
 
 
 def _expected_refusal_fragment(reason: str) -> str:
-    """The text of the note parser's refusal for a case's reason label."""
     return {
         "wrong column count": routing_guard._WRONG_COLUMN_COUNT_REASON,
         "unknown status": routing_guard._UNKNOWN_STATUS_REASON,
@@ -762,7 +747,6 @@ def _branch_facts(**overrides) -> routing_guard._BranchFacts:
 def _branch_states(
     *, unknown_causes: tuple[str, ...] = (), mixed: bool = False, state: str = "off",
 ) -> routing_guard._BranchKeyStates:
-    """Key states for a branch: every key `state`, the routing key unknown with `unknown_causes` or mixed."""
     by_key = {key: state for key in routing_guard._STATE_KEYS}
     if unknown_causes:
         by_key[routing_guard._ROUTING_KEY] = routing_guard._STATE_UNKNOWN
@@ -881,7 +865,6 @@ class TestWholeReason:
 def _write_marker_writing_orchestrator(
     project_dir: Path, *, session_id: str = "sess-1", tool_use_id: str = "o1", orchestrator_write_is_error: bool = False,
 ) -> None:
-    """The review-orchestrator's own transcript, holding the clean-marker write and its paired result."""
     records = [
         _as_sidechain(_priced(
             _SONNET, input=5_000, branch=_BRANCH, ts=_ts(2),
@@ -895,7 +878,6 @@ def _write_marker_writing_orchestrator(
 
 
 def _key_on_loop(branch: str = _BRANCH) -> list[dict]:
-    """A denied Skill(code-review) followed by the review-orchestrator spawn that replaces it."""
     return [
         _priced(_SONNET, input=40_000, branch=branch, ts=_ts(0), content=[_skill_block("sk-denied", "code-review")]),
         _routing_deny_record("sk-denied", branch=branch, ts=_ts(1)),
@@ -907,10 +889,7 @@ def _key_on_loop(branch: str = _BRANCH) -> list[dict]:
 def _round(
     branch: str, tag: str, minute: int, *, marker: bool, input_tokens: int = 1_000, write_result: str | None = "ok",
 ) -> list[dict]:
-    """One code-review round opened by a Skill call, its outcome span holding a marker write or not.
-
-    `write_result` is the paired result of the write: "ok", "error", or None for a write with no result.
-    """
+    """`write_result` is the paired result of the write: "ok", "error", or None for a write with no result."""
     content = [_marker_write_use(f"mk-{tag}")] if marker else []
     paired_result = (
         [_marker_write_result(f"mk-{tag}", minute=minute + 1, branch=branch, is_error=write_result == "error")]
@@ -1260,7 +1239,7 @@ class TestGrowthAndLaterTurns:
         assert loop["later_turns"] == {_SONNET: 1}
 
     def test_growth_is_the_difference_of_the_full_contexts_when_the_turns_carry_cache_tokens(self, world, capsys):
-        # Context is input plus cache reads plus both cache-write classes. input_tokens alone is 5 and 7 here.
+        # input_tokens alone would give a different growth than the full contexts.
         records = [
             _priced(_SONNET, input=5, cache_read=60_000, ephemeral_1h=30_000, ephemeral_5m=10_000, branch=_BRANCH,
                     ts=_ts(0), content=[_skill_block("sk-a", "code-review")]),
@@ -1499,7 +1478,6 @@ def _standard_tokens(*, input: int, output: int = 0) -> dict:
 
 
 class TestMalformedUsage:
-    """`_clean_loop`'s valid turns give overhead of 110,000 input and 500 output tokens, growth of 30,000 and one later turn."""
 
     @_MALFORMED_INPUT_TOKENS
     def test_a_malformed_main_thread_turn_inside_the_window_is_excluded_and_degrades_its_loop(
@@ -3046,7 +3024,6 @@ def _with_valid_states(data: bytes) -> bytes:
     return json.dumps({**json.loads(data), **_VALID_STATES}).encode()
 
 
-# Each case puts a valid element first and the invalid one second at one nesting level.
 _SECOND_ELEMENT_CASES_WITHOUT_STATES = [
     (
         "second-loop-with-a-boolean-growth",
@@ -3110,7 +3087,6 @@ _SECOND_ELEMENT_INVALID_CAPTURES = [
 _VALID_LOOP_TEXT = json.dumps(_DEFAULT_LOOP)
 _VALID_STATES_TEXT = json.dumps(_VALID_STATES)[1:-1]
 _VALID_FILE_TEXT = _capture_file_text([_DEFAULT_LOOP])
-# Each case differs from the valid file in one place, so only the guard it names can refuse it.
 _GUARD_CASES = [
     (
         "duplicate-loops-key-holding-two-valid-lists",
@@ -3589,7 +3565,6 @@ class TestFreeText:
 
         outcome = _run(capsys, world)
 
-        # Only a contiguous run whose input usage disagrees trips the drift flag; a non-contiguous run never does.
         assert outcome.code == (3 if drift_shape == "contiguous-usage-disagrees" else 0), outcome.err
         assert request_id in outcome.err
         assert request_id not in outcome.out
@@ -3599,7 +3574,7 @@ class TestFreeText:
 # --- output ------------------------------------------------------------------
 
 
-# Capture's own computed values: a locator, the progress count, a row's counts, the published count and a deny's UTC minute.
+# The digit-bearing line shapes capture itself prints.
 _PERMITTED_COMPUTED_VALUES = re.compile("|".join([
     r"note line \d+",
     r"scanning project directory \d+ of \d+",
@@ -3619,7 +3594,6 @@ _CAPTURED_LINE = (
 
 
 def _lines_with_values_outside_the_permitted_shapes(outcome: _Outcome) -> list[str]:
-    """Every output line holding a digit or `$` once the permitted line shapes are set aside."""
     lines = (outcome.out + outcome.err).splitlines()
     scanned = [line for line in lines if not line.startswith(_DIGIT_SCAN_EXEMPT_PREFIXES)]
     return [line for line in scanned if any(ch.isdigit() or ch == "$" for ch in _PERMITTED_COMPUTED_VALUES.sub("", line))]
@@ -3997,7 +3971,7 @@ def _epoch(iso: str) -> float:
 def _log_with(
     rows_by_session: dict[str, list[tuple[str, dict]]], *, status=routing_guard._LogStatus.READ, earliest: str | None = None,
 ) -> routing_guard._SessionConfigKeysLog:
-    """An in-memory log: per session, (logged_at, keys) rows in file order."""
+    """An in-memory log: per session, (logged_at, keys) rows."""
     rows = {
         session_id: [routing_guard._LogRow(_epoch(logged_at), keys) for logged_at, keys in session_rows]
         for session_id, session_rows in rows_by_session.items()
@@ -4046,7 +4020,6 @@ _FIFO_READ_TIMEOUT_SECONDS = 5
 
 
 class _ReadlineSizeSpy:
-    """A binary handle that records the size argument of every `readline` and delegates to the real handle."""
 
     def __init__(self, handle):
         self._handle = handle
@@ -5165,7 +5138,6 @@ _MESSAGE_CITATION_RE = re.compile(r'(?P<doc_path>[\w./-]+\.md) § "(?P<heading>[
 
 
 def _message_constant_texts() -> list[str]:
-    """The text of every module-level constant of routing_guard that holds a string, or a collection of strings."""
     texts: list[str] = []
     for name, value in vars(routing_guard).items():
         if not re.fullmatch(r"_[A-Z][A-Z0-9_]*", name):
@@ -5194,9 +5166,7 @@ _BANNER_CITATION_RE = re.compile(r'`(?P<doc_path>[\w./-]+\.md)` section "(?P<hea
 
 
 def _routing_guard_section_citation_headings() -> set[str]:
-    """Every heading cited as `routing-guard "<heading>"` by a message constant or by the unlisted-deny refusal.
-
-    The refusal is built inside `_reconcile_denies`, so it is produced by calling that function."""
+    """The unlisted-deny refusal is built inside `_reconcile_denies`, so it is produced by calling that function."""
     unlisted_deny_refusals = routing_guard._reconcile_denies(
         [routing_guard._DenyFact("unlisted-branch", 1.0, "sess-1")], [_STATE_ON], [],
         Path("/placeholder/account-a"), set(), {}, {},
@@ -5276,8 +5246,7 @@ class TestMessageCitations:
         assert not unresolved
 
 
-# The documented loop reads its short note and runs a stub per account: a few shell builtins and at most three stub
-# processes, so milliseconds. 30 seconds is far above that, and well below the 25-minute CI job cap
+# The documented loop does milliseconds of work. 30 seconds is far above that, and well below the 25-minute CI job cap
 # (.github/workflows/tests.yml) that a loop regressed to a blocking read would otherwise stall until.
 _DOCUMENTED_LOOP_TIMEOUT_SECONDS = 30
 
@@ -5328,11 +5297,7 @@ with open(exit_code_file) as exit_code_handle:
     def _run_loop(
         self, tmp_path: Path, exit_codes_in_sorted_order: tuple[int, ...],
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-        """Run the documented loop over a note naming one account per exit code.
-
-        Returns the run and each `--config-dir` the stub saw, relative to `tmp_path`. The accounts sort as `acct-a`,
-        `acct-b`, `~/acct-c` under the C locale, and the note lists them out of order.
-        """
+        """Returns the run and each `--config-dir` the stub saw, relative to `tmp_path`."""
         home = tmp_path / "home"
         exit_codes_dir = tmp_path / "exit-codes"
         for directory in (home, exit_codes_dir):

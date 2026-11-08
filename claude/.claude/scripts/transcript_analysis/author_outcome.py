@@ -179,11 +179,7 @@ def _records_have_clean_marker_write(
 ) -> bool:
     """True iff any Bash tool_use command in `records` is the hook-allowlisted
     `marker.sh write code-review` shape. Applies no sidechain filter, so it
-    reads a subagent transcript as well as main-thread records.
-
-    When `succeeded_tool_use_ids` is given, a matching block counts only if its
-    `id` is in it.
-    """
+    reads a subagent transcript as well as main-thread records."""
     for rec in records:
         if rec.get("type") != "assistant":
             continue
@@ -211,21 +207,12 @@ def _round_has_marker_write(
     """True iff this round's own outcome span [open_idx, span_end) holds a
     hook-allowlisted `marker.sh write code-review`.
 
-    Author-outcome reads it as the "attempted" signal, the fallback for a round
-    with no ledger row (see _classify_round). The routing-guard subcommand reads
-    it as the "confirmed" signal that ends a review loop.
-
-    The span's main-thread records are read, and so is the transcript of every
-    orchestrator spawn whose spawn_idx falls inside the span.
-
     With `succeeded_tool_use_ids` None the signal is "attempted": a write
     counts whether or not it succeeded, and docs/transcript-analysis.md's
     author-outcome "Orchestrator rounds" section lists what it counts besides
-    a successful write. With a collection the signal is "confirmed": a
-    main-thread write counts only when its id is in the collection, and a
-    spawn counts only when its own transcript holds a confirmed write
-    (`has_confirmed_marker_write`). A confirmed write has a paired non-error
-    result, which does not prove the marker was stored.
+    a successful write. With a collection the signal is "confirmed": a write
+    counts only when its tool_use id is in the collection (it has a paired
+    non-error result). That does not prove the marker was stored.
     """
     main_thread_span = [rec for rec in records[open_idx:span_end] if not rec.get("isSidechain")]
     if _records_have_clean_marker_write(main_thread_span, succeeded_tool_use_ids):
@@ -663,11 +650,6 @@ def _build_tool_result_index_map(records: list[dict], *, skip_sidechain: bool = 
 
 
 def _succeeded_tool_use_ids(records: list[dict], *, skip_sidechain: bool = True) -> set[str]:
-    """The tool_use_id of every tool_result block that is not an error.
-
-    Sidechain records are skipped unless skip_sidechain is False (see
-    _agent_dispatch_tool_use_ids).
-    """
     succeeded: set[str] = set()
     for rec in records:
         if skip_sidechain and rec.get("isSidechain"):

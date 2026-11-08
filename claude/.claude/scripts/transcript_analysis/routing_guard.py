@@ -7,9 +7,8 @@ OUTPUT INVARIANT, each clause pinned by the tests it names:
 - Free text (assistant and user message text, `Skill` and `Agent` arguments, denial text, a dispatch's meta description)
   reaches no capture file, stdout or stderr. Denial text is read only to classify a record.
   Pinned by `TestFreeText` in test_transcript_routing_guard_capture.py.
-- No line names a branch, a config-directory path or an account label. Pinned by `_invoke_routing_guard` in
-  _routing_guard_helpers.py, which asserts, on every exit, that no note branch, note config-dir cell, absolute cell's
-  final path segment or `--config-dir` argument appears in either stream.
+- No line names a branch, a config-directory path or an account label.
+  Pinned by `_invoke_routing_guard` in _routing_guard_helpers.py, on every exit.
 - A capture file stores `message.model` strings verbatim. Every other string it holds is a fixed label.
   Pinned by `TestGoldenFile` in test_transcript_routing_guard_capture.py.
 - The session config-keys log is read for a row's session id, `logged_at` and key values. A session id and a
@@ -73,7 +72,6 @@ _BOOTSTRAP_SEED = 0
 # pricing.py's rates are dollars per million tokens.
 _TOKENS_PER_MTOK = 1_000_000
 # The root of the checkout holding this module. Path.resolve() follows stow's symlinks into it.
-# Capture refuses a cwd outside a worktree of it, because scope._repo_scoped_project_slugs scopes the read to the cwd's repo.
 _CHECKOUT_ROOT = Path(__file__).resolve().parents[4]
 
 # Placeholder leaf for the git work tree check on the captures directory, which must see the directory itself.
@@ -137,7 +135,7 @@ _REASON_KEY_STATE_UNKNOWN = "key-state-unknown"
 _REASON_KEY_STATE_MIXED = "key-state-mixed"
 _REASON_KEY_STATE_CONTRADICTED = "key-state-contradicted"
 
-# The causes of an unknown key state, in the order `_key_state_at` tests them.
+# The causes of an unknown key state.
 _CAUSE_ROUND_UNTIMED = "round-untimed"
 _CAUSE_LOG_UNUSABLE = "log-unusable"
 _CAUSE_LOST_EVENT = "lost-event"
@@ -250,7 +248,7 @@ _PRICING_INTEGRITY_LINE = (
     " read this run's stderr for the diagnostic"
 )
 
-# Every NOT RUN reason is fixed and digit-free. The tuple's order is the order they print in.
+# Every NOT RUN reason is fixed and digit-free.
 _REASON_TOO_FEW_ON = "fewer key-on branches than the guard's minimum"
 _REASON_ACCOUNT_NOT_READY = (
     "an account with merged branches has its `pr_cost_recording` key off, a config fault, or no captures directory"
@@ -342,7 +340,6 @@ class _StandingFile(enum.Enum):
     ABSENT = "absent"
     UNREADABLE = "unreadable"
     INVALID = "invalid"
-    # A file that holds loops and no key states.
     LOOPS_ONLY = "loops only"
 
 
@@ -370,8 +367,6 @@ class _RoundFacts(NamedTuple):
 
 
 class _Loop(NamedTuple):
-    """One review loop. The first four fields are the stored shape; the last two feed the per-row line."""
-
     overhead_tokens: dict[str, dict[str, dict[str, int]]]
     growth_tokens: int | None
     later_turns: dict[str, int]
@@ -415,7 +410,7 @@ class _KeyState(NamedTuple):
 
 
 class _BranchKeyStates(NamedTuple):
-    """Per key in `_STATE_KEYS`, a branch's state: `on`, `off`, `mixed` or `unknown`. `causes` is in `_CAUSES` order."""
+    """Per key in `_STATE_KEYS`, a branch's state."""
 
     by_key: dict[str, str]
     causes: tuple[str, ...]
@@ -447,7 +442,7 @@ class _LogRow(NamedTuple):
 
 @dataclass
 class _SessionConfigKeysLog:
-    """The valid rows of the session config-keys log for the scanned sessions, in file order, and the account-wide facts."""
+    """The valid rows of the session config-keys log for the scanned sessions, and the account-wide facts."""
 
     status: _LogStatus
     rows_by_session: dict[str, list[_LogRow]] = field(default_factory=dict)
@@ -458,8 +453,6 @@ class _SessionConfigKeysLog:
 
 @dataclass
 class _RecorderEvents:
-    """The earliest time of one session's recorder hook attachments, and the times of those that are lost events."""
-
     earliest_attachment_time: float | None = None
     lost_event_times: list[float] = field(default_factory=list)
 
@@ -506,7 +499,6 @@ def _expand_note_config_dir(cell: str, line_no: int) -> Path:
 
 
 def _resolve_note_config_dir(config_dir: Path, line_no: int) -> Path:
-    """`config_dir` resolved, or a _NoteRefusal when resolving raises (an embedded NUL, a symlink loop)."""
     try:
         return config_dir.resolve()
     except (OSError, ValueError, RuntimeError):
@@ -514,11 +506,6 @@ def _resolve_note_config_dir(config_dir: Path, line_no: int) -> Path:
 
 
 def _parse_note(text: str) -> list[_NoteRow]:
-    """The note's rows, one per tab-separated line: config dir, branch and `merged` or `excluded`.
-
-    A `#` line and a blank line are skipped and a trailing `\\r` is dropped. Cells are not trimmed.
-    Raises _NoteRefusal for the first bad line.
-    """
     rows: list[_NoteRow] = []
     seen_branches: set[str] = set()
     for line_no, raw_line in enumerate(text.split("\n"), start=1):
@@ -545,7 +532,6 @@ def _parse_note(text: str) -> list[_NoteRow]:
 
 
 def _load_note_rows(note_arg: str) -> list[_NoteRow]:
-    """Read and parse the note, exiting 2 on any refusal. Prints a notice for a note with any group or other permission."""
     if not os.path.isabs(note_arg):
         _refuse(f"{_COMMAND}: --note must be an absolute path", 2)
     note_path = Path(note_arg)
@@ -587,11 +573,7 @@ def _read_opt_in(config_dir: Path) -> _OptInOutcome:
 
 
 def _classify_capture_opt_in(config_dir: Path) -> _OptInOutcome:
-    """Whether `config_dir`'s `pr_cost_recording` is on, or the named config fault that blocked the read.
-
-    Never exits. `_config` prints the config file's path and part of a rejected line to stderr, so the
-    whole classification runs with stderr captured and discarded, and one fixed notice stands in for it.
-    """
+    """`_config` prints the config file's path and part of a rejected line to stderr, so one fixed notice stands in for it."""
     reader_stderr = io.StringIO()
     with contextlib.redirect_stderr(reader_stderr):
         outcome = _read_opt_in(config_dir)
@@ -628,10 +610,7 @@ def _branch_digest(branch: str) -> str:
 
 
 def _capture_file_name(branch: str, revision: int) -> str:
-    """The captures-directory file name for `branch` at `revision`.
-
-    The digest hides the branch only from a reader who does not already suspect it.
-    """
+    """The digest hides the branch only from a reader who does not already suspect it."""
     return f"{_branch_digest(branch)}.r{revision}.json"
 
 
@@ -688,11 +667,7 @@ def _validate_loop(loop: object) -> None:
 
 
 def _parse_capture_bytes(data: bytes) -> _CaptureRecord:
-    """The loops and the three key states of one capture file's bytes, or _InvalidCapture with a fixed reason.
-
-    Shared by every reader and writer of a capture file, so a file is checked the same way on every path. The
-    reason never echoes a cell.
-    """
+    """Shared by every reader and writer of a capture file, so a file is checked the same way on every path."""
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -700,7 +675,7 @@ def _parse_capture_bytes(data: bytes) -> _CaptureRecord:
     try:
         parsed = json.loads(text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_non_finite_constant)
     except (ValueError, RecursionError):
-        # ValueError covers invalid JSON, a duplicate key, a non-finite number and an integer past Python's digit limit.
+        # ValueError also covers an integer past Python's digit limit.
         raise _InvalidCapture("not valid JSON") from None
     if not isinstance(parsed, dict):
         raise _InvalidCapture(_REASON_NOT_AN_OBJECT)
@@ -720,7 +695,7 @@ def _parse_capture_bytes(data: bytes) -> _CaptureRecord:
 
 
 def _serialize_capture(loops: Sequence[_Loop], states: _KeyStates) -> str:
-    """The capture file text. ASCII-only, so it encodes the same under any locale."""
+    """ASCII-only, so the text encodes the same under any locale."""
     return json.dumps(
         {
             "loops": [
@@ -739,7 +714,6 @@ def _serialize_capture(loops: Sequence[_Loop], states: _KeyStates) -> str:
 
 
 def _read_standing_capture(path: Path) -> bytes | _StandingFile:
-    """The bytes of an existing capture file, opened without following a symlink."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -765,8 +739,7 @@ def _load_capture_file(path: Path) -> _CaptureRecord | _StandingFile:
 
 # --- the session config-keys log -----------------------------------------------
 #
-# docs/session-config-keys-log.md states the reader rules (§ "Rows", § "Values", § "State at a transcript record",
-# § "Coverage"). The functions below apply them and add only the choices their docstrings name.
+# docs/session-config-keys-log.md states the reader rules the functions below apply.
 
 
 def _discard_rest_of_line(handle, remaining: int) -> int:
@@ -784,7 +757,6 @@ def _is_valid_log_token(value: object, pattern: re.Pattern[str]) -> bool:
 
 
 def _valid_log_row(parsed: object) -> tuple[str, _LogRow] | None:
-    """(session id, row) for a parsed line that passes the reader doc's row validation, else None."""
     if not isinstance(parsed, dict):
         return None
     session_id = parsed.get("session_id")
@@ -811,17 +783,12 @@ def _parse_log_line(line: bytes) -> tuple[str, _LogRow] | None:
     try:
         parsed = json.loads(line.decode("utf-8"))
     except (ValueError, RecursionError, TypeError):
-        # ValueError covers a bad UTF-8 byte and invalid JSON. RecursionError covers nesting past the recursion limit.
         return None
     return _valid_log_row(parsed)
 
 
 def _read_session_config_keys_log(path: Path, wanted_session_ids: Collection[str]) -> _SessionConfigKeysLog:
-    """The log's rows for `wanted_session_ids`, with the account-wide facts, streamed once.
-
-    A missing file is ABSENT. Any other failure to open it safely, a non-regular or foreign-owned file included,
-    is UNUSABLE. The read stops at the size `fstat` reports and never holds an over-long line.
-    A blank line is no row and is not counted as skipped, because the recorder starts every append with one.
+    """A blank line is no row and is not counted as skipped, because the recorder starts every append with one.
     The log has a writer other than this tool, the recorder hook, so its file type and content are not this tool's to assume.
     The capture store has this tool as its only intended writer, so its reader keeps the lighter open.
     """
@@ -872,7 +839,6 @@ def _recorder_attachment(rec: dict) -> tuple[str, float, bool] | None:
     """(session id, time, whether it is a lost event) for a main-thread recorder hook attachment, else None.
 
     docs/session-config-keys-log.md § "Coverage" defines a lost event as such an attachment with a non-empty `stdout`.
-    A record whose `stdout` or `timestamp` is not a usable string is skipped.
     """
     if rec.get("type") != "attachment" or rec.get("isSidechain"):
         return None
@@ -899,10 +865,7 @@ def _coverage_start(log: _SessionConfigKeysLog, recorder_events: Mapping[str, _R
 
 
 def _lost_event_hides(round_ts: float, session_rows: Sequence[_LogRow], lost_event_times: Sequence[float]) -> bool:
-    """Whether a lost event at or before the round has no row after it.
-
-    `logged_at` is floored, so a row follows an event only past the event's whole second.
-    """
+    """`logged_at` is floored, so a row follows an event only past the event's whole second."""
     return any(
         not any(math.floor(event_ts) < row.logged_at <= round_ts for row in session_rows)
         for event_ts in lost_event_times
@@ -921,7 +884,6 @@ def _round_row_at(
     session_id: str | None, at_ts: float | None, log: _SessionConfigKeysLog,
     recorder_events: Mapping[str, _RecorderEvents], coverage_start: float | None,
 ) -> _RoundRow:
-    """The row of `session_id` in force at `at_ts`, or the first key-independent cause in `_CAUSES` order."""
     if at_ts is None or not session_id:
         return _RoundRow(None, _CAUSE_ROUND_UNTIMED)
     if log.status is _LogStatus.UNUSABLE:
@@ -932,7 +894,6 @@ def _round_row_at(
         return _RoundRow(None, _CAUSE_LOST_EVENT)
     taken: _LogRow | None = None
     for row in session_rows:
-        # A later line wins a tie, and a later line with an earlier `logged_at` does not displace the later row.
         if row.logged_at <= at_ts and (taken is None or row.logged_at >= taken.logged_at):
             taken = row
     if taken is None:
@@ -957,10 +918,6 @@ def _key_state_at(
     key: str, session_id: str | None, at_ts: float | None, log: _SessionConfigKeysLog,
     recorder_events: Mapping[str, _RecorderEvents], coverage_start: float | None,
 ) -> _KeyState:
-    """`key`'s state in `session_id` at `at_ts`, or the first cause in `_CAUSES` order that leaves it unknown.
-
-    One function returns the state or the cause, so the two cannot disagree.
-    """
     return _key_state_in_round_row(key, _round_row_at(session_id, at_ts, log, recorder_events, coverage_start))
 
 
@@ -968,10 +925,6 @@ def _branch_key_states(
     rounds: Sequence[_RoundFacts], log: _SessionConfigKeysLog, recorder_events: Mapping[str, _RecorderEvents],
     coverage_start: float | None,
 ) -> _BranchKeyStates:
-    """Each key's state over `rounds`, the rounds of a branch's loops: unknown, else mixed, else the one value.
-
-    The causes cover every unknown key, in `_CAUSES` order.
-    """
     round_rows = [
         _round_row_at(round_facts.session_id, round_facts.open_ts, log, recorder_events, coverage_start)
         for round_facts in rounds
@@ -994,9 +947,7 @@ def _branch_key_states(
 
 
 def _capture_scope(root: Path, scan_gaps: Counter[str]) -> _CaptureScope:
-    """This repo's live worktree slugs plus the orphaned worktree directories on `root`.
-
-    Exits 1 when the cwd is not in a worktree of the checkout holding this module, since the
+    """Exits 1 when the cwd is not in a worktree of the checkout holding this module, since the
     cwd's repo would otherwise be the one read.
     """
     slugs = scope._repo_scoped_project_slugs(_COMMAND)
@@ -1015,7 +966,7 @@ def _capture_scope(root: Path, scan_gaps: Counter[str]) -> _CaptureScope:
 
 
 def _main_thread_turns(records: list[dict]) -> list[tuple[int, str, int]]:
-    """(record index, model, context) for each main-thread assistant turn with valid usage, a `<synthetic>` record excluded."""
+    """(record index, model, context) per main-thread turn, skipping invalid usage and `<synthetic>` records."""
     turns: list[tuple[int, str, int]] = []
     for idx, rec in enumerate(records):
         if rec.get("type") != "assistant" or rec.get("isSidechain"):
@@ -1074,21 +1025,17 @@ def _main_thread_tool_use_ids(records: list[dict]) -> tuple[set[str], set[str]]:
 
 
 def _record_session_id(rec: dict) -> str | None:
-    """The record's `sessionId`, else None. It is the join key to the session config-keys log."""
+    """The record's `sessionId` is the join key to the session config-keys log."""
     session_id = rec.get("sessionId")
     return session_id if isinstance(session_id, str) and session_id else None
 
 
 def _record_routing_denies(scan: _ScanFacts, records: list[dict], record_branches: list[str]) -> set[str]:
-    """Add this session's routing-gate denies to `scan`, deduped by non-empty tool_use_id, and return those ids.
+    """A deny identified only by its text signature counts only when its id joins a `Skill(code-review)` tool_use of
+    the same session, so an ordinary tool error that carries the gate's wording does not.
 
-    The rules, in the order the code tests them:
-
-    1. A tool_use_id that is not a string counts as empty.
-    2. A deny identified only by its text signature counts only when its id joins a `Skill(code-review)` tool_use of
-       the same session, so an ordinary tool error that carries the gate's wording does not.
-    3. When rule 2 drops a deny whose id matches no tool_use of the session, `scan.dropped_deny_without_tool_use`
-       is set, because the deny may be real with its tool_use elsewhere.
+    When that drops a deny whose id matches no tool_use of the session, `scan.dropped_deny_without_tool_use`
+    is set, because the deny may be real with its tool_use elsewhere.
     """
     tool_use_ids, code_review_skill_ids = _main_thread_tool_use_ids(records)
     denied_tool_use_ids: set[str] = set()
@@ -1152,7 +1099,7 @@ def _opens_with_denied_skill(rec: dict, denied_tool_use_ids: Collection[str]) ->
 
 
 def _add_session_facts(scan: _ScanFacts, jsonl: Path, raw_records: list[dict]) -> None:
-    """Fold one session into `scan` as derived facts. Nothing here keeps a reference to a record."""
+    """Nothing here keeps a reference to a record."""
     records = pricing.dedup_turns_by_request_id(raw_records)
     windows = review_rounds.detect_round_windows(records)
     record_branches = review_rounds._session_record_branches(records, windows)
@@ -1235,10 +1182,9 @@ def _scan_sessions(root: Path, capture_scope: _CaptureScope, scan_gaps: Counter[
 def _whole_failure(
     branch_facts: _BranchFacts | None, rounds: Sequence[_RoundFacts], key_states: _BranchKeyStates,
 ) -> _WholeFailure | None:
-    """Why a branch cannot be captured whole, or None when it can. The first failing condition names the reason.
+    """Why a branch cannot be captured whole, or None when it can.
 
-    `key_states` covers the rounds of the branch's loops, so a branch with no complete loop is refused before it is read.
-    The contradiction between a deny and the log (`key-state-contradicted`) is a deny reconciliation outcome.
+    `key-state-contradicted` is not decided here; the deny reconciliation produces it.
     """
     if branch_facts is None or not branch_facts.has_timestamped_record:
         return _WholeFailure(_REASON_NO_RECORDS, frozenset())
@@ -1256,6 +1202,7 @@ def _whole_failure(
 
 
 def _round_sort_key(round_facts: _RoundFacts) -> tuple[float, str, int]:
+    # Builds the same key as `compute_review_round_costs`' `sort_key` (review_rounds.py, the `entry["sort_key"]` assignment).
     open_ts = round_facts.open_ts
     return (open_ts if open_ts is not None else float("inf"), round_facts.session_key, round_facts.open_idx)
 
@@ -1288,12 +1235,7 @@ def _joined_denied_opens(rounds: Sequence[_RoundFacts]) -> int:
 
 
 def _loop_groups(rounds: Sequence[_RoundFacts]) -> list[list[_RoundFacts]]:
-    """A branch's loops as groups of rounds: each runs up to and including the first round with a confirmed marker write.
-
-    A marker write is confirmed by a paired tool_result that is not an error.
-    Rounds sort by open time, session path and open index, the order compute_review_round_costs uses.
-    Rounds after the last marker write belong to no loop and are dropped.
-    """
+    """A marker write is confirmed by a paired tool_result that is not an error."""
     groups: list[list[_RoundFacts]] = []
     open_loop: list[_RoundFacts] = []
     for round_facts in sorted(rounds, key=_round_sort_key):
@@ -1337,7 +1279,6 @@ def _build_row(rounds: Sequence[_RoundFacts], key_states: _BranchKeyStates) -> _
 
 
 def _utc_text(ts: float | None, pattern: str, unknown: str) -> str:
-    """`ts` formatted in UTC, or `unknown` when there is none or UTC conversion leaves `datetime`'s year range."""
     if ts is None:
         return unknown
     try:
@@ -1366,8 +1307,6 @@ def _reconcile_denies(
 ) -> _DenyReconciliation:
     """Check this root's routing-gate denies against the note, so an unlisted branch with a deny here cannot shrink an arm.
 
-    `deny_routing_states` is parallel to `denies`. `routing_by_line` holds each merged row's routing state, derived
-    this run for a row in `built_line_nos` and read from its standing file otherwise. The log never excuses a deny.
     A deny on a branch listed for another config dir is a notice, because no note edit could clear a refusal.
     """
     rows_by_branch = {row.branch: row for row in note_rows}
@@ -1496,7 +1435,6 @@ def _published_files_text(published_count: int) -> str:
 
 
 def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count: int) -> NoReturn:
-    """Exit 4 for any outcome that left no file published."""
     action = {
         ledger_common._PublishOutcome.WRITE_FAILED: "written",
         ledger_common._PublishOutcome.LINK_FAILED: "linked into place "
@@ -1509,10 +1447,7 @@ def _exit_publish_failed(outcome: ledger_common._PublishOutcome, published_count
 
 
 def _refuse_unsafe_captures_dir(captures_dir: Path) -> None:
-    """Exit 2 when capture files would land inside a git work tree, or the directory is a symlink.
-
-    Runs before the scan and again just before the first publish, since the scan can run long.
-    """
+    """Runs before the scan and again just before the first publish, since the scan can run long."""
     if ledger_common._ledger_path_is_git_tracked(captures_dir.resolve() / _GIT_TREE_CHECK_LEAF, _COMMAND):
         _refuse(
             f"{_COMMAND}: the captures directory is inside a git working tree; capture files are never"
@@ -1524,10 +1459,7 @@ def _refuse_unsafe_captures_dir(captures_dir: Path) -> None:
 
 
 def _refuse_unless_still_opted_in(account_dir: Path) -> None:
-    """Exit 1 unless `account_dir`'s `pr_cost_recording` still resolves on.
-
-    Runs again just before the first publish, since the scan can run long and the owner can revoke consent meanwhile.
-    """
+    """Runs again just before the first publish, since the scan can run long and the owner can revoke consent meanwhile."""
     opt_in = _classify_capture_opt_in(account_dir)
     if opt_in is not _OptInOutcome.OPTED_IN:
         _refuse(_OPT_IN_REFUSALS[opt_in], 1)
@@ -1542,8 +1474,6 @@ class _RowKind(enum.Enum):
 
 @dataclass
 class _AccountReport:
-    """What one capture run did to an account's merged rows, for the lines printed after the row lines."""
-
     kinds: Counter[_RowKind] = field(default_factory=Counter)
     key_on_files: int = 0
     key_off_files: int = 0
@@ -1617,9 +1547,7 @@ def _capture_account_rows(
 
 
 def _account_level_lines(log: _SessionConfigKeysLog, coverage_start: float | None) -> list[str]:
-    """The lines about the account's log that no single row owns. Each applies only on its own condition.
-
-    No coverage start means no valid row and no recorder attachment of any kind, which is the reader doc's
+    """No coverage start means no valid row and no recorder attachment of any kind, which is the reader doc's
     "the hook has not run".
     """
     if log.status is _LogStatus.UNUSABLE:
@@ -1794,10 +1722,7 @@ class _BootstrapResult(NamedTuple):
 
 
 def _account_is_ready(config_dir: Path) -> bool:
-    """Whether the account's key resolves true and its captures directory exists.
-
-    The key is checked first, so an account with its key off has none of its files opened.
-    """
+    """The key is checked first, so an account with its key off has none of its capture files opened."""
     if _classify_capture_opt_in(config_dir) is not _OptInOutcome.OPTED_IN:
         return False
     return (config_dir / _CAPTURES_DIR_NAME).is_dir()
@@ -1808,7 +1733,6 @@ def _merged_rows(note_rows: Sequence[_NoteRow]) -> list[_NoteRow]:
 
 
 def _ready_accounts(note_rows: Sequence[_NoteRow]) -> set[Path]:
-    """The config dirs with a `merged` row that pass _account_is_ready, checked in note order."""
     accounts_with_merged_rows = dict.fromkeys(row.resolved_config_dir for row in _merged_rows(note_rows))
     return {config_dir for config_dir in accounts_with_merged_rows if _account_is_ready(config_dir)}
 
@@ -1837,7 +1761,6 @@ def _row_load_reasons(
     rows_by_account: Mapping[Path, Sequence[_NoteRow]], ready: Collection[Path],
     loaded: Mapping[int, _CaptureRecord | _StandingFile],
 ) -> list[_NotRunReason]:
-    """The per-row reasons: an account not ready, and a `merged` row whose file is missing or unusable."""
     reasons: list[_NotRunReason] = []
     for config_dir, account_rows in rows_by_account.items():
         if config_dir not in ready:
@@ -1855,10 +1778,7 @@ def _row_load_reasons(
 def _account_count_reasons(
     account_rows: Sequence[_NoteRow], records: Mapping[int, _CaptureRecord],
 ) -> tuple[list[_NotRunReason], list[_NoteRow], list[_NoteRow]]:
-    """(the pilot and arm-size reasons, key-on rows, key-off rows) of one account whose files all loaded.
-
-    The key-off rows of an account with no key-on row are ignored, so it adds neither.
-    """
+    """(reasons, key-on rows, key-off rows) of one account whose files all loaded."""
     on_rows: list[_NoteRow] = []
     off_rows: list[_NoteRow] = []
     for row in account_rows:
@@ -1883,14 +1803,6 @@ def _account_count_reasons(
 def _select_sample(
     note_rows: Sequence[_NoteRow], ready: Collection[Path], loaded: Mapping[int, _CaptureRecord | _StandingFile],
 ) -> _SampleSelection:
-    """The sampled rows of each arm and every NOT RUN reason the sample checks find.
-
-    - Each `merged` row's arm and pilot states come from its file.
-    - `excluded` rows are ignored, and so are the key-off files of an account with no key-on file.
-    - The count reasons run only when every account is ready and every file loaded.
-    - The growth check runs only when no other reason holds, since a row that failed to load would otherwise
-      read as an arm without growth.
-    """
     rows_by_account: dict[Path, list[_NoteRow]] = {}
     for row in _merged_rows(note_rows):
         rows_by_account.setdefault(row.resolved_config_dir, []).append(row)
@@ -1964,10 +1876,6 @@ def _loop_carry_rate(loop: Mapping, priced_models: set[str]) -> tuple[float, boo
 
 
 def _branch_scalars(loops: Sequence[Mapping], digest: str, *, price_later_turns: bool) -> _BranchScalars:
-    """One branch's scalars from its validated loops. A loop with a skipped model counts as degraded.
-
-    Later turns are priced only for a key-off branch.
-    """
     growth_sum = 0
     growth_defined_loops = 0
     overhead_dollars = 0.0
@@ -2010,7 +1918,6 @@ def _arm_totals(branches: Iterable[_BranchScalars]) -> _ArmTotals:
 
 
 def _net_from_totals(on: _ArmTotals, off: _ArmTotals) -> _NetFigures | None:
-    """The net per loop, or None when an arm has no loop whose growth is defined, which leaves no gap."""
     if on.growth_defined_loops == 0 or off.growth_defined_loops == 0:
         return None
     overhead_difference = on.overhead_dollars / on.loop_count - off.overhead_dollars / off.loop_count
@@ -2026,12 +1933,10 @@ def _arm_net(on: Iterable[_BranchScalars], off: Iterable[_BranchScalars]) -> _Ne
 def _bootstrap_net(
     on: Sequence[_BranchScalars], off: Sequence[_BranchScalars], *, replicates: int, rng: random.Random,
 ) -> _BootstrapResult:
-    """The percentile bootstrap of the net over branches resampled within each arm.
+    """Each arm is sorted by digest before drawing, so the result does not depend on note order.
 
-    Each arm is sorted by digest before drawing, so the result does not depend on note order. A
-    replicate whose resample leaves an arm with no growth-defined loop has no net. It is never
-    redrawn and ranks above every defined net as math.inf, so the replicate count is exact and the
-    lower bound can only rise.
+    A replicate whose resample leaves an arm with no growth-defined loop has no net. It is never redrawn and ranks
+    above every defined net as math.inf, so the replicate count is exact and the lower bound can only rise.
     """
     on_sorted = sorted(on, key=lambda branch: branch.digest)
     off_sorted = sorted(off, key=lambda branch: branch.digest)
@@ -2078,7 +1983,6 @@ def _arm_figure_lines(arm: str, totals: _ArmTotals) -> list[str]:
 
 
 def _out_file_text(figures: _NetFigures, bootstrap: _BootstrapResult, on: _ArmTotals, off: _ArmTotals) -> str:
-    """The `--out` file: the banner, then every figure. An upper bound on an undefined replicate reads `unbounded`."""
     lines = [
         _DO_NOT_PUBLISH_BANNER,
         f"net per loop: {render._fmt_usd(figures.net)}",
@@ -2156,7 +2060,7 @@ def _run_compute(args: argparse.Namespace) -> None:
 
 
 def _innermost_frame_name(exc: BaseException) -> str:
-    """The function name of the deepest traceback frame. Never a file path, line number or exception text."""
+    """Returns only the function name, never a file path, line number or exception text."""
     innermost = exc.__traceback__
     if innermost is None:
         return "unknown"
@@ -2166,11 +2070,7 @@ def _innermost_frame_name(exc: BaseException) -> str:
 
 
 def cmd_routing_guard(args: argparse.Namespace) -> None:
-    """Capture each sampled branch's review loops with `--capture`, else compute the guard from the captured files.
-
-    Every exit goes through sys.exit, because main() ignores a handler's return value. One
-    except clause maps an unexpected failure to exit 4, so a crash never reads as a refusal.
-    """
+    """Every exit goes through sys.exit, because main() ignores a handler's return value."""
     try:
         if args.out == "":
             _refuse(_EMPTY_OUT_MESSAGE, 2)

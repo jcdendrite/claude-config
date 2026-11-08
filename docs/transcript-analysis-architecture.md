@@ -325,8 +325,7 @@ author-outcome section ("Ledger lookup") for the attribution rules and the resid
 still leave. `_round_blocks` groups a session's rows into blocks, and the k-th round-open takes
 the k-th block by rank, not by `round` value. The transcript is still the sole source for
 round-open positions, dispatch completion ordering, and the `marker.sh write code-review` Bash
-`tool_use` signal (`_is_clean_marker_write`). Author-outcome uses that signal only to classify a round with
-no ledger row, and routing-guard reads it for every round's loop end. For a main-thread
+`tool_use` signal (`_is_clean_marker_write`). For a main-thread
 `review-orchestrator` round-open, `_orchestrator_spawns` also projects that spawn's own
 transcript, when it has readable records,
 into a `_OrchestratorSpawn` of derived facts (the marker-write facts and the nested `--agent`
@@ -392,10 +391,8 @@ Recording primitives shared by the cost-ledger and pr-cost ledgers: the generate
 machine identity (`_resolve_machine_identity`, `_machine_identity_path`), the git-tracked
 destination check (`_ledger_path_is_git_tracked`), the machine-label format, the merge-conflict
 markers both parsers refuse, and the local-lock timing both `--record` paths use. It also holds the
-create-new file publish helpers: the fsynced temp-file-plus-hard-link core `_publish_new_file`
-(returning a `_PublishOutcome`) and the two `--out` helpers built on it,
-`_refuse_unusable_out_path` (run before any work) and `_publish_new_owner_file` (run last).
-`routing_guard.py` publishes each captured branch's file through the core as well. A leaf: no
+create-new file publish helpers `_publish_new_file`, `_refuse_unusable_out_path` and
+`_publish_new_owner_file`. A leaf: no
 dependency on any other package module. Binds `config_dir` by name from `_config_dir`, mirroring
 `scope.py`'s own binding (see the attribute-access discipline noted under `scope.py` above) — every
 package consumer (`cost_ledger.py`, `pr_cost_ledger.py`, `pr_cost.py`, `pr_cost_export.py`) reads
@@ -778,13 +775,8 @@ bare.
 ### `routing_guard.py`
 
 The routing-guard command: `cmd_routing_guard` and the `_add_routing_guard_subparser` registration.
-Its `--capture` mode publishes one write-once file for each captured branch into the account's
-`routing-guard-captures` directory, gated by the account's `pr_cost_recording` key. Its inputs are the
-account's transcripts of this repo and the account's session config-keys log, which supplies each branch's arm and
-pilot states. Without `--capture` it computes the guard from the captured files and reads no transcripts and no log.
-`docs/transcript-analysis.md` § "routing-guard" states both modes. Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`,
-`scope`, and `session_pricing` all by module (attribute access), and `_config` for the opt-in read. It makes private reads across
-those modules, such as `review_rounds._session_record_branches`, `session_pricing._usage_is_invalid` and `ledger_common._publish_new_file`.
+`docs/transcript-analysis.md` § "routing-guard" states what each mode reads and writes. Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`,
+`scope`, and `session_pricing` all by module (attribute access), and `_config` for the opt-in read.
 `_add_routing_guard_subparser` is the one name `build_parser()` reaches bare.
 
 ## Sibling scripts

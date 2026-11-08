@@ -1,7 +1,6 @@
 """Recording primitives shared by the cost-ledger and pr-cost ledgers: the generated per-config-dir machine identity, the
 git-tracked destination check, the machine-label format, the merge-conflict markers both parsers refuse, and the local-lock
-timing both --record paths use. Also the create-new file publish helpers: the fsynced temp-file-plus-hard-link core and the
-two `--out` helpers (refusal before any work, publish last) that subcommands writing one owner-only file share."""
+timing both --record paths use. Also the create-new file publish helpers that subcommands writing one owner-only file share."""
 from __future__ import annotations
 
 import contextlib
@@ -100,7 +99,7 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
 
 
 class _PublishOutcome(enum.Enum):
-    """How _publish_new_file ended. The failures stay distinct so each caller keeps its own messages."""
+    """How `_publish_new_file` ended. The failures stay distinct so each caller can word its own message."""
 
     CREATED = "created"
     EXISTS = "exists"
@@ -143,10 +142,6 @@ def _publish_new_file(path: Path, text: str, temp_prefix: str, temp_suffix: str)
 
 
 def _hard_link_requirement(directory_label: str) -> str:
-    """The parenthetical naming what `directory_label`'s filesystem must provide for a LINK_FAILED publish.
-
-    `os.link` fails on a filesystem without hard links or with no free space, and the errno is never returned.
-    """
     return f"({directory_label}'s filesystem must support hard links and have free space)"
 
 
@@ -172,9 +167,6 @@ def _resolve_machine_identity(
         return token
     if outcome is _PublishOutcome.EXISTS:
         return _read_machine_identity_or_refuse(subcommand, path, location_label)
-    # Any other outcome fails closed. No OSError text: a real mkstemp/os.link
-    # failure embeds the full temp-file path via exc.filename/filename2, which
-    # sits inside this machine's own config dir.
     print(
         f"{subcommand}: could not create the machine identity file ({location_label})",
         file=sys.stderr,
@@ -264,30 +256,23 @@ def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledge
 
 
 def _refuse_unusable_out_path(out: str, command: str) -> None:
-    """Exit 2 unless `out` names a path that does not exist and sits outside any git working tree.
+    """Run before any work.
 
-    Run before any work. `command` names the subcommand in each message.
     Only the operator's own literal `out` string is echoed, never the resolved
     path, which can embed a home-rooted engagement directory.
     """
     # Resolved (following any symlink at `out` itself) so the git-tree check
-    # below sees where the path really points. For a dangling symlink,
-    # resolve() still reports that the target doesn't exist.
+    # below sees where the path really points.
     resolved_out = Path(out).resolve()
-    # lexists() here buys nothing over exists(), since resolve() above
-    # already followed every symlink. This check is a UX-only fast path.
-    # The symlink defense is _publish_new_owner_file's os.link, which raises
-    # FileExistsError on an existing destination rather than dereferencing it.
+    # A UX-only fast path: the publish step refuses an existing destination race-safely.
     if os.path.lexists(str(resolved_out)):
         print(
             f"{command}: --out {out!r} already exists -- refusing to overwrite; pass a new path",
             file=sys.stderr,
         )
         sys.exit(2)
-    # resolved_out is re-resolved independently when _publish_new_owner_file
-    # publishes. A symlink retargeted between the two is a known, accepted
-    # TOCTOU window for this tool's single-operator threat model, not one this
-    # check closes.
+    # A symlink retargeted between this check and the publish is an accepted
+    # TOCTOU window for this tool's single-operator threat model.
     if _ledger_path_is_git_tracked(resolved_out, command):
         print(
             f"{command}: --out {out!r} is inside a git working tree -- this repo (and every"
@@ -299,16 +284,12 @@ def _refuse_unusable_out_path(out: str, command: str) -> None:
 
 
 def _publish_new_owner_file(out: str, text: str, command: str) -> None:
-    """Publish `text` at `out` as a new `0600` file through _publish_new_file, exiting 2 on any failure.
-
-    Run last, after the work that produced `text`. `command` names the
-    subcommand in each message and in the `.{command}-` temp-file prefix.
-    """
-    # The final path component is left exactly as named, unlike the resolved
-    # path in _refuse_unusable_out_path, so a symlink there makes os.link fail
-    # with FileExistsError instead of silently following the link. The parent
-    # is still resolved, so a symlinked parent directory lands inside the same
-    # target the git-tree check validated.
+    """Run last, after the work that produced `text`."""
+    # The final path component is left exactly as named, unlike the fully
+    # resolved path the git-tree check uses, so a symlink there makes os.link
+    # fail with FileExistsError instead of silently following the link. The
+    # parent is still resolved, so a symlinked parent directory lands inside
+    # the same target the git-tree check validated.
     open_path = Path(out).parent.resolve() / Path(out).name
     outcome = _publish_new_file(open_path, text, f".{command}-", ".tmp")
     if outcome is _PublishOutcome.CREATED:
@@ -332,7 +313,6 @@ def _publish_new_owner_file(out: str, text: str, command: str) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    # Any outcome not named above fails closed.
     print(
         f"{command}: --out {out!r} could not be published; pass a new path",
         file=sys.stderr,

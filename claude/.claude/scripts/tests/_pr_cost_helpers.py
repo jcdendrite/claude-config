@@ -253,7 +253,6 @@ _TEMP_FILE_PREFIX = ".pr-cost-export-"
 
 
 def _record_temp_file_paths(monkeypatch) -> list[Path]:
-    """Record the full path of every temp file the publish step creates."""
     created_paths: list[Path] = []
     real_mkstemp = tempfile.mkstemp
 

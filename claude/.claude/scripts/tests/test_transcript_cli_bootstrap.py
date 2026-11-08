@@ -1254,7 +1254,7 @@ _ROUTING_GUARD_BRANCH = "bootstrap-branch"
 
 
 def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Path]:
-    """(account config dir, owner-only note) for one opted-in account holding one key-off loop on a synthetic branch."""
+    """(account config dir, owner-only note)."""
     account = tmp_path / "account"
     project_dir = account / "projects" / project_slug
     project_dir.mkdir(parents=True)
@@ -1269,7 +1269,7 @@ def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Pat
         _priced("claude-sonnet-5", input=130_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:03:00.000Z"),
     ]
     _write_jsonl(project_dir / "session.jsonl", [{"sessionId": "session", **record} for record in records])
-    # One recorder row before every record: the routing key off and both pilots on, so a transposition shows.
+    # Routing is off and both pilots are on, so a transposition shows.
     (account / ".session-config-keys-log.jsonl").write_text("\n" + json.dumps({
         "session_id": "session", "source": "startup", "logged_at": "2026-08-01T09:00:00Z",
         "keys": {
@@ -1305,13 +1305,8 @@ def test_transcript_analysis_routing_guard_help_exits_zero():
 
 
 def test_transcript_analysis_routing_guard_capture_subprocess_publishes_one_file_from_the_running_checkout(tmp_path):
-    """Proves, in a fresh interpreter:
-
-    - routing_guard.py resolves through sys.path[0] alone.
-    - Real argparse dispatches routing-guard to cmd_routing_guard.
-    - _CHECKOUT_ROOT's parents[4] depth reaches the checkout root. No _CHECKOUT_ROOT patch reaches this process,
-      so the run passes the checkout check only when that depth is right.
-    - The project directory's slug comes from `git worktree list`, as scope slugs it.
+    """No `_CHECKOUT_ROOT` patch reaches this process, so the run passes the checkout check only when the
+    `parents[4]` depth reaches the checkout root.
     """
     # Same mapping as scope._path_to_project_slug; this file imports no transcript_analysis module.
     project_slug = re.sub(r"[/.]", "-", _listed_worktree_path(REPO_ROOT))
@@ -1354,9 +1349,9 @@ _COMPUTE_MODEL = "claude-sonnet-5"
 
 
 def _routing_guard_compute_fixture(tmp_path: Path, branches_per_arm: int) -> tuple[Path, Path]:
-    """(account config dir, owner-only note) for hand-written capture files of `branches_per_arm` key-on and key-off branches.
+    """(account config dir, owner-only note) for `branches_per_arm` key-on and key-off branches.
 
-    Branches differ in loop count, overhead and growth, and every key-on loop costs far more than any key-off loop.
+    Every key-on loop costs far more than any key-off loop.
     """
     account = tmp_path / "compute-account"
     captures_dir = account / "routing-guard-captures"

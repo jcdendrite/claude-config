@@ -1233,8 +1233,7 @@ class TestSelectPytestTargets:
         token-cap counts in README.md. test_skills.py's
         test_doc_has_no_state_path (SKILLS_TESTS_DIR) also reads it for the
         per-account state-path contract. test_transcript_routing_guard_capture.py
-        is the only SCRIPTS_TESTS_DIR test that reads it, for a heading a
-        printed message cites."""
+        reads it for a heading a printed message cites."""
         result = _mod.select_pytest_targets([_mod.README_MD])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
