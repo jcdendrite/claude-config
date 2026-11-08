@@ -686,12 +686,12 @@ _POOLED_SCAN_GAP_REFUSAL = (
     f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
 )
 
-# The dedup attributes a project directory reachable from two declared roots to whichever root is
+# The dedup attributes a project directory reachable from two scan roots to whichever root is
 # scanned first, which follows the active profile, so the pooled count and dominance floors would
 # shift with it. The message carries a count only, never a path or name.
 _POOLED_CROSS_ROOT_ALIAS_REFUSAL = (
-    "review-round-cost --pooled refuses a project directory reachable from more than one declared"
-    " root ({count} such director{plural}): a symlink from one declared root into another, or one"
+    "review-round-cost --pooled refuses a project directory reachable from more than one scan"
+    " root ({count} such director{plural}): a symlink from one scan root into another, or one"
     " directory listed under two roots, would be attributed to whichever root is scanned first. Remove"
     " the link, or remove that account from {config_dirs_label} if it is a declared entry you no"
     " longer need."
@@ -825,7 +825,7 @@ def _pooled_scope_refusal(
 
 
 def _pooled_cross_root_alias_refusal(roots: Sequence[Path]) -> str | None:
-    """The cross-root alias refusal message, or None when no project directory is claimed by two declared roots.
+    """The cross-root alias refusal message, or None when no project directory is claimed by two scan roots.
 
     Separate from `_pooled_scope_refusal` because it lists every root's project directories, so cmd_review_round_cost
     calls it once, after the root-count check and before the corpus scan.

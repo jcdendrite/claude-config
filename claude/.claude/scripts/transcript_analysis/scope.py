@@ -274,15 +274,12 @@ def _dedup_new_project_dirs(
 
 
 def _cross_root_alias_project_dir_count(roots: Sequence[Path]) -> int:
-    """Count the distinct real project directories that two declared roots both
+    """Count the distinct real project directories that two scan roots both
     claim, so a figure attributing sessions to a root can refuse them.
 
-    A project directory is a cross-root alias when it is listed under more
-    than one root (by resolved real path), or when its resolved path is inside
-    a declared root other than the one it is listed under and not inside the
-    listing root itself. The dedup in `_dedup_new_project_dirs` attributes it
-    to whichever root is scanned first, and the scan order follows the active
-    profile. A symlink resolving outside every declared root is not an alias.
+    The dedup in `_dedup_new_project_dirs` attributes a shared directory to
+    whichever root is scanned first, and the scan order follows the active
+    profile. A symlink resolving outside every scan root is not an alias.
     A directory that cannot be listed or resolved is skipped: the scan itself
     records that as a scan gap.
     """
@@ -895,13 +892,11 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
 
     `resolved_roots` must already be resolved (real, symlink-free) paths: this
     function resolves only the session's own grandparent, once per call, so
-    callers resolve the roots list once rather than once per session. Callers
-    run it only with more than one root, and each session iterator yields
-    exactly `root/name/file.jsonl`, so the lexical grandparent is the root the
-    session was listed under, even when `name` or the file is a symlink
-    pointing outside every root. That matches the redact map's key only because
-    the redact map scans each root without cross-root dedup, which the scans
-    feeding this function do apply.
+    callers resolve the roots list once rather than once per session.
+    Callers run it only with more than one root.
+    Each session iterator yields exactly `root/name/file.jsonl`, so the lexical
+    grandparent is the root the session was listed under, even when `name` or
+    the file is a symlink pointing outside every root.
     """
     owning_root = jsonl.parent.parent.resolve()
     for idx, resolved_root in enumerate(resolved_roots):

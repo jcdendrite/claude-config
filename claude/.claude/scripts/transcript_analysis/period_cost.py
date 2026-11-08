@@ -1262,7 +1262,7 @@ _NOTE_SCOPE_EXCLUSIONS = " Other accounts and other people's work are not includ
 
 def _scope_note(flags: _ReportFlags) -> str:
     """Drops the exclusivity sentence when the outside-root note is shown, since that note says the figures may include
-    work from outside the account's directory."""
+    work from outside the projects directory."""
     return f"_{_NOTE_SCOPE_COUNTS}{'' if flags.outside_root_sources else _NOTE_SCOPE_EXCLUSIONS}_"
 
 
@@ -1340,7 +1340,7 @@ def _table_widths(shown: Sequence[tuple[_ReportRow, Decimal]]) -> tuple[int, int
 
 def _flag_notes(flags: _ReportFlags) -> list[str]:
     """The coverage, read-failure, outside-root-source, excluded-spend, and stale-rate notes: the conditions that can make the
-    figures understate, include work from outside the account's directory, or rest on stale rates."""
+    figures understate, include work from outside the projects directory, or rest on stale rates."""
     notes: list[str] = []
     if flags.coverage_date is not None:
         notes.append(
@@ -1353,8 +1353,9 @@ def _flag_notes(flags: _ReportFlags) -> list[str]:
         )
     if flags.outside_root_sources:
         notes.append(
-            "_Note: some sessions were read through symlinks that lead outside this account's directory, so these figures"
-            " may include work from outside it._"
+            "_Note: some sessions were read through symlinks that lead outside this account's projects directory, so these"
+            " figures may include work from outside it, and may leave out the subagent work of a linked transcript because its"
+            " subagent files are not followed._"
         )
     if flags.excluded_spend:
         notes.append("_Note: some usage could not be priced or dated and is left out, so these figures understate the spend._")

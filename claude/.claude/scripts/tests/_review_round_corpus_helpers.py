@@ -190,12 +190,9 @@ def _review_round_cost_args(
 
 
 def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
-    """Two declared roots, two branches each (four total), one
-    distinctively named. Reused by the grammar, totals-absence,
-    banner-suppression, branch-name-leak, header, and stderr-diagnostic
-    tests in test_transcript_review_rounds.py and the alias-refusal tests
-    in test_transcript_review_rounds_pooled_alias.py, all of which need the
-    same non-degenerate, >1-root, >1-branch shape.
+    """Two scan roots (the active profile's plus one declared root), two branches each (four total), one
+    distinctively named. The shape is non-degenerate: more than one root and
+    more than one branch.
     """
     roots = _two_declared_roots(tmp_path, monkeypatch)
     proj_a = roots[0] / "-home-user-repo-a"

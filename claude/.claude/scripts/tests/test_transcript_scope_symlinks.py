@@ -73,7 +73,7 @@ class TestCostWithSymlinkedProjectDirs:
 
         account_totals = _extract_account_totals(capsys.readouterr().out)
         assert account_totals[1] == pytest.approx(6.00)  # 3M input tokens at $2.00 per million
-        assert account_totals.get(2, 0.0) == 0.0
+        assert account_totals[2] == 0.0
 
     def test_multi_root_redacted_cost_completes_when_a_project_dir_is_symlinked_outside_every_root(self, tmp_path, capsys):
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ONE_MILLION_INPUT_TOKENS)
@@ -89,6 +89,20 @@ class TestCostWithSymlinkedProjectDirs:
         account_totals = _extract_account_totals(capsys.readouterr().out)
         assert account_totals[1] == pytest.approx(2.00)  # 1M input tokens
         assert account_totals[2] == pytest.approx(4.00)  # 2M input tokens
+
+    def test_project_dir_listed_under_two_roots_is_scanned_under_each_root_but_priced_once(self, tmp_path, capsys):
+        """The per-root scan diagnostic is not deduplicated across roots, unlike the per-account totals."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _ONE_MILLION_INPUT_TOKENS)
+        (root_a / "-home-user-repo-alias").symlink_to(root_b / "-home-user-repo-b")
+
+        cost._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
+
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert sum(_extract_account_totals(out).values()) == pytest.approx(2.00)  # 1M input tokens, once
 
 
 _ITERATORS = [
@@ -182,6 +196,29 @@ class TestCrossRootAliasProjectDirCount:
         (root_a / "-repo-alias").symlink_to(root_b / "-repo-b", target_is_directory=True)
 
         assert scope._cross_root_alias_project_dir_count([root_a, root_b]) == 1
+
+    def test_link_into_a_root_whose_name_extends_the_listing_roots_name_counts(self, tmp_path):
+        """`acct-b` is a string-prefix extension of `acct` but not inside it, so a containment check by string prefix
+        would read the link target as inside the listing root. The target is a directory `acct-b` does not list, so only the
+        containment check can find the alias."""
+        root_acct = _write_cost_root(tmp_path, "acct", "-repo-a", "sess-a", _ONE_MILLION_INPUT_TOKENS)
+        root_acct_b = _write_cost_root(tmp_path, "acct-b", "-repo-b", "sess-b", _ONE_MILLION_INPUT_TOKENS)
+        (root_acct_b / "-repo-b" / "nested").mkdir()
+        (root_acct / "-repo-alias").symlink_to(root_acct_b / "-repo-b" / "nested", target_is_directory=True)
+
+        assert scope._cross_root_alias_project_dir_count([root_acct, root_acct_b]) == 1
+
+    def test_link_into_an_undeclared_directory_whose_name_extends_another_roots_name_is_not_an_alias(self, tmp_path):
+        """`acct-b-archive` is a string-prefix extension of the other root `acct-b` but not inside it, so a containment
+        check of the other root by string prefix would count the target. `acct-a` does not prefix the target, so the
+        listing root's own check cannot mask that."""
+        root_acct_a = _write_cost_root(tmp_path, "acct-a", "-repo-a", "sess-a", _ONE_MILLION_INPUT_TOKENS)
+        root_acct_b = _write_cost_root(tmp_path, "acct-b", "-repo-b", "sess-b", _ONE_MILLION_INPUT_TOKENS)
+        archived_project_dir = tmp_path / "acct-b-archive" / "-repo-archived"
+        archived_project_dir.mkdir(parents=True)
+        (root_acct_a / "-repo-alias").symlink_to(archived_project_dir, target_is_directory=True)
+
+        assert scope._cross_root_alias_project_dir_count([root_acct_a, root_acct_b]) == 0
 
     def test_link_to_a_directory_inside_another_root_that_root_does_not_list_counts(self, tmp_path):
         root_a = _write_cost_root(tmp_path, "acct-a", "-repo-a", "sess-a", _ONE_MILLION_INPUT_TOKENS)

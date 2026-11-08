@@ -47,7 +47,15 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 Every subcommand except four accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, and `period-cost` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
 
-**`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. Under one root or several, a project directory or transcript symlinked outside the scan root is followed and stays in scope, attributed to the root it is listed under. A project directory listed under two declared roots is read once and attributed to whichever root is scanned first, and the active profile is scanned first, so that attribution can change with the invoking profile. A symlinked project directory carries its subagent files, but a symlinked transcript's subagent files are not followed, because the subagent directory is derived from the listed transcript's name. `review-round-cost --pooled` refuses a project directory reachable from more than one declared root (see "Pooled mode"), but the refusal covers project directories only.
+**`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing.
+
+**Symlinked project directories and transcripts.**
+- Under one root or several, a project directory or transcript symlinked outside the scan root is followed and stays in scope.
+- Under more than one root, a session is attributed to the root it is listed under.
+- A project directory listed under two scan roots is read once and attributed to whichever root is scanned first. The active profile is scanned first, so that attribution can change with the invoking profile.
+- A symlinked project directory carries its subagent files. A symlinked transcript's subagent files are not followed, because the subagent directory is derived from the listed transcript's name.
+- The per-root `scanned X transcripts` diagnostic counts a project directory listed under two roots under each of them. Unlike the per-account totals, it is not deduplicated across roots.
+- `review-round-cost --pooled` refuses a project directory reachable from more than one scan root (see "Pooled mode"). The refusal covers project directories only.
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default, except under `--include-subagents`; see Limits) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
@@ -1809,7 +1817,11 @@ Counts recorded spawn calls in each session's main transcript and its subagent t
 **Fixed scope.** The only root is `<config-dir>/projects` of the active account. The declared-roots file is never read, and no other account's directory is listed. A symlink under the root is followed wherever it leads (see the bullets below). The subcommand registers no `--this-repo`, `--projects`, or `--config-dir`, so argparse rejects each, and the top-level `--config-dir` is refused with exit 2.
 - Every project directory is read: those of removed worktrees, other clones, sessions started in a subdirectory, and sessions started outside any repository. A project directory's name plays no part in grouping, because Claude Code's lossy directory naming cannot identify a repository.
 - A missing root, or a root that is not a directory, is an empty scope. A root that cannot be listed exits 1 with `period-cost: could not list the active account's projects directory -- no report written`.
-- Each transcript path is resolved once. A symlinked project directory and a symlinked transcript are followed, including one whose target is outside the root, so the report can include sessions from outside the active account's directory. A symlinked project directory carries its subagent files, but a symlinked transcript's subagent files are not followed. `SCOPE` line 2 counts the read transcripts whose resolved path is outside the resolved root, and a non-zero count adds a stdout note. The count is per transcript, not per project directory, because the scan already resolves each transcript for its dedup. A path whose resolved form was already read is skipped, so a symlinked transcript is priced once. A path that fails to resolve counts as a read failure. Subagent files are not checked this way.
+- Each transcript path is resolved once.
+  - A symlinked project directory and a symlinked transcript are followed wherever they lead, so the report can include sessions from outside the projects directory. `SCOPE` line 2 and a stdout note report those transcripts (see "Counts and the period").
+  - Subagent files follow the rules under "Symlinked project directories and transcripts" in "Scoping to this repo: `--this-repo`". A symlinked session directory's subagent files are read and priced, but not counted and not noted.
+  - A path whose resolved form was already read is skipped, so a symlinked transcript is priced once. When a transcript is reached both through an alias and its real path, the copy that sorts first is kept, so subagent files that exist only beside the other copy are not priced.
+  - A path that fails to resolve counts as a read failure.
 - No output names the account.
   - The header says "One Claude Code account", stderr says "the active account", and no line prints the config-directory path or its basename.
   - `SCOPE` line 1 says only whether the account came from `CLAUDE_CONFIG_DIR` or the default config directory.
@@ -1854,7 +1866,10 @@ Counts recorded spawn calls in each session's main transcript and its subagent t
 
 **Counts and the period.**
 - `SCOPE` and `NO ACTIVITY` report project directories, meaning distinct directories that yielded at least one transcript, and transcripts, meaning main session transcripts yielded. Subagent files count as part of their session, and an empty project directory adds to neither count.
-- `SCOPE` line 2 also reports the transcripts whose resolved path is outside the resolved projects root, as a count only. It names no path, and the count excludes subagent files.
+- `SCOPE` line 2 also reports the outside-root count: the transcripts read whose resolved path is outside the resolved projects root.
+  - The count is per transcript, not per project directory, because the scan already resolves each transcript for its dedup. It names no path and excludes subagent files.
+  - It is measured against the resolved projects root, so a link at the projects root itself, or at a directory above it such as the config directory, is neither counted nor gated. The account-scope note keeps its sentence that other accounts' and other people's work are not included.
+  - A non-zero count adds a stdout note (note 6a) and triggers the skill's send gate. A confirmed in-session `NO ACTIVITY` run skips the gate's link question, because that report names no repositories and shows no figures.
 - Read failures are reported as a floor, "at least N": the sum of the scan-gap counter's three tags (root, project directory, session file) plus the transcripts whose path fails to resolve. A subagent-level read failure increments none of them, so the floor can understate.
 - Both days are inclusive UTC days: a turn counts when `since_ts <= ts < until_epoch`, and the header says "(UTC)".
 - The period is partial when `until` is today or later, and the header then appends `, partial: through <today>`.
@@ -1894,7 +1909,7 @@ Counts recorded spawn calls in each session's main transcript and its subagent t
   4. The account-scope note. Always. It omits the sentence that other accounts' and other people's work are not included when note 6a is shown.
   5. No records before a date. When the earliest record is more than a day after the period starts.
   6. Some session records could not be read. When the read-failure floor is non-zero.
-  6a. Some sessions were read through symlinks that lead outside the account's directory. When the SCOPE outside-the-projects-directory transcript count is non-zero.
+  6a. Some sessions were read through symlinks that lead outside the projects directory, so the figures may include work from outside it and may leave out a linked transcript's subagent work. When the outside-root count is non-zero.
   7. Some usage could not be priced or dated. When a model is unpriced in the period or a turn has no timestamp.
   8. List rates are past their re-verify date. When an in-period priced model's date has passed.
   9. A repository marked PR list unavailable. When a displayed group is unavailable.
@@ -1915,7 +1930,7 @@ Counts recorded spawn calls in each session's main transcript and its subagent t
 - A `NOTICE: non-contiguous requestId run ...` line from `pricing.dedup_turns_by_request_id`. It records a decision on how records merge into priced turns. It is printed at most once per decision kind per run. It also interpolates a `repr`-escaped `requestId`.
 
 The tags, with the skill's action for each:
-- `SCOPE` — always, up to four lines: the account source; the counts, the outside-root transcript count and the read-failure floor; the resolved repositories with the unresolved, not-checked, and no-directory counts; and, when a table is shown, `Unlinked: $X of $Total (P%) is in Other rows or Repository not determined.` When the outside-root count is non-zero, the skill asks the engineer whether every link target holds only the account's own sessions, and a no (or an "I don't know") means do not send.
+- `SCOPE` — always, up to four lines: the account source; the counts, the outside-root count (see "Counts and the period") and the read-failure floor; the resolved repositories with the unresolved, not-checked, and no-directory counts; and, when a table is shown, `Unlinked: $X of $Total (P%) is in Other rows or Repository not determined.` When the outside-root count is non-zero, the skill asks the engineer whether every link target holds only the account's own sessions, and a no (or an "I don't know") means do not send. A confirmed in-session `NO ACTIVITY` run skips that question.
 - `SHARING` — always. The report names the account's repositories, PRs, titles, and spend; share it privately, only with the owner of those repositories.
 - `COVERAGE WARNING` — the earliest record is more than a day after the period starts. Retention may have deleted transcripts, or the account was quiet.
 - `NO ACTIVITY` — only with the first no-table variant. It tells zero transcripts apart from transcripts with no dated in-period usage and repeats the counts. The skill holds before any fence.
