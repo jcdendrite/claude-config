@@ -36,6 +36,7 @@ A merged pull request (PR) is eligible when all of these hold:
 - It has a prompt issue.
 - Its diff changes at least one non-test file named `*.sh` or `*.py`. Eligibility is deliberately by file name: a file with only a shell or Python shebang is stripped but does not make a PR eligible.
 - It changes none of `requirements-dev.txt`, `pyproject.toml` and `.github/workflows/tests.yml`, so one environment serves the base and the merge.
+- Its base commit predates the first commit that adds any study artifact (this page, its plan file under `.claude/plans/`, or anything the harness holds in this repository), so no base commit holds a study artifact.
 - It has at least one fail-to-pass test.
 
 Terms used above and below:
@@ -71,7 +72,7 @@ One rater makes every filter judgment. A second rater independently judges a ran
 
 ### Trap tasks
 
-At least 10 *trap tasks* pass all their checks by the lock. Ten is a floor chosen for cost. A trap that fails a check is repaired or replaced before the lock. A trap is hand-built at one fixed base commit and is not a merged PR.
+At least 10 *trap tasks* pass all their checks by the lock. Ten is a floor chosen for cost. A trap that fails a check is repaired or replaced before the lock. A trap is hand-built at one fixed base commit, which meets the eligibility list's base-commit condition, and is not a merged PR.
 
 Each trap starts from a comment stating a rule the code does not show. Its task statement invites breaking the rule and does not mention it. Its held-out test fails at the base because the requested change is absent, and once the change is made it fails exactly when the rule is broken. Before any session, each trap passes three checks, the last two at both the intact and the stripped base:
 
@@ -148,6 +149,7 @@ The *loaded-configuration check* starts the CLI once per task and arm, traps inc
 
 - A live checkout of this repository.
 - The experimenter's home or config directory.
+- Any environment variable or credential from the experimenter's own environment, other than the credential dedicated to the experiment, which is held only by a session, by the loaded-configuration check and by the confinement verification's turn in the session environment, and by no test run.
 - The task's other arm, or any other session or test run.
 - Any commit but its snapshot's own.
 - The held-out test files, a trap's included.
@@ -210,7 +212,7 @@ The cap of 75 is a cost choice that leaves `psi` = 0.30 underpowered. There, the
 - The loaded-configuration check.
 - The *confinement verification*, for sessions and for test runs, that the confinement holds and that the CLI completes a turn inside it.
 
-Before either passes, the loaded-configuration check is shown to reject a deliberately planted violation. The confinement verification is shown to reject one planted violation in each category of the confinement list. Reading the configuration does not count as showing it. How the harness verifies is otherwise the harness's to decide.
+Before either passes, the loaded-configuration check is shown to reject a deliberately planted violation. The confinement verification is shown to reject one planted violation in each category of the confinement list. Reading the configuration does not count as showing it. Every planted item, in either check, is a decoy with no authority. A planted credential or environment variable is a canary value that no service accepts. How the harness verifies is otherwise the harness's to decide.
 
 **Lock.** The lock records:
 
@@ -244,16 +246,17 @@ Secondary results are descriptive and never change the verdict: trap pass rates 
 The rule applies to `Delta` and its two-sided 95% interval from `L` to `U`. The 15-point margin enters twice: as the effect the sizing targets, and as the harm that the Harm excluded outcome must exclude. The four outcomes are exclusive and cover every result:
 
 1. *Harm*: `L` > 0, with no minimum gap. No narrowing of the comment rules may cite this study.
-2. *Harm excluded*, when all four of these hold:
+2. *Harm excluded*, when all five of these hold:
    - `L` <= 0 <= `U`.
    - `U` < 0.15.
    - The worst-case recomputation's upper bound is below 0.15.
+   - The worst-case recomputation's lower bound is not above 0.
    - The trap interval's lower bound is above 0.
 
    There is no evidence of harm, and this task distribution excludes a 15-point harm. That does not by itself justify narrowing, since human readers and review-round cost go unmeasured.
 3. *Inconclusive*: `L` <= 0 <= `U`, and a condition of Harm excluded fails. It supports no narrowing whatever `U` is. These land here, among others:
    - A PR task count too short for `U` to fall below 0.15.
-   - A result that holds only while missing replicates are ignored.
+   - A result that holds only while missing replicates are ignored, including one whose worst-case recomputation lies wholly above 0.
    - A harness the traps did not show to be sensitive.
 4. *Stripped better*: `U` < 0. Comments misled agents on this distribution. That does not justify narrowing either, because the kept accuracy rule already targets misleading comments. The discordant tasks get inspected for stale comments.
 
@@ -287,7 +290,7 @@ At a zero estimate and the pessimistic end, `U` is 13.9 points at 40 tasks and 1
 - 125 of those also change none of `requirements-dev.txt`, `pyproject.toml` and `.github/workflows/tests.yml`.
 - 471 commits pass those three file conditions whether or not they match, which includes the 125.
 
-The 125 bounds the count of eligible, filter-passing PRs from above only up to the undercount in the 195, since it is counted before the why-comment and specification filters and the fail-to-pass condition. The 471 is a ceiling on that count.
+Over the 1037 commits counted, the 125 bounds the count of eligible, filter-passing PRs from above only up to the undercount in the 195, since it is counted before the why-comment and specification filters and the fail-to-pass condition. The 471 is a ceiling on that count over the same 1037 commits.
 
 The `Revisions` section binds the margin from the moment this page ships.
 
