@@ -48,6 +48,7 @@
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - On BSD/macOS awk, a blank line inside a quoted span, such as a multi-paragraph commit message, can hide a push chained later in the same command. This is permanent debt, tracked in `_lib_mask_shell_quotes`' Limits.
 #   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`, after a quoted multi-word flag value, or after a flag value holding a command substitution. The first two make the endpoint read take another word as the endpoint, so a computed endpoint after them passes, such as `gh api -X PUT -f message="add readme" $URL`. The third cuts the `gh api` fragment at the substitution, so a computed or literal ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
+#   - An unquoted command substitution in a `-C` path, such as `git -C $(…) push origin main`: the substitution cuts the fragment before the subcommand, so the push is never parsed. A cooperative agent rarely writes this shape, and parsing substitutions would add another defensive layer.
 #   See `_lib_mask_shell_quotes`' Limits for the other residuals the masked pass inherits.
 #
 # Accepted over-denials (the irreversible tier names over-deny as the correct trade):
