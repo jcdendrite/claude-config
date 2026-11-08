@@ -31,9 +31,9 @@
 #      means this check can read "still active" when only CI touched the
 #      PR — under-deletes (fails safe) rather than over-deletes.
 #   4. Otherwise -> candidate. A worktree that doesn't actually exist for
-#      this branch (never checked out, or it's the worktree this script is
-#      running from) is skipped silently rather than erroring. A worktree a
-#      live process is working inside is skipped and reported.
+#      this branch (never checked out, the worktree this script is running
+#      from, or the main worktree) is skipped silently rather than erroring.
+#      A worktree a live process is working inside is skipped and reported.
 #   5. Removed via `git worktree remove` (no --force — a dirty working tree
 #      makes git itself refuse the removal), capturing success/failure per
 #      candidate so one refusal doesn't abort the batch under `set -euo
@@ -71,8 +71,7 @@ set -euo pipefail
 # shellcheck source=../hooks/_config.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
 
-# progress / clear_progress, collect_process_cwds / worktree_in_use, and
-# resolve_worktree_for_branch are shared with cleanup-merged-branches.sh.
+# Shares the helpers in `_worktree-lib.sh` with cleanup-merged-branches.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
 
@@ -124,6 +123,13 @@ fi
 # ---------------------------------------------------------------------------
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# The main worktree is what `git worktree remove` never removes, and REPO_ROOT
+# is a linked worktree when the script runs from one.
+# The fallback keeps the REPO_ROOT comparison, which still excludes the runner's own worktree.
+if ! MAIN_WORKTREE_PATH=$(main_worktree_path); then
+  MAIN_WORKTREE_PATH="$REPO_ROOT"
+fi
 
 if ! git remote get-url origin >/dev/null 2>&1; then
   echo "ERROR: no 'origin' remote configured; cannot determine which repo's open PRs to check." >&2
@@ -292,9 +298,10 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
   fi
 
   resolve_worktree_for_branch "$BRANCH"
-  if [ -z "$WORKTREE_PATH" ] || [ "$WORKTREE_PATH" = "$REPO_ROOT" ]; then
-    # No removable worktree for this branch — never checked out, or it's
-    # the worktree this script is running from. Nothing to do.
+  if [ -z "$WORKTREE_PATH" ] || [ -n "$(worktree_protected_role "$WORKTREE_PATH" "$MAIN_WORKTREE_PATH" "$REPO_ROOT")" ]; then
+    # No removable worktree for this branch — never checked out, it's the
+    # worktree this script is running from, or it's the main worktree.
+    # Nothing to do.
     continue
   fi
 

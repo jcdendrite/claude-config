@@ -12,27 +12,25 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import textwrap
 from pathlib import Path
 
 from .conftest import (
+    _break_worktree_git_link,
+    _commit,
     _dead_pid,
+    _failing_tool_shims,
+    _leave_modules_directory_in_worktree_git_dir,
+    _live_process_in,
+    _lock_worktree,
     _make_feature_branch,
     _make_repo_with_remote,
+    _make_submodule_worktree,
     _make_worktree,
+    _make_worktree_without_git_entry,
 )
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "worktree-removal-status.sh"
-
-# A PATH-shimmed readlink/lsof that always fails -- same source
-# test_worktree_lib.py's readlink_always_fails_path/lsof_always_fails_path
-# fixtures use, reused inline here (not imported) since those fixtures are
-# scoped to that file's own module.
-_ALWAYS_FAILS_SOURCE = textwrap.dedent("""\
-    #!/usr/bin/env bash
-    exit 1
-""")
 
 
 def _run_script(
@@ -105,10 +103,7 @@ class TestLockedWorktreeShowsFullReasonText:
         _make_worktree(local, "feat/locked", wt_path)
         dead = _dead_pid()
         reason = f"held for review (pid {dead})"
-        subprocess.run(
-            ["git", "worktree", "lock", str(wt_path), "--reason", reason],
-            cwd=local, check=True,
-        )
+        _lock_worktree(local, wt_path, reason)
 
         result = _run_script(local)
 
@@ -127,7 +122,7 @@ class TestLockedWorktreeWithNoReasonShowsBareLocked:
         _make_feature_branch(local, "feat/locked-no-reason")
         wt_path = tmp_path / "locked-no-reason-tree"
         _make_worktree(local, "feat/locked-no-reason", wt_path)
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
 
         result = _run_script(local)
 
@@ -149,7 +144,7 @@ class TestCombinedDirtyLockedVerdictListsBothReasons:
         wt_path = tmp_path / "dirty-locked-tree"
         _make_worktree(local, "feat/dirty-locked", wt_path)
         (wt_path / "scratch.txt").write_text("wip\n")
-        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+        _lock_worktree(local, wt_path, None)
 
         result = _run_script(local)
 
@@ -191,6 +186,100 @@ class TestSubmoduleWorktreeNeedsForce:
 
         assert result.returncode == 0, result.stderr
         assert "Status: clean" in result.stdout
+        assert "Submodules: yes" in result.stdout
+        assert "Verdict: git worktree remove would fail without --force (has submodules)." in result.stdout
+
+
+class TestUninitializedSubmoduleDoesNotBlockRemoval:
+    """`git worktree remove` removes a worktree whose submodules are only
+    uninitialized, so the report must not call that "Submodules: yes"."""
+
+    def test_uninitialized_submodule_reports_none_and_removable(self, tmp_path):
+        wt_path = tmp_path / "uninitialized-tree"
+        local, _ = _make_submodule_worktree(tmp_path, "feat/uninitialized", wt_path, populate=False)
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
+        assert "Submodules: no" in result.stdout
+        assert "Verdict: git worktree remove would succeed (no --force needed)." in result.stdout
+
+
+class TestUnreadableStatusKeepsGitsErrorText:
+    def test_broken_git_file_reports_status_could_not_be_determined_with_git_error(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/broken")
+        wt_path = tmp_path / "broken-tree"
+        _make_worktree(local, "feat/broken", wt_path)
+        _break_worktree_git_link(wt_path)
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
+        assert "Status: could not be determined (fatal:" in result.stdout
+        assert "Verdict: could not be determined; inspect this worktree manually." in result.stdout
+
+
+class TestWorktreeWithoutGitFileReportsReasonNotEnclosingRepoState:
+    """Git reports an unlocked worktree without a `.git` file as prunable, so
+    the status check is reached only for a locked one."""
+
+    def test_missing_git_file_reports_status_could_not_be_determined_with_the_reason(self, tmp_path):
+        local, wt_path = _make_worktree_without_git_entry(tmp_path, locked=True)
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Status: could not be determined ({wt_path} has no .git)" in result.stdout
+        assert "Verdict: could not be determined; inspect this worktree manually." in result.stdout
+
+    def test_dirty_enclosing_checkout_is_not_reported_as_the_worktrees_state(self, tmp_path):
+        """Without a `.git`, a status run would walk up and name the enclosing checkout's untracked file."""
+        local, wt_path = _make_worktree_without_git_entry(tmp_path, locked=True)
+        (local / "main-checkout-dirty.txt").write_text("x")
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
+        status_line = next(line for line in result.stdout.splitlines() if line.startswith("Status:"))
+        assert status_line == f"Status: could not be determined ({wt_path} has no .git)"
+        assert "main-checkout-dirty.txt" not in result.stdout
+
+
+class TestLockedWorktreeWithMissingDirectory:
+    """git does not mark a locked worktree prunable, so the probes run on a
+    directory that is gone: it has no changes and no submodules, and the lock decides."""
+
+    def test_missing_directory_reads_clean_without_submodules_and_fails_on_the_lock(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-gone")
+        wt_path = tmp_path / "locked-gone-tree"
+        _make_worktree(local, "feat/locked-gone", wt_path)
+        _lock_worktree(local, wt_path, None)
+        shutil.rmtree(wt_path)
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
+        assert "Status: clean" in result.stdout
+        assert "Submodules: no" in result.stdout
+        assert "Verdict: git worktree remove would fail without --force specified twice (locked)." in result.stdout
+
+
+class TestLeftoverModulesDirectoryBlocksRemoval:
+    """`git worktree remove` refuses a worktree whose own git dir holds a
+    `modules` directory, even with no submodule initialized."""
+
+    def test_leftover_modules_directory_reports_submodules_and_needs_force(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/leftover-modules")
+        wt_path = tmp_path / "leftover-modules-tree"
+        _make_worktree(local, "feat/leftover-modules", wt_path)
+        _leave_modules_directory_in_worktree_git_dir(wt_path)
+
+        result = _run_script(local)
+
+        assert result.returncode == 0, result.stderr
         assert "Submodules: yes" in result.stdout
         assert "Verdict: git worktree remove would fail without --force (has submodules)." in result.stdout
 
@@ -246,12 +335,8 @@ class TestLiveProcessReportsInUse:
         wt_path = tmp_path / "in-use-tree"
         _make_worktree(local, "feat/in-use", wt_path)
 
-        holder = subprocess.Popen(["sleep", "30"], cwd=str(wt_path))
-        try:
+        with _live_process_in(wt_path):
             result = _run_script(local)
-        finally:
-            holder.terminate()
-            holder.wait()
 
         assert result.returncode == 0, result.stderr
         assert "In use: yes (live process)" in result.stdout
@@ -272,12 +357,7 @@ class TestUnverifiableInUseCheckReportsCouldNotBeDetermined:
         wt_path = tmp_path / "unverifiable-tree"
         _make_worktree(local, "feat/unverifiable", wt_path)
 
-        shim_dir = tmp_path / "always-fails-shim"
-        shim_dir.mkdir()
-        for tool in ("readlink", "lsof"):
-            shim = shim_dir / tool
-            shim.write_text(_ALWAYS_FAILS_SOURCE)
-            shim.chmod(0o755)
+        shim_dir = _failing_tool_shims(tmp_path, "always-fails-shim", "readlink", "lsof")
         env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
 
         result = _run_script(local, env=env)
@@ -385,6 +465,56 @@ class TestMainWorktreeExcluded:
 
         assert result.returncode == 0, result.stderr
         assert f"Worktree: {local}" not in result.stdout
+
+    def test_main_worktree_excluded_when_run_from_a_linked_worktree(self, tmp_path):
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/linked")
+        linked_path = tmp_path / "linked-tree"
+        _make_worktree(local, "feat/linked", linked_path)
+
+        result = _run_script(linked_path)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Worktree: {local}\n" not in result.stdout
+        assert f"Worktree: {linked_path} (current)" in result.stdout
+
+    def test_main_worktree_excluded_when_its_git_dir_is_stored_elsewhere(self, tmp_path):
+        """With `--separate-git-dir`, git lists the main worktree under its git dir, not its
+        checkout, and it must still be excluded."""
+        main_path = tmp_path / "main"
+        separate_git_dir = tmp_path / "store.git"
+        subprocess.run(
+            ["git", "init", "-q", "--initial-branch=main", f"--separate-git-dir={separate_git_dir}", str(main_path)],
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=main_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=main_path, check=True)
+        _commit(main_path, "init")
+        linked_path = tmp_path / "linked-tree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feat/linked", str(linked_path)], cwd=main_path, check=True,
+        )
+
+        result = _run_script(linked_path)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Worktree: {separate_git_dir}\n" not in result.stdout
+        assert f"Worktree: {main_path}\n" not in result.stdout
+        assert f"Worktree: {linked_path} (current)" in result.stdout
+
+    def test_bare_repository_path_excluded_when_run_from_its_linked_worktree(self, tmp_path):
+        """A bare repository's first `git worktree list` record is the bare git dir, which must not be reported."""
+        _, bare = _make_repo_with_remote(tmp_path)
+        linked_path = tmp_path / "linked-tree"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feat/linked", str(linked_path), "main"], cwd=bare, check=True,
+        )
+
+        result = _run_script(linked_path)
+
+        assert result.returncode == 0, result.stderr
+        assert f"Worktree: {bare}\n" not in result.stdout
+        assert f"Worktree: {linked_path} (current)" in result.stdout
 
 
 class TestNotAGitRepository:
