@@ -369,6 +369,7 @@ The header also points to `_lib_mask_shell_quotes`' Limits for the other residua
       - Denying a mutating `gh api` fragment cut before its endpoint word also denies a flags-first call whose single-word field value holds a substitution, such as `gh api -X POST -f body="$(cat f)" repos/o/r/issues`. `[verified: ciso-reviewer-1794055402-GH-1407-deny-default.md R1, which names that cost]`
       - Reading the endpoint from masked text instead keeps a quoted multi-word value as one word, but a quoted endpoint holding `{owner}` or `$` masks to `""` and would pass (row 13). Reading both texts is a new layer, which the freeze rules out (row 53).
 78. The engineer accepted as permanent debt the two `gh api` gap shapes that row 76's widening added: a quoted multi-word flag value before the endpoint, and a flag value holding a command substitution. `[engineer-verified: "Accept both as permanent debt (Recommended)"]` This covers only that acceptance of those two shapes as permanent debt. `anchors: row68, row76`
+79. Code review of dispatch 1 found `_set_origin_head` copied across two test files and open-coded in a third, and the fix adds a shared helper to `claude/.claude/tests/helpers.py`, a file the plan did not name. `[engineer-verified: "Keep the helpers.py edit"]` This covers only adding that file to dispatch 1's Critical files. `anchors: row22`
 
 ## Critical files
 
@@ -387,6 +388,7 @@ Implementation runs as three `code-writer` dispatches in sequence. Dispatches 1 
   - New silent cases: `main` with no origin, an origin/HEAD-named `trunk`, and a detached HEAD. Each repo is dirty, so only the branch decides.
   - A dirty repo on a non-default branch where only the `symbolic-ref` read fails stays silent (row 22). `git_timeout_shim`'s `exit_status` makes that one call fail, and the fixture skips without `timeout` or `gtimeout` (`claude/.claude/hooks/tests/conftest.py:311-312`).
 - `claude/.claude/hooks/tests/test_autonomous_shipping_grant_boundary.py`: one module constant names the scenario branch, and every `init_git_repo_with_commit` call in `_build_scenario` passes it. Each denied scenario is then still denied for its root reason, not for the branch.
+- `claude/.claude/tests/helpers.py`: a shared `set_origin_head`, imported by the three test files above in place of their private copies (row 79).
 - `docs/commit-stall-block.md`: a firing-condition bullet after line 23 naming `_lib_head_detached_or_default`. Line 78's git-call list is reworded without a count.
 - `docs/hooks.md`: the `advance-past-commit-stall.sh` bullet (line 220) adds the condition.
 - `CHANGELOG.md`: a bullet in the `### Changed` section at line 7.

@@ -6,6 +6,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The commit-stall Stop hook (`advance-past-commit-stall.sh`) no longer forces a continuation on the default branch or a detached HEAD.**
+  - **Why:** the forced continuation commits and pushes, and from those states the push would land on a protected branch.
+  - **What it reads:** the shared `_lib_head_detached_or_default` in `_lib.sh`, the same default-branch test `_lib_review_ledger_path` already applied. It fires only on a non-default branch, and a git failure while reading HEAD stays silent.
+  - **Rename:** `_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES` is now `_LIB_DEFAULT_BRANCH_FALLBACK_NAMES`. The review ledger's scoping is unchanged.
+  - The change is live on `git pull`.
 - **`/code-review` now checks whether a factual claim in a comment or durable doc is true.** The design is in `docs/design-decisions/false-or-unsourced-claim-checks.md`.
   - `comment-discipline-reviewer` gains a "False or unsourced claim" angle for added or modified prose. It flags a settleable claim its subject contradicts, citing the subject's `file:line`. It runs in `/ready-for-review`'s cumulative pass, like the agent's other angles.
   - Step 1.5 gains a "Stale claim in unchanged prose" tripwire. When a diff renames, removes or redefines a name, it searches for unchanged comments and docs still describing the old contract. It runs inline in every round, and skips preserved records, plans and dated design-decision records.

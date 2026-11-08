@@ -24,6 +24,7 @@ from helpers import (
     enable_round2_pilot,
     init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
+    set_origin_head,
     staged_diff_hash_at_base,
 )
 
@@ -708,17 +709,6 @@ def _ledger_path_resolution(config_dir: Path, repo: Path | str, session_id: str)
     )
 
 
-def _set_origin_head(repo: Path, default_branch: str) -> None:
-    """Point refs/remotes/origin/HEAD at origin/<default_branch> without a
-    real remote, the same local-refs-only setup test_lib_git_refs.py's default-branch
-    tests use."""
-    subprocess.run(["git", "update-ref", f"refs/remotes/origin/{default_branch}", "HEAD"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{default_branch}"],
-        cwd=repo, check=True,
-    )
-
-
 class TestLibReviewLedgerPath:
     """The scope matrix for _lib_review_ledger_path, tested once here. The
     expected path comes from conftest's independent oracle, and each case
@@ -741,7 +731,7 @@ class TestLibReviewLedgerPath:
     def test_feature_branch_with_origin_head_set_is_branch_scope(self, tmp_path):
         repo = tmp_path / "repo"
         _init_repo(repo, branch="main")
-        _set_origin_head(repo, "main")
+        set_origin_head(repo, "main")
         subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
 
         scope, path = self._resolve(tmp_path, repo)
@@ -753,7 +743,7 @@ class TestLibReviewLedgerPath:
     def test_default_branch_named_by_origin_head_is_session_scope(self, tmp_path):
         repo = tmp_path / "repo"
         _init_repo(repo, branch="trunk")
-        _set_origin_head(repo, "trunk")
+        set_origin_head(repo, "trunk")
 
         scope, path = self._resolve(tmp_path, repo)
 
@@ -797,7 +787,7 @@ class TestLibReviewLedgerPath:
         when the remote's default is `trunk`."""
         repo = tmp_path / "repo"
         _init_repo(repo, branch="main")
-        _set_origin_head(repo, "trunk")
+        set_origin_head(repo, "trunk")
 
         scope, path = self._resolve(tmp_path, repo)
 
@@ -821,12 +811,13 @@ class TestLibReviewLedgerPath:
         assert result.stdout == ""
 
     def test_default_branch_names_are_exactly_the_candidates_default_branch_probing_resolves(self, tmp_path):
-        """The resolver's fallback name list is a copy of the one
+        """_lib_head_detached_or_default's fallback name list, which the
+        resolver's scope matrix rests on, is a copy of the one
         _lib_default_branch_or_guess probes. Probing a universe of names
         with only origin/<name> present checks both directions: every name
         in the list resolves, and no other name in the universe does."""
         names = subprocess.run(
-            ["bash", "-c", f'. "{LIB_SH}"; printf "%s\\n" "${{_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}}"'],
+            ["bash", "-c", f'. "{LIB_SH}"; printf "%s\\n" "${{_LIB_DEFAULT_BRANCH_FALLBACK_NAMES[@]}}"'],
             capture_output=True, text=True, check=True,
         ).stdout.split()
         decoy_names = ["trunk", "dev", "development", "release", "production", "stable", "next", "default"]

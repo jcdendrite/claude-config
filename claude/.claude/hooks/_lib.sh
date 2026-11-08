@@ -5179,11 +5179,45 @@ _ledger_sweep_window_days() {
   fi
 }
 
-# Branch names _lib_review_ledger_path treats as the default when no default
-# branch resolves. Mirrors _lib_default_branch_or_guess's candidate list; a
-# copy of that function lives in the skill-management plugin's own _lib.sh
-# and must stay text-identical, so the list cannot be shared by reference.
-_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES=(main master develop)
+# Branch names _lib_head_detached_or_default treats as the default when no
+# default branch resolves. Mirrors _lib_default_branch_or_guess's candidate
+# list; a copy of that function lives in the skill-management plugin's own
+# _lib.sh and must stay text-identical, so the list cannot be shared by
+# reference.
+_LIB_DEFAULT_BRANCH_FALLBACK_NAMES=(main master develop)
+
+# _lib_head_detached_or_default REPO_ROOT
+# Prints the branch HEAD names, empty when HEAD is detached (mid-rebase
+# included), and exits with one of three statuses:
+# - 0: HEAD is detached or on the default branch. Default-branch detection is
+#   _lib_default_branch_or_guess. When no default resolves, a branch named like
+#   one of _LIB_DEFAULT_BRANCH_FALLBACK_NAMES counts as the default.
+# - 1: HEAD is on any other branch. A branch named like a fallback name is
+#   still "other" when origin/HEAD names a different branch.
+# - 2: REPO_ROOT is empty or git could not read HEAD.
+# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
+# status above 1 when git itself failed or timed out, so a git failure is not
+# read as a detached HEAD.
+_lib_head_detached_or_default() {
+  local repo_root="$1"
+  local branch default_branch candidate
+  local head_status=0
+  [ -n "$repo_root" ] || return 2
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
+  [ "$head_status" -le 1 ] || return 2
+  # `symbolic-ref --short` prints `heads/<name>` when another ref, such as a tag, shares the branch's name.
+  branch=${branch#heads/}
+  printf '%s' "$branch"
+  [ -n "$branch" ] || return 0
+  if default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
+    [ "$branch" = "$default_branch" ]
+    return
+  fi
+  for candidate in "${_LIB_DEFAULT_BRANCH_FALLBACK_NAMES[@]}"; do
+    [ "$branch" = "$candidate" ] && return 0
+  done
+  return 1
+}
 
 # _lib_review_ledger_session_path CONFIG_DIR REPO_ROOT SESSION_ID
 # Prints <config-dir>/review-narrative-ledger/<repo-hash>.<session-id>.jsonl,
@@ -5210,14 +5244,9 @@ _lib_review_ledger_session_path() {
 # - scope "session": _lib_review_ledger_session_path's file. It is used on a
 #   detached HEAD (mid-rebase included) and on the default branch, so a
 #   local-only main does not grow one unbounded file.
-# Default-branch detection is _lib_default_branch_or_guess. When no default
-# resolves, a branch named like one of _LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES
-# counts as the default.
-# A branch named like one of those names is still branch-keyed when origin/HEAD
-# names a different branch.
-# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
-# status above 1 when git itself failed or timed out, so a git failure does not
-# silently downgrade a branch's rows into the session file.
+# Session scope is _lib_head_detached_or_default's status 0, which owns the
+# default-branch rules. Its status 2 (a git failure) does not silently
+# downgrade a branch's rows into the session file.
 # Exit 1, empty stdout: REPO_ROOT is empty, a hash did not compute, git could
 # not read HEAD, or (session scope only) SESSION_ID is not a valid path
 # component.
@@ -5226,24 +5255,15 @@ _lib_review_ledger_session_path() {
 # exit 1 as "no ledger".
 _lib_review_ledger_path() {
   local config_dir="$1" repo_root="$2" session_id="$3"
-  local branch branch_key default_branch candidate session_path
+  local branch branch_key session_path
   local head_status=0 session_scoped=0
   [ -n "$repo_root" ] || return 1
-  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
-  [ "$head_status" -le 1 ] || return 1
-  if [ -z "$branch" ]; then
-    session_scoped=1
-  elif default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
-    if [ "$branch" = "$default_branch" ]; then
-      session_scoped=1
-    fi
-  else
-    for candidate in "${_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}"; do
-      if [ "$branch" = "$candidate" ]; then
-        session_scoped=1
-      fi
-    done
-  fi
+  branch=$(_lib_head_detached_or_default "$repo_root") || head_status=$?
+  case "$head_status" in
+    0) session_scoped=1 ;;
+    1) ;;
+    *) return 1 ;;
+  esac
   if [ "$session_scoped" -eq 1 ]; then
     session_path=$(_lib_review_ledger_session_path "$config_dir" "$repo_root" "$session_id") || return 1
     printf 'session %s' "$session_path"

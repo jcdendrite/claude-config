@@ -1379,6 +1379,20 @@ def init_git_repo_with_commit(
     return path
 
 
+def set_origin_head(repo: Path, default_branch: str) -> None:
+    """Point refs/remotes/origin/HEAD at origin/<default_branch> without a real remote."""
+    subprocess.run(
+        ["git", "update-ref", f"refs/remotes/origin/{default_branch}", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        [
+            "git", "symbolic-ref", "refs/remotes/origin/HEAD",
+            f"refs/remotes/origin/{default_branch}",
+        ],
+        cwd=repo, check=True,
+    )
+
+
 GITLINK_BEFORE = "1" * 40
 GITLINK_AFTER = "2" * 40
 
