@@ -4779,7 +4779,7 @@ class TestCmdReviewRoundCostPooled:
     def test_project_dir_symlinked_to_another_directory_inside_a_declared_root_still_completes(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """Paired with the outside-every-root test above: an alias whose
+        """Paired with the project-directory outside-every-root test above: an alias whose
         real path stays under a declared root dedups against its target, so
         the run completes with the same figures as without the alias. Runs
         with --show-withheld so the compared output carries numeric figures.

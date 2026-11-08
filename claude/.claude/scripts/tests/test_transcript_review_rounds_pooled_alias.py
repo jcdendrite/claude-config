@@ -1,6 +1,7 @@
 """review_rounds' --pooled refusal of a project directory reachable from more than one scan root, and the non-refusal of a
 transcript file or session directory linked across scan roots."""
 import re
+from collections.abc import Sequence
 
 import pytest
 from transcript_analysis import review_rounds, scope
@@ -9,12 +10,16 @@ from ._review_round_corpus_helpers import _pooled_two_root_fixture, _review_roun
 from .conftest import _agent_use, _priced, _skill_block, _user_msg, _write_jsonl, _write_subagent_dispatch
 
 
-def _assert_refused_with_alias_count(captured, expected_count_clause: str) -> None:
+def _assert_refused_with_alias_count(
+    captured, expected_count_clause: str, *, absent_names: Sequence[str],
+) -> None:
     """The refusal exits with no stdout, states the count, names the declared-roots file as the remediation, ends with the
-    documentation pointer, and carries no traceback."""
+    documentation pointer, carries no traceback, and names none of `absent_names`."""
     out, err = captured
     assert out == ""
     assert expected_count_clause in err
+    for absent_name in absent_names:
+        assert absent_name not in err
     assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
     assert err.strip().endswith(review_rounds._POOLED_REFUSAL_DOC_POINTER.strip())
     assert "Traceback" not in err
@@ -34,6 +39,7 @@ class TestPooledCrossRootAliasRefusal:
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
         (roots[1] / "-home-user-repo-b" / "nested").mkdir()
         alias_name = "-home-user-secret-alias-name"
+        alias_target_name = alias_target.rsplit("/", 1)[-1]
         (roots[0] / alias_name).symlink_to(roots[1] / alias_target, target_is_directory=True)
 
         with pytest.raises(SystemExit) as exc:
@@ -42,9 +48,10 @@ class TestPooledCrossRootAliasRefusal:
         assert exc.value.code == 2
         captured = capsys.readouterr()
         _assert_refused_with_alias_count(
-            captured, "refuses a project directory reachable from more than one scan root (1 such directory)"
+            captured,
+            "refuses a project directory reachable from more than one scan root (1 such directory)",
+            absent_names=(alias_name, "-home-user-repo-b", alias_target_name),
         )
-        assert alias_name not in captured.err
         assert str(tmp_path) not in captured.err
 
     def test_two_aliased_project_dirs_are_refused_with_a_plural_count(self, tmp_path, monkeypatch, capsys):
@@ -58,7 +65,11 @@ class TestPooledCrossRootAliasRefusal:
 
         assert exc.value.code == 2
         _assert_refused_with_alias_count(
-            capsys.readouterr(), "refuses a project directory reachable from more than one scan root (2 such directories)"
+            capsys.readouterr(),
+            "refuses a project directory reachable from more than one scan root (2 such directories)",
+            absent_names=(
+                "-home-user-link-one", "-home-user-link-two", "-home-user-repo-b", "-home-user-repo-b-second",
+            ),
         )
 
     def test_project_dir_listed_under_two_scan_roots_through_links_is_refused(self, tmp_path, monkeypatch, capsys):
@@ -73,10 +84,29 @@ class TestPooledCrossRootAliasRefusal:
 
         assert exc.value.code == 2
         captured = capsys.readouterr()
+        # The target name is a substring of the link name, so it covers both.
         _assert_refused_with_alias_count(
-            captured, "refuses a project directory reachable from more than one scan root (1 such directory)"
+            captured,
+            "refuses a project directory reachable from more than one scan root (1 such directory)",
+            absent_names=("-home-user-repo-shared",),
         )
         assert str(tmp_path) not in captured.err
+
+    def test_non_pooled_run_over_a_cross_root_alias_completes_with_the_banner_and_no_refusal(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The refusal is --pooled-only: a plain multi-root run over the same alias reads the directory once and prints
+        the do-not-publish banner."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        (roots[0] / "-home-user-link-to-repo-b").symlink_to(roots[1] / "-home-user-repo-b", target_is_directory=True)
+
+        review_rounds.cmd_review_round_cost(_review_round_cost_args(pooled=False))
+
+        out, err = capsys.readouterr()
+        assert scope._DO_NOT_PUBLISH_BANNER in out
+        assert "Totals: 4 branches, 4 rounds" in out
+        assert out.count("Totals:") == 1
+        assert review_rounds._POOLED_REFUSAL_DOC_POINTER.strip() not in err
 
 
 # The pooled fixture holds 4 rounds with 1 ready-for-review; the linked transcript adds 1 round, itself ready-for-review.
