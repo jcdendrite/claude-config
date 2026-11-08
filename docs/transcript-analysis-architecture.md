@@ -790,16 +790,10 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 `.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
 the existing tests live.
 
-`tests/test_transcript_cli.py` holds seven tests that are exceptions to the rule's bullet on one command's
-CLI wiring. Each belongs in its command's file:
-
-- `TestCacheEfficiencyArgparseWiring`'s two tests, in `tests/test_transcript_cache_efficiency.py`
-- `TestBuildParser`'s `test_this_repo_and_projects_mutually_exclusive_on_skill_invocation` and
-  `test_bare_skill_invocation_leaves_projects_unset`, in `tests/test_transcript_skill_invocation.py`
-- `TestBuildParser`'s `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts`, in
-  `tests/test_transcript_review_cost_by_size.py`
-- `TestBuildParser`'s `test_pr_link_without_repo_flag_defaults_to_none` and
-  `test_pr_link_with_repo_flag_parses_value`, in `tests/test_transcript_pr_link.py`
+`tests/test_transcript_cli.py` holds one test that is an exception to the rule's bullet on one command's CLI
+wiring: `TestBuildParser`'s `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts`. It belongs
+in `tests/test_transcript_review_cost_by_size.py`, which is over the line limit, so the move waits for a split
+of that file at a named seam.
 
 `corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
 `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
@@ -1019,8 +1013,8 @@ modules directly. `tests/_cache_efficiency_helpers.py`, a plain module, not a te
 `_cache_efficiency_args`, which the cache-efficiency file and `tests/test_transcript_cache_rebuild.py` both
 read. Both import it as `from ._cache_efficiency_helpers import ...` — see
 `.claude/rules/test-tree-packaging.md` for why. `TestConfigDirRouting` lives in `tests/test_transcript_cli.py`
-with `main()`'s other `--config-dir` tests. `TestCacheEfficiencyArgparseWiring` is there too, one of the
-exceptions named at the start of this section.
+with `main()`'s other `--config-dir` tests. `TestCacheEfficiencyArgparseWiring`, the cache-efficiency
+subcommand's flag and default wiring, lives in `tests/test_transcript_cache_efficiency.py`.
 
 The edit-format and instrument-authoring commands each have one test file:
 `tests/test_transcript_edit_format.py` and `tests/test_transcript_instrument_authoring.py`. Neither

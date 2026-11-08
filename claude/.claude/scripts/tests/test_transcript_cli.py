@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from transcript_analysis import cache_efficiency, cli, review_cost_by_size, scope
+from transcript_analysis import cli, review_cost_by_size, scope
 
 from .conftest import _asst, _write_jsonl
 
@@ -275,27 +275,6 @@ def test_read_cost_this_repo_runs_to_a_report_through_main(
     assert "sessions=1 " in out
 
 
-class TestCacheEfficiencyArgparseWiring:
-    """Round-trips the real argparser, mirroring
-    TestPlanBoundaryArgparseWiring -- every other new test in this section
-    builds args via the hand-rolled _cache_efficiency_args() factory, which
-    cannot catch a dest= typo or missing set_defaults in the real parser."""
-
-    def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
-        parser = cli.build_parser()
-        args = parser.parse_args(["cache-efficiency"])
-        assert args.extra_config_dirs is None
-        assert args.no_redact is False
-        assert args.func == cache_efficiency.cmd_cache_efficiency
-
-    def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
-        parser = cli.build_parser()
-        args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
-        assert args.func is cache_efficiency.cmd_cache_efficiency
-        assert args.extra_config_dirs == ["X"]
-        assert args.no_redact is True
-
-
 class TestBuildParser:
     """build_parser() as a testable seam — the argparse layer without executing
     a subcommand against the real ~/.claude/projects."""
@@ -304,16 +283,6 @@ class TestBuildParser:
         parser = cli.build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["buckets", "--this-repo", "--projects", "x"])
-
-    def test_this_repo_and_projects_mutually_exclusive_on_skill_invocation(self):
-        parser = cli.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
-
-    def test_bare_skill_invocation_leaves_projects_unset(self):
-        """None, not "*", is what makes skill-invocation default to this repo's worktrees."""
-        parsed = cli.build_parser().parse_args(["skill-invocation"])
-        assert parsed.projects is None
 
     @staticmethod
     def _subcommand_flags(parser):
@@ -368,16 +337,6 @@ class TestBuildParser:
         parser = cli.build_parser()
         assert parser.parse_args(["review-trace", "--omit-plan-review-spawns"]).omit_plan_review_spawns is True
         assert parser.parse_args(["review-trace"]).omit_plan_review_spawns is False
-
-    def test_pr_link_without_repo_flag_defaults_to_none(self):
-        parser = cli.build_parser()
-        parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])
-        assert parsed.repo is None
-
-    def test_pr_link_with_repo_flag_parses_value(self):
-        parser = cli.build_parser()
-        parsed = parser.parse_args(["pr-link", "--branches", "feat-y", "--repo", "owner/repo"])
-        assert parsed.repo == "owner/repo"
 
 
 class TestProjectsFlagHasNoArgparseType:

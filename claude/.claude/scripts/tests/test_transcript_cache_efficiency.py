@@ -3,7 +3,7 @@ classifier, the per-group scan's chain keying and compaction reset, and cmd_cach
 end, including the --no-redact refusal and the per-account breakdown.
 """
 import pytest
-from transcript_analysis import cache_efficiency, scope
+from transcript_analysis import cache_efficiency, cli, scope
 
 from ._cache_efficiency_helpers import _cache_efficiency_args
 from .conftest import (
@@ -380,3 +380,23 @@ class TestCacheEfficiencyFormatDriftCanary:
         ])
         cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
         assert "WARNING" not in capsys.readouterr().err
+
+
+class TestCacheEfficiencyArgparseWiring:
+    """Round-trips the real argparser. _cache_efficiency_args() builds a
+    plain args object without it, so it cannot catch a dest= typo or a
+    missing set_defaults(func=...)."""
+
+    def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["cache-efficiency"])
+        assert args.extra_config_dirs is None
+        assert args.no_redact is False
+        assert args.func == cache_efficiency.cmd_cache_efficiency
+
+    def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
+        assert args.func is cache_efficiency.cmd_cache_efficiency
+        assert args.extra_config_dirs == ["X"]
+        assert args.no_redact is True
