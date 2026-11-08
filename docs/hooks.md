@@ -200,7 +200,7 @@ A new gate registers every handler with `"onFailure": "block"` and ends its scri
   - the file's `--cwd` is compared raw, with no canonicalization (symlinks and `.` and `..` components), so a non-canonical spelling of this worktree gets the shell-only announce (its reason names that spelling) while `/resume-context` loads it
   - a handoff/brief filename or the file's own `--cwd` directory spelled as an English directive from allowlisted bytes is echoed into `additionalContext` verbatim (an accepted residual)
   - a file name starting with `@` gets the shell route, because the hook withholds the slash form although `resume-context-same-session.sh` accepts that name
-  - the byte allowlist does not bound a file-sourced `--cwd` directory, which the announce shows alone in a copy span
+  - a file-sourced `--cwd` may name any directory made of allowlisted bytes, and the engineer copies the command with it without this hook having checked the directory
 
   Carries no kill switch — an informational hook firing only on the deliberate, infrequent act of writing a continuity file.
 - **`announce-approved-plan-path.sh`** (PostToolUse, `Bash`, informational) — after a `marker.sh write plan-review` Bash command runs, shows the approved plan's absolute path to the engineer by relaying the `plan-review marker covers: <absolute path>` lines `marker.sh` prints (see [`scripts.md`](scripts.md)). It emits `systemMessage` only, claims only that a marker was recorded, and never blocks. Carries no kill switch other than removing its `settings.json` entry. The hook header carries the trigger, path-shape rules, message forms, and Known gaps.

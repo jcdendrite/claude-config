@@ -189,9 +189,9 @@ read_fired_marker() {
   esac
 }
 
-# Criteria, timing and resume-route text both nudge messages carry;
-# docs/handoff-nudge.md "Compaction as an alternative to /handoff" restates
-# them, the compaction text beside its vendor quotes, and
+# These constants hold the criteria, timing and resume-route text both nudge messages carry.
+# docs/handoff-nudge.md "Compaction as an alternative to /handoff" restates them.
+# That doc places the compaction text beside its vendor quotes.
 # test_nudge_handoff_near_context_cap.py pins the match.
 COMPACT_CRITERIA="the next step continues the current task without switching to another worktree or repository, it needs files already read or edited in this conversation, and Claude has not been corrected more than twice on the same issue"
 COMPACT_TIMING="Run /compact now rather than after a break: once the prompt cache expires, /compact reprocesses the full history as uncached input, which is when it costs the most."

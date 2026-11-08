@@ -95,8 +95,8 @@
 #     digits, and the allowed punctuation -- still passes the allowlist and is
 #     echoed verbatim into additionalContext. This is a known, accepted residual,
 #     not a bug.
-#   - The byte allowlist does not bound a file-sourced --cwd directory, which the
-#     announce shows alone in a copy span.
+#   - A file-sourced --cwd may name any directory made of allowlisted bytes, and the
+#     engineer copies the command with it without this hook having checked the directory.
 #   - The file's own --cwd is compared raw, with no canonicalization (symlinks and
 #     `.` and `..` components), so a non-canonical spelling of this worktree gets the
 #     shell-only announce (its reason names that spelling) while /resume-context loads it.

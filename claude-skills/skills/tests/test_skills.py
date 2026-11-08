@@ -6071,7 +6071,7 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
     "handoff_second_paragraph": (
         "handoff",
         "## §7 Resume command",
-        "After the write, the announce hook names the resume route; relay it to the "
+        "Relay the resume route the announce hook names after the write to the "
         "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
@@ -6104,7 +6104,7 @@ _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
     "brief_second_paragraph": (
         "brief",
         "## §7.5 Resume command",
-        "After the write, the announce hook names the resume route; relay it to the "
+        "Relay the resume route the announce hook names after the write to the "
         "engineer. `--cwd` makes the launched session start "
         "in that directory regardless of where the resume command is actually run from "
         "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
