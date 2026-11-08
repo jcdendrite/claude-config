@@ -96,7 +96,7 @@
 #     echoed verbatim into additionalContext. This is a known, accepted residual,
 #     not a bug.
 #   - The byte allowlist does not bound a file-sourced --cwd directory, which the
-#     announce now shows alone in a copy span.
+#     announce shows alone in a copy span.
 #   - The file's own --cwd is compared raw, with no canonicalization (symlinks and
 #     `.` and `..` components), so a non-canonical spelling of this worktree gets the
 #     shell-only announce (its reason names that spelling) while /resume-context loads it.
@@ -123,7 +123,7 @@ esac
 FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 [ -n "$FILE_PATH" ] || exit 0
 
-# Glob copy: consume-durable-continuity-file-on-read.sh's case arm and _lib_collect_pending_continuity_files define the same set.
+# Glob copy: see "Paired glob sites" in the header.
 case "$FILE_PATH" in
   "$CONFIG_DIR"/handoffs/*-handoff.md | "$CONFIG_DIR"/briefs/*-task.md) ;;
   *) exit 0 ;;

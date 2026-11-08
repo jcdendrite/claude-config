@@ -5576,41 +5576,28 @@ _lib_resume_context_verdict() {
 }
 
 # _lib_collect_pending_continuity_files CONFIG_DIR
+# Call it directly in the current shell, not in `$(...)` or a pipeline.
 # Sets _LIB_PENDING_CONTINUITY_FILES to the pending /handoff and /brief files, handoffs first.
 # This glob is the single definition of the pending set.
 # The same two globs are spelled in announce-resume-command.sh and consume-durable-continuity-file-on-read.sh as `case` patterns, and as suffixes in resume-context-same-session.sh.
-# It matches no nested path and no leading-dot name.
-# Call it directly in the current shell, not in `$(...)` or a pipeline.
-# It sets noglob, dotglob, nullglob, failglob and GLOBIGNORE to their defaults for the expansion and restores them, so the result does not depend on those options.
-# Other expansion options such as nocaseglob are left as the caller set them, and a restored GLOBIGNORE is not exported.
-# The dotglob probe runs before GLOBIGNORE is unset because unsetting GLOBIGNORE turns dotglob off.
 # A pending file is a regular file, not a symlink.
+# The glob runs in a process substitution that resets the expansion options the result depends on, so the caller's settings neither change the result nor are changed.
+# A failure inside that subshell, such as a readonly GLOBIGNORE in the caller, reads as an empty set.
 _lib_collect_pending_continuity_files() {
-  local path
-  local noglob_was_set=0 dotglob_was_set=0 nullglob_was_set=0 failglob_was_set=0
-  local globignore_was_set=0 saved_globignore=""
-  case "$-" in *f*) noglob_was_set=1 ;; esac
-  if shopt -q dotglob; then dotglob_was_set=1; fi
-  if shopt -q nullglob; then nullglob_was_set=1; fi
-  if shopt -q failglob; then failglob_was_set=1; fi
-  if [ -n "${GLOBIGNORE+set}" ]; then
-    globignore_was_set=1
-    saved_globignore="$GLOBIGNORE"
-  fi
-  unset GLOBIGNORE
-  set +f
-  shopt -u dotglob nullglob failglob
+  local config_dir="$1" path
   _LIB_PENDING_CONTINUITY_FILES=()
-  for path in "$1"/handoffs/*-handoff.md "$1"/briefs/*-task.md; do
-    if [ -f "$path" ] && [ ! -L "$path" ]; then
-      _LIB_PENDING_CONTINUITY_FILES+=("$path")
-    fi
-  done
-  if [ "$noglob_was_set" -eq 1 ]; then set -f; fi
-  if [ "$dotglob_was_set" -eq 1 ]; then shopt -s dotglob; fi
-  if [ "$nullglob_was_set" -eq 1 ]; then shopt -s nullglob; fi
-  if [ "$failglob_was_set" -eq 1 ]; then shopt -s failglob; fi
-  if [ "$globignore_was_set" -eq 1 ]; then GLOBIGNORE="$saved_globignore"; fi
+  while IFS= read -r -d '' path; do
+    _LIB_PENDING_CONTINUITY_FILES+=("$path")
+  done < <(
+    unset GLOBIGNORE
+    set +f
+    shopt -u dotglob nocaseglob nullglob failglob
+    for path in "$config_dir"/handoffs/*-handoff.md "$config_dir"/briefs/*-task.md; do
+      if [ -f "$path" ] && [ ! -L "$path" ]; then
+        printf '%s\0' "$path"
+      fi
+    done
+  )
 }
 
 # _lib_is_pending_continuity_file CONFIG_DIR PATH

@@ -6043,7 +6043,7 @@ class TestResumeContextSkill:
 # message compares with the session's worktree to pick the resume route. Each
 # section states the directory rule and the command forms (three bullets), then a
 # second paragraph. The second paragraph holds the `cd <path> &&` prohibition and
-# the only sentence telling the writer why the directory matters, so a trim at the
+# the instruction to relay the announce hook's resume route, so a trim at the
 # line cap must fail here. Each entry is (skill name, section heading, pinned text).
 _PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
     "handoff_directory_bullet": (

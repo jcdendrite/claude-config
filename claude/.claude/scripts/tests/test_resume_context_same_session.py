@@ -942,6 +942,16 @@ class TestPendingSet:
         assert outcome.first("SKIPPED_UNPRINTABLE") == "1"
         assert outcome.stop_code == "nothing-pending"
 
+    def test_a_name_with_a_backslash_is_counted_as_unprintable_not_unescaped(self, sandbox: _Sandbox) -> None:
+        sandbox.handoffs.mkdir()
+        (sandbox.handoffs / "back\\slash-handoff.md").write_text("x\n")
+
+        outcome = sandbox.run()
+
+        assert not outcome.has("LOAD")
+        assert outcome.first("SKIPPED_UNPRINTABLE") == "1"
+        assert outcome.stop_code == "nothing-pending"
+
     def test_a_symlink_and_a_dotfile_are_excluded(self, sandbox: _Sandbox) -> None:
         real = sandbox.write_named(sandbox.tmp_path / "elsewhere" / "real-handoff.md", None)
         sandbox.handoffs.mkdir()

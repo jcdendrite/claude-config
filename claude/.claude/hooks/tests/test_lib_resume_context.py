@@ -729,9 +729,36 @@ def _is_pending_continuity_file(config_dir: Path, candidate: str, *, caller_shel
 
 
 def _glob_state(
-    *, noglob: int = 0, dotglob: int = 0, nullglob: int = 0, failglob: int = 0, globignore: str = "unset"
+    *,
+    noglob: int = 0,
+    dotglob: int = 0,
+    nocaseglob: int = 0,
+    nullglob: int = 0,
+    failglob: int = 0,
+    globignore: str = "unset",
 ) -> str:
-    return f"noglob={noglob} dotglob={dotglob} nullglob={nullglob} failglob={failglob} globignore={globignore}"
+    return (
+        f"noglob={noglob} dotglob={dotglob} nocaseglob={nocaseglob} "
+        f"nullglob={nullglob} failglob={failglob} globignore={globignore}"
+    )
+
+
+def _collected_pending_paths(config_dir: Path) -> list[str]:
+    """The collector's array, read back through a NUL-delimited dump so a name's own bytes survive."""
+    script = (
+        "set -euo pipefail\n"
+        f". {_LIB_SH}\n"
+        '_lib_collect_pending_continuity_files "$1"\n'
+        "for collected_path in \"${_LIB_PENDING_CONTINUITY_FILES[@]}\"; do printf '%s\\0' \"$collected_path\"; done\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(config_dir)],
+        capture_output=True,
+        env=dict(os.environ),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return [os.fsdecode(entry) for entry in result.stdout.split(b"\0")[:-1]]
 
 
 def _glob_state_after_collect(config_dir: Path, caller_shell_state: str, after_collect: str = "") -> str:
@@ -744,7 +771,7 @@ def _glob_state_after_collect(config_dir: Path, caller_shell_state: str, after_c
         '_lib_collect_pending_continuity_files "$1"\n'
         f"{after_collect}\n"
         "case \"$-\" in *f*) printf 'noglob=1 ' ;; *) printf 'noglob=0 ' ;; esac\n"
-        "for option in dotglob nullglob failglob; do\n"
+        "for option in dotglob nocaseglob nullglob failglob; do\n"
         "  if shopt -q \"$option\"; then printf '%s=1 ' \"$option\"; else printf '%s=0 ' \"$option\"; fi\n"
         "done\n"
         "printf 'globignore=%s' \"${GLOBIGNORE-unset}\"\n"
@@ -850,20 +877,30 @@ class TestLibIsPendingContinuityFile:
 
     @pytest.mark.parametrize(
         "caller_shell_state",
-        ["set -f", "GLOBIGNORE=x", "shopt -s dotglob nullglob failglob", "GLOBIGNORE='*' ; set -f"],
-        ids=["noglob", "globignore", "dotglob-nullglob-failglob", "globignore-and-noglob"],
+        [
+            "set -f",
+            "GLOBIGNORE=x",
+            "shopt -s dotglob nullglob failglob",
+            "GLOBIGNORE='*' ; set -f",
+            "shopt -s nocaseglob",
+        ],
+        ids=["noglob", "globignore", "dotglob-nullglob-failglob", "globignore-and-noglob", "nocaseglob"],
     )
     def test_the_pending_set_does_not_depend_on_the_callers_glob_options(
         self, config_dir: Path, caller_shell_state: str
     ) -> None:
-        """Allow and deny under the same caller state: a regular direct child stays pending and a dot-name stays not pending."""
+        """Under one caller state a regular child stays pending; a dot-name and an upper-case suffix stay not pending."""
         (config_dir / "handoffs" / "example-handoff.md").write_text("body\n")
         (config_dir / "handoffs" / ".hidden-handoff.md").write_text("body\n")
+        (config_dir / "handoffs" / "UPPER-HANDOFF.md").write_text("body\n")
         assert _is_pending_continuity_file(
             config_dir, f"{config_dir}/handoffs/example-handoff.md", caller_shell_state=caller_shell_state
         )
         assert not _is_pending_continuity_file(
             config_dir, f"{config_dir}/handoffs/.hidden-handoff.md", caller_shell_state=caller_shell_state
+        )
+        assert not _is_pending_continuity_file(
+            config_dir, f"{config_dir}/handoffs/UPPER-HANDOFF.md", caller_shell_state=caller_shell_state
         )
 
     @pytest.mark.parametrize(
@@ -872,28 +909,32 @@ class TestLibIsPendingContinuityFile:
             ("", "", _glob_state()),
             ("set -f", "", _glob_state(noglob=1)),
             ("shopt -s dotglob", "", _glob_state(dotglob=1)),
+            ("shopt -s nocaseglob", "", _glob_state(nocaseglob=1)),
             ("shopt -s nullglob", "", _glob_state(nullglob=1)),
             ("shopt -s failglob", "", _glob_state(failglob=1)),
             ("GLOBIGNORE=''", "", _glob_state(globignore="")),
             ("shopt -s dotglob; GLOBIGNORE=''", "", _glob_state(dotglob=1, globignore="")),
             ("GLOBIGNORE=x", "", _glob_state(dotglob=1, globignore="x")),
             ("GLOBIGNORE=x", "unset GLOBIGNORE", _glob_state()),
+            ("GLOBIGNORE=x; shopt -u dotglob", "", _glob_state(dotglob=0, globignore="x")),
             (
-                "set -f; shopt -s dotglob nullglob failglob; GLOBIGNORE=x",
+                "set -f; shopt -s dotglob nocaseglob nullglob failglob; GLOBIGNORE=x",
                 "",
-                _glob_state(noglob=1, dotglob=1, nullglob=1, failglob=1, globignore="x"),
+                _glob_state(noglob=1, dotglob=1, nocaseglob=1, nullglob=1, failglob=1, globignore="x"),
             ),
         ],
         ids=[
             "defaults-stay-defaults",
             "noglob-alone",
             "dotglob-alone",
+            "nocaseglob-alone",
             "nullglob-alone",
             "failglob-alone",
             "globignore-empty-stays-empty",
             "dotglob-with-empty-globignore",
             "globignore-non-empty-stays-non-empty",
             "globignore-leaves-dotglob-off-once-unset",
+            "globignore-with-dotglob-explicitly-off",
             "every-option-at-once",
         ],
     )
@@ -901,6 +942,65 @@ class TestLibIsPendingContinuityFile:
         self, config_dir: Path, caller_shell_state: str, after_collect: str, expected_state: str
     ) -> None:
         assert _glob_state_after_collect(config_dir, caller_shell_state, after_collect) == expected_state
+
+    def test_an_exported_globignore_stays_exported_to_child_processes(self, config_dir: Path) -> None:
+        """Unsetting and re-assigning GLOBIGNORE in the caller's shell would drop its export attribute."""
+        script = (
+            "set -euo pipefail\n"
+            f". {_LIB_SH}\n"
+            "export GLOBIGNORE=x\n"
+            '_lib_collect_pending_continuity_files "$1"\n'
+            "bash -c 'printf %s \"${GLOBIGNORE-unset}\"'\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(config_dir)],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ),
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "x"
+
+    @pytest.mark.parametrize(
+        ("file_name", "degraded_spelling", "glob_sibling_name"),
+        [
+            ("nl\nname-handoff.md", "nl", None),
+            ("back\\slash-handoff.md", "backslash-handoff.md", None),
+            ("has space-handoff.md", "has", None),
+            ("star*-handoff.md", "star-handoff.md", "starX-handoff.md"),
+        ],
+        ids=["newline", "backslash", "space", "asterisk"],
+    )
+    def test_a_name_with_a_shell_special_byte_is_collected_as_one_exact_entry(
+        self, config_dir: Path, file_name: str, degraded_spelling: str, glob_sibling_name: str | None
+    ) -> None:
+        """The NUL-delimited hand-off from the collector's subshell must not split, unescape or expand a name.
+
+        A glob-character name needs a sibling the pattern would match, or an expanding transport returns the same file.
+        """
+        exact_path = f"{config_dir}/handoffs/{file_name}"
+        (config_dir / "handoffs" / file_name).write_text("body\n")
+        expected_paths = [exact_path]
+        if glob_sibling_name is not None:
+            (config_dir / "handoffs" / glob_sibling_name).write_text("body\n")
+            expected_paths.append(f"{config_dir}/handoffs/{glob_sibling_name}")
+
+        assert sorted(_collected_pending_paths(config_dir)) == sorted(expected_paths)
+        assert _is_pending_continuity_file(config_dir, exact_path)
+        assert not _is_pending_continuity_file(config_dir, f"{config_dir}/handoffs/{degraded_spelling}")
+
+    def test_every_pending_handoff_precedes_every_pending_brief(self, config_dir: Path) -> None:
+        for relative_path in ("briefs/a-task.md", "handoffs/z-handoff.md", "briefs/b-task.md", "handoffs/y-handoff.md"):
+            (config_dir / relative_path).write_text("body\n")
+
+        collected_paths = _collected_pending_paths(config_dir)
+
+        handoff_positions = [i for i, path in enumerate(collected_paths) if "/handoffs/" in path]
+        brief_positions = [i for i, path in enumerate(collected_paths) if "/briefs/" in path]
+        assert len(handoff_positions) == 2
+        assert len(brief_positions) == 2
+        assert max(handoff_positions) < min(brief_positions)
 
 
 # _lib_sanitize_for_terminal — direct unit coverage of all three documented

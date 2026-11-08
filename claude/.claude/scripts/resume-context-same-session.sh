@@ -366,7 +366,7 @@ resume_without_argument() {
 resume_with_argument() {
   local arg="$1" file name matches="" match_count=0 match_slug=1
   # An argument that is already a full file name is never also a slug, so `x-handoff.md` cannot match `x-handoff.md-handoff.md`.
-  # These suffixes repeat the globs of _lib_collect_pending_continuity_files in _lib.sh, which the announce and consume hooks copy as case patterns.
+  # These suffixes are a glob copy: see "Paired glob sites" in announce-resume-command.sh.
   case "$arg" in
     *-handoff.md | *-task.md) match_slug=0 ;;
   esac
