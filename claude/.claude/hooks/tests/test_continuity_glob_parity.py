@@ -1,9 +1,11 @@
-"""Parity of the three definitions of the continuity-file set.
+"""Agreement of the continuity-file set across the announce hook, the consume hook and the pending helper.
 
 announce-resume-command.sh and consume-durable-continuity-file-on-read.sh each spell the set as a
-`case` pattern, and _lib_is_pending_continuity_file defines it as a filesystem glob. The parity tests
-run the real hooks and the real helper over one name matrix, so a change to one definition alone fails
-here. The last test covers the leading-`@` slash-form precaution on its own rows.
+`case` pattern, and _lib_is_pending_continuity_file defines it as a filesystem glob. The two hooks'
+patterns must agree with each other. The helper's pending set must be a subset of both, because the
+helper is intentionally narrower (it skips nested and dot-led names). The tests run the real hooks and
+the real helper over one name matrix, so a change to one definition alone fails here. The last test
+covers the leading-`@` slash-form precaution on its own rows.
 """
 from __future__ import annotations
 

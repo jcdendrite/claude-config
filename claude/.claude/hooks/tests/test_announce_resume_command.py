@@ -883,6 +883,42 @@ class TestAnnounceResumeCommand:
         announced_path = str(written) if announced_rel_path is None else f"{isolated_home}/{announced_rel_path}"
         self._assert_slash_form_refused_for(isolated_home, git_repo, announced_path)
 
+    @pytest.mark.parametrize("session", ["linked", "main"])
+    @pytest.mark.parametrize(
+        ("written_rel_path", "announced_rel_path"),
+        [
+            pytest.param(".claude/handoffs/-handoff.md", None, id="leading-dash"),
+            pytest.param(".claude/handoffs/@mention-handoff.md", None, id="leading-at-sign"),
+            pytest.param(".claude/handoffs/nested/example-handoff.md", None, id="nested-path"),
+            pytest.param(
+                ".claude/handoffs/example-handoff.md",
+                ".claude/handoffs/../handoffs/example-handoff.md",
+                id="dot-dot-spelling",
+            ),
+        ],
+    )
+    def test_refused_name_in_a_file_naming_another_directory_announces_the_mismatch_target(
+        self, isolated_home, git_repo, linked_worktree, tmp_path, session, written_rel_path, announced_rel_path
+    ):
+        """A name the slash form refuses and a --cwd naming another usable directory: the mismatch arm owns the
+        reason and the command, so the refused-name reason must not replace the file's own --cwd."""
+        elsewhere = tmp_path / "some-other-directory"
+        elsewhere.mkdir()
+        written = _write_continuity_file(isolated_home, written_rel_path, str(elsewhere))
+        announced_path = str(written) if announced_rel_path is None else f"{isolated_home}/{announced_rel_path}"
+        arm = _ANNOUNCE_ARMS["mismatch-linked-usable-target" if session == "linked" else "mismatch-not-linked-usable-target"]
+        reason = arm.reason.format(root=linked_worktree, elsewhere=elsewhere)
+        session_cwd = linked_worktree if session == "linked" else git_repo
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(announced_path, cwd=str(session_cwd)), home=isolated_home)
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        assert code_span_command(message) == f"resume-context --cwd {elsewhere} {announced_path}"
+        assert message.split("\n")[0] == _SHELL_LEAD.format(reason=reason)
+        assert _REFUSED_NAME_REASON not in message
+        assert f"`resume-context --cwd {elsewhere} {announced_path}`" in context
+        _assert_context_labels_the_cwd_as_file_sourced(context)
+        assert resume_context_stub_invocations(isolated_home) == ""
+
     # -----------------------------------------------------------------------
     # Allowlist gate on the interpolated file_path
     # -----------------------------------------------------------------------

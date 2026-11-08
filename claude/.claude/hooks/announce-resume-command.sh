@@ -35,7 +35,8 @@
 # this worktree) becomes the --cwd of the advertised shell command, and the
 # reason names it. Without a usable target, the command keeps this worktree's
 # --cwd (linked) or has none (outside a linked worktree).
-# `systemMessage` puts the announced command alone on its second line in single backticks, not in a fenced block, because the phone client prefixes every `systemMessage` line, fence lines included (observed once; Claude Code does not document it).
+# `systemMessage` puts the announced command alone on its second line in single backticks, not in a fenced block.
+# The phone client prefixes every `systemMessage` line, fence lines included (observed once; Claude Code does not document it).
 # `additionalContext` is one line telling the model to relay that one route, its command fenced, and run nothing.
 # A file-sourced --cwd is the file's own text, not a measurement by this hook,
 # and additionalContext labels it so and carries the reason.
@@ -77,7 +78,7 @@
 # from the `case "$FILE_PATH" in` arm of consume-durable-continuity-file-on-read.sh.
 # _lib_collect_pending_continuity_files in _lib.sh defines the same two globs as the pending set; a glob change reaches it too.
 # The suffixes are spelled again in resume-context-same-session.sh's argument matching; a suffix change reaches it too.
-# test_continuity_glob_parity.py pins the announce, consume and helper sets to one another.
+# test_continuity_glob_parity.py pins the announce and consume patterns to each other and the helper's pending set to a subset of both.
 #
 # Known gaps:
 #   - A session whose .cwd has drifted out of the worktree where the work
