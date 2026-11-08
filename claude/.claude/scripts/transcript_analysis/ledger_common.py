@@ -1,6 +1,6 @@
 """Recording primitives shared by the cost-ledger and pr-cost ledgers: the generated per-config-dir machine identity, the
 git-tracked destination check, the machine-label format, the merge-conflict markers both parsers refuse, and the local-lock
-timing both --record paths use. Also the create-new file publish helpers that subcommands writing one owner-only file share."""
+timing both --record paths use. It also holds the create-new file publish helpers."""
 from __future__ import annotations
 
 import contextlib
@@ -131,8 +131,6 @@ def _publish_new_file(path: Path, text: str, temp_prefix: str, temp_suffix: str)
         except FileExistsError:
             return _PublishOutcome.EXISTS
         except OSError:
-            # Not narrowed to a missing or unwritable parent directory:
-            # os.link also fails on EXDEV and ENOSPC.
             return _PublishOutcome.LINK_FAILED
         return _PublishOutcome.CREATED
     finally:

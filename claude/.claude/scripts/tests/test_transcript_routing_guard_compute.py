@@ -73,7 +73,8 @@ _TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
 _SAMPLE_OUTPUT_HEADING = "### Sample output"
 # `routing_guard.py` names the file, not an attribute of the module.
 _CITED_MODULE_NAME = re.compile(r"routing_guard\.(?!py\b)([A-Za-z_]\w*)")
-# The --out lines that echo the operator's own path, quoted by repr. The fixed --out messages are not exempt.
+# The --out lines that echo the operator's own path, quoted by repr, and the git-tracked check's diagnostics, which print
+# an errno in `failed ([Errno N] ...)` and a git exit code in `exited N unexpectedly`. The fixed --out messages are not exempt.
 _DIGIT_SCAN_EXEMPT_PREFIXES = (
     "routing-guard: --out '", 'routing-guard: --out "', "routing-guard: git-tracked check",
 )
@@ -1283,7 +1284,7 @@ class TestBootstrap:
         assert (first.lower, first.upper) == (second.lower, second.upper)
         assert (first.lower, first.upper) != (other_seed.lower, other_seed.upper)
 
-    def test_a_scripted_stream_ranks_undefined_replicates_last_and_reads_the_lower_bound_at_index_10_of_the_360_defined(self):
+    def test_a_scripted_stream_ranks_undefined_replicates_last_and_reads_the_lower_bound_among_the_360_defined(self):
         on = [_bs("01", overhead=1.0, growth_sum=10), _bs("02", overhead=3.0, growth_loops=0)]
         off = [_bs("03", overhead=10.0, growth_sum=10), _bs("04", overhead=4.0, growth_sum=10)]
         groups = [
@@ -1297,13 +1298,19 @@ class TestBootstrap:
             for on_draw, off_draw, count in groups[:-1] for _ in range(count)
         )
         rng = _ScriptedRng(draws)
+        replicate_count = 400
+        lower_rank, upper_rank = _percentile_ranks(routing_guard._GUARD_CI_LEVEL, replicate_count)
+        drop_hypothesis_rank = _percentile_ranks(routing_guard._GUARD_CI_LEVEL, len(defined_nets))[0]
 
-        result = routing_guard._bootstrap_net(on, off, replicates=400, rng=rng)
+        result = routing_guard._bootstrap_net(on, off, replicates=replicate_count, rng=rng)
 
         assert len(defined_nets) == 360
-        assert defined_nets[9] != defined_nets[10], "a dropped-replicate implementation would read index 9"
-        assert result.lower == defined_nets[10]
-        assert math.isinf(result.upper), "index 389 falls among the 40 undefined replicates"
+        assert upper_rank >= len(defined_nets)
+        assert defined_nets[lower_rank] != defined_nets[drop_hypothesis_rank], (
+            "a dropped-replicate implementation would read the drop-hypothesis rank"
+        )
+        assert result.lower == defined_nets[lower_rank]
+        assert math.isinf(result.upper), "the upper rank falls among the undefined replicates"
         assert (result.undefined_total, result.undefined_on, result.undefined_off) == (40, 40, 0)
         assert len(rng.calls) == 800
 

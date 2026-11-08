@@ -94,6 +94,7 @@ from .conftest import (
 
 _BRANCH = "feat-alpha"
 _OTHER_MODEL = "claude-opus-5"
+# The git-tracked check prints an errno in `failed ([Errno N] ...)` and a git exit code in `exited N unexpectedly`.
 _DIGIT_SCAN_EXEMPT_PREFIXES = ("routing-guard: git-tracked check",)
 _CAPTURED_FILE_MODE = 0o600
 _CAPTURES_DIR_MODE = 0o700
@@ -747,12 +748,13 @@ def _branch_facts(**overrides) -> routing_guard._BranchFacts:
 
 def _branch_states(
     *, unknown_causes: tuple[str, ...] = (), mixed: bool = False, state: str = "off",
+    degraded_key: str = routing_guard._ROUTING_KEY,
 ) -> routing_guard._BranchKeyStates:
     by_key = {key: state for key in routing_guard._STATE_KEYS}
     if unknown_causes:
-        by_key[routing_guard._ROUTING_KEY] = routing_guard._STATE_UNKNOWN
+        by_key[degraded_key] = routing_guard._STATE_UNKNOWN
     elif mixed:
-        by_key[routing_guard._ROUTING_KEY] = routing_guard._STATE_MIXED
+        by_key[degraded_key] = routing_guard._STATE_MIXED
     return routing_guard._BranchKeyStates(by_key, unknown_causes)
 
 
@@ -797,12 +799,33 @@ class TestWholeReason:
 
         assert reason == "key-state-mixed"
 
-    def test_unknown_takes_precedence_over_mixed_when_both_hold_for_different_keys(self):
-        by_key = {
-            routing_guard._ROUTING_KEY: routing_guard._STATE_UNKNOWN,
-            routing_guard._ROUND2_PILOT_KEY: routing_guard._STATE_MIXED,
-            routing_guard._ARCHITECT_PILOT_KEY: "off",
-        }
+    @pytest.mark.parametrize("key", routing_guard._STATE_KEYS)
+    def test_a_mixed_state_on_only_one_key_reads_key_state_mixed(self, key):
+        states = _branch_states(mixed=True, degraded_key=key)
+
+        reason = _whole_reason_text(_branch_facts(), [_round_facts(has_marker_write=True)], states)
+
+        assert reason == "key-state-mixed"
+
+    @pytest.mark.parametrize("key", routing_guard._STATE_KEYS)
+    def test_an_unknown_state_on_only_one_key_reads_key_state_unknown(self, key):
+        states = _branch_states(unknown_causes=("hook-not-run",), degraded_key=key)
+
+        reason = _whole_reason_text(_branch_facts(), [_round_facts(has_marker_write=True)], states)
+
+        assert reason == "key-state-unknown: hook-not-run"
+
+    @pytest.mark.parametrize(
+        ("unknown_key", "mixed_key"),
+        [
+            pytest.param(routing_guard._ROUTING_KEY, routing_guard._ROUND2_PILOT_KEY, id="unknown-key-first"),
+            pytest.param(routing_guard._ROUND2_PILOT_KEY, routing_guard._ROUTING_KEY, id="mixed-key-first"),
+        ],
+    )
+    def test_unknown_takes_precedence_over_mixed_when_both_hold_for_different_keys(self, unknown_key, mixed_key):
+        by_key = dict.fromkeys(routing_guard._STATE_KEYS, "off")
+        by_key[unknown_key] = routing_guard._STATE_UNKNOWN
+        by_key[mixed_key] = routing_guard._STATE_MIXED
         states = routing_guard._BranchKeyStates(by_key, ("hook-not-run",))
 
         reason = _whole_reason_text(_branch_facts(), [_round_facts(has_marker_write=True)], states)
@@ -1510,6 +1533,7 @@ class TestMalformedUsage:
         outcome = _run(capsys, world)
 
         assert outcome.code == 0, outcome.err
+        # growth 120_000 = the later turn's 130_000 input minus the second turn's 10_000.
         assert _stored_loops(world, _BRANCH) == [{
             "overhead_tokens": _standard_tokens(input=10_000, output=500),
             "growth_tokens": 120_000, "later_turns": {_SONNET: 1}, "degraded": True,
@@ -3331,6 +3355,8 @@ class TestGoldenFile:
             "The file name changed. Bump _CAPTURE_REVISION only when the change alters what a stored row means;"
             " otherwise update this literal, because a bump strands every standing file."
         )
+        # input 112000 = 100_000 + 10_000 main-thread turns plus the reviewer's 2_000; output 600 = 500 + 100.
+        # cache_read 40000 and cache_write_1h 3000 are the reviewer turn's cache classes.
         assert published[0].read_text() == (
             '{"architect_fix_plan_pilot": "off", "loops": [{"degraded": false, "growth_tokens": 30000,'
             ' "later_turns": {"claude-sonnet-5": 1}, "overhead_tokens": {"claude-sonnet-5": {"standard":'
@@ -5232,6 +5258,18 @@ class TestMessageCitations:
         assert match
         assert match["doc_path"] == "docs/private-project-redaction.md"
         assert normalize_heading(match["heading"]) in heading_texts((REPO_ROOT / match["doc_path"]).read_text())
+
+    def test_the_banner_states_the_publication_bar(self):
+        publication_bar_sentences = (
+            "governs every quantity the guard computes.",
+            "A public artifact states only whether the guard passed and whether the default flipped.",
+        )
+
+        missing_sentences = [
+            sentence for sentence in publication_bar_sentences if sentence not in routing_guard._DO_NOT_PUBLISH_BANNER
+        ]
+
+        assert missing_sentences == []
 
     def test_the_routing_guard_section_holds_every_heading_a_printed_message_cites(self):
         cited_headings = _routing_guard_section_citation_headings()

@@ -91,7 +91,8 @@ _UNAUTHENTICATED_INPUTS_STATEMENT = (
 _DO_NOT_PUBLISH_BANNER = (
     "DO NOT PUBLISH -- this output belongs to the owner alone.\n"
     "`docs/private-project-redaction.md` section \"A wider corpus goes to the owner, never into a public artifact\""
-    " allows a public artifact to state only whether the guard passed and whether the default flipped.\n"
+    " governs every quantity the guard computes."
+    " A public artifact states only whether the guard passed and whether the default flipped.\n"
     "Run and read routing-guard outside any agent session.\n"
     f"Note that {_UNAUTHENTICATED_INPUTS_STATEMENT}."
 )
@@ -390,8 +391,6 @@ _STATE_LABELS = _KeyStates(
 
 
 class _CaptureRecord(NamedTuple):
-    """What a validated capture file holds."""
-
     loops: list[dict]
     states: _KeyStates
 
@@ -410,8 +409,6 @@ class _KeyState(NamedTuple):
 
 
 class _BranchKeyStates(NamedTuple):
-    """Per key in `_STATE_KEYS`, a branch's state."""
-
     by_key: dict[str, str]
     causes: tuple[str, ...]
 
@@ -442,8 +439,6 @@ class _LogRow(NamedTuple):
 
 @dataclass
 class _SessionConfigKeysLog:
-    """The valid rows of the session config-keys log for the scanned sessions, and the account-wide facts."""
-
     status: _LogStatus
     rows_by_session: dict[str, list[_LogRow]] = field(default_factory=dict)
     earliest_logged_at: float | None = None
@@ -1228,7 +1223,6 @@ def _loop_growth_tokens(first_round: _RoundFacts, last_round: _RoundFacts) -> in
 
 
 def _joined_denied_opens(rounds: Sequence[_RoundFacts]) -> int:
-    """How many denied round-opens have a later orchestrator-spawn round in the same loop."""
     return sum(
         1 for position, round_facts in enumerate(rounds)
         if round_facts.denied_open and any(later.spawn_open for later in rounds[position + 1:])
@@ -1413,7 +1407,6 @@ def _captured_line(line_no: int, built: _BuiltRow, earliest_record_ts: float | N
 
 
 def _standing_line(line_no: int, standing: _CaptureRecord | _StandingFile) -> tuple[str, bool]:
-    """The per-row line for an existing file, and whether the row is good."""
     if standing is _StandingFile.LOOPS_ONLY:
         return _row_line(line_no, f"invalid ({_LOOPS_ONLY_NOTE})"), False
     if isinstance(standing, _StandingFile):
