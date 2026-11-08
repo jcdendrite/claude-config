@@ -541,7 +541,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Whether IDE and desktop sessions record a row is untested.
 - **`transcript-analysis.py routing-guard` captures each sampled branch's review loops per account and computes the review-orchestrator routing gate's cost guard.**
   - `--capture` writes one file for each captured branch into `<config-dir>/routing-guard-captures/`, gated per account on `pr_cost_recording`. Existing opt-ins authorize the new directory with no new prompt.
-  - A branch's arm and pilot states come from the session config-keys log, not from the note, so a branch worked before the recorder began cannot be sampled and is listed `excluded`.
+  - A branch's arm and pilot states come from the session config-keys log, so a branch worked before the recorder began cannot be sampled and is listed `excluded`.
   - Files are named by a digest of the branch, and each holds token counts and model strings, with no branch name, path or timestamp. Each file also holds the routing key state and the two pilot states, each `on` or `off`. The digest is unsalted, so anyone holding a directory listing and the public branch list can recover which branches were captured.
   - Without `--capture`, it writes its figures only to a new owner-only `--out` file. A NOT RUN line carries its reason, and that reason and every notice are owner-only.
   - See `docs/transcript-analysis.md` § "routing-guard".

@@ -1265,6 +1265,7 @@ class TestBootstrap:
             ([0, 0], [0, 0], 10), ([0, 0], [0, 1], 100), ([0, 0], [1, 1], 100),
             ([0, 1], [0, 0], 50), ([0, 1], [1, 1], 100), ([1, 1], [0, 0], 40),
         ]
+        # `_bootstrap_net` draws the key-on arm then the key-off arm in each replicate, so the script is valid only in that order.
         draws = [draw for on_draw, off_draw, count in groups for draw in [on_draw, off_draw] * count]
         defined_nets = sorted(
             routing_guard._arm_net([on[i] for i in on_draw], [off[j] for j in off_draw]).net

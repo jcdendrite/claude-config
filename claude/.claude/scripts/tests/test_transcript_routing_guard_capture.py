@@ -3565,6 +3565,8 @@ class TestFreeText:
 
         outcome = _run(capsys, world)
 
+        # Only a contiguous run disagreeing on a pricing._USAGE_DRIFT_INVARIANT_KEYS class trips the
+        # usage-drift flag that exits 3; a non-contiguous run is merged or rejected without tripping it.
         assert outcome.code == (3 if drift_shape == "contiguous-usage-disagrees" else 0), outcome.err
         assert request_id in outcome.err
         assert request_id not in outcome.out
@@ -5304,6 +5306,7 @@ with open(exit_code_file) as exit_code_handle:
             directory.mkdir()
         _install_stub_at_documented_path(home, self.STUB_SCRIPT)
         account_a, account_b = tmp_path / "acct-a", tmp_path / "acct-b"
+        # `~` (0x7E) sorts after `/` (0x2F) under LC_ALL=C, so the `~/` account runs last.
         accounts_by_sorted_order = [str(account_a), str(account_b), "~/acct-c"]
         for account, exit_code in zip(
             accounts_by_sorted_order[:len(exit_codes_in_sorted_order)], exit_codes_in_sorted_order, strict=True,

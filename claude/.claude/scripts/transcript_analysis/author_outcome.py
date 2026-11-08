@@ -210,9 +210,11 @@ def _round_has_marker_write(
     With `succeeded_tool_use_ids` None the signal is "attempted": a write
     counts whether or not it succeeded, and docs/transcript-analysis.md's
     author-outcome "Orchestrator rounds" section lists what it counts besides
-    a successful write. With a collection the signal is "confirmed": a write
-    counts only when its tool_use id is in the collection (it has a paired
-    non-error result). That does not prove the marker was stored.
+    a successful write. With a collection the signal is "confirmed": a
+    main-thread write counts only when its tool_use id is in the collection
+    (it has a paired non-error result). An orchestrator spawn's write is
+    judged against the spawn's own transcript, independent of the collection.
+    Neither proves the marker was stored.
     """
     main_thread_span = [rec for rec in records[open_idx:span_end] if not rec.get("isSidechain")]
     if _records_have_clean_marker_write(main_thread_span, succeeded_tool_use_ids):

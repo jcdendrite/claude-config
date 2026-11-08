@@ -2487,6 +2487,7 @@ class TestPriceDispatchTokenSink:
         _write_subagent_dispatch(fake_projects, "sess-1", "agent-a", "a1", [
             _priced(
                 "claude-sonnet-5", input=1000, output=10, cache_read=5, ephemeral_1h=7, ephemeral_5m=3,
+                # The repeated n1 spawn guards that `visited` makes the second spawn a no-op.
                 content=[_agent_use("n1", "staff-sdet"), _agent_use("n1", "staff-sdet"), _agent_use("ghost", "staff-sdet")],
             ),
             _priced(_UNPRICED_MODEL, input=40, output=2),
@@ -2525,6 +2526,8 @@ class TestPriceDispatchTokenSink:
         review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink={})
 
         assert with_sink == without_sink
+        # unpriced: the unpriced-model turn plus the `<synthetic>` turn, which `_price_dispatch` counts unpriced
+        # but the token sink drops; dangling: the `ghost` spawn; resolved: `a1` and `n1`.
         assert (with_sink.unpriced_turns, with_sink.dangling, with_sink.resolved) == (2, 1, 2)
 
     @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])

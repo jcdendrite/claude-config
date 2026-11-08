@@ -714,6 +714,8 @@ def _serialize_capture(loops: Sequence[_Loop], states: _KeyStates) -> str:
 
 
 def _read_standing_capture(path: Path) -> bytes | _StandingFile:
+    # This tool is the capture store's only intended writer, so unlike _read_session_config_keys_log this open sets no
+    # O_NONBLOCK and makes no regular-file or owner check.
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -790,7 +792,6 @@ def _parse_log_line(line: bytes) -> tuple[str, _LogRow] | None:
 def _read_session_config_keys_log(path: Path, wanted_session_ids: Collection[str]) -> _SessionConfigKeysLog:
     """A blank line is no row and is not counted as skipped, because the recorder starts every append with one.
     The log has a writer other than this tool, the recorder hook, so its file type and content are not this tool's to assume.
-    The capture store has this tool as its only intended writer, so its reader keeps the lighter open.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -1235,7 +1236,6 @@ def _joined_denied_opens(rounds: Sequence[_RoundFacts]) -> int:
 
 
 def _loop_groups(rounds: Sequence[_RoundFacts]) -> list[list[_RoundFacts]]:
-    """A marker write is confirmed by a paired tool_result that is not an error."""
     groups: list[list[_RoundFacts]] = []
     open_loop: list[_RoundFacts] = []
     for round_facts in sorted(rounds, key=_round_sort_key):

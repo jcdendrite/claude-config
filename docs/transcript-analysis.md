@@ -1710,7 +1710,13 @@ The note says which branches are in the sample. Capture derives each branch's ar
 - `excluded` is a branch not in the sample: one that has not merged, or one that merged but cannot be sampled. It is never captured, and a routing deny on it passes deny reconciliation.
 - `#` lines and blank lines are skipped. A leading `~/` in the config directory expands to `$HOME`. Any other config directory must be absolute.
 
-Keep the note as an owner-only file outside any git work tree and any cloud-sync folder. Add a branch's row once its sessions end, and list a branch still in progress as `excluded`. Listing a branch `excluded` to clear a NOT RUN reason shrinks the sample, and the guard cannot tell that from a correction.
+Keeping the note:
+
+- Keep the note as an owner-only file outside any git work tree and any cloud-sync folder.
+- Add a branch's row once its sessions end.
+- List a branch still in progress as `excluded`.
+
+Listing a branch `excluded` to clear a NOT RUN reason shrinks the sample, and the guard cannot tell that from a correction.
 
 ### Run order
 
