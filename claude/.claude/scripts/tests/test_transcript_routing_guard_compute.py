@@ -84,6 +84,12 @@ _FAR_PAST_RATE_EXPIRY = date(2000, 1, 1)
 _FAR_FUTURE_RATE_EXPIRY = date(2999, 1, 1)
 
 
+def _percentile_ranks(level: float, replicate_count: int) -> tuple[int, int]:
+    """The (lower, upper) sorted-index ranks of a percentile interval at `level` over `replicate_count` replicates."""
+    tail = (1 - level) / 2
+    return round(tail * (replicate_count - 1)), round((1 - tail) * (replicate_count - 1))
+
+
 @pytest.fixture(autouse=True)
 def _rates_never_expire(monkeypatch):
     """Keep the stale-rate line off every output, so no test depends on the clock."""
@@ -451,6 +457,25 @@ class TestSelectSample:
         reasons = _select(entries).reasons
 
         assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_ARM_SIZE_MISMATCH, 1)]
+
+    def test_an_account_with_more_off_rows_than_on_rows_names_its_first_merged_row(self):
+        entries = [
+            _entry(1, _ACCOUNT_A, "in-progress", status="excluded"),
+            _entry(2, _ACCOUNT_A, "off-1", "off"),
+            _entry(3, _ACCOUNT_A, "on-1"),
+            _entry(4, _ACCOUNT_A, "off-2", "off"),
+        ]
+
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_ARM_SIZE_MISMATCH, 2)]
+
+    def test_a_growth_defined_on_arm_beside_an_off_arm_with_no_growth_defined_loop_is_a_reason(self):
+        entries = [_entry(1, _ACCOUNT_A, "on-1"), _entry(2, _ACCOUNT_A, "off-1", "off", loops=_UNDEFINED)]
+
+        reasons = _select(entries).reasons
+
+        assert reasons == [routing_guard._NotRunReason(routing_guard._REASON_NO_GROWTH_DEFINED, None)]
 
     def test_an_arm_with_no_loop_whose_growth_is_defined_is_a_reason(self):
         entries = [_entry(1, _ACCOUNT_A, "on-1", loops=_UNDEFINED), _entry(2, _ACCOUNT_A, "off-1", "off")]
@@ -1316,13 +1341,15 @@ class TestBootstrap:
         ]
         off = [_bs(f"off-{i:02d}", growth_sum=900 + 50 * i, overhead=6.0 + (i % 3), rate=1e-6) for i in range(10)]
         rng = _SpyRng(0)
+        replicate_count = 10_000
+        lower_rank, _upper_rank = _percentile_ranks(routing_guard._GUARD_CI_LEVEL, replicate_count)
 
-        result = routing_guard._bootstrap_net(on, off, replicates=10_000, rng=rng)
+        result = routing_guard._bootstrap_net(on, off, replicates=replicate_count, rng=rng)
 
         # The seeded replay matches the production stream only in production's draw order, key-on then key-off.
         reference_rng = random.Random(0)
         reference_nets = []
-        for _ in range(10_000):
+        for _ in range(replicate_count):
             figures = routing_guard._arm_net(
                 reference_rng.choices(on, k=10), reference_rng.choices(off, k=10),
             )
@@ -1332,11 +1359,12 @@ class TestBootstrap:
 
         def lower_with_fill(fill: float) -> float:
             filled = sorted([*defined, *([fill] * undefined_count)])
-            return review_rounds._resample_percentile(filled, level=0.95)[0]
+            return review_rounds._resample_percentile(filled, level=routing_guard._GUARD_CI_LEVEL)[0]
 
-        assert len(rng.calls) == 20_000
-        assert result.undefined_total == undefined_count > 250
-        assert defined[250] != defined[round(0.025 * (9_999 - undefined_count))]
+        assert len(rng.calls) == 2 * replicate_count
+        assert result.undefined_total == undefined_count > lower_rank
+        drop_hypothesis_rank = _percentile_ranks(routing_guard._GUARD_CI_LEVEL, replicate_count - undefined_count)[0]
+        assert defined[lower_rank] != defined[drop_hypothesis_rank]
         assert result.lower == lower_with_fill(max(defined))
         assert result.lower == lower_with_fill(1e300)
         assert result.lower >= lower_with_fill(-1e300)
@@ -1349,6 +1377,16 @@ class TestBootstrap:
         result = routing_guard._bootstrap_net(on, off, replicates=1, rng=_ScriptedRng([[0], [0]]))
 
         assert math.isinf(result.lower) and result.undefined_total == 1
+
+    def test_a_replicate_that_leaves_both_arms_without_growth_counts_once_in_the_total_and_once_in_each_side(self):
+        on = [_bs("01", growth_sum=10), _bs("02", growth_loops=0)]
+        off = [_bs("03", growth_sum=10), _bs("04", growth_loops=0)]
+        # Replicate 1 draws only the growth-less branch from each arm; replicate 2 does so from the key-on arm alone.
+        rng = _ScriptedRng([[1, 1], [1, 1], [1, 1], [0, 0]])
+
+        result = routing_guard._bootstrap_net(on, off, replicates=2, rng=rng)
+
+        assert (result.undefined_total, result.undefined_on, result.undefined_off) == (2, 2, 1)
 
 
 class _PipelineSpy(NamedTuple):
@@ -1437,14 +1475,18 @@ class TestBootstrapThroughCompute:
     ):
         _six_branch_lab(lab)
         _compute(capsys, lab)
-        monkeypatch.setattr(routing_guard, "_GUARD_CI_LEVEL", 0.90)
+        default_level = routing_guard._GUARD_CI_LEVEL
+        narrowed_level = 0.90
+        monkeypatch.setattr(routing_guard, "_GUARD_CI_LEVEL", narrowed_level)
         _compute(capsys, lab)
 
         default_nets, narrowed_nets = pipeline_spy.sorted_nets
-        assert pipeline_spy.bounds[0] == (default_nets[250], default_nets[9_749])
-        assert pipeline_spy.bounds[1] == (narrowed_nets[500], narrowed_nets[9_499])
-        assert default_nets[250] != default_nets[500]
-        assert default_nets[9_749] != default_nets[9_499]
+        default_lower, default_upper = _percentile_ranks(default_level, len(default_nets))
+        narrowed_lower, narrowed_upper = _percentile_ranks(narrowed_level, len(narrowed_nets))
+        assert pipeline_spy.bounds[0] == (default_nets[default_lower], default_nets[default_upper])
+        assert pipeline_spy.bounds[1] == (narrowed_nets[narrowed_lower], narrowed_nets[narrowed_upper])
+        assert default_nets[default_lower] != default_nets[narrowed_lower]
+        assert default_nets[default_upper] != default_nets[narrowed_upper]
 
     def test_an_all_null_growth_arm_is_not_run_before_any_replicate(self, lab, capsys, pipeline_spy):
         account = lab.account()
@@ -1515,8 +1557,33 @@ class TestBootstrapThroughCompute:
         assert "key-on growth-defined loops: 2" in figure_lines
         assert "key-off growth-defined branches: 10" in figure_lines
         undefined_replicates = pipeline_spy.results[0].undefined_total
-        assert undefined_replicates > 250
+        lower_rank, _upper_rank = _percentile_ranks(routing_guard._GUARD_CI_LEVEL, _PRODUCTION_BOOTSTRAP_REPLICATES)
+        assert undefined_replicates > lower_rank
         assert f"undefined replicates: {undefined_replicates} of 10000" in figure_lines
+
+    def test_a_thin_off_growth_sample_notes_the_undefined_replicates_on_the_off_side_only(
+        self, lab, capsys, pipeline_spy, production_bootstrap_replicates,
+    ):
+        account = lab.account()
+        for index in range(10):
+            lab.row(account, f"on-{index}", "on", loops=[_loop(input_tokens=1_000_000 + index, growth=900 + index)])
+            lab.row(account, f"off-{index}", "off", loops=[
+                _loop(input_tokens=2_000_000 + index, growth=100 * index if index < 2 else None),
+            ])
+        lab.write_note()
+        out_path = lab.root / "figures.txt"
+
+        outcome = _compute(capsys, lab, out=str(out_path))
+
+        figure_lines = out_path.read_text().splitlines()
+        assert outcome.code in (0, 1)
+        assert routing_guard._UNDEFINED_REPLICATE_NOTICES["off"] in outcome.err.splitlines()
+        assert routing_guard._UNDEFINED_REPLICATE_NOTICES["on"] not in outcome.err.splitlines()
+        assert "key-on growth-defined branches: 10" in figure_lines
+        assert "key-off growth-defined branches: 2" in figure_lines
+        result = pipeline_spy.results[0]
+        assert result.undefined_off > 0 and result.undefined_on == 0
+        assert f"undefined replicates: {result.undefined_off} of 10000" in figure_lines
 
 
 # --- output ------------------------------------------------------------------

@@ -27,15 +27,15 @@ from helpers import REPO_ROOT, add_linked_worktree, heading_texts, normalize_hea
 from transcript_analysis import ledger_common, pricing, review_trace, routing_guard, scope
 
 from ._pr_cost_helpers import _enable_pr_cost
-from ._review_round_helpers import (
+from ._review_round_corpus_helpers import (
+    _LEAK_SENTINEL_PREFIX,
     _ORCHESTRATOR_AGENT_TYPE,
-    _SONNET,
     _as_sidechain,
     _leak_sentinel,
-    _marker_write_use,
     _orchestrator_return_record,
     _orchestrator_spawn_record,
 )
+from ._review_round_helpers import _SONNET, _marker_write_use
 from ._routing_guard_helpers import (
     _BANNER_PROVENANCE_SENTENCE,
     _JQ_ABSENT,
@@ -44,6 +44,7 @@ from ._routing_guard_helpers import (
     _NO_ROW_PAYLOAD,
     _NOISY_CONFIG_MALFORMED_TOKEN,
     _NOISY_CONFIG_UNKNOWN_KEY,
+    _RECORDER_HOOK_FILE,
     _VALID_STATES,
     _append_log_rows,
     _assert_git_failure_diagnostic_precedes_note_refusal,
@@ -3525,7 +3526,7 @@ class TestFreeText:
         assert (world.captures_dir / _digest_name(_BRANCH)).exists()
         published_text = (world.captures_dir / _digest_name(_BRANCH)).read_text()
         for stream in (published_text, outcome.out, outcome.err):
-            assert "LEAKSENTINEL" not in stream
+            assert _LEAK_SENTINEL_PREFIX not in stream
 
     def test_the_body_of_a_dropped_text_derived_deny_and_of_a_legacy_attachment_deny_reaches_no_output(self, world, capsys):
         records = _clean_loop(_BRANCH) + [
@@ -3543,7 +3544,7 @@ class TestFreeText:
         assert routing_guard._DROPPED_DENY_NOTICE in outcome.err
         published_text = (world.captures_dir / _digest_name(_BRANCH)).read_text()
         for stream in (published_text, outcome.out, outcome.err):
-            assert "LEAKSENTINEL" not in stream
+            assert _LEAK_SENTINEL_PREFIX not in stream
 
     @pytest.mark.parametrize("drift_shape", ["contiguous-usage-disagrees", "non-contiguous-merged", "non-contiguous-rejected"])
     def test_a_request_id_may_show_on_stderr_through_a_dedup_print_and_nowhere_else(
@@ -3864,7 +3865,7 @@ class TestOutput:
     def test_the_strings_a_run_must_not_name_read_a_bare_carriage_return_inside_a_row_as_part_of_its_cell(self, tmp_path):
         cell = f"{tmp_path.resolve() / 'account-cr'}\r"
         note = tmp_path / "note.tsv"
-        note.write_bytes(f"{cell}\tbranch-cr\ton\toff\toff\n".encode())
+        note.write_bytes(f"{_note_line(cell, 'branch-cr')}\n".encode())
 
         strings = _strings_the_output_must_not_name(str(note), None)
 
@@ -5126,6 +5127,12 @@ class TestRecorderContract:
         )
 
 
+class TestRecorderHookPath:
+    def test_the_recorder_hook_basename_the_reader_matches_names_the_hook_file_in_the_repo(self):
+        assert _RECORDER_HOOK_FILE.name == routing_guard._RECORDER_HOOK_BASENAME
+        assert _RECORDER_HOOK_FILE.is_file()
+
+
 class TestSchemaDrift:
     def test_every_schema_key_matches_the_readers_key_name_class_and_the_three_constants_are_schema_keys(self):
         schema_key_names = _schema_key_names()
@@ -5248,7 +5255,7 @@ class TestMessageCitations:
         assert not unresolved
 
 
-# The documented loop does milliseconds of work. 30 seconds is far above that, and well below the 25-minute CI job cap
+# The documented loop does milliseconds of work. 30 seconds is far above that, and well below the CI job cap
 # (.github/workflows/tests.yml) that a loop regressed to a blocking read would otherwise stall until.
 _DOCUMENTED_LOOP_TIMEOUT_SECONDS = 30
 

@@ -297,7 +297,6 @@ def _add_turn_tokens(tokens: dict[str, dict[str, dict[str, int]]], model: str, u
 
 
 def _record_turn_tokens(token_sink: dict[str, dict[str, dict[str, int]]], model: str, usage: dict) -> None:
-    """A turn whose model the rate table does not price is still recorded, under its own model."""
     if model == pricing._SYNTHETIC_MODEL_ID:
         return
     _add_turn_tokens(token_sink, model, usage)
@@ -338,8 +337,7 @@ def _price_dispatch(
     own Dangling column. tally.resolved is this dispatch plus every nested one
     successfully priced — review-round-cost's own "agents" column.
 
-    `token_sink`, when given, also receives the tokens of unpriced turns,
-    which `tally.tokens` excludes. It never changes `tally`.
+    `token_sink`, when given, never changes `tally`.
     """
     if tool_use_id in visited:
         return

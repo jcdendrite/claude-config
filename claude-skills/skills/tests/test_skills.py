@@ -4131,8 +4131,6 @@ def test_routing_gate_design_record_cites_routing_guard_section() -> None:
     `docs/transcript-analysis.md` § "routing-guard" for how to run the
     subcommand.
 
-    This test checks that the heading exists there.
-
     The record defers to that section instead of restating how to run it,
     and docs/*.md sits outside the generic skill-citation sweep, so
     a heading rename would otherwise orphan the pointer with no

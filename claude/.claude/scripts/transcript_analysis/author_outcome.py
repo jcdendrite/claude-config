@@ -177,9 +177,8 @@ class _OrchestratorSpawn(NamedTuple):
 def _records_have_clean_marker_write(
     records: list[dict], succeeded_tool_use_ids: Collection[str] | None = None,
 ) -> bool:
-    """True iff any Bash tool_use command in `records` is the hook-allowlisted
-    `marker.sh write code-review` shape. Applies no sidechain filter, so it
-    reads a subagent transcript as well as main-thread records."""
+    """Applies no sidechain filter, so it reads a subagent transcript as well
+    as main-thread records."""
     for rec in records:
         if rec.get("type") != "assistant":
             continue

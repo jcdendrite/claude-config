@@ -88,7 +88,6 @@ class _PathSpies:
 
 
 def _install_path_spies(monkeypatch) -> _PathSpies:
-    """A file descriptor argument is not a path and is skipped."""
     spies = _PathSpies()
 
     def recorded(target: list[str], real: Callable) -> Callable:
@@ -323,7 +322,7 @@ def _append_log_rows(config_dir: Path, *rows: dict) -> Path:
     return path
 
 
-_RECORDER_HOOK_PATH = Path(__file__).resolve().parents[2] / "hooks" / "record-session-config-keys.sh"
+_RECORDER_HOOK_FILE = Path(__file__).resolve().parents[2] / "hooks" / "record-session-config-keys.sh"
 # Far above the hook's normal run, so only a hung child trips it and the test fails instead of the suite stalling.
 _RECORDER_HOOK_TIMEOUT_SECONDS = 30
 # The recorder hook parses its payload with jq, so a test that runs it skips without jq.
@@ -334,7 +333,7 @@ _JQ_ABSENT_SKIP_REASON = "the recorder hook needs jq"
 def _run_recorder_hook(config_dir: Path, home: Path, payload: dict, cwd: Path) -> subprocess.CompletedProcess[str]:
     """Run the real recorder hook once against `config_dir`, as the harness does: the payload on stdin."""
     return subprocess.run(
-        [str(_RECORDER_HOOK_PATH)], input=json.dumps(payload), capture_output=True, text=True, cwd=cwd, check=False,
+        [str(_RECORDER_HOOK_FILE)], input=json.dumps(payload), capture_output=True, text=True, cwd=cwd, check=False,
         env={**os.environ, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)},
         timeout=_RECORDER_HOOK_TIMEOUT_SECONDS,
     )
@@ -369,6 +368,8 @@ def _recorder_attachment(
 
     Keys the reader ignores hold synthetic values.
     """
+    from transcript_analysis import routing_guard
+
     return {
         "type": "attachment",
         "sessionId": session_id,
@@ -383,7 +384,7 @@ def _recorder_attachment(
             "stdout": _real_no_row_stdout() if stdout is None else stdout,
             "stderr": "",
             "exitCode": 0,
-            "command": command or "~/.claude/hooks/record-session-config-keys.sh",
+            "command": command or routing_guard._RECORDER_HOOK_PATH,
             "durationMs": 12,
         },
     }

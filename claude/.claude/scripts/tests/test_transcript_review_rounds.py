@@ -2716,11 +2716,6 @@ class TestComputeReviewRoundCostsRoundKeys:
 
 
 class TestResamplePercentileLevel:
-    def test_default_level_is_the_ci_level_bounds(self):
-        sample = [float(i) for i in range(31)]
-
-        assert review_rounds._resample_percentile(sample) == (1.0, 29.0)
-
     def test_default_level_resolves_ci_level_when_the_call_runs(self, monkeypatch):
         sample = [float(i) for i in range(101)]
         monkeypatch.setattr(review_rounds, "_CI_LEVEL", 0.90)
