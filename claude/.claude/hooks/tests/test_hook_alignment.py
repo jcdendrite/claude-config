@@ -875,6 +875,7 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-private-project-refs.sh",
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
+    "deny-default-branch-push.sh",
     "enforce-marker-script-shape.sh",
     "deny-invisible-commit-content.sh",
     # Carry no "Bash(git commit *)" `if`; each self-filters on its own
@@ -2182,7 +2183,7 @@ def test_gate_header_tier_matches_table_row(hook: Path) -> None:
     )
 
 
-# The pinned floor from docs/hooks.md § "Threat-model tiers": the eight
+# The pinned floor from docs/hooks.md § "Threat-model tiers": the nine
 # gates that carry `untrusted-input`. One-sided by design: it fails loudly
 # if a pinned name stops being a hook-class: gate hook, is renamed, or
 # drops `untrusted-input` from its header, a security-class relaxation
@@ -2199,6 +2200,7 @@ _UNTRUSTED_INPUT_FLOOR: frozenset[str] = frozenset(
         "deny-credential-file-reads.sh",
         "deny-network-installs.sh",
         "deny-plan-writer-off-plan-writes.sh",
+        "deny-default-branch-push.sh",
     }
 )
 
@@ -2227,7 +2229,7 @@ def test_untrusted_input_floor_pinned(hook_name: str) -> None:
     )
 
 
-# The pinned floor from docs/hooks.md § "Threat-model tiers": the 15 gates
+# The pinned floor from docs/hooks.md § "Threat-model tiers": the 16 gates
 # that carry `irreversible`. One-sided by design: it fails loudly if a
 # pinned name stops being a hook-class: gate hook, is renamed, or drops
 # `irreversible` from its header, a security-class relaxation needing a
@@ -2240,6 +2242,7 @@ _IRREVERSIBLE_FLOOR: frozenset[str] = frozenset(
         "deny-credential-bash-reads.sh",
         "deny-credential-file-reads.sh",
         "deny-data-file-reads.sh",
+        "deny-default-branch-push.sh",
         "deny-env-reads.sh",
         "deny-invisible-commit-content.sh",
         "deny-network-installs.sh",
@@ -2302,6 +2305,12 @@ _TIER_RATIONALE_HOOK_SENTENCES: dict[str, tuple[str, ...]] = {
         (
             "This zero-allowlist, no-bypass-valve design is deliberate against "
             "a steered agent, not only an accidental Read."
+        ),
+    ),
+    "deny-default-branch-push.sh": (
+        (
+            "Text from a PR or a tool result can steer an agent into this push, "
+            "so steered input is in scope."
         ),
     ),
     "deny-network-installs.sh": (
@@ -3459,10 +3468,10 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 33
+_GATE_HOOK_COUNT = 34
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 34
+_SETTINGS_GATE_HANDLER_COUNT = 35
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"

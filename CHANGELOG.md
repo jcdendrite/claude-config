@@ -522,6 +522,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new PreToolUse gate, `deny-default-branch-push.sh`, denies an agent push whose destination is a protected branch.**
+  - **Protected set:** the branch `refs/remotes/<remote>/HEAD` names, plus `main` and `master`, plus `develop` when that HEAD does not resolve. It also denies a push whose destination it cannot resolve, and a mutating `gh api` call to a `contents`, `git/refs` or `merges` endpoint. `git push --dry-run` passes.
+  - **Limits:** wrapped, scripted and HTTP pushes pass, so server-side branch protection stays the barrier against them. The hook header lists the Known gaps and the accepted over-denials.
+  - **Re-run `./install.sh` from a separate terminal after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the gate is registered but not linked, and every Bash call blocks.
+  - **Plugin:** the `skill-management` plugin's patch bump, 5.0.1 to 5.0.2, comes from the shared `_LIB_GIT_GLOBAL_VALUE_FLAGS` constant its `_lib.sh` now carries. It changes no behavior.
 - **A new SessionStart hook, `announce-autonomous-shipping.sh`, states the resolved autonomous-shipping state to the agent at startup, resume and `/clear`.**
   - On a machine with `autonomous_shipping` on, in a repo without `.claude/autonomous-shipping-optout`, the agent is told the engineer's request to make a change authorizes committing it, pushing the current branch and opening a PR without asking. Merging stays human-only.
   - It has no kill switch of its own: `autonomous_shipping` and the repo optout silence it. It is advisory context, so the model may still ask.
