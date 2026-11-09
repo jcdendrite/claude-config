@@ -216,8 +216,8 @@ Give the agent a credential without repository-administration rights.
 
 The gate reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The hook header's Known gaps list them, so protection on the remote is the only barrier for steered input.
 
-A host or plan that offers no branch protection leaves the gate as the only control, and it is known to leak.
-Treat pushes from such a repository as unprotected and do not rely on the gate.
+Where the host or plan offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.
+Give the agent a credential that cannot push to that repository, or treat its pushes as unprotected and do not rely on the gate.
 
 Check a branch protection rule with `gh api repos/<owner>/<repo>/branches/<default>/protection`, and expect:
 - `enforce_admins.enabled` true.
@@ -244,9 +244,6 @@ Then verify the three credential properties the rules above depend on:
   - The agent needs an account of its own, separate from the engineer's, so that the engineer can approve its pull requests.
   - If the agent runs on the engineer's own credential, no approval comes from a different account, so the rule is satisfied only by a bypass for the engineer's account, which the agent's credential holds too.
   - Confirm the rule lists no bypass actor that the agent's credential can act as.
-
-Where the host offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.
-Give the agent a credential that cannot push to that repository, or accept that risk.
 
 ## Utility hooks
 
