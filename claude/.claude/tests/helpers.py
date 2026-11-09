@@ -2906,6 +2906,41 @@ def build_path_with_silent_python3(shim_dir: Path) -> str:
     return f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
+def _awk_implementations_on_this_machine() -> dict[str, str]:
+    """Real path of each awk the matrix knows how to find, keyed by the real file's name."""
+    implementations: dict[str, str] = {}
+    for candidate in ("/usr/bin/awk", "mawk", "gawk", "original-awk", "nawk"):
+        resolved = shutil.which(candidate)
+        if resolved is None:
+            continue
+        real_path = os.path.realpath(resolved)
+        implementations.setdefault(os.path.basename(real_path), real_path)
+    return implementations
+
+
+AWK_IMPLEMENTATIONS = _awk_implementations_on_this_machine()
+# Parametrize ids for an every-installed-awk matrix; `None` (no known awk found) makes `awk_first_on_path_env` skip.
+AWK_MATRIX_NAMES: list[str | None] = list(AWK_IMPLEMENTATIONS) or [None]
+# Key of `/usr/bin/awk` in `AWK_IMPLEMENTATIONS` (BSD awk on Darwin), or `None` where the matrix has no such awk.
+SYSTEM_AWK_NAME: str | None = next(
+    (name for name, path in AWK_IMPLEMENTATIONS.items() if path == os.path.realpath("/usr/bin/awk")), None
+)
+
+
+def awk_first_on_path_env(shim_dir: Path, awk_name: str | None) -> dict[str, str]:
+    """`PATH` override that makes the `awk_name` entry of `AWK_IMPLEMENTATIONS` the awk a script resolves.
+
+    Creates `shim_dir` for the `awk` symlink. Skips the calling test when `awk_name` is `None`.
+    """
+    import pytest  # imported here because the module header keeps pytest out of the runtime imports
+
+    if awk_name is None:
+        pytest.skip("no known awk implementation found on PATH")
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    (shim_dir / "awk").symlink_to(AWK_IMPLEMENTATIONS[awk_name])
+    return {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
 # -- Forced-fallback realpath shim -------------------------------------------
 #
 # Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls

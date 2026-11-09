@@ -20,9 +20,11 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    SYSTEM_AWK_NAME,
     _make_git_recording_argv,
     _run_git,
     assert_cap_engaged,
+    awk_first_on_path_env,
     bare_remote_with_default_branch,
     bash_input,
     isolated_git_config_env,
@@ -300,6 +302,26 @@ class TestRefspecLessPush:
     def test_allows_a_bare_push_on_a_feature_branch(self, shared_scenario):
         _assert_allowed("git push", shared_scenario.feature_worktree)
 
+    def test_judges_a_slash_bearing_branch_by_its_whole_name(self, trunk_scenario):
+        """Guards the `HEAD` and `@{push}` reads keeping the whole branch name, not its last path segment.
+
+        A last-segment read would allow a push from the slash-named default branch `release/2` and deny a push from
+        the feature branch `team/main`.
+        """
+        main_checkout = trunk_scenario.main_checkout
+        feature_worktree = trunk_scenario.feature_worktree
+        _run_git(main_checkout, "push", "-q", "origin", "HEAD:refs/heads/release/2")
+        _run_git(main_checkout, "fetch", "-q", "origin")
+        _run_git(main_checkout, "remote", "set-head", "origin", "release/2")
+        _run_git(main_checkout, "checkout", "-q", "-B", "release/2", "origin/release/2")
+        _run_git(feature_worktree, "checkout", "-q", "-b", "team/main")
+        _run_git(feature_worktree, "push", "-q", "-u", "origin", "team/main")
+
+        _assert_denied("git push origin HEAD", main_checkout, _protected("release/2"))
+        _assert_denied("git push", main_checkout, _protected("release/2"))
+        _assert_allowed("git push origin HEAD", feature_worktree)
+        _assert_allowed("git push", feature_worktree)
+
 
 def _add_fork_remote_with_default_branch_dev(scenario: Scenario, tmp_path: Path) -> Path:
     """Adds remote `fork`, whose HEAD names `dev`, so its protected set differs from origin's. Pushes a `topic` branch too."""
@@ -549,6 +571,46 @@ class TestBackslashNewlineJoin:
             shared_scenario.expand(deny_command), shared_scenario.feature_worktree, _protected("main")
         )
         _assert_allowed(shared_scenario.expand(allow_command), shared_scenario.feature_worktree)
+
+
+class TestBlankLineInTheCommand:
+    """A blank line, quoted or not, must not split the command into separately-masked records."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "# publish\n\ngit push origin main",
+            "git status\n\ngit push origin main",
+            'git commit -m "title\n\nbody" && git push origin HEAD:main && echo "done"',
+        ],
+        ids=["push-after-a-comment", "push-after-a-command", "push-chained-after-a-multi-paragraph-message"],
+    )
+    def test_denies_a_push_after_a_blank_line_on_the_awk_on_path(self, shared_scenario, command):
+        """Guards `_lib_mask_shell_quotes` keeping a blank line out of record splitting, on the first awk on PATH.
+
+        An awk that read `RS = "\\0"` as paragraph mode (BSD/macOS awk) fused the paragraph-initial `git` word onto
+        the previous paragraph's last word, or inverted quote parity after a quoted blank line, so the push was
+        never judged. The masker's unit tests run the same shapes under every installed awk.
+        """
+        _assert_denied(command, shared_scenario.feature_worktree, _protected("main"))
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin" or not Path("/usr/bin/awk").exists(),
+        reason="forces BSD/macOS awk's paragraph-mode reading of `RS = \"\\0\"`, which only Darwin's /usr/bin/awk has",
+    )
+    def test_denies_a_push_after_a_blank_line_on_the_bsd_awk(self, shared_scenario, tmp_path):
+        """Guards the masker's record separator at the gate, with `/usr/bin/awk` forced ahead of any other awk on PATH.
+
+        Regression pin for `RS = "\\0"`: CI runs a non-BSD awk, which reads it as an ordinary separator and would
+        pass without the fix.
+        """
+        extra_env = awk_first_on_path_env(tmp_path / "bsd-awk-bin", SYSTEM_AWK_NAME)
+        _assert_denied(
+            "# publish\n\ngit push origin main",
+            shared_scenario.feature_worktree,
+            _protected("main"),
+            extra_env=extra_env,
+        )
 
 
 class TestRepoPath:
@@ -869,47 +931,6 @@ class TestPinnedGaps:
         feature_worktree = shared_scenario.feature_worktree
         _assert_allowed("git -C $(pwd) push origin main", feature_worktree)
         _assert_denied("git -C . push origin main", feature_worktree, _protected("main"))
-
-    @pytest.mark.skipif(
-        sys.platform != "darwin" or not Path("/usr/bin/awk").exists(),
-        reason="reproduces BSD/macOS awk's paragraph-mode masking, which only /usr/bin/awk on Darwin has",
-    )
-    def test_blank_line_in_a_commit_message_hides_a_chained_push_on_bsd_awk(self, shared_scenario, tmp_path):
-        """Pins the header's BSD/macOS awk Known gap.
-
-        If the first assertion fails, a fix to `_lib_mask_shell_quotes` made the allow stop reproducing. That
-        makes the header's awk Known gap and the masker's Limits entry stale, not this gate a regression.
-        Delete the header entry, update the Limits entry, and flip this test to a deny.
-        """
-        awk_directory = tmp_path / "bsd-awk-bin"
-        awk_directory.mkdir()
-        (awk_directory / "awk").symlink_to("/usr/bin/awk")
-        extra_env = {"PATH": f"{awk_directory}{os.pathsep}{os.environ['PATH']}"}
-        chained_push = ' && git push origin HEAD:main && echo "done"'
-        _assert_allowed(
-            'git commit -m "title\n\nbody"' + chained_push,
-            shared_scenario.feature_worktree,
-            extra_env=extra_env,
-        )
-        _assert_denied(
-            'git commit -m "title\nbody"' + chained_push,
-            shared_scenario.feature_worktree,
-            _protected("main"),
-            extra_env=extra_env,
-        )
-
-    @pytest.mark.skipif(
-        sys.platform == "darwin", reason="Darwin's /usr/bin/awk is BSD awk; the test above pins its behavior"
-    )
-    def test_blank_line_in_a_commit_message_does_not_hide_a_chained_push_on_the_default_awk(
-        self, shared_scenario
-    ):
-        """The control for the BSD awk Known gap: where awk is not BSD awk, a blank line in a quoted span hides nothing."""
-        _assert_denied(
-            'git commit -m "title\n\nbody" && git push origin HEAD:main && echo "done"',
-            shared_scenario.feature_worktree,
-            _protected("main"),
-        )
 
     @pytest.mark.parametrize(
         ("hidden_endpoint", "visible_endpoint"),

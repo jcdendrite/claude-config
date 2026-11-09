@@ -4459,6 +4459,8 @@ _lib_strip_shell_quotes() {
 # A quote left open at end of string is left unmasked, erring toward denying.
 # See docs/hooks.md's deny-invisible-commit-content.sh entry for the design.
 # Runs under a 5s `_lib_capped_for` cap because the scan is O(n^2).
+# Reads the command as one awk record by setting `RS` to SOH (`\001`), which command text does not normally contain.
+# An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits at each blank line, so it is not used.
 # Call-site contract (load-bearing): awk can be missing, killed, or time out,
 # and no caller runs under `set -e`, so every call site must capture and check
 # the exit status immediately and fail closed on non-zero.
@@ -4470,13 +4472,7 @@ _lib_strip_shell_quotes() {
 #   - An empty quote pair glued to a word.
 #   - A multi-word mid-word split.
 #   - An ANSI-C escape.
-# - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
-#   command into records at each blank line, with two effects:
-#   - An unquoted blank line is deleted and its neighbouring tokens fuse.
-#   - A blank line inside a quoted span resets quote state at the record
-#     boundary, so the span's closing quote acts as an opener and quote parity
-#     stays inverted for the rest of the command, blanking a later real commit
-#     any distance away.
+#   - A literal SOH byte, which ends the record, deletes the byte and resets quote state.
 # - A gap in this class can drop a command word from a caller's fragment
 #   count, and the effect then fails open.
 _lib_mask_shell_quotes() {
@@ -4486,7 +4482,7 @@ _lib_mask_shell_quotes() {
   # program, not a shell string, and is not meant to expand.
   # shellcheck disable=SC2016
   printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
-    BEGIN { RS = "\0" }
+    BEGIN { RS = "\001" }
     {
       n = length($0)
       quote = ""

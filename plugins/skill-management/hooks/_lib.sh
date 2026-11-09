@@ -14,8 +14,8 @@
 # _lib_extract_git_subcmd_args, _lib_fragment_concludes_commit_shape,
 # _lib_command_concludes_commit_shape, and
 # _lib_command_concludes_marker_gated_commit, plus the
-# _LIB_CONTINUE_VERBS_MARKER_GATED assignment. No worktree-enforcement
-# helpers.
+# _LIB_CONTINUE_VERBS_MARKER_GATED and _LIB_GIT_GLOBAL_VALUE_FLAGS
+# assignments. No worktree-enforcement helpers.
 #
 # _lib_config_dir must stay byte-identical to the same function in the
 # stowed claude/.claude/hooks/_lib.sh. _marker_lib_repo_hash instead needs
@@ -41,6 +41,9 @@
 # and _LIB_CONTINUE_VERBS_MARKER_GATED carry the same contract against the
 # stowed copy, so this gate and the stowed code-review gate cannot drift
 # apart on which commit-concluding commands they recognize.
+# The stowed and plugin copies of _LIB_GIT_GLOBAL_VALUE_FLAGS must hold the
+# same flags; test_require_skill_review.py pins it. Updating the installed
+# plugin is optional for a consumer when the change alters no behavior.
 
 # A plugin cannot source across the plugin boundary, so this block duplicates claude/.claude/hooks/_config.sh's.
 # test_bash_floor.py pins the copies together.

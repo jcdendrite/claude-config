@@ -38,7 +38,6 @@
 # Fail-open on:
 #   - A missing or empty command field, and a non-Bash tool.
 #   - Every shape listed under Known gaps.
-#   - `_lib_gh_api_call_is_mutating` when its here-string temp file cannot be created (unwritable or full TMPDIR), so a mutating `gh api` call longer than the pipe buffer passes unjudged.
 #
 # Dispatch: no `if` in settings.json; the gate self-filters, since an `if`
 # pattern would miss aliased and dashed push forms.
@@ -63,7 +62,6 @@
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - Every mutating verb (`PUT`, `PATCH`, `POST` and `DELETE`) of a `gh api` call to `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which weakens or removes the server-side barrier above.
 #     The barrier needs an agent credential without repository-administration rights.
-#   - On BSD/macOS awk, a blank line inside a quoted span, such as a multi-paragraph commit message, can hide a push chained later in the same command. This is tracked in `_lib_mask_shell_quotes`' Limits.
 #   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes, such as `gh api -X PUT -f message="add readme" $URL`.
 #   - A `gh api` endpoint written after a quoted multi-word flag value. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes.
 #   - A `gh api` endpoint written after a flag value holding a command substitution. The `gh api` fragment is cut at the substitution, so a ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
@@ -79,6 +77,7 @@
 #   - An unquoted command substitution in any word between `git` and its subcommand, such as a `-C` path, a `-c` value, a `--git-dir=` value or the subcommand word, as in `git -C $(…) push origin main` or `git -c credential.helper=$(which x) push origin main`. The substitution cuts the fragment before the subcommand, so the push is never parsed.
 #     The cut-marker deny is unreachable for it because the parser returns first.
 #   - A push hidden by a backslash-quoted quote or by an apostrophe in a `#` comment, which the quote scanner reads as opening or closing a span, such as `echo \"; git push origin main; echo \"`.
+#   - A push hidden by a literal 0x01 byte inside a quoted span, which splits the masker's record and resets quote state, such as `echo "…"; git push origin main; echo "x"` where the `…` is a literal 0x01 byte.
 #   - An odd apostrophe in an unquoted heredoc body, such as `don't`, which the quote scanner reads as opening a span, so a protected push later in the command is masked when another apostrophe follows it.
 #   - A push whose command word carries an attached parenthesis or brace, such as `then (git push origin main)`, `{ (git push origin main); }` or `cat <(git push origin main)`.
 #   - A push whose destination carries an attached parenthesis, such as `(cd w && git push origin HEAD) 2>&1`, which reads the destination as `HEAD)`.
@@ -120,7 +119,6 @@
 #   - A mutating `gh api` call to a ref-moving endpoint, quoted as inline code or at the start of a quoted line.
 #   - A mutating `gh api` call with any word, a flag value or field text included, that names a ref-moving endpoint path.
 #   - A mutating `gh api` call with a boolean flag such as `--paginate`, or a quoted multi-word flag value, before its endpoint, when the first later word gh's flag grammar leaves positional holds `$`, `$(` or a backtick, such as `gh api -X POST -f body="hello $USER" repos/o/r/issues/1/comments`.
-#   - On BSD/macOS awk, a blank line inside a quoted commit body inverts quote parity for the rest of the command, so a later quoted mention of a push reads as a live fragment and is denied.
 #   - A remote, refspec, `-C` path, `--git-dir` path or `GIT_DIR=` value holding `\`, `{`, `}`, `?`, `[` or `]`, such as `HEAD:ma{i,i}n`, which the shell rewrites before git sees it.
 #     The gate denies `HEAD^{commit}` too: the shell leaves it alone, but the gate cannot tell a rewritten word from a literal one.
 #   - A `gh api` read of a ref-moving endpoint beside a body flag or write method anywhere in the same command, because `_lib_gh_api_call_is_mutating` reads the whole stripped command.
