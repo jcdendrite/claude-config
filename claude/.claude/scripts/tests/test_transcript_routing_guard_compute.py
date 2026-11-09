@@ -148,7 +148,7 @@ class _Lab:
 
     def write_note(self, *, mode: int = 0o600, order: Sequence[int] | None = None) -> None:
         lines = self.note_lines if order is None else [self.note_lines[i] for i in order]
-        self.note.write_text("\n".join(lines) + "\n")
+        self.note.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.note.chmod(mode)
 
 
@@ -2138,7 +2138,6 @@ class TestRoutingGuardDocSection:
             line for line in section if f"`{placeholder}`" in line and "`routing_guard._DO_NOT_PUBLISH_BANNER`" in line
         ]
         assert naming_lines, "no line of the section says which constant the banner placeholder stands for"
-        assert hasattr(routing_guard, "_DO_NOT_PUBLISH_BANNER")
 
     def test_the_heading_the_messages_cite_is_a_subheading_of_the_section_and_each_message_carries_the_pointer(self):
         account = Path("/placeholder/account")

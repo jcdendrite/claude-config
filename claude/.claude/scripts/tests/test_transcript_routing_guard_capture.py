@@ -154,7 +154,7 @@ def world(tmp_path, monkeypatch) -> _World:
 
 
 def _write_note(world: _World, *lines: str, mode: int = 0o600, text: str | None = None) -> None:
-    world.note.write_text(text if text is not None else "\n".join(lines) + "\n")
+    world.note.write_text(text if text is not None else "\n".join(lines) + "\n", encoding="utf-8")
     world.note.chmod(mode)
 
 
@@ -450,7 +450,6 @@ class TestNoteParser:
         assert outcome.err.strip().splitlines()[-1] == f"routing-guard: note line 1: {routing_guard._WRONG_COLUMN_COUNT_REASON}"
         assert "three columns: config dir, branch and merged or excluded" in outcome.err
         assert "session config-keys log supplies the arm and pilot states" in outcome.err
-        assert "session config-keys log" in outcome.err
         assert _published_files(world) == []
 
     def test_an_unknown_third_value_gets_the_fixed_message_naming_merged_and_excluded(self, world, capsys):
@@ -4648,6 +4647,13 @@ class TestLostEvents:
 
         assert _state_at(row_after_the_round, events=events).cause == "lost-event"
 
+    def test_a_row_logged_in_the_rounds_own_second_rescues_a_lost_event_before_it(self):
+        lost = ("2026-08-01T09:30:00.000Z",)
+        events = {"sess-a": _events(attachments=lost, lost=lost)}
+        row_at_the_round = _log_with({"sess-a": [("2026-08-01T10:00:00Z", _keys(routing="true"))]})
+
+        assert _state_at(row_at_the_round, events=events).state == "on"
+
     def test_a_lost_event_exactly_at_the_round_time_hides_the_round(self):
         lost = (_FIXED_ROUND_AT,)
         events = {"sess-a": _events(attachments=lost, lost=lost)}
@@ -5159,7 +5165,9 @@ class TestRecorderContract:
         config_dir = tmp_path / "config"
         home.mkdir()
         config_dir.mkdir()
-        (config_dir / "claude-config.toml").write_text(f"{key_on} = true\n")
+        (config_dir / "claude-config.toml").write_text(
+            "".join(f"{key} = {'true' if key == key_on else 'false'}\n" for key in routing_guard._STATE_KEYS),
+        )
         for source in ("startup", "resume", "compact"):
             payload = {"hook_event_name": "SessionStart", "session_id": "contract-session", "source": source}
             run = _run_recorder_hook(config_dir, home, payload, tmp_path)
