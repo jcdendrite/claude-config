@@ -17,16 +17,18 @@
 # Read, or /resume-context) resume paths.
 #
 # --cwd <dir> launches the new session with <dir> as its working directory
-# instead of inheriting the invoking shell's. handoff/SKILL.md §7 and
-# brief/SKILL.md §7.5 write this flag into the resume command when the
-# continuity file names a worktree, so the target directory travels with the
-# command itself rather than depending on the invoker also running a
-# separate `cd` first — the failure mode this closes is a resume launched
-# from the wrong directory (main checkout, `~`, a different worktree)
-# silently landing set-session-title-from-branch.sh on the wrong branch or
-# no branch at all. Rejected together with --consume-only, since that mode
-# never launches a session for a cwd to apply to. Validated as an existing
-# directory before any file is moved.
+# instead of inheriting the invoking shell's.
+# handoff/SKILL.md §7 and brief/SKILL.md §7.5 write this flag into the resume
+# command with the directory the resumed session starts in, except in the
+# bare-form case those sections define.
+# The target directory therefore travels with the command itself, not with a
+# separate `cd` the invoker must also run first.
+# This closes a resume launched from the wrong directory (main checkout, `~`,
+# a different worktree), which silently lands set-session-title-from-branch.sh
+# on the wrong branch or no branch at all.
+# Rejected together with --consume-only, since that mode never launches a
+# session for a cwd to apply to.
+# Validated as an existing directory before any file is moved.
 #
 # --model <value> forwards to the launcher as `--model <value>`, so a resume
 # can pick the new session's model the same way `claude --model <value>` would.

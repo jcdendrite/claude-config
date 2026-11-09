@@ -1536,6 +1536,76 @@ def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: st
     return write_continuity_body(path, continuity_resume_section(kind, path, resume_cwd))
 
 
+def write_continuity_named_file(config_dir: Path, relative_path: str, *, symlink_leaf: bool = False) -> Path:
+    """A file at `relative_path` under `config_dir`, creating parent directories. With `symlink_leaf`
+    the leaf is a symlink to a regular file outside `config_dir`, in a sibling directory unique to it.
+    The file body is a fixed one-line `body` with no resume command, which the leading-`@` test relies on."""
+    path = config_dir / relative_path
+    if not symlink_leaf:
+        return write_continuity_body(path, "body\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    real = write_continuity_body(config_dir.with_name(f"{config_dir.name}-elsewhere") / "real-handoff.md", "body\n")
+    path.symlink_to(real)
+    return path
+
+
+def code_span_command(message: str) -> str:
+    """The command of a two-line hook `systemMessage`: a one-line lead, a newline, then the
+    command alone in single backticks. Each clause fails with its own message, because
+    pytest does not rewrite asserts in this module."""
+    lines = message.split("\n")
+    assert len(lines) == 2, f"code_span_command line count: expected exactly two lines, got {len(lines)}: {message!r}"
+    lead, command_line = lines
+    assert lead, f"code_span_command non-empty LEAD: the first line is empty: {message!r}"
+    assert lead.count("`") % 2 == 0, (
+        f"code_span_command even LEAD backticks: the LEAD holds an odd number, so a span it opens "
+        f"could close on the command line: {message!r}"
+    )
+    assert command_line.startswith("`"), (
+        f"code_span_command opening backtick: the second line does not start with one: {message!r}"
+    )
+    assert command_line.endswith("`"), (
+        f"code_span_command closing backtick: the second line does not end with one: {message!r}"
+    )
+    command = command_line[1:-1]
+    assert command, f"code_span_command non-empty command: nothing sits between the backticks: {message!r}"
+    assert "`" not in command, f"code_span_command no backtick in the command: the command holds one: {message!r}"
+    assert command not in lead, f"code_span_command command absent from the LEAD: the LEAD repeats the command: {message!r}"
+    return command
+
+
+SLASH_COMMAND_PREFIX = "/resume-context "
+SHELL_COMMAND_PREFIX = "resume-context "
+
+
+def announced_route(command: str) -> str:
+    """`load` for an announced slash command and `shell` for an announced shell command."""
+    if command.startswith(SLASH_COMMAND_PREFIX):
+        return "load"
+    assert command.startswith(SHELL_COMMAND_PREFIX), f"announced command is neither route: {command!r}"
+    return "shell"
+
+
+def install_resume_context_stub(home: Path) -> Path:
+    """A `resume-context` that only records its argv. Returns the directory to put first on the
+    PATH of an announce-hook run, so a dropped backtick escape in the hook's message assembly
+    cannot run a real launcher."""
+    stub_bin = home / ".resume-context-stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    stub = stub_bin / "resume-context"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n"
+    )
+    stub.chmod(0o755)
+    return stub_bin
+
+
+def resume_context_stub_invocations(home: Path) -> str:
+    log = home / ".resume-context-stub-bin" / "invocations.log"
+    return log.read_text() if log.exists() else ""
+
+
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
 

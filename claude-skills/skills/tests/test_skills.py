@@ -6129,6 +6129,7 @@ class TestPlanItStep7PushConsent:
 
 # Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
 # cannot match to this session, or from running on its own.
+# One clause has the skill set each relayed command off as a fenced code block.
 _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "run_only_when_asked": (
         "Run only when the engineer asked to resume in this session. Never run the "
@@ -6167,11 +6168,9 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
         "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
         "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
-        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
-        "header (§3 in a brief) names if you read the file and it is an absolute path made "
-        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
-        "say the directory is unknown and must come from the session that wrote the file; "
-        "name none."
+        "(on `LOAD:` it equals `SESSION_TARGET:`). When `FILE_TARGET:` is `none`, the "
+        "script printed no directory for the file: say the directory is unknown and must "
+        "come from the session that wrote the file; name none."
     ),
     "unreadable_file_target_relay": (
         "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
@@ -6182,8 +6181,10 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "slash_form_only_for_matching_candidates": (
         "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
         "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
-        "when either is `unknown`. Any other candidate needs the shell command on its "
-        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+        "when either is `unknown`. A candidate whose file name starts with `-` or `@` is "
+        "never suggested as `/resume-context <name>`. Every candidate not suggested that way "
+        "needs the shell command on its `CANDIDATE:` line, which you relay as a command for "
+        "a new terminal."
     ),
     "unreadable_or_absent_candidate_target_caveat": (
         "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
@@ -6218,6 +6219,10 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "Relay the line verbatim as a command for a new terminal, not as a slash "
         "command. The file is still pending. Stop."
     ),
+    "fence_each_relayed_command": (
+        "In chat replies, put each command this skill has you relay or suggest alone "
+        "in its own fenced code block."
+    ),
 }
 
 
@@ -6245,6 +6250,136 @@ class TestResumeContextSkill:
         read = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["read_only_after_session_target_matches"].split())
         assert 0 <= body.find(comparison) < body.find(read), (
             "resume-context/SKILL.md: the SESSION_TARGET comparison clause no longer starts before the `Read` clause."
+        )
+
+
+# Clauses of the handoff §7 and brief §7.5 resume-command sections that make the
+# written `--cwd` the directory the resumed session starts in, which the announce
+# message compares with the session's worktree to pick the resume route. Each
+# section states the directory rule and the command forms (three bullets), then a
+# second paragraph. The second paragraph holds the `cd <path> &&` prohibition and
+# the instruction to relay the announce hook's resume route, so a trim at the
+# line cap must fail here.
+_PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
+    "handoff_directory_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "The directory is the root of the worktree or checkout where §3's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a question it is this session's own "
+        "directory, as §4's header names it.",
+    ),
+    "handoff_cwd_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`.",
+    ),
+    "handoff_bare_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write the bare form `resume-context <config-dir>/handoffs/<slug>-handoff.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §4's header names it too. In every other case write the "
+        "first form alone.",
+    ),
+    "handoff_second_paragraph": (
+        "handoff",
+        "## §7 Resume command",
+        "Relay the resume route the announce hook names after the write to the "
+        "engineer. `--cwd` makes the launched session start "
+        "in that directory regardless of where the resume command is actually run from "
+        "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so nothing depends on the resuming "
+        "session remembering to read or delete the file.",
+    ),
+    "brief_directory_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "The directory is the root of the worktree or checkout where §6's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a decision it is the worktree §3 names, "
+        "else this session's own directory.",
+    ),
+    "brief_cwd_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`.",
+    ),
+    "brief_bare_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write the bare form `resume-context <config-dir>/briefs/<slug>-task.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §3 names no other directory. In every other case write the "
+        "first form alone.",
+    ),
+    "brief_second_paragraph": (
+        "brief",
+        "## §7.5 Resume command",
+        "Relay the resume route the announce hook names after the write to the "
+        "engineer. `--cwd` makes the launched session start "
+        "in that directory regardless of where the resume command is actually run from "
+        "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so picking up the brief doesn't depend "
+        "on the fresh session remembering to read or delete the file.",
+    ),
+}
+
+_HANDOFF_SECTION4_HEADING = "## §4 Files modified this session"
+_HANDOFF_SECTION4_REENTER_PHRASE = (
+    "Direct the resuming session to re-enter §7's directory (its `--cwd`, or this "
+    "header's directory when §7 is bare) before"
+)
+
+
+class TestResumeCommandDirectoryClauses:
+    """Pin the §7/§7.5 text that makes `--cwd` the directory the resumed session
+    starts in. The tests check wording and the clause's right edge, not behavior.
+    On failure, re-read the guarantee and update the constant only if the new
+    wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_RESUME_DIRECTORY_CLAUSES))
+    def test_pinned_clause_matches_live_text(self, clause_key: str) -> None:
+        skill_name, heading, pinned_text = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
+        raw_section = _raw_heading_section_text(_skill_file(skill_name), heading)
+        _assert_pinned_clause_right_bounded(
+            " ".join(pinned_text.split()),
+            raw_section,
+            context=f"{skill_name}/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
+        )
+
+    @pytest.mark.parametrize(
+        "clause_key",
+        [
+            "handoff_directory_bullet",
+            "handoff_cwd_form_bullet",
+            "handoff_bare_form_bullet",
+            "brief_directory_bullet",
+            "brief_cwd_form_bullet",
+            "brief_bare_form_bullet",
+        ],
+    )
+    def test_directory_rule_clause_is_one_unwrapped_line(self, clause_key: str) -> None:
+        """A hard wrap inside a clause that holds a command splits the command, and the
+        template contract's scan joins lines only on a trailing backslash.
+        """
+        skill_name, heading, clause = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
+        section_lines = [
+            line.removeprefix("- ") for line in _raw_heading_section_text(_skill_file(skill_name), heading).splitlines()
+        ]
+        assert clause in section_lines, (
+            f"{skill_name}/SKILL.md: the {clause_key!r} clause is not one unwrapped line of its section."
+        )
+
+    def test_handoff_section4_directs_reentry_to_the_resume_directory(self) -> None:
+        section_text = _heading_section_text(_skill_file("handoff"), _HANDOFF_SECTION4_HEADING)
+        assert _HANDOFF_SECTION4_REENTER_PHRASE in section_text, (
+            "handoff/SKILL.md: §4 no longer directs the resuming session to re-enter §7's directory."
         )
 
 
