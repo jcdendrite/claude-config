@@ -182,7 +182,8 @@ def round_opened_by_spawn(rec: dict) -> bool:
     a `Skill` block, the same per-record order _round_open_skill applies.
 
     Public (no leading underscore): the review-bench miner skips such a round,
-    and must agree with _round_open_skill about which shape opened it.
+    and routing_guard.py reads it as that round's spawn_open flag. Both must
+    agree with _round_open_skill about which shape opened it.
     """
     if rec.get("isSidechain") or rec.get("type") != "assistant":
         return False
@@ -202,12 +203,13 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     _round_open_skill's per-record order, so a record holding both a `Skill`
     block and a spawn block is one round. A /slash tag lives on a user record.
 
-    Public (no leading underscore): author_outcome.py, review_trace.py, and the
-    review-bench miner (evals/review_bench/mine_review_rounds.py, which also
-    calls round_opened_by_spawn) are further consumers. author_outcome.py reads only
-    each window's own open_idx/skill (its own outcome-span definition is not
-    this function's window_end -- see docs/transcript-analysis.md's
-    author-outcome section).
+    Public (no leading underscore): author_outcome.py, review_trace.py,
+    routing_guard.py, and the review-bench miner
+    (evals/review_bench/mine_review_rounds.py) are further consumers.
+    routing_guard.py and the miner also call round_opened_by_spawn.
+    author_outcome.py reads only each window's own open_idx/skill (its own
+    outcome-span definition is not this function's window_end -- see
+    docs/transcript-analysis.md's author-outcome section).
 
     cmd_judgment_pair keeps its own `Skill`-only matcher, so it deliberately
     does not open a round on a spawn block.

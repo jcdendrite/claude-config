@@ -1992,6 +1992,15 @@ class TestReadsMadeInComputeMode:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         assert decoy in _config_dir.declared_transcript_roots()
         spies = _install_path_spies(monkeypatch)
+        # Positive control: the allowlist assertion below also passes for a spy that records nothing.
+        listing_control_dir = tmp_path / "listing-control"
+        listing_control_dir.mkdir()
+        list(listing_control_dir.iterdir())
+        assert listing_control_dir in {Path(path) for path in spies.listed_paths()}
+        spies.listed.clear()
+        list(listing_control_dir.glob("*"))
+        assert listing_control_dir in {Path(path) for path in spies.listed_paths()}
+        spies.listed.clear()
         recorder = _install_subprocess_recorder(monkeypatch)
         # Positive control: the `<=` check below also holds for a recorder that records nothing.
         subprocess.Popen([sys.executable, "-c", "pass"]).wait()
@@ -2003,6 +2012,7 @@ class TestReadsMadeInComputeMode:
 
         recorded = spies.all_paths()
         assert outcome.code in (0, 1)
+        # The allowlist admits only `.r1.json` files in the captures directory, never the directory itself, so listing it fails.
         assert [path for path in recorded if not self._is_allowed(path, lab, [account])] == []
         projects_dirs = [account / "projects", decoy / "projects"]
         assert not any(
@@ -2012,7 +2022,6 @@ class TestReadsMadeInComputeMode:
         assert not any(str(decoy) in path for path in recorded)
         assert _digest_name("excluded-branch") not in {Path(path).name for path in spies.opened_paths()}
         assert not any(path.endswith(".session-config-keys-log.jsonl") for path in recorded)
-        assert not any(path.endswith(_CAPTURES_DIR) for path in spies.listed_paths())
         assert str(lab.note) in spies.opened_paths()
         assert any(path.endswith(_digest_name("branch-on")) for path in spies.opened_paths())
         assert recorder.executables() <= {"git"}

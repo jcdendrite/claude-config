@@ -943,8 +943,8 @@ def _branch_key_states(
 
 
 def _capture_scope(root: Path, scan_gaps: Counter[str]) -> _CaptureScope:
-    """Exits 1 when the cwd is not in a worktree of the checkout holding this module, since the
-    cwd's repo would otherwise be the one read.
+    """The slugs come from `git worktree list` in the cwd, so a cwd outside this checkout's worktrees would read
+    that repo's transcripts.
     """
     slugs = scope._repo_scoped_project_slugs(_COMMAND)
     if scope._path_to_project_slug(str(_CHECKOUT_ROOT)) not in slugs:

@@ -23,12 +23,7 @@ modules the shim imports back into (not just from). The CLI's own `build_parser(
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both.
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 A command-group module may import another by module (attribute access). Among the review modules,
-`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
-is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
-`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
-`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`),
-`review_cost_by_size.py` (for `compute_review_round_costs`), `pr_cost.py` (for `compute_review_round_costs`, `REVIEW_SKILLS` and
-`REVIEW_ROUND_RULE`), and `pr_cost_export.py` (for `REVIEW_SKILLS`). `review_trace.py` imports `reviewer_yield.py` (for
+`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
 `review_rounds.py` for the reads listed in the `review_trace.py` section below.
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
@@ -285,7 +280,8 @@ main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RUL
 is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
-miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
+miner's round filter and `routing_guard.py`'s per-round `spawn_open` flag are its consumers).
+`REVIEW_SKILLS` is read by:
 
 - `judgment_pair.py`: judgment-pair's `--skills` default.
 - `pr_cost.py` and `pr_cost_export.py`: the skills a `review_rounds` cell holds.
@@ -298,7 +294,7 @@ miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
 `_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
-window's own `open_idx`/`skill`. `review_trace.py` is a further one.
+window's own `open_idx`/`skill`. `review_trace.py` and `routing_guard.py` are further ones.
 
 ### `review_cost_by_size.py`
 

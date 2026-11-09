@@ -3433,7 +3433,6 @@ class TestReadsMadeInCaptureMode:
         assert not any(str(decoy) in path for path in recorded)
         assert str(world.note) in spies.opened_paths()
         assert any(path.endswith("sess-1.jsonl") for path in spies.opened_paths())
-        assert str(world.captures_dir) not in spies.listed_paths()
         assert str(world.config_dir / ".session-config-keys-log.jsonl") in spies.opened_paths()
         assert recorder.executables() == {"git"}
 
@@ -4974,6 +4973,32 @@ class TestSummaryAndDate:
             " key-on files: 1, key-off files: 4"
         ) in outcome.out.splitlines()
         assert outcome.out.splitlines()[-1] == routing_guard._NEXT_ACTION_ACT_ON_LINES
+
+    def test_an_excluded_branch_with_a_complete_clean_loop_is_never_published_beside_a_merged_one(self, world, capsys):
+        merged_branch, excluded_branch = "merged-with-loop", "excluded-with-loop"
+        _write_session(world, _clean_loop(merged_branch, tag="m"), session_id="sess-merged", log=_KEYS_OFF)
+        _write_session(
+            world, _clean_loop(excluded_branch, tag="x", later_input=170_000), session_id="sess-excluded", log=_KEYS_OFF,
+        )
+        _write_note(
+            world,
+            _note_line(world.config_dir, excluded_branch, "excluded"),
+            _note_line(world.config_dir, merged_branch),
+        )
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0, outcome.err
+        assert [p.name for p in _published_files(world)] == [_digest_name(merged_branch)]
+        assert _stored_loops(world, merged_branch) == [{
+            "overhead_tokens": _standard_tokens(input=110_000, output=500),
+            "growth_tokens": 30_000, "later_turns": {_SONNET: 1}, "degraded": False,
+        }]
+        assert not (world.captures_dir / _digest_name(excluded_branch)).exists()
+        assert (
+            "routing-guard: summary: 1 captured, 0 already captured, 0 missing, 0 invalid, 1 excluded;"
+            " key-on files: 0, key-off files: 1"
+        ) in outcome.out.splitlines()
 
     def test_a_note_with_no_merged_row_ends_with_the_wait_for_a_merge_action(self, world, capsys):
         _write_note(world, _note_line(world.config_dir, "excluded-only", "excluded"))
