@@ -189,6 +189,10 @@ class TestPushTargetsRepoForms:
             "git -C ~ push",
             'git --git-dir="$G" push',
             "GIT_DIR=$G git push",
+            "git -C a\\b push",
+            "git -C a{b,c} push",
+            "git -C a?b push",
+            "git --git-dir=a[b] push",
         ],
     )
     def test_computed_or_user_tilde_repo_path_is_unresolvable(self, fragment):
@@ -317,11 +321,25 @@ class TestPushTargetsUnresolvable:
             ("git push origin HEAD:$BRANCH", "refspec"),
             ("git push origin `git branch --show-current`", "refspec"),
             ("git push origin tag $TAG", "refspec"),
+            ("git push origin HEAD:m\\ain", "refspec"),
+            ("git push origin HEAD:ma{i,i}n", "refspec"),
+            ("git push origin HE\\AD", "refspec"),
+            ("git push origin HEAD:{main,wip}", "refspec"),
+            ("git push origin HEAD:ma?n", "refspec"),
+            ("git push origin HEAD:ma[i]n", "refspec"),
+            ("git push or\\igin main", "remote"),
+            ("git push or{i,i}gin main", "remote"),
         ],
     )
     def test_each_cause_gives_its_own_reason(self, fragment, reason):
         _, records = _push_targets(fragment)
         assert _unresolvable(reason) in records
+
+    def test_force_mark_revision_suffix_and_at_sign_in_a_refspec_are_literal(self):
+        """Guards the computed-word test against flagging characters git refspecs legitimately hold."""
+        assert _push_targets("git push origin +HEAD~1:feature/x@y") == (
+            0, [CWD_REPO, ORIGIN, _ref("HEAD~1", "feature/x@y")],
+        )
 
     def test_unresolvable_word_adds_no_remote_or_ref_record(self):
         assert _push_targets("git push origin $BRANCH") == (

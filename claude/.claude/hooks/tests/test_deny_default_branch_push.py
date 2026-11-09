@@ -22,6 +22,7 @@ from helpers import (
     HOOKS_DIR,
     _make_git_recording_argv,
     _run_git,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     isolated_git_config_env,
@@ -127,6 +128,20 @@ def _assert_denied(
     assert reason is not None, f"expected {command!r} to be denied"
     for mention in mentions:
         assert mention in reason, f"deny for {command!r} does not mention {mention!r}: {reason}"
+
+
+def _git_call_log_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """Returns the PATH override for a `git` shim that logs each call's argv, and the log file it writes."""
+    real_git = shutil.which("git")
+    assert real_git is not None
+    call_log = tmp_path / "git-calls.log"
+    shim_directory = tmp_path / "logging-shim-bin"
+    _make_git_recording_argv(shim_directory, call_log)
+    extra_env = {
+        "PATH": f"{shim_directory}{os.pathsep}{os.environ['PATH']}",
+        "REAL_GIT": real_git,
+    }
+    return extra_env, call_log
 
 
 def _protected(branch: str, remote: str = "origin") -> str:
@@ -305,6 +320,22 @@ class TestSeveralPushFragments:
         )
 
 
+class TestSeveralRepositories:
+    def test_judges_each_push_against_its_own_repository_protected_set(self, shared_scenario, trunk_scenario):
+        """The first push loads repository A's set (`main`); the second must reload repository B's, where `trunk` is protected."""
+        first, second = shared_scenario, trunk_scenario
+        _assert_denied(
+            f"git -C {first.main_checkout} push origin feature && git -C {second.main_checkout} push origin trunk",
+            first.feature_worktree,
+            _protected("trunk"),
+        )
+        # `trunk` is protected only in the second repository, so a set kept from it or unioned with it denies this.
+        _assert_allowed(
+            f"git -C {second.main_checkout} push origin feature && git -C {first.main_checkout} push origin trunk",
+            first.feature_worktree,
+        )
+
+
 class TestSecondPushRemote:
     def test_judges_a_bare_push_against_the_push_default_remote(self, scenario, tmp_path):
         """Under remote.pushDefault=fork, @{push} names fork/<branch>, whose protected set follows fork's HEAD."""
@@ -318,6 +349,31 @@ class TestSecondPushRemote:
 
         _assert_denied("git push", dev_worktree, _protected("dev", "fork"))
         _assert_allowed("git push", topic_worktree)
+
+    def test_judges_a_bare_push_against_the_remote_the_command_names_not_the_upstream_remote(
+        self, scenario, tmp_path
+    ):
+        """Branch `dev` tracks origin/dev, where `dev` is unprotected, but `git push fork` lands on fork's default branch."""
+        _add_fork_remote_with_default_branch_dev(scenario, tmp_path)
+        clone = scenario.main_checkout
+        _run_git(clone, "push", "-q", "origin", "HEAD:refs/heads/dev")
+        _run_git(clone, "fetch", "-q", "origin")
+        dev_worktree = tmp_path / "dev-wt"
+        _run_git(clone, "worktree", "add", "-q", "--track", "-b", "dev", str(dev_worktree), "origin/dev")
+
+        _assert_denied("git push fork", dev_worktree, _protected("dev", "fork"))
+        _assert_allowed("git push origin", dev_worktree)
+
+    def test_judges_the_current_branch_name_on_the_remote_the_command_names_when_no_push_target_resolves(
+        self, scenario, tmp_path
+    ):
+        """With no upstream `@{push}` fails, so the gate judges branch `dev` on the named remote, not on `origin`."""
+        _add_fork_remote_with_default_branch_dev(scenario, tmp_path)
+        dev_worktree = tmp_path / "dev-wt"
+        _run_git(scenario.main_checkout, "worktree", "add", "-q", "--no-track", "-b", "dev", str(dev_worktree), "HEAD")
+
+        _assert_denied("git push fork", dev_worktree, _protected("dev", "fork"))
+        _assert_allowed("git push origin", dev_worktree)
 
 
 class TestRedirectingConfig:
@@ -339,6 +395,19 @@ class TestRedirectingConfig:
             "git -c remote.origin.push=HEAD:main push",
             shared_scenario.feature_worktree,
             "'remote.origin.push'",
+        )
+
+    def test_denies_a_bare_push_with_a_command_line_branch_upstream_override(self, shared_scenario):
+        _assert_denied(
+            "git -c branch.feature.remote=origin -c branch.feature.merge=refs/heads/main push",
+            shared_scenario.feature_worktree,
+            "'branch.feature.remote'",
+        )
+
+    def test_allows_a_command_line_branch_override_beside_an_explicit_refspec(self, shared_scenario):
+        _assert_allowed(
+            "git -c branch.feature.merge=refs/heads/main push origin feature",
+            shared_scenario.feature_worktree,
         )
 
     def test_allows_a_bare_push_with_a_command_line_config_override_of_an_unrelated_key(self, shared_scenario):
@@ -416,6 +485,20 @@ class TestComputedDestination:
         _assert_denied(command, shared_scenario.feature_worktree, LITERAL_PUSH_ADVICE)
 
     @pytest.mark.parametrize(
+        "refspec",
+        ["HEAD:m\\ain", "HEAD:ma{i,i}n"],
+        ids=["backslash", "brace-list"],
+    )
+    def test_denies_a_refspec_the_shell_rewrites_before_git_sees_it(self, shared_scenario, refspec):
+        """Bash turns each of these into `HEAD:main`, which the gate would otherwise read as literal text."""
+        _assert_denied(
+            f"git push origin {refspec}", shared_scenario.feature_worktree, _unresolved("refspec")
+        )
+
+    def test_denies_a_remote_the_shell_rewrites_before_git_sees_it(self, shared_scenario):
+        _assert_denied("git push or{i,i}gin main", shared_scenario.feature_worktree, _unresolved("remote"))
+
+    @pytest.mark.parametrize(
         "command",
         [
             "git push --force-with-lease --force-if-includes",
@@ -428,6 +511,26 @@ class TestComputedDestination:
     def test_allows_the_sync_recipes_on_a_feature_branch(self, shared_scenario, command):
         """Copies the pushes git-feature-branch-sync/SKILL.md prescribes, with its placeholders filled in."""
         _assert_allowed(command, shared_scenario.feature_worktree)
+
+
+class TestBackslashNewlineJoin:
+    """A backslash-newline pair joins lines in the shell, so a push split across lines reads as one command."""
+
+    @pytest.mark.parametrize(
+        ("deny_command", "allow_command"),
+        [
+            ("git push origin \\\nmain", "git push origin \\\nfeature"),
+            ("git -C <MAIN> \\\npush origin HEAD", "git -C <FEATURE> \\\npush origin HEAD"),
+        ],
+        ids=["refspec-on-the-next-line", "subcommand-on-the-next-line"],
+    )
+    def test_judges_a_push_split_across_lines_like_the_joined_push(
+        self, shared_scenario, deny_command, allow_command
+    ):
+        _assert_denied(
+            shared_scenario.expand(deny_command), shared_scenario.feature_worktree, _protected("main")
+        )
+        _assert_allowed(shared_scenario.expand(allow_command), shared_scenario.feature_worktree)
 
 
 class TestRepoPath:
@@ -499,6 +602,7 @@ class TestMovedFlag:
             "pushd <FEATURE> && git push -u origin HEAD",
             "popd && git push -u origin HEAD",
             "git switch main && git push origin HEAD",
+            "git checkout main && git push origin @",
         ],
     )
     def test_denies_a_head_relative_push_after_a_fragment_that_moves_state(
@@ -545,6 +649,26 @@ class TestAliases:
         _assert_denied(deny_command, shared_scenario.feature_worktree, _protected("main"))
         _assert_allowed(allow_command, shared_scenario.feature_worktree)
 
+    def test_looks_an_alias_up_in_the_repository_a_dash_c_names_and_judges_the_push_there(self, shared_scenario):
+        """The re-judged push follows `-C`, not the payload cwd. The lookup half is pinned by the next test."""
+        _assert_denied(
+            shared_scenario.expand("git -C <MAIN> p origin HEAD"),
+            shared_scenario.feature_worktree,
+            _protected("main"),
+        )
+        _assert_allowed(
+            shared_scenario.expand("git -C <FEATURE> p origin HEAD"), shared_scenario.main_checkout
+        )
+
+    def test_finds_an_alias_defined_only_in_the_repository_the_command_names(self, shared_scenario, trunk_scenario):
+        """The payload cwd's repository lacks `only-here`, so a lookup there would miss and allow the push."""
+        _run_git(trunk_scenario.main_checkout, "config", "alias.only-here", "push")
+        for command in (
+            f"git -C {trunk_scenario.main_checkout} only-here origin HEAD",
+            f"git --git-dir={trunk_scenario.main_checkout}/.git only-here origin HEAD",
+        ):
+            _assert_denied(command, shared_scenario.feature_worktree, _protected("trunk"))
+
     def test_denies_an_alias_of_checkout_as_a_moved_flag(self, shared_scenario):
         _assert_denied("git co main && git push", shared_scenario.feature_worktree, "git -C <dir> push")
 
@@ -585,10 +709,29 @@ class TestGhApi:
             "-X PUT -f message=m -f content=x",
             "gh api repos/`gh repo view --json nameWithOwner -q .nameWithOwner`/contents/f "
             "-X PUT -f message=m -f content=x",
+            'gh api -X PUT "repos/{owner}/{repo}/contents/f" -f message=m -f content=x',
+            "gh api -X PUT /repos/o/r/contents/f -f message=m -f content=x",
+            "gh api -X POST repos/o/r/merges?base=main -f head=x",
+            "gh api -X PUT repositories/123/contents/f -f message=m -f content=x",
+            "gh api repos/o/r/contents/f --jq '.a|.b' -X PUT -f message=m -f content=x",
         ],
-        ids=["contents", "git-refs", "merges", "computed-endpoint", "boolean-flag-first", "substitution", "backtick"],
+        ids=[
+            "contents",
+            "git-refs",
+            "merges",
+            "computed-endpoint",
+            "boolean-flag-first",
+            "substitution",
+            "backtick",
+            "quoted-placeholder-endpoint",
+            "leading-slash-endpoint",
+            "query-string-only-endpoint",
+            "repositories-id-endpoint",
+            "pipe-in-flag-value-before-method",
+        ],
     )
     def test_denies_a_mutating_call_to_a_ref_moving_endpoint(self, tmp_path, command):
+        """The last case puts a separator inside the call's own words, so its method and body flags land in a later fragment."""
         _assert_denied(command, tmp_path, "mutating gh api call")
 
     @pytest.mark.parametrize(
@@ -599,11 +742,35 @@ class TestGhApi:
             "gh api -X POST repos/o/r/issues -f title=t",
             'gh api repos/o/r/issues -f body="$(cat f)"',
             'git commit -m "deny gh api -X PUT repos/o/r/contents/f"',
+            "gh api repos/o/r/contents/f --jq '.a|.b'",
         ],
-        ids=["get", "get-boolean-flag", "mutating-issues", "substitution-field-value", "mention-not-command-word"],
+        ids=[
+            "get",
+            "get-boolean-flag",
+            "mutating-issues",
+            "substitution-field-value",
+            "mention-not-command-word",
+            "read-with-pipe-in-flag-value",
+        ],
     )
     def test_allows_a_read_or_a_mutating_call_that_moves_no_ref(self, tmp_path, command):
         _assert_allowed(command, tmp_path)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/o/r/contents/f -X GET -f key=value",
+            "gh api repos/o/r/git/refs/heads/main --jq .object.sha && rm -f scratch.txt",
+            "gh api repos/o/r/contents/README.md --jq .content | base64 -d | grep -F pattern",
+        ],
+        ids=["get-with-field", "read-then-force-remove", "read-piped-to-fixed-string-grep"],
+    )
+    def test_denies_a_read_beside_a_body_flag_or_write_method_elsewhere_in_the_command(self, tmp_path, command):
+        """Pins the header's accepted over-denial: the mutating test reads the whole command, not the `gh api` fragment.
+
+        The deny message must also name the way forward: running the read as its own Bash call.
+        """
+        _assert_denied(command, tmp_path, "mutating gh api call", "its own Bash call")
 
     @pytest.mark.parametrize(
         "command",
@@ -713,6 +880,19 @@ class TestPinnedGaps:
             extra_env=extra_env,
         )
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin", reason="Darwin's /usr/bin/awk is BSD awk; the test above pins its behavior"
+    )
+    def test_blank_line_in_a_commit_message_does_not_hide_a_chained_push_on_the_default_awk(
+        self, shared_scenario
+    ):
+        """The control for the BSD awk Known gap: where awk is not BSD awk, a blank line in a quoted span hides nothing."""
+        _assert_denied(
+            'git commit -m "title\n\nbody" && git push origin HEAD:main && echo "done"',
+            shared_scenario.feature_worktree,
+            _protected("main"),
+        )
+
     @pytest.mark.parametrize(
         ("hidden_endpoint", "visible_endpoint"),
         [
@@ -730,6 +910,25 @@ class TestPinnedGaps:
     def test_gh_api_endpoint_after_a_flag_value_is_a_pinned_gap(self, tmp_path, hidden_endpoint, visible_endpoint):
         _assert_allowed(hidden_endpoint, tmp_path)
         _assert_denied(visible_endpoint, tmp_path, "mutating gh api call")
+
+
+class TestPinnedGhApiCommandWordGaps:
+    """Pins the header's `gh api` command-word Known gaps: the arm keys on the command word, so a prefix hides the call."""
+
+    MUTATING_CALL = "gh api -X PUT repos/o/r/contents/f -f message=m -f content=x"
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["do ", "timeout 30 ", "gtimeout 30 ", "GH_TOKEN=$(cat token) "],
+        ids=["shell-keyword", "timeout", "gtimeout", "assignment-with-substitution"],
+    )
+    def test_gh_api_call_after_a_prefix_is_a_pinned_gap(self, tmp_path, prefix):
+        """If the allow fails, a fix closed the gap: delete the header entry and flip this case to a deny."""
+        _assert_allowed(prefix + self.MUTATING_CALL, tmp_path)
+
+    def test_gh_api_call_after_an_assignment_without_a_substitution_is_read(self, tmp_path):
+        """The control for the assignment-with-substitution gap: only the substitution's cut hides the call."""
+        _assert_denied("GH_TOKEN=token " + self.MUTATING_CALL, tmp_path, "mutating gh api call")
 
 
 class TestAppendedArguments:
@@ -799,15 +998,7 @@ class TestPayloadWorkingDirectory:
 
 class TestNoGitCallWithoutPushFragment:
     def test_forks_git_only_for_an_alias_lookup(self, shared_scenario, tmp_path):
-        real_git = shutil.which("git")
-        assert real_git is not None
-        call_log = tmp_path / "git-calls.log"
-        shim_directory = tmp_path / "logging-shim-bin"
-        _make_git_recording_argv(shim_directory, call_log)
-        extra_env = {
-            "PATH": f"{shim_directory}{os.pathsep}{os.environ['PATH']}",
-            "REAL_GIT": real_git,
-        }
+        extra_env, call_log = _git_call_log_env(tmp_path)
 
         for command in ("ls", "git status", "git log --oneline", "gh pr view"):
             _assert_allowed(command, shared_scenario.feature_worktree, extra_env=extra_env)
@@ -816,6 +1007,13 @@ class TestNoGitCallWithoutPushFragment:
         _assert_allowed("git st", shared_scenario.feature_worktree, extra_env=extra_env)
         calls = call_log.read_text().splitlines()
         assert len(calls) == 1 and calls[0].endswith("config --get alias.st"), calls
+
+    def test_allows_a_git_extension_after_exactly_one_alias_lookup(self, shared_scenario, tmp_path):
+        """A subcommand outside the builtin list and defined by no alias is looked up once, then allowed."""
+        extra_env, call_log = _git_call_log_env(tmp_path)
+        _assert_allowed("git submodule status", shared_scenario.feature_worktree, extra_env=extra_env)
+        calls = call_log.read_text().splitlines()
+        assert len(calls) == 1 and calls[0].endswith("config --get alias.submodule"), calls
 
 
 class TestFailClosed:
@@ -873,9 +1071,13 @@ class TestFailClosed:
             command, shared_scenario.feature_worktree, step, f"status {status}", extra_env=extra_env
         )
 
-    def test_denies_when_resolving_the_push_destination_hits_the_cap(self, scenario, git_timeout_shim):
+    @pytest.mark.timing
+    def test_denies_when_resolving_the_push_destination_hits_the_cap(
+        self, scenario, git_timeout_shim, tmp_path
+    ):
         """The 128 fallback for a missing @{push} would judge `feature` and pass; a cap kill must not take it."""
         _run_git(scenario.feature_worktree, "branch", "--set-upstream-to=origin/main", "feature")
         _run_git(scenario.feature_worktree, "config", "push.default", "upstream")
         extra_env = git_timeout_shim('[[ "$*" == *"rev-parse --symbolic-full-name"* ]]')
-        _assert_denied("git push", scenario.feature_worktree, "resolve @{push}", extra_env=extra_env)
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            _assert_denied("git push", scenario.feature_worktree, "resolve @{push}", extra_env=extra_env)

@@ -2086,12 +2086,16 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
-# Exit 0 when WORD holds a quote character, `$`, a backtick, `<` or `>`: after
-# _lib_mask_shell_quotes or _lib_strip_shell_quotes it names a value the
-# parser cannot read as literal text.
+# Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,
+# `{`, `}`, `?`, `[` or `]`: after _lib_mask_shell_quotes or
+# _lib_strip_shell_quotes it names a value the parser cannot read as literal
+# text, because the shell may rewrite it (escape or brace expansion, or a `?`
+# or `[` glob) before git sees it. A single-item brace such as `HEAD^{commit}`
+# is left alone by the shell and still counts. A git refname cannot hold `\`,
+# `?` or `[`. An asterisk is not in the set.
 _lib_git_push_word_is_computed() {
   case "$1" in
-    *\"*|*\'*|*\$*|*\`*|*\<*|*\>*) return 0 ;;
+    *\"*|*\'*|*\$*|*\`*|*\<*|*\>*|*\\*|*\{*|*\}*|*\?*|*\[*|*\]*) return 0 ;;
   esac
   return 1
 }
