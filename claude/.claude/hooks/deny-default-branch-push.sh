@@ -19,13 +19,12 @@
 # where its remote's HEAD is set locally.
 # A push to a URL or path remote protects `main`, `master` and `develop`.
 #
-# Judging: arguments are read from quote-masked text only, so a quoted mention
-# of a push stays inert. A `$(` or backtick ends its fragment in a cut marker,
-# and a push fragment that ends in it is denied as unresolvable. `gh api`
-# endpoints are read from quote-stripped text, because a quoted endpoint
-# holding `{owner}` or `$` masks to `""`.
-# A refspec-less push is denied as unresolvable when a `-c` or `--config-env` setting names a `push.*`, `remote.*` or `branch.*` key.
-# The environment arm denies a refspec-less push carrying any `GIT_CONFIG_COUNT=` or `GIT_CONFIG_PARAMETERS=` prefix, whatever the key.
+# Judging:
+#   - Arguments are read from quote-masked text only, so a quoted mention of a push stays inert.
+#   - A `$(` or backtick ends its fragment in a cut marker, and a push fragment that ends in it is denied as unresolvable.
+#   - `gh api` endpoints are read from quote-stripped text, because a quoted endpoint holding `{owner}` or `$` masks to `""`.
+#   - A refspec-less push is denied as unresolvable when a `-c` or `--config-env` setting names a `push.*`, `remote.*` or `branch.*` key.
+#   - A refspec-less push carrying a `GIT_CONFIG_COUNT=` or `GIT_CONFIG_PARAMETERS=` prefix is denied whatever the key (`judge_refspecless`'s `*` key).
 #
 # Fail posture, fail-closed on:
 #   - A JSON parse error.
@@ -36,7 +35,10 @@
 #   - A missing jq.
 #   - A failed `sed` or `tr` fork.
 #   - A `timeout` that rejects `-k`.
-# Fail-open on a missing or empty command field, on a non-Bash tool, and on every shape listed under Known gaps.
+# Fail-open on:
+#   - A missing or empty command field, and a non-Bash tool.
+#   - Every shape listed under Known gaps.
+#   - `_lib_gh_api_call_is_mutating` when its here-string temp file cannot be created (unwritable or full TMPDIR), so a mutating `gh api` call longer than the pipe buffer passes unjudged.
 #
 # Dispatch: no `if` in settings.json; the gate self-filters, since an `if`
 # pattern would miss aliased and dashed push forms.
@@ -56,7 +58,7 @@
 #   - A push inside a double-quoted `$(…)` or backtick span, which bash executes but quote masking treats as a mention.
 #   - A push inside a shell wrapper's string argument (`bash -c "…"`, `sh -c '…'`, `eval "…"`, `xargs … sh -c '…'`), which quote masking treats as a mention.
 #   - A push that also pushes submodules, through `--recurse-submodules`, `push.recurseSubmodules` or `submodule.recurse`, because only the superproject's refspecs are judged.
-#   - A fragment earlier in the same command that changes the branch, config or remote HEAD the gate reads, such as `git config remote.origin.push HEAD:main && git push`, `git branch -m` or `git remote set-head`.
+#   - An earlier fragment or an earlier Bash call that changes the branch, config or remote HEAD the gate reads, such as `git config remote.origin.push HEAD:main && git push`, `git branch -m`, or a `git remote set-head` or `git symbolic-ref` rewrite of `refs/remotes/<remote>/HEAD`.
 #   - A push over HTTP, such as `curl` with a token against the contents API, because no `git` or `gh` command is present.
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - Every mutating verb (`PUT`, `PATCH`, `POST` and `DELETE`) of a `gh api` call to `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which weakens or removes the server-side barrier above.
@@ -74,7 +76,7 @@
 #   - A `gh api` call through a persistent `gh alias`, such as `gh NAME -f message=m` after `gh alias set NAME 'api -X PUT repos/{owner}/{repo}/contents/f'` in an earlier call, because the gate never expands a `gh` alias.
 #   - A `gh api` call written as a double-parenthesis word, such as `((gh api -X PUT repos/o/r/contents/f -f message=m))`, because the command word reads `(gh`.
 #   - A `gh api` call after a wrapper whose flag takes a separate value, such as `sudo -u root`, `env -u X` or `nice -n 5`, because the command word reads the flag's value.
-#   - An unquoted command substitution in a `-C` path, such as `git -C $(…) push origin main`. The substitution cuts the fragment before the subcommand, so the push is never parsed.
+#   - An unquoted command substitution in any word between `git` and its subcommand, such as a `-C` path, a `-c` value, a `--git-dir=` value or the subcommand word, as in `git -C $(…) push origin main` or `git -c credential.helper=$(which x) push origin main`. The substitution cuts the fragment before the subcommand, so the push is never parsed.
 #     The cut-marker deny is unreachable for it because the parser returns first.
 #   - A push hidden by a backslash-quoted quote or by an apostrophe in a `#` comment, which the quote scanner reads as opening or closing a span, such as `echo \"; git push origin main; echo \"`.
 #   - An odd apostrophe in an unquoted heredoc body, such as `don't`, which the quote scanner reads as opening a span, so a protected push later in the command is masked when another apostrophe follows it.
@@ -94,6 +96,7 @@
 #   - A backslash-newline join that ignores backslash parity, such as `echo a\\` followed by a newline and `git push origin main`, which bash reads as two commands.
 #   - `remote.<name>.mirror`, which makes a refspec-less `git push <name>` mirror every ref and is never read.
 #   - An explicit-refspec push after a `cd`, such as `cd <dir> && git push origin feature`, which is judged against the working directory from before the `cd`.
+#   - A push alias fragment that also holds a `cd`, `pushd` or `popd` word, such as `git p origin HEAD:main # cd` or `git sync # cd`, because the moved check runs before alias expansion, so the alias is never judged.
 #   - A refspec-less push whose `@{push}` fails under `push.default=upstream`, where the fallback judges the local branch name instead of the upstream branch's.
 #   - A refspec-less push whose `@{push}` fails under `remote.pushDefault`, `branch.<name>.pushRemote` or `branch.<name>.remote` naming a remote other than `origin`, where the fallback reads the protected set from `origin` for a bare `git push` and from the remote word otherwise.
 #   - A `gh api` endpoint path written with a double slash, a dot segment (`/./`) or a percent-encoded letter, such as `repos/o/r/%63ontents/f`, because the endpoint regex matches the path as written.
@@ -111,6 +114,7 @@
 #   - A backtick-wrapped push.
 #   - A computed `-C` path.
 #   - A refspec-less push, or a push whose destination is `HEAD` or `@`, chained after a `cd`, `pushd`, `popd`, `git checkout`, `git switch` or `gh pr checkout` fragment, such as `cd <worktree> && git push -u origin HEAD`.
+#   - A `cd`, `pushd` or `popd` word in a non-push fragment, such as `ls cd && git push`, which sets the moved flag, so a later refspec-less or `HEAD` push is denied.
 #   - A quoted refspec, `-C` path or `--git-dir` path holding a character outside `[A-Za-z0-9._/-]`, such as `git push origin "HEAD:feature"` or `git -C "<dir with space>" push`, which masks to `""`.
 #   - An alias whose value starts with another alias, a git extension, or a builtin `_LIB_GIT_BUILTIN_SUBCOMMANDS` omits.
 #   - A mutating `gh api` call to a ref-moving endpoint, quoted as inline code or at the start of a quoted line.

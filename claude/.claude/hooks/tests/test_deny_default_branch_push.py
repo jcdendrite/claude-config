@@ -965,6 +965,20 @@ class TestDryRun:
     def test_allows_a_dry_run_push_to_the_default_branch(self, shared_scenario):
         _assert_allowed("git push --dry-run origin main", shared_scenario.feature_worktree)
 
+    def test_denies_a_real_push_to_the_default_branch_chained_after_a_dry_run(self, shared_scenario):
+        """The dry-run exemption belongs to its own push, not to the rest of the command."""
+        _assert_denied(
+            "git push --dry-run origin main && git push origin main",
+            shared_scenario.feature_worktree,
+            _protected("main"),
+        )
+
+    def test_allows_a_real_push_to_a_feature_branch_chained_after_a_dry_run(self, shared_scenario):
+        _assert_allowed(
+            "git push --dry-run origin main && git push origin feature",
+            shared_scenario.feature_worktree,
+        )
+
 
 class TestNonBashTools:
     def test_passes_a_non_bash_tool_call(self, shared_scenario):

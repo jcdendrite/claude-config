@@ -2170,6 +2170,9 @@ _lib_git_push_note_reason() {
 #   tags / dry-run          --tags; --dry-run or -n
 #   unresolvable <reason>   all, mirror, glob, matching, prune, stdin, no-refs,
 #                           remote, refspec, repo-path or appended-args
+# Records are split by parameter expansion on the first and last tab, never with
+# `IFS=$'\t' read`, because a deletion's `ref` record has an empty source field
+# that `read` collapses.
 # A word that is unresolvable adds its reason and no remote or ref record.
 # A send-pack command has no default refspec, so it prints no-refs rather than
 # no-refspec.
@@ -2436,7 +2439,7 @@ _lib_push_protected_branches() {
 # flag, which gh promotes to POST.
 # Keys on flags, not the endpoint.
 # Scans the whole TEXT rather than one fragment, leaning toward a match: a false
-# positive costs one redundant scan or deny, a false negative ships a leak.
+# negative lets a mutating call through.
 # Also exits 0 when grep exits 2 or more (an engine error), which both callers read as the safe side.
 # A here-string redirect that fails before grep runs is not caught: it exits 1, which reads as no match.
 # `[^A-Za-z]` is the trailing method boundary, the grep-portable substitute for `\b`.
