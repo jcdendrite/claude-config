@@ -79,6 +79,7 @@ from .conftest import (
     _bash_use,
     _commit,
     _compact_boundary_rec,
+    _declared_deny_gate_label,
     _hook_deny,
     _hook_deny_current,
     _init_repo,
@@ -511,7 +512,7 @@ class TestNoteParser:
 
         assert outcome.code == 2
         assert str(world.note) not in outcome.err
-        assert "note" in outcome.err
+        assert "the note could not be read as a UTF-8 text file" in outcome.err
 
 
 class TestNoteLocation:
@@ -1595,6 +1596,12 @@ class TestMalformedUsage:
 
 
 class TestDenyExtraction:
+    def test_the_matched_deny_label_equals_the_label_the_routing_hook_declares(self):
+        # denials keeps renamed labels as legacy members, so a hook rename would otherwise leave this match stale unnoticed.
+        declared_label = _declared_deny_gate_label("require-review-orchestrator-routing.sh")
+
+        assert declared_label == routing_guard._ROUTING_DENY_LABEL
+
     @pytest.mark.parametrize("shape", ["current", "legacy"])
     def test_both_deny_shapes_are_extracted_and_deduped_by_tool_use_id(self, tmp_path, shape):
         scan = routing_guard._ScanFacts()

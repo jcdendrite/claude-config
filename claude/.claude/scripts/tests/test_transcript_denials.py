@@ -11,6 +11,12 @@ from transcript_analysis import (
     denials,
 )
 
+from .conftest import (
+    _DENY_GATE_LABEL_DECLARATION_RE,
+    _declared_deny_gate_label,
+    _deny_gate_label_declarations,
+)
+
 
 class TestDropDenialCommandFlagValues:
     """Direct unit coverage for _drop_denial_command_flag_values — the CLI-layer
@@ -525,8 +531,6 @@ class TestDenialHookLabelEnumerationRealHooks:
 # _DENIAL_CAUSE_MARKERS to have kept up on their own.
 # ---------------------------------------------------------------------------
 
-_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
-
 # Bounds a declared label the same way _DENIAL_HOOK_NAME_MAX_CHARS bounds an
 # extracted one (clause (c)) — independent of any "blocked by ... gate"
 # framing, since this checks the raw declared value.
@@ -587,19 +591,6 @@ def _deny_literals_from_text(text: str) -> list[str]:
 
 def _deny_literals(hook_name: str) -> list[str]:
     return _deny_literals_from_text((HOOKS_DIR / hook_name).read_text())
-
-
-def _deny_gate_label_declarations(hook_name: str) -> list[str]:
-    text = (HOOKS_DIR / hook_name).read_text()
-    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
-
-
-def _declared_deny_gate_label(hook_name: str) -> str:
-    declarations = _deny_gate_label_declarations(hook_name)
-    assert len(declarations) == 1, (
-        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
-    )
-    return declarations[0]
 
 
 def _marker_kinds_present(text: str) -> list[str]:
