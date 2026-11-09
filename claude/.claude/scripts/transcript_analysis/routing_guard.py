@@ -12,7 +12,7 @@ OUTPUT INVARIANT, each clause pinned by the tests it names:
 - A capture file stores `message.model` strings verbatim. Every other string it holds is a fixed label.
   Pinned by `TestGoldenFile` in test_transcript_routing_guard_capture.py.
 - The session config-keys log is read for a row's session id, `logged_at` and key values. A session id and a
-  key value reach no capture file, stdout or stderr, and each key value reaches the file only as `on` or `off`.
+  raw key value reach no capture file, stdout or stderr. The file holds only each key's derived state, `on` or `off`.
   Pinned by `TestKeyStateOutput` in test_transcript_routing_guard_capture.py.
 - A transcript `requestId` can reach stderr, and nothing else, through pricing.dedup_turns_by_request_id's rate-limited
   prints. The DO NOT PUBLISH banner covers it. Pinned by `TestFreeText` in test_transcript_routing_guard_capture.py.

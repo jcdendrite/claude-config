@@ -758,7 +758,8 @@ class TestCaptureFiles:
             path.mkdir()
         elif state == "live-symlink":
             real_file = tmp_path / "real-capture.json"
-            real_file.write_text(json.dumps({"loops": [_loop(growth=1)]}))
+            # The target must be a valid capture so only the unfollowed link makes the row unusable.
+            real_file.write_text(_capture_file_text([_loop(growth=1)]))
             path.symlink_to(real_file)
         elif state == "dangling-symlink":
             path.symlink_to(tmp_path / "no-such-target.json")
