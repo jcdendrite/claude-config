@@ -1308,7 +1308,7 @@ def test_transcript_analysis_routing_guard_capture_subprocess_publishes_one_file
     """No `_CHECKOUT_ROOT` patch reaches this process, so the run passes the checkout check only when the
     `parents[4]` depth reaches the checkout root.
     """
-    # Same mapping as scope._path_to_project_slug; this file imports no transcript_analysis module.
+    # Same mapping as scope._path_to_project_slug, copied so a change to that function fails this test instead of being followed.
     project_slug = re.sub(r"[/.]", "-", _listed_worktree_path(REPO_ROOT))
     account, note = _routing_guard_fixture(tmp_path, project_slug)
 

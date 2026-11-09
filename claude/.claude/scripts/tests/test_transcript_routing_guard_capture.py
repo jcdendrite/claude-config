@@ -704,7 +704,17 @@ class TestConfigReaderStderr:
         assert _NOISY_CONFIG_UNKNOWN_KEY not in combined
         assert str(world.config_dir) not in combined
         assert str(second_account) not in combined
-        assert routing_guard._CONFIG_READER_NOTICE in outcome.err
+        # Once per opt-in read: before the scan and again before the first publish.
+        assert outcome.err.splitlines().count(routing_guard._CONFIG_READER_NOTICE) == 2
+
+    def test_a_clean_config_prints_no_config_reader_notice(self, world, capsys):
+        _write_session(world, _clean_loop(), log=_KEYS_OFF)
+        _write_note(world, _note_line(world.config_dir, _BRANCH))
+
+        outcome = _run(capsys, world)
+
+        assert outcome.code == 0, outcome.err
+        assert routing_guard._CONFIG_READER_NOTICE not in outcome.err
 
     def test_an_unreadable_schema_is_reported_with_no_path_and_no_digit(self, world, capsys, monkeypatch, tmp_path):
         monkeypatch.setattr(_config, "_SCHEMA_FILE", tmp_path / "no-such-schema.psv")

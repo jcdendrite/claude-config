@@ -1655,6 +1655,7 @@ class TestOutput:
         expected_status = routing_guard._STATUS_FAILED if scenario == "failed" else routing_guard._STATUS_PASSED
         assert outcome.out.splitlines() == [expected_status]
         assert _COMPUTE_PROVENANCE_LINE in outcome.err.splitlines()
+        assert routing_guard._OUT_PUBLISHED_NOTICE not in outcome.err
 
     def test_a_not_run_prints_no_unauthenticated_rows_statement(self, lab, capsys):
         account = lab.account()
