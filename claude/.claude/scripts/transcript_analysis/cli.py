@@ -791,8 +791,9 @@ def build_parser() -> argparse.ArgumentParser:
         "period-cost",
         help=(
             "Per-PR and per-review Claude Code spend for an inclusive UTC date range, grouped by repository, as"
-            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, for an account"
-            " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
+            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, plus any symlink"
+            " target outside it, for an account that works for one project owner; no scope flags. Calls gh."
+            " --sample prints a synthetic report."
         ),
     )
     p_period_cost.add_argument(

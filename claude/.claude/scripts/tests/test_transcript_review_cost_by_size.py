@@ -617,9 +617,8 @@ class TestScanCodeReviewRounds:
     def test_rounds_sum_across_roots_when_one_roots_project_dir_is_a_symlink_outside_every_root(
         self, tmp_path, monkeypatch,
     ):
-        """Two rounds in root A and three in root B join one PR with five. B's slug-named project directory
-        resolves outside both roots, which scope._root_index_for_path would abort on if the scan passed
-        resolved roots."""
+        """Two rounds in root A and three in root B join one PR with five: rounds from every root merge under
+        one (None, branch) key even when B's slug-named project directory resolves outside both roots."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         project_in_root_a = roots[0] / _PROJECT_SLUG
         project_in_root_a.mkdir()

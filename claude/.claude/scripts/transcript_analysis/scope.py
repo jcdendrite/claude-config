@@ -231,6 +231,16 @@ def _stat_mode_unless_absent(path: Path) -> int | None:
         raise
 
 
+def _resolved_dir_or_none(path: Path) -> Path | None:
+    """The absent-errno exemption covers the stat only, so an `OSError` from `resolve()` propagates whatever its errno.
+    The propagated `OSError` can carry the path, so each caller must strip or discard it.
+    """
+    mode = _stat_mode_unless_absent(path)
+    if mode is None or not stat.S_ISDIR(mode):
+        return None
+    return path.resolve()
+
+
 def _dedup_new_project_dirs(
     candidates: Iterable[Path], visited_dirs: set[Path], *, scan_gaps: Counter[str] | None = None,
 ) -> Iterator[Path]:
@@ -249,7 +259,7 @@ def _dedup_new_project_dirs(
 
     A candidate that is not a directory is skipped: a missing path, a
     non-directory, and a symlink loop all read as absent, not as a gap.
-    An `OSError` from `_stat_mode_unless_absent()` or `resolve()` on an existing entry (e.g. an
+    An `OSError` from `_resolved_dir_or_none()` on an existing entry (e.g. an
     unreadable ancestor) is recorded as a scan gap when `scan_gaps` is given.
     With `scan_gaps=None` it propagates instead, with the raw path stripped
     from the message by `_path_stripped_scan_error`. The path is stripped
@@ -258,19 +268,49 @@ def _dedup_new_project_dirs(
     """
     for candidate in candidates:
         try:
-            mode = _stat_mode_unless_absent(candidate)
-            if mode is None or not stat.S_ISDIR(mode):
-                continue
-            resolved_dir = candidate.resolve()
+            resolved_dir = _resolved_dir_or_none(candidate)
         except OSError as exc:
             if scan_gaps is None:
                 raise _path_stripped_scan_error(exc) from None
             scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
             continue
+        if resolved_dir is None:
+            continue
         if resolved_dir in visited_dirs:
             continue
         visited_dirs.add(resolved_dir)
         yield candidate
+
+
+def _cross_root_alias_project_dir_count(roots: Sequence[Path]) -> int:
+    """Count the distinct real project directories that two scan roots both
+    claim, so a figure attributing sessions to a root can refuse them.
+
+    The dedup in `_dedup_new_project_dirs` attributes a shared directory to
+    whichever root is scanned first, and the scan order follows the active
+    profile. A symlink resolving outside every scan root is not an alias.
+    A directory that cannot be listed or resolved is skipped: the scan itself
+    records that as a scan gap.
+    """
+    resolved_roots = [root.resolve() for root in roots]
+    first_listing_root_by_directory: dict[Path, int] = {}
+    aliased_directories: set[Path] = set()
+    for root_idx, root in enumerate(roots):
+        for candidate in _list_dir_recording_gaps(root, None, _SCAN_GAP_ROOT):
+            try:
+                resolved_dir = _resolved_dir_or_none(candidate)
+            except OSError:
+                continue
+            if resolved_dir is None:
+                continue
+            first_root_idx = first_listing_root_by_directory.setdefault(resolved_dir, root_idx)
+            inside_other_root = not resolved_dir.is_relative_to(resolved_roots[root_idx]) and any(
+                resolved_dir.is_relative_to(other_root)
+                for other_idx, other_root in enumerate(resolved_roots) if other_idx != root_idx
+            )
+            if first_root_idx != root_idx or inside_other_root:
+                aliased_directories.add(resolved_dir)
+    return len(aliased_directories)
 
 
 def _redaction_ordinals(roots: Sequence[Path]) -> dict[Path, int]:
@@ -858,26 +898,17 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
 def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
     """Return the 0-based index of the root under which jsonl was found.
 
-    `resolved_roots` must already be resolved (real, symlink-free) paths —
-    callers resolve the roots list once, outside cost's per-session loop,
-    since this runs once per session and re-resolving every root on every
-    call would be a per-element filesystem stat inside that loop.
-    `jsonl` is always a file path, so a root can only ever be one of its
-    ancestors, never equal to it — `resolved.parents` alone covers every case.
-
-    Returns the FIRST matching root by list order when one declared root is a
-    genuine filesystem descendant of another (not just a symlink alias back
-    to it, which the dedup guards upstream already collapse to one root's
-    worth of sessions) — attributing every session under the nested root to
-    whichever sorts earlier, always the default config dir. Untested and
-    low-realism given this repo's own per-account layout (sibling
-    directories under `~/.config/claude-accounts/`, never nested); revisit if
-    `--config-dir` is ever pointed at a directory nested inside another
-    declared root.
+    `resolved_roots` must already be resolved (real, symlink-free) paths: this
+    function resolves only the session's own grandparent, once per call, so
+    callers resolve the roots list once rather than once per session.
+    Callers run it only with more than one root.
+    Each session iterator yields exactly `root/name/file.jsonl`, so the lexical
+    grandparent is the root the session was listed under, even when `name` or
+    the file is a symlink pointing outside every root.
     """
-    resolved = jsonl.resolve()
+    owning_root = jsonl.parent.parent.resolve()
     for idx, resolved_root in enumerate(resolved_roots):
-        if resolved_root in resolved.parents:
+        if resolved_root == owning_root:
             return idx
     # Deliberately omits the raw jsonl path: main() has no top-level exception
     # handler, so this message would otherwise reach stderr uncaught — the
@@ -887,8 +918,7 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
     path_hash = hashlib.sha256(str(jsonl).encode()).hexdigest()[:12]
     raise AssertionError(
         f"cost: a session path (hash {path_hash}) matched no known scan root — roots list is"
-        " out of sync with the session iterator (a symlinked project dir resolving outside"
-        " every declared root is one way this can happen)"
+        " out of sync with the session iterator"
     )
 
 

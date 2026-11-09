@@ -24,6 +24,7 @@ import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
 from transcript_analysis import corpus, cost, gh_cli, period_cost, pr_cost_ledger, pricing, scope
 
+from ._period_cost_helpers import _RESOLVE_ERRORS
 from .conftest import (
     _TASK_NOTIFICATION_TEXT,
     _dollars_per_output_token,
@@ -2552,6 +2553,12 @@ _SCOPE_NOTE = (
     "_Counts one Claude Code account's spend across every repository its sessions worked in. Other accounts and other"
     " people's work are not included._"
 )
+_SCOPE_NOTE_WITHOUT_EXCLUSIVITY = "_Counts one Claude Code account's spend across every repository its sessions worked in._"
+_OUTSIDE_ROOT_NOTE = (
+    "_Note: some sessions were read through symlinks that lead outside this account's projects directory, so these"
+    " figures may include work from outside it, and may leave out the subagent work of a linked transcript because its"
+    " subagent files are not followed._"
+)
 
 
 class TestRenderSlackReport:
@@ -2853,6 +2860,7 @@ class TestRenderSlackReport:
         flags = period_cost._ReportFlags(
             coverage_date="2026-09-10",
             read_failures=True,
+            outside_root_sources=True,
             excluded_spend=True,
             stale_date="2026-09-20",
             directories_not_checked=True,
@@ -2864,9 +2872,10 @@ class TestRenderSlackReport:
             "_Each row counts only spend dated within this period._",
             "_+ Also has spend outside this period, which is not counted here._",
             "_? A review's end was not recorded, so a marked row may include later work that belongs to another row._",
-            _SCOPE_NOTE,
+            _SCOPE_NOTE_WITHOUT_EXCLUSIVITY,
             "_Note: no Claude Code records were found before 2026-09-10; spend before that date, if any, is not included._",
             "_Note: some session records could not be read and are left out, so these figures may understate the spend._",
+            _OUTSIDE_ROOT_NOTE,
             "_Note: some usage could not be priced or dated and is left out, so these figures understate the spend._",
             (
                 "_Note: these figures use list rates that were due to be rechecked on 2026-09-20, so any rate change since then"
@@ -2932,6 +2941,7 @@ class TestRenderSlackReport:
         flags = period_cost._ReportFlags(
             coverage_date="2026-09-10",
             read_failures=True,
+            outside_root_sources=True,
             excluded_spend=True,
             stale_date="2026-09-20",
             directories_not_checked=True,
@@ -2941,9 +2951,9 @@ class TestRenderSlackReport:
         for dated in (False, True):
             lines = _render([], flags=period_cost._ReportFlags(**{**flags.__dict__, "dated_usage_in_period": dated})).splitlines()
 
-            assert lines[3] == _SCOPE_NOTE
+            assert lines[3] == _SCOPE_NOTE_WITHOUT_EXCLUSIVITY
             assert lines[-1] == _CAVEAT_LINE
-            assert len(lines) == 9
+            assert len(lines) == 10
             assert not any("Each row counts" in line or "time limit" in line or "PR list" in line for line in lines)
 
     @pytest.mark.parametrize(
@@ -2983,6 +2993,7 @@ class TestRenderSlackReport:
         flags = period_cost._ReportFlags(
             coverage_date="2026-09-10",
             read_failures=True,
+            outside_root_sources=True,
             excluded_spend=True,
             stale_date="2026-09-20",
             directories_not_checked=True,
@@ -3052,6 +3063,7 @@ def _facts(**overrides):
         account_source="CLAUDE_CONFIG_DIR",
         project_directories=2,
         transcripts=3,
+        outside_root_transcripts=0,
         read_failure_floor=0,
         table_shown=True,
         dated_usage_in_period=True,
@@ -3166,6 +3178,7 @@ class TestNoticeLines:
 
         assert second == (
             "project directories: 4; transcripts: 9; read failures: at least 2 (subagent files are not counted in that floor)"
+            "; transcripts resolving outside the projects directory: 0 (subagent files are not checked)"
         )
 
     def test_scope_line_three_lists_resolved_repositories_largest_first_with_the_unresolved_counts(self):
@@ -4251,7 +4264,7 @@ class TestTopologyReport:
         built = topology(signed=True)
         window = _window()
         totals = period_cost._period_stream_totals(
-            period_cost._contained_sessions(
+            period_cost._distinct_sessions(
                 scope._iter_glob_scoped_sessions([period_cost._projects_root()], "*", True),
                 period_cost._projects_root(),
                 period_cost._ScanTally(),
@@ -4323,7 +4336,7 @@ class TestTopologyReport:
         first, counts, repositories, unlinked = _lines_for(notices, "SCOPE")
         assert counts == (
             "project directories: 15; transcripts: 15; read failures: at least 0 (subagent files are not counted in that"
-            " floor)"
+            " floor); transcripts resolving outside the projects directory: 0 (subagent files are not checked)"
         )
         assert repositories.startswith("resolved repositories: 9 (")
         assert repositories.endswith(
@@ -4402,50 +4415,7 @@ class TestSubagentFiles:
         assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1; read failures: at least 0")
 
 
-_RESOLVE_ERRORS = [
-    pytest.param(OSError(errno.ELOOP, "too many levels of symbolic links"), id="os_error"),
-    pytest.param(RuntimeError("loop"), id="runtime_error"),
-]
-
-
-class TestContainedSessionsResolveFailures:
-    """A transcript or root whose `Path.resolve` raises is handled without aborting the scan. On some interpreter versions
-    non-strict `Path.resolve` does not raise on a symlink loop, so the injection stands in for the `RuntimeError` and
-    `OSError` cases of older interpreters."""
-
-    _ROOT = Path("/srv/account/projects")
-    _TRANSCRIPT = _ROOT / "project-a" / "session-1.jsonl"
-
-    @staticmethod
-    def _resolve_raises_for(monkeypatch, failing_path: Path, error: Exception) -> None:
-        def resolve(self, strict=False):
-            if self == failing_path:
-                raise error
-            return self
-
-        monkeypatch.setattr(Path, "resolve", resolve)
-
-    @pytest.mark.parametrize("error", _RESOLVE_ERRORS)
-    def test_a_transcript_whose_path_cannot_be_resolved_is_dropped_and_counted(self, monkeypatch, error):
-        self._resolve_raises_for(monkeypatch, self._TRANSCRIPT, error)
-        tally = period_cost._ScanTally()
-
-        kept = list(period_cost._contained_sessions([(self._TRANSCRIPT, [])], self._ROOT, tally))
-
-        assert kept == []
-        assert (tally.dropped, tally.transcripts) == (1, 0)
-
-    @pytest.mark.parametrize("error", _RESOLVE_ERRORS)
-    def test_an_unresolvable_root_falls_back_to_its_given_path_for_the_containment_check(self, monkeypatch, error):
-        outside = Path("/srv/elsewhere/session-2.jsonl")
-        self._resolve_raises_for(monkeypatch, self._ROOT, error)
-        tally = period_cost._ScanTally()
-
-        kept = list(period_cost._contained_sessions([(self._TRANSCRIPT, []), (outside, [])], self._ROOT, tally))
-
-        assert kept == [(self._TRANSCRIPT, [])]
-        assert (tally.dropped, tally.transcripts) == (1, 1)
-
+_OUTSIDE_ROOT_COUNT_ZERO_TAIL = "transcripts resolving outside the projects directory: 0 (subagent files are not checked)"
 
 _UNDETERMINED_OTHER_ROW = ("Other", "Work not linked to a repository", "", "$3.00", "")
 
@@ -4650,11 +4620,6 @@ class TestResolutionFailures:
             _write_session(projects_dir, name, records)
         (projects_dir / "-home-user-testrepo").mkdir()
         unreadable = _write_session(projects_dir, "unreadable-only", [_hand_priced(1, 1, day=_FIRST_DAY)])
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 1, day=_FIRST_DAY)])
-        (projects_dir / "links-outside").mkdir()
-        (projects_dir / "links-outside" / "link.jsonl").symlink_to(elsewhere / "outside.jsonl")
         real_session = _write_session(projects_dir, "real-session", [_hand_priced(1, 1, day=_FIRST_DAY, cwd=str(repos / "gone"))])
         (projects_dir / "links-inside").mkdir()
         (projects_dir / "links-inside" / "alias.jsonl").symlink_to(real_session)
@@ -4673,11 +4638,11 @@ class TestResolutionFailures:
         }
         assert "*Total: $10.00*" in report.splitlines()
         counts = _lines_for(notices, "SCOPE")[1]
-        # 9 session projects + real-session = 10 spend-bearing directories, the in-root alias adds none; the empty,
-        # unreadable, and outside-root directories yield no priced transcript.
+        # 9 session projects + real-session = 10 spend-bearing directories, the in-root alias adds none; the empty
+        # and unreadable directories yield no priced transcript.
         assert counts == (
-            "project directories: 10; transcripts: 10; read failures: at least 2 (subagent files are not counted in that"
-            " floor)"
+            "project directories: 10; transcripts: 10; read failures: at least 1 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 0 (subagent files are not checked)"
         )
         assert "Note: some session records could not be read" in report
 
@@ -4700,19 +4665,245 @@ class TestResolutionFailures:
         assert "Note: some session records could not be read" not in report
         assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1;")
 
-    def test_an_outside_root_drop_alone_sets_the_read_failure_floor_and_note_six_but_no_scan_gap(
-        self, projects_dir, tmp_path, monkeypatch
+    @pytest.mark.parametrize("linked_entry", ["project-dir", "transcript"])
+    def test_a_project_directory_or_transcript_symlinked_outside_the_root_is_read_and_counted_as_outside(
+        self, projects_dir, tmp_path, monkeypatch, linked_entry
     ):
+        directory = _make_dir(tmp_path, "repos", "widgets")
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 1, day=_FIRST_DAY)])
-        (projects_dir / "links-outside").mkdir()
-        (projects_dir / "links-outside" / "link.jsonl").symlink_to(elsewhere / "outside.jsonl")
-        _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
+        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, branch="feature-x", cwd=directory)])
+        if linked_entry == "project-dir":
+            (projects_dir / "links-outside").symlink_to(elsewhere, target_is_directory=True)
+        else:
+            (projects_dir / "links-outside").mkdir()
+            (projects_dir / "links-outside" / "link.jsonl").symlink_to(elsewhere / "outside.jsonl")
+        _install_fake(
+            monkeypatch,
+            origins_by_dir={directory: "https://github.com/acme/widgets.git"},
+            pr_lists_by_repo={"github.com/acme/widgets": [_listed_pr(10, "feature-x")]},
+        )
 
         report, notices = _run_report()
 
-        assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 0; transcripts: 0; read failures: at least 1 (")
+        assert "*Total: $3.00*" in report.splitlines()
+        assert "Note: some session records could not be read" not in report
+        assert _lines_for(notices, "SCOPE")[1] == (
+            "project directories: 1; transcripts: 1; read failures: at least 0 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 1 (subagent files are not checked)"
+        )
+        assert _OUTSIDE_ROOT_NOTE in report.splitlines()
+        assert _SCOPE_NOTE_WITHOUT_EXCLUSIVITY in report.splitlines()
+        assert _SCOPE_NOTE not in report.splitlines()
+
+    def test_a_target_in_a_sibling_directory_named_like_the_projects_directory_plus_a_suffix_is_counted_as_outside(
+        self, projects_dir, tmp_path, monkeypatch
+    ):
+        """The sibling's path starts with the projects directory's path as a string without being inside it, so a
+        containment check by string prefix would count 0."""
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        archive = projects_dir.parent / f"{projects_dir.name}-archive"
+        archive.mkdir()
+        _write_jsonl(archive / "archived.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        (projects_dir / "links-archive").symlink_to(archive, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $3.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1].endswith(
+            "transcripts resolving outside the projects directory: 1 (subagent files are not checked)"
+        )
+        assert _OUTSIDE_ROOT_NOTE in report.splitlines()
+
+    def test_a_symlinked_project_directorys_subagent_files_are_priced_but_not_counted_as_outside(
+        self, projects_dir, tmp_path, monkeypatch
+    ):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        subagent_file = elsewhere / "outside" / "subagents" / "agent-a1.jsonl"
+        subagent_file.parent.mkdir(parents=True)
+        _write_jsonl(subagent_file, [_hand_priced(2, 4, day=_FIRST_DAY, cwd=directory, sidechain=True)])
+        (projects_dir / "links-outside").symlink_to(elsewhere, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $7.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1] == (
+            "project directories: 1; transcripts: 1; read failures: at least 0 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 1 (subagent files are not checked)"
+        )
+
+    def test_a_symlinked_transcripts_subagent_files_beside_its_target_are_not_followed(
+        self, projects_dir, tmp_path, monkeypatch
+    ):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        subagent_file = elsewhere / "outside" / "subagents" / "agent-a1.jsonl"
+        subagent_file.parent.mkdir(parents=True)
+        _write_jsonl(subagent_file, [_hand_priced(2, 4, day=_FIRST_DAY, cwd=directory, sidechain=True)])
+        (projects_dir / "links-outside").mkdir()
+        (projects_dir / "links-outside" / "outside.jsonl").symlink_to(elsewhere / "outside.jsonl")
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $3.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1] == (
+            "project directories: 1; transcripts: 1; read failures: at least 0 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 1 (subagent files are not checked)"
+        )
+
+    def test_a_symlinked_session_directorys_subagent_files_are_priced_but_not_counted_or_noted_as_outside(
+        self, projects_dir, tmp_path, monkeypatch
+    ):
+        """Pins an accepted limitation: see "Fixed scope" in the period-cost section of docs/transcript-analysis.md."""
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        _write_session(projects_dir, "in-root", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        elsewhere_session_dir = tmp_path / "elsewhere" / "session-1"
+        subagent_file = elsewhere_session_dir / "subagents" / "agent-a1.jsonl"
+        subagent_file.parent.mkdir(parents=True)
+        _write_jsonl(subagent_file, [_hand_priced(2, 4, day=_FIRST_DAY, cwd=directory, sidechain=True)])
+        (projects_dir / "in-root" / "session-1").symlink_to(elsewhere_session_dir, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $7.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1].endswith(_OUTSIDE_ROOT_COUNT_ZERO_TAIL)
+        assert _OUTSIDE_ROOT_NOTE not in report.splitlines()
+        assert _SCOPE_NOTE in report.splitlines()
+
+    @pytest.mark.parametrize(
+        "alias_dir_name,real_dir_name,expected_total",
+        [
+            pytest.param("a-alias", "b-real", "$3.00", id="alias_sorts_first_so_the_subagent_beside_the_real_copy_is_not_priced"),
+            pytest.param("b-alias", "a-real", "$7.00", id="real_sorts_first_so_the_subagent_beside_it_is_priced"),
+        ],
+    )
+    def test_a_transcript_reached_through_an_alias_and_its_real_path_keeps_the_copy_that_sorts_first(
+        self, projects_dir, tmp_path, monkeypatch, alias_dir_name, real_dir_name, expected_total
+    ):
+        """Pins an accepted limitation: see "Fixed scope" in the period-cost section of docs/transcript-analysis.md."""
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        real_session = _write_session(projects_dir, real_dir_name, [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        subagent_file = real_session.parent / real_session.stem / "subagents" / "agent-a1.jsonl"
+        subagent_file.parent.mkdir(parents=True)
+        _write_jsonl(subagent_file, [_hand_priced(2, 4, day=_FIRST_DAY, cwd=directory, sidechain=True)])
+        (projects_dir / alias_dir_name).mkdir()
+        (projects_dir / alias_dir_name / real_session.name).symlink_to(real_session)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert f"*Total: {expected_total}*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1;")
+
+    def test_two_distinct_outside_transcripts_in_one_symlinked_project_directory_count_as_two(
+        self, projects_dir, tmp_path, monkeypatch
+    ):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        for name in ("outside-one", "outside-two"):
+            _write_jsonl(elsewhere / f"{name}.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        (projects_dir / "links-outside").symlink_to(elsewhere, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        _report, notices = _run_report()
+
+        assert _lines_for(notices, "SCOPE")[1] == (
+            "project directories: 1; transcripts: 2; read failures: at least 0 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 2 (subagent files are not checked)"
+        )
+
+    def test_two_links_to_one_outside_transcript_count_once(self, projects_dir, tmp_path, monkeypatch):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        _write_jsonl(elsewhere / "outside.jsonl", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        (projects_dir / "links-outside").mkdir()
+        for link_name in ("link-one.jsonl", "link-two.jsonl"):
+            (projects_dir / "links-outside" / link_name).symlink_to(elsewhere / "outside.jsonl")
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $3.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1] == (
+            "project directories: 1; transcripts: 1; read failures: at least 0 (subagent files are not counted in that"
+            " floor); transcripts resolving outside the projects directory: 1 (subagent files are not checked)"
+        )
+
+    def test_a_transcript_symlinked_within_the_root_is_not_counted_as_outside(self, projects_dir, tmp_path, monkeypatch):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        real_session = _write_session(projects_dir, "real", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        (projects_dir / "alias").mkdir()
+        (projects_dir / "alias" / "again.jsonl").symlink_to(real_session)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert _lines_for(notices, "SCOPE")[1].endswith(_OUTSIDE_ROOT_COUNT_ZERO_TAIL)
+        assert _OUTSIDE_ROOT_NOTE not in report.splitlines()
+        assert _SCOPE_NOTE in report.splitlines()
+
+    def test_sessions_under_a_projects_root_that_is_itself_a_symlink_count_as_inside(self, tmp_path, monkeypatch):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        real_root = tmp_path / "data-drive" / "projects"
+        _write_session(real_root, "real", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        linked_root = tmp_path / "linked-projects"
+        linked_root.symlink_to(real_root, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report(linked_root)
+
+        assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1;")
+        assert _lines_for(notices, "SCOPE")[1].endswith(_OUTSIDE_ROOT_COUNT_ZERO_TAIL)
+        assert _OUTSIDE_ROOT_NOTE not in report.splitlines()
+        assert _SCOPE_NOTE in report.splitlines()
+
+    def test_sessions_under_a_config_directory_that_is_itself_a_symlink_count_as_inside(self, tmp_path, monkeypatch):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        real_config_dir = tmp_path / "data-drive" / "account"
+        _write_session(real_config_dir / "projects", "real", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        (tmp_path / "account").symlink_to(real_config_dir, target_is_directory=True)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1;")
+        assert _lines_for(notices, "SCOPE")[1].endswith(_OUTSIDE_ROOT_COUNT_ZERO_TAIL)
+        assert _OUTSIDE_ROOT_NOTE not in report.splitlines()
+        assert _SCOPE_NOTE in report.splitlines()
+
+    @pytest.mark.parametrize("error", _RESOLVE_ERRORS)
+    def test_a_transcript_whose_path_fails_to_resolve_is_left_out_and_raises_the_read_failure_floor_and_note_six(
+        self, projects_dir, tmp_path, monkeypatch, error
+    ):
+        directory = _make_dir(tmp_path, "repos", "widgets")
+        _write_session(projects_dir, "resolvable", [_hand_priced(1, 3, day=_FIRST_DAY, cwd=directory)])
+        unresolvable = _write_session(projects_dir, "unresolvable", [_hand_priced(1, 5, day=_FIRST_DAY, cwd=directory)])
+        resolve_without_injection = Path.resolve
+
+        def resolve(self, strict=False):
+            if self == unresolvable:
+                raise error
+            return resolve_without_injection(self, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+        _install_fake(monkeypatch, origins_by_dir={directory: "https://github.com/acme/widgets.git"}, pr_lists_by_repo={})
+
+        report, notices = _run_report()
+
+        assert "*Total: $3.00*" in report.splitlines()
+        assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1; read failures: at least 1 (")
+        assert "unresolved directories: 0; directories not checked before the time limit: 0;" in _lines_for(notices, "SCOPE")[2]
         assert (
             "_Note: some session records could not be read and are left out, so these figures may understate the spend._"
             in report.splitlines()
@@ -5010,6 +5201,7 @@ class TestVariantSelection:
         assert report.splitlines()[2].startswith("No Claude Code usage was found")
         assert _lines_for(notices, "SCOPE")[1] == (
             "project directories: 0; transcripts: 0; read failures: at least 0 (subagent files are not counted in that floor)"
+            "; transcripts resolving outside the projects directory: 0 (subagent files are not checked)"
         )
 
     def test_a_projects_path_that_is_a_file_is_an_empty_scope(self, tmp_path):
@@ -5396,7 +5588,15 @@ _LEAK_SKILL_ARGS = "/srv/leak-sentinel/skill-args"
 _LEAK_USER_MESSAGE = "LEAK-SENTINEL-USER-MESSAGE"
 _LEAK_PROJECT_DIR = "leak-sentinel-project-dir"
 _LEAK_CHECKOUT_DIR = "leak-sentinel-checkout"
+_LEAK_BILLING_DIR = "leak-sentinel-billing-dir"
+_LEAK_CREDENTIALED_DIR = "leak-sentinel-credentialed-dir"
 _LEAK_CONFIG_DIR = "leak-sentinel-config-dir"
+_LEAK_LINKED_PROJECT_DIR = "leak-sentinel-linked-project-dir"
+_LEAK_LINKED_PROJECT_TARGET_DIR = "leak-sentinel-linked-project-target-dir"
+_LEAK_LINKED_PROJECT_TARGET_STEM = "leak-sentinel-linked-project-target-stem"
+_LEAK_LINKED_TRANSCRIPT = "leak-sentinel-transcript-link-name"
+_LEAK_LINKED_TRANSCRIPT_TARGET_DIR = "leak-sentinel-linked-transcript-target-dir"
+_LEAK_LINKED_TRANSCRIPT_TARGET_STEM = "leak-sentinel-linked-transcript-target-stem"
 
 
 class TestNothingIdentifyingLeaks:
@@ -5408,8 +5608,8 @@ class TestNothingIdentifyingLeaks:
         projects.mkdir(parents=True)
         repos = tmp_path / "repos"
         widgets = _make_dir(repos, _LEAK_CHECKOUT_DIR)
-        billing = _make_dir(repos, "billing")
-        credentialed = _make_dir(repos, "credentialed")
+        billing = _make_dir(repos, _LEAK_BILLING_DIR)
+        credentialed = _make_dir(repos, _LEAK_CREDENTIALED_DIR)
         review_user = _user_prompt(1, _LEAK_USER_MESSAGE, day=_FIRST_DAY, cwd=widgets)
         invocation = _skill_invocation(2, args=_LEAK_SKILL_ARGS, cwd=widgets, day=_FIRST_DAY)
         acquire = _bash_record(3, f"{_LEAK_COMMAND_PATH}/review-pr-acquire.sh acme/widgets#99", cwd=widgets, day=_FIRST_DAY)
@@ -5430,6 +5630,22 @@ class TestNothingIdentifyingLeaks:
         }
         for dir_name, records in sessions.items():
             _write_session(projects, dir_name, records)
+        # Each link targets its own directory so that resolved-path dedup skips neither.
+        linked_project_target = tmp_path / _LEAK_LINKED_PROJECT_TARGET_DIR
+        _write_session(
+            tmp_path,
+            _LEAK_LINKED_PROJECT_TARGET_DIR,
+            [_hand_priced(1, 1, day=_FIRST_DAY, branch="feature-x", cwd=widgets)],
+            session_id=_LEAK_LINKED_PROJECT_TARGET_STEM,
+        )
+        (projects / _LEAK_LINKED_PROJECT_DIR).symlink_to(linked_project_target, target_is_directory=True)
+        linked_transcript_target = _write_session(
+            tmp_path,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_DIR,
+            [_hand_priced(1, 1, day=_FIRST_DAY, branch="feature-x", cwd=widgets)],
+            session_id=_LEAK_LINKED_TRANSCRIPT_TARGET_STEM,
+        )
+        (projects / f"{_LEAK_PROJECT_DIR}-1" / f"{_LEAK_LINKED_TRANSCRIPT}.jsonl").symlink_to(linked_transcript_target)
         origins = {
             widgets: "https://github.com/acme/widgets.git",
             billing: "https://github.com/acme/billing-api.git",
@@ -5444,14 +5660,25 @@ class TestNothingIdentifyingLeaks:
             "failures": {_BILLING_REPO: f"HTTP 502\n{_LEAK_STDERR_SENTINEL}\n"},
         }
 
-    def _sentinels(self, tmp_path, account) -> list[str]:
+    @staticmethod
+    def _sentinels(tmp_path, account) -> list[str]:
         return [
             str(tmp_path),
             str(account["config"]),
             _LEAK_CONFIG_DIR,
             f"{_LEAK_PROJECT_DIR}-1",
             f"{_LEAK_PROJECT_DIR}-2",
+            f"{_LEAK_PROJECT_DIR}-3",
+            f"{_LEAK_PROJECT_DIR}-4",
             _LEAK_CHECKOUT_DIR,
+            _LEAK_BILLING_DIR,
+            _LEAK_CREDENTIALED_DIR,
+            _LEAK_LINKED_PROJECT_DIR,
+            _LEAK_LINKED_PROJECT_TARGET_DIR,
+            _LEAK_LINKED_PROJECT_TARGET_STEM,
+            _LEAK_LINKED_TRANSCRIPT,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_DIR,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_STEM,
             _LEAK_SECRET,
             _LEAK_USER,
             _LEAK_STDERR_SENTINEL,
@@ -5466,6 +5693,9 @@ class TestNothingIdentifyingLeaks:
             [path.read_text() for path in account["projects"].glob("*/*.jsonl")]
             + list(account["origins"].values())
             + [str(path) for path in account["projects"].glob("*")]
+            + [str(path) for path in account["projects"].glob("*/*.jsonl")]
+            + [str(path.resolve()) for path in account["projects"].glob("*")]
+            + [str(path.resolve()) for path in account["projects"].glob("*/*.jsonl")]
             + list(account["failures"].values()),
         )
 
@@ -5824,7 +6054,7 @@ class TestCommandWiring:
         _report, notices = self._run_command(capsys)
 
         assert _lines_for(notices, "SCOPE")[0] == (
-            "only the active account's projects directory is read, taken from CLAUDE_CONFIG_DIR; the declared-roots file is"
+            "only the active account's projects directory is listed, taken from CLAUDE_CONFIG_DIR; the declared-roots file is"
             " not read"
         )
 
@@ -5844,7 +6074,7 @@ class TestCommandWiring:
 
         scope_lines = _lines_for(notices, "SCOPE")
         assert scope_lines[0] == (
-            "only the active account's projects directory is read, taken from the default config directory; the"
+            "only the active account's projects directory is listed, taken from the default config directory; the"
             " declared-roots file is not read"
         )
         assert scope_lines[1].startswith("project directories: 3; transcripts: 3;")
@@ -6062,7 +6292,10 @@ class TestPeriodCostReportSkillTripwire:
       settings file, keeps every transcript of the account on disk longer without the engineer deciding it.
     - Coverage limit: an agent that reads a quiet COVERAGE WARNING as proof of complete coverage lets an understated
       report go out as complete.
-    - The `GH UNAVAILABLE` kind list: a renamed or new kind otherwise leaves the skill with a dead or missing branch."""
+    - The `GH UNAVAILABLE` kind list: a renamed or new kind otherwise leaves the skill with a dead or missing branch.
+    - Outside-root gate: without the engineer's yes/no on a non-zero outside-root count (run in the terminal as well as by
+      the agent), spend from a linked directory that holds another owner's sessions reaches the owner behind a note nobody
+      acted on. The agent must not enumerate or delete links itself, since encoded project paths would enter the transcript."""
 
     @staticmethod
     def _skill_text() -> str:
@@ -6146,6 +6379,35 @@ class TestPeriodCostReportSkillTripwire:
             f"The engineer pastes only from the line starting `{period_cost._REPORT_FIRST_LINE_PREFIX}` to the end of the output,"
             " because the `period-cost:` lines above it are for the engineer only."
         ) in transcript_item
+
+    def test_the_transcript_item_adds_the_outside_root_question_to_the_terminal_run_duties(self):
+        transcript_item = self._pinned_item_text("transcript")
+
+        assert (
+            "answers Step 3 item 5's three questions, plus item 4's link question when `SCOPE` line 2's outside count is"
+            " non-zero."
+        ) in transcript_item
+
+    def test_the_decide_before_presenting_item_gates_sending_on_the_engineers_answer_about_outside_root_links(self):
+        decide_item = self._pinned_item_text("gh_unavailable_kinds")
+        outside_count_phrase = "transcripts resolving outside the projects directory"
+
+        assert outside_count_phrase in decide_item
+        assert outside_count_phrase in period_cost._scope_notice_lines(_facts(outside_root_transcripts=1))[1]
+        assert "only the engineer finds the link in a separate terminal and removes or keeps it." in decide_item
+        assert "The agent never lists, searches for, or deletes links." in decide_item
+        assert "ask whether every link target holds only this account's own sessions" in decide_item
+        assert 'a no or an "I don\'t know" means do not send' in decide_item
+
+    def test_the_remaining_notices_item_carves_a_non_zero_outside_root_count_out_of_sendable_as_is(self):
+        remaining_notices_item = self._pinned_item_text("remaining_notices")
+
+        assert (
+            "All are sendable as is, except that a non-zero outside count on `SCOPE` line 2 is item 4's decision:"
+        ) in remaining_notices_item
+        assert (
+            "It never lists, searches for, or deletes symlinks or other entries under a config directory."
+        ) in remaining_notices_item
 
     def test_the_retention_item_leaves_the_setting_to_the_engineer_and_names_the_cost_and_the_alternatives(self):
         retention_item = self._pinned_item_text("retention")

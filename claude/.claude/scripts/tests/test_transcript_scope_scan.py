@@ -1,4 +1,7 @@
-"""scope.py's scan-traversal, scan-gap and glob-selection classes; test_transcript_scope.py holds scope.py's other tests."""
+"""scope.py's scan-traversal, scan-gap and glob-selection classes.
+
+test_transcript_scope.py and test_transcript_scope_symlinks.py hold scope.py's other tests.
+"""
 import argparse
 import errno
 import os
@@ -9,6 +12,16 @@ import pytest
 from transcript_analysis import corpus, scope
 
 from .conftest import _asst, _write_jsonl
+
+
+class _StatRaisesEacces:
+    """Duck-typed project-dir candidate whose `stat()` fails with EACCES carrying `sensitive_path`."""
+
+    def __init__(self, sensitive_path: str):
+        self._sensitive_path = sensitive_path
+
+    def stat(self):
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), self._sensitive_path)
 
 
 class TestScanRootTranscripts:
@@ -675,25 +688,29 @@ class TestScanGapCounter:
         assert yielded == []
         assert scan_gaps == Counter()
 
-    def test_dedup_records_a_project_dir_gap_when_stat_fails_with_eacces(self):
-        class _StatRaises:
-            def stat(self):
-                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+    def test_dedup_records_a_project_dir_gap_when_the_candidate_fails_with_eacces(self):
+        candidate = _StatRaisesEacces("/private/acct-a/projects/-repo-sealed")
 
         scan_gaps = Counter()
-        yielded = list(scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        yielded = list(scope._dedup_new_project_dirs([candidate], set(), scan_gaps=scan_gaps))
         assert yielded == []
+        assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_dedup_yields_a_directory_listed_after_a_candidate_that_fails_with_eacces(self, tmp_path):
+        unreadable = _StatRaisesEacces("/private/acct-a/projects/-repo-sealed")
+        readable_dir = tmp_path / "-repo-readable"
+        readable_dir.mkdir()
+
+        scan_gaps = Counter()
+        yielded = list(scope._dedup_new_project_dirs([unreadable, readable_dir], set(), scan_gaps=scan_gaps))
+        assert yielded == [readable_dir]
         assert scan_gaps == Counter({scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_dedup_without_scan_gaps_raises_eacces_with_the_path_stripped(self):
         sensitive_path = "/private/acct-a/projects/-repo-sealed"
 
-        class _StatRaises:
-            def stat(self):
-                raise OSError(errno.EACCES, os.strerror(errno.EACCES), sensitive_path)
-
         with pytest.raises(OSError) as excinfo:
-            list(scope._dedup_new_project_dirs([_StatRaises()], set()))
+            list(scope._dedup_new_project_dirs([_StatRaisesEacces(sensitive_path)], set()))
         assert excinfo.value.errno == errno.EACCES
         assert sensitive_path not in str(excinfo.value)
         _assert_scan_error_chain_suppressed(excinfo)
