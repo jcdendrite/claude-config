@@ -583,7 +583,7 @@ class TestSampleReasonsEndToEnd:
         assert outcome.code == 3
         assert outcome.out.splitlines() == [_not_run_line(routing_guard._REASON_OFF_PILOT_DIFFERS, off_line)]
 
-    def test_an_account_with_no_on_file_and_excluded_rows_do_not_affect_the_run_or_have_a_file_opened(
+    def test_an_account_with_no_on_file_and_excluded_rows_do_not_affect_the_run_and_excluded_rows_have_no_file_opened(
         self, lab, capsys, monkeypatch,
     ):
         account, _on_line, _off_line = _minimal_pair(lab)
@@ -1341,7 +1341,7 @@ class TestBootstrap:
         assert interval_line == "95% interval: -$1.00 to unbounded"
         assert "inf" not in interval_line
 
-    def test_a_thin_growth_arm_at_ten_branches_runs_to_a_status_with_about_a_tenth_of_replicates_undefined(self):
+    def test_a_thin_growth_arm_at_ten_branches_leaves_about_a_tenth_of_replicates_undefined_and_ranks_them_last(self):
         on = [
             _bs(f"on-{i:02d}", growth_sum=100 * i if i < 2 else 0, growth_loops=1 if i < 2 else 0, overhead=2.0 + i)
             for i in range(10)

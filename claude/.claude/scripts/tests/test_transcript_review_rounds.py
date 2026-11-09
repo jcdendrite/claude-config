@@ -2526,8 +2526,9 @@ class TestPriceDispatchTokenSink:
         review_rounds._price_dispatch("a1", dispatch_index, set(), with_sink, token_sink={})
 
         assert with_sink == without_sink
-        # unpriced: the unpriced-model turn plus the `<synthetic>` turn, which `_price_dispatch` counts unpriced
-        # but the token sink drops; dangling: the `ghost` spawn; resolved: `a1` and `n1`.
+        # unpriced_turns: the unpriced-model turn and the `<synthetic>` turn, which the token sink drops.
+        # dangling: the `ghost` spawn.
+        # resolved: `a1` and `n1`.
         assert (with_sink.unpriced_turns, with_sink.dangling, with_sink.resolved) == (2, 1, 2)
 
     @pytest.mark.parametrize("malformed_input_tokens", ["x", -5_000], ids=["non-numeric", "negative"])

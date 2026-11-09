@@ -854,7 +854,7 @@ class TestWholeReason:
             unreadable_without_loop, [_round_facts(has_marker_write=True)], unknown,
         ) == "orchestrator-unreadable"
 
-    def test_leading_default_branch_records_are_credited_to_the_first_branch_entered(self, tmp_path):
+    def test_a_leading_default_branch_name_does_not_surface_as_a_branch_of_its_own(self, tmp_path):
         scan = routing_guard._ScanFacts()
         records = [
             _asst(_SONNET, branch="main", ts=_ts(0)),
@@ -4807,7 +4807,7 @@ class TestBranchKeyStates:
         assert outcome.code == 0, outcome.err
         assert json.loads((world.captures_dir / _digest_name(_BRANCH)).read_text())["routing"] == "off"
 
-    def test_end_to_end_a_deny_with_a_log_that_says_on_does_not_change_the_stored_state_source(self, world, capsys):
+    def test_end_to_end_a_key_on_loop_with_a_deny_stores_routing_on(self, world, capsys):
         project_dir = _write_session(world, _key_on_loop(), log=_ROUTING_ON)
         _write_marker_writing_orchestrator(project_dir)
         _write_note(world, _note_line(world.config_dir, _BRANCH))

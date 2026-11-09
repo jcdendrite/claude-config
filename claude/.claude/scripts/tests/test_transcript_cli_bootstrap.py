@@ -1269,7 +1269,7 @@ def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Pat
         _priced("claude-sonnet-5", input=130_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:03:00.000Z"),
     ]
     _write_jsonl(project_dir / "session.jsonl", [{"sessionId": "session", **record} for record in records])
-    # Routing is off and both pilots are on, so a transposition shows.
+    # Routing is off and both pilots are on, so a swap between routing and a pilot shows.
     (account / ".session-config-keys-log.jsonl").write_text("\n" + json.dumps({
         "session_id": "session", "source": "startup", "logged_at": "2026-08-01T09:00:00Z",
         "keys": {
