@@ -14,7 +14,7 @@ GH-1408 asks whether the comment rules in `claude/.claude/CLAUDE.md` § "Durable
 - The "don't restate the code" rule is kept.
 - Narrowing to "comment only for a non-obvious why" is not decided.
 
-The issue's transcript sample could not rule out a substantial dependence on comments. It leans toward "no" because it sees only reads that were followed by an edit. No document yet fixes how to measure whether comments help an authoring agent, so a later study could re-decide its tasks, outcome or decision rule after seeing data. This page fixes them first.
+The issue's transcript sample could not rule out a substantial dependence on comments. It leans toward "no" because it sees only reads that were followed by an edit. Without a pre-registration, a later study could re-decide its tasks, outcome or decision rule after seeing data. This page fixes them first.
 
 ## Question and arms
 
@@ -231,7 +231,7 @@ In the lock, the experimenter decides whether the study goes ahead at that `n`. 
 
 ## Analysis
 
-The unit is the task. Per task and arm, the pass rate is passing valid replicates over valid replicates. `d_task` is the intact rate minus the stripped rate, and `Delta` is the mean `d_task` over the PR tasks the study runs that are not dropped. A positive `Delta` means stripping hurt.
+The unit is the task. Per task and arm, the pass rate is passing valid replicates over valid replicates. `d_task` is the intact rate minus the stripped rate, and `Delta` is the mean `d_task` over the PR tasks the study runs that are not dropped. A positive `Delta` means stripping hurt. In this page, "harm" and "stripping hurt" both mean a drop in the held-out-test pass rate, that is test-measured correctness.
 
 The interval is a two-sided 95% percentile bootstrap over tasks, with 10,000 draws and a recorded seed. `L` and `U` are its lower and upper bounds. Intervals alone decide the verdict, and no separate significance test runs. A PR task the study runs that is left with no valid replicate in an arm drops from the primary interval, and the page reports drops per arm. A task outside the PR tasks the study runs, an excluded task included, is neither dropped nor missing.
 
@@ -253,12 +253,12 @@ The rule applies to `Delta` and its two-sided 95% interval from `L` to `U`. The 
    - The worst-case recomputation's lower bound is not above 0.
    - The trap interval's lower bound is above 0.
 
-   There is no evidence of harm, and this task distribution excludes a 15-point harm. That does not by itself justify narrowing, since human readers and review-round cost go unmeasured.
+   There is no evidence of a drop in test-measured correctness, and this task distribution excludes a 15-point drop. That does not by itself justify narrowing, since human readers, review-round cost and code quality beyond what the held-out tests measure go unmeasured. The Limits section lists the rest.
 3. *Inconclusive*: `L` <= 0 <= `U`, and a condition of Harm excluded fails. It supports no narrowing whatever `U` is. These land here, among others:
    - A PR task count too short for `U` to fall below 0.15.
    - A result that holds only while missing replicates are ignored, including one whose worst-case recomputation lies wholly above 0.
    - A harness the traps did not show to be sensitive.
-4. *Stripped better*: `U` < 0. Comments misled agents on this distribution. That does not justify narrowing either, because the kept accuracy rule already targets misleading comments. The discordant tasks get inspected for stale comments.
+4. *Stripped better*: `U` < 0. The stripped arm had a higher held-out-test pass rate on this distribution. That does not justify narrowing either, because the kept accuracy rule already targets misleading comments. The discordant tasks get inspected for stale comments.
 
 Under every outcome, the `Results` section reports `Delta`, `L` and `U`, the worst-case recomputation's interval and the trap interval, reads `U` alone as the largest harm the primary interval leaves open (none when `U` <= 0), and states that the result excludes a harm only under Harm excluded, at the larger of `U` and the worst-case recomputation's upper bound. Only Harm excluded can support a narrowing argument, and never alone. That is the deliberate asymmetry of the rule. `docs/case-studies/opus-frontload-review-rounds.md` is this repository's earlier pre-registered study with an asymmetric rule.
 
@@ -296,8 +296,8 @@ The `Revisions` section binds the margin from the moment this page ships.
 
 ## Limits
 
-- The study measures one authoring session's correctness, not the review pipeline, human readers, or the cost of review rounds.
-- The held-out tests are a proxy for quality. A change can pass them and still ignore a recorded rationale, read worse to the next maintainer, or break a convention no test asserts. Harm excluded therefore rules out only a drop in test-measured correctness of 15 points or more on this task distribution. It is not a finding that stripping leaves code quality unharmed.
+- The study measures one authoring session's test-measured correctness, not the review pipeline, human readers, or the cost of review rounds.
+- The held-out tests are a proxy for quality. A change can pass them and still ignore a recorded rationale, read worse to the next maintainer, or break a convention no test asserts. Harm excluded therefore rules out only a drop in test-measured correctness of 15 points or more on this task distribution. It is not a finding that stripping leaves code quality unharmed. Scoring runs only the PR's own test files, so a regression in a suite test outside those files goes unscored, which favors Harm excluded.
 - Rationale in markdown that both arms keep can mask a comment effect. That includes the files under `.claude/plans/` and the project instructions and skills that load in both arms.
 - A result may not transfer to the codebases of people who install this repository's configuration, which the same rules govern.
 - Only why-comment tasks run, so the result says nothing about code without one.
