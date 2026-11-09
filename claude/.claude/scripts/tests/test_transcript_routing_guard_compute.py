@@ -2081,16 +2081,18 @@ def _sample_output_fences(section_lines: list[str]) -> list[str]:
 _SYNTHETIC_DOC = """\
 ## earlier
 ```
-# not a heading
+## routing-guard
 ```
 ## routing-guard
 prose
 ```bash
-# a comment line inside a fence never ends the section
+## a level-two heading inside a fence never ends the section
+### Sample output
 echo 1
 ```
 ### Sample output
 ```text
+# a heading inside a fence never ends the sample output
 sample <n>
 ```
 ### Later subsection
@@ -2108,15 +2110,16 @@ class TestRoutingGuardDocSection:
     def test_the_section_scanner_is_fence_aware_and_ends_at_the_next_level_two_heading(self):
         section = _routing_guard_section_lines(_SYNTHETIC_DOC)
 
+        assert "## a level-two heading inside a fence never ends the section" in section
         assert "echo 1" in section
         assert "not a sample 2" in section
         assert "outside 3" not in section
-        assert "# not a heading" not in section
+        assert section[:2] == ["## routing-guard", "prose"]
 
     def test_the_sample_scanner_returns_only_the_fences_under_the_sample_subheading(self):
         fences = _sample_output_fences(_routing_guard_section_lines(_SYNTHETIC_DOC))
 
-        assert fences == ["sample <n>"]
+        assert fences == ["# a heading inside a fence never ends the sample output\nsample <n>"]
 
     def test_the_sample_output_fences_hold_no_digit(self):
         fences = _sample_output_fences(_routing_guard_section_lines(_TRANSCRIPT_ANALYSIS_DOC.read_text()))
