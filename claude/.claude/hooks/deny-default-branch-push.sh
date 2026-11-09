@@ -40,16 +40,19 @@
 #
 # Dispatch: no `if` in settings.json; the gate self-filters, since an `if`
 # pattern would miss aliased and dashed push forms.
+# Per-fire cost exceeds the <100ms budget (plugins/claude-hook-review/skills/claude-hook-review/SKILL.md § "7. Performance budget") and grows with the command's line count, an exceedance accepted here.
 #
-# Known gaps, six accepted on GH-1407:
+# Server-side branch protection (docs/hooks.md § "Required server-side protection") is the only barrier for every gap below.
+#
+# Known gaps accepted on GH-1407:
 #   - A push from a script file the agent writes.
 #   - An alias defined in the same command.
 #   - `gh api graphql`.
 #   - `gh repo sync` of a fork. A POST to `repos/<owner>/<repo>/merge-upstream` moves a fork's default branch, and the endpoint set does not match it.
 #   - `gh api`'s bundled `-iXPUT` and attached `-fmessage=m` spellings, which `_lib_gh_api_call_is_mutating` does not read as mutating.
 #   - The bare `&`, which `_lib_split_fragments` does not split on.
-# Accepted as permanent debt under the "Existing debt" rule in docs/hooks.md § "Threat-model tiers":
-# Server-side branch protection (docs/hooks.md § "Required server-side protection") is the only barrier for them.
+#
+# Known gaps accepted as permanent debt under the "Existing debt" rule in docs/hooks.md § "Threat-model tiers":
 #   - A push inside a double-quoted `$(…)` or backtick span, which bash executes but quote masking treats as a mention.
 #   - A push inside a shell wrapper's string argument (`bash -c "…"`, `sh -c '…'`, `eval "…"`, `xargs … sh -c '…'`), which quote masking treats as a mention.
 #   - A push that also pushes submodules, through `--recurse-submodules`, `push.recurseSubmodules` or `submodule.recurse`, because only the superproject's refspecs are judged.
@@ -74,8 +77,10 @@
 #   - An unquoted command substitution in a `-C` path, such as `git -C $(…) push origin main`. The substitution cuts the fragment before the subcommand, so the push is never parsed.
 #     The cut-marker deny is unreachable for it because the parser returns first.
 #   - A push hidden by a backslash-quoted quote or by an apostrophe in a `#` comment, which the quote scanner reads as opening or closing a span, such as `echo \"; git push origin main; echo \"`.
+#   - An odd apostrophe in an unquoted heredoc body, such as `don't`, which the quote scanner reads as opening a span, so a protected push later in the command is masked when another apostrophe follows it.
 #   - A push whose command word carries an attached parenthesis or brace, such as `then (git push origin main)`, `{ (git push origin main); }` or `cat <(git push origin main)`.
 #   - A push whose destination carries an attached parenthesis, such as `(cd w && git push origin HEAD) 2>&1`, which reads the destination as `HEAD)`.
+#   - An attached `&` on a destination, remote or subcommand word, such as `git push origin main&`, which stays in the word, so the push is judged as an unprotected name.
 #   - A git option negation or abbreviation the parser does not read, such as `--no-dry-run`, `--no-tags` or an abbreviated `--mirr`, where git accepts the spelling.
 #   - A spelling that relocates the config a refspec-less push reads, such as `GIT_CONFIG_GLOBAL=<file>`, `HOME=<dir>` or `-c include.path=<file>`.
 #   - `env -u git git push origin main`, because the parser binds to the first `git`-named word, here the word after `-u`.
@@ -83,6 +88,7 @@
 #   - A leading redirect whose target ends in `/git`, such as `2>/tmp/git git push origin main`, which the parser reads as the command word.
 #   - A `git push` option value that the shell rewrites into extra words, such as `git push -o {x,origin} HEAD:main`, because the parser skips the option's value and reads `HEAD:main` as the remote.
 #   - A backslash or brace inside any word the parser compares to a literal, such as the command word (`\git push origin main`), the subcommand (`git pu\sh origin main`) or an option (`git push --mir\ror origin`), because the word no longer matches.
+#   - An unbraced `$name`, a field-split variable or a glob character in the command or subcommand word, such as `git$IFS push origin main` or `/usr/bin/gi[t] push origin main`, because the word no longer matches and the push goes unrecognised.
 #   - `GIT push origin main` on a case-insensitive volume, where bash resolves `GIT` to the git binary.
 #   - `GH api -X PUT repos/o/r/contents/f …`, `/usr/bin/GH api …` or `sudo GH api …` on a case-insensitive volume, because the command-word match folds case and the argv walk does not.
 #   - A backslash-newline join that ignores backslash parity, such as `echo a\\` followed by a newline and `git push origin main`, which bash reads as two commands.
@@ -93,13 +99,15 @@
 #   - A `gh api` endpoint path written with a double slash, a dot segment (`/./`) or a percent-encoded letter, such as `repos/o/r/%63ontents/f`, because the endpoint regex matches the path as written.
 #   - A refspec-less push to a URL or path remote, which judges only `main`, `master` and `develop`, so a differently named default branch of the branch's `@{push}` remote is not protected.
 #   - A quoted or computed `-c` key, such as `git -c 'remote.origin.push=HEAD:main' push`, which masks to an empty quoted pair and slips the config-key filter.
-#   - A bare `git push` followed by a same-line comment, such as `git push # publish`, because the parser reads the comment words as the remote and refspec, so the config, `@{push}` and HEAD judgment never runs.
+#   - A refspec-less push, bare or with a remote word and flags, followed by a same-line comment, such as `git push # publish` or `git push -u origin # publish`, because the parser reads the comment words as the remote or refspecs, so the config, `@{push}` and HEAD judgment never runs.
 #   - A configured remote group (`remotes.<group>`), because it passes the plain-name test and is judged against `main`, `master` and `develop` only.
 #   - A name-shaped word that git reads as a path, such as a symlink `o` in the working directory, and a configured remote named with `/`, `+` or `@`, because the gate classifies a remote word by its spelling, not by git's own resolution.
-#   See `_lib_mask_shell_quotes`' Limits for the other residuals the masked pass inherits.
+#
+# See `_lib_mask_shell_quotes`' Limits for the other residuals the masked pass inherits.
 #
 # Accepted over-denials (the irreversible tier names over-deny as the correct trade):
 #   - An unquoted heredoc body line that reads as a protected push.
+#   - Prose in an unquoted heredoc body or `echo` argument that names a user's `!`-alias after a `git` word, such as `Run git sync after merging`, which is denied as an unresolvable push.
 #   - A backtick-wrapped push.
 #   - A computed `-C` path.
 #   - A refspec-less push, or a push whose destination is `HEAD` or `@`, chained after a `cd`, `pushd`, `popd`, `git checkout`, `git switch` or `gh pr checkout` fragment, such as `cd <worktree> && git push -u origin HEAD`.
@@ -200,7 +208,6 @@ git_call() {
   GIT_CALL_OUTPUT=$(_lib_capped git "$@" 2>/dev/null </dev/null)
 }
 
-# Sets FRAGMENTS to the non-blank lines of TEXT.
 load_fragments() {
   local line
   FRAGMENTS=()
@@ -226,7 +233,6 @@ fragment_ends_in_cut_marker() {
   [[ "$trimmed" == *"$CUT_MARKER" ]]
 }
 
-# Exit 0 when FRAGMENT holds a `cd`, `pushd` or `popd` word.
 fragment_has_directory_change_word() {
   local saved_opts=$- word found=1
   set -f
@@ -272,7 +278,6 @@ git_alias_candidate() {
   printf '%s' "$subcmd"
 }
 
-# Exit 0 when FRAGMENT is a `gh api` call.
 fragment_is_gh_api() {
   local first_word
   _lib_fragment_invokes_tool "$1" gh || return 1
@@ -307,7 +312,6 @@ set_target() {
   fi
 }
 
-# Sets the target from the `repo` record in RECORDS.
 set_target_from_records() {
   local line rest
   while IFS= read -r line; do
@@ -369,7 +373,6 @@ judge_destination() {
   fi
 }
 
-# Denies a refspec-less push when config can redirect where it lands.
 judge_refspecless_config() {
   local key value call_status=0 push_default=""
   git_call "${TARGET_ARGS[@]}" config --get-regexp '^(push\.default|remote\..*\.push)$' || call_status=$?

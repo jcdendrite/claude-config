@@ -436,9 +436,9 @@ while IFS= read -r fragment; do
       # endpoint path — endpoint allowlisting is fragile, and the next
       # leak path could be a new endpoint. The flag check is global to the
       # command string, not scoped to the gh-api fragment — intentionally
-      # fail-toward-scan: a false positive costs one redundant scan, a
-      # false negative ships a leak. The regexes live in
-      # _lib_gh_api_call_is_mutating (_lib.sh).
+      # fail-toward-scan, so a false positive here costs one redundant scan.
+      # The regexes and the rationale live in _lib_gh_api_call_is_mutating
+      # (_lib.sh).
       if _lib_gh_api_call_is_mutating "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
       fi

@@ -1986,7 +1986,6 @@ _lib_fragment_invokes_git() {
 # version adding another needs this list updated by hand.
 _LIB_GIT_GLOBAL_VALUE_FLAGS=(-C -c --git-dir --work-tree --namespace --super-prefix --config-env --attr-source)
 
-# Exit 0 when WORD is in _LIB_GIT_GLOBAL_VALUE_FLAGS.
 _lib_git_global_flag_takes_value() {
   local flag
   for flag in "${_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}"; do
@@ -2087,12 +2086,13 @@ _lib_extract_git_subcmd_args() {
 }
 
 # Exit 0 when WORD holds a quote character, `$`, a backtick, `<`, `>`, `\`,
-# `{`, `}`, `?`, `[` or `]`: after _lib_mask_shell_quotes or
-# _lib_strip_shell_quotes it names a value the parser cannot read as literal
-# text, because the shell may rewrite it (escape or brace expansion, or a `?`
-# or `[` glob) before git sees it. A single-item brace such as `HEAD^{commit}`
-# is left alone by the shell and still counts. A git refname cannot hold `\`,
-# `?` or `[`. An asterisk is not in the set.
+# `{`, `}`, `?`, `[` or `]`.
+# Called on text that went through _lib_mask_shell_quotes or _lib_strip_shell_quotes.
+# The shell may rewrite such a word (escape or brace expansion, or a `?` or `[`
+# glob) before git sees it, so the parser cannot read it as literal text.
+# A single-item brace such as `HEAD^{commit}` is left alone by the shell and
+# still counts. A git refname cannot hold `\`, `?` or `[`. An asterisk is not in
+# the set.
 _lib_git_push_word_is_computed() {
   case "$1" in
     *\"*|*\'*|*\$*|*\`*|*\<*|*\>*|*\\*|*\{*|*\}*|*\?*|*\[*|*\]*) return 0 ;;
@@ -2142,8 +2142,6 @@ _lib_git_push_add_config() {
   printf -v "$1" '%s%s\n' "${!1}" "config"$'\t'"$key"
 }
 
-# _lib_git_push_note_reason OUT_VAR REASON
-# Appends REASON as a line of OUT_VAR unless a line already holds it.
 _lib_git_push_note_reason() {
   local current="${!1}"
   case $'\n'"$current" in

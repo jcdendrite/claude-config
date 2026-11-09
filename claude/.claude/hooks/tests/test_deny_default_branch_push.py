@@ -154,19 +154,37 @@ def _unresolved(cause: str) -> str:
 
 class TestExplicitDestination:
     @pytest.mark.parametrize(
-        "command",
-        ["git push origin main", "git push origin feature main", "git push origin cd main"],
-        ids=["main", "feature-and-main", "branch-named-like-a-directory-change"],
+        ("command", "protected_branch"),
+        [
+            ("git push origin main", "main"),
+            ("git push origin feature main", "main"),
+            ("git push origin cd main", "main"),
+            ("git push origin master", "master"),
+        ],
+        ids=["main", "feature-and-main", "branch-named-like-a-directory-change", "master-beside-a-resolved-head"],
     )
-    def test_denies_a_push_that_names_the_default_branch(self, shared_scenario, command):
-        _assert_denied(command, shared_scenario.feature_worktree, _protected("main"))
+    def test_denies_a_push_that_names_a_protected_branch(self, shared_scenario, command, protected_branch):
+        _assert_denied(command, shared_scenario.feature_worktree, _protected(protected_branch))
 
     def test_protects_the_default_branch_named_by_origin_head_only_on_a_named_remote(self, trunk_scenario):
-        """A path remote gets no origin/HEAD lookup, so `trunk` is unprotected there while `main` stays protected (header)."""
+        """A path remote gets no origin/HEAD lookup, so `trunk` is unprotected there while `main` stays protected (header).
+
+        The named-remote `main` deny pins a non-first member of the protected set on a remote whose HEAD names another branch.
+        """
         feature_worktree = trunk_scenario.feature_worktree
         _assert_denied("git push origin trunk", feature_worktree, _protected("trunk"))
+        _assert_denied("git push origin main", feature_worktree, _protected("main"))
         _assert_allowed("git push ../origin.git trunk", feature_worktree)
         _assert_denied("git push ../origin.git main", feature_worktree, _protected("main", "../origin.git"))
+
+    def test_protects_develop_only_while_origin_head_is_unresolved(self, trunk_scenario):
+        feature_worktree = trunk_scenario.feature_worktree
+        _assert_allowed("git push origin develop", feature_worktree)
+
+        _run_git(feature_worktree, "remote", "set-head", "origin", "--delete")
+
+        _assert_denied("git push origin develop", feature_worktree, _protected("develop"))
+        _assert_allowed("git push origin trunk", feature_worktree)
 
     @pytest.mark.parametrize(
         "command",
