@@ -1762,7 +1762,7 @@ Listing a branch `excluded` to clear a NOT RUN reason shrinks the sample, and th
 
 Before any publish, capture checks the routing gate's denies on the account's root against the note, so a branch with a routing deny that the note omits cannot silently shrink an arm. Capture refuses the run for such a branch until the note lists it.
 
-**The deny lookups.** Run both in the owner's terminal outside any agent session, with the same top-level `--config-dir` given to capture. Each timeline prints a denial with its UTC timestamp and `branch=`. List every denial row whose `msg=` opens "Blocked by review-orchestrator routing gate" and whose `branch=` the note omits.
+**The deny lookups.** Run both in the owner's terminal outside any agent session, with the same top-level `--config-dir` given to capture. Each timeline prints a denial with its UTC timestamp and `branch=`. List every denial row whose `branch=` the note omits.
 
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py --config-dir <config-dir> review-trace --this-repo --deny-only
