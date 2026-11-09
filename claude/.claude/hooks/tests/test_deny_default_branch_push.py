@@ -588,21 +588,22 @@ class TestBlankLineInTheCommand:
     def test_denies_a_push_after_a_blank_line_on_the_awk_on_path(self, shared_scenario, command):
         """Guards `_lib_mask_shell_quotes` keeping a blank line out of record splitting, on the first awk on PATH.
 
-        An awk that read `RS = "\\0"` as paragraph mode (BSD/macOS awk) fused the paragraph-initial `git` word onto
-        the previous paragraph's last word, or inverted quote parity after a quoted blank line, so the push was
-        never judged. The masker's unit tests run the same shapes under every installed awk.
+        The masker's record separator is SOH because BSD/macOS awk reads a NUL `RS` as paragraph mode, which fuses
+        the paragraph-initial `git` word onto the previous paragraph's last word and inverts quote parity after a
+        quoted blank line, so the push is never judged. The masker's unit tests run the same shapes under every
+        installed awk.
         """
         _assert_denied(command, shared_scenario.feature_worktree, _protected("main"))
 
     @pytest.mark.skipif(
-        sys.platform != "darwin" or not Path("/usr/bin/awk").exists(),
+        sys.platform != "darwin" or SYSTEM_AWK_NAME is None,
         reason="forces BSD/macOS awk's paragraph-mode reading of `RS = \"\\0\"`, which only Darwin's /usr/bin/awk has",
     )
     def test_denies_a_push_after_a_blank_line_on_the_bsd_awk(self, shared_scenario, tmp_path):
         """Guards the masker's record separator at the gate, with `/usr/bin/awk` forced ahead of any other awk on PATH.
 
-        Regression pin for `RS = "\\0"`: CI runs a non-BSD awk, which reads it as an ordinary separator and would
-        pass without the fix.
+        Only BSD awk reads a NUL `RS` as paragraph mode, so only the forced `/usr/bin/awk` can tell SOH from NUL.
+        CI runs a non-BSD awk, which treats both as an ordinary separator.
         """
         extra_env = awk_first_on_path_env(tmp_path / "bsd-awk-bin", SYSTEM_AWK_NAME)
         _assert_denied(

@@ -214,6 +214,9 @@ The agent's credential must not be able to supply the approval.
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
+Restrict the scope of any repository secret that can push to the default branch or deploy.
+The gate allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
+
 The gate reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The hook header's Known gaps list them, so protection on the remote is the only barrier for steered input.
 
 Where the host or plan offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.

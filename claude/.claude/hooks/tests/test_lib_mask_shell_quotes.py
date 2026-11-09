@@ -185,8 +185,8 @@ class TestLibMaskShellQuotes:
     def test_unquoted_blank_line_is_preserved_so_the_next_paragraph_keeps_its_own_line(
         self, tmp_path, text, awk_name
     ):
-        """An awk that read `RS = "\\0"` as paragraph mode (BSD/macOS awk) deleted an unquoted blank line and fused
-        the tokens on each side, so a push or commit starting a paragraph lost its command word.
+        """BSD/macOS awk reads a NUL `RS` as paragraph mode, which deletes an unquoted blank line and fuses the tokens
+        on each side, so a push or commit starting a paragraph would lose its command word.
 
         Runs under every awk installed, because only BSD awk tells `"\\0"` from SOH.
         """

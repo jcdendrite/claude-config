@@ -138,10 +138,10 @@ class TestDenyInvisibleCommitContent:
     def test_two_chained_commits_after_a_blank_line_in_the_message_denied_on_the_bsd_awk(self, tmp_path):
         """A blank line inside the first commit's quoted message must not hide a second commit that carries a quote.
 
-        An awk that read `RS = "\\0"` as paragraph mode reset quote state at the blank line, so the second commit's
-        quote flipped the parity and masked the second `git commit`. The tail's quote is what makes this input
-        discriminate: without it the commit stays visible whatever the separator. `/usr/bin/awk` is forced ahead of
-        any other awk, because CI runs a non-BSD awk that would pass without the fix.
+        BSD/macOS awk reads a NUL `RS` as paragraph mode, which resets quote state at the blank line, so the second
+        commit's quote would flip the parity and mask the second `git commit`. The tail's quote is what makes this
+        input discriminate: without it the commit stays visible whatever the separator. `/usr/bin/awk` is forced
+        ahead of any other awk, because only BSD awk tells SOH from NUL and CI runs a non-BSD awk.
         """
         extra_env = awk_first_on_path_env(tmp_path / "bsd-awk-bin", SYSTEM_AWK_NAME)
         assert run_hook(

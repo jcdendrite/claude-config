@@ -354,8 +354,8 @@ class TestRequireRespondPr:
     def test_blank_line_between_gh_api_and_its_url_denied(
         self, isolated_home, current_repo_foo_bar, tmp_path, awk_name
     ):
-        """An awk that read `RS = "\\0"` as paragraph mode (BSD/macOS awk) deleted the blank line and fused
-        `gh api` onto the URL, so the REST arm missed it.
+        """BSD/macOS awk reads a NUL `RS` as paragraph mode, which deletes the blank line and fuses `gh api` onto
+        the URL, so the REST arm would miss it.
 
         Runs under every awk installed, because only BSD awk tells `"\\0"` from SOH.
         """

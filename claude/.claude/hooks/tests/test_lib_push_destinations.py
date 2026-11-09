@@ -585,3 +585,15 @@ class TestGhApiCallIsMutating:
         }
 
         assert _gh_api_call_is_mutating("gh api repos/o/r/contents/f", env) == 0
+
+    def test_body_flag_grep_failure_counts_as_mutating(self, tmp_path):
+        """The method grep (`-qiE`) runs real and finds no match, so only the body-flag grep (`-qE`) fails."""
+        grep_engine_error_status = 2
+        env = {
+            **os.environ,
+            "PATH": path_with_failing_tool_shim(
+                tmp_path / "grep-shim", "grep", arg_pattern="-qE", exit_status=grep_engine_error_status
+            ),
+        }
+
+        assert _gh_api_call_is_mutating("gh api repos/o/r/contents/f", env) == 0

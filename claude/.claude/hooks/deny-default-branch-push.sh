@@ -62,6 +62,7 @@
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - Every mutating verb (`PUT`, `PATCH`, `POST` and `DELETE`) of a `gh api` call to `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which weakens or removes the server-side barrier above.
 #     The barrier needs an agent credential without repository-administration rights.
+#   - The `gh api` `repos/<owner>/<repo>/branches/<branch>/rename` endpoint, which the endpoint set does not list, so a default-branch rename passes and only the non-admin-credential requirement in docs/hooks.md § "Required server-side protection" covers it.
 #   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes, such as `gh api -X PUT -f message="add readme" $URL`.
 #   - A `gh api` endpoint written after a quoted multi-word flag value. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes.
 #   - A `gh api` endpoint written after a flag value holding a command substitution. The `gh api` fragment is cut at the substitution, so a ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
@@ -83,8 +84,10 @@
 #   - A push whose destination carries an attached parenthesis, such as `(cd w && git push origin HEAD) 2>&1`, which reads the destination as `HEAD)`.
 #   - An attached `&` on a destination, remote or subcommand word, such as `git push origin main&`, which stays in the word, so the push is judged as an unprotected name.
 #   - A git option negation or abbreviation the parser does not read, such as `--no-dry-run`, `--no-tags` or an abbreviated `--mirr`, where git accepts the spelling.
+#   - Subcommand autocorrect through `-c help.autocorrect=immediate`, such as `git -c help.autocorrect=immediate pusj origin main`, because git rewrites the word after the gate read it as a non-push.
 #   - A spelling that relocates the config a refspec-less push reads, such as `GIT_CONFIG_GLOBAL=<file>`, `HOME=<dir>` or `-c include.path=<file>`.
 #   - `env -u git git push origin main`, because the parser binds to the first `git`-named word, here the word after `-u`.
+#   - A push that git itself runs inside `git submodule foreach` or `git bisect run`, such as `git submodule foreach git push origin HEAD:main`, because the first git word is not a push.
 #   - A redirect between `git` and its subcommand, such as `git 2>&1 push origin main` or `git >/dev/null push origin main`, which the parser reads as the subcommand.
 #   - A leading redirect whose target ends in `/git`, such as `2>/tmp/git git push origin main`, which the parser reads as the command word.
 #   - A `git push` option value that the shell rewrites into extra words, such as `git push -o {x,origin} HEAD:main`, because the parser skips the option's value and reads `HEAD:main` as the remote.

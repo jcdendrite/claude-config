@@ -9,7 +9,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
-  - GNU awk read the whole command as one record before, so its verdicts do not change.
+  - For a command without a 0x01 byte, GNU awk read the whole command as one record before, so its verdicts do not change. A command carrying a 0x01 byte is now split at it, an accepted limit listed in `_lib_mask_shell_quotes`' Limits.
   - The change is live on `git pull`.
 - **The commit-stall Stop hook (`advance-past-commit-stall.sh`) no longer forces a continuation on the default branch or a detached HEAD.**
   - **Why:** the forced continuation commits and pushes, and from those states the push would land on a protected branch.
