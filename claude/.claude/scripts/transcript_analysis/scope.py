@@ -231,6 +231,16 @@ def _stat_mode_unless_absent(path: Path) -> int | None:
         raise
 
 
+def _resolved_dir_or_none(path: Path) -> Path | None:
+    """The absent-errno exemption covers the stat only, so an `OSError` from `resolve()` propagates whatever its errno.
+    The propagated `OSError` can carry the path, so each caller must strip or discard it.
+    """
+    mode = _stat_mode_unless_absent(path)
+    if mode is None or not stat.S_ISDIR(mode):
+        return None
+    return path.resolve()
+
+
 def _dedup_new_project_dirs(
     candidates: Iterable[Path], visited_dirs: set[Path], *, scan_gaps: Counter[str] | None = None,
 ) -> Iterator[Path]:
@@ -249,7 +259,7 @@ def _dedup_new_project_dirs(
 
     A candidate that is not a directory is skipped: a missing path, a
     non-directory, and a symlink loop all read as absent, not as a gap.
-    An `OSError` from `_stat_mode_unless_absent()` or `resolve()` on an existing entry (e.g. an
+    An `OSError` from `_resolved_dir_or_none()` on an existing entry (e.g. an
     unreadable ancestor) is recorded as a scan gap when `scan_gaps` is given.
     With `scan_gaps=None` it propagates instead, with the raw path stripped
     from the message by `_path_stripped_scan_error`. The path is stripped
@@ -258,14 +268,13 @@ def _dedup_new_project_dirs(
     """
     for candidate in candidates:
         try:
-            mode = _stat_mode_unless_absent(candidate)
-            if mode is None or not stat.S_ISDIR(mode):
-                continue
-            resolved_dir = candidate.resolve()
+            resolved_dir = _resolved_dir_or_none(candidate)
         except OSError as exc:
             if scan_gaps is None:
                 raise _path_stripped_scan_error(exc) from None
             scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
+            continue
+        if resolved_dir is None:
             continue
         if resolved_dir in visited_dirs:
             continue
@@ -289,11 +298,10 @@ def _cross_root_alias_project_dir_count(roots: Sequence[Path]) -> int:
     for root_idx, root in enumerate(roots):
         for candidate in _list_dir_recording_gaps(root, None, _SCAN_GAP_ROOT):
             try:
-                mode = _stat_mode_unless_absent(candidate)
-                if mode is None or not stat.S_ISDIR(mode):
-                    continue
-                resolved_dir = candidate.resolve()
+                resolved_dir = _resolved_dir_or_none(candidate)
             except OSError:
+                continue
+            if resolved_dir is None:
                 continue
             first_root_idx = first_listing_root_by_directory.setdefault(resolved_dir, root_idx)
             inside_other_root = not resolved_dir.is_relative_to(resolved_roots[root_idx]) and any(

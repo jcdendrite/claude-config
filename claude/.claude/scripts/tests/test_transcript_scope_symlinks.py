@@ -13,6 +13,13 @@ from .conftest import _cost_args, _priced, _write_cost_root, _write_jsonl
 _ONE_MILLION_INPUT_TOKENS = [_priced("claude-sonnet-5", input=1_000_000)]
 _TWO_MILLION_INPUT_TOKENS = [_priced("claude-sonnet-5", input=2_000_000)]
 _THREE_ROOT_INDEXES = [pytest.param(0, id="first-root"), pytest.param(1, id="middle-root"), pytest.param(2, id="last-root")]
+_TARGET_DIR_SCENARIOS = [
+    pytest.param(lambda tmp_path, roots, listed_index: tmp_path / "outside", id="outside-every-root"),
+    pytest.param(
+        lambda tmp_path, roots, listed_index: roots[(listed_index + 1) % len(roots)] / "-repo-other",
+        id="inside-another-roots-project-dir",
+    ),
+]
 
 
 def _three_roots(tmp_path):
@@ -36,14 +43,18 @@ class TestRootIndexForPath:
         assert scope._root_index_for_path(listed, [root.resolve() for root in roots]) == listed_index
 
     @pytest.mark.parametrize("listed_index", _THREE_ROOT_INDEXES)
-    def test_transcript_symlinked_outside_every_root_is_attributed_to_the_root_it_is_listed_under(self, tmp_path, listed_index):
+    @pytest.mark.parametrize("target_dir_for", _TARGET_DIR_SCENARIOS)
+    def test_symlinked_transcript_is_attributed_to_the_root_it_is_listed_under_not_where_its_target_resolves(
+        self, tmp_path, listed_index, target_dir_for
+    ):
         roots = _three_roots(tmp_path)
         (roots[listed_index] / "-repo-main").mkdir()
-        outside_transcript = tmp_path / "outside" / "sess-outside.jsonl"
-        outside_transcript.parent.mkdir()
-        _write_jsonl(outside_transcript, _ONE_MILLION_INPUT_TOKENS)
+        target_dir = target_dir_for(tmp_path, roots, listed_index)
+        target_dir.mkdir()
+        target_transcript = target_dir / "sess-target.jsonl"
+        _write_jsonl(target_transcript, _ONE_MILLION_INPUT_TOKENS)
         listed = roots[listed_index] / "-repo-main" / "link.jsonl"
-        listed.symlink_to(outside_transcript)
+        listed.symlink_to(target_transcript)
 
         assert scope._root_index_for_path(listed, [root.resolve() for root in roots]) == listed_index
 
@@ -184,9 +195,9 @@ class TestIteratorsYieldPathsUnderTheirListedRoot:
 
 
 class TestCrossRootAliasProjectDirCount:
-    def test_roots_with_only_their_own_real_project_dirs_have_no_alias(self, tmp_path):
-        root_a = _write_cost_root(tmp_path, "acct-a", "-repo-a", "sess-a", _ONE_MILLION_INPUT_TOKENS)
-        root_b = _write_cost_root(tmp_path, "acct-b", "-repo-b", "sess-b", _ONE_MILLION_INPUT_TOKENS)
+    def test_roots_with_only_their_own_real_project_dirs_have_no_alias_even_when_the_dirs_share_a_name(self, tmp_path):
+        root_a = _write_cost_root(tmp_path, "acct-a", "-repo-same", "sess-a", _ONE_MILLION_INPUT_TOKENS)
+        root_b = _write_cost_root(tmp_path, "acct-b", "-repo-same", "sess-b", _ONE_MILLION_INPUT_TOKENS)
 
         assert scope._cross_root_alias_project_dir_count([root_a, root_b]) == 0
 

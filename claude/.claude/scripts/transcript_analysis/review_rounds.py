@@ -687,8 +687,8 @@ _POOLED_SCAN_GAP_REFUSAL = (
 )
 
 # The dedup attributes a project directory reachable from two scan roots to whichever root is
-# scanned first, which follows the active profile, so the pooled count and dominance floors would
-# shift with it. The message carries a count only, never a path or name.
+# scanned first. That order follows the active profile, so the pooled count and dominance floors
+# would shift with it. The message carries a count only, never a path or name.
 _POOLED_CROSS_ROOT_ALIAS_REFUSAL = (
     "review-round-cost --pooled refuses a project directory reachable from more than one scan"
     " root ({count} such director{plural}): a symlink from one scan root into another, or one"
