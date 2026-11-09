@@ -297,6 +297,7 @@ The `Revisions` section binds the margin from the moment this page ships.
 ## Limits
 
 - The study measures one authoring session's correctness, not the review pipeline, human readers, or the cost of review rounds.
+- The held-out tests are a proxy for quality. A change can pass them and still ignore a recorded rationale, read worse to the next maintainer, or break a convention no test asserts. Harm excluded therefore rules out only a drop in test-measured correctness of 15 points or more on this task distribution. It is not a finding that stripping leaves code quality unharmed.
 - Rationale in markdown that both arms keep can mask a comment effect. That includes the files under `.claude/plans/` and the project instructions and skills that load in both arms.
 - A result may not transfer to the codebases of people who install this repository's configuration, which the same rules govern.
 - Only why-comment tasks run, so the result says nothing about code without one.
