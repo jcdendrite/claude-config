@@ -4695,7 +4695,6 @@ class TestResolutionFailures:
         assert _OUTSIDE_ROOT_NOTE in report.splitlines()
         assert _SCOPE_NOTE_WITHOUT_EXCLUSIVITY in report.splitlines()
         assert _SCOPE_NOTE not in report.splitlines()
-        assert str(elsewhere) not in report + "".join(notices)
 
     def test_a_target_in_a_sibling_directory_named_like_the_projects_directory_plus_a_suffix_is_counted_as_outside(
         self, projects_dir, tmp_path, monkeypatch
@@ -5589,7 +5588,15 @@ _LEAK_SKILL_ARGS = "/srv/leak-sentinel/skill-args"
 _LEAK_USER_MESSAGE = "LEAK-SENTINEL-USER-MESSAGE"
 _LEAK_PROJECT_DIR = "leak-sentinel-project-dir"
 _LEAK_CHECKOUT_DIR = "leak-sentinel-checkout"
+_LEAK_BILLING_DIR = "leak-sentinel-billing-dir"
+_LEAK_CREDENTIALED_DIR = "leak-sentinel-credentialed-dir"
 _LEAK_CONFIG_DIR = "leak-sentinel-config-dir"
+_LEAK_LINKED_PROJECT_DIR = "leak-sentinel-linked-project-dir"
+_LEAK_LINKED_PROJECT_TARGET_DIR = "leak-sentinel-linked-project-target-dir"
+_LEAK_LINKED_PROJECT_TARGET_STEM = "leak-sentinel-linked-project-target-stem"
+_LEAK_LINKED_TRANSCRIPT = "leak-sentinel-transcript-link-name"
+_LEAK_LINKED_TRANSCRIPT_TARGET_DIR = "leak-sentinel-linked-transcript-target-dir"
+_LEAK_LINKED_TRANSCRIPT_TARGET_STEM = "leak-sentinel-linked-transcript-target-stem"
 
 
 class TestNothingIdentifyingLeaks:
@@ -5601,8 +5608,8 @@ class TestNothingIdentifyingLeaks:
         projects.mkdir(parents=True)
         repos = tmp_path / "repos"
         widgets = _make_dir(repos, _LEAK_CHECKOUT_DIR)
-        billing = _make_dir(repos, "billing")
-        credentialed = _make_dir(repos, "credentialed")
+        billing = _make_dir(repos, _LEAK_BILLING_DIR)
+        credentialed = _make_dir(repos, _LEAK_CREDENTIALED_DIR)
         review_user = _user_prompt(1, _LEAK_USER_MESSAGE, day=_FIRST_DAY, cwd=widgets)
         invocation = _skill_invocation(2, args=_LEAK_SKILL_ARGS, cwd=widgets, day=_FIRST_DAY)
         acquire = _bash_record(3, f"{_LEAK_COMMAND_PATH}/review-pr-acquire.sh acme/widgets#99", cwd=widgets, day=_FIRST_DAY)
@@ -5623,6 +5630,22 @@ class TestNothingIdentifyingLeaks:
         }
         for dir_name, records in sessions.items():
             _write_session(projects, dir_name, records)
+        # Each link targets its own directory so that resolved-path dedup skips neither.
+        linked_project_target = tmp_path / _LEAK_LINKED_PROJECT_TARGET_DIR
+        _write_session(
+            tmp_path,
+            _LEAK_LINKED_PROJECT_TARGET_DIR,
+            [_hand_priced(1, 1, day=_FIRST_DAY, branch="feature-x", cwd=widgets)],
+            session_id=_LEAK_LINKED_PROJECT_TARGET_STEM,
+        )
+        (projects / _LEAK_LINKED_PROJECT_DIR).symlink_to(linked_project_target, target_is_directory=True)
+        linked_transcript_target = _write_session(
+            tmp_path,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_DIR,
+            [_hand_priced(1, 1, day=_FIRST_DAY, branch="feature-x", cwd=widgets)],
+            session_id=_LEAK_LINKED_TRANSCRIPT_TARGET_STEM,
+        )
+        (projects / f"{_LEAK_PROJECT_DIR}-1" / f"{_LEAK_LINKED_TRANSCRIPT}.jsonl").symlink_to(linked_transcript_target)
         origins = {
             widgets: "https://github.com/acme/widgets.git",
             billing: "https://github.com/acme/billing-api.git",
@@ -5637,14 +5660,25 @@ class TestNothingIdentifyingLeaks:
             "failures": {_BILLING_REPO: f"HTTP 502\n{_LEAK_STDERR_SENTINEL}\n"},
         }
 
-    def _sentinels(self, tmp_path, account) -> list[str]:
+    @staticmethod
+    def _sentinels(tmp_path, account) -> list[str]:
         return [
             str(tmp_path),
             str(account["config"]),
             _LEAK_CONFIG_DIR,
             f"{_LEAK_PROJECT_DIR}-1",
             f"{_LEAK_PROJECT_DIR}-2",
+            f"{_LEAK_PROJECT_DIR}-3",
+            f"{_LEAK_PROJECT_DIR}-4",
             _LEAK_CHECKOUT_DIR,
+            _LEAK_BILLING_DIR,
+            _LEAK_CREDENTIALED_DIR,
+            _LEAK_LINKED_PROJECT_DIR,
+            _LEAK_LINKED_PROJECT_TARGET_DIR,
+            _LEAK_LINKED_PROJECT_TARGET_STEM,
+            _LEAK_LINKED_TRANSCRIPT,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_DIR,
+            _LEAK_LINKED_TRANSCRIPT_TARGET_STEM,
             _LEAK_SECRET,
             _LEAK_USER,
             _LEAK_STDERR_SENTINEL,
@@ -5659,6 +5693,9 @@ class TestNothingIdentifyingLeaks:
             [path.read_text() for path in account["projects"].glob("*/*.jsonl")]
             + list(account["origins"].values())
             + [str(path) for path in account["projects"].glob("*")]
+            + [str(path) for path in account["projects"].glob("*/*.jsonl")]
+            + [str(path.resolve()) for path in account["projects"].glob("*")]
+            + [str(path.resolve()) for path in account["projects"].glob("*/*.jsonl")]
             + list(account["failures"].values()),
         )
 

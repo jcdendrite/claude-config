@@ -17,7 +17,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Now a session is attributed to the root it is listed under, as in a single-root run.
   - A project directory listed under two scan roots is read once and attributed to whichever root is scanned first.
   - The active profile is scanned first, so that attribution can change with the invoking profile.
-  - A project directory or transcript file linked from one scan root into another scan root's tree is now attributed to the listing root, where it used to go to the target's root. Per-account figures for that layout from earlier runs will not reproduce.
+  - A transcript file linked from one scan root into another scan root's tree is now attributed to the listing root, where it used to go to the target's root.
+  - A project directory linked the same way goes to whichever of the two roots is scanned first, so it moves to the listing root only when that root is scanned first.
+  - Per-account figures for either layout from earlier runs may not reproduce.
   - `period-cost` still prices a symlinked transcript once. Only `period-cost` dedups by resolved transcript path, so `review-round-cost` can read one twice.
   - `period-cost` prints the count of transcripts resolving outside the account's projects directory in its `SCOPE` line, and adds a report note when it is non-zero. The account-scope note then drops its sentence "Other accounts and other people's work are not included." The count is measured against the resolved projects directory, so a link at the projects directory or above it is neither counted nor gated. See `docs/transcript-analysis.md` § "period-cost".
   - The `/period-cost-report` skill now withholds the report, when the outside-root count is non-zero, until the engineer confirms every link target holds only this account's sessions. A no or an "I don't know" means do not send. The answer is the engineer's own word, not a check. A confirmed in-session `NO ACTIVITY` run skips this question, because that report names no repositories and shows no figures.
