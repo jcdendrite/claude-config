@@ -4148,16 +4148,15 @@ def test_routing_gate_design_record_cites_routing_guard_section() -> None:
     "pr_cost_heading",
     ["Data", "Residual replication paths the git-tree check doesn't close"],
 )
-def test_routing_guard_section_cites_real_pr_cost_headings(pr_cost_heading: str) -> None:
-    """docs/transcript-analysis.md's `routing-guard` section cites
-    `docs/pr-cost.md` § "Data" and § "Residual replication paths the git-tree
-    check doesn't close" for the capture store's rules — each resolves to a
-    real heading there.
+def test_transcript_analysis_doc_cites_real_pr_cost_headings(pr_cost_heading: str) -> None:
+    """docs/transcript-analysis.md cites `docs/pr-cost.md` § "Data" and
+    § "Residual replication paths the git-tree check doesn't close" somewhere
+    — each resolves to a real heading there.
 
-    The section defers to pr-cost's ledger rules instead of restating them,
-    and docs/*.md sits outside the generic skill-citation sweep, so a
-    heading rename in docs/pr-cost.md would otherwise orphan the pointer
-    with no reader-visible symptom.
+    The doc defers to pr-cost's ledger rules instead of restating them, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename in docs/pr-cost.md would otherwise orphan the pointer with no
+    reader-visible symptom.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / "docs" / "transcript-analysis.md",

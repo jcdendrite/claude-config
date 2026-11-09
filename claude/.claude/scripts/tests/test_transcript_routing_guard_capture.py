@@ -1159,7 +1159,7 @@ class TestLoops:
         assert _round_counts_per_loop(assembled_loops) == [2]
         assert [loop.growth_tokens for loop in assembled_loops[0]] == [None]
 
-    def test_assemble_loops_orders_by_time_then_session_then_open_index(self):
+    def test_assemble_loops_breaks_an_equal_timestamp_tie_by_session(self):
         rounds = [
             _round_facts(session_key="b", open_idx=0, open_ts=5.0, has_marker_write=True),
             _round_facts(session_key="a", open_idx=3, open_ts=5.0),
