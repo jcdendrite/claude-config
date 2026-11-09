@@ -24,7 +24,7 @@ The global `test-conventions` skill defines how tests should be written. The glo
 
 **Wrong-layer tests** — component test asserting a reducer's math belongs in a unit test; HTTP integration test asserting auth-policy belongs in a contract/policy test.
 
-**Contract tests at service boundaries** — when modules talk across a boundary (HTTP, RPC, queue, library API), is there a test pinning the contract independent of both sides' implementation? Cite `test-evaluation` §2.
+**Contract tests at service boundaries** — when modules talk across a boundary (HTTP, RPC, queue, library API), is there a test pinning the contract independent of both sides' implementation? Cite `test-conventions` §7.
 
 **Regression-test intent** — every test should answer "what bug does this guard against?" If not specific, the test is decorative. Cite `test-conventions` §5.
 

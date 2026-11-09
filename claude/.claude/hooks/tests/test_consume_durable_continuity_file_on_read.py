@@ -15,6 +15,7 @@ from helpers import (
     SCRIPTS_DIR,
     agent_input,
     assert_cap_engaged,
+    code_span_command,
     install_resume_context_script,
     read_input,
     run_hook,
@@ -131,6 +132,7 @@ class TestConsumeDurableContinuityFileOnRead:
         dest = str(moved[0])
         payload = json.loads(result.stdout)
         assert dest in payload["systemMessage"]
+        assert code_span_command(payload["systemMessage"]) == f"claude --append-system-prompt-file {dest}"
         assert payload["hookSpecificOutput"]["hookEventName"] == _registered_post_tool_use_event_name()
         assert dest in payload["hookSpecificOutput"]["additionalContext"]
         if rel_path.startswith(".claude/briefs/"):
@@ -416,6 +418,7 @@ class TestConsumeDurableContinuityFileOnRead:
         dest = str(moved[0])
         payload = json.loads(result.stdout)
         assert dest in payload["systemMessage"]
+        assert code_span_command(payload["systemMessage"]) == f"claude --append-system-prompt-file {dest}"
         assert dest in payload["hookSpecificOutput"]["additionalContext"]
 
     # -----------------------------------------------------------------------

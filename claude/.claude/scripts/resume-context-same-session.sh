@@ -76,10 +76,8 @@ stop_nothing_pending() {
 # collect_pending: fills PENDING, PENDING_COUNT and SKIPPED_UNPRINTABLE.
 collect_pending() {
   local path
-  for path in "$CONFIG_DIR"/handoffs/*-handoff.md "$CONFIG_DIR"/briefs/*-task.md; do
-    if [ ! -f "$path" ] || [ -L "$path" ]; then
-      continue
-    fi
+  _lib_collect_pending_continuity_files "$CONFIG_DIR"
+  for path in "${_LIB_PENDING_CONTINUITY_FILES[@]}"; do
     if _lib_passes_path_char_allowlist "$path"; then
       PENDING="$PENDING$path"$'\n'
       PENDING_COUNT=$((PENDING_COUNT + 1))
@@ -211,6 +209,7 @@ has_usable_target() {
   [ -n "$1" ] && [ "$1" != "$_LIB_RESUME_CWD_UNUSABLE" ]
 }
 
+# A file-sourced --cwd may name any directory made of allowlisted bytes, and the command printed on the SHELL_COMMAND: and CANDIDATE: lines carries it without this script having checked the directory.
 shell_command() {
   if has_usable_target "$2"; then
     printf 'resume-context --cwd %s %s' "$2" "$1"
@@ -366,12 +365,17 @@ resume_without_argument() {
 
 # resume_with_argument ARG: loads the one pending file ARG names exactly.
 resume_with_argument() {
-  local arg="$1" file name matches="" match_count=0
+  local arg="$1" file name matches="" match_count=0 match_slug=1
+  # An argument that is already a full file name is never also a slug, so `x-handoff.md` cannot match `x-handoff.md-handoff.md`.
+  # These suffixes are a glob copy: see "Paired glob sites" in announce-resume-command.sh.
+  case "$arg" in
+    *-handoff.md | *-task.md) match_slug=0 ;;
+  esac
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     name="${file##*/}"
     if [ "$file" = "$arg" ] || [ "$name" = "$arg" ] \
-      || [ "$name" = "$arg-handoff.md" ] || [ "$name" = "$arg-task.md" ]; then
+      || { [ "$match_slug" -eq 1 ] && { [ "$name" = "$arg-handoff.md" ] || [ "$name" = "$arg-task.md" ]; }; }; then
       matches="$matches$file"$'\n'
       match_count=$((match_count + 1))
     fi
