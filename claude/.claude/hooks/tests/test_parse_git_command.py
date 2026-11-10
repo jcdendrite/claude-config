@@ -19,10 +19,13 @@ code contract that only a real subprocess invocation can verify.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 
 from helpers import HOOKS_DIR
+
+from ._lib_sh_helpers import _run_lib_call
 
 PARSER_PATH = HOOKS_DIR / "parse-git-command.py"
 
@@ -250,6 +253,15 @@ class TestGlobalFlags:
         assert parse('git "status\nCD\t/some/real/worktree\t;\t0"') == [
             rec("SENTINEL", "could not determine the git subcommand")
         ]
+
+    def test_value_flag_set_matches_lib_sh_global_value_flags(self):
+        """The parser keeps its own copy of the list, so a flag added to only one copy misreads a value as the subcommand."""
+        printed_flags = _run_lib_call(
+            'printf "%s\\n" "${_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}"', dict(os.environ)
+        )
+        assert printed_flags.returncode == 0, printed_flags.stderr
+        assert printed_flags.stdout.split(), "_LIB_GIT_GLOBAL_VALUE_FLAGS empty or undefined in _lib.sh"
+        assert set(printed_flags.stdout.split()) == _parse_git_command.GIT_FLAGS_WITH_ARG
 
 
 class TestWrappersAndChains:

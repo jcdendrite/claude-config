@@ -30,6 +30,11 @@ STOP_HOOK = HOOKS_DIR / "advance-past-commit-stall.sh"
 
 STOP_ASK = "Want me to commit this?"
 
+# Not a default-branch name, and not "feature", which add_linked_worktree and the checkout in
+# "tracked-optout-deleted-on-the-checked-out-branch" both create. The Stop hook stays silent on the
+# default branch, so a denied scenario on "main" would be denied for its branch, not its root.
+SCENARIO_BRANCH = "shipping-work"
+
 
 @dataclass
 class Scenario:
@@ -68,7 +73,7 @@ def _write_machine_config(armed_home: Path, content: str) -> None:
 
 def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: Path) -> Scenario:
     """Builds the filesystem for one named case. The cases with `granted` true are the allow controls for the rest."""
-    repo = init_git_repo_with_commit(tmp_path / "shipping-repo", branch="main")
+    repo = init_git_repo_with_commit(tmp_path / "shipping-repo", branch=SCENARIO_BRANCH)
     no_env: dict[str, str] = {}
 
     if name == "repo-root":
@@ -85,16 +90,16 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
         return Scenario(str(linked), non_repo_dir, True, no_env)
     if name == "repo-beneath-home":
         # Nearly every real repo lives under HOME, so a rule that denied any root under HOME would disable the feature.
-        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch=SCENARIO_BRANCH)
         _make_dirty(repo_beneath_home)
         return Scenario(str(repo_beneath_home), non_repo_dir, True, no_env)
     if name == "nested-own-repo-beneath-a-home-rooted-work-tree":
-        init_git_repo_with_commit(armed_home, branch="main")
-        nested_repo = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        init_git_repo_with_commit(armed_home, branch=SCENARIO_BRANCH)
+        nested_repo = init_git_repo_with_commit(armed_home / "projects" / "repo", branch=SCENARIO_BRANCH)
         _make_dirty(nested_repo)
         return Scenario(str(nested_repo), non_repo_dir, True, no_env)
     if name == "symlinked-cwd-to-a-repo-beneath-home":
-        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch="main")
+        repo_beneath_home = init_git_repo_with_commit(armed_home / "projects" / "repo", branch=SCENARIO_BRANCH)
         _make_dirty(repo_beneath_home)
         cwd_link = tmp_path / "repo-link"
         cwd_link.symlink_to(repo_beneath_home, target_is_directory=True)
@@ -108,7 +113,7 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
     if name == "space-and-non-ascii-in-the-repo-path":
         try:
             repo_with_awkward_name = init_git_repo_with_commit(
-                tmp_path / "projects with space" / "répo ünï", branch="main"
+                tmp_path / "projects with space" / "répo ünï", branch=SCENARIO_BRANCH
             )
         except (OSError, UnicodeError) as error:
             pytest.skip(f"filesystem rejects a space and non-ASCII path: {error}")
@@ -151,17 +156,17 @@ def _build_scenario(name: str, armed_home: Path, tmp_path: Path, non_repo_dir: P
         _make_dirty(repo)
         return Scenario(str(repo), non_repo_dir, False, no_env)
     if name == "root-equal-to-home":
-        init_git_repo_with_commit(armed_home, branch="main")
+        init_git_repo_with_commit(armed_home, branch=SCENARIO_BRANCH)
         _make_dirty(armed_home)
         return Scenario(str(armed_home), non_repo_dir, False, no_env)
     if name == "project-below-a-home-rooted-repo":
-        init_git_repo_with_commit(armed_home, branch="main")
+        init_git_repo_with_commit(armed_home, branch=SCENARIO_BRANCH)
         _make_dirty(armed_home)
         project_below_home = armed_home / "project"
         project_below_home.mkdir()
         return Scenario(str(project_below_home), non_repo_dir, False, no_env)
     if name == "root-is-an-ancestor-of-home":
-        init_git_repo_with_commit(tmp_path, branch="main")
+        init_git_repo_with_commit(tmp_path, branch=SCENARIO_BRANCH)
         _make_dirty(tmp_path)
         return Scenario(str(armed_home), non_repo_dir, False, no_env)
     if name == "empty-home":

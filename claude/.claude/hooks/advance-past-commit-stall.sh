@@ -4,7 +4,9 @@
 # stall (GH-526), in repos where the engineer has opted in to autonomous
 # shipping. Fires only on a session (never a subagent) whose last message
 # asks permission to commit/push/open a PR while work is pending, in a repo
-# where _lib_autonomous_shipping_active holds.
+# where _lib_autonomous_shipping_active holds and HEAD is on a non-default
+# branch (_lib_head_detached_or_default). The default branch and a detached
+# HEAD stay silent, because the forced continuation would ship from them.
 #
 # Dispatch: matcher-less Stop (per Anthropic's docs, Stop has no matcher
 # support). Fail-silent posture throughout — this hook must never emit a
@@ -36,7 +38,7 @@
 # - The predicate requires a question construction; a silent (non-question)
 #   stall is not caught here.
 # - _lib_capped's timeout(1) fallback is a no-op on stock macOS without GNU
-#   coreutils, so the three git calls below are unbounded there.
+#   coreutils, so the git calls below are unbounded there.
 # - This hook does not gate a git operation, so --dry-run/default-branch
 #   bypass shapes from the push-gate arm are irrelevant here.
 # - STATE_FILE's write-then-read-back race is untested: assumes Stop fires
@@ -229,6 +231,13 @@ _commit_stall_work_pending() {
 }
 
 _commit_stall_work_pending "$REPO_ROOT" || exit 0
+
+# 11. Only status 1 (a non-default branch) fires. Status 0 (detached or default)
+# and status 2 (git could not read HEAD) stay silent. See
+# _lib_head_detached_or_default for how the default branch is resolved.
+HEAD_BRANCH_STATUS=0
+_lib_head_detached_or_default "$REPO_ROOT" >/dev/null || HEAD_BRANCH_STATUS=$?
+[ "$HEAD_BRANCH_STATUS" -eq 1 ] || exit 0
 
 # Fire. Write state, read it back, and emit block only if it holds the
 # current prompt_id — a write failure (read-only $HOME, full disk) must not

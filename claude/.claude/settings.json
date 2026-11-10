@@ -376,6 +376,12 @@
           },
           {
             "type": "command",
+            "command": "~/.claude/hooks/deny-default-branch-push.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking push destination..."
+          },
+          {
+            "type": "command",
             "command": "~/.claude/hooks/deny-pii-in-commits.sh",
             "onFailure": "block",
             "statusMessage": "Scanning for PII/PHI..."

@@ -828,23 +828,11 @@ to hold PII/PHI or live credentials:
   - Also open, and failing open: the masker is a character-level quote scanner,
     not a bash tokenizer, so a shape it mis-scans can drop a real second commit
     fragment from arm 2's count. `_lib_mask_shell_quotes`'s header in `_lib.sh`
-    lists the limits once as a class; two worked cases follow.
+    lists the limits once as a class; one worked case follows.
   - `git commit -m x && echo \" && git commit -m y && echo \"` is allowed
     (backslash escapes are not modeled): bash runs both commits, but the masker
     treats the `\"` pair as a span the shell never sees and blanks the second
     commit.
-  - BSD/macOS awk splits the command at each blank line, which breaks the
-    masker's quote tracking (mechanism in the `_lib.sh` header). Neither case
-    below needs deliberate obfuscation, only a blank line, which is routine in
-    multi-paragraph command text.
-    - `true<blank line>git commit -m x && git commit -m y` is allowed, because
-      the blank line is deleted and the tokens on each side fuse, while the
-      same command with a single newline is denied.
-    - `git commit -m "para1<blank line>para2" && git commit -m "y"` is
-      allowed, because the masked text becomes `git commit -m
-      "para1para2""y"`, while the same command with a single newline is
-      denied.
-  - Only awk 20200816 was checked for the BSD/macOS-awk cases.
 - `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:
   `_lib_mask_shell_quotes` blanks any quoted span whose interior contains
   whitespace or a shell operator, so a real `git commit` invoked inside a

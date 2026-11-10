@@ -6,6 +6,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
+  - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
+  - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
+  - For a command without a 0x01 byte, GNU awk read the whole command as one record before, so its verdicts do not change. A command carrying a 0x01 byte is now split at it, an accepted limit listed in `_lib_mask_shell_quotes`' Limits.
+  - The change is live on `git pull`.
+- **The commit-stall Stop hook (`advance-past-commit-stall.sh`) no longer forces a continuation on the default branch or a detached HEAD.**
+  - **Why:** the forced continuation commits and pushes, and from those states the push would land on a protected branch.
+  - **What it reads:** the shared `_lib_head_detached_or_default` in `_lib.sh`, the same default-branch test `_lib_review_ledger_path` already applied. It fires only on a non-default branch, and a git failure while reading HEAD stays silent.
+  - **Rename:** `_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES` is now `_LIB_DEFAULT_BRANCH_FALLBACK_NAMES`. The review ledger's scoping is unchanged, except that a branch whose name a tag shares now keys on the branch name without the `heads/` prefix, so it no longer matches the round-3 gate's key for that name.
+  - The change is live on `git pull`.
 - **`comment-discipline-reviewer` now lists the fields its dispatch prompt may carry, and follows its own scope when a prompt contradicts it.**
   - Its `## Input contract` marks each field derived, free-form or fixed. When prompt text names sites, a scope or an exclusion its file contradicts, it follows its file and names the text it set aside.
   - `/code-review` and `/plan-review` name its fields and cite that section. `/code-review` no longer sends it a diff scope, a specific question or the declaration block.
@@ -544,6 +554,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **A new PreToolUse gate, `deny-default-branch-push.sh`, denies an agent push whose destination is a protected branch.**
+  - **Protected set:** the branch `refs/remotes/<remote>/HEAD` names, plus `main` and `master`, plus `develop` when that HEAD does not resolve. It also denies a push whose destination it cannot resolve, and a mutating `gh api` call to a `contents`, `git/refs` or `merges` endpoint. `git push --dry-run` passes.
+  - **Limits:** wrapped, scripted and HTTP pushes pass, so server-side branch protection stays the barrier against them. The hook header lists the Known gaps and the accepted over-denials.
+  - **Re-run `./install.sh` from a separate terminal after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the gate is registered but not linked, and every Bash call blocks.
+  - **Plugin:** the `skill-management` plugin's patch bump, 5.0.1 to 5.0.2, comes from the shared `_LIB_GIT_GLOBAL_VALUE_FLAGS` constant its `_lib.sh` now carries. The stowed and plugin copies of that constant must match, and a test pins it. The change alters no behavior, so updating the installed plugin is optional.
 - **`cleanup-merged-branches.sh --list-removable` prints one tab-separated `<main worktree path> <branch> <worktree path>` line per Tier A worktree a real run would remove, and exits 1 when it could not evaluate a candidate. The `--dry-run` tags, the real run's lock line and its re-lock after a refused removal change with it.**
   - It removes nothing but runs the same `git fetch` and `git remote set-head` as `--dry-run`, and it is not auto-approved. It cannot be combined with `--dry-run`: the pair exits 2.
   - A failed `gh` lookup, an unverifiable idle state, a worktree without a `.git`, a failed `git status`, `git rev-parse` or `git submodule status`, or a tab in a path leaves the branch out of the list with a stderr line naming the branch and exits 1. A failed up-front `git worktree list` exits 1 before any line, with a stderr line that names no branch. Discard the list on a nonzero exit. Under `--all-projects` the `== <repo> ==` banner goes to stderr, so stdout stays list lines only.

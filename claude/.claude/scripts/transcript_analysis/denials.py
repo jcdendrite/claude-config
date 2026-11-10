@@ -156,6 +156,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "review-orchestrator routing",  # require-review-orchestrator-routing.sh
     "plan-writer-scope",  # deny-plan-writer-off-plan-writes.sh
     "diff-size",  # require-diff-size-prompt.sh
+    "default-branch-push",  # deny-default-branch-push.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts

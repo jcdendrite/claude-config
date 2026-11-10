@@ -14,8 +14,8 @@
 # _lib_extract_git_subcmd_args, _lib_fragment_concludes_commit_shape,
 # _lib_command_concludes_commit_shape, and
 # _lib_command_concludes_marker_gated_commit, plus the
-# _LIB_CONTINUE_VERBS_MARKER_GATED assignment. No worktree-enforcement
-# helpers.
+# _LIB_CONTINUE_VERBS_MARKER_GATED and _LIB_GIT_GLOBAL_VALUE_FLAGS
+# assignments. No worktree-enforcement helpers.
 #
 # _lib_config_dir must stay byte-identical to the same function in the
 # stowed claude/.claude/hooks/_lib.sh. _marker_lib_repo_hash instead needs
@@ -41,6 +41,9 @@
 # and _LIB_CONTINUE_VERBS_MARKER_GATED carry the same contract against the
 # stowed copy, so this gate and the stowed code-review gate cannot drift
 # apart on which commit-concluding commands they recognize.
+# The stowed and plugin copies of _LIB_GIT_GLOBAL_VALUE_FLAGS must hold the
+# same flags; test_require_skill_review.py pins it. Updating the installed
+# plugin is optional for a consumer when the change alters no behavior.
 
 # A plugin cannot source across the plugin boundary, so this block duplicates claude/.claude/hooks/_config.sh's.
 # test_bash_floor.py pins the copies together.
@@ -691,6 +694,10 @@ _lib_fragment_invokes_git() {
   $found
 }
 
+# The git 2.43 global flags that take a separate-word value. A later git
+# version adding another needs this list updated by hand.
+_LIB_GIT_GLOBAL_VALUE_FLAGS=(-C -c --git-dir --work-tree --namespace --super-prefix --config-env --attr-source)
+
 # Print a git fragment's argv from the subcommand onward, one word per line.
 # Walks to the `git` command word, then consumes git's global flags and the
 # values the value-taking ones absorb. The first line is the subcommand; each
@@ -703,7 +710,7 @@ _lib_git_argv_from_subcmd() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  local past_git=false skip_next=false past_subcmd=false word
+  local past_git=false skip_next=false past_subcmd=false word flag takes_value
   for word in $fragment; do
     if $past_subcmd; then
       printf '%s\n' "$word"
@@ -716,11 +723,15 @@ _lib_git_argv_from_subcmd() {
       continue
     fi
     if $skip_next; then skip_next=false; continue; fi
+    takes_value=false
+    for flag in "${_LIB_GIT_GLOBAL_VALUE_FLAGS[@]}"; do
+      if [[ "$word" == "$flag" ]]; then takes_value=true; break; fi
+    done
+    if $takes_value; then
+      skip_next=true
+      continue
+    fi
     case "$word" in
-      # The git 2.43 global flags that take a separate-word value. A later git
-      # version adding another needs this list updated by hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
-        skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
     esac

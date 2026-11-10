@@ -14,7 +14,7 @@ import shutil
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without
+from helpers import AWK_MATRIX_NAMES, HOOKS_DIR, awk_first_on_path_env, build_path_without
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 BASH = shutil.which("bash")
@@ -172,6 +172,43 @@ class TestLibMaskShellQuotes:
 
     def test_span_with_embedded_newline_is_scanned_as_one_span(self):
         assert _mask_shell_quotes('-m "line1\ngit commit"').stdout == '-m ""'
+
+    @pytest.mark.parametrize("awk_name", AWK_MATRIX_NAMES)
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "# publish\n\ngit push origin main\n",
+            "true\n\n\ngit commit -m x && git commit -m y",
+        ],
+        ids=["push-after-a-comment", "commit-after-two-blank-lines"],
+    )
+    def test_unquoted_blank_line_is_preserved_so_the_next_paragraph_keeps_its_own_line(
+        self, tmp_path, text, awk_name
+    ):
+        """BSD/macOS awk reads a NUL `RS` as paragraph mode, which deletes an unquoted blank line and fuses the tokens
+        on each side, so a push or commit starting a paragraph would lose its command word.
+
+        Runs under every awk installed, because only BSD awk tells `"\\0"` from SOH.
+        """
+        env = awk_first_on_path_env(tmp_path / "awk-shim-dir", awk_name)
+        assert _mask_shell_quotes(text, env=env).stdout == text
+
+    @pytest.mark.parametrize("awk_name", AWK_MATRIX_NAMES)
+    def test_blank_line_inside_a_quoted_span_does_not_reset_quote_state(self, tmp_path, awk_name):
+        """A blank line inside a quoted span must not end the span's record: parity stays correct for the rest of the
+        command, so a later quoted mention is blanked and a later real command stays visible.
+
+        Runs under every awk installed, because only BSD awk splits the record at a blank line.
+        """
+        env = awk_first_on_path_env(tmp_path / "awk-shim-dir", awk_name)
+        text = 'git commit -m "title\n\nbody" && git push origin HEAD:main && echo "done now"'
+        assert _mask_shell_quotes(text, env=env).stdout == 'git commit -m "" && git push origin HEAD:main && echo ""'
+
+    def test_literal_soh_byte_in_a_quoted_span_hides_a_later_push_known_limit(self):
+        """Pins the accepted limit in the masker's Limits comment: a literal 0x01 byte ends the record and resets
+        quote state, so the later `git push` lands inside a span the shell never opened and is masked away."""
+        masked = _mask_shell_quotes('echo "x\x01"; git push origin main; echo "y"').stdout
+        assert masked == 'echo "x""y"'
 
     def test_multibyte_span_blanks_to_its_delimiter_pair(self):
         assert _mask_shell_quotes('-m "café && x"').stdout == '-m ""'

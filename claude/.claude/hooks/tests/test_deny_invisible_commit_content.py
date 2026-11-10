@@ -12,12 +12,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 from helpers import (
     HOOKS_DIR,
     LARGE_MULTILINE_TAIL,
     MASK_SAFE_MULTILINE_TAIL,
+    SYSTEM_AWK_NAME,
+    awk_first_on_path_env,
     bash_input,
     build_path_without,
     read_input,
@@ -126,6 +129,25 @@ class TestDenyInvisibleCommitContent:
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git commit -m x && git commit -a --amend --no-edit"),
+        ) == "deny"
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin" or SYSTEM_AWK_NAME is None,
+        reason="forces BSD/macOS awk's paragraph-mode reading of `RS = \"\\0\"`, which only Darwin's /usr/bin/awk has",
+    )
+    def test_two_chained_commits_after_a_blank_line_in_the_message_denied_on_the_bsd_awk(self, tmp_path):
+        """A blank line inside the first commit's quoted message must not hide a second commit that carries a quote.
+
+        BSD/macOS awk reads a NUL `RS` as paragraph mode, which resets quote state at the blank line, so the second
+        commit's quote would flip the parity and mask the second `git commit`. The tail's quote is what makes this
+        input discriminate: without it the commit stays visible whatever the separator. `/usr/bin/awk` is forced
+        ahead of any other awk, because only BSD awk tells SOH from NUL and CI runs a non-BSD awk.
+        """
+        extra_env = awk_first_on_path_env(tmp_path / "bsd-awk-bin", SYSTEM_AWK_NAME)
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m "para1\n\npara2" && git commit -m "c"'),
+            extra_env=extra_env,
         ) == "deny"
 
     def test_multi_invocation_deny_separates_labels_with_comma_and_space(self):

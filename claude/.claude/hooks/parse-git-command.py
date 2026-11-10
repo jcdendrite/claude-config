@@ -67,7 +67,7 @@ import shlex
 import sys
 
 # Global flags that consume the next word. Mirrors the value-taking global-flag
-# list in `_lib.sh`'s `_lib_git_argv_from_subcmd`; keep the two in step.
+# list `_LIB_GIT_GLOBAL_VALUE_FLAGS` in `_lib.sh`; keep the two in step.
 # Deliberately duplicated, not shared — see require-worktree-for-git-writes.sh's
 # "Scope boundary" header section for the named two-parsers-coexist exception.
 GIT_FLAGS_WITH_ARG = {

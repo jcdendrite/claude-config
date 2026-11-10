@@ -275,9 +275,10 @@ def git_timeout_shim(tmp_path):
     (e.g. a `-C <dir>` prefix shifts every position) and must be re-audited
     whenever that call site's argv shape changes.
 
-    Skips when `git` is absent, or when neither `timeout(1)` nor
-    `gtimeout(1)` is available (stock macOS ships neither without Homebrew
-    coreutils).
+    Skips when `git` is absent. `install` also skips when neither
+    `timeout(1)` nor `gtimeout(1)` is available (stock macOS ships neither
+    without Homebrew coreutils), except with `exit_status`, which never
+    engages the cap.
 
     The PATH dict is built inside `install`, not at fixture setup, so it
     reads `os.environ["PATH"]` at the test's own call time. A caller that
@@ -308,8 +309,6 @@ def git_timeout_shim(tmp_path):
     real_git = shutil.which("git")
     if not real_git:
         pytest.skip("git not found in PATH")
-    if not shutil.which("timeout") and not shutil.which("gtimeout"):
-        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
     def install(
         match_condition: str,
@@ -318,6 +317,8 @@ def git_timeout_shim(tmp_path):
         sigterm_immune: bool = False,
         exit_status: int | None = None,
     ) -> dict[str, str]:
+        if exit_status is None and not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         if sigterm_immune and not _real_timeout_is_gnu_coreutils():
             pytest.skip("scaled sub-second -k grace is truncated to 0 by a non-GNU timeout, so SIGKILL never fires")
         _write_conditional_sleep_shim(
