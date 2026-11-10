@@ -539,6 +539,56 @@ naming pattern is itself sensitive. Treat them as sensitive artifacts:
   belt-and-suspenders entries for all four in case one is created in the
   wrong place by mistake.
 
+## Required server-side branch protection
+
+Configure the default branch so that direct pushes are blocked for the credential the agent uses, with no bypass for administrators or that credential:
+
+- A branch protection rule that requires a pull request with at least one approving review, has "Do not allow bypassing the above settings" (`enforce_admins`) on, and allows the credential no pull-request bypass.
+- Or a repository ruleset that targets the default branch, requires a pull request with at least one approving review and lists no bypass actor for the credential.
+
+Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
+Block force pushes and branch deletion on the default branch as well.
+
+The approving review is a requirement because the gate does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
+The agent's credential must not be able to supply the approval.
+
+Give the agent a credential without repository-administration rights.
+`deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
+
+Restrict the scope of any repository secret that can push to the default branch or deploy.
+The gate allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
+
+The gate reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The hook header's Known gaps list them, so protection on the remote is the only barrier for steered input.
+
+Where the host or plan offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.
+Give the agent a credential that cannot push to that repository, or treat its pushes as unprotected and do not rely on the gate.
+
+Check a branch protection rule with `gh api repos/<owner>/<repo>/branches/<default>/protection`, and expect:
+- `enforce_admins.enabled` true.
+- Required pull-request reviews with an approving-review count of at least one.
+- No pull-request bypass allowance for the credential.
+- Stale-approval dismissal on, or approval of the most recent push required.
+- Force pushes and deletions both disallowed.
+
+Check rulesets by listing them with `gh api repos/<owner>/<repo>/rulesets`, then inspect each ruleset individually with `gh api repos/<owner>/<repo>/rulesets/<id>`. Expect:
+- `enforcement` set to `active`.
+- A target that includes the default branch.
+- A pull-request rule requiring at least one approving review, with stale-approval dismissal on push or approval of the most recent push required.
+- A rule blocking force pushes and a rule blocking deletion.
+- No bypass actor for the credential.
+
+Confirm any of these that the API output does not show in the repository settings page.
+
+Run these protection reads with the engineer's own credential, not the agent's. The agent's credential is the one the protection must bind and holds no repository-administration rights, so the reads may be refused to it or show less than the full configuration.
+
+Then verify the three credential properties the rules above depend on:
+- **No administration rights.** In the repository's collaborator and permission settings, confirm the agent's account holds a role below administrator, is on no bypass list and owns no token or app installation with administration scope.
+- **Cannot supply the approval.** Open a pull request from a throwaway branch with the agent's credential. Confirm it stays blocked from merging while the agent's account is the only one that has reviewed it.
+- **Solo owner.** When the engineer is the only reviewer, the rule must still require an approval that the agent's credential cannot give.
+  - The agent needs an account of its own, separate from the engineer's, so that the engineer can approve its pull requests.
+  - If the agent runs on the engineer's own credential, no approval comes from a different account, so the rule is satisfied only by a bypass for the engineer's account, which the agent's credential holds too.
+  - Confirm the rule lists no bypass actor that the agent's credential can act as.
+
 ## Audit checklist
 
 The hooks guard the commit, `Bash`, and `Read`/tool-result surfaces. A full

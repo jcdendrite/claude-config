@@ -43,7 +43,7 @@
 # pattern would miss aliased and dashed push forms.
 # Per-fire cost exceeds the <100ms budget (plugins/claude-hook-review/skills/claude-hook-review/SKILL.md § "7. Performance budget") and grows with the command's line count, an exceedance accepted here.
 #
-# Server-side branch protection (docs/hooks.md § "Required server-side protection") is the only barrier for every gap below.
+# Server-side branch protection (docs/security-hardening.md § "Required server-side branch protection") is the only barrier for every gap below.
 #
 # Known gaps accepted on GH-1407:
 #   - A push from a script file the agent writes.
@@ -126,10 +126,6 @@
 #     The gate denies `HEAD^{commit}` too: the shell leaves it alone, but the gate cannot tell a rewritten word from a literal one.
 #   - A `gh api` read of a ref-moving endpoint beside a body flag or write method anywhere in the same command, because `_lib_gh_api_call_is_mutating` reads the whole stripped command.
 #     Examples are `gh api -X GET … -f key=value`, `gh api … && rm -f scratch.txt` and `gh api … | grep -F text`.
-#
-# Where `~/.claude/hooks` is a real directory, a `git pull` leaves this file
-# unlinked while settings.json already registers it, and every Bash call then
-# blocks. See docs/hooks.md § "Gate deadlock recovery".
 
 set -uo pipefail
 
