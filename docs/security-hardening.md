@@ -541,6 +541,8 @@ naming pattern is itself sensitive. Treat them as sensitive artifacts:
 
 ## Required server-side branch protection
 
+This section backstops the `deny-default-branch-push.sh` hook at `claude/.claude/hooks/deny-default-branch-push.sh` (see [`hooks.md`](hooks.md) for its entry).
+
 Configure the default branch so that direct pushes are blocked for the credential the agent uses, with no bypass for administrators or that credential:
 
 - A branch protection rule that requires a pull request with at least one approving review, has "Do not allow bypassing the above settings" (`enforce_admins`) on, and allows the credential no pull-request bypass.
@@ -549,19 +551,19 @@ Configure the default branch so that direct pushes are blocked for the credentia
 Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
 Block force pushes and branch deletion on the default branch as well.
 
-The approving review is a requirement because the gate does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
+The approving review is a requirement because `deny-default-branch-push.sh` does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
 The agent's credential must not be able to supply the approval.
 
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
 Restrict the scope of any repository secret that can push to the default branch or deploy.
-The gate allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
+The hook allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
 
-The gate reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The hook header's Known gaps list them, so protection on the remote is the only barrier for steered input.
+The hook reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The Known gaps in its header list them, so protection on the remote is the only barrier for steered input.
 
-Where the host or plan offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.
-Give the agent a credential that cannot push to that repository, or treat its pushes as unprotected and do not rely on the gate.
+Where the host or plan offers no branch protection for the repository, the hook is the only control and every Known gap in its header is open.
+Give the agent a credential that cannot push to that repository, or treat its pushes as unprotected and do not rely on the hook.
 
 Check a branch protection rule with `gh api repos/<owner>/<repo>/branches/<default>/protection`, and expect:
 - `enforce_admins.enabled` true.
@@ -626,6 +628,8 @@ enforce them via managed settings, below).
 Claude can do without a prompt. The `review-permissions` skill in this repo
 covers the checklist — over-broad globs, command chaining, and shell-
 expansion surface.
+
+**Server-side branch protection.** Verify the default branch's protection, the agent credential's rights and the scope of repository secrets that can push or deploy, as `docs/security-hardening.md` § "Required server-side branch protection" describes.
 
 ## Private-fork guidance
 
