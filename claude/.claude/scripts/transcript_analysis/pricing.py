@@ -641,9 +641,7 @@ def _token_counts(usage: dict) -> dict[str, int]:
 
     Mirrors _price_turn's own class breakdown (same fields, same
     _cache_write_split reuse) so cost's Tokens column sums the same fields
-    its $ column already prices — callers apply it at the same point
-    _price_turn's dollar accumulation does, after a turn is confirmed priced,
-    so an unpriced model's tokens are excluded here too.
+    its $ column already prices.
     """
     eph_1h, eph_5m = _cache_write_split(usage)
     return {

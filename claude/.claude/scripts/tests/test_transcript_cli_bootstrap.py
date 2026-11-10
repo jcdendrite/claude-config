@@ -11,6 +11,7 @@ or the package can break it while every in-process test still passes.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,9 +21,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import REPO_ROOT
+from helpers import REPO_ROOT, init_git_repo_with_commit
 
-from .conftest import _asst, _bash_use, _table_cols, _tool_result, _user_msg, _write_jsonl
+from ._review_round_helpers import _marker_write_use
+from ._routing_guard_helpers import _capture_file_text, _note_line
+from .conftest import _asst, _bash_use, _priced, _skill_block, _table_cols, _tool_result, _user_msg, _write_jsonl
 
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
@@ -1255,3 +1258,183 @@ def test_transcript_analysis_handoff_signal_response_subprocess_dispatches_on_se
 
     assert result.returncode == 0, result.stderr
     assert "## Handoff signal response (0 signal(s) in scope)" in result.stdout
+
+
+_ROUTING_GUARD_BRANCH = "bootstrap-branch"
+
+
+def _routing_guard_fixture(tmp_path: Path, project_slug: str) -> tuple[Path, Path]:
+    """(account config dir, owner-only note)."""
+    account = tmp_path / "account"
+    project_dir = account / "projects" / project_slug
+    project_dir.mkdir(parents=True)
+    (account / ".pr-cost-enabled").touch()
+    records = [
+        _priced("claude-sonnet-5", input=100_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("sk-1", "code-review")]),
+        _priced("claude-sonnet-5", input=10_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:01:00.000Z",
+                content=[_marker_write_use("mk-1")]),
+        _user_msg([_tool_result("mk-1", "ok")], branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:01:00.000Z"),
+        _user_msg("next task", branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:02:00.000Z"),
+        _priced("claude-sonnet-5", input=130_000, branch=_ROUTING_GUARD_BRANCH, ts="2026-08-01T10:03:00.000Z"),
+    ]
+    _write_jsonl(project_dir / "session.jsonl", [{"sessionId": "session", **record} for record in records])
+    # Routing is off and both pilots are on, so a swap between routing and a pilot shows.
+    (account / ".session-config-keys-log.jsonl").write_text("\n" + json.dumps({
+        "session_id": "session", "source": "startup", "logged_at": "2026-08-01T09:00:00Z",
+        "keys": {
+            "review_orchestrator_routing": "false", "round_consult_round2_pilot": "true",
+            "architect_fix_plan_pilot": "true",
+        },
+    }) + "\n")
+    note_dir = tmp_path / "notes"
+    note_dir.mkdir()
+    note = note_dir / "note.tsv"
+    note.write_text(_note_line(account, _ROUTING_GUARD_BRANCH) + "\n")
+    note.chmod(0o600)
+    return account, note
+
+
+def _routing_guard_env(tmp_path: Path) -> dict[str, str]:
+    return {**os.environ, "HOME": str(tmp_path), "CLAUDE_CONFIG_DIR": str(tmp_path / "unused-active-account")}
+
+
+def _listed_worktree_path(repo: Path) -> str:
+    """The path `git worktree list` prints for `repo` itself, which is what the capture slugs."""
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    listed_paths = [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
+    return next(path for path in listed_paths if Path(path).resolve() == repo.resolve())
+
+
+def test_transcript_analysis_routing_guard_help_exits_zero():
+    result = _run("transcript-analysis.py", "routing-guard", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--capture" in result.stdout
+
+
+def test_transcript_analysis_routing_guard_capture_subprocess_publishes_one_file_from_the_running_checkout(tmp_path):
+    """No `_CHECKOUT_ROOT` patch reaches this process, so the run passes the checkout check only when the
+    `parents[4]` depth reaches the checkout root.
+    """
+    # Same mapping as scope._path_to_project_slug, copied so a change to that function fails this test instead of being followed.
+    project_slug = re.sub(r"[/.]", "-", _listed_worktree_path(REPO_ROOT))
+    account, note = _routing_guard_fixture(tmp_path, project_slug)
+
+    result = _run(
+        str(SCRIPTS_DIR / "transcript-analysis.py"), "--config-dir", str(account), "routing-guard", "--capture",
+        "--note", str(note), cwd=REPO_ROOT, env=_routing_guard_env(tmp_path),
+    )
+
+    captures_dir = account / "routing-guard-captures"
+    published = list(captures_dir.iterdir())
+    expected_name = f"{hashlib.sha256(_ROUTING_GUARD_BRANCH.encode()).hexdigest()}.r1.json"
+    assert result.returncode == 0, result.stderr
+    assert (captures_dir.stat().st_mode & 0o777) == 0o700
+    assert [p.name for p in published] == [expected_name]
+    assert (published[0].stat().st_mode & 0o777) == 0o600
+    assert result.stdout.startswith("DO NOT PUBLISH")
+    stored = json.loads(published[0].read_text())
+    assert {name: stored[name] for name in ("routing", "round_consult_round2_pilot", "architect_fix_plan_pilot")} == {
+        "routing": "off", "round_consult_round2_pilot": "on", "architect_fix_plan_pilot": "on",
+    }
+
+
+def test_transcript_analysis_routing_guard_capture_subprocess_from_another_repo_exits_1_and_creates_nothing(tmp_path):
+    other_repo = init_git_repo_with_commit(tmp_path / "other-repo")
+    account, note = _routing_guard_fixture(tmp_path, re.sub(r"[/.]", "-", _listed_worktree_path(other_repo)))
+
+    result = _run(
+        str(SCRIPTS_DIR / "transcript-analysis.py"), "--config-dir", str(account), "routing-guard", "--capture",
+        "--note", str(note), cwd=other_repo, env=_routing_guard_env(tmp_path),
+    )
+
+    assert result.returncode == 1
+    assert "must run from a worktree of the checkout holding this script" in result.stderr
+    assert not (account / "routing-guard-captures").exists()
+
+
+_COMPUTE_MODEL = "claude-sonnet-5"
+
+
+def _routing_guard_compute_fixture(tmp_path: Path, branches_per_arm: int) -> tuple[Path, Path]:
+    """(account config dir, owner-only note) for `branches_per_arm` key-on and key-off branches.
+
+    Every key-on loop costs far more than any key-off loop.
+    """
+    account = tmp_path / "compute-account"
+    captures_dir = account / "routing-guard-captures"
+    captures_dir.mkdir(parents=True)
+    (account / ".pr-cost-enabled").touch()
+    note_lines = []
+    for arm, base_million_tokens in (("on", 40), ("off", 5)):
+        for index in range(branches_per_arm):
+            branch = f"compute-{arm}-{index}"
+            loops = [
+                {
+                    "overhead_tokens": {
+                        _COMPUTE_MODEL: {"standard": {"input": (base_million_tokens + index + loop_index) * 1_000_000}},
+                    },
+                    "growth_tokens": 10_000 * (index + 1) + 1_000 * loop_index if (index + loop_index) % 4 else None,
+                    "later_turns": {_COMPUTE_MODEL: 3 + index} if arm == "off" else {},
+                    "degraded": False,
+                }
+                for loop_index in range(1 + index % 3)
+            ]
+            digest = hashlib.sha256(branch.encode()).hexdigest()
+            (captures_dir / f"{digest}.r1.json").write_text(_capture_file_text(loops, routing=arm))
+            note_lines.append(_note_line(account, branch))
+    note_dir = tmp_path / "compute-notes"
+    note_dir.mkdir()
+    note = note_dir / "note.tsv"
+    note.write_text("\n".join(note_lines) + "\n")
+    note.chmod(0o600)
+    return account, note
+
+
+def test_transcript_analysis_routing_guard_compute_refuses_a_top_level_config_dir(tmp_path):
+    account, note = _routing_guard_compute_fixture(tmp_path, 1)
+
+    result = _run(
+        str(SCRIPTS_DIR / "transcript-analysis.py"), "--config-dir", str(account), "routing-guard", "--note", str(note),
+        env=_routing_guard_env(tmp_path),
+    )
+
+    assert result.returncode == 2
+    assert "takes no top-level --config-dir" in result.stderr
+    assert result.stdout == ""
+
+
+def test_transcript_analysis_routing_guard_compute_below_the_real_minimum_prints_not_run_and_leaves_no_out_file(tmp_path):
+    _account, note = _routing_guard_compute_fixture(tmp_path, 9)
+    out_path = tmp_path / "figures.txt"
+
+    result = _run(
+        str(SCRIPTS_DIR / "transcript-analysis.py"), "routing-guard", "--note", str(note), "--out", str(out_path),
+        env=_routing_guard_env(tmp_path),
+    )
+
+    assert result.returncode == 3, result.stderr
+    # Exactly the minimum reason, so a run that is NOT RUN only because its files are unusable fails.
+    assert result.stdout.splitlines() == ["routing-guard: NOT RUN: fewer key-on branches than the guard's minimum"]
+    assert not out_path.exists()
+
+
+def test_transcript_analysis_routing_guard_compute_at_the_real_minimum_prints_failed_with_identical_out_files_per_hash_seed(
+    tmp_path,
+):
+    _account, note = _routing_guard_compute_fixture(tmp_path, 10)
+    out_texts = []
+    for hash_seed in ("1", "2"):
+        out_path = tmp_path / f"figures-{hash_seed}.txt"
+        result = _run(
+            str(SCRIPTS_DIR / "transcript-analysis.py"), "routing-guard", "--note", str(note), "--out", str(out_path),
+            env={**_routing_guard_env(tmp_path), "PYTHONHASHSEED": hash_seed},
+        )
+        assert result.returncode == 1, result.stderr
+        assert result.stdout.splitlines() == ["routing-guard: FAILED"]
+        out_texts.append(out_path.read_bytes())
+
+    assert out_texts[0] == out_texts[1]
+    assert out_texts[0].startswith(b"DO NOT PUBLISH")

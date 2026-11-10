@@ -13,12 +13,7 @@ both, and calls `main()`. Everything else lives in the `transcript_analysis/` pa
 import is possible. `build_parser()` wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS`
 and `read_scope.py`'s `cmd_read_scope` from `cli.py`.
 A command-group module may import another by module (attribute access). Among the review modules,
-`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
-is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
-`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`),
-`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`),
-`review_cost_by_size.py` (for `compute_review_round_costs`), `pr_cost.py` (for `compute_review_round_costs`, `REVIEW_SKILLS` and
-`REVIEW_ROUND_RULE`), and `pr_cost_export.py` (for `REVIEW_SKILLS`). `review_trace.py` imports `reviewer_yield.py` (for
+`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
 `review_rounds.py` for the reads listed in the `review_trace.py` section below.
 `friction_count.py` imports `fail_seq.py` (for `TEST_RUNNER_RE` and `FAILED_RE`) and `struggle.py` (for
@@ -43,7 +38,7 @@ from `cli.py`.
 `build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
 user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
 turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
-instrument-authoring, review-cost-by-size, and read-cost by calling each owning
+instrument-authoring, review-cost-by-size, read-cost, and routing-guard by calling each owning
 module's `_add_<command>_subparser` from `cli.py` at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
@@ -276,7 +271,8 @@ main-thread round-opening record never needs. `REVIEW_SKILLS`, `REVIEW_ROUND_RUL
 is read by `review_cost_by_size.py` and `pr_cost.py`. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
-miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
+miner's round filter and `routing_guard.py`'s per-round `spawn_open` flag are its consumers).
+`REVIEW_SKILLS` is read by:
 
 - `judgment_pair.py`: judgment-pair's `--skills` default.
 - `pr_cost.py` and `pr_cost_export.py`: the skills a `review_rounds` cell holds.
@@ -289,7 +285,7 @@ miner's round filter is its consumer). `REVIEW_SKILLS` is read by:
 `_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
-window's own `open_idx`/`skill`. `review_trace.py` is a further one.
+window's own `open_idx`/`skill`. `review_trace.py` and `routing_guard.py` are further ones.
 
 ### `review_cost_by_size.py`
 
@@ -316,10 +312,10 @@ author-outcome section ("Ledger lookup") for the attribution rules and the resid
 still leave. `_round_blocks` groups a session's rows into blocks, and the k-th round-open takes
 the k-th block by rank, not by `round` value. The transcript is still the sole source for
 round-open positions, dispatch completion ordering, and the `marker.sh write code-review` Bash
-`tool_use` fallback signal used only when a round has no ledger row at all
-(`_is_clean_marker_write`). For a main-thread `review-orchestrator` round-open,
-`_orchestrator_spawns` also projects that spawn's own transcript, when it has readable records,
-into a `_OrchestratorSpawn` of derived facts (the marker write and the nested `--agent`
+`tool_use` signal (`_is_clean_marker_write`). For a main-thread
+`review-orchestrator` round-open, `_orchestrator_spawns` also projects that spawn's own
+transcript, when it has readable records,
+into a `_OrchestratorSpawn` of derived facts (the marker-write facts and the nested `--agent`
 dispatches), located through
 `corpus._index_subagent_dispatches`' `toolUseId` join.
 
@@ -388,7 +384,9 @@ reads include `session_pricing._usage_is_invalid`, `redaction._repo_tracked_agen
 Recording primitives shared by the cost-ledger and pr-cost ledgers: the generated per-config-dir
 machine identity (`_resolve_machine_identity`, `_machine_identity_path`), the git-tracked
 destination check (`_ledger_path_is_git_tracked`), the machine-label format, the merge-conflict
-markers both parsers refuse, and the local-lock timing both `--record` paths use. A leaf: no
+markers both parsers refuse, and the local-lock timing both `--record` paths use. It also holds the
+create-new file publish helpers `_publish_new_file`, `_refuse_unusable_out_path` and
+`_publish_new_owner_file`. A leaf: no
 dependency on any other package module. Binds `config_dir` by name from `_config_dir`, mirroring
 `scope.py`'s own binding (see the attribute-access discipline noted under `scope.py` above) — every
 package consumer (`cost_ledger.py`, `pr_cost_ledger.py`, `pr_cost.py`, `pr_cost_export.py`) reads
@@ -767,6 +765,13 @@ and split into zero-dispatch and dispatched session cohorts, and the `_add_instr
 registration. Imports `pricing`, `render`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_add_instrument_authoring_subparser` is the one name `build_parser()` reaches
 bare.
+
+### `routing_guard.py`
+
+The routing-guard command: `cmd_routing_guard` and the `_add_routing_guard_subparser` registration.
+`docs/transcript-analysis.md` § "routing-guard" states what each mode reads and writes. Imports `author_outcome`, `corpus`, `denials`, `ledger_common`, `pricing`, `render`, `review_rounds`,
+`scope`, and `session_pricing` all by module (attribute access), and `_config` for the opt-in read.
+`_add_routing_guard_subparser` is the one name `build_parser()` reaches bare.
 
 ### `cli.py`
 

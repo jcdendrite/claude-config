@@ -1,9 +1,10 @@
 """Recording primitives shared by the cost-ledger and pr-cost ledgers: the generated per-config-dir machine identity, the
 git-tracked destination check, the machine-label format, the merge-conflict markers both parsers refuse, and the local-lock
-timing both --record paths use."""
+timing both --record paths use. It also holds the create-new file publish helpers."""
 from __future__ import annotations
 
 import contextlib
+import enum
 import os
 import re
 import secrets
@@ -97,13 +98,58 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
     return stripped
 
 
+class _PublishOutcome(enum.Enum):
+    """How `_publish_new_file` ended. The failures stay distinct so each caller can word its own message."""
+
+    CREATED = "created"
+    EXISTS = "exists"
+    WRITE_FAILED = "write failed"
+    LINK_FAILED = "link failed"
+
+
+def _publish_new_file(path: Path, text: str, temp_prefix: str, temp_suffix: str) -> _PublishOutcome:
+    """Create `path` holding `text`, never replacing an existing entry at `path`, a dangling symlink included.
+
+    A crash mid-write leaves only a temp file, never a torn file at `path`,
+    and `os.link` lets exactly one of several racing writers claim the name.
+    `path` shares the temp file's inode, which `mkstemp` creates at `0600`, so
+    it needs no separate chmod. The OSError is not returned, since its text
+    embeds the temp file's full path.
+    """
+    tmp_name: str | None = None
+    try:
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=temp_prefix, suffix=temp_suffix)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError:
+            return _PublishOutcome.WRITE_FAILED
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return _PublishOutcome.EXISTS
+        except OSError:
+            return _PublishOutcome.LINK_FAILED
+        return _PublishOutcome.CREATED
+    finally:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+
+
+def _hard_link_requirement(directory_label: str) -> str:
+    return f"({directory_label}'s filesystem must support hard links and have free space)"
+
+
 def _resolve_machine_identity(
     subcommand: str, config_dir_override: Path | None = None, location_label: str | None = None
 ) -> str:
     """Generates and persists a per-config-dir identity via
-    secrets.token_hex(4) on first use, publishing it through mkstemp+os.link
-    so a losing racer adopts the winner's value instead of a torn write
-    (see docs/pr-cost.md's "Machine identity").
+    secrets.token_hex(4) on first use, publishing it through
+    _publish_new_file so a losing racer adopts the winner's value instead of
+    a torn write (see docs/pr-cost.md's "Machine identity").
     """
     path = _machine_identity_path(config_dir_override)
     if location_label is None:
@@ -114,29 +160,16 @@ def _resolve_machine_identity(
     # 8 lowercase hex chars is a 32-bit collision budget (see docs/pr-cost.md's
     # "Refusals" section for the cloud-sync-duplication collision discussion).
     token = secrets.token_hex(4)
-    tmp_name: str | None = None
-    try:
-        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{_MACHINE_IDENTITY_FILENAME}.")
-        with os.fdopen(fd, "w") as f:
-            f.write(token)
-        try:
-            os.link(tmp_name, path)
-        except FileExistsError:
-            return _read_machine_identity_or_refuse(subcommand, path, location_label)
-    except OSError:
-        # Not exc's str(): a real mkstemp/os.link failure embeds the full
-        # temp-file path via exc.filename/filename2, which sits inside
-        # this machine's own config dir.
-        print(
-            f"{subcommand}: could not create the machine identity file ({location_label})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    finally:
-        if tmp_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-    return token
+    outcome = _publish_new_file(path, token, f"{_MACHINE_IDENTITY_FILENAME}.", "")
+    if outcome is _PublishOutcome.CREATED:
+        return token
+    if outcome is _PublishOutcome.EXISTS:
+        return _read_machine_identity_or_refuse(subcommand, path, location_label)
+    print(
+        f"{subcommand}: could not create the machine identity file ({location_label})",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
@@ -218,3 +251,68 @@ def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledge
         file=sys.stderr,
     )
     return True
+
+
+def _refuse_unusable_out_path(out: str, command: str) -> None:
+    """Run before any work.
+
+    Only the operator's own literal `out` string is echoed, never the resolved
+    path, which can embed a home-rooted engagement directory.
+    """
+    # Resolved (following any symlink at `out` itself) so the git-tree check
+    # below sees where the path really points.
+    resolved_out = Path(out).resolve()
+    # A UX-only fast path: the publish step refuses an existing destination race-safely.
+    if os.path.lexists(str(resolved_out)):
+        print(
+            f"{command}: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # A symlink retargeted between this check and the publish is an accepted
+    # TOCTOU window for this tool's single-operator threat model.
+    if _ledger_path_is_git_tracked(resolved_out, command):
+        print(
+            f"{command}: --out {out!r} is inside a git working tree -- this repo (and every"
+            " repo this subcommand might be run from) is potentially public; write outside any"
+            " git working tree",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
+def _publish_new_owner_file(out: str, text: str, command: str) -> None:
+    """Run last, after the work that produced `text`."""
+    # The final path component is left exactly as named, unlike the fully
+    # resolved path the git-tree check uses, so a symlink there makes os.link
+    # fail with FileExistsError instead of silently following the link. The
+    # parent is still resolved, so a symlinked parent directory lands inside
+    # the same target the git-tree check validated.
+    open_path = Path(out).parent.resolve() / Path(out).name
+    outcome = _publish_new_file(open_path, text, f".{command}-", ".tmp")
+    if outcome is _PublishOutcome.CREATED:
+        return
+    if outcome is _PublishOutcome.EXISTS:
+        print(
+            f"{command}: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if outcome is _PublishOutcome.WRITE_FAILED:
+        print(
+            f"{command}: --out {out!r} could not be written -- pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if outcome is _PublishOutcome.LINK_FAILED:
+        print(
+            f"{command}: --out {out!r} could not be published {_hard_link_requirement('the --out directory')};"
+            " pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    print(
+        f"{command}: --out {out!r} could not be published; pass a new path",
+        file=sys.stderr,
+    )
+    sys.exit(2)

@@ -4151,6 +4151,72 @@ def test_review_round_cost_citation_resolves_to_real_heading() -> None:
     )
 
 
+def test_routing_gate_design_record_cites_routing_guard_section() -> None:
+    """The routing-gate design record points to
+    `docs/transcript-analysis.md` § "routing-guard" for how to run the
+    subcommand.
+
+    The record defers to that section instead of restating how to run it,
+    and docs/*.md sits outside the generic skill-citation sweep, so
+    a heading rename would otherwise orphan the pointer with no
+    reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "design-decisions" / "review-orchestrator-routing-gate.md",
+        "docs/transcript-analysis.md",
+        "routing-guard",
+        repo_root=REPO_ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    "pr_cost_heading",
+    ["Data", "Residual replication paths the git-tree check doesn't close"],
+)
+def test_transcript_analysis_doc_cites_real_pr_cost_headings(pr_cost_heading: str) -> None:
+    """docs/transcript-analysis.md cites `docs/pr-cost.md` § "Data" and
+    § "Residual replication paths the git-tree check doesn't close" somewhere
+    — each resolves to a real heading there.
+
+    The doc defers to pr-cost's ledger rules instead of restating them, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename in docs/pr-cost.md would otherwise orphan the pointer with no
+    reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        "docs/pr-cost.md",
+        pr_cost_heading,
+        repo_root=REPO_ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "heading"),
+    [
+        ("docs/session-config-keys-log.md", "State at a transcript record"),
+        ("docs/session-config-keys-log.md", "Coverage"),
+        ("README.md", "Updating after git pull"),
+    ],
+)
+def test_routing_guard_section_cites_real_key_state_headings(target: str, heading: str) -> None:
+    """docs/transcript-analysis.md's `routing-guard` section cites the session
+    config-keys log's reader rules and `README.md` § "Updating after git pull"
+    for its key-state rules and next steps — each resolves to a real heading.
+
+    The section defers to the reader doc instead of restating its rules, and
+    docs/*.md sits outside the generic skill-citation sweep, so a heading
+    rename there would otherwise orphan the pointer with no reader-visible
+    symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        target,
+        heading,
+        repo_root=REPO_ROOT,
+    )
+
+
 _SHOW_WITHHELD_BARRED_LIST_FILES = (
     ".claude/skills/code-review-claude-config/SKILL.md",
     "docs/private-project-redaction.md",

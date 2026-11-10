@@ -20,6 +20,8 @@ Subcommands that write to disk:
 - `friction-count --checkpoint` writes the checkpoint file it names. It is not gated on a config key.
 - `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`. It is gated on the `cost_ledger_recording` config key; see the `cost-ledger` section below.
 - `pr-cost --record` appends to `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default, overridable via `PR_COST_LEDGER_PATH`. It is gated on the `pr_cost_recording` config key; see the `pr-cost` section below.
+- `routing-guard --capture` publishes one write-once file for each captured branch into `<config-dir>/routing-guard-captures/`. It is gated on the `pr_cost_recording` config key of the account it writes to; see the `routing-guard` section below.
+- `routing-guard --out` writes the one file it names and never overwrites it. It is not gated on a config key of its own, and each listed account's `pr_cost_recording` key still decides whether compute reads that account's files; see the `routing-guard` section below.
 
 No other subcommand writes to disk.
 
@@ -31,8 +33,8 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
 - **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
-  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `review-cost-by-size` and `read-cost` abort the whole invocation with an uncaught error, with the path stripped from the message.
-  - `review-round-cost --pooled`, `review-cost-by-size` and `read-cost` record it as a scan gap instead.
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled`, `review-cost-by-size`, `read-cost` and `routing-guard --capture` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled`, `review-cost-by-size`, `read-cost` and `routing-guard --capture` record it as a scan gap instead. `routing-guard --capture` then refuses with exit 2 (see the exit-code table under "routing-guard").
   - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
   - `cost`'s per-root scan diagnostic also skips it silently.
   - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
@@ -45,7 +47,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ## Scoping to this repo: `--this-repo`
 
-Every subcommand except four accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, and `period-cost` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+Every subcommand except five accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`: `user-input` takes `--projects` only, and `friction-count`, `pr-cost-export`, `period-cost`, and `routing-guard` take neither. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
 
 **`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
@@ -63,7 +65,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
   ```
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A stricter `<slug>-*` prefix match is not used because it still collides with a sibling clone like `<repo>-fork`. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
-- **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
+- **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had. For a `routing-guard` deny on an unlisted branch, see "Deny reconciliation" under `routing-guard` for the lookup that reads these directories.
 - **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*: a subagent that worked in this repo from another repo's session counts under that session's branch, per "Subagent attribution" and the consumer list under `cost`. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. The same holds for the consumers that detect rounds or count spawns from main-thread records only.
 
 The four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected. The slug-collision exception in the first gap is the reverse case, silent over-inclusion: the resolved-scope header's project-dir count comes from `git worktree list`, so it does not change, and `cost --summary` prints no such header.
@@ -81,6 +83,7 @@ Most subcommands' default scan corpus is a **union**, not a single account. The 
 - `cost-counts`: reads the active account's `projects` directory only (see its section below).
 - `review-cost-by-size` without `--all-accounts`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
 - `read-cost`: reads the active account's `projects` directory only, scoped to this repository (see its section below).
+- `routing-guard`: under `--capture` reads only the one root the top-level `--config-dir` names, and otherwise reads no transcripts (see its section below).
 - `user-input`: reads the active account's `projects` directory only, narrowed by `--projects GLOB`.
 
 List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's.
@@ -738,7 +741,7 @@ These subcommands apply this block, except where the last bullet says otherwise,
 - `subagents`, `skill-invocation --include-subagents`, `skill-pair` and `cost-counts` spawn counts apply both blocks. The `cost-counts` spawn counts read sidechain records. `cost-counts` reads the direct `subagents/*.jsonl` files of the sessions it scopes, with no flag to turn that off. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
 - `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
 - `review-round-cost` detects rounds and `subagent-mix` counts spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. `review-cost-by-size` reuses `review-round-cost`'s round detection, so the same applies. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
-- Round attribution (`review-round-cost`, `review-cost-by-size`, `cost-counts` round counts, the `pr-cost` `review_rounds` column, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
+- Round attribution (`review-round-cost`, `review-cost-by-size`, `cost-counts` round counts, the `pr-cost` `review_rounds` column, `routing-guard --capture`, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
 - Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
 The full `cost` report under `--branches` prints one extra line, `Pre-branch default-branch records credited to this --branches filter: <N> turns, $<X>`. It counts only the turns this block moved into the filter set from outside it, so a filter that holds both the default branch and its successor prints nothing for that session. Unpriced turns count toward the turns but not the dollars. It never prints under `--summary` or `--share-only`. The shift from "Subagent attribution" has no audit line.
@@ -1664,7 +1667,7 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 - **Nested dispatches.** A dispatch of the `--agent` type inside the orchestrator's transcript takes the orchestrator's spawn position as its completion index, so it attributes to the first round-open after the orchestrator's round. Its `--since` check uses its own start timestamp. It is UNDECIDABLE when the orchestrator's transcript holds no `tool_result` for it.
 - **Launch-position limitation.** Completion at the spawn position is the same limitation the main thread has, where a dispatch whose `tool_result` is a launch acknowledgement completes at its launch position, and an acknowledgement satisfies the result check. Two residuals follow. A main-thread round that opens while the orchestrator is running is credited with its fix. An orchestrator can return while a nested `code-writer` is still in flight, so the next round is credited with that fix.
 - **Unreadable transcripts.** An orchestrator whose transcript is dangling, unreadable or empty, or whose spawn block has no usable `id` (absent or not a string), contributes no marker and no nested dispatches, and counts under "orchestrator dispatches with no readable transcript records". A non-zero value can explain a rise in the `authoring_agent inconsistent` count, because the unreadable orchestrator's nested `code-writer` is missing and the round's transcript side reads `inline`. The counter also counts dispatches that never ran, which lose no nested `code-writer`, so a non-zero value alone does not establish such a rise.
-- **Rounds that end before a ledger append.** All three round-consuming subcommands count a halted or never-run orchestrator dispatch as a round, whether or not it invoked a review skill. The "Round-number-sequence check" below decides when a round-open with no ledger block makes the session a mismatch. Three cases differ in what author-outcome does with a round that ends early:
+- **Rounds that end before a ledger append.** Every round-consuming subcommand counts a halted or never-run orchestrator dispatch as a round, whether or not it invoked a review skill. The "Round-number-sequence check" below decides when a round-open with no ledger block makes the session a mismatch. Three cases differ in what author-outcome does with a round that ends early:
   - **Cannot start (it lacks the `Skill` or `Agent` tool), or returns a round-ending `HALT:` before its first ledger append.** The round-open has no ledger block. In a session with no round-keyed ledger rows, the round reads as UNATTRIBUTED and the round-number-mismatch counter does not move. A session flagged by the "Ledger-possibly-swept check" below instead has its dispatches leave the headline under that counter.
   - **Halts after its first ledger append.** The round-open has a ledger block, so the session is no mismatch.
   - **Halts and another round appends a block.** An inline `/code-review` after a round-ending `HALT:` is the designed path. The session holds a round-open with no ledger block and another round-keyed block, so the mismatch rule in the "Round-number-sequence check" below applies.
@@ -1746,6 +1749,206 @@ Data quality
 **Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED. A round whose `append` calls straddle the schema v2 rollout mid-session can also misclassify as PASS, if a pre-flip `ADDRESS` row lacks a `round` key while a post-flip `DEFER` row in the same round has one -- a one-time artifact bounded by this same sweep window, which is the other reason the accumulation wait matters.
 
 **When to reach for it.** Answer "what share of `code-writer`'s own diffs failed their own downstream review" -- no other subcommand joins the review's own structured disposition back to the dispatch that authored the reviewed diff. `reviewer-yield` classifies a *reviewer's* own verdict shape (findings-found/zero-finding/unclassified), not whether the diff under review passed; `review-round-cost` prices a round's dollars with no pass/fail axis at all.
+
+---
+
+## routing-guard
+
+**Purpose.** Capture each sampled branch's review loops per account, then compute the cost guard of the review-orchestrator routing gate: the net cost per review loop, key-on minus key-off, with its 95% bootstrap interval. The guard's definitions are fixed in `docs/design-decisions/review-orchestrator-routing-gate.md`. The code reads "writes the code-review marker" as a write whose Bash call has a paired non-error result, so a write that returns exit 0 with nothing to review ends a loop too. The guard counts as failed until a compute run reaches PASSED.
+
+Capture and compute are two modes of one subcommand, like `pr-cost` and `pr-cost --record`:
+
+- `--capture` reads one account's transcripts of this repo and that account's session config-keys log, and publishes one write-once file for each captured branch into that account's captures directory. A file holds token counts, not dollars, so compute prices them at the rate table current when it runs. It also holds the branch's routing key and pilot states, which the log supplies.
+- Without `--capture`, it reads no transcripts and no log. It opens the note and each `merged` branch's capture file and prices every loop. It prints a status line (PASSED, FAILED, or NOT RUN with each reason) and owner-only notices, never a figure. The figures go only to an `--out` file.
+
+**Flags.**
+- `--note PATH` -- required, an absolute path outside any git work tree. The note has three columns (config dir, branch and `merged` or `excluded`), and only `merged` rows are sampled. See "The note" below.
+- `--capture` -- publish capture files instead of computing. Needs the top-level `--config-dir` (placed before the subcommand name) naming the one account to capture, and that account's `pr_cost_recording` key to resolve true.
+- `--out PATH` -- compute only: write the figures to this new file.
+- A top-level `--config-dir` is refused in compute mode, because the note names each config directory.
+
+The subcommand takes neither `--projects` nor `--this-repo`.
+
+**Run both modes from a terminal outside any agent session.** A `--config-dir` or `--note` path on a command line, and any output the run prints, land in that session's transcript.
+
+### The note
+
+The note says which branches are in the sample. Capture derives each branch's arm and pilot states from the session config-keys log (`docs/session-config-keys-log.md` § "State at a transcript record" and `docs/session-config-keys-log.md` § "Coverage" state how the key states are read). The subcommand makes no `gh` call, so it cannot tell which branches merged. The owner writes the note, one tab-separated row per branch:
+
+```text
+<config-dir> <TAB> <branch> <TAB> <merged|excluded>
+```
+
+- `merged` is a branch in the sample: a merged key-on branch, or a merged key-off branch. Each account lists as many `merged` key-off branches as `merged` key-on ones.
+- `excluded` is a branch not in the sample: one that has not merged, or one that merged but cannot be sampled. It is never captured, and a routing deny on it passes deny reconciliation.
+- `#` lines and blank lines are skipped. A leading `~/` in the config directory expands to `$HOME`. Any other config directory must be absolute.
+
+Keeping the note:
+
+- Keep the note as an owner-only file outside any git work tree and any cloud-sync folder.
+- Add a branch's row once its sessions end.
+- List a branch still in progress as `excluded`.
+
+Listing a branch `excluded` to clear a NOT RUN reason shrinks the sample, and the guard cannot tell that from a correction.
+
+### Run order
+
+1. Write the note, as under "The note".
+2. First run only:
+   - Check the recorder is installed: run the `ls` check in `README.md` § "Updating after git pull" on `~/.claude/hooks/record-session-config-keys.sh`, and check that the log holds a row for a session started after the install.
+   - Check that each listed account's `pr_cost_recording` key is opted in.
+   - Run the two deny lookups under "Deny reconciliation", and list every denied branch the note omits as `excluded` or `merged`.
+   - Capture one post-recorder merged branch, and read its per-row line against what you know of that branch, because a file is never rebuilt.
+3. Run capture for each account after each sampled PR merges, key-off PRs included.
+   - Capture each branch while its sessions are still inside `cleanupPeriodDays`, the Claude Code setting after which it deletes session transcripts. `docs/pr-cost.md` states its default as 30 days, so check the effective value in your own settings.
+   - Capture publishes only absent rows, so a run is safe to repeat.
+   - Run capture only when the checkout whose script is running (the stowed checkout, for the `~/.claude/scripts` copy) has this subcommand merged, never from a branch whose capture logic may still change.
+   - Run it with its cwd in a worktree of that checkout.
+
+   This bash loop runs one capture per config directory in the note. It prints each run's exit code and nothing that names an account. It continues past exit 3 and stops on any other nonzero exit. The loop's own exit status is the gate for step 4.
+
+   ```bash
+   awk -F '\t' '{ sub(/\r$/, "") } !/^#/ && NF { print $1 }' <note-path> | sort -u | (
+     loop_exit_code=0
+     capture_count=0
+     while IFS= read -r config_dir; do
+       capture_count=$((capture_count + 1))
+       python3 ~/.claude/scripts/transcript-analysis.py --config-dir "${config_dir/#\~/$HOME}" routing-guard --note <note-path> --capture < /dev/null
+       capture_exit_code=$?
+       echo "capture exit: $capture_exit_code"
+       if [ "$capture_exit_code" -ne 0 ] && [ "$capture_exit_code" -ne 3 ]; then loop_exit_code=$capture_exit_code; break; fi
+       if [ "$capture_exit_code" -eq 3 ]; then loop_exit_code=3; fi
+     done
+     if [ "$capture_count" -eq 0 ]; then echo "no capture ran" >&2; exit 2; fi
+     exit "$loop_exit_code"
+   )
+   ```
+4. Run capture again on every listed account, as under "Deny reconciliation". Run compute, with no `--config-dir`, only when every one of those captures exits 0:
+
+   ```bash
+   python3 ~/.claude/scripts/transcript-analysis.py routing-guard --note <note-path> --out <new-file-path>
+   ```
+
+5. Read the `--out` file, then delete it.
+
+### Deny reconciliation
+
+Before any publish, capture checks the routing gate's denies on the account's root against the note, so a branch with a routing deny that the note omits cannot silently shrink an arm. Capture refuses the run for such a branch until the note lists it.
+
+**The deny lookups.** Run both in the owner's terminal outside any agent session, with the same top-level `--config-dir` given to capture. Each timeline prints a denial with its UTC timestamp and `branch=`. List every denial row whose `branch=` the note omits.
+
+```bash
+python3 ~/.claude/scripts/transcript-analysis.py --config-dir <config-dir> review-trace --this-repo --deny-only
+python3 ~/.claude/scripts/transcript-analysis.py --config-dir <config-dir> review-trace --deny-only --projects='<main-project-slug>--claude-worktrees-*'
+```
+
+`--this-repo` skips a removed worktree's project directory, which capture reads, so the second lookup covers it. `<main-project-slug>` is the main checkout's project slug, its path with `/` and `.` replaced by `-`. Attach the `--projects` value with `=`, because the slug starts with `-` and the parser reads a separate argument starting with `-` as an option.
+
+When capture's dropped-deny notice prints, run both lookups and list any routing-gate branch the note omits before running compute.
+
+Reconciliation runs only in capture, because compute reads no transcript. Re-run capture last on every listed account, even when every row reads `already captured`, after the last sampled branch's sessions have ended.
+
+### The captures directory
+
+Each account's store is `<config-dir>/routing-guard-captures/`, holding one file per captured branch, named `<digest>.r<rev>.json`. `<digest>` is the SHA-256 hex digest of the branch name's UTF-8 bytes, which is unsalted, so treat the file name as sensitive.
+
+The store follows the pr-cost ledger rules: it is local, untracked, per account, and opt-in per account through the same `pr_cost_recording` key. See `docs/pr-cost.md` § "Data" and `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close". Capture refuses to use the directory when it sits inside a git work tree or is a symlink. Keep it at `0700`, and delete the whole directory when the guard concludes.
+
+A file is never rebuilt once it exists. To **re-capture** a branch, delete that branch's file, then run capture again while every session of the branch is still inside `cleanupPeriodDays`. One `hashlib` command, run in a terminal outside any agent session, prints the branch's digest. The branch's capture file is the one in the captures directory whose name begins with that digest. The command prompts for the branch name, so the shell never parses it and shell history never records it:
+
+```bash
+python3 -c 'import hashlib; print(hashlib.sha256(input("branch: ").encode("utf-8")).hexdigest())'
+```
+
+### Output
+
+- Capture prints one line per `merged` row of the `--config-dir` account, then a summary line and a fixed next action. A `captured` row ends with the date of the earliest surviving record. That is the earliest timestamped main-thread record of the branch that still exists among the scanned sessions. A date near the `cleanupPeriodDays` limit means older sessions may already be gone and the write-once file will read low. A recent date does not show that none were lost.
+- Compute prints one status line, or one NOT RUN line per reason and note line. FAILED means the interval's lower bound is above zero, PASSED means it is not, and NOT RUN means the guard could not be computed. How a loop end is read is in the Purpose sentence above. A negative net in the `--out` file means key-on costs less per loop than key-off.
+- `--out PATH` writes the figures to a new owner-only file outside any git work tree, which opens with the `DO NOT PUBLISH` banner. The file's directory must be on a filesystem that supports hard links and has free space. A NOT RUN run writes no file. Delete the file once its figures are read. The git-tree check does not cover a cloud-sync folder or a bare-repo dotfile manager; see `docs/pr-cost.md` § "Residual replication paths the git-tree check doesn't close".
+
+Exit codes:
+
+| Code | Capture | Compute |
+|---|---|---|
+| 0 | every row `captured` or `already captured`, and no `PRICING INTEGRITY` line printed | PASSED |
+| 1 | the account is not opted in, its key read hit a config fault, or the cwd is not in a worktree of the running checkout | FAILED |
+| 2 | a refusal of a flag, the note, a scan gap, a deny or the captures directory | a refusal of a flag, the note or the `--out` path |
+| 3 | a row is `missing` or `invalid`, or the `PRICING INTEGRITY` line printed | NOT RUN |
+| 4 | an unexpected `OSError`, a failed publish, a built row that failed validation, or any other unexpected exception | an unexpected `OSError` or other unexpected exception |
+
+Files published in a capture run that exits 3 or 4 stay, and a re-run reports each of them `already captured`.
+
+### Publication
+
+No quantity the guard computes is published. `docs/private-project-redaction.md` § "A wider corpus goes to the owner, never into a public artifact" governs it. A public artifact states only whether the guard passed and whether the default flipped. It never states an account count. The banner says that PASSED and FAILED rest on inputs the account can write.
+
+### Known gaps
+
+- To fill the key-off arm, list the most recent merged branches every one of whose sessions started with the key already off, as many as under "The note", each worked under the same two pilot states as the account's key-on branches. The design record's key-off sample, each key-on account's most recent branches from before its key went on, cannot be met on an account whose key predates its log. Both arms fill only from branches worked while the recorder was running, key-on branches included.
+- A log row is a SessionStart snapshot, so a mid-session flip is invisible.
+- An excluded branch is a selection effect on the arm.
+- A marker write with no result, or whose call was interrupted, does not end its loop. The loop then absorbs the next round, and a branch whose only write is unpaired has no complete loop.
+- The loop-end recognizer is shape-based and reads only the Bash call's result status, so it can over-confirm or under-confirm a write. It over-confirms matching text that never ran in a call that exits 0, such as `true || marker.sh write code-review` or heredoc body text, and a failed write whose status a later chain segment or a pipe masks. It under-confirms a stored write in a call that exits non-zero, such as one chained before a failing commit, and a write spelled through a variable or wrapper. The "Marker fallback" list under "Orchestrator rounds" in the author-outcome section names three shapes the matcher counts although the command never ran.
+- A round replayed into a second session file may form a second loop with the same overhead. Capture deduplicates denies across session files but not rounds, and whether a replay occurs is unverified.
+- Negative growth after a compaction is averaged at face value, and a loop's later turns run to the end of the session, across any compaction.
+- List every merged key-on branch in the note. Deny reconciliation sees only routing denies, so an unlisted key-on branch that left none shrinks its arm undetected.
+- Capture admits an orphaned project directory by the main checkout's name prefix plus the worktrees infix, so a foreign clone under the worktrees directory is read as this repo's.
+
+### Retirement
+
+Records stay as history, and the retirement adds its own, as `docs/design-decisions/review-orchestrator-routing-gate.md` § "Withdrawal form" does for the gate. To retire the subcommand:
+
+- Delete `routing_guard.py` and every other site the verification `git grep` below finds, except the kept sites it lists.
+- Keep the `pr_cost_recording` key, which `pr-cost --record` also reads. Remove only the routing-guard sentences about it in `docs/pr-cost.md` and `config-keys.psv`.
+- Remove `ROUTING_GUARD_CAPTURE_TEST_PATH` and `SESSION_CONFIG_KEYS_LOG_DOC_MD`. The capture test is the only `SCRIPTS_TESTS_DIR` test that reads `docs/session-config-keys-log.md`.
+- At retirement time, not before, edit the paragraph in `docs/design-decisions/review-orchestrator-routing-gate.md` that begins "`transcript-analysis.py routing-guard --capture`" and cites this section. Replace it with the retirement record, so the record does not point at a removed section.
+- Keep the shared helpers: the `ledger_common` publish core, the `pr-cost-export` use of it and the review-round fixtures in `_review_round_helpers.py`.
+- Remove the token-sink plumbing in `review_rounds.py`. The public round dict's keys must stay as they are; `TestComputeReviewRoundCostsRoundKeys` guards them.
+- Remove the author-outcome plumbing behind this subcommand's "confirmed" reading: `has_confirmed_marker_write`, `succeeded_tool_use_ids`, and the `is_error` clause in the `author_outcome.py` module docstring's field list. Keep `_is_clean_marker_write` and the "attempted" reading, which author-outcome uses.
+- Keep the `CHANGELOG.md` entry for the subcommand and add a `Removed` entry. The `routing-guard-captures/` directories remain on disk, and that entry is the only notice that they exist.
+
+Each account's captures directory is removed by hand. A code revert leaves those directories inert.
+
+To verify the retirement, run this from the repository root. It should print only the kept sites: the `CHANGELOG.md` entries, the plans under `.claude/plans/`, the design record, and the `_OUT_COMMAND` label in `test_transcript_ledger_common.py`.
+
+```bash
+git grep -nE 'routing[-_]guard|token_sink|collect_tokens'
+```
+
+The grep does not match the upper-case constants or the author-outcome plumbing above, so grep for their names too, and for `_record_turn_tokens`. These pieces of the `review_rounds.py` plumbing carry none of those names:
+
+- `_resample_percentile`'s `level` parameter and `TestResamplePercentileLevel`.
+- The round entry's `window_end` key, with the `del entry["window_end"]` in `compute_review_round_costs`.
+- The helper `_class_tokens` and constant `_UNPRICED_MODEL` in `test_transcript_review_rounds.py`. Ruff does not flag them once their tests go.
+
+### Sample output
+
+Each fence is a placeholder line, because the code owns the wording. `<DO NOT PUBLISH banner>` stands for `routing_guard._DO_NOT_PUBLISH_BANNER`, which opens capture's stdout and the `--out` file.
+
+Capture, stdout. Per-row lines name a note line only (`routing_guard._captured_line`, `routing_guard._standing_line`). The next-step and account-level lines follow only when they apply, then the summary line and the next action:
+
+```text
+<DO NOT PUBLISH banner>
+routing-guard: note line <n>: <per-row outcome>
+routing-guard: next step, <cause>: <fixed next step>
+routing-guard: summary: <n> captured, <n> already captured, <n> missing, <n> invalid, <n> excluded; key-on files: <n>, key-off files: <n>
+routing-guard: next: <fixed next action>
+```
+
+Compute, stdout. A run prints one status line (`routing_guard._STATUS_PASSED`, `routing_guard._STATUS_FAILED`), or one NOT RUN line per reason and note line (`routing_guard._NOT_RUN_REASONS`):
+
+```text
+routing-guard: <status, or NOT RUN: reason (note line <n>)>
+```
+
+Compute, the `--out` file (`routing_guard._out_file_text`):
+
+```text
+<DO NOT PUBLISH banner>
+<figure label>: <figure>
+```
+
+---
 
 ## cost-counts
 

@@ -1437,6 +1437,22 @@ def _hook_deny_current(
     return rec
 
 
+_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
+
+
+def _deny_gate_label_declarations(hook_name: str) -> list[str]:
+    text = (HOOKS_DIR / hook_name).read_text()
+    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
+
+
+def _declared_deny_gate_label(hook_name: str) -> str:
+    declarations = _deny_gate_label_declarations(hook_name)
+    assert len(declarations) == 1, (
+        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
+    )
+    return declarations[0]
+
+
 def _review_trace_args(
     *,
     projects: str = "*",

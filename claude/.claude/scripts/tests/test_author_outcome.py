@@ -13,6 +13,7 @@ from helpers import init_git_repo_with_commit
 from transcript_analysis import author_outcome as ao
 from transcript_analysis import corpus
 
+from ._review_round_helpers import _MARKER_WRITE_COMMAND, _marker_write_use
 from .conftest import (
     _agent_use,
     _asst,
@@ -59,13 +60,6 @@ def _config_dir_root(fake_projects: Path) -> Path:
 
 def _seed_ledger(fake_projects: Path, session_id: str, rows: list[dict]) -> Path:
     return _write_ledger_file(_config_dir_root(fake_projects), session_id, rows)
-
-
-_MARKER_WRITE_COMMAND = "marker.sh write code-review"
-
-
-def _marker_write_use(tool_id: str) -> dict:
-    return _bash_use(tool_id, _MARKER_WRITE_COMMAND)
 
 
 def _dispatch_start(tool_id: str, ts: str, *, agent_type: str = "code-writer", tool_name: str = "Agent") -> dict:
@@ -141,6 +135,25 @@ class TestIsCleanMarkerWrite:
         assert ao._is_clean_marker_write(f"echo {_MARKER_WRITE_COMMAND}") is False
 
 
+_ABSENT_ID = object()
+_NON_STRING_TOOL_USE_IDS = [
+    pytest.param(None, id="none-id"),
+    pytest.param(7, id="int-id"),
+    pytest.param(["w1"], id="list-id"),
+    pytest.param(_ABSENT_ID, id="missing-id"),
+]
+
+
+def _marker_write_use_with_id(tool_use_id: object) -> dict:
+    """A marker-write tool_use block whose `id` is `tool_use_id`, or has no `id` key for `_ABSENT_ID`."""
+    block = _marker_write_use("w1")
+    if tool_use_id is _ABSENT_ID:
+        del block["id"]
+    else:
+        block["id"] = tool_use_id
+    return block
+
+
 class TestRoundHasMarkerWrite:
     def test_sidechain_marker_write_alone_is_not_found(self):
         """isSidechain assistant records are a subagent's own transcript
@@ -155,6 +168,189 @@ class TestRoundHasMarkerWrite:
             _asst("claude-sonnet-5", content=[_marker_write_use("main-1")]),
         ]
         assert ao._round_has_marker_write(records, 0, len(records)) is True
+
+    def test_a_write_paired_with_an_ok_result_counts_when_confirmation_is_required(self):
+        records = [
+            _asst("claude-sonnet-5", content=[_marker_write_use("w1")]),
+            _user_msg([_tool_result("w1", "stored")]),
+        ]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is True
+
+    def test_a_write_paired_with_an_error_result_does_not_count_when_confirmation_is_required(self):
+        records = [
+            _asst("claude-sonnet-5", content=[_marker_write_use("w1")]),
+            _user_msg([{**_tool_result("w1", "denied"), "is_error": True}]),
+        ]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is False
+
+    def test_a_write_with_no_result_does_not_count_when_confirmation_is_required(self):
+        records = [_asst("claude-sonnet-5", content=[_marker_write_use("w1")])]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is False
+
+    def test_an_unpaired_write_still_counts_when_no_confirmation_collection_is_passed(self):
+        records = [_asst("claude-sonnet-5", content=[_marker_write_use("w1")])]
+
+        assert ao._round_has_marker_write(records, 0, len(records)) is True
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=None) is True
+
+    def test_an_ok_result_for_a_different_tool_use_does_not_confirm_the_write(self):
+        records = [
+            _asst("claude-sonnet-5", content=[_marker_write_use("w1")]),
+            _user_msg([_tool_result("other", "stored")]),
+        ]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is False
+
+    @pytest.mark.parametrize("malformed_tool_use_id", _NON_STRING_TOOL_USE_IDS)
+    def test_a_write_whose_tool_use_id_is_not_a_string_does_not_count_when_confirmation_is_required(
+        self, malformed_tool_use_id,
+    ):
+        records = [_asst("claude-sonnet-5", content=[_marker_write_use_with_id(malformed_tool_use_id)])]
+        succeeded = {"w1", "7"}
+
+        assert ao._records_have_clean_marker_write(records, succeeded) is False
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is False
+
+    @pytest.mark.parametrize("malformed_tool_use_id", _NON_STRING_TOOL_USE_IDS)
+    def test_a_write_whose_tool_use_id_is_not_a_string_still_counts_when_no_confirmation_collection_is_passed(
+        self, malformed_tool_use_id,
+    ):
+        records = [_asst("claude-sonnet-5", content=[_marker_write_use_with_id(malformed_tool_use_id)])]
+
+        assert ao._records_have_clean_marker_write(records) is True
+        assert ao._round_has_marker_write(records, 0, len(records)) is True
+
+    @pytest.mark.parametrize("truthy_is_error", ["false", 1], ids=["string-false", "int-one"])
+    def test_a_result_whose_is_error_is_a_truthy_non_bool_leaves_the_write_unconfirmed(self, truthy_is_error):
+        records = [
+            _asst("claude-sonnet-5", content=[_marker_write_use("w1")]),
+            _user_msg([{**_tool_result("w1", "stored"), "is_error": truthy_is_error}]),
+        ]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is False
+
+    @pytest.mark.parametrize("error_result_first", [True, False], ids=["error-then-ok", "ok-then-error"])
+    @pytest.mark.parametrize("same_user_record", [True, False], ids=["one-record", "two-records"])
+    def test_an_ok_result_confirms_the_write_whatever_the_result_order_characterization(
+        self, error_result_first, same_user_record,
+    ):
+        """Pins record-order independence: a write with both an ok and an error result reads as confirmed."""
+        error_result = {**_tool_result("w1", "denied"), "is_error": True}
+        ok_result = _tool_result("w1", "stored")
+        results = [error_result, ok_result] if error_result_first else [ok_result, error_result]
+        result_records = [_user_msg(results)] if same_user_record else [_user_msg([result]) for result in results]
+        records = [_asst("claude-sonnet-5", content=[_marker_write_use("w1")]), *result_records]
+
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert succeeded == {"w1"}
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is True
+
+    @pytest.mark.parametrize(
+        "never_ran_command",
+        [
+            pytest.param(f"true || {_MARKER_WRITE_COMMAND}", id="short-circuited-by-or"),
+            pytest.param(f"cat <<EOF\nnote && {_MARKER_WRITE_COMMAND}\nEOF", id="heredoc-body-text"),
+        ],
+    )
+    def test_a_write_recognized_only_by_shape_in_text_that_never_ran_counts_when_its_call_succeeds_characterization(
+        self, never_ran_command,
+    ):
+        """Pins that confirmation reads the call's result status, not whether the marker write ran."""
+        records = [
+            _asst("claude-sonnet-5", content=[_bash_use("w1", never_ran_command)]),
+            _user_msg([_tool_result("w1", "")]),
+        ]
+        succeeded = ao._succeeded_tool_use_ids(records)
+
+        assert ao._round_has_marker_write(records, 0, len(records), succeeded_tool_use_ids=succeeded) is True
+
+    @pytest.mark.parametrize(
+        ("has_clean_marker_write", "has_confirmed_marker_write", "expected_with_confirmation", "expected_attempted"),
+        [(True, True, True, True), (True, False, False, True), (False, False, False, False)],
+        ids=["confirmed-spawn", "attempted-only-spawn", "no-write-spawn"],
+    )
+    def test_a_spawn_in_the_span_counts_by_the_reading_asked_for(
+        self, has_clean_marker_write, has_confirmed_marker_write, expected_with_confirmation, expected_attempted,
+    ):
+        records = [_asst("claude-sonnet-5", content=[])]
+        spawns = [ao._OrchestratorSpawn(0, has_clean_marker_write, has_confirmed_marker_write, [])]
+
+        assert ao._round_has_marker_write(
+            records, 0, len(records), spawns, succeeded_tool_use_ids=frozenset(),
+        ) is expected_with_confirmation
+        assert ao._round_has_marker_write(records, 0, len(records), spawns) is expected_attempted
+
+
+class TestSucceededToolUseIds:
+    def test_an_error_result_is_excluded_and_a_result_without_is_error_is_included(self):
+        records = [_user_msg([
+            {**_tool_result("failed", "denied"), "is_error": True},
+            _tool_result("absent-flag", "fine"),
+            {**_tool_result("explicit-false", "fine"), "is_error": False},
+        ])]
+
+        assert ao._succeeded_tool_use_ids(records) == {"absent-flag", "explicit-false"}
+
+    def test_a_sidechain_result_is_skipped_unless_the_switch_is_turned_off(self):
+        sidechain_result = _user_msg([_tool_result("side-1", "fine")])
+        sidechain_result["isSidechain"] = True
+        records = [sidechain_result, _user_msg([_tool_result("main-1", "fine")])]
+
+        assert ao._succeeded_tool_use_ids(records) == {"main-1"}
+        assert ao._succeeded_tool_use_ids(records, skip_sidechain=False) == {"side-1", "main-1"}
+
+    def test_a_result_without_a_string_tool_use_id_is_ignored(self):
+        records = [_user_msg([
+            {"type": "tool_result", "content": "no id"},
+            {"type": "tool_result", "tool_use_id": ["unhashable"], "content": "list id"},
+            {"type": "tool_result", "tool_use_id": "", "content": "empty id"},
+        ])]
+
+        assert ao._succeeded_tool_use_ids(records) == set()
+
+    def test_a_tool_result_block_in_an_assistant_record_is_not_counted_as_a_success(self):
+        records = [
+            _asst("claude-sonnet-5", content=[_tool_result("assistant-side", "fine")]),
+            _user_msg([_tool_result("user-side", "fine")]),
+        ]
+
+        assert ao._succeeded_tool_use_ids(records) == {"user-side"}
+
+    @pytest.mark.parametrize(
+        "user_record",
+        [
+            pytest.param(_user_msg(None), id="content-is-none"),
+            pytest.param({"type": "user"}, id="no-message"),
+            pytest.param({"type": "user", "message": None}, id="message-is-none"),
+            pytest.param(_user_msg("plain prompt text"), id="content-is-a-string"),
+        ],
+    )
+    def test_a_user_record_without_list_content_yields_no_ids_and_does_not_raise(self, user_record):
+        records = [user_record, _user_msg([_tool_result("after", "fine")])]
+
+        assert ao._succeeded_tool_use_ids(records) == {"after"}
+
+    @pytest.mark.parametrize(
+        "non_dict_block",
+        [
+            pytest.param("bare string", id="str-element"),
+            pytest.param(None, id="none-element"),
+            pytest.param(7, id="int-element"),
+        ],
+    )
+    def test_a_non_dict_element_in_list_content_is_skipped_and_does_not_raise(self, non_dict_block):
+        records = [_user_msg([non_dict_block, _tool_result("valid", "fine")])]
+
+        assert ao._succeeded_tool_use_ids(records) == {"valid"}
 
 
 class TestConfigDirRootForSession:
@@ -3227,6 +3423,39 @@ class TestOrchestratorMarkerAttemptedNotConfirmed:
         assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
 
 
+class TestOrchestratorSpawnMarkerFacts:
+    @pytest.mark.parametrize(
+        ("marker_result", "expected_confirmed"),
+        [
+            (_user_msg([_tool_result("m1", "stored")], branch="feat", ts="2026-08-01T10:03:00.000Z"), True),
+            (
+                _user_msg(
+                    [{**_tool_result("m1", "denied"), "is_error": True}], branch="feat", ts="2026-08-01T10:03:00.000Z",
+                ),
+                False,
+            ),
+            (None, False),
+        ],
+        ids=["ok-result", "error-result", "no-result"],
+    )
+    def test_a_spawn_is_confirmed_only_by_a_paired_non_error_result_in_its_own_transcript(
+        self, fake_projects, marker_result, expected_confirmed,
+    ):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:04:00.000Z"),
+        ])
+        orchestrator_records = [_sonnet_asst("2026-08-01T10:02:00.000Z", [_marker_write_use("m1")])]
+        if marker_result is not None:
+            orchestrator_records.append(dict(marker_result))
+        _write_orchestrator_transcript(fake_projects, "sess-1", "o1", orchestrator_records)
+
+        (spawn,) = _collect_orchestrator_spawns(fake_projects)
+
+        assert spawn.has_clean_marker_write is True
+        assert spawn.has_confirmed_marker_write is expected_confirmed
+
+
 class TestOrchestratorUnreadableTranscriptCounter:
     """Each spawn whose transcript yields no records counts once under
     _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE, whatever else the session is."""
@@ -3578,6 +3807,9 @@ class TestOrchestratorTranscriptLeakTripwire:
                 sentinel("model"), branch=sentinel("branch"), ts="2026-08-01T10:01:40.000Z", request_id="req-3",
                 content=[_marker_write_use("m1")],
             ),
+            _user_msg(
+                [_tool_result("m1", sentinel("marker-write-result"))], branch=sentinel("branch"), ts="2026-08-01T10:01:45.000Z",
+            ),
         ]
         for position, record in enumerate(records):
             record["uuid"] = sentinel(f"uuid-{position}")
@@ -3627,10 +3859,13 @@ class TestOrchestratorTranscriptLeakTripwire:
         # and its nested code-writer, and the main-thread dispatch attributed to its round.
         assert len(spawns) == 1
         assert spawns[0].has_clean_marker_write is True
+        assert spawns[0].has_confirmed_marker_write is True
         assert [completion_idx for _start_ts, completion_idx in spawns[0].nested_dispatches] == [spawns[0].spawn_idx]
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 1
-        assert ao._OrchestratorSpawn._fields == ("spawn_idx", "has_clean_marker_write", "nested_dispatches")
+        assert ao._OrchestratorSpawn._fields == (
+            "spawn_idx", "has_clean_marker_write", "has_confirmed_marker_write", "nested_dispatches",
+        )
         for surfaced in (captured.out, captured.err, repr(result), repr(spawns)):
             assert _LEAK_SENTINEL not in surfaced
 
