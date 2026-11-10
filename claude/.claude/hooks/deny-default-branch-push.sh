@@ -62,7 +62,7 @@
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - Every mutating verb (`PUT`, `PATCH`, `POST` and `DELETE`) of a `gh api` call to `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which weakens or removes the server-side barrier above.
 #     The barrier needs an agent credential without repository-administration rights.
-#   - The `gh api` `repos/<owner>/<repo>/branches/<branch>/rename` endpoint, which the endpoint set does not list, so a default-branch rename passes and only the non-admin-credential requirement in docs/hooks.md § "Required server-side protection" covers it.
+#   - The `gh api` `repos/<owner>/<repo>/branches/<branch>/rename` endpoint, which the endpoint set does not list, so a default-branch rename passes and only the non-admin-credential requirement in docs/security-hardening.md § "Required server-side branch protection" covers it.
 #   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes, such as `gh api -X PUT -f message="add readme" $URL`.
 #   - A `gh api` endpoint written after a quoted multi-word flag value. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes.
 #   - A `gh api` endpoint written after a flag value holding a command substitution. The `gh api` fragment is cut at the substitution, so a ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
