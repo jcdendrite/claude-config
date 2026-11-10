@@ -152,6 +152,7 @@ claude/.claude/telemetry/
 # hooks/skills but is per-machine scratch space regardless of origin.
 claude/.claude/.activate-handoff-bypass.log
 claude/.claude/.architect-consult-latch.d/
+claude/.claude/.diff-size-prompt-latch.d/
 claude/.claude/.code-writer-self-review.d/
 claude/.claude/.code-writer-self-review.log
 claude/.claude/.handoff-nudge-fired.d/

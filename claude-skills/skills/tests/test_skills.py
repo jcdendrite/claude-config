@@ -62,9 +62,15 @@ from helpers import (
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    backticked_field_tokens,
+    change_type_table_rows,
     extract_skill_command,
+    heading_section_bounds,
     heading_texts,
+    input_contract_field_tokens,
+    input_contract_section,
     normalize_heading,
+    prompt_contract_agent_names,
     run_skill_command,
 )
 
@@ -723,6 +729,25 @@ class TestReviewLedgerAuthoringEffortLiteral:
             "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
             "main finding append, main-flow CLEAN append) -- found "
             f"{skill_body.count(literal)}"
+        )
+
+
+class TestReviewLedgerReviewerLaneLiteral:
+    """The per-finding append template carries `--reviewer '<lane>'` once, in the
+    code span that also names the ADDRESS|DEFER|SETTLED dispositions, so moving
+    the flag onto the CLEAN template, or duplicating it, fails."""
+
+    def test_reviewer_flag_sits_once_on_the_per_finding_append_template(self):
+        skill_body = _skill_body("code-review")
+        literal = "--reviewer '<lane>'"
+
+        assert skill_body.count(literal) == 1, (
+            f"code-review/SKILL.md must carry {literal!r} exactly once, on the per-finding append "
+            f"template -- found {skill_body.count(literal)}"
+        )
+        template_span = re.search(r"`([^`\n]*" + re.escape(literal) + r"[^`\n]*)`", skill_body)
+        assert template_span is not None and "--disposition ADDRESS|DEFER|SETTLED" in template_span.group(1), (
+            f"{literal!r} must sit in the inline code span of the ADDRESS|DEFER|SETTLED append template"
         )
 
 
@@ -5148,29 +5173,6 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_rows(skill_md_path: Path) -> list[str]:
-    """Raw row-line strings of every data row in the Change-type table.
-
-    Shared header-lookup-and-row-walk for every reader of the Change-type
-    table — `_change_type_table_left_columns` and
-    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    both build on this instead of re-walking the table themselves.
-    """
-    lines = skill_md_path.read_text().splitlines()
-    header_index = next(
-        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
-        None,
-    )
-    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
-
-    rows = []
-    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
-        if not line.startswith("|"):
-            break
-        rows.append(line)
-    return rows
-
-
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 
@@ -5181,7 +5183,7 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     `test_scope_exempt_row_excludes_security_controls_row`), a resulting
     mismatch surfaces as a loud assertion failure, not silently.
     """
-    return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
+    return [row.split("|")[1].strip() for row in change_type_table_rows(skill_md_path)]
 
 
 def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
@@ -5193,7 +5195,7 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     shorthand `_change_type_table_left_columns` returns.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-    for line in _change_type_table_rows(skill_md_path):
+    for line in change_type_table_rows(skill_md_path):
         # line.split("|")[1] truncates at an embedded pipe in the left cell,
         # same caveat as _change_type_table_left_columns's identical parse.
         if line.split("|")[1].strip() == exempt_shorthand:
@@ -5305,18 +5307,9 @@ def _section_between(
     inferred — a renamed or deleted heading would otherwise extract as empty
     and compare equal to another empty extraction.
     """
-    start_idx = next(
-        (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
-        None,
-    )
-    assert start_idx is not None, f"{path}: {start_heading!r} heading not found."
-
-    end_idx = len(lines)
-    for j in range(start_idx + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end_idx = j
-            break
-    return start_idx, end_idx
+    bounds = heading_section_bounds(lines, start_heading)
+    assert bounds is not None, f"{path}: {start_heading!r} heading not found."
+    return bounds
 
 
 _READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
@@ -5340,6 +5333,37 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
         f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
         "--cached) review basis — that's the commit-gate pass's job, not the "
         "cumulative sweep's"
+    )
+
+
+def test_ready_for_review_step3_discards_the_diff_stdout() -> None:
+    """GH-1296: step 3 hands the diff on by its `DIFF_FILE:` path, so printing
+    it to stdout only adds its bytes to the session's context. The command
+    must end at `> /dev/null` with no further redirect, because an appended
+    `2>&1` would discard the `DIFF_EMPTY:` and `DIFF_FILE:` stderr signals
+    step 3 acts on. Step 3 must contain no other invocation line, since a
+    bare second one would print the diff again.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --record --diff-file > /dev/null"
+    invocation_lines = [
+        line
+        for line in section_text.splitlines()
+        if line.startswith("~/.claude/scripts/pr-diff-against-base.sh")
+    ]
+    assert invocation_lines == [discarding_command], (
+        f"{skill_md_path}: step 3's only pr-diff-against-base.sh invocation line must be "
+        f"exactly {discarding_command!r}, ending at '> /dev/null' with no further "
+        "redirect, so the diff stays out of the session and stderr still reaches it; "
+        f"found {invocation_lines!r}"
+    )
+    assert "Read the diff only from the file at that path" in section_text, (
+        f"{skill_md_path}: step 3 no longer tells the session to read the diff "
+        "from the DIFF_FILE: path now that stdout is discarded"
     )
 
 
@@ -5517,7 +5541,10 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     inside the row itself and not in Step 0. A file-wide `in` check would
     pass just as well if a later edit moved the instruction back into the
     row or into Step 0, so this locates the note's own text before also
-    checking the file-wide occurrence count.
+    checking the file-wide occurrence count. It also pins the note's
+    `> /dev/null` redirect, with no further redirect after it, so the staged
+    diff stays out of the session's context while the script's stderr signals
+    still reach it.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
@@ -5544,6 +5571,13 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert text.count(staged_diff_literal) == 1, (
         f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
         "the resolution note only -- not duplicated into Step 0 or the row"
+    )
+
+    discarding_command = "~/.claude/scripts/pr-diff-against-base.sh --staged --diff-file > /dev/null"
+    assert discarding_command + "`" in note_text, (
+        f"{skill_md_path}: the resolution note must run {discarding_command!r} "
+        "as a code span that ends right after the redirect, so the diff stays "
+        "out of the session and stderr still reaches it"
     )
 
     for literal in (
@@ -5617,7 +5651,11 @@ def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
 
 
 def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
-    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip."""
+    """The dispatcher and the agent name the same input token, and the spawn keeps its `/review-pr` skip.
+
+    Its `plan_path:` checks overlap `test_prompt_contract_site_matches_agent_contract`.
+    It stays for the spawn-condition literals: the Step 5 condition and the `/review-pr` skip.
+    """
     routing_roles_text = _heading_section_text(_ROUTING_MD_PATH, "## Reviewer roles")
     agent_input_contract_text = _heading_section_text(
         _AGENTS_DIR / "comment-discipline-reviewer.md", "## Input contract"
@@ -5632,6 +5670,221 @@ def test_plan_review_hands_comment_discipline_reviewer_a_plan_path() -> None:
         )
     assert "`plan_path:`" in agent_input_contract_text, (
         "comment-discipline-reviewer.md: Input contract no longer names `plan_path:`"
+    )
+
+
+class _PromptContractDispatchSite(NamedTuple):
+    label: str
+    agent_file: str
+    site_text: Callable[[], str]
+    sent_tokens: frozenset[str]
+    exclusion_sentence: str
+    forbidden_phrases: tuple[str, ...]
+
+
+_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR = "- Always spawn `comment-discipline-reviewer`"
+
+
+def _plan_review_comment_discipline_spawn_text(routing_md_path: Path) -> str:
+    """The comment-discipline-reviewer spawn bullet and its indented continuation paragraph in ROUTING.md.
+
+    An unindented continuation line ends the window, so a sentence added there
+    falls outside it.
+    """
+    lines = routing_md_path.read_text().splitlines()
+    start_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR)
+        ),
+        None,
+    )
+    assert start_index is not None, (
+        f"{routing_md_path}: no line starts with "
+        f"{_PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR!r}"
+    )
+    end_index = start_index + 1
+    while end_index < len(lines) and (
+        not lines[end_index].strip() or lines[end_index].startswith(" ")
+    ):
+        end_index += 1
+    return "\n".join(lines[start_index:end_index]).rstrip()
+
+
+class TestPlanReviewCommentDisciplineSpawnText:
+    _SPAWN_BULLET = (
+        "- Always spawn `comment-discipline-reviewer` on every round.\n"
+        "  - `plan_path:` with the plan file's path\n"
+        "\n"
+        "  It gets no Item ownership routing. It keys its findings by angle name.\n"
+    )
+
+    def test_text_appended_after_the_paragraphs_last_sentence_is_inside_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(
+            self._SPAWN_BULLET.rstrip("\n") + " Also pass it `declared:`.\n"
+            "\n"
+            "- Next unindented bullet.\n"
+        )
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert window.endswith("Also pass it `declared:`.")
+        assert "It gets no Item ownership routing." in window
+
+    def test_next_unindented_bullet_is_outside_the_window(self, tmp_path: Path) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(self._SPAWN_BULLET + "\n- Always spawn `other-reviewer` for `declared:`.\n")
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert "other-reviewer" not in window
+        assert "declared:" not in window
+
+    @pytest.mark.parametrize("trailing_blank_lines", ["", "\n", "\n\n\n"])
+    def test_spawn_bullet_that_ends_the_file_returns_its_whole_paragraph(
+        self, tmp_path: Path, trailing_blank_lines: str
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text("- Earlier bullet.\n\n" + self._SPAWN_BULLET + trailing_blank_lines)
+
+        window = _plan_review_comment_discipline_spawn_text(path)
+
+        assert window == self._SPAWN_BULLET.rstrip("\n")
+
+    def test_reworded_start_anchor_raises_an_assertion_error_naming_the_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "ROUTING.md"
+        path.write_text(
+            self._SPAWN_BULLET.replace("Always spawn", "Spawn")
+        )
+
+        with pytest.raises(AssertionError) as excinfo:
+            _plan_review_comment_discipline_spawn_text(path)
+        assert str(path) in str(excinfo.value)
+        assert _PLAN_REVIEW_COMMENT_DISCIPLINE_SPAWN_ANCHOR in str(excinfo.value)
+
+
+# Every dispatch site that hands an agent with an Input contract field list its prompt.
+# A new site for a listed agent goes here, or it escapes test_prompt_contract_site_matches_agent_contract.
+_PROMPT_CONTRACT_DISPATCH_SITES = (
+    _PromptContractDispatchSite(
+        label="code-review",
+        agent_file="comment-discipline-reviewer.md",
+        site_text=lambda: _scope_exempt_change_type_row_text(_skill_file("code-review")),
+        sent_tokens=frozenset({"diff:", "findings_path:", "prior_decisions:"}),
+        exclusion_sentence=(
+            "Send it no diff scope, specific question, declared value or declaration "
+            'block from the "Spawn per question" paragraph, and no return budget from '
+            'the "Other spawned specialists" paragraph below this table.'
+        ),
+        forbidden_phrases=(
+            "declaration block",
+            "specific question",
+            "return budget",
+            "diff scope",
+            "declared value",
+            "declared:",
+        ),
+    ),
+    _PromptContractDispatchSite(
+        label="plan-review",
+        agent_file="comment-discipline-reviewer.md",
+        site_text=lambda: _plan_review_comment_discipline_spawn_text(_ROUTING_MD_PATH),
+        sent_tokens=frozenset({"plan_path:", "findings_path:", "prior_decisions:"}),
+        exclusion_sentence=(
+            "It gets no Item ownership routing and no Ledger cross-check instruction."
+        ),
+        forbidden_phrases=(
+            "declared:",
+            "Declaration block",
+            "Item ownership",
+            "Ledger cross-check",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "site", _PROMPT_CONTRACT_DISPATCH_SITES, ids=lambda site: site.label
+)
+def test_prompt_contract_site_matches_agent_contract(site: _PromptContractDispatchSite) -> None:
+    """A dispatching site cites the agent's Input contract and names exactly the fields it sends, each one the contract lists.
+
+    Each item the site's exclusion sentence names appears nowhere else in the site,
+    and the site carries the phrase "its prompt carries only". Other added prose goes
+    unchecked, and the agent's shared sentences set it aside at runtime.
+
+    The agent's Input contract is the one home for what its dispatch prompt may carry.
+    docs/design-decisions/agent-input-contract-owns-dispatch-fields.md records why the contract owns the fields.
+    """
+    site_text = site.site_text()
+    agent_contract_tokens = input_contract_field_tokens(
+        input_contract_section(_AGENTS_DIR / site.agent_file)
+    )
+    assert agent_contract_tokens, (
+        f"{site.agent_file}: '## Input contract' section not found or lists no field bullet."
+    )
+    citation = f'`claude/.claude/agents/{site.agent_file}` § "Input contract"'
+    assert citation in site_text, f"{site.label}: site no longer cites {citation}"
+    named_tokens = backticked_field_tokens(site_text)
+    assert named_tokens == site.sent_tokens, (
+        f"{site.label}: site names {sorted(named_tokens)}, but the fields it sends are "
+        f"{sorted(site.sent_tokens)}. A backticked mention of a field token counts as sending it, "
+        "even in a negation, so the exclusion sentence names the declared value without backticks."
+    )
+    assert site.sent_tokens <= agent_contract_tokens, (
+        f"{site.label}: {sorted(site.sent_tokens - agent_contract_tokens)} not in "
+        f"{site.agent_file}'s Input contract fields {sorted(agent_contract_tokens)}"
+    )
+    assert site_text.count(site.exclusion_sentence) == 1, (
+        f"{site.label}: site must carry its exclusion sentence exactly once: "
+        f"{site.exclusion_sentence!r}"
+    )
+    lowered_site_text = site_text.lower()
+    assert "its prompt carries only" in lowered_site_text, (
+        f"{site.label}: site no longer says its prompt carries only the fields it sends."
+    )
+    lowered_exclusion_sentence = site.exclusion_sentence.lower()
+    for phrase in site.forbidden_phrases:
+        lowered_phrase = phrase.lower()
+        allowed_count = lowered_exclusion_sentence.count(lowered_phrase)
+        assert lowered_site_text.count(lowered_phrase) == allowed_count, (
+            f"{site.label}: {phrase!r} appears {lowered_site_text.count(lowered_phrase)} time(s) "
+            f"in the site, but only {allowed_count} inside its exclusion sentence. The agent's "
+            "Input contract does not list that part of a prompt."
+        )
+
+
+def test_code_review_exclusion_sentence_cites_paragraphs_that_exist() -> None:
+    """The /code-review row's exclusion sentence names two paragraphs, so each must still open a line in the skill.
+
+    Both names also occur inside the exclusion sentence, so only a line-start match proves the paragraph exists.
+    """
+    skill_md_path = _skill_file("code-review")
+    lines = skill_md_path.read_text().splitlines()
+    for paragraph_name in ("Spawn per question", "Other spawned specialists"):
+        assert any(line.startswith(paragraph_name) for line in lines), (
+            f"{skill_md_path}: no line starts with {paragraph_name!r}, the paragraph the "
+            "comment-discipline row's exclusion sentence cites."
+        )
+
+
+def test_prompt_contract_sites_cover_every_contract_agent() -> None:
+    """An agent under claude/.claude/agents with Input contract field bullets and no listed dispatch site fails here.
+
+    Scans claude/.claude/agents only, not plugin agent directories.
+    """
+    agents_with_sites = {site.agent_file for site in _PROMPT_CONTRACT_DISPATCH_SITES}
+    agents_with_fields = prompt_contract_agent_names(_AGENTS_DIR)
+    assert agents_with_sites == agents_with_fields, (
+        f"Agents with Input contract field bullets are {sorted(agents_with_fields)}, but "
+        f"_PROMPT_CONTRACT_DISPATCH_SITES names {sorted(agents_with_sites)}. Add each dispatching "
+        "site of the missing agent(s) to _PROMPT_CONTRACT_DISPATCH_SITES."
     )
 
 
@@ -5942,6 +6195,7 @@ class TestPlanItStep7PushConsent:
 
 # Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
 # cannot match to this session, or from running on its own.
+# One clause has the skill set each relayed command off as a fenced code block.
 _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "run_only_when_asked": (
         "Run only when the engineer asked to resume in this session. Never run the "
@@ -5980,11 +6234,9 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
         "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
         "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
-        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
-        "header (§3 in a brief) names if you read the file and it is an absolute path made "
-        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
-        "say the directory is unknown and must come from the session that wrote the file; "
-        "name none."
+        "(on `LOAD:` it equals `SESSION_TARGET:`). When `FILE_TARGET:` is `none`, the "
+        "script printed no directory for the file: say the directory is unknown and must "
+        "come from the session that wrote the file; name none."
     ),
     "unreadable_file_target_relay": (
         "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
@@ -5995,8 +6247,10 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
     "slash_form_only_for_matching_candidates": (
         "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
         "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
-        "when either is `unknown`. Any other candidate needs the shell command on its "
-        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+        "when either is `unknown`. A candidate whose file name starts with `-` or `@` is "
+        "never suggested as `/resume-context <name>`. Every candidate not suggested that way "
+        "needs the shell command on its `CANDIDATE:` line, which you relay as a command for "
+        "a new terminal."
     ),
     "unreadable_or_absent_candidate_target_caveat": (
         "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
@@ -6031,6 +6285,10 @@ _PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
         "Relay the line verbatim as a command for a new terminal, not as a slash "
         "command. The file is still pending. Stop."
     ),
+    "fence_each_relayed_command": (
+        "In chat replies, put each command this skill has you relay or suggest alone "
+        "in its own fenced code block."
+    ),
 }
 
 
@@ -6058,6 +6316,136 @@ class TestResumeContextSkill:
         read = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["read_only_after_session_target_matches"].split())
         assert 0 <= body.find(comparison) < body.find(read), (
             "resume-context/SKILL.md: the SESSION_TARGET comparison clause no longer starts before the `Read` clause."
+        )
+
+
+# Clauses of the handoff §7 and brief §7.5 resume-command sections that make the
+# written `--cwd` the directory the resumed session starts in, which the announce
+# message compares with the session's worktree to pick the resume route. Each
+# section states the directory rule and the command forms (three bullets), then a
+# second paragraph. The second paragraph holds the `cd <path> &&` prohibition and
+# the instruction to relay the announce hook's resume route, so a trim at the
+# line cap must fail here.
+_PINNED_RESUME_DIRECTORY_CLAUSES: dict[str, tuple[str, str, str]] = {
+    "handoff_directory_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "The directory is the root of the worktree or checkout where §3's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a question it is this session's own "
+        "directory, as §4's header names it.",
+    ),
+    "handoff_cwd_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/handoffs/<slug>-handoff.md`.",
+    ),
+    "handoff_bare_form_bullet": (
+        "handoff",
+        "## §7 Resume command",
+        "Write the bare form `resume-context <config-dir>/handoffs/<slug>-handoff.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §4's header names it too. In every other case write the "
+        "first form alone.",
+    ),
+    "handoff_second_paragraph": (
+        "handoff",
+        "## §7 Resume command",
+        "Relay the resume route the announce hook names after the write to the "
+        "engineer. `--cwd` makes the launched session start "
+        "in that directory regardless of where the resume command is actually run from "
+        "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so nothing depends on the resuming "
+        "session remembering to read or delete the file.",
+    ),
+    "brief_directory_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "The directory is the root of the worktree or checkout where §6's first step "
+        "runs, or that directory itself outside any repository. For a step that creates "
+        "a worktree it is the existing directory the step runs from. For a first step "
+        "that names no directory or is only a decision it is the worktree §3 names, "
+        "else this session's own directory.",
+    ),
+    "brief_cwd_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write `resume-context --cwd <worktree path> <config-dir>/briefs/<slug>-task.md`.",
+    ),
+    "brief_bare_form_bullet": (
+        "brief",
+        "## §7.5 Resume command",
+        "Write the bare form `resume-context <config-dir>/briefs/<slug>-task.md` "
+        "instead only when that directory is the one this session runs in outside any "
+        "linked worktree and §3 names no other directory. In every other case write the "
+        "first form alone.",
+    ),
+    "brief_second_paragraph": (
+        "brief",
+        "## §7.5 Resume command",
+        "Relay the resume route the announce hook names after the write to the "
+        "engineer. `--cwd` makes the launched session start "
+        "in that directory regardless of where the resume command is actually run from "
+        "— do not use a `cd <path> &&` prefix instead, which only works if the invoker "
+        "happens to already be positioned to run it. The command moves the file to a fresh "
+        "temp path and launches a new session with it loaded, so picking up the brief doesn't depend "
+        "on the fresh session remembering to read or delete the file.",
+    ),
+}
+
+_HANDOFF_SECTION4_HEADING = "## §4 Files modified this session"
+_HANDOFF_SECTION4_REENTER_PHRASE = (
+    "Direct the resuming session to re-enter §7's directory (its `--cwd`, or this "
+    "header's directory when §7 is bare) before"
+)
+
+
+class TestResumeCommandDirectoryClauses:
+    """Pin the §7/§7.5 text that makes `--cwd` the directory the resumed session
+    starts in. The tests check wording and the clause's right edge, not behavior.
+    On failure, re-read the guarantee and update the constant only if the new
+    wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_RESUME_DIRECTORY_CLAUSES))
+    def test_pinned_clause_matches_live_text(self, clause_key: str) -> None:
+        skill_name, heading, pinned_text = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
+        raw_section = _raw_heading_section_text(_skill_file(skill_name), heading)
+        _assert_pinned_clause_right_bounded(
+            " ".join(pinned_text.split()),
+            raw_section,
+            context=f"{skill_name}/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
+        )
+
+    @pytest.mark.parametrize(
+        "clause_key",
+        [
+            "handoff_directory_bullet",
+            "handoff_cwd_form_bullet",
+            "handoff_bare_form_bullet",
+            "brief_directory_bullet",
+            "brief_cwd_form_bullet",
+            "brief_bare_form_bullet",
+        ],
+    )
+    def test_directory_rule_clause_is_one_unwrapped_line(self, clause_key: str) -> None:
+        """A hard wrap inside a clause that holds a command splits the command, and the
+        template contract's scan joins lines only on a trailing backslash.
+        """
+        skill_name, heading, clause = _PINNED_RESUME_DIRECTORY_CLAUSES[clause_key]
+        section_lines = [
+            line.removeprefix("- ") for line in _raw_heading_section_text(_skill_file(skill_name), heading).splitlines()
+        ]
+        assert clause in section_lines, (
+            f"{skill_name}/SKILL.md: the {clause_key!r} clause is not one unwrapped line of its section."
+        )
+
+    def test_handoff_section4_directs_reentry_to_the_resume_directory(self) -> None:
+        section_text = _heading_section_text(_skill_file("handoff"), _HANDOFF_SECTION4_HEADING)
+        assert _HANDOFF_SECTION4_REENTER_PHRASE in section_text, (
+            "handoff/SKILL.md: §4 no longer directs the resuming session to re-enter §7's directory."
         )
 
 
@@ -6769,7 +7157,7 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "ADDRESS or fresh DEFER of a repeat carries `--ref <id>` so the old "
     "row retires; another finding at the site leaves it live. The "
     "round report relays each `carry of decision` line, and a reopen "
-    "is logged `ADDRESS --ref <id>`, which retires the decision and its "
+    "is logged `ADDRESS --ref <id> --relog`, which retires the decision and its "
     "carries from the PR block."
 )
 
@@ -7674,8 +8062,30 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
-        "--defer-criterion '<name>' --ref '<id>' --cited-line '<file:line>']",
+        "--defer-criterion '<name>' --ref '<id>' --relog --cited-line '<file:line>']",
         id="append-template-quotes-criterion-ref-and-cited-line",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "Finding | Lane | Disposition | Rationale",
+        id="disposition-table-names-the-lane-column",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "`skill-tool` marks a Skill-tool review's finding, `unrostered-agent` marks a finding a spawned reviewer "
+        "agent outside the roster raised, and `orchestrator` marks any finding no reviewer agent or Skill-tool "
+        "review raised.",
+        id="lane-cell-defines-the-three-non-roster-literals",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "CLEAN takes no lanes",
+        id="clean-append-takes-no-lanes",
+    ),
+    pytest.param(
+        "code-review", "## Review-narrative ledger",
+        "as a reopen, a gate-denial recovery and a `--carry-forward` withdrawal do",
+        id="relog-is-for-a-row-that-only-re-logs-its-decision",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",

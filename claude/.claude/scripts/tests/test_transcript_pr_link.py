@@ -5,7 +5,7 @@ import json
 import subprocess
 
 import pytest
-from transcript_analysis import gh_cli, pr_link
+from transcript_analysis import cli, gh_cli, pr_link
 
 from .conftest import _asst, _table_cols, _write_jsonl
 
@@ -385,3 +385,15 @@ class TestPrLink:
         assert set(recorded) == {"list", "issues", "pulls"}
         for kwargs in recorded.values():
             assert kwargs["timeout"] == gh_cli._GH_CALL_TIMEOUT_S
+
+
+class TestPrLinkArgparseWiring:
+    def test_pr_link_without_repo_flag_defaults_to_none(self):
+        parser = cli.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])
+        assert parsed.repo is None
+
+    def test_pr_link_with_repo_flag_parses_value(self):
+        parser = cli.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y", "--repo", "owner/repo"])
+        assert parsed.repo == "owner/repo"

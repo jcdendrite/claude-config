@@ -26,6 +26,7 @@
 # went. Both emit from the same jq call and share its `-n --arg dest`
 # guard; a missing destination, missing jq, or any failure building either
 # message emits nothing and falls through to `exit 0`.
+# The `systemMessage` puts the reload command alone on its second line in single backticks, for the reason recorded in announce-resume-command.sh's header.
 #
 # Kill-switch: touching ~/.claude/.consume-durable-continuity-disabled
 # suppresses this hook entirely, mirroring
@@ -120,6 +121,7 @@ TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/nul
 FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 [ -n "$FILE_PATH" ] || exit 0
 
+# Glob copy: see "Paired glob sites" in announce-resume-command.sh.
 case "$FILE_PATH" in
   "$CONFIG_DIR"/handoffs/*-handoff.md | "$CONFIG_DIR"/briefs/*-task.md) ;;
   *) exit 0 ;;
@@ -138,7 +140,7 @@ if [ -n "$DEST" ] && command -v jq >/dev/null 2>&1; then
   # shellcheck disable=SC2016 # single-quoted on purpose: $dest is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
   _lib_jq -n --arg dest "$DEST" \
     '{
-      systemMessage: ("Continuity file moved to " + $dest + ". Reload with: claude --append-system-prompt-file " + $dest),
+      systemMessage: ("Continuity file moved to " + $dest + ". Reload with:\n`claude --append-system-prompt-file " + $dest + "`"),
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
         additionalContext: ("The /handoff or /brief continuity file you just read has been consumed: it no longer exists at the path you read, and now lives at " + $dest + ". Its contents are in this tool result.")

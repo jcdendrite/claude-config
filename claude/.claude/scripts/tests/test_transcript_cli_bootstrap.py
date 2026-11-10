@@ -1,14 +1,13 @@
 """Real-subprocess invocation of the CLI shim and its two sibling scripts.
 
-Every other test in this suite loads these scripts via
+The in-process tests import `transcript_analysis` directly or load a script via
 `importlib.util.spec_from_file_location` + `exec_module`, with pytest's own
 `pythonpath` ini entry making `from transcript_analysis import ...` resolve.
-A real `python3 transcript-analysis.py ...` invocation has neither of those --
+A real `python3 transcript-analysis.py ...` invocation has no such entry --
 it resolves the package purely through `sys.path[0]` (the script's own
 directory, which CPython sets for a directly-invoked script). This is the one
-bootstrap path no in-process test exercises, and the one a later
-phase's import changes could break silently while every in-process test still
-passes.
+bootstrap path no in-process test exercises, so an import change in the script
+or the package can break it while every in-process test still passes.
 """
 from __future__ import annotations
 
@@ -1157,6 +1156,17 @@ def test_transcript_analysis_review_cost_by_size_subprocess_refuses_without_this
     real argparse dispatches review-cost-by-size to cmd_review_cost_by_size through set_defaults(func=...).
     The stderr text is what separates the command's own refusal from an argparse usage error, which also exits 2."""
     result = _run("transcript-analysis.py", "review-cost-by-size")
+
+    assert result.returncode == 2
+    assert "requires --this-repo" in result.stderr
+    assert result.stdout == ""
+
+
+def test_transcript_analysis_read_cost_subprocess_refuses_without_this_repo():
+    """Proves, in a fresh interpreter, that read_cost.py resolves through sys.path[0] alone and that real argparse
+    dispatches read-cost to cmd_read_cost through set_defaults(func=...). The stderr text is what separates the
+    command's own refusal from an argparse usage error, which also exits 2."""
+    result = _run("transcript-analysis.py", "read-cost")
 
     assert result.returncode == 2
     assert "requires --this-repo" in result.stderr

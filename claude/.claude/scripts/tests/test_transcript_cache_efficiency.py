@@ -3,16 +3,19 @@ classifier, the per-group scan's chain keying and compaction reset, and cmd_cach
 end, including the --no-redact refusal and the per-account breakdown.
 """
 import pytest
-from transcript_analysis import cache_efficiency, scope
+from transcript_analysis import cache_efficiency, cli, scope
 
 from ._cache_efficiency_helpers import _cache_efficiency_args
 from .conftest import (
+    _agent_use,
+    _asst,
     _compact_boundary_rec,
     _priced,
     _table_cols,
     _user_msg,
     _write_cost_root,
     _write_jsonl,
+    _write_subagent_jsonl,
 )
 
 
@@ -314,3 +317,86 @@ class TestCacheEfficiency:
         assert account_1["ColdTok"] == "0"
         assert account_2["ColdEvts"] == "1"
         assert account_2["ColdTok"] == "500"
+
+
+class TestCacheEfficiencyFormatDriftCanary:
+    def test_drift_warning_also_fires_in_cache_efficiency(self, fake_projects, capsys):
+        """cmd_cache_efficiency also emits the drift warning when spawns
+        have no sidechain turns."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_on_healthy_corpus(self, fake_projects, capsys):
+        """The negative counterpart for cmd_cache_efficiency: no spawns, no
+        warning."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", cache_read=100),
+        ])
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_real_sidechain_turn(self, fake_projects, capsys):
+        """The true no-drift case: a spawn paired with an actual sidechain
+        assistant turn in the subagents/ file. The spawn-only case above
+        (sidechain=0) and the no-spawn case (sidechain=0) both leave
+        total_sidechain_turns at 0 regardless of whether
+        _scan_cache_efficiency_group's return value is summed correctly --
+        only this spawn=1/sidechain=1 case proves the accumulation actually
+        works, since a dropped or off-by-one return value would still print
+        no warning in the other two cases but would wrongly warn here."""
+        session_id = "sess-side"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        side_rec = _priced("claude-sonnet-5", cache_read=100)
+        side_rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [side_rec])
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+    def test_no_warning_in_cache_efficiency_with_spawn_and_unpriced_sidechain_turn(self, fake_projects, capsys):
+        """The cache-efficiency counterpart to
+        TestCostFormatDriftCanary.test_no_warning_in_cost_with_spawn_and_unpriced_sidechain_turn
+        (test_transcript_cost.py): an unpriced sidechain assistant turn must
+        still count toward
+        _scan_cache_efficiency_group's returned sidechain_turns_read, since
+        that count happens before the group scan's own `if not usage:
+        continue` guard."""
+        session_id = "sess-unpriced-side-ce"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "a1", [
+            _asst("claude-opus-4-7", branch="main", sidechain=True),
+        ])
+        cache_efficiency.cmd_cache_efficiency(_cache_efficiency_args())
+        assert "WARNING" not in capsys.readouterr().err
+
+
+class TestCacheEfficiencyArgparseWiring:
+    """Round-trips the real argparser. _cache_efficiency_args() builds a
+    plain args object without it, so it cannot catch a dest= typo or a
+    missing set_defaults(func=...)."""
+
+    def test_registers_cache_efficiency_subcommand_with_expected_defaults(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["cache-efficiency"])
+        assert args.extra_config_dirs is None
+        assert args.no_redact is False
+        assert args.func == cache_efficiency.cmd_cache_efficiency
+
+    def test_config_dir_and_no_redact_wire_to_expected_attributes(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["cache-efficiency", "--config-dir", "X", "--no-redact"])
+        assert args.func is cache_efficiency.cmd_cache_efficiency
+        assert args.extra_config_dirs == ["X"]
+        assert args.no_redact is True

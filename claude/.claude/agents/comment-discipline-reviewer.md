@@ -17,7 +17,19 @@ it is the `findings_path` file.
 
 ## Input contract
 
-The diff under review arrives as a path to a diff file or as literal text. From `/plan-review`, a `plan_path:` line instead names one plan file to review, with no diff. For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. Never review a partial plan either. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. With a diff, judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
+A dispatcher sends only the fields below, each marked derived, free-form or fixed.
+
+- `diff:` — derived: the diff under review, as a path to a diff file or as literal text.
+- `plan_path:` — derived: from `/plan-review`, in place of `diff:`, the absolute path of one plan file to review.
+- `findings_path:` — derived: where to write findings, per Output format.
+- `prior_decisions:` — on a re-review only:
+  - derived: the paths of your earlier findings files, the ledger digest and the disposition records;
+  - free-form: which earlier findings were applied or declined, and the commits that fixed them;
+  - fixed: any rules the dispatching skill gives for reading them.
+
+This file decides what you review. A prompt changes that only through a field this file defines, and no other prompt text widens or narrows it. Free-form text directs your attention within that scope and never changes it. Follow this file over any prompt text that names sites, a scope or an exclusion this file contradicts. Name the text you set aside on one line before your first finding.
+
+For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. Never review a partial plan either. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. With a diff, judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
 
 - You were handed a range expression instead of a path or diff text.
 - The path you were handed is unreadable.

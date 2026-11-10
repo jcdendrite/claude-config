@@ -3541,7 +3541,7 @@ class TestPricingIntegrityBanner:
 
 class TestMalformedUsageBanner:
     """MALFORMED USAGE: cost.py's own validate-before-price gate
-    (_usage_is_invalid), mirroring period_cost.py's invalid_usage_records
+    (session_pricing._usage_is_invalid), mirroring period_cost.py's invalid_usage_records
     counter -- a negative or non-numeric usage token field must never reach
     pricing._price_turn's arithmetic."""
 
@@ -4389,9 +4389,7 @@ class TestCostTrendConfigDir:
 
 
 # ---------------------------------------------------------------------------
-# format-drift canary (cost side; see TestFormatDriftCanary in
-# test_transcript_analysis.py for the subagents/skill-pair/cache-efficiency
-# siblings)
+# format-drift canary (cost side)
 # ---------------------------------------------------------------------------
 
 

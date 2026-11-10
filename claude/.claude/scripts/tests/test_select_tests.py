@@ -1635,6 +1635,17 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py" in result.target_paths
 
+    def test_skill_md_change_selects_the_multi_root_scope_test_file(self):
+        """The multi-root scope test file reads SKILL.md inside test bodies, which TestCrossDomainReadCompleteness
+        cannot see, so only the TRANSCRIPT_ANALYSIS_TEST_GLOB row selects it for a skill edit. The path is
+        hand-typed, so any rename of the file fails here and must update this pin."""
+        changed_path = "claude-skills/skills/transcript-analysis/SKILL.md"
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        expanded_paths = _mod.resolve_target_paths(list(result.target_paths), repo_root=_REPO_ROOT)
+        assert "claude/.claude/scripts/tests/test_transcript_analysis_multi_root_scope.py" in expanded_paths
+
     def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
         """test_config_lib.py is a HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
         member, so this change
@@ -1700,6 +1711,14 @@ class TestSelectPytestTargets:
             "claude/.claude/scripts/tests/test_review_ledger_lib.py",
             *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
         }
+
+    def test_shared_lib_sh_test_helpers_change_selects_the_diff_size_ack_test(self):
+        """test_diff_size_ack.py imports its repository builders from hooks.tests._lib_sh_helpers.
+        The ack test is spelled as a literal rather than derived from
+        SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES, so dropping either set member fails here."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/_lib_sh_helpers.py"])
+        assert result.is_full_suite is False
+        assert "claude/.claude/scripts/tests/test_diff_size_ack.py" in result.target_paths
 
 
 class TestResolveTargetPaths:

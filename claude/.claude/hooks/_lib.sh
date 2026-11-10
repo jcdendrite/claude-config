@@ -4762,7 +4762,7 @@ _lib_diff_size_measure() {
 }
 
 # _lib_diff_size_gate_state START_DIR
-# The one read sequence the diff-size gate and its acknowledgment script share, so they agree on the config dir,
+# The one read sequence require-diff-size-prompt.sh and diff-size-ack.sh share, so they agree on the config dir,
 # repository, branch, latch path and count.
 # Only status 0 writes stdout: the latch path, then the "<count> <base>" line of _lib_diff_size_measure.
 # Only status 1 can write stderr: _lib_configured_stack_base's stack-base line, plus incidental shell errors such as a
@@ -5530,7 +5530,9 @@ _lib_resume_cwd_scan_line() {
 # _lib_normalize_resume_cwd_token TOKEN
 # Sets _LIB_RESUME_CWD_NORMALIZED to TOKEN minus one trailing `/` and exits 0
 # when it is an absolute path passing _lib_passes_path_char_allowlist; exits 1
-# otherwise. Sets a global instead of printing so no command substitution forks.
+# otherwise. Acceptance is judged after the one trailing `/` is stripped, so `/`
+# is rejected and `//` is accepted as `/`.
+# Sets a global instead of printing so no command substitution forks.
 _lib_normalize_resume_cwd_token() {
   local token="${1%/}"
   _LIB_RESUME_CWD_NORMALIZED=""
@@ -5548,8 +5550,9 @@ _lib_normalize_resume_cwd_token() {
 # STATE is `linked`, `not-linked` or `unknown` (the three outcomes of
 # _lib_linked_worktree_root). ROOT is the linked root, FILE_TARGET the file's
 # own --cwd (_lib_continuity_file_resume_cwd, including its
-# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root), both already
-# canonicalized.
+# $_LIB_RESUME_CWD_UNUSABLE answer, which never equals a root).
+# The comparison is a literal string equality, so a caller that passes a
+# non-canonical spelling of the same directory gets `shell`.
 #   - linked: load only when FILE_TARGET equals ROOT.
 #   - not-linked: load only when FILE_TARGET is empty.
 #   - unknown, or any other STATE: shell.
@@ -5573,6 +5576,47 @@ _lib_resume_context_verdict() {
       ;;
     *) printf 'shell\n' ;;
   esac
+}
+
+# _lib_collect_pending_continuity_files CONFIG_DIR
+# Call it directly in the current shell, not in `$(...)` or a pipeline.
+# Sets _LIB_PENDING_CONTINUITY_FILES to the pending /handoff and /brief files, handoffs first.
+# This glob is the one definition the slash script and the announce hook's slash-form check consult.
+# The same two globs are spelled in announce-resume-command.sh and consume-durable-continuity-file-on-read.sh as `case` patterns, and as suffixes in resume-context-same-session.sh.
+# The glob runs in a process substitution that resets the expansion options the result depends on, so the caller's settings neither change the result nor are changed.
+# A failure inside that subshell is not reported to the caller.
+# Entries are not filtered by the path-character allowlist and may hold any byte except NUL, so callers allowlist before interpolating.
+_lib_collect_pending_continuity_files() {
+  local config_dir="$1" path
+  _LIB_PENDING_CONTINUITY_FILES=()
+  while IFS= read -r -d '' path; do
+    _LIB_PENDING_CONTINUITY_FILES+=("$path")
+  done < <(
+    unset GLOBIGNORE
+    set +f
+    shopt -u dotglob nocaseglob nullglob failglob
+    for path in "$config_dir"/handoffs/*-handoff.md "$config_dir"/briefs/*-task.md; do
+      if [ -f "$path" ] && [ ! -L "$path" ]; then
+        printf '%s\0' "$path"
+      fi
+    done
+  )
+}
+
+# _lib_is_pending_continuity_file CONFIG_DIR PATH
+# Exits 0 when PATH is, spelled exactly, a member of _lib_collect_pending_continuity_files.
+# It overwrites _LIB_PENDING_CONTINUITY_FILES.
+# Membership does not imply the slash script lists PATH, because the script also applies the path-character allowlist.
+# The caller allowlists PATH before this call.
+_lib_is_pending_continuity_file() {
+  local pending_path
+  _lib_collect_pending_continuity_files "$1"
+  for pending_path in "${_LIB_PENDING_CONTINUITY_FILES[@]}"; do
+    if [ "$pending_path" = "$2" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # _lib_sanitize_for_terminal VALUE

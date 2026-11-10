@@ -85,9 +85,9 @@ DEFAULT_BLOCK_AT = 470_000
 # `?????????*` corrupt-value guard.
 REARM_MECHANICS_BLOCK_AT = "9000000"
 
-# Literal copies of the compaction text both nudge messages carry. They are
-# quoted, not derived from the hook, so a wording edit has to change the hook,
-# this file, and docs/handoff-nudge.md together. None may hold a `%`: the hard
+# Literal copies of the compaction and resume-route text both nudge messages
+# carry. They are quoted, not derived from the hook, so a wording edit has to
+# change the hook, this file, and docs/handoff-nudge.md together. None may hold a `%`: the hard
 # block's printf receives them as arguments, but a `%` would still corrupt any
 # future edit that inlines one into its format string.
 COMPACT_CRITERIA_PHRASE = (
@@ -104,6 +104,14 @@ COMPACT_TIE_BREAK_SOFT = (
 )
 COMPACT_TIE_BREAK_HARD = (
     "If all three clauses hold, the user can run a bare /compact instead, and a focus line is optional."
+)
+HANDOFF_RESUME_ROUTE_SENTENCE = (
+    "After /handoff, the resume route depends on whether the next step runs in this worktree: "
+    "if it does, the user resumes in this session with /clear and then /resume-context; "
+    "if not, the user resumes outside this session with the shell resume-context command in a new terminal. "
+    "A next step that creates a new worktree counts as running in the directory it is created from. "
+    "The message shown after the handoff file is written gives the exact command "
+    "and is authoritative where it differs from a route named earlier."
 )
 HANDOFF_NUDGE_DOC = REPO_ROOT / "docs" / "handoff-nudge.md"
 
@@ -2228,6 +2236,7 @@ class TestNudgeHandoffNearContextCap:
             pytest.param(COMPACT_TIMING_SENTENCE, id="timing"),
             pytest.param(COMPACT_TIE_BREAK_SOFT, id="tie-break-soft"),
             pytest.param(COMPACT_TIE_BREAK_HARD, id="tie-break-hard"),
+            pytest.param(HANDOFF_RESUME_ROUTE_SENTENCE, id="route"),
         ],
     )
     def test_compact_text_constants_hold_no_percent_sign(self, text):
@@ -2279,12 +2288,22 @@ class TestNudgeHandoffNearContextCap:
         assert "ignored re-arms" not in text
 
     @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
-    def test_message_leaves_resume_routing_to_the_announce_message(self, tmp_path, kind):
-        """Which resume route fits depends on the next worktree, so neither
-        message names /clear or /resume-context."""
+    def test_message_states_the_resume_route_rule(self, tmp_path, kind):
+        """Both messages carry the worktree-keyed resume-route rule, and defer to
+        the announce message after the write for the exact command."""
         text, _ = _fire_nudge_message(tmp_path, kind)
-        assert "/clear" not in text
-        assert "/resume-context" not in text
+        assert HANDOFF_RESUME_ROUTE_SENTENCE in text
+
+    def test_soft_nudge_tells_the_model_to_name_the_route_and_run_no_resume_command(self, tmp_path):
+        text, _ = _fire_nudge_message(tmp_path, "soft nudge")
+        assert (
+            "If you recommend /handoff, tell the user which resume route applies, "
+            "and run no resume command yourself. " + HANDOFF_RESUME_ROUTE_SENTENCE
+        ) in text
+
+    def test_hard_block_places_the_route_sentence_between_handoff_and_the_user_only_statement(self, tmp_path):
+        text, _ = _fire_nudge_message(tmp_path, "hard block")
+        assert "run /handoff now. " + HANDOFF_RESUME_ROUTE_SENTENCE + " Only the user can run /compact." in text
 
     @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
     def test_message_makes_no_cost_comparison_between_the_exits(self, tmp_path, kind):
@@ -2337,6 +2356,8 @@ class TestNudgeHandoffNearContextCap:
             pytest.param(COMPACT_TIMING_SENTENCE, "hard block", id="timing-hard"),
             pytest.param(COMPACT_TIE_BREAK_SOFT, "soft nudge", id="tie-break-soft"),
             pytest.param(COMPACT_TIE_BREAK_HARD, "hard block", id="tie-break-hard"),
+            pytest.param(HANDOFF_RESUME_ROUTE_SENTENCE, "soft nudge", id="route-soft"),
+            pytest.param(HANDOFF_RESUME_ROUTE_SENTENCE, "hard block", id="route-hard"),
         ],
     )
     def test_docs_restate_the_compact_text_the_hook_emits(self, tmp_path, text, kind):

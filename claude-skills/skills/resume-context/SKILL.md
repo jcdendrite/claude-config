@@ -6,7 +6,9 @@ argument-hint: "[<slug> | <file name> | <absolute path>]"
 
 # Resume context
 
-`/resume-context` loads a pending `/handoff` or `/brief` file into this session's conversation. The shell command `resume-context` is a different thing: it starts a new `claude` process, and it is the route for a file that belongs to another worktree.
+`/resume-context` loads a pending `/handoff` or `/brief` file into this session's conversation. The shell command `resume-context` is a different thing: it starts a new `claude` process, and it is the route for a file that names another directory or whose worktree this session cannot confirm.
+
+In chat replies, put each command this skill has you relay or suggest alone in its own fenced code block.
 
 0. Gate the run.
 
@@ -30,7 +32,7 @@ argument-hint: "[<slug> | <file name> | <absolute path>]"
 
    - Then check the target. When the script printed `FILE_TARGET: none` and the file's §4 header (§3 in a brief) names a directory other than this session's, say so and stop without acting on the file. Give the recovery text below.
 
-   - Recovery text: the file is already consumed, so tell the engineer to `cd` to the directory named here and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` finds the copy later. The directory is the `FILE_TARGET:` path when it is a path (on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 header (§3 in a brief) names if you read the file and it is an absolute path made only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, say the directory is unknown and must come from the session that wrote the file; name none.
+   - Recovery text: the file is already consumed, so tell the engineer to `cd` to the directory named here and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` finds the copy later. The directory is the `FILE_TARGET:` path when it is a path (on `LOAD:` it equals `SESSION_TARGET:`). When `FILE_TARGET:` is `none`, the script printed no directory for the file: say the directory is unknown and must come from the session that wrote the file; name none.
 
    - Otherwise, continue from the file. Its artifact preamble governs.
 
@@ -50,7 +52,7 @@ argument-hint: "[<slug> | <file name> | <absolute path>]"
 
 4. On `CANDIDATE:`, `MORE:`, `SKIPPED_UNPRINTABLE:` or `STOP_REASON:` lines, relay them and stop.
 
-   - Suggest `/resume-context <file name>` only for a candidate whose `target` is the same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never when either is `unknown`. Any other candidate needs the shell command on its `CANDIDATE:` line, which you relay as a command for a new terminal.
+   - Suggest `/resume-context <file name>` only for a candidate whose `target` is the same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never when either is `unknown`. A candidate whose file name starts with `-` or `@` is never suggested as `/resume-context <name>`. Every candidate not suggested that way needs the shell command on its `CANDIDATE:` line, which you relay as a command for a new terminal.
 
    - Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when that line appears, and, for each candidate with `target none` or `target unknown`, the caveat for that `FILE_TARGET:` value beside its shell command.
 

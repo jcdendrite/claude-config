@@ -34,10 +34,10 @@ The three always-spawn rules:
 
 - Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, data exposure, sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** Step 4 reports `declared: dev-only, cooperative` and that declaration puts the change outside `ciso-reviewer`'s threat model. When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception.
 - Always spawn `staff-product-engineer` when the plan changes any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) changes user-facing behavior even when the plan touches no channel template file.
-- Always spawn `comment-discipline-reviewer` on every round that reaches Step 5 with a plan file from Step 1, so the plan's prose is reviewed before approval. Skip it under `/review-pr`'s standing override, which reviews an already-approved plan and applies no fixes. It is not a domain reviewer, so its prompt carries only these:
+- Always spawn `comment-discipline-reviewer` on every round that reaches Step 5 with a plan file from Step 1, so the plan's prose is reviewed before approval. Skip it under `/review-pr`'s standing override, which reviews an already-approved plan and applies no fixes. It is not a domain reviewer, so its prompt carries only these fields, each as `claude/.claude/agents/comment-discipline-reviewer.md` § "Input contract" defines it:
   - `plan_path:` with the plan file's absolute path
   - its `findings_path:`
-  - on a re-review round, its own prior findings file and which of those findings were applied or declined
+  - on a re-review round, `prior_decisions:` with its own prior findings file and which of those findings were applied or declined
 
   It gets no Item ownership routing and no Ledger cross-check instruction. It keys its findings by angle name, not checklist item.
 

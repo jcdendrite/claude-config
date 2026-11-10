@@ -6,7 +6,7 @@ import os
 import subprocess
 
 import pytest
-from transcript_analysis import scope, skill_invocation
+from transcript_analysis import cli, scope, skill_invocation
 
 from ._skill_helpers import _skill_inv_args
 from .conftest import (
@@ -648,3 +648,15 @@ def test_slash_invocation_counts_the_command_name_and_never_its_command_args(fak
         assert "/abs" not in stream_text, "no fragment of command-args may reach output"
     cols = _table_cols(captured.out, header_contains="user-slash", row_contains="x", row_startswith=True)
     assert int(cols["user-slash"]) == 1, f"expected the x row to show one /slash invocation: {cols}"
+
+
+class TestSkillInvocationArgparseWiring:
+    def test_this_repo_and_projects_mutually_exclusive_on_skill_invocation(self):
+        parser = cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
+
+    def test_bare_skill_invocation_leaves_projects_unset(self):
+        """None, not "*", is what makes skill-invocation default to this repo's worktrees."""
+        parsed = cli.build_parser().parse_args(["skill-invocation"])
+        assert parsed.projects is None

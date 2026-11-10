@@ -24,7 +24,7 @@ The global `test-conventions` skill defines how tests should be written. The glo
 
 **Wrong-layer tests** — component test asserting a reducer's math belongs in a unit test; HTTP integration test asserting auth-policy belongs in a contract/policy test.
 
-**Contract tests at service boundaries** — when modules talk across a boundary (HTTP, RPC, queue, library API), is there a test pinning the contract independent of both sides' implementation? Cite `test-evaluation` §2.
+**Contract tests at service boundaries** — when modules talk across a boundary (HTTP, RPC, queue, library API), is there a test pinning the contract independent of both sides' implementation? Cite `test-conventions` §7.
 
 **Regression-test intent** — every test should answer "what bug does this guard against?" If not specific, the test is decorative. Cite `test-conventions` §5.
 
@@ -49,6 +49,8 @@ The global `test-conventions` skill defines how tests should be written. The glo
 **Testability of the code under test** — if the change makes code harder to test (new singleton, new implicit global, new non-injectable dependency), that's a finding even if current tests pass.
 
 **Security invariants as tests** — for every access-control boundary, is there BOTH an allow-path test (authorized caller succeeds) AND a deny-path test (unauthorized caller rejected)? Untested security controls are indistinguishable from absent ones.
+
+**Boundary rules without enforcement** — does the diff or plan state or change a module-boundary, layering, or dependency-direction rule with no test that fails when the rule is broken? Does the boundary test the diff adds or touches carry controls (rule's modules in the scanned set, seeded violation per rule shape), or can it pass vacuously? Cite `test-conventions` §7.
 
 ## How to work
 

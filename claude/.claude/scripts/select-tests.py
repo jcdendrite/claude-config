@@ -110,8 +110,8 @@ CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 # collected.
 WORKTREES_DIR_NAME = "worktrees"
 
-# test_transcript_analysis.py (matched by the glob below, with its two
-# siblings) reads specific SKILL.md files by path, not by import.
+# test_transcript_analysis_multi_root_scope.py, one of the files the glob
+# below matches, reads specific SKILL.md files by path, not by import.
 # Domain-narrowing can't see that dependency, so it's declared here as a
 # cross-domain exception rather than folded into the scripts domain rule.
 # test_transcript_denials.py shells into specific hook scripts by path. It
@@ -239,6 +239,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/__init__.py",
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
+    "claude/.claude/hooks/tests/_lib_sh_helpers.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
     "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
@@ -280,6 +281,7 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
+    "claude/.claude/scripts/tests/test_diff_size_ack.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
     "claude/.claude/scripts/tests/test_review_pr_lib.py",
 })

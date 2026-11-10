@@ -22,11 +22,17 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
+    SHELL_COMMAND_PREFIX,
     SKILLS_DIR,
+    SLASH_COMMAND_PREFIX,
     _make_git_exiting_with_status,
+    announced_route,
+    code_span_command,
     continuity_resume_section,
     init_git_repo_with_commit,
+    install_resume_context_stub,
     read_input,
+    resume_context_stub_invocations,
     write_continuity_body,
     write_input,
 )
@@ -558,6 +564,26 @@ class TestExplicitArgument:
         assert outcome.first("SOURCE") == str(brief)
         assert outcome.first("FILE_TARGET") == str(sandbox.worktree_a.resolve())
 
+    @pytest.mark.parametrize(
+        ("kind", "slug"),
+        [("handoff", "deploy-handoff"), ("brief", "deploy-task"), ("handoff", "notes.md"), ("brief", "notes.md")],
+        ids=[
+            "handoff-slug-ending-in-handoff",
+            "brief-slug-ending-in-task",
+            "handoff-slug-ending-in-dot-md",
+            "brief-slug-ending-in-dot-md",
+        ],
+    )
+    def test_a_slug_that_does_not_end_in_a_full_suffix_still_loads_by_slug(
+        self, sandbox: _Sandbox, kind: str, slug: str
+    ) -> None:
+        """Allow: only an argument ending in the full `-handoff.md` / `-task.md` is a file name rather than a slug."""
+        wanted = sandbox.write_pending(slug, sandbox.worktree_a, kind=kind)
+
+        outcome = sandbox.run(slug, cwd=sandbox.worktree_a)
+
+        assert outcome.first("SOURCE") == str(wanted)
+
     def test_recently_written_file_reports_the_fresh_bucket(self, sandbox: _Sandbox) -> None:
         sandbox.write_pending("fresh", sandbox.worktree_a, age_days=_AGE_FRESH_DAYS)
 
@@ -916,6 +942,16 @@ class TestPendingSet:
         assert outcome.first("SKIPPED_UNPRINTABLE") == "1"
         assert outcome.stop_code == "nothing-pending"
 
+    def test_a_name_with_a_backslash_is_counted_as_unprintable_not_unescaped(self, sandbox: _Sandbox) -> None:
+        sandbox.handoffs.mkdir()
+        (sandbox.handoffs / "back\\slash-handoff.md").write_text("x\n")
+
+        outcome = sandbox.run()
+
+        assert not outcome.has("LOAD")
+        assert outcome.first("SKIPPED_UNPRINTABLE") == "1"
+        assert outcome.stop_code == "nothing-pending"
+
     def test_a_symlink_and_a_dotfile_are_excluded(self, sandbox: _Sandbox) -> None:
         real = sandbox.write_named(sandbox.tmp_path / "elsewhere" / "real-handoff.md", None)
         sandbox.handoffs.mkdir()
@@ -1185,47 +1221,159 @@ class TestConsume:
             assert not legacy_copy.exists()
 
 
+def _env_with_resume_context_stub_first(sandbox: _Sandbox) -> dict[str, str]:
+    return sandbox.env({"PATH": f"{install_resume_context_stub(sandbox.home)}:{os.environ['PATH']}"})
+
+
+def _announced_command(sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
+    result = subprocess.run(
+        [str(_ANNOUNCE_HOOK)],
+        input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
+        capture_output=True,
+        text=True,
+        env=_env_with_resume_context_stub_first(sandbox),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert resume_context_stub_invocations(sandbox.home) == ""
+    return code_span_command(json.loads(result.stdout)["systemMessage"])
+
+
 class TestRoundTrip:
-    def _announced_slash_argument(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
+    def test_the_announce_runner_environment_resolves_resume_context_to_the_recording_stub(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """`_announced_command` asserts the stub's log is empty, which stays green if the stub is
+        not on the hook's PATH. A bare-name `resume-context` run in the same environment must reach it."""
         result = subprocess.run(
-            [str(_ANNOUNCE_HOOK)],
-            input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
+            ["sh", "-c", "resume-context --path-probe"],
             capture_output=True,
             text=True,
-            env=sandbox.env(),
+            env=_env_with_resume_context_stub_first(sandbox),
             check=False,
         )
+
         assert result.returncode == 0, result.stderr
-        message = json.loads(result.stdout)["systemMessage"]
-        found = re.search(r"/resume-context (\S+?)\. ", message)
-        assert found, f"no slash form in {message!r}"
-        return found.group(1)
+        assert resume_context_stub_invocations(sandbox.home) == "--path-probe\n"
 
     def test_the_file_name_the_announce_hook_advertises_loads_exactly_that_file(self, sandbox: _Sandbox) -> None:
         pending = sandbox.write_pending("v1.2-step-3.4", sandbox.worktree_a)
         decoy = sandbox.write_pending("v1.2-step-3", sandbox.worktree_a)
 
-        argument = self._announced_slash_argument(sandbox, pending, sandbox.worktree_a)
+        announced = _announced_command(sandbox, pending, sandbox.worktree_a)
+        assert announced.startswith(SLASH_COMMAND_PREFIX)
+        argument = announced[len(SLASH_COMMAND_PREFIX) :]
         outcome = sandbox.run(argument, cwd=sandbox.worktree_a)
 
         assert argument == pending.name
         assert outcome.first("SOURCE") == str(pending)
         assert decoy.exists()
 
-    def _announced_shell_command(self, sandbox: _Sandbox, pending: Path, session_cwd: Path) -> str:
-        result = subprocess.run(
-            [str(_ANNOUNCE_HOOK)],
-            input=json.dumps(write_input(str(pending), cwd=str(session_cwd))),
-            capture_output=True,
-            text=True,
-            env=sandbox.env(),
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        message = json.loads(result.stdout)["systemMessage"]
-        found = re.search(r"Resume \(run in your shell\): `([^`]+)`", message)
-        assert found, f"no shell-only command in {message!r}"
-        return found.group(1)
+    @pytest.mark.parametrize(
+        ("relative_path", "stop_code"),
+        [
+            ("handoffs/v1.2-step-3.4-handoff.md", None),
+            ("handoffs/-handoff.md", "argument-not-allowed"),
+            ("handoffs/nested/example-handoff.md", "nothing-pending"),
+            ("handoffs/.hidden-handoff.md", "nothing-pending"),
+            ("briefs/.hidden-task.md", "nothing-pending"),
+        ],
+        ids=[
+            "dotted-name-loads",
+            "leading-dash-name-is-refused",
+            "nested-path-is-not-listed",
+            "leading-dot-name-is-not-listed",
+            "leading-dot-brief-is-not-listed",
+        ],
+    )
+    def test_the_slash_form_is_announced_only_for_a_file_name_the_script_accepts(
+        self, sandbox: _Sandbox, relative_path: str, stop_code: str | None
+    ) -> None:
+        """Allow/deny pair: a name the script refuses or cannot list gets the shell command, so no
+        announce advertises a slash argument that ends in a STOP_REASON."""
+        written = sandbox.write_named(sandbox.config_dir / relative_path, None)
+
+        announced = _announced_command(sandbox, written, sandbox.main_checkout)
+        outcome = sandbox.run(written.name, cwd=sandbox.main_checkout)
+
+        if stop_code is None:
+            assert announced == f"{SLASH_COMMAND_PREFIX}{written.name}"
+            assert outcome.first("LOAD")
+        else:
+            assert announced == f"{SHELL_COMMAND_PREFIX}{written}"
+            assert outcome.stop_code == stop_code
+
+    def test_the_brief_file_name_the_announce_hook_advertises_loads_exactly_that_brief(
+        self, sandbox: _Sandbox
+    ) -> None:
+        brief = sandbox.write_pending("example", None, kind="brief")
+
+        announced = _announced_command(sandbox, brief, sandbox.main_checkout)
+        outcome = sandbox.run(brief.name, cwd=sandbox.main_checkout)
+
+        assert announced == f"{SLASH_COMMAND_PREFIX}{brief.name}"
+        assert outcome.first("SOURCE") == str(brief)
+
+    def test_a_symlink_leaf_is_announced_as_the_shell_command_because_the_script_does_not_list_it(
+        self, sandbox: _Sandbox
+    ) -> None:
+        real = sandbox.write_named(sandbox.tmp_path / "elsewhere" / "real-handoff.md", None)
+        sandbox.handoffs.mkdir()
+        link = sandbox.handoffs / "linked-handoff.md"
+        link.symlink_to(real)
+
+        announced = _announced_command(sandbox, link, sandbox.main_checkout)
+        outcome = sandbox.run(link.name, cwd=sandbox.main_checkout)
+
+        assert announced == f"{SHELL_COMMAND_PREFIX}{link}"
+        assert outcome.stop_code == "nothing-pending"
+
+    def test_a_nested_file_with_a_direct_child_of_the_same_name_never_gets_the_slash_argument(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """The slash argument is a bare file name, so announcing it for the nested file would load the direct child."""
+        nested = sandbox.write_named(sandbox.handoffs / "nested" / "example-handoff.md", None)
+        decoy = sandbox.write_named(sandbox.handoffs / "example-handoff.md", None)
+        decoy_body = decoy.read_text()
+
+        announced = _announced_command(sandbox, nested, sandbox.main_checkout)
+
+        assert announced == f"{SHELL_COMMAND_PREFIX}{nested}"
+        assert decoy.read_text() == decoy_body
+        assert sandbox.run(decoy.name, cwd=sandbox.main_checkout).first("SOURCE") == str(decoy)
+
+    @pytest.mark.parametrize("announced_kind", ["handoff", "brief"])
+    @pytest.mark.parametrize("decoy_kind", ["handoff", "brief"], ids=["handoff-decoy", "brief-decoy"])
+    def test_an_announced_file_name_never_also_matches_a_suffix_doubled_decoy(
+        self, sandbox: _Sandbox, announced_kind: str, decoy_kind: str
+    ) -> None:
+        """Allow: the announced file loads and the decoy named `<announced file name>-handoff.md` or `-task.md` stays pending."""
+        announced_file = sandbox.write_pending("x", kind=announced_kind)
+        decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
+
+        announced = _announced_command(sandbox, announced_file, sandbox.main_checkout)
+        assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
+        outcome = sandbox.run(announced[len(SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+
+        assert outcome.first("SOURCE") == str(announced_file)
+        assert decoy.exists()
+
+    @pytest.mark.parametrize("announced_kind", ["handoff", "brief"])
+    @pytest.mark.parametrize("decoy_kind", ["handoff", "brief"], ids=["handoff-decoy", "brief-decoy"])
+    def test_a_consumed_announced_file_name_does_not_load_a_suffix_doubled_decoy(
+        self, sandbox: _Sandbox, announced_kind: str, decoy_kind: str
+    ) -> None:
+        """Deny: with the announced file consumed, the decoy is not the single match and the script stops."""
+        announced_file = sandbox.write_pending("x", kind=announced_kind)
+        decoy = sandbox.write_pending(announced_file.name, kind=decoy_kind)
+        announced = _announced_command(sandbox, announced_file, sandbox.main_checkout)
+        assert announced == f"{SLASH_COMMAND_PREFIX}{announced_file.name}"
+        announced_file.unlink()
+
+        outcome = sandbox.run(announced[len(SLASH_COMMAND_PREFIX) :], cwd=sandbox.main_checkout)
+
+        assert outcome.stop_code == "not-pending"
+        sandbox.assert_nothing_moved(decoy)
 
     @pytest.mark.parametrize(
         ("session", "file_target"),
@@ -1239,11 +1387,80 @@ class TestRoundTrip:
         session_cwd = getattr(sandbox, session)
         pending = sandbox.write_pending("parity", getattr(sandbox, file_target).resolve())
 
-        announced = self._announced_shell_command(sandbox, pending, session_cwd)
+        announced = _announced_command(sandbox, pending, session_cwd)
         outcome = sandbox.run(pending.name, cwd=session_cwd)
 
         assert announced == outcome.first("SHELL_COMMAND")
         assert f"--cwd {getattr(sandbox, file_target).resolve()} " in announced
+
+    def _write_pending_naming(self, sandbox: _Sandbox, file_target: str) -> Path:
+        """A pending handoff whose resume command names `file_target`: a sandbox tree, a spelling of
+        this worktree, an unreadable `--cwd` from `_UNREADABLE_CWD_BODIES`, or no `--cwd` at all."""
+        if file_target in ("none", "worktree_a", "worktree_b"):
+            resume_cwd = None if file_target == "none" else getattr(sandbox, file_target).resolve()
+            return sandbox.write_pending("route", resume_cwd)
+        if file_target == "symlink-to-worktree_a":
+            link = sandbox.tmp_path / "worktree-link"
+            link.symlink_to(sandbox.worktree_a.resolve())
+            return sandbox.write_pending("route", link)
+        if file_target == "dotted-worktree_a":
+            dotted = f"{sandbox.worktree_a.resolve()}/../{sandbox.worktree_a.name}"
+            return sandbox.write_pending("route", dotted)
+        return sandbox.write_body(sandbox.handoffs / "route-handoff.md", _UNREADABLE_CWD_BODIES[file_target])
+
+    def _announced_and_scripted_routes(self, sandbox: _Sandbox, session: str, file_target: str) -> tuple[str, str]:
+        session_cwd = getattr(sandbox, session)
+        pending = self._write_pending_naming(sandbox, file_target)
+        announced = announced_route(_announced_command(sandbox, pending, session_cwd))
+        outcome = sandbox.run(pending.name, cwd=session_cwd)
+        return announced, self._route_of_scripted_outcome(outcome)
+
+    @staticmethod
+    def _route_of_scripted_outcome(outcome: _Outcome) -> str:
+        """`load` for a LOAD token and `shell` for a SHELL_COMMAND token. A STOP_REASON or CANDIDATE is neither route."""
+        if outcome.has("LOAD"):
+            return "load"
+        assert outcome.has("SHELL_COMMAND"), f"the script served neither route: {outcome.pairs}"
+        return "shell"
+
+    @pytest.mark.parametrize(
+        ("session", "file_target", "route"),
+        [
+            ("worktree_a", "worktree_a", "load"),
+            ("worktree_a", "worktree_b", "shell"),
+            ("worktree_a", "none", "shell"),
+            ("main_checkout", "none", "load"),
+            ("main_checkout", "worktree_b", "shell"),
+            ("main_checkout", "tilde", "shell"),
+            ("main_checkout", "two-disagreeing-commands", "shell"),
+        ],
+        ids=[
+            "linked-session-file-names-this-worktree",
+            "linked-session-file-names-another-worktree",
+            "linked-session-file-names-no-cwd",
+            "main-checkout-file-names-no-cwd",
+            "main-checkout-file-names-a-worktree",
+            "main-checkout-file-has-an-unreadable-cwd",
+            "main-checkout-file-has-two-disagreeing-commands",
+        ],
+    )
+    def test_the_route_the_announce_hook_names_equals_the_scripts_outcome(
+        self, sandbox: _Sandbox, session: str, file_target: str, route: str
+    ) -> None:
+        """Routes only: for a file naming no usable `--cwd` the script's SHELL_COMMAND is the bare command, while
+        the announce gives a linked session its own root as `--cwd`."""
+        announced, scripted = self._announced_and_scripted_routes(sandbox, session, file_target)
+
+        assert announced == scripted == route
+
+    @pytest.mark.parametrize("file_target", ["symlink-to-worktree_a", "dotted-worktree_a"])
+    def test_a_non_canonical_spelling_of_this_worktree_is_announced_as_shell_though_the_script_loads_it(
+        self, sandbox: _Sandbox, file_target: str
+    ) -> None:
+        """Expected divergence: the announce compares the file's raw `--cwd`, the script canonicalizes it first."""
+        announced, scripted = self._announced_and_scripted_routes(sandbox, "worktree_a", file_target)
+
+        assert (announced, scripted) == ("shell", "load")
 
     def test_every_listed_candidate_file_name_resolves_to_exactly_that_candidate(self, sandbox: _Sandbox) -> None:
         sandbox.write_pending("alpha-1.0")
@@ -1269,6 +1486,37 @@ class TestSkillContract:
         header_keys = re.findall(r"^#   ([A-Z_]+): ", _SCRIPT.read_text(), flags=re.MULTILINE)
 
         assert sorted(header_keys) == sorted(_EMITTED_KEYS)
+
+    def test_the_skill_withholds_the_slash_form_from_exactly_the_listed_candidates_the_announce_hook_sends_to_the_shell(
+        self, sandbox: _Sandbox
+    ) -> None:
+        """A first byte the skill step 4 names must be one the announce hook refuses the slash form for, and the
+        only such bytes among those a candidate listing can reach (a leading dot is never listed)."""
+        # Every non-alphanumeric first byte the path-character allowlist admits today.
+        # Widening the allowlist means widening this list.
+        non_alphanumeric_first_bytes = [".", "_", "-", "+", "@"]
+        for first_byte in non_alphanumeric_first_bytes:
+            sandbox.write_named(sandbox.handoffs / f"{first_byte}lead-handoff.md", None)
+        announced_shell_bytes = [
+            first_byte
+            for first_byte in non_alphanumeric_first_bytes
+            if announced_route(
+                _announced_command(sandbox, sandbox.handoffs / f"{first_byte}lead-handoff.md", sandbox.main_checkout)
+            )
+            == "shell"
+        ]
+        listed_names = sandbox.run(cwd=sandbox.main_checkout).candidate_names
+        listed_shell_bytes = [
+            first_byte for first_byte in announced_shell_bytes if f"{first_byte}lead-handoff.md" in listed_names
+        ]
+
+        step_four_sentence = re.search(
+            r"A candidate whose file name starts with (.+?) is never suggested as `/resume-context <name>`\.",
+            _SKILL_MD.read_text(),
+        )
+        assert step_four_sentence, "resume-context/SKILL.md no longer states which candidate names are never suggested"
+        named_bytes = re.findall(r"`(.)`", step_four_sentence.group(1))
+        assert sorted(named_bytes) == sorted(listed_shell_bytes)
 
     def test_the_skill_argument_charset_equals_the_scripts_allowlist(self) -> None:
         """The skill refuses before the script runs, so the two must accept the same characters."""

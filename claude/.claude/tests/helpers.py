@@ -191,6 +191,129 @@ def heading_texts(markdown_text: str) -> set[str]:
     return headings
 
 
+def markdown_table_rows(markdown_path: Path, header_line: str) -> list[str]:
+    """Raw lines of a Markdown table's data rows, found by its exact header line."""
+    lines = markdown_path.read_text().splitlines()
+    header_index = next((i for i, line in enumerate(lines) if line.strip() == header_line), None)
+    assert header_index is not None, f"{markdown_path}: table header {header_line!r} not found."
+
+    rows = []
+    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
+        if not line.startswith("|"):
+            break
+        rows.append(line)
+    return rows
+
+
+def change_type_table_rows(skill_md_path: Path) -> list[str]:
+    """Raw lines of every data row in a SKILL.md's Change-type table."""
+    return markdown_table_rows(skill_md_path, "| Change type | Spawn / invoke |")
+
+
+def _nonempty_shell_lines(shell_body: str, what: str) -> list[str]:
+    """Non-empty stdout lines of `bash -c shell_body`, asserting a zero exit and at least one line.
+
+    The emptiness assertion stops a renamed or emptied shell value from reading as an empty list,
+    which would leave every test iterating it passing with zero iterations or skipped.
+    """
+    result = subprocess.run(["bash", "-c", shell_body], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"reading {what} exited {result.returncode}: {result.stderr}"
+    lines = [line for line in result.stdout.splitlines() if line]
+    assert lines, f"reading {what} printed nothing: a renamed or emptied shell value"
+    return lines
+
+
+def reviewer_persona_agents() -> list[str]:
+    """`_LIB_REVIEWER_PERSONA_AGENTS` from _lib.sh -- the lanes review-ledger.sh accepts by agent name."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_reviewer_persona_agents", "_lib_reviewer_persona_agents")
+
+
+def review_only_agents() -> list[str]:
+    """`_LIB_REVIEW_ONLY_AGENTS` from _lib.sh -- the reviewer agents deny-reviewer-tree-mutation.sh covers."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_review_only_agents", "_lib_review_only_agents")
+
+
+def no_gate_release_agents() -> list[str]:
+    """`_LIB_NO_GATE_RELEASE_AGENTS` from _lib.sh -- the agent identities barred from releasing a gate."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_no_gate_release_agents", "_lib_no_gate_release_agents")
+
+
+def plan_writer_agents() -> list[str]:
+    """`_LIB_PLAN_WRITER_AGENTS` from _lib.sh -- the agents confined to writing plan files."""
+    return _nonempty_shell_lines(f". {_LIB_SH}; _lib_plan_writer_agents", "_lib_plan_writer_agents")
+
+
+def review_ledger_non_agent_lanes() -> list[str]:
+    """`_REVIEW_LEDGER_NON_AGENT_LANES`, sourcing _lib.sh then the library as review-ledger.sh does."""
+    ledger_lib = SCRIPTS_DIR / "_review-ledger-lib.sh"
+    return _nonempty_shell_lines(
+        f'. {_LIB_SH}; . {ledger_lib}; printf "%s\\n" "${{_REVIEW_LEDGER_NON_AGENT_LANES[@]}}"',
+        "_REVIEW_LEDGER_NON_AGENT_LANES",
+    )
+
+
+# A dispatch-prompt field token: a lowercase name with underscores, ending in a colon (`plan_path:`).
+_INPUT_CONTRACT_FIELD_TOKEN = r"[a-z][a-z0-9_]*:"
+# Only the exact bullet shape "- `token:`" enrolls an agent; a near-miss shape does not.
+_INPUT_CONTRACT_FIELD_BULLET_RE = re.compile(
+    rf"^- `({_INPUT_CONTRACT_FIELD_TOKEN})`", re.MULTILINE
+)
+_BACKTICKED_FIELD_TOKEN_RE = re.compile(rf"`({_INPUT_CONTRACT_FIELD_TOKEN})`")
+
+
+def heading_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """`lines` must keep its newlines (`splitlines(keepends=True)`). Returns None when the heading is absent."""
+    start_index = next(
+        (index for index, line in enumerate(lines) if line.rstrip("\n") == heading),
+        None,
+    )
+    if start_index is None:
+        return None
+    end_index = next(
+        (
+            index
+            for index in range(start_index + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    return start_index, end_index
+
+
+def input_contract_section(agent_path: Path) -> str:
+    """The '## Input contract' section of an agent file, or '' when it has none.
+
+    A near-miss heading deliberately yields no section, so it enrolls no agent.
+    """
+    lines = agent_path.read_text().splitlines(keepends=True)
+    bounds = heading_section_bounds(lines, "## Input contract")
+    if bounds is None:
+        return ""
+    start_index, end_index = bounds
+    return "".join(lines[start_index:end_index])
+
+
+def input_contract_field_tokens(section_text: str) -> set[str]:
+    """Tokens that lead a top-level bullet of an Input contract section.
+
+    Anchored at line start, so an indented sub-bullet and a bullet led by a
+    bold name do not count.
+    """
+    return set(_INPUT_CONTRACT_FIELD_BULLET_RE.findall(section_text))
+
+
+def backticked_field_tokens(text: str) -> set[str]:
+    return set(_BACKTICKED_FIELD_TOKEN_RE.findall(text))
+
+
+def prompt_contract_agent_names(agents_dir: Path) -> set[str]:
+    return {
+        agent_path.name
+        for agent_path in agents_dir.glob("*.md")
+        if input_contract_field_tokens(input_contract_section(agent_path))
+    }
+
+
 def _build_subprocess_env(
     home: Path | None,
     extra_env: dict | None,
@@ -1411,6 +1534,76 @@ def write_continuity_body(path: Path, body: str) -> Path:
 def write_continuity_file(path: Path, resume_cwd: Path | str | None, *, kind: str = "handoff") -> Path:
     """A continuity file at `path` holding only the resume section `continuity_resume_section` builds."""
     return write_continuity_body(path, continuity_resume_section(kind, path, resume_cwd))
+
+
+def write_continuity_named_file(config_dir: Path, relative_path: str, *, symlink_leaf: bool = False) -> Path:
+    """A file at `relative_path` under `config_dir`, creating parent directories. With `symlink_leaf`
+    the leaf is a symlink to a regular file outside `config_dir`, in a sibling directory unique to it.
+    The file body is a fixed one-line `body` with no resume command, which the leading-`@` test relies on."""
+    path = config_dir / relative_path
+    if not symlink_leaf:
+        return write_continuity_body(path, "body\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    real = write_continuity_body(config_dir.with_name(f"{config_dir.name}-elsewhere") / "real-handoff.md", "body\n")
+    path.symlink_to(real)
+    return path
+
+
+def code_span_command(message: str) -> str:
+    """The command of a two-line hook `systemMessage`: a one-line lead, a newline, then the
+    command alone in single backticks. Each clause fails with its own message, because
+    pytest does not rewrite asserts in this module."""
+    lines = message.split("\n")
+    assert len(lines) == 2, f"code_span_command line count: expected exactly two lines, got {len(lines)}: {message!r}"
+    lead, command_line = lines
+    assert lead, f"code_span_command non-empty LEAD: the first line is empty: {message!r}"
+    assert lead.count("`") % 2 == 0, (
+        f"code_span_command even LEAD backticks: the LEAD holds an odd number, so a span it opens "
+        f"could close on the command line: {message!r}"
+    )
+    assert command_line.startswith("`"), (
+        f"code_span_command opening backtick: the second line does not start with one: {message!r}"
+    )
+    assert command_line.endswith("`"), (
+        f"code_span_command closing backtick: the second line does not end with one: {message!r}"
+    )
+    command = command_line[1:-1]
+    assert command, f"code_span_command non-empty command: nothing sits between the backticks: {message!r}"
+    assert "`" not in command, f"code_span_command no backtick in the command: the command holds one: {message!r}"
+    assert command not in lead, f"code_span_command command absent from the LEAD: the LEAD repeats the command: {message!r}"
+    return command
+
+
+SLASH_COMMAND_PREFIX = "/resume-context "
+SHELL_COMMAND_PREFIX = "resume-context "
+
+
+def announced_route(command: str) -> str:
+    """`load` for an announced slash command and `shell` for an announced shell command."""
+    if command.startswith(SLASH_COMMAND_PREFIX):
+        return "load"
+    assert command.startswith(SHELL_COMMAND_PREFIX), f"announced command is neither route: {command!r}"
+    return "shell"
+
+
+def install_resume_context_stub(home: Path) -> Path:
+    """A `resume-context` that only records its argv. Returns the directory to put first on the
+    PATH of an announce-hook run, so a dropped backtick escape in the hook's message assembly
+    cannot run a real launcher."""
+    stub_bin = home / ".resume-context-stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    stub = stub_bin / "resume-context"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'invocations.log'))}\n"
+    )
+    stub.chmod(0o755)
+    return stub_bin
+
+
+def resume_context_stub_invocations(home: Path) -> str:
+    log = home / ".resume-context-stub-bin" / "invocations.log"
+    return log.read_text() if log.exists() else ""
 
 
 def _current_branch(repo: Path) -> str:
