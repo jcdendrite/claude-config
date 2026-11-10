@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "reasons": ["unsupported", "declined", "pending-phase", "withheld-premise"],
+  "kinds": ["registration", "permission-deny", "adapter-gate", "cursor-tool"],
+  "entries": [
+    {"kind": "registration", "key": "PreToolUse|ExitPlanMode|require-plan-review.sh", "reason": "unsupported", "detail": "Cursor has no ExitPlanMode tool"},
+    {"kind": "registration", "key": "PreToolUse|Skill|require-review-orchestrator-routing.sh", "reason": "unsupported", "detail": "Cursor has no Skill tool event"},
+    {"kind": "registration", "key": "PreToolUse|SubagentHandback|send-back-skipped-self-review.sh", "reason": "unsupported", "detail": "Cursor has no SubagentHandback tool"},
+    {"kind": "registration", "key": "PostToolUse|AskUserQuestion|nudge-answer-provenance.sh", "reason": "unsupported", "detail": "Cursor has no AskUserQuestion tool"},
+    {"kind": "registration", "key": "PostToolUse|Skill|activate-handoff-bypass.sh", "reason": "unsupported", "detail": "Cursor has no Skill tool event"},
+    {"kind": "registration", "key": "Notification|permission_prompt|track-permission-prompts.sh", "reason": "unsupported", "detail": "Cursor has no Notification event"},
+    {"kind": "registration", "key": "PostToolBatch|*|nudge-handoff-near-context-cap.sh", "reason": "unsupported", "detail": "Cursor has no PostToolBatch event"},
+    {"kind": "registration", "key": "PostToolBatch|*|nudge-long-turn-subagent.sh", "reason": "unsupported", "detail": "Cursor has no PostToolBatch event"},
+    {"kind": "permission-deny", "key": "EnterPlanMode", "reason": "unsupported", "detail": "Cursor sends no EnterPlanMode tool"},
+    {"kind": "permission-deny", "key": "ScheduleWakeup", "reason": "unsupported", "detail": "Cursor sends no ScheduleWakeup tool"},
+    {"kind": "registration", "key": "SessionStart|*|capture-session-id.sh", "reason": "declined", "detail": "No Cursor process becomes a registered live ancestor"},
+    {"kind": "registration", "key": "SubagentStart|*|capture-session-id.sh", "reason": "declined", "detail": "No Cursor process becomes a registered live ancestor"},
+    {"kind": "registration", "key": "SessionEnd|*|record-session-end.sh", "reason": "declined", "detail": "No Cursor process becomes a registered live ancestor"},
+    {"kind": "registration", "key": "PreToolUse|Bash|require-worktree-for-git-writes.sh", "reason": "pending-phase", "phase": "4", "detail": "Needs the host-neutral session identity"},
+    {"kind": "registration", "key": "PreToolUse|Edit|Write|MultiEdit|require-worktree-for-file-writes.sh", "reason": "pending-phase", "phase": "4", "detail": "Needs the host-neutral session identity"},
+    {"kind": "registration", "key": "Stop|*|advance-past-commit-stall.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by the Stop twin"},
+    {"kind": "registration", "key": "Stop|*|nudge-handoff-near-context-cap.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by the context-cap twin"},
+    {"kind": "registration", "key": "SubagentStop|code-writer|send-back-skipped-self-review.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by the send-back twin"},
+    {"kind": "registration", "key": "SessionStart|compact|restore-authorization-boundary-on-compact.sh", "reason": "pending-phase", "phase": "5b", "detail": "Carried by the compact twin"},
+    {"kind": "adapter-gate", "key": "gate-settings-permissions.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries the permissions.deny Bash and Read entries"},
+    {"kind": "adapter-gate", "key": "gate-agent-tools.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries agent tool limits"},
+    {"kind": "adapter-gate", "key": "gate-credential-exposure.sh", "reason": "pending-phase", "phase": "5a", "detail": "Carries the credential-exposure arms"}
+  ]
+}

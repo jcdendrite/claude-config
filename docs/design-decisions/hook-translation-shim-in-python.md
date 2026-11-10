@@ -40,6 +40,7 @@ A 1.4 MB payload (a 1.4 MB command string; 20 runs, so p95 and p99 rest on one o
 ## Limits of the comparison
 
 - The Python version covered the common allow path only. It omitted the directory pin, full install-record validation, the `timeout` wrapper, output size caps, most tool translations, the log line and the real hook-output mapping. The Python figures are therefore somewhat optimistic. The added in-process work was not measured.
+- The hook's `timeout` wrapper, which this timing omitted, now runs on every hook call. Its cost sits outside the figures above.
 - It was one pass on one machine under load.
 
 ## Does this apply to other hooks in this toolkit
@@ -50,6 +51,10 @@ Not measured. By the startup medians above (`jq` 8.2 ms, interpreter 32.2 ms), a
 
 - **Keep bash+jq and cut processes.** The bash shim wrapped each step in `timeout`, which accounted for 7 of its 17 counted processes. Removing steps removes the caps they provide.
 - **Accept the cost.** The accepted budget is 2 s at the 95th percentile of added hook time per call. With a trivial hook, the bash shim's 1.4 MB p95 was 1545.6 ms and its p99 was 2101.7 ms (20 runs), against 268.2 ms and 415.4 ms for Python.
+
+## Python version floor
+
+The adapter requires python3 3.14 or later. `install` and `check` refuse an older interpreter, and the shim itself carries no floor check. The floor keeps the adapter to the one version CI runs (`.github/workflows/tests.yml`) in place of a second supported version to test. The toolkit's documented 3.11 floor stays for the hooks, which are the toolkit's own code.
 
 ## Costs of the Python choice
 
