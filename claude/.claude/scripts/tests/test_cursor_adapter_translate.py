@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -148,6 +149,22 @@ class TestOutputTable:
         assert set(mapped) == {"out", "outcome", "dropped"}
         assert isinstance(mapped["out"], dict)
         assert re.fullmatch(r"[0-9A-Za-z._:+-]{1,32}", mapped["outcome"]), mapped["outcome"]
+
+    @pytest.mark.parametrize(("exit_code", "stdout"), [(1, ""), (0, "not json at all")], ids=["exit-nonzero", "non-json"])
+    @pytest.mark.parametrize("event", ALL_EVENTS)
+    def test_a_fail_closed_abnormal_outcome_emits_output_only_on_an_event_with_a_block_channel(
+        self, event: str, exit_code: int, stdout: str
+    ) -> None:
+        mapped = map_output(stdout, event=event, exit_code=exit_code, fail_closed=True)
+        assert (mapped["out"] != {}) is (event in BLOCK_CHANNEL_EVENTS)
+
+    @pytest.mark.parametrize(("exit_code", "stdout"), [(1, ""), (0, "not json at all")], ids=["exit-nonzero", "non-json"])
+    @pytest.mark.parametrize("event", ALL_EVENTS)
+    def test_an_informational_abnormal_outcome_maps_to_empty_on_every_event(
+        self, event: str, exit_code: int, stdout: str
+    ) -> None:
+        mapped = map_output(stdout, event=event, exit_code=exit_code, fail_closed=False)
+        assert mapped["out"] == {}
 
     @pytest.mark.parametrize("event", BLOCK_CHANNEL_EVENTS)
     @pytest.mark.parametrize("stdout_name", ["deny", "block"])
@@ -690,7 +707,9 @@ class TestFieldTableCoverage:
         assert read, "the scan found no tool_input keys, so this test is vacuous"
         assert read - UNSUPPORTED_TOOL_INPUT_KEYS <= produced, sorted(read - UNSUPPORTED_TOOL_INPUT_KEYS - produced)
 
-    def test_the_table_names_the_fields_requirement_17_lists(self) -> None:
+    def test_the_table_keeps_the_five_claude_cased_fields_even_if_no_hook_reads_them(self) -> None:
+        """The scan test above requires rows only for fields a hook's jq program reads today, so dropping a row fails it
+        only while a hook still reads that field."""
         table = load_json(FIELD_TABLE_JSON)
         assert {"hook_event_name", "prompt_id", "permission_mode", "transcript_path", "session_id"} <= _field_table_claude_fields(
             table
@@ -728,7 +747,7 @@ class TestFieldTableCoverage:
             for field in event["fields"]
             if field.get("from") and field["from"][0] in table["dropped_keys"]
         }
-        # The one rename out of a dropped key: the generation id becomes the Stop twin's prompt id.
+        # The one rename out of a dropped key: the generation id becomes the Stop event's prompt id.
         assert renamed_from_a_dropped_key == {("generation_id", "prompt_id")}
 
     @pytest.mark.parametrize("spec_id", SPEC_IDS)
@@ -1107,7 +1126,7 @@ class TestParityExceptions:
                 names = matcher.split("|")
                 assert any(name in claude_tool_names for name in names), f"{key}: no mapped tool for its matcher"
 
-    def test_the_worktree_gate_and_the_stop_twin_are_not_yet_delivered(self) -> None:
+    def test_the_git_write_worktree_gate_and_the_commit_stall_hook_are_listed_as_pending_phase(self) -> None:
         pending = {e["key"] for e in load_json(PARITY_EXCEPTIONS_JSON)["entries"] if e["reason"] == "pending-phase"}
         assert "PreToolUse|Bash|require-worktree-for-git-writes.sh" in pending
         assert "Stop|*|advance-past-commit-stall.sh" in pending
@@ -1131,18 +1150,6 @@ class TestParityExceptions:
 
 # --- Delete and Write translation ---
 
-# One module-level id list, asserted equal to the set the quoting matrix states.
-DELETE_CASE_IDS = [
-    "space",
-    "single-quote",
-    "double-quote",
-    "command-substitution",
-    "backtick",
-    "newline",
-    "leading-dash",
-    "glob",
-    "non-ascii",
-]
 DELETE_CASES = {
     "space": "dir with space/file name.txt",
     "single-quote": "it's/a file.txt",
@@ -1153,6 +1160,24 @@ DELETE_CASES = {
     "leading-dash": "-rf",
     "glob": "*?[a-z]/file*.txt",
     "non-ascii": "d\u00e9j\u00e0/\u30d5\u30a1\u30a4\u30eb.txt",
+}
+DELETE_CASE_IDS = list(DELETE_CASES)
+# The nine quoting classes the Delete cases cover, each as a test on a path.
+# Written apart from DELETE_CASES so a dropped case fails.
+DELETE_QUOTING_CLASSES: dict[str, Callable[[str], bool]] = {
+    "space": lambda path: (
+        " " in path
+        and not path.startswith("-")
+        and re.fullmatch(r"[A-Za-z0-9._/ -]+", path) is not None
+    ),
+    "single quote": lambda path: "'" in path,
+    "double quote": lambda path: '"' in path,
+    "command substitution": lambda path: "$(" in path,
+    "backtick": lambda path: "`" in path,
+    "newline": lambda path: "\n" in path,
+    "leading dash": lambda path: path.startswith("-"),
+    "glob characters": lambda path: any(character in path for character in "*?["),
+    "non-ASCII": lambda path: not path.isascii(),
 }
 # The quote-blind splitter over-splits these, an accepted over-split: it cuts at `$(`, a backtick and a newline.
 OVER_SPLIT_CASE_IDS = {"command-substitution", "backtick", "newline"}
@@ -1171,9 +1196,10 @@ def _translated_command(tmp_path: Path, file_path: str, *, extra_payload: dict |
 
 
 class TestDeleteTranslation:
-    def test_the_case_ids_are_the_set_the_requirement_states(self) -> None:
-        assert list(DELETE_CASES) == DELETE_CASE_IDS
-        assert set(DELETE_CASE_IDS) >= OVER_SPLIT_CASE_IDS
+    @pytest.mark.parametrize("quoting_class", list(DELETE_QUOTING_CLASSES))
+    def test_the_cases_cover_each_of_the_nine_listed_quoting_classes(self, quoting_class: str) -> None:
+        matches = DELETE_QUOTING_CLASSES[quoting_class]
+        assert any(matches(path) for path in DELETE_CASES.values()), quoting_class
 
     @pytest.mark.parametrize("case_id", DELETE_CASE_IDS)
     def test_the_translated_command_passes_the_original_path_as_one_argument(self, case_id: str, tmp_path: Path) -> None:

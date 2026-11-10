@@ -623,11 +623,11 @@ def hook_args(
     label: str = "test-hook",
     fail_closed: bool = True,
     deadline: int = 10,
-    contract_version: str = CONTRACT_VERSION,
+    contract_version: str | None = CONTRACT_VERSION,
 ) -> list[str]:
-    args = [
-        "--contract-version",
-        contract_version,
+    """The shim's command line. A `contract_version` of None leaves the `--contract-version` flag out."""
+    args = ["--contract-version", contract_version] if contract_version is not None else []
+    args += [
         "--claude-event",
         claude_event,
         "--mode",
@@ -861,8 +861,10 @@ def opens_of_files_like(events: list[dict], targets: list[Path], cwd: Path) -> l
     return matched
 
 
-# The values requirement 15's text rules sweep. A classifier over agent-influenced text runs each one at the start, in
-# the middle and at the end of an otherwise valid input. A lone surrogate also appears as an object key in the parser rows.
+# Non-ASCII, separator and control values that are probes where an ASCII-only grammar and a Unicode-aware one differ.
+# A test runs each one at the start, in the middle and at the end of an otherwise valid input, and writes each
+# classifier's expected outcome per position.
+# A lone surrogate also appears as an object key in the parser rows.
 TEXT_RULE_CORPUS = {
     "nbsp": " ",
     "line-separator": " ",

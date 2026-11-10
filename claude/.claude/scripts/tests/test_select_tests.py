@@ -434,26 +434,35 @@ _HAND_AUDITED_AGENTS_DIR_READERS: tuple[tuple[str, str], ...] = (
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
         """TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also selected: this is a
-        .py file under claude/, which that test statically scans."""
+        .py file under claude/, which that test statically scans.
+        The helper HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS names also selects
+        SCRIPTS_TESTS_DIR, which runs it through the hook that calls it."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
+        assert _mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS, "an empty tuple would let the loop below pass vacuously"
+        for helper_path in _mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS:
+            helper_result = _mod.select_pytest_targets([helper_path])
+            assert helper_result.is_full_suite is False
+            assert {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR} <= set(helper_result.target_paths), helper_path
 
     def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
         """test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
         recursively globs claude/.claude/ for *.sh files, picking up
         claude/.claude/hooks/.
         Without this cross-domain exception, that check goes unrun on a
-        hooks-dir shell script change."""
-        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
-        assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-            _mod.SCRIPTS_TESTS_DIR,
-        }
+        hooks-dir shell script change. _lib.sh is covered because
+        test_cursor_adapter_translate.py runs its fragment splitter."""
+        for changed_path in ("claude/.claude/hooks/deny-example.sh", "claude/.claude/hooks/_lib.sh"):
+            result = _mod.select_pytest_targets([changed_path])
+            assert result.is_full_suite is False
+            assert set(result.target_paths) == {
+                _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+                _mod.SCRIPTS_TESTS_DIR,
+            }, changed_path
 
     def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
         """test_ticket_reference_discipline.py statically scans every
@@ -2202,6 +2211,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.REVIEW_PR_SKILL_MD,
     _mod.PERIOD_COST_REPORT_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
+    *_mod.HOOK_HELPERS_RUN_BY_SCRIPTS_TESTS,
     _mod.RESUME_CONTEXT_SKILL_MD,
     _mod.PLAN_IT_SKILL_MD,
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
@@ -2212,6 +2222,9 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
+    _mod.CONFIG_KEYS_PSV,
+    _mod.CHANGELOG_MD,
+    _mod.SKILL_EVALS_RUNNER,
     _mod.REVIEW_BENCH_RUNNER,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,

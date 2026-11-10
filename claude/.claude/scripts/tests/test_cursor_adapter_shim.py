@@ -147,9 +147,13 @@ def _hook_row(body: str, logged: str, *, deadline: int = 10) -> Row:
     return row
 
 
-# The marker sits beside the script, so a deadline test can tell a hook that ran too long from a deadline gone before it started.
-HOOK_STARTED_THEN_SLEEP = 'touch "${0%/*}/hook-started"\nsleep 30\n'
-HOOK_STARTED_THEN_IGNORE_TERM = "trap '' TERM\ntouch \"${0%/*}/hook-started\"\nexec sleep 30\n"
+HOOK_STARTED_TOUCH = 'touch "${0%/*}/hook-started"\n'
+HOOK_STARTED_THEN_SLEEP = HOOK_STARTED_TOUCH + "sleep 30\n"
+HOOK_STARTED_THEN_IGNORE_TERM = "trap '' TERM\n" + HOOK_STARTED_TOUCH + "exec sleep 30\n"
+
+
+def _assert_hook_started(tmp_path: Path) -> None:
+    assert (tmp_path / "hook-started").exists(), "the hook never reached its marker line, so the path under test did not run"
 
 
 def _timeout_row(tmp_path: Path, fail_closed: bool) -> tuple[dict, ShimEnv, str | None]:
@@ -258,8 +262,10 @@ def _no_wrapper_row(tmp_path: Path, fail_closed: bool) -> tuple[dict, ShimEnv, s
 INSTALL_RECORD_FAULT_ROWS["install-record-no-wrapper"] = _no_wrapper_row
 
 
-def _stale_row(argument_version: str, record_version: str | None, lacking: tuple[str, ...] = ()) -> Row:
-    """A stale install. `lacking` names record keys the stale record does not have, as a record of an older contract may not."""
+def _stale_row(argument_version: str | None, record_version: str | None, lacking: tuple[str, ...] = ()) -> Row:
+    """A stale install. `argument_version` None leaves `--contract-version` off the command line.
+
+    `lacking` names record keys the stale record does not have, as a record of an older contract may not."""
 
     def row(tmp_path: Path, fail_closed: bool) -> tuple[dict, ShimEnv, str | None]:
         env = make_shim_env(tmp_path)
@@ -391,6 +397,7 @@ OUTCOME_ROWS: dict[str, Row] = {
     "non-json-output": _hook_row("echo 'definitely not json'\n", "non-json"),
     **INSTALL_RECORD_FAULT_ROWS,
     "stale-install-argument": _stale_row("0", None),
+    "stale-install-argument-absent": _stale_row(None, None),
     "stale-install-record": _stale_row(CONTRACT_VERSION, "0"),
     "stale-install-agreeing-foreign-version": _stale_row("7", "7"),
     "stale-install-record-lacking-a-newer-key": _stale_row(CONTRACT_VERSION, "0", lacking=("tool_map",)),
@@ -403,97 +410,66 @@ OUTCOME_ROWS: dict[str, Row] = {
     "exit-2-with-stderr-at-the-output-cap": _stderr_at_cap_exit_two_row,
 }
 
-# The outcomes that end with no output document, so the launch guard's tail decides the call. TestShimFaults runs each.
-NO_DOCUMENT_OUTCOME_IDS = ["usage", "shim-fault"]
-
-# One module-level id list of the outcomes the shim must cover, asserted equal to requirement 3's.
-OUTCOME_IDS = [
-    "exit-1",
-    "exit-2-with-stderr",
-    "hook-exit-126",
-    "hook-exit-127",
-    "hook-exit-124",
-    "hook-killed-by-signal",
-    "timeout",
-    "set-u-abort",
-    "failed-source-of-config",
-    "missing-script",
-    "not-executable-script",
-    "missing-shebang-interpreter",
-    "start-failed",
-    "empty-non-json-output",
-    "non-json-output",
-    *INSTALL_RECORD_FAULT_ROWS,
-    "stale-install-argument",
-    "stale-install-record",
-    "stale-install-agreeing-foreign-version",
-    "stale-install-record-lacking-a-newer-key",
-    "unenterable-directory-missing",
-    "unenterable-directory-mode-000",
-    "payload-malformed",
-    "unknown-event",
-    "hook-output-cap-stdout",
-    "hook-output-cap-stderr",
-    "exit-2-with-stderr-at-the-output-cap",
-]
-# Requirement 3's outcome ids: the exit and signal outcomes, the start faults `start-failed`, `usage` and `shim-fault`,
-# the install-record and stale-install faults, the unenterable-directory outcomes and the output faults.
-REQUIREMENT_3_OUTCOME_IDS = {
-    "exit-1",
-    "exit-2-with-stderr",
-    "hook-exit-126",
-    "hook-exit-127",
-    "hook-exit-124",
-    "hook-killed-by-signal",
-    "timeout",
-    "set-u-abort",
-    "failed-source-of-config",
-    "missing-script",
-    "not-executable-script",
-    "missing-shebang-interpreter",
-    "start-failed",
-    "empty-non-json-output",
-    "non-json-output",
-    "install-record-missing",
-    "install-record-unreadable",
-    "install-record-unparseable",
-    "install-record-lacks-routed-dir",
-    "install-record-lacks-contract-version",
-    "install-record-lacks-tool-map",
-    "install-record-empty-tools",
-    "install-record-tool-map-lacks-shell",
-    "install-record-empty-prefix",
-    "install-record-unknown-translation",
-    "install-record-unknown-prefix-translation",
-    "install-record-jq-path-relative",
-    "install-record-jq-path-with-colon",
-    "install-record-wrapper-path-relative",
-    "install-record-wrapper-path-with-newline",
-    "install-record-wrapper-path-with-nul",
-    "install-record-wrapper-path-with-dot-dot",
-    "install-record-wrapper-path-not-a-string",
-    "install-record-python3-path-with-dot-dot",
-    "install-record-tool-paths-not-an-object",
-    "install-record-no-wrapper",
-    "stale-install-argument",
-    "stale-install-record",
-    "stale-install-agreeing-foreign-version",
-    "stale-install-record-lacking-a-newer-key",
-    "unenterable-directory-missing",
-    "unenterable-directory-mode-000",
-    "payload-malformed",
-    "unknown-event",
-    "hook-output-cap-stdout",
-    "hook-output-cap-stderr",
-    "exit-2-with-stderr-at-the-output-cap",
-    *NO_DOCUMENT_OUTCOME_IDS,
-}
+# The outcome ids the shim must have a row for, written out apart from OUTCOME_ROWS so a dropped row fails in its own case.
+REQUIRED_OUTCOME_IDS = frozenset(
+    {
+        "exit-1",
+        "exit-2-with-stderr",
+        "hook-exit-126",
+        "hook-exit-127",
+        "hook-exit-124",
+        "hook-killed-by-signal",
+        "timeout",
+        "set-u-abort",
+        "failed-source-of-config",
+        "missing-script",
+        "not-executable-script",
+        "missing-shebang-interpreter",
+        "start-failed",
+        "empty-non-json-output",
+        "non-json-output",
+        "install-record-missing",
+        "install-record-unreadable",
+        "install-record-unparseable",
+        "install-record-lacks-routed-dir",
+        "install-record-lacks-contract-version",
+        "install-record-lacks-tool-map",
+        "install-record-empty-tools",
+        "install-record-tool-map-lacks-shell",
+        "install-record-empty-prefix",
+        "install-record-unknown-translation",
+        "install-record-unknown-prefix-translation",
+        "install-record-jq-path-relative",
+        "install-record-jq-path-with-colon",
+        "install-record-wrapper-path-relative",
+        "install-record-wrapper-path-with-newline",
+        "install-record-wrapper-path-with-nul",
+        "install-record-wrapper-path-with-dot-dot",
+        "install-record-wrapper-path-not-a-string",
+        "install-record-python3-path-with-dot-dot",
+        "install-record-tool-paths-not-an-object",
+        "install-record-no-wrapper",
+        "stale-install-argument",
+        "stale-install-argument-absent",
+        "stale-install-record",
+        "stale-install-agreeing-foreign-version",
+        "stale-install-record-lacking-a-newer-key",
+        "unenterable-directory-missing",
+        "unenterable-directory-mode-000",
+        "payload-malformed",
+        "unknown-event",
+        "hook-output-cap-stdout",
+        "hook-output-cap-stderr",
+        "exit-2-with-stderr-at-the-output-cap",
+    }
+)
+OUTCOME_IDS = [*OUTCOME_ROWS, *sorted(REQUIRED_OUTCOME_IDS - OUTCOME_ROWS.keys())]
 # These print what the hook itself decided, so the shim's deny text rules do not apply to them.
 HOOK_OWN_OUTCOME_IDS = {"exit-2-with-stderr", "empty-non-json-output", "exit-2-with-stderr-at-the-output-cap"}
 SHIM_AUTHORED_OUTCOME_IDS = [i for i in OUTCOME_IDS if i not in HOOK_OWN_OUTCOME_IDS]
 INSTALL_RECORD_FAULT_IDS = list(INSTALL_RECORD_FAULT_ROWS)
 
-# The values shim.log's `out=` field holds. The third element a row returns is one of the failure tokens, and a row's id is not.
+# The values shim.log's `out=` field holds.
 FAILURE_OUTCOME_TOKENS = frozenset(
     {
         "exit-nonzero",
@@ -549,17 +525,9 @@ UNLOGGED_OUTCOME_TOKENS = frozenset({"install-record"})
 
 
 class TestShimFailureOutcomes:
-    def test_the_rows_are_exactly_the_listed_outcome_ids(self) -> None:
-        assert list(OUTCOME_ROWS) != [] and sorted(OUTCOME_ROWS) == sorted(OUTCOME_IDS)
-        assert len(OUTCOME_IDS) == len(set(OUTCOME_IDS))
-
-    def test_the_outcome_ids_are_the_set_the_requirement_states(self) -> None:
-        assert {*OUTCOME_IDS, *NO_DOCUMENT_OUTCOME_IDS} == REQUIREMENT_3_OUTCOME_IDS
-        for dropped in ("separator-byte", "nul-byte", "hook-nul-output", "existing-file-cap", "translate-failed"):
-            assert dropped not in REQUIREMENT_3_OUTCOME_IDS
-
     @pytest.mark.parametrize("outcome_id", OUTCOME_IDS)
     def test_every_outcome_id_denies_on_a_fail_closed_entry_and_logs_its_token(self, tmp_path: Path, outcome_id: str) -> None:
+        assert outcome_id in OUTCOME_ROWS
         output, env, logged = OUTCOME_ROWS[outcome_id](tmp_path, True)
         if outcome_id == "empty-non-json-output":
             assert output == {}
@@ -570,7 +538,6 @@ class TestShimFailureOutcomes:
             assert output["permission"] == "deny", outcome_id
             _assert_deny_text_rules(output)
         if logged is not None:
-            assert logged in LOGGED_OUTCOME_TOKENS, outcome_id
             assert read_log_lines(env)[-1]["out"] == logged, outcome_id
 
     def test_every_outcome_token_the_source_names_is_in_the_logged_set(self) -> None:
@@ -587,6 +554,7 @@ class TestShimFailureOutcomes:
     def test_every_shim_authored_outcome_prints_empty_output_on_an_informational_entry(
         self, tmp_path: Path, outcome_id: str
     ) -> None:
+        assert outcome_id in OUTCOME_ROWS
         output, env, logged = OUTCOME_ROWS[outcome_id](tmp_path, False)
         assert output == {}, outcome_id
         if logged is not None:
@@ -690,10 +658,13 @@ class TestShimFailureOutcomes:
             assert output == {}
 
     @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
-    @pytest.mark.parametrize("which", ["argument", "record"])
-    def test_a_contract_version_mismatch_is_a_stale_install(self, tmp_path: Path, which: str, fail_closed: bool) -> None:
-        row = _stale_row("0", None) if which == "argument" else _stale_row(CONTRACT_VERSION, "0")
-        output, _, _ = row(tmp_path, fail_closed)
+    @pytest.mark.parametrize(
+        "row_id",
+        ["stale-install-argument", "stale-install-argument-absent", "stale-install-record"],
+        ids=["argument", "absent-argument", "record"],
+    )
+    def test_a_contract_version_mismatch_is_a_stale_install(self, tmp_path: Path, row_id: str, fail_closed: bool) -> None:
+        output, _, _ = OUTCOME_ROWS[row_id](tmp_path, fail_closed)
         if fail_closed:
             assert (
                 "stale install: the engineer quits Cursor, re-runs install and relaunches. See the Recovery section"
@@ -702,6 +673,30 @@ class TestShimFailureOutcomes:
             _assert_deny_text_rules(output)
         else:
             assert output == {}
+
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    @pytest.mark.parametrize(
+        "contract_version", [None, "0", CONTRACT_VERSION], ids=["absent-version", "foreign-version", "current-version"]
+    )
+    @pytest.mark.parametrize("mode", ["pin", "pin-check", "classify"])
+    def test_the_contract_version_check_covers_every_mode(
+        self, tmp_path: Path, mode: str, contract_version: str | None, fail_closed: bool
+    ) -> None:
+        root = _workspace(tmp_path)
+        payload = build_spec("shell_before_execution", root).cursor if mode == "pin-check" else shell_pre_payload(root, "ls")
+        output, env = _run_probe(tmp_path, payload, fail_closed=fail_closed, mode=mode, contract_version=contract_version)
+        logged = read_log_lines(env)[-1]["out"]
+        if contract_version == CONTRACT_VERSION:
+            assert logged != "stale-install"
+        elif fail_closed:
+            assert output["permission"] == "deny"
+            assert "outcome stale-install" in output["agent_message"]
+            assert "stale install" in output["agent_message"]
+            _assert_deny_text_rules(output)
+            assert logged == "stale-install"
+        else:
+            assert output == {}
+            assert logged == "stale-install"
 
     def test_a_stale_install_is_logged_for_a_later_status_count(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
@@ -784,6 +779,25 @@ class TestShimArguments:
         result = run_shim(env, shell_pre_payload(_workspace(tmp_path), "ls"), args, cwd=_scratch(tmp_path))
         assert (result.returncode, result.stdout) == (1, b"")
 
+    def test_a_command_line_without_a_contract_version_parses_with_an_empty_one(self) -> None:
+        arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", contract_version=None))
+        assert arguments is not None
+        assert arguments.contract_version == ""
+
+    @pytest.mark.parametrize(("mode", "parses"), [("hook", False), ("pin", True), ("pin-check", True), ("classify", True)])
+    def test_only_hook_mode_requires_a_script(self, mode: str, parses: bool) -> None:
+        arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", mode=mode))
+        assert (arguments is not None) is parses
+
+    def test_a_hook_mode_command_line_with_an_empty_script_is_rejected(self) -> None:
+        assert SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="")) is None
+
+    def test_an_unknown_mode_is_rejected(self) -> None:
+        assert SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", mode="bogus")) is None
+
+    def test_a_matcher_that_is_not_a_compilable_regex_is_rejected(self) -> None:
+        assert SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", matcher="(")) is None
+
     @pytest.mark.parametrize("deadline", ["08", "010", "0", "1", "-3", "1.5", "", "61", "9999999"])
     def test_a_deadline_outside_two_to_sixty_whole_seconds_is_a_usage_outcome(self, tmp_path: Path, deadline: str) -> None:
         env = make_shim_env(tmp_path)
@@ -819,7 +833,7 @@ class TestShimArguments:
         started = time.monotonic()
         output, env = _run_hook_body(tmp_path, HOOK_STARTED_THEN_IGNORE_TERM, deadline=deadline)
         elapsed = time.monotonic() - started
-        assert (tmp_path / "hook-started").exists(), "the deadline passed before the hook started, so the kill path did not run"
+        _assert_hook_started(tmp_path)
         assert output["permission"] == "deny"
         assert read_log_lines(env)[-1]["out"] == "timeout"
         assert elapsed < SHIM_MODULE.worst_case_wall_seconds(deadline) + SHIM_MODULE.MARGIN_SECONDS
@@ -828,7 +842,7 @@ class TestShimArguments:
     def test_a_hook_that_outlives_the_deadline_is_killed_and_denied(self, tmp_path: Path) -> None:
         output, _, _ = OUTCOME_ROWS["timeout"](tmp_path, True)
         assert output["permission"] == "deny"
-        assert (tmp_path / "hook-started").exists(), "the deadline passed before the hook started, so the kill path did not run"
+        _assert_hook_started(tmp_path)
 
     def test_the_shim_never_runs_the_hook_from_another_directory(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
@@ -1923,7 +1937,10 @@ class TestShimHookRun:
     def test_a_hook_that_never_reads_its_stdin_and_sleeps_past_the_deadline_takes_the_timeout_outcome(
         self, tmp_path: Path, gnu_wrapper: str
     ) -> None:
-        output, elapsed, env = _timed_run(tmp_path, "sleep 30\n", deadline=2, payload=_big_command_payload(tmp_path, 1024 * 1024))
+        output, elapsed, env = _timed_run(
+            tmp_path, HOOK_STARTED_THEN_SLEEP, deadline=2, payload=_big_command_payload(tmp_path, 1024 * 1024)
+        )
+        _assert_hook_started(tmp_path)
         assert "outcome timeout" in output["agent_message"]
         assert elapsed < _timing_bound(2)
         assert read_log_lines(env)[-1]["out"] == "timeout"
@@ -1953,9 +1970,10 @@ class TestShimHookRun:
     @pytest.mark.timing
     def test_the_bound_ends_a_call_that_a_child_in_its_own_session_holds_open(self, tmp_path: Path, gnu_wrapper: str) -> None:
         pid_file = tmp_path / "child.pid"
-        holder = f"import os, time\\nos.setsid()\\nopen('{pid_file}', 'w').write(str(os.getpid()))\\ntime.sleep(40)"
+        holder = f'import os, time\\nos.setsid()\\nopen("{pid_file}", "w").write(str(os.getpid()))\\ntime.sleep(40)'
         body = (
-            f"'{sys.executable}' -c \"$(printf '{holder}')\" &\nwhile [ ! -s '{pid_file}' ]; do sleep 0.05; done\nprintf '{{}}'\n"
+            f"'{sys.executable}' -c \"$(printf '{holder}')\" &\n"
+            f"while [ ! -s '{pid_file}' ]; do sleep 0.05; done\n{HOOK_STARTED_TOUCH}printf '{{}}'\n"
         )
         try:
             output, elapsed, _ = _timed_run(tmp_path, body, deadline=2)
@@ -1963,6 +1981,7 @@ class TestShimHookRun:
             if pid_file.exists():
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        _assert_hook_started(tmp_path)
         assert "outcome timeout" in output["agent_message"]
         assert elapsed < _timing_bound(2)
 
@@ -1971,11 +1990,12 @@ class TestShimHookRun:
         self, tmp_path: Path, gnu_wrapper: str
     ) -> None:
         sleep_argument = f"41.{os.getpid()}"
-        body = f"'{gnu_wrapper}' 40 sleep {sleep_argument} >/dev/null &\nprintf '{{}}'\n"
+        body = f"{HOOK_STARTED_TOUCH}'{gnu_wrapper}' 40 sleep {sleep_argument} >/dev/null &\nprintf '{{}}'\n"
         try:
             output, elapsed, _ = _timed_run(tmp_path, body, deadline=2)
         finally:
             subprocess.run(["pkill", "-f", f"sleep {sleep_argument}"], check=False)
+        _assert_hook_started(tmp_path)
         assert "outcome timeout" in output["agent_message"]
         assert elapsed < _timing_bound(2)
 
@@ -1983,7 +2003,8 @@ class TestShimHookRun:
     def test_a_hook_that_closes_stdout_and_stderr_and_sleeps_past_the_deadline_takes_the_timeout_outcome(
         self, tmp_path: Path, gnu_wrapper: str
     ) -> None:
-        output, elapsed, _ = _timed_run(tmp_path, "exec >&- 2>&-\nsleep 30\n", deadline=2)
+        output, elapsed, _ = _timed_run(tmp_path, f"{HOOK_STARTED_TOUCH}exec >&- 2>&-\nsleep 30\n", deadline=2)
+        _assert_hook_started(tmp_path)
         assert "outcome timeout" in output["agent_message"]
         assert elapsed < _timing_bound(2)
 
@@ -1991,8 +2012,9 @@ class TestShimHookRun:
     def test_a_hook_still_running_at_the_deadline_that_prints_an_allow_and_exits_zero_on_the_term_is_a_timeout(
         self, tmp_path: Path, gnu_wrapper: str
     ) -> None:
-        body = "trap 'printf \"{}\"; exit 0' TERM\nsleep 30 &\nwait $!\n"
+        body = f"trap 'printf \"{{}}\"; exit 0' TERM\n{HOOK_STARTED_TOUCH}sleep 30 &\nwait $!\n"
         output, elapsed, env = _timed_run(tmp_path, body, deadline=2)
+        _assert_hook_started(tmp_path)
         assert output["permission"] == "deny"
         assert "outcome timeout" in output["agent_message"]
         assert elapsed < _timing_bound(2)
@@ -2610,19 +2632,6 @@ class TestShimInterpreterIsolation:
 
 # --- text rules ---
 
-# The ids of the classifiers requirement 15's first text rule lists. The two a later phase builds have no consumer yet.
-TEXT_CLASSIFIER_IDS = [
-    "pin-prefix",
-    "leading-cd",
-    "taint-word-match",
-    "session-id-grammar",
-    "log-grammar",
-    "matcher-recheck",
-    "case-insensitive-name-compare",
-]
-CLASSIFIERS_NOT_YET_BUILT = {"taint-word-match", "case-insensitive-name-compare"}
-CLASSIFIER_CONSUMER_IDS = ["pin-prefix", "leading-cd", "session-id-grammar", "log-grammar", "matcher-recheck"]
-
 # Parser edges: each takes the payload-malformed outcome, never a shim fault.
 PARSER_EDGES = {
     "invalid-utf-8": b'{"conversation_id": "\xff"}',
@@ -2715,18 +2724,6 @@ class TestShimTextRules:
             assert SHIM_MODULE.matcher_selects(exact, candidate) is False
             assert SHIM_MODULE.matcher_selects(wide, candidate) is False
         assert SHIM_MODULE.matcher_selects(exact, "MCP:tool") is True
-
-    def test_the_consumer_ids_are_the_classifier_list_the_rule_states_less_the_ones_a_later_phase_builds(self) -> None:
-        assert [i for i in TEXT_CLASSIFIER_IDS if i not in CLASSIFIERS_NOT_YET_BUILT] == CLASSIFIER_CONSUMER_IDS
-        assert set(TEXT_CLASSIFIER_IDS) == {
-            "pin-prefix",
-            "leading-cd",
-            "taint-word-match",
-            "session-id-grammar",
-            "log-grammar",
-            "matcher-recheck",
-            "case-insensitive-name-compare",
-        }
 
     def test_a_translated_write_whose_path_holds_a_unit_separator_takes_the_hooks_own_field_shift_deny(
         self, tmp_path: Path

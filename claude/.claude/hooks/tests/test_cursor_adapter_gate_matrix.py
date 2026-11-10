@@ -1,18 +1,5 @@
 """Gate matrix: the unchanged harness hooks, run through the Cursor adapter's shim with no Cursor.
 
-Sections:
-- TestCursorPayloadBuilders: the shared builders' keys, types and distinct ids;
-- TestTranslatedPayload and TestShimEnvelope: what a hook receives, with no gate run;
-- TestGateMatrix: one row per gate-class registration in settings.json that has a delivered shim arm. Four arms are drawn from
-  a trigger where the gate has one (shim, near miss, raw, import), each with an effect check. A gate with no trigger yet is listed
-  in NO_TRIGGER_YET with a reason and runs a benign call that must print `{}` with an `ok` log line;
-- TestInformationalArms and TestChildPayloadImportArm: the informational registrations with a delivered arm run their shim arm
-  on a benign call of their event, the hooks in INFORMATIONAL_WRITE_TRIGGERS also run a call that reaches their write path,
-  and every delivered arm also runs a child payload (its own conversation id, the parent's in parent_agent_id) through
-  the shim and import arms;
-- TestLeadingCdVerdictEquality: leading-cd command shapes through the shim equal the Claude-shaped reference verdict;
-- positive controls for each effect detector, and the bootstrap-project-plugins row.
-
 What the matrix does not cover: an informational hook listed in NO_WRITE_TRIGGER_YET runs a benign call only, so a state write
 reached only by a trigger is not seen. Those triggers are due before Phase 4 of .claude/plans/cursor-adapter.md, which relies
 on the hooks' state writes staying under the parent id. A registration with a parity exception has no shim arm, only an import
@@ -870,7 +857,8 @@ TRIGGER_CASES = [(r, t) for r in SHIM_ARM_REGISTRATIONS for t in TRIGGERS.get(r.
 
 # Gate scripts whose registration has no trigger above, each with the reason. A new gate, or a new trigger, forces an edit here.
 NO_TRIGGER_YET = {
-    "require-diff-size-prompt.sh": "denies a commit only when the branch's cumulative diff passes a size threshold",
+    "require-diff-size-prompt.sh": "denies a commit only when the branch's cumulative diff passes a size threshold; "
+    "its roster deny keys on agent_type, which the shim does not forward, so that deny is inert under the shim",
     "guard-settings-session-keys.sh": "denies a commit only when a staged settings.json holds session keys",
     "deny-private-project-refs.sh": "denies only against a populated private-project blocklist",
     "require-stow-reminder.sh": "denies a PR open or edit that adds a stowed path to this repository",
@@ -880,7 +868,8 @@ NO_TRIGGER_YET = {
     "require-ready-for-review.sh": "denies a push, ready or create only against an open PR or a missing completion marker",
     "deny-pii-in-commits.sh": "denies a commit only when its added lines hold personal data in a staged diff",
     "deny-invisible-commit-content.sh": "denies a commit only when its staged content holds invisible characters",
-    "enforce-marker-script-shape.sh": "denies only a marker write or script of the wrong shape, which needs marker state",
+    "enforce-marker-script-shape.sh": "denies only a marker write or script of the wrong shape, which needs marker state; "
+    "its subagent bars key on agent_type and agent_id, which the shim does not forward, so they are inert under the shim",
     "deny-reviewer-tree-mutation.sh": "keys on agent_type, which Cursor payloads do not carry until agent attribution lands",
     "require-plan-review.sh": "denies a Write only while a modified plan awaits review, which needs plan state",
     "deny-plan-writer-off-plan-writes.sh": "keys on agent_type, which Cursor payloads do not carry until attribution lands; "
@@ -1095,9 +1084,8 @@ def _claude_twin_for(registration: Registration, world: World, trigger: Trigger 
         return {**twin, "tool_name": "Agent", "tool_input": tool_input}
     if near_miss or trigger.overwrites is None:
         return {**twin, "tool_name": "Write", "tool_input": tool_input}
-    # An overwrite is named as Translation step 2 names it, by the row's Claude matcher: `Edit` where the matcher selects the
-    # name `Edit` (a `MultiEdit`-alone matcher does not), `Write` otherwise. The rest comes from the builder module's
-    # `write_edit` twin, so requirement 40's one object stays one.
+    # An overwrite is `Edit` where the row's Claude matcher selects the name `Edit` (a `MultiEdit`-alone matcher does not), else
+    # `Write`; see `write_overwrites` in hook-shim.py. The rest comes from the builder module's `write_edit` twin.
     overwrite_name = (
         "Edit" if _row_matcher(registration) and re.fullmatch(f"(?:{_row_matcher(registration)})", "Edit") else "Write"
     )
@@ -1242,7 +1230,8 @@ class TestGateMatrix:
             DECLINED_SESSION_WRITES
         )
 
-    def test_every_translated_tool_class_has_a_trigger_or_is_listed_with_a_reason(self) -> None:
+    def test_the_trigger_classes_are_the_five_gate_deny_classes_and_delete_is_listed_with_a_reason(self) -> None:
+        """Grep and the passthrough tools (WebFetch, WebSearch, `MCP:` names) are in neither set."""
         covered = {trigger.tool_class for triggers in TRIGGERS.values() for trigger in triggers}
         assert covered == TRIGGER_TOOL_CLASSES
         assert set(NO_TRIGGER_TOOL_CLASSES) == {"Delete"}

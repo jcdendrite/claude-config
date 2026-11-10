@@ -5,9 +5,8 @@ Usage: hook-shim.py --contract-version V --claude-event CLAUDE_EVENT [--mode hoo
   [--matcher REGEX] [--script PATH] [--label NAME] [--deadline SECONDS] [--fail-closed|--fail-open]
 
 Cursor's payload arrives on stdin and Cursor's output leaves on stdout as one JSON document.
-The generated launch guard runs this file with the recorded python3 under `-I -S` and turns a missing
-document into the entry's deny or `{}`. Nothing here reads the environment, an argument or a file until
-`main` runs, so a test can load the module in-process. The install record at
+The launch guard that the installer (not yet written) generates runs this file with the recorded python3 under
+`-I -S` and turns a missing document into the entry's deny or `{}`. A test can load the module in-process. The install record at
 $HOME/.cursor/cursor-adapter/install.json fixes the routed config dir, the tool paths and the tool map.
 """
 
@@ -31,21 +30,22 @@ from types import MappingProxyType
 CONTRACT_VERSION = "1"
 STALE_INSTALL_DETAIL = "stale install: the engineer quits Cursor, re-runs install and relaunches."
 
-# The command-line vocabulary. cursor-adapter.py's command grammar must stay equal to it.
+# The command-line vocabulary. The command grammar of the installer (cursor-adapter.py, not yet written) must stay equal to it.
 VALUE_FLAGS = ("--contract-version", "--claude-event", "--mode", "--matcher", "--script", "--label", "--deadline")
 SWITCH_FLAGS = ("--fail-closed", "--fail-open")
 MODES = ("hook", "pin", "pin-check", "classify")
 
-# The deadline is the entry's `--deadline`, in whole seconds. The default is a project choice with no vendor value: long
-# enough for the slowest gate in normal use, short enough to sit well inside Cursor's own hook timeout.
+# The deadline is the entry's `--deadline`, in whole seconds.
+# The default is a project choice with no vendor value.
 DEFAULT_DEADLINE_SECONDS = 10
 MIN_DEADLINE_SECONDS = 2
+# A project choice with no documented source. It puts the entry `timeout` at 65 s, and no documented Cursor ceiling backs that.
 MAX_DEADLINE_SECONDS = 60
 # The wrapper's `-k` value, a project choice: how long a hook that ignores the TERM gets before the KILL.
 GRACE_PERIOD_SECONDS = 2
 # A project choice: how long the shim keeps reading after the wrapper's kill, for the pipes to reach EOF.
 DRAIN_BOUND_SECONDS = 1
-# Covers interpreter start-up before the deadline's clock starts. A generated entry's `timeout` is the worst case plus this.
+# A project choice, not measured. A generated entry's `timeout` is the worst case plus this.
 MARGIN_SECONDS = 2
 # A project choice. GNU timeout reads a duration of 0 as no timeout, so a time left below this takes the timeout outcome.
 TIME_LEFT_FLOOR_SECONDS = 0.1
@@ -61,7 +61,9 @@ HOOK_STATUS_BLOCK = 2
 # `start-failed` causes whose deny text invites one retry.
 TRANSIENT_ERRNO_SYMBOLS = frozenset({"EAGAIN", "EMFILE", "ENFILE", "ENOMEM"})
 
-# Cursor payloads of about 1.4 MB have been observed without error, so the cap sits well above that.
+# A project choice, set above the largest Cursor payload observed (about 1.4 MB on `postToolUse`):
+# `.claude/plans/cursor-adapter.md` § "Payload (O1, O3, O8, O15)".
+# A bound on the bytes the shim reads into memory.
 PAYLOAD_CAP_BYTES = 8 * 1024 * 1024
 # Each of a hook's stdout and stderr is kept up to this size.
 HOOK_OUTPUT_CAP_BYTES = 1024 * 1024
@@ -71,7 +73,7 @@ HOOK_REASON_CAP_CHARS = 16384
 # A project choice: the size of one read or write on a hook's pipes, small enough that the deadline is checked often.
 IO_CHUNK_BYTES = 32 * 1024
 
-# Sentence that every shim-authored deny carries, and the Recovery section opens with.
+# Sentence the Recovery section of docs/cursor-adapter.md (not yet written) opens with.
 RECOVERY_SENTENCE = (
     "The engineer, not the agent, follows the Recovery section. An agent runs no command from that section, "
     "retries only where this deny's own text says to, and otherwise stops and reports this deny in chat."
@@ -103,7 +105,7 @@ LOG_OVERFLOW_TOKEN = "overflow"
 LOG_VALUE_PATTERN = r"[0-9A-Za-z._:+-]+"
 # One line is at most this many bytes with its newline.
 LOG_LINE_MAX_BYTES = 1024
-# Field order and maxima. `runmode` is first written by the installer.
+# Field order and maxima. `runmode` is first written by the installer (not yet written).
 LOG_FIELDS = (
     ("ts", 12),
     ("reg", 64),
@@ -207,7 +209,7 @@ class Arguments:
 
 
 def worst_case_wall_seconds(deadline):
-    """The longest the shim runs for `--deadline`, apart from steps with no time bound of their own."""
+    """The `--deadline` plus the grace period and the drain bound."""
     return deadline + GRACE_PERIOD_SECONDS + DRAIN_BOUND_SECONDS
 
 
@@ -657,9 +659,13 @@ class Roots:
     def shell_pin_directory(self, original):
         """The directory the pin gives a Shell command, or None when no absolute directory is known.
 
-        The first workspace root, or $HOME with none, unless the command starts with `cd <path> &&` where the path is
-        absolute, holds no NUL, `$`, `~` or backtick, exists, and is a workspace root or lies inside one by the
-        containment test on its realpath form. The test runs no git and no other program."""
+        The default is the first workspace root, or $HOME with none.
+        A command that starts with `cd <path> &&` gets the path instead when all of these hold:
+        - the path is absolute and holds no NUL, `$`, `~` or backtick;
+        - the path exists;
+        - the path is a workspace root or lies inside one, by the containment test on its realpath form.
+
+        The test runs no git and no other program."""
         first = self.raw[0] if self.raw else self.home
         if not first.startswith("/") or "\0" in first:
             return None
@@ -710,10 +716,11 @@ def leading_cd_candidate(command):
 
 
 def recognize_pin(command, roots):
-    """(the agent's command, whether COMMAND started with exactly the pin prefix its own remainder would get).
+    """Returns (the agent's command, whether `command` started with exactly the pin prefix its own remainder would get).
 
-    Tries each newline as the end of the pin line, earliest first, so a second fire over a prefixed command leaves it
-    alone and a lookalike pin line naming another directory is agent text."""
+    Tries each newline as the end of the pin line, earliest first.
+    A second fire over a prefixed command leaves it alone.
+    A lookalike pin line naming another directory is agent text."""
     if not command.startswith(PIN_LINE_HEAD):
         return command, False
     position = -1
@@ -1708,7 +1715,8 @@ def _self_check_record():
 
 
 def self_check(wrapper):
-    """Runs the checks `install` and `check` run under the recorded python3. Returns the failures, one `name: class` each.
+    """Runs the checks that the installer's `install` and `check` commands (not yet written) run under the recorded python3.
+    Returns the failures, one `name: class` each.
 
     The hook-run check starts one process, the wrapper, around /bin/sh reading its program from the payload on stdin.
     It writes no file and no log line."""
