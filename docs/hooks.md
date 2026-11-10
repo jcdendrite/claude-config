@@ -150,8 +150,7 @@ Cites are to quoted header text, not line numbers, since the tier line's own ins
   - The checks that script makes before it posts are listed in its usage text.
   - `/review-pr`'s completion marker is session-scoped, unlike the cross-session glob other completion markers use.
 - **`require-ready-for-review.sh`** — gates `git push`, `gh pr ready`, and `gh pr create` on branches with an open PR. Requires `/ready-for-review` to have run and passed since the last commit. Verified via a marker whose content is the HEAD SHA the gate ran against — a new commit invalidates the marker automatically and forces a re-run. Wired on the PreToolUse `Bash` matcher with no `if`-condition, so it fires on every Bash call and self-filters internally. An active-skill bypass marker (`<config-dir>/.ready-for-review-active.d/<session_id>`) prevents the skill's own iteration pushes (fix → push → loop) from self-denying.
-- **`deny-default-branch-push.sh`** — denies an agent push whose destination is a protected branch or cannot be resolved, and a mutating `gh api` call to a ref-moving endpoint (`repos/<o>/<r>/contents`, `git/refs` or `merges`, or the same paths under `repositories/<id>/`). The gate is best-effort command-text parsing: wrapped, scripted and HTTP pushes pass, so server-side branch protection is the only barrier for steered input (see "Required server-side protection" below). The hook header lists the Known gaps and the accepted over-denials.
-  - **Install recovery.** Where `~/.claude/hooks` is a real directory, a `git pull` leaves the new file unlinked while settings.json already registers it, and every Bash call blocks. Run `./install.sh` from a separate terminal.
+- **`deny-default-branch-push.sh`** — denies an agent push whose destination is a protected branch or cannot be resolved, and a mutating `gh api` call to a ref-moving endpoint (`repos/<o>/<r>/contents`, `git/refs` or `merges`, or the same paths under `repositories/<id>/`). The gate is best-effort command-text parsing: wrapped, scripted and HTTP pushes pass, so server-side branch protection is the only barrier for steered input (see `docs/security-hardening.md` § "Required server-side branch protection"). The hook header lists the Known gaps and the accepted over-denials.
   - **Protected set.** The hook header's "Protected set" paragraph names the protected branches. Set `origin/HEAD` locally (`git remote set-head origin --auto`) so a default branch other than `main`, `master` or `develop` is protected. For such a default branch the local `origin/HEAD` is advice for a cooperative agent, because an earlier Bash call can rewrite it, and server-side protection is the barrier.
   - **How it judges.** It judges one masked pass of the command, so a quoted mention of a push is inert, and reads `gh api` endpoints from quote-stripped text. A refspec-less push resolves through `@{push}`. A push that git config or an earlier `cd`, `pushd`, `popd`, `git checkout`, `git switch` or `gh pr checkout` fragment can redirect is denied. The deny tells the agent to push a feature branch and open a PR, or to ask the engineer to run the push with the `!` prefix.
   - **Dispatch.** Registered on the PreToolUse `Bash` matcher with no `if`-condition, so it fires on every Bash call and exits before any git call unless a fragment is a push, an alias candidate or a `gh api` call.
@@ -197,56 +196,6 @@ Cites are to quoted header text, not line numbers, since the tier line's own ins
 - **`require-review-orchestrator-routing.sh`** — `PreToolUse` gate on matcher `Skill`, with no `if` filter, so the script's own tool-name check is the only one. While the `review_orchestrator_routing` config key is on, it denies a main-session `Skill(code-review)` call so the round runs through the `review-orchestrator` agent, and the deny text points at `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven". The call is denied before the skill body loads. The escape is a leading `unrouted` word in the call's args, used by the four rounds that must stay inline: the protocol's HALT fallback (for the rest of that review loop), a `/ready-for-review` cumulative pass, a `/review-pr` pass, and an inline round the user asks for. The hook header states the exact allow rules and their order. It allows every subagent call, every account whose key is off or cannot be read, and any failed skill or args read after the payload parsed. A malformed payload still denies, as for every gate. Known gaps: a typed `/code-review` expands without a `Skill` call, so it runs in the main thread by design. `/review-pr` is for reviewing a pull request. A main session run as `claude --agent review-orchestrator` is denied with text that points at itself, and recovers with args `unrouted` or the key set to `false`. The key is off by default. A deny that carries the routing instruction and repeats on every call, including the `unrouted` retry, means the gate does not read the args as starting with the bare lowercase word `unrouted`, followed by the end of the args or ASCII whitespace. Examples include a harness that no longer sends `tool_input.args` as a string, a copied quoted or backtick-wrapped spelling such as `"unrouted"`, and a non-ASCII space such as U+3000 before or after the word. Set the key to `false` to recover on the next `Skill` call, or type `/code-review`, which expands without a `Skill` call. A retry whose args start with the plain ASCII word recovers every case except the harness change. See [`docs/design-decisions/review-orchestrator-routing-gate.md`](design-decisions/review-orchestrator-routing-gate.md) for the design rationale, the enable steps, the dogfood and the withdrawal form.
 
 A new gate registers every handler with `"onFailure": "block"` and ends its script with a column-0 `exit 0`, and `test_hook_alignment.py` fails a gate that lacks either. See [Bash version](#bash-version) for why.
-
-### Required server-side protection
-
-Configure the default branch so that direct pushes are blocked for the credential the agent uses, with no bypass for administrators or that credential:
-
-- A branch protection rule that requires a pull request with at least one approving review, has "Do not allow bypassing the above settings" (`enforce_admins`) on, and allows the credential no pull-request bypass.
-- Or a repository ruleset that targets the default branch, requires a pull request with at least one approving review and lists no bypass actor for the credential.
-
-Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
-Block force pushes and branch deletion on the default branch as well.
-
-The approving review is a requirement because the gate does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
-The agent's credential must not be able to supply the approval.
-
-Give the agent a credential without repository-administration rights.
-`deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
-
-Restrict the scope of any repository secret that can push to the default branch or deploy.
-The gate allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
-
-The gate reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The hook header's Known gaps list them, so protection on the remote is the only barrier for steered input.
-
-Where the host or plan offers no branch protection for the repository, the gate is the only control and every Known gap in the hook header is open.
-Give the agent a credential that cannot push to that repository, or treat its pushes as unprotected and do not rely on the gate.
-
-Check a branch protection rule with `gh api repos/<owner>/<repo>/branches/<default>/protection`, and expect:
-- `enforce_admins.enabled` true.
-- Required pull-request reviews with an approving-review count of at least one.
-- No pull-request bypass allowance for the credential.
-- Stale-approval dismissal on, or approval of the most recent push required.
-- Force pushes and deletions both disallowed.
-
-Check rulesets by listing them with `gh api repos/<owner>/<repo>/rulesets`, then inspect each ruleset individually with `gh api repos/<owner>/<repo>/rulesets/<id>`. Expect:
-- `enforcement` set to `active`.
-- A target that includes the default branch.
-- A pull-request rule requiring at least one approving review, with stale-approval dismissal on push or approval of the most recent push required.
-- A rule blocking force pushes and a rule blocking deletion.
-- No bypass actor for the credential.
-
-Confirm any of these that the API output does not show in the repository settings page.
-
-Run these protection reads with the engineer's own credential, not the agent's. The agent's credential is the one the protection must bind and holds no repository-administration rights, so the reads may be refused to it or show less than the full configuration.
-
-Then verify the three credential properties the rules above depend on:
-- **No administration rights.** In the repository's collaborator and permission settings, confirm the agent's account holds a role below administrator, is on no bypass list and owns no token or app installation with administration scope.
-- **Cannot supply the approval.** Open a pull request from a throwaway branch with the agent's credential. Confirm it stays blocked from merging while the agent's account is the only one that has reviewed it.
-- **Solo owner.** When the engineer is the only reviewer, the rule must still require an approval that the agent's credential cannot give.
-  - The agent needs an account of its own, separate from the engineer's, so that the engineer can approve its pull requests.
-  - If the agent runs on the engineer's own credential, no approval comes from a different account, so the rule is satisfied only by a bypass for the engineer's account, which the agent's credential holds too.
-  - Confirm the rule lists no bypass actor that the agent's credential can act as.
 
 ## Utility hooks
 

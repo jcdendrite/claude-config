@@ -216,7 +216,8 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_ansi_c_multi_char_escape_git_word_second_commit_allowed(self):
-        """Documented residual (docs/security-hardening.md lines ~784-787):
+        """Documented residual (docs/security-hardening.md, the paragraph
+        beginning "None of the five closes a multi-character ANSI-C escape"):
         the ANSI-C multi-character escape `$'\\x67it'` (`\\x67` is `g`)
         contains a backslash, so `_lib_mask_shell_quotes`'s single-safe-word
         exception regex (`^[A-Za-z0-9._/-]+$`) never matches it and the span

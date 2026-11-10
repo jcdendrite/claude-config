@@ -43,7 +43,7 @@
 # pattern would miss aliased and dashed push forms.
 # Per-fire cost exceeds the <100ms budget (plugins/claude-hook-review/skills/claude-hook-review/SKILL.md § "7. Performance budget") and grows with the command's line count, an exceedance accepted here.
 #
-# Server-side branch protection (docs/hooks.md § "Required server-side protection") is the only barrier for every gap below.
+# Server-side branch protection (docs/security-hardening.md § "Required server-side branch protection") is the only barrier for every gap below.
 #
 # Known gaps accepted on GH-1407:
 #   - A push from a script file the agent writes.
@@ -62,7 +62,7 @@
 #   - `gh api repos/<owner>/<repo>/pulls/<n>/merge`, tracked as GH-1077.
 #   - Every mutating verb (`PUT`, `PATCH`, `POST` and `DELETE`) of a `gh api` call to `repos/<owner>/<repo>/branches/<branch>/protection` or `repos/<owner>/<repo>/rulesets`, which weakens or removes the server-side barrier above.
 #     The barrier needs an agent credential without repository-administration rights.
-#   - The `gh api` `repos/<owner>/<repo>/branches/<branch>/rename` endpoint, which the endpoint set does not list, so a default-branch rename passes and only the non-admin-credential requirement in docs/hooks.md § "Required server-side protection" covers it.
+#   - The `gh api` `repos/<owner>/<repo>/branches/<branch>/rename` endpoint, which the endpoint set does not list, so a default-branch rename passes and only the non-admin-credential requirement in docs/security-hardening.md § "Required server-side branch protection" covers it.
 #   - A `gh api` endpoint written after a boolean flag such as `--paginate`, `-i` or `--silent`. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes, such as `gh api -X PUT -f message="add readme" $URL`.
 #   - A `gh api` endpoint written after a quoted multi-word flag value. The endpoint read takes another word as the endpoint, so a computed endpoint after it passes.
 #   - A `gh api` endpoint written after a flag value holding a command substitution. The `gh api` fragment is cut at the substitution, so a ref-moving endpoint after it passes, such as `gh api -X PUT -f content="$(base64 …)" repos/o/r/contents/f`.
@@ -126,10 +126,6 @@
 #     The gate denies `HEAD^{commit}` too: the shell leaves it alone, but the gate cannot tell a rewritten word from a literal one.
 #   - A `gh api` read of a ref-moving endpoint beside a body flag or write method anywhere in the same command, because `_lib_gh_api_call_is_mutating` reads the whole stripped command.
 #     Examples are `gh api -X GET … -f key=value`, `gh api … && rm -f scratch.txt` and `gh api … | grep -F text`.
-#
-# Where `~/.claude/hooks` is a real directory, a `git pull` leaves this file
-# unlinked while settings.json already registers it, and every Bash call then
-# blocks. See docs/hooks.md § "Gate deadlock recovery".
 
 set -uo pipefail
 
