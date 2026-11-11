@@ -55,7 +55,6 @@ TRANSCRIPT_PATH_NAME = "transcript.jsonl"
 # Environment names that mark a Claude Code process. The shim removes them from a hook's environment.
 CLAUDE_PROCESS_ENV_NAMES = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID")
 
-# The phase the adapter's tests and tables are delivered through. A `pending-phase` parity entry must name a later phase.
 DELIVERED_PHASE_NUMBER = 2
 
 

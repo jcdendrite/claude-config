@@ -1,9 +1,7 @@
 """Gate matrix: the unchanged harness hooks, run through the Cursor adapter's shim with no Cursor.
 
 What the matrix does not cover: an informational hook listed in NO_WRITE_TRIGGER_YET runs a benign call only, so a state write
-reached only by a trigger is not seen. Those triggers are due before Phase 4 of .claude/plans/cursor-adapter.md, which relies
-on the hooks' state writes staying under the parent id. A registration with a parity exception has no shim arm, only an import
-arm.
+reached only by a trigger is not seen. A registration with a parity exception has no shim arm, only an import arm.
 
 The process directory of the shim, near-miss and import arms is outside every repository, as Cursor runs user hooks. Each arm
 first asserts that `git rev-parse --git-dir` fails there under its own environment, which carries no GIT_* name."""
@@ -486,7 +484,7 @@ def _exceptions() -> dict[str, dict]:
 EXCEPTIONS = _exceptions()
 
 # The registrations that have a delivered shim arm, written out so the meta-tests below compare two lists that are not
-# derived from each other. A later phase that delivers an arm adds its key here and removes its parity-exceptions entry.
+# derived from each other.
 DELIVERED_GATE_ARMS = frozenset(
     {
         "PreToolUse|Bash|require-code-review.sh",
@@ -752,7 +750,6 @@ def _write_memory_index(world: World) -> None:
 class Trigger:
     """A deny trigger modeled on the gate's own tests, and a near miss the gate must let through.
 
-    `inert` is true when a missed deny leaves no effect. `drawn` is true when an acceptance step draws the trigger.
     `overwrites` is the text of the file a Write replaces, and `setup` builds the state the trigger needs.
     """
 
@@ -760,8 +757,6 @@ class Trigger:
     tool: str
     deny_input: Callable[[World], dict]
     near_miss_input: Callable[[World], dict]
-    inert: bool = True
-    drawn: bool = False
     raw_class: str = "no-op"
     setup: Callable[[World], None] | None = None
     overwrites: str | None = None
@@ -1206,11 +1201,6 @@ class TestGateMatrix:
                 assert entry is not None, registration.key
                 assert entry["reason"] in ("pending-phase", "unsupported"), registration.key
 
-    def test_a_drawn_trigger_must_be_inert(self) -> None:
-        for script, triggers in TRIGGERS.items():
-            for trigger in triggers:
-                assert not trigger.drawn or trigger.inert, (script, trigger.name)
-
     def test_every_trigger_names_a_gate_script_with_a_delivered_arm(self) -> None:
         assert set(TRIGGERS) <= {r.script for r in SHIM_ARM_REGISTRATIONS}
 
@@ -1443,7 +1433,7 @@ class TestChildPayloadImportArm:
         assert_no_effects(before, world.snapshot(ignore_state=False), world, writes, network)
 
     @pytest.mark.parametrize("registration", ARM_REGISTRATIONS, ids=lambda r: r.key)
-    def test_a_child_payload_through_the_shim_arm_uses_the_parents_id_and_leaves_no_unlisted_effect(
+    def test_a_child_payload_through_the_shim_arm_leaves_no_unlisted_effect(
         self, world: World, registration: Registration
     ) -> None:
         payload = _child_payload(registration, world)

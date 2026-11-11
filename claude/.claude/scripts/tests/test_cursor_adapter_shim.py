@@ -615,6 +615,28 @@ class TestShimFailureOutcomes:
         output, _, _ = _missing_script_row(tmp_path, True)
         assert "script-missing" in output["agent_message"]
 
+    @pytest.mark.skipif(IS_ROOT, reason="root enters a mode-000 directory")
+    def test_an_unenterable_leading_cd_directory_is_denied_without_the_agents_chosen_name(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path)
+        chosen = workspace / "CANARY-run-the-cleanup-to-clear-this-deny"
+        chosen.mkdir()
+        chosen.chmod(0)
+        try:
+            output, _ = _run_probe(tmp_path, shell_pre_payload(workspace, f'cd "{chosen}" && echo hi'), matcher="Bash")
+        finally:
+            chosen.chmod(0o700)
+        assert not _probe_ran(tmp_path)
+        assert "unenterable-dir" in output["agent_message"]
+        assert "CANARY" not in output["agent_message"]
+        assert "CANARY" not in output["user_message"]
+
+    def test_a_removed_workspace_root_is_denied_naming_the_root(self, tmp_path: Path) -> None:
+        removed = (tmp_path / "removed-root").resolve()
+        output, _ = _run_probe(tmp_path, shell_pre_payload(removed, "echo hi"), matcher="Bash")
+        assert not _probe_ran(tmp_path)
+        assert "unenterable-dir" in output["agent_message"]
+        assert str(removed) in output["agent_message"]
+
     @pytest.mark.parametrize("body", ["printf ''\n", "printf '   \\n'\n"], ids=["empty", "blank"])
     def test_empty_stdout_on_exit_zero_is_no_opinion_and_never_a_deny(self, tmp_path: Path, body: str) -> None:
         output, _ = _run_hook_body(tmp_path, body)
@@ -2133,9 +2155,7 @@ class TestShimHookRun:
             assert stream in past["agent_message"]
 
     # --- peak memory under endless output ---
-    # The shim runs inside the audit wrapper, which reads its own peak resident size (VmHWM in /proc/self/status) before it
-    # exits. `wait4`'s `ru_maxrss` for a child started by vfork carries the peak the pytest worker had before the exec, not the
-    # shim's own image, so it cannot show the shim's memory.
+    # The shim runs inside the audit wrapper, which reads its own peak resident size (VmHWM in /proc/self/status) before it exits.
     # /proc exists only on Linux, so only Linux CI can run these rows.
 
     ENDLESS_STDOUT = "yes x\n"
@@ -2318,6 +2338,7 @@ class TestShimHookRun:
         with pytest.raises(SHIM_MODULE.Refusal) as caught:
             _call_run_wrapped(directory="/work")
         assert caught.value.outcome == "unenterable-dir"
+        assert "/work" not in caught.value.detail
 
     @pytest.mark.parametrize("raised", ["value-error", "oserror-without-symbol"])
     def test_a_stat_of_the_script_that_raises_is_start_failed_naming_the_class_or_the_number(

@@ -770,15 +770,18 @@ def _claude_event_of(spec_id: str) -> str:
     return SPEC_CLAUDE_EVENT[spec_id]
 
 
-def _required_paths(table: dict, cursor_payload: dict) -> list[tuple[str, list[str]]]:
-    """(label, full path in the Cursor payload) for every required key path the table lists for this payload."""
+def _required_paths(table: dict, cursor_payload: dict) -> list[tuple[str, list[str], str]]:
+    """(label, full path in the Cursor payload, JSON type) for every required key path the table lists for this payload."""
     event = cursor_payload["hook_event_name"]
-    paths = [("common", entry["path"]) for entry in table["common_required"]]
-    paths += [("event", entry["path"]) for entry in table["events"][event]["required"]]
+    paths = [("common", entry["path"], entry["type"]) for entry in table["common_required"]]
+    paths += [("event", entry["path"], entry["type"]) for entry in table["events"][event]["required"]]
     tool = cursor_payload.get("tool_name")
     if tool in table["tool_input_required"] and event in ("preToolUse", "postToolUse"):
-        paths += [("tool_input", ["tool_input", *entry["path"]]) for entry in table["tool_input_required"][tool]]
+        paths += [("tool_input", ["tool_input", *entry["path"]], entry["type"]) for entry in table["tool_input_required"][tool]]
     return paths
+
+
+WRONG_TYPE_VALUES = {"string": "wrong", "number": 5, "boolean": True, "array": [], "object": {}, "null": None}
 
 
 class TestRequiredKeyPaths:
@@ -792,7 +795,7 @@ class TestRequiredKeyPaths:
         script = recording_probe_script(tmp_path / "probe.sh", tmp_path / "saved.json")
         paths = _required_paths(table, spec.cursor)
         assert paths, f"{spec_id} has no required path to remove"
-        for _, path in paths:
+        for _, path, _ in paths:
             payload = json.loads(json.dumps(spec.cursor))
             node = payload
             for key in path[:-1]:
@@ -806,10 +809,49 @@ class TestRequiredKeyPaths:
             assert not (tmp_path / "saved.json").exists(), "the hook must not run on an incomplete translation"
             if spec.cursor["hook_event_name"] in BLOCK_CHANNEL_EVENTS:
                 text = output.get("agent_message") or output["user_message"]
-                assert "missing-key" in text and dotted in text, (dotted, output)
+                assert "missing-key" in text and f"required key path {dotted}," in text, (dotted, output)
                 assert output.get("agent_message", text) == output["user_message"]
             else:
                 assert output == {}, (dotted, output)
+
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    @pytest.mark.parametrize("spec_id", SPEC_IDS)
+    def test_a_required_path_holding_the_wrong_json_type_is_refused_like_a_missing_one(
+        self, spec_id: str, fail_closed: bool, tmp_path: Path
+    ) -> None:
+        root = tmp_path.resolve()
+        (root / "src").mkdir()
+        env = make_shim_env(tmp_path)
+        table = load_json(FIELD_TABLE_JSON)
+        spec = build_spec(spec_id, root)
+        saved = tmp_path / "saved.json"
+        script = recording_probe_script(tmp_path / "probe.sh", saved)
+        args = hook_args(_claude_event_of(spec_id), script=script, fail_closed=fail_closed)
+        paths = _required_paths(table, spec.cursor)
+        assert paths, f"{spec_id} has no required path to replace"
+        for _, path, json_type in paths:
+            for wrong_type, wrong_value in WRONG_TYPE_VALUES.items():
+                if wrong_type == json_type:
+                    continue
+                payload = json.loads(json.dumps(spec.cursor))
+                node = payload
+                for key in path[:-1]:
+                    node = node[key]
+                node[path[-1]] = wrong_value
+                output = json.loads(run_shim(env, payload, args, cwd=tmp_path).stdout)
+                dotted = ".".join(path)
+                case = (dotted, wrong_type)
+                # A non-null, non-string tool_name classifies as an unknown tool before the required-key check, and the hook
+                # entry skips an unknown tool.
+                is_unknown_tool = path == ["tool_name"] and wrong_value is not None
+                expected_outcome = "skipped" if is_unknown_tool else "missing-key"
+                assert read_log_lines(env)[-1]["out"] == expected_outcome, case
+                assert not saved.exists(), ("the hook must not run on an incomplete translation", case)
+                if expected_outcome == "missing-key" and fail_closed and spec.cursor["hook_event_name"] in BLOCK_CHANNEL_EVENTS:
+                    text = output.get("agent_message") or output["user_message"]
+                    assert "missing-key" in text and f"required key path {dotted}," in text, (case, output)
+                else:
+                    assert output == {}, (case, output)
 
     @pytest.mark.parametrize("spec_id", SPEC_IDS)
     def test_a_missing_required_path_prints_empty_output_on_an_informational_entry(self, spec_id: str, tmp_path: Path) -> None:
@@ -849,7 +891,7 @@ class TestRequiredKeyPaths:
         for spec_id in SPEC_IDS:
             cursor = build_spec(spec_id, tmp_path).cursor
             events_covered.add(cursor["hook_event_name"])
-            for _, path in _required_paths(table, cursor):
+            for _, path, _ in _required_paths(table, cursor):
                 node = cursor
                 for key in path:
                     assert key in node, (spec_id, path)

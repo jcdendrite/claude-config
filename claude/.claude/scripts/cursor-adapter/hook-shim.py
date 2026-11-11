@@ -61,9 +61,9 @@ HOOK_STATUS_BLOCK = 2
 # `start-failed` causes whose deny text invites one retry.
 TRANSIENT_ERRNO_SYMBOLS = frozenset({"EAGAIN", "EMFILE", "ENFILE", "ENOMEM"})
 
+# A bound on the bytes the shim reads into memory.
 # A project choice, set above the largest Cursor payload observed (about 1.4 MB on `postToolUse`):
 # `.claude/plans/cursor-adapter.md` § "Payload (O1, O3, O8, O15)".
-# A bound on the bytes the shim reads into memory.
 PAYLOAD_CAP_BYTES = 8 * 1024 * 1024
 # Each of a hook's stdout and stderr is kept up to this size.
 HOOK_OUTPUT_CAP_BYTES = 1024 * 1024
@@ -257,6 +257,7 @@ def write_log_line(state_dir, fields):
         os.path.join(state_dir, LOG_FILE_NAME), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
     )
     try:
+        # A short write (ENOSPC, EDQUOT, RLIMIT_FSIZE) is not retried, so the line may be torn.
         os.write(descriptor, line)
     finally:
         # After a complete write, a failed close loses nothing, so it must not read as a failed log line.
@@ -651,6 +652,9 @@ class Roots:
                 best = root
         return best
 
+    def is_workspace_root(self, directory):
+        return directory in self.raw or directory in self.canonical
+
     def shell_pin_directory(self, original):
         """The directory the pin gives a Shell command, or None when no absolute directory is known.
 
@@ -733,18 +737,24 @@ def recognize_pin(command, roots):
     return command, False
 
 
-def require_enterable(directory):
+def unenterable_refusal(directory, roots):
+    """The unenterable-directory refusal. Only a workspace root is named, because a Shell call's `cd` target is
+    agent-chosen text and the deny carries the shim's authority."""
+    subject = f"The directory {directory}" if roots is not None and roots.is_workspace_root(directory) else "The hook's directory"
+    return Refusal(
+        "unenterable-dir",
+        f"{subject} does not exist or cannot be searched. "
+        "The engineer restores the folder or its permissions, or starts a new conversation on a folder that exists.",
+    )
+
+
+def require_enterable(directory, roots):
     try:
         enterable = os.path.isdir(directory) and os.access(directory, os.X_OK)
     except ValueError:
         enterable = False
     if not enterable:
-        raise Refusal(
-            "unenterable-dir",
-            f"The directory {directory} does not exist or cannot be searched. Most likely a workspace root was removed, "
-            "renamed or made unsearchable while the conversation stayed open. The engineer restores the folder or its "
-            "permissions, or starts a new conversation on a folder that exists.",
-        )
+        raise unenterable_refusal(directory, roots)
 
 
 # --- translation ---
@@ -1396,7 +1406,7 @@ def _pump(process, payload_bytes, bound_at):
     return bytes(collected["out"]), bytes(collected["err"])
 
 
-def run_wrapped_hook(wrapper, script, payload_bytes, directory, environment, deadline_at):
+def run_wrapped_hook(wrapper, script, payload_bytes, directory, environment, deadline_at, roots=None):
     """Starts `<wrapper> -k <grace> <time left> <script>` in `directory`, feeds it the payload and reads its output.
 
     Returns (exit status, stdout bytes, stderr bytes). Raises Refusal for every other outcome. The wrapper is the hook's
@@ -1417,11 +1427,7 @@ def run_wrapped_hook(wrapper, script, payload_bytes, directory, environment, dea
         )
     except OSError as error:
         if error.filename == directory:
-            raise Refusal(
-                "unenterable-dir",
-                f"The directory {directory} does not exist or cannot be searched. The engineer restores the folder or "
-                "its permissions, or starts a new conversation on a folder that exists.",
-            ) from error
+            raise unenterable_refusal(directory, roots) from error
         raise start_failed("wrapper", error_name(error)) from error
     bound_at = deadline_at + GRACE_PERIOD_SECONDS + DRAIN_BOUND_SECONDS
     stdout, stderr = _pump(process, payload_bytes, bound_at)
@@ -1483,7 +1489,7 @@ def run_pin(call, facts, roots, payload):
             raise Refusal("dir-input-refused", DIRECTORY_INPUT_DETAIL)
     elif facts.cwd_state == "other":
         raise Refusal("dir-input-refused", DIRECTORY_INPUT_DETAIL)
-    require_enterable(directory)
+    require_enterable(directory, roots)
     if recognized:
         call.outcome = "pin-unchanged"
         return {}
@@ -1506,7 +1512,7 @@ def run_pin_check(call, facts, roots):
 
 def run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at):
     directory = resolve_directory(facts, roots)
-    require_enterable(directory)
+    require_enterable(directory, roots)
     tool = facts.tool
     original = facts.command
     if facts.tool_class == "shell":
@@ -1524,7 +1530,7 @@ def run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at):
     document = serialize(claude_payload)
     check_script(arguments.script)
     status, stdout, stderr = run_wrapped_hook(
-        recorded_wrapper(record), arguments.script, document, directory, hook_environment(record), deadline_at
+        recorded_wrapper(record), arguments.script, document, directory, hook_environment(record), deadline_at, roots
     )
     call.hook_exit = str(status)
     meta = {

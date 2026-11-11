@@ -1743,8 +1743,7 @@ class TestCursorAdapterSelection:
         ],
     )
     def test_any_path_under_the_adapter_directory_selects_the_two_reading_hooks_tests_and_the_scripts_tests(self, changed_path):
-        """The matrix and parity tests read the adapter through a subprocess, so they are selected by path, not as the whole
-        hooks tests tree. The scripts tests come from the blanket SCRIPTS_DIR domain rule."""
+        """The whole hooks tests tree is not selected. The scripts tests come from the blanket SCRIPTS_DIR domain rule."""
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
         assert set(_mod.CURSOR_ADAPTER_READING_TESTS) <= set(result.target_paths)
