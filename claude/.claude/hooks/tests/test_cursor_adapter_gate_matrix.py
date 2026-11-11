@@ -430,7 +430,7 @@ class TestShimEnvelope:
         self, tmp_path: Path, locale_variables: dict
     ) -> None:
         """Under a C locale the interpreter's coercion gives the hook a UTF-8 LC_CTYPE the direct run lacks. Any other
-        new or changed name fails the pair. docs/cursor-adapter.md discloses the residual."""
+        new or changed name fails the pair."""
         pair = self._run_pair(tmp_path, locale_variables, drop_names=self.LOCALE_NAMES)
         shim_environment = pair["shim"][2]
         direct_environment = pair["direct"][2]

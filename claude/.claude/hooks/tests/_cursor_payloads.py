@@ -115,7 +115,7 @@ def compile_shim_module(shim: Path = SHIM) -> types.ModuleType:
     module = types.ModuleType(SHIM_MODULE_NAME)
     module.__file__ = str(shim)
     sys.modules[SHIM_MODULE_NAME] = module
-    exec(compile(Path(shim).read_bytes(), str(shim), "exec"), module.__dict__)  # noqa: S102 - loading the file under test
+    exec(compile(Path(shim).read_bytes(), str(shim), "exec"), module.__dict__)  # loading the file under test
     return module
 
 
@@ -730,7 +730,7 @@ def read_log_lines(env: ShimEnv) -> list[dict]:
 # never writes. "main" runs the file as `__main__` through runpy; "load" compiles it with no call to `main` and reports
 # how many descriptors the load opened; "call" loads it and then calls one named function.
 AUDIT_WRAPPER = r"""
-import contextlib, errno, json, os, re, runpy, select, selectors, signal, stat, subprocess, sys, time, types  # noqa: F401
+import contextlib, errno, json, os, re, runpy, select, selectors, signal, stat, subprocess, sys, time, types
 config = json.loads(sys.argv[1])
 watched = frozenset(config["events"])
 blocked = frozenset(config.get("block", []))

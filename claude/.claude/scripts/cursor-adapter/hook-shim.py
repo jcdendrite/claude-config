@@ -223,7 +223,6 @@ def is_valid_session_id(value):
 
 
 def is_valid_tool_path(value):
-    """The rule for a recorded tool path: absolute, with no `:`, newline or NUL, and no `..` component."""
     return (
         isinstance(value, str)
         and value.startswith("/")
@@ -266,7 +265,6 @@ def write_log_line(state_dir, fields):
 
 
 def interpreter_version():
-    """The running interpreter's `major.minor`, for the log lines that record it."""
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
@@ -302,7 +300,6 @@ def release_first_call(state_dir, session_id):
 
 
 def usable_state_dir(path):
-    """True when `path` is a real directory, not a link."""
     try:
         return stat.S_ISDIR(os.lstat(path).st_mode)
     except (OSError, ValueError):
@@ -333,7 +330,7 @@ def pin_line(directory):
 
 
 def path_within(root, target):
-    """True when `target` is `root` or lies under it, compared by path component. Both must be canonical absolute paths."""
+    """Both must be canonical absolute paths."""
     return root == "/" or target == root or target.startswith(root + "/")
 
 
@@ -556,7 +553,6 @@ def recorded_wrapper(record):
 
 
 def _is_valid_deadline(text):
-    """True for plain ASCII digits with no leading zero, within the deadline range."""
     if _DEADLINE_RE.fullmatch(text) is None or text.startswith("0"):
         return False
     return MIN_DEADLINE_SECONDS <= int(text) <= MAX_DEADLINE_SECONDS
@@ -649,7 +645,6 @@ class Roots:
         return self._memo[path]
 
     def root_containing(self, canonical):
-        """The longest canonical root that contains `canonical`, or None."""
         best = None
         for root in self.canonical:
             if path_within(root, canonical) and (best is None or len(root) > len(best)):
@@ -739,7 +734,6 @@ def recognize_pin(command, roots):
 
 
 def require_enterable(directory):
-    """Raises the unenterable-directory refusal unless the shim can start a process in `directory`."""
     try:
         enterable = os.path.isdir(directory) and os.access(directory, os.X_OK)
     except ValueError:
@@ -1213,8 +1207,7 @@ def _map_parsed_decision(meta, parsed):
     # A deny, block or ask on an event with no channel for it is counted, so the log can tell a lost block from an allow.
     lost_block = int(blocked or asked)
     lost_permission = int(permission == "deny" or asked)
-    # Fields with no Cursor channel on any event are counted, never delivered. A `systemMessage` has none: Cursor's
-    # `user_message` shows only a block or deny, sessionStart accepts it without enforcing it, and the rest have no field.
+    # Fields with no Cursor channel on any event are counted, never delivered.
     always_dropped = sum(
         value is not None
         for value in (
@@ -1266,7 +1259,6 @@ def _map_parsed_decision(meta, parsed):
             + int(updated_output is not None and not replace_output),
         }
     elif event in ("stop", "subagentStop"):
-        # The reference gives `continue: false` precedence over event decision fields in general.
         follows_up = legacy == "block" if event == "subagentStop" else blocked
         if stopped:
             result = {"out": {}, "outcome": "ok"}
@@ -1655,14 +1647,11 @@ def main(argv, call):
 
 
 def run(argv):
-    """The top-level handler: a fault of any kind ends the run with no output document, so the launch guard decides.
-
-    It tries once to log the call as a shim-fault with the exception's class and the interpreter's major.minor, ignores
-    any failure of that attempt, and writes nothing to stdout or stderr."""
+    """The top-level handler: a fault of any kind ends the run with no output document, so the launch guard decides."""
     call = CallState()
     try:
         return main(argv, call)
-    except BaseException as fault:  # noqa: BLE001 - the launch guard's tail needs every fault to end as exit 1
+    except BaseException as fault:  # the launch guard's tail needs every fault to end as exit 1
         try:
             call.outcome = "shim-fault"
             if call.state_dir:
@@ -1679,7 +1668,7 @@ def run(argv):
                         "py": interpreter_version(),
                     },
                 )
-        except BaseException:  # noqa: BLE001 - nothing may escape the handler
+        except BaseException:  # nothing may escape the handler
             pass
         return EXIT_FAULT
 
@@ -1688,7 +1677,7 @@ def run(argv):
 
 
 class SelfCheckMismatch(Exception):
-    """A self-check step ran and returned something other than what it should."""
+    pass
 
 
 SELF_CHECK_SHELL = "/bin/sh"
@@ -1716,16 +1705,13 @@ def _self_check_record():
 
 def self_check(wrapper):
     """Runs the checks that the installer's `install` and `check` commands (not yet written) run under the recorded python3.
-    Returns the failures, one `name: class` each.
-
-    The hook-run check starts one process, the wrapper, around /bin/sh reading its program from the payload on stdin.
-    It writes no file and no log line."""
+    Returns the failures, one `name: class` each."""
     failures = []
 
     def attempt(name, step):
         try:
             step()
-        except Exception as error:  # noqa: BLE001 - the report names the class, never the message
+        except Exception as error:  # the report names the class, never the message
             failures.append(f"{name}: {type(error).__name__}")
 
     state = {}

@@ -220,13 +220,20 @@ def _set_path(*keys_and_value) -> Callable[[ShimEnv, dict], bool]:
 # The tools the shim translates. A record whose tool map lacks any of them is unusable.
 TRANSLATED_TOOLS = ("Shell", "Read", "Write", "Delete", "Grep", "Task")
 
-# Each shape the malformed rule names, on the path of a tool that is not the wrapper, beside a good wrapper.
 INSTALL_RECORD_FAULT_ROWS: dict[str, Row] = {
     "install-record-missing": _record_row(_missing_record),
     "install-record-unreadable": _record_row(_unreadable_record),
     "install-record-unparseable": _record_row(_unparseable_record),
     "install-record-lacks-routed-dir": _record_row(_without("routed_config_dir")),
     "install-record-lacks-contract-version": _record_row(_without("contract_version")),
+    "install-record-routed-dir-relative": _record_row(_set_path("routed_config_dir", "relative/config")),
+    "install-record-routed-dir-with-newline": _record_row(_set_path("routed_config_dir", "/a\n/b")),
+    "install-record-routed-dir-with-nul": _record_row(_set_path("routed_config_dir", "/a\u0000/b")),
+    "install-record-routed-dir-not-a-string": _record_row(_set_path("routed_config_dir", 5)),
+    "install-record-contract-version-a-bool": _record_row(_set_path("contract_version", True)),
+    "install-record-contract-version-a-list": _record_row(_set_path("contract_version", [1])),
+    "install-record-contract-version-empty": _record_row(_set_path("contract_version", "")),
+    "install-record-contract-version-a-newline": _record_row(_set_path("contract_version", "\n")),
     "install-record-lacks-tool-map": _record_row(_without("tool_map")),
     "install-record-empty-tools": _record_row(_set_path("tool_map", "tools", {})),
     "install-record-tool-map-lacks-shell": _record_row(_without("tool_map", "tools", "Shell")),
@@ -433,6 +440,14 @@ REQUIRED_OUTCOME_IDS = frozenset(
         "install-record-unparseable",
         "install-record-lacks-routed-dir",
         "install-record-lacks-contract-version",
+        "install-record-routed-dir-relative",
+        "install-record-routed-dir-with-newline",
+        "install-record-routed-dir-with-nul",
+        "install-record-routed-dir-not-a-string",
+        "install-record-contract-version-a-bool",
+        "install-record-contract-version-a-list",
+        "install-record-contract-version-empty",
+        "install-record-contract-version-a-newline",
         "install-record-lacks-tool-map",
         "install-record-empty-tools",
         "install-record-tool-map-lacks-shell",
@@ -657,6 +672,36 @@ class TestShimFailureOutcomes:
         else:
             assert output == {}
 
+    def test_an_integer_contract_version_equal_to_the_current_one_is_accepted(self, tmp_path: Path) -> None:
+        env = make_shim_env(tmp_path)
+        _edit_record(env, lambda record: record.update(contract_version=int(CONTRACT_VERSION)))
+        output, _ = _run_probe(tmp_path, shell_pre_payload(_workspace(tmp_path), "echo hi"), env=env, matcher="Bash")
+        assert _probe_ran(tmp_path)
+        assert output == {}
+
+    @staticmethod
+    def _tool_paths_without_wrapper() -> dict:
+        return {name: path for name, path in recorded_tool_paths().items() if name not in ("timeout", "gtimeout")}
+
+    def test_a_record_naming_the_wrapper_only_under_gtimeout_runs_the_hook(self, tmp_path: Path) -> None:
+        tool_paths = {**self._tool_paths_without_wrapper(), "gtimeout": _recorded_wrapper()}
+        env = make_shim_env(tmp_path, tool_paths=tool_paths)
+        output, _ = _run_probe(tmp_path, shell_pre_payload(_workspace(tmp_path), "echo hi"), env=env, matcher="Bash")
+        assert _probe_ran(tmp_path)
+        assert output == {}
+
+    def test_a_record_naming_both_wrappers_runs_the_hook_under_timeout(self, tmp_path: Path) -> None:
+        refusing_wrapper = write_hook_script(tmp_path / "refusing-gtimeout", "exit 97\n")
+        tool_paths = {
+            **self._tool_paths_without_wrapper(),
+            "timeout": _recorded_wrapper(),
+            "gtimeout": str(refusing_wrapper),
+        }
+        env = make_shim_env(tmp_path, tool_paths=tool_paths)
+        output, _ = _run_probe(tmp_path, shell_pre_payload(_workspace(tmp_path), "echo hi"), env=env, matcher="Bash")
+        assert _probe_ran(tmp_path)
+        assert output == {}
+
     @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
     @pytest.mark.parametrize(
         "row_id",
@@ -778,6 +823,18 @@ class TestShimArguments:
         del args[args.index("--claude-event") : args.index("--claude-event") + 2]
         result = run_shim(env, shell_pre_payload(_workspace(tmp_path), "ls"), args, cwd=_scratch(tmp_path))
         assert (result.returncode, result.stdout) == (1, b"")
+
+    def test_a_command_line_with_neither_switch_denies_on_a_shim_refusal(self, tmp_path: Path) -> None:
+        env = make_shim_env(tmp_path)
+        script = recording_probe_script(tmp_path / "hook.sh", tmp_path / "saved.json")
+        args = ["--contract-version", CONTRACT_VERSION, "--claude-event", "PreToolUse", "--script", str(script)]
+        assert "--fail-closed" not in args and "--fail-open" not in args
+        result = run_shim(env, "{not json", args, cwd=_scratch(tmp_path))
+        assert result.returncode == 0, result.stderr
+        output = shim_json(result)
+        assert output["permission"] == "deny"
+        assert "payload-malformed" in output["agent_message"]
+        assert not _probe_ran(tmp_path)
 
     def test_a_command_line_without_a_contract_version_parses_with_an_empty_one(self) -> None:
         arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", contract_version=None))
@@ -1891,8 +1948,11 @@ def _call_run_wrapped(deadline_at: float = 8.0, directory: str = "/", wrapper: s
 class TestShimHookRun:
     @pytest.mark.timing
     def test_a_hook_that_prints_a_deny_and_exits_at_once_denies_every_time_under_cpu_contention(
-        self, tmp_path: Path, gnu_wrapper: str
+        self, tmp_path: Path, gnu_wrapper: str, worker_id: str
     ) -> None:
+        # xdist's `worker_id` is "master" only in a serial session, and the hogs take every core.
+        if worker_id != "master":
+            pytest.skip("starts one busy process per core, so it runs only in a serial session (-n0)")
         deny = json.dumps(
             {
                 "hookSpecificOutput": {
@@ -1958,12 +2018,19 @@ class TestShimHookRun:
             env=shim_process_env(env),
         )
         started = time.monotonic()
-        process.stdin.write(json.dumps(shell_pre_payload(_workspace(tmp_path), "ls")).encode())
-        process.stdin.flush()
-        stdout = process.stdout.read()
-        process.wait(timeout=30)
-        assert time.monotonic() - started < _timing_bound(2)
-        process.stdin.close()
+        try:
+            process.stdin.write(json.dumps(shell_pre_payload(_workspace(tmp_path), "ls")).encode())
+            process.stdin.flush()
+            process.wait(timeout=30)
+            elapsed = time.monotonic() - started
+            stdout = process.stdout.read()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+        assert elapsed < _timing_bound(2)
         assert "outcome timeout" in json.loads(stdout)["agent_message"]
         assert not _probe_ran(tmp_path)
 
@@ -2560,18 +2627,6 @@ class TestShimInterpreterIsolation:
         assert canary.exists(), "the control run did not import the neighbouring json"
         canary.unlink()
         flagged = subprocess.run(shim_argv(shim=probe), capture_output=True, check=False)
-        assert flagged.returncode == 0
-        assert not canary.exists()
-
-    def test_a_json_py_in_the_working_directory_is_not_imported(self, tmp_path: Path) -> None:
-        # No control: this row counts as no protection, because the working directory is not on sys.path under -I either way.
-        canary = tmp_path / "cwd-canary"
-        (tmp_path / "json.py").write_text(_canary_writer(canary))
-        probe_dir = tmp_path / "elsewhere"
-        probe_dir.mkdir()
-        probe = probe_dir / "probe.py"
-        probe.write_text("import json\nprint(json.dumps(1))\n")
-        flagged = subprocess.run(shim_argv(shim=probe), capture_output=True, check=False, cwd=tmp_path)
         assert flagged.returncode == 0
         assert not canary.exists()
 
