@@ -67,10 +67,11 @@ def _extract_python_floor_check_block() -> str:
     return _extract_marked_block(_FIXTURE_START, _FIXTURE_END)
 
 
-def _write_python3_stub(bin_dir: Path, body: str) -> None:
-    """A `python3` that ignores its arguments and runs `body`."""
+def _write_python3_stub(bin_dir: Path, body: str, *, calls_log: Path | None = None) -> None:
+    """A `python3` that ignores its arguments and runs `body`, first appending its arguments to `calls_log` when given."""
     bin_dir.mkdir(exist_ok=True)
-    _write_executable(bin_dir / "python3", f"#!/bin/sh\n{body}\n")
+    log_line = f"printf '%s\\n' \"$*\" >> '{calls_log}'\n" if calls_log is not None else ""
+    _write_executable(bin_dir / "python3", f"#!/bin/sh\n{log_line}{body}\n")
 
 
 def _link_real_python3(bin_dir: Path) -> None:

@@ -52,11 +52,9 @@
 #      allow. Both mean "the tool to evaluate is unavailable", not "the
 #      content is unevaluable" -- kept distinct from step 5/7's degraded
 #      ask, and checked before step 7 so a broken interpreter can never
-#      be misread as a helper content-parse failure. A present, usable
-#      python3 below the repo's Python >= 3.11 floor (install.sh's
-#      preflight check; see parse-manifest-dependencies.py's module
-#      docstring for why) is a broken install rather than an expected
-#      runtime state, so it degrades ask instead of silently allowing.
+#      be misread as a helper content-parse failure. A python3 below
+#      README.md's Python floor gets no check of its own, and a helper it
+#      cannot run fails step 7, which degrades to ask.
 #   7. spawn the helper under _lib_capped. Nonzero exit, or an empty
 #      output file, -> degraded ask. Zero new dependencies -> silent
 #      allow. Otherwise -> ask, naming every new dependency.
@@ -194,11 +192,6 @@ fi
 # --- Step 6: interpreter sanity probe -----------------------------------
 command -v python3 >/dev/null 2>&1 || exit 0
 _lib_capped python3 -c '' >/dev/null 2>&1 || exit 0
-# A present, usable interpreter below the repo's Python >= 3.11 floor is a
-# broken install, not an expected runtime state -- degrades ask rather than
-# silently allowing (see header's step 6 note).
-_lib_capped python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1 \
-  || _emit_degraded_ask "$FILE_PATH"
 
 # --- Step 7: spawn the helper --------------------------------------------
 HELPER_SCRIPT="$(dirname "$0")/parse-manifest-dependencies.py"

@@ -67,7 +67,7 @@ if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
   return 1
 fi
 
-# install.sh compares python3 with this floor, and test_python_floor.py ties it to CI's pin.
+# install.sh and check-python-floor.sh compare python3 with this floor, and test_python_floor.py ties it to CI's pin.
 # Assigned unconditionally and not readonly, so an inherited value cannot move the floor and a second source does not fail.
 _PYTHON_FLOOR_MAJOR=3
 _PYTHON_FLOOR_MINOR=14

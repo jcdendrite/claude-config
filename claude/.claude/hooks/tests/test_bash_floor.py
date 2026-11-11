@@ -65,6 +65,7 @@ class Citation(NamedTuple):
 README_REQUIREMENTS = Citation("README.md", "Requirements")
 HOOKS_DOC_GATE_DEADLOCK_RECOVERY = Citation("docs/hooks.md", "Gate deadlock recovery")
 HOOKS_DOC_BASH_VERSION = Citation("docs/hooks.md", "Bash version")
+HOOKS_DOC_PYTHON_VERSION = Citation("docs/hooks.md", "Python version")
 
 
 def readme_requirements_bullet(opener: str) -> str:
@@ -401,6 +402,8 @@ class TestFloorMessageCitationsResolve:
     docs/hooks.md Gate deadlock recovery citations are also asserted against rendered
     output in test_install_sh_bash_floor.py. The README Requirements citation is also
     asserted against the redactor's rendered message in test_redact_credential_values.py.
+    The "Python version" citation is also asserted against the agent text of
+    check-python-floor.sh's notice in test_check_python_floor.py.
     The "Bash version" citation appears only in
     static docs and comments, so for it this test checks only that the heading exists."""
 
@@ -410,6 +413,7 @@ class TestFloorMessageCitationsResolve:
             pytest.param(README_REQUIREMENTS, id="readme-requirements"),
             pytest.param(HOOKS_DOC_GATE_DEADLOCK_RECOVERY, id="hooks-doc-gate-deadlock-recovery"),
             pytest.param(HOOKS_DOC_BASH_VERSION, id="hooks-doc-bash-version"),
+            pytest.param(HOOKS_DOC_PYTHON_VERSION, id="hooks-doc-python-version"),
         ],
     )
     def test_cited_heading_exists_in_the_cited_document(self, citation: Citation) -> None:
