@@ -3,22 +3,23 @@ import pytest
 
 from ._compaction_context_helpers import (
     ABSENT,
-    SKILL_DIR,
+    SKILL_PATH,
     already_loaded_record,
     answer_record,
     assistant_tool_use,
     attachment_record,
+    automatic_compaction_records,
     bash_input,
     bash_stdout,
     block_for,
     builtin_command,
-    compact_boundary,
     compact_caveat,
     compact_summary,
     compaction_context,
     headless_prompt,
     interrupt_marker,
     local_command_stdout,
+    manual_compaction_records,
     pasted_prompt,
     quoted_messages,
     sidechain,
@@ -44,9 +45,10 @@ def _as_plain_text(rec):
     return {**_without_keys("toolUseResult")(rec), "message": {"role": "user", "content": f"plain {EXCLUDED}"}}
 
 
-# Each recorded harness-written shape has no `origin` and entrypoint `cli`, so the origin check alone excludes it.
-# Its headless copy passes that check, leaving the check the row id names as the only exclusion. The second value
-# removes the one feature that check keys on, and the result must then be quoted.
+# Each row pairs a recorded harness-written shape with a mutator and runs the shape as a headless copy.
+# The id prefix names the one rule the copy still trips: `not_a_keystroke` (a summary, meta or tool-result record),
+# `tag_opening` (the text opens with a tag) or `interrupt_key` (the record carries `interruptedMessageId`).
+# The mutator removes that rule's single feature, after which the record must be quoted.
 _SDK_CLI_COPIES = [
     pytest.param(compact_summary(EXCLUDED), _without_keys("isCompactSummary"), id="not_a_keystroke_compact_summary"),
     pytest.param(
@@ -193,7 +195,7 @@ class TestExcludedRecords:
         block = block_for(tmp_path, records)
 
         assert quoted_messages(block) == [PRIOR]
-        assert block.count(f"{SKILL_DIR}/SKILL.md") == 1
+        assert block.count(SKILL_PATH) == 1
 
     def test_tool_run_interrupt_in_recorded_order_leaves_the_prompt_before_the_tool_use_as_newest(self, tmp_path):
         records = [
@@ -214,6 +216,9 @@ _INCLUDED = [
     pytest.param([headless_prompt("claude -p text")], ["claude -p text"], id="claude_p_prompt_with_sdk_cli_and_no_origin"),
     pytest.param([headless_prompt("null origin text", origin=None)], ["null origin text"], id="claude_p_prompt_with_null_origin"),
     pytest.param([user_prompt("typed text")], ["typed text"], id="typed_prompt_with_human_origin"),
+    pytest.param(
+        [user_prompt("typed text", promptSource=ABSENT)], ["typed text"], id="typed_prompt_with_human_origin_and_no_prompt_source"
+    ),
     pytest.param(
         [user_prompt("mentions task-notification> in prose")],
         ["mentions task-notification> in prose"],
@@ -268,20 +273,9 @@ class TestRecordSequences:
     @pytest.mark.parametrize(
         "compaction_records",
         [
+            pytest.param(manual_compaction_records(), id="earlier_manual_compaction_in_recorded_order"),
             pytest.param(
-                [
-                    compact_boundary(), compact_summary(), compact_caveat(), builtin_command(), local_command_stdout(),
-                    attachment_record("hook block"),
-                ],
-                id="earlier_manual_compaction_in_recorded_order",
-            ),
-            pytest.param(
-                [
-                    compact_boundary(automatic=True, preserved_uuids=["uuid-p1"]),
-                    attachment_record(), attachment_record(), attachment_record(),
-                    compact_summary(automatic=True), attachment_record("hook block"),
-                ],
-                id="earlier_automatic_compaction_whose_boundary_lists_a_prompt",
+                automatic_compaction_records(), id="earlier_automatic_compaction_whose_boundary_lists_a_prompt"
             ),
         ],
     )

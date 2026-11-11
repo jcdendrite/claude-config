@@ -144,15 +144,19 @@ def _plan_path(thread: Sequence[dict]) -> str | None:
     if branch == scope._DETACHED_HEAD_BRANCH:
         return None
     slug = branch.rsplit("/", 1)[-1]
-    root = _checkout_root(cwd)
-    if root is None:
-        return None
-    plan = root / ".claude" / "plans" / f"{slug}.md"
-    plan_path = str(plan)
-    if not _is_allowed_path(plan_path) or plan.is_symlink() or not plan.is_file():
-        return None
-    # Measured against the resolved root so a symlinked `.claude` or `plans` is not resolved away on both sides of the check.
-    if not plan.resolve().is_relative_to(root.resolve() / ".claude" / "plans"):
+    # A filesystem probe that fails on a stale or hostile cwd costs the plan line, not the block.
+    try:
+        root = _checkout_root(cwd)
+        if root is None:
+            return None
+        plan = root / ".claude" / "plans" / f"{slug}.md"
+        plan_path = str(plan)
+        if not _is_allowed_path(plan_path) or plan.is_symlink() or not plan.is_file():
+            return None
+        # Measured against the resolved root so a symlinked `.claude` or `plans` is not resolved away on both sides of the check.
+        if not plan.resolve().is_relative_to(root.resolve() / ".claude" / "plans"):
+            return None
+    except OSError:
         return None
     return plan_path
 
@@ -197,7 +201,8 @@ def _slash_invocation_quote(name: str, text: str) -> str | None:
 def _quoted_text(thread: Sequence[dict], index: int) -> str | None:
     """The text to quote for thread[index], or None when it is not a quotable prompt.
 
-    A prompt that opens with a tag-shaped token is harness-written (a `!` command, local command output), so it is left out.
+    A prompt that opens with a tag-shaped token is left out, which also drops a typed prompt that happens to start with a
+    tag. Records the harness writes with tags (a `!` command, local command output) already fail the origin rule.
     The two exceptions are a pasted prompt, which the harness wraps in a tag, and a skill slash invocation, which is quoted
     as `/NAME <args>` and only when a skill-load record follows it directly.
     """

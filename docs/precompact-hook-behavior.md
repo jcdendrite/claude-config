@@ -98,7 +98,6 @@ Empirical results from seven scratch sessions that measured what a compaction ke
   - LA, LA2 and LA3 each compacted once, automatically, after the same kind of load. LA and LA2 compacted before most steps had run. LA3 ran every step but the HOOK-SENTINEL invocation.
   - INT interrupted one turn during a tool run and did not compact.
 - Planted texts: EARLY-SENTINEL (first prompt); MID-SENTINEL (last line of a pasted paragraph of about 1,500 characters); ANSWER-SENTINEL and SELECTED-SENTINEL (a free-text `AskUserQuestion` answer and a selected option's label); BANG-SENTINEL (a `!` command's output); TAG-SENTINEL (a typed prompt opening with a tag-shaped token); REFERENT-ONE and REFERENT-TWO (two options that a typed "Yes for #1" chose between); HOOK-SENTINEL (a slash invocation's arguments); BG-SENTINEL (a background script's output).
-- The probe's local logs spell the two referent sentinels with a digit suffix instead of the words ONE and TWO.
 - A text counts as kept word for word when it appears in `compact_summary` as an exact substring once each side's whitespace runs collapse to one space. A mixed result across a sentinel's occurrences counts as lost.
 - The scratch skill loaded through the `Skill` tool, a bare slash command and a slash command with arguments.
 
@@ -185,7 +184,7 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
   - spans of the scratch skill's SKILL.md body (1,625 windows), of the skill-load records and of the `invoked_skills` attachment;
   - spans of the 15 `sdk-cli` tool-result records;
   - the `/compact` record, the `isCompactSummary` records' text and the debug block's tail sentinel.
-  - HOOK-SENTINEL appears only in the two slash-with-arguments cuts that carry it.
+  - HOOK-SENTINEL appears in 9 cuts, each only as the quoted `/probe-steps gamma HOOK-SENTINEL` prompt: 3 slash-with-arguments cuts and 6 later cuts whose last five prompts include it.
 - **Pass, pasted prompt:** the cut keeps the first 750 characters (the opening `pasted_content` wrapper with its `id`) and the last 750 (MID-SENTINEL and the closing tag), with an omitted count of 72, which is 1,572 minus 1,500.
 - **Pass, skills:** the scratch skill appears exactly once, with a path under which a SKILL.md exists, in every cut taken at or after its first load, and in no earlier cut. All three invocation paths are covered. The skill-load first line uses a colon and a space after the prefix.
 - **Pass, plan line:** it matches the script's constant word for word in all 62 cuts. In M1 it names the first plan file in the cut before the move and the second in the cut taken at the first main-thread record with the worktree's `cwd`, which is the assistant `tool_use` record.
@@ -197,4 +196,4 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
 - **Not exercised:** the answer, `!`-record and interrupt-key exclusions are not exercised on real no-`origin` `cli` records, because the no-`origin` exclusion drops each such record first. The script's unit tests cover them with `sdk-cli` copies.
 - **Invocation:** `python3 -I compaction-context.py` exits 1 with `ModuleNotFoundError` for `transcript_analysis`, because `-I` removes the script's directory from `sys.path`. `transcript-analysis.py` imports its package the same way. Callers must run it without `-I`.
 - **Admission and plan line:** the quoted `claude -p` load prompts pass the three-field no-`origin` rule, because the recorded records carry `entrypoint` `sdk-cli` with `promptSource` and `turnOrigin` both `"sdk"`. Every plan line names an absolute path that exists on disk, and the scratch checkout root passes the path allow-list.
-- **Script attested:** git blob SHA beginning `9c62b1165a23` for the script alone (`git hash-object` prefix, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.
+- **Script attested:** the script blob whose git SHA begins `82698d93adbf` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.

@@ -6,7 +6,8 @@ import sys
 import pytest
 
 from ._compaction_context_helpers import (
-    SKILL_DIR,
+    PLAN_LINE_PREFIX,
+    SKILL_PATH,
     at_checkout,
     block_for,
     builtin_command,
@@ -19,6 +20,7 @@ from ._compaction_context_helpers import (
     quoted_messages,
     run_cli,
     sidechain,
+    skill_dir,
     skill_load,
     user_prompt,
     write_transcript,
@@ -27,8 +29,8 @@ from ._compaction_context_helpers import (
 MESSAGE_CHAR_BUDGET = compaction_context.MESSAGE_CHAR_BUDGET
 HALF_BUDGET = MESSAGE_CHAR_BUDGET // 2
 SKILL_NAMES = ("oldest", "middle", "newest")
-# The vendor's per-hook output ceiling. The repo records it only in .claude/plans/precompact-compaction-instructions.md
-# (row 1, a relay of the vendor docs that was not re-fetched), and that plan's cap bullet applies it to SessionStart output.
+# The vendor's per-hook output ceiling, 10,000 characters per the vendor's hook documentation. It was not re-fetched,
+# so the figure is unverified.
 VENDOR_PER_HOOK_CHARACTER_CEILING = 10_000
 
 
@@ -36,8 +38,8 @@ def _skills_and_plan_records(root, *, newest_prompt=None):
     """Three skills loaded oldest to newest, the first record carrying the checkout that names a plan file."""
     make_plan_checkout(root, "x")
     first, *rest = SKILL_NAMES
-    records = [at_checkout(skill_load(f"/work/skills/{first}"), branch="feature/x", cwd=str(root))]
-    records += [skill_load(f"/work/skills/{name}") for name in rest]
+    records = [at_checkout(skill_load(skill_dir(first)), branch="feature/x", cwd=str(root))]
+    records += [skill_load(skill_dir(name)) for name in rest]
     return records + ([user_prompt(newest_prompt)] if newest_prompt else [])
 
 
@@ -78,14 +80,14 @@ class TestCap:
         one_over = block_for(tmp_path, records)
 
         assert at_cap == full_block
-        assert "/work/skills/oldest/SKILL.md" not in one_over
-        assert "/work/skills/middle/SKILL.md" in one_over
-        assert "/work/skills/newest/SKILL.md" in one_over
+        assert f"{skill_dir('oldest')}/SKILL.md" not in one_over
+        assert f"{skill_dir('middle')}/SKILL.md" in one_over
+        assert f"{skill_dir('newest')}/SKILL.md" in one_over
         plan_path = str(tmp_path / "root" / ".claude" / "plans" / "x.md")
         assert compaction_context.PLAN_LINE_TEMPLATE.format(path=plan_path) in one_over
 
     def test_block_stays_within_the_real_cap_and_keeps_the_newest_prompt(self, tmp_path):
-        skills = [skill_load(f"/work/skills/{'long-name-' * 10}{index}") for index in range(60)]
+        skills = [skill_load(skill_dir(f"{'long-name-' * 10}{index}")) for index in range(60)]
         records = [*skills, *(user_prompt(f"prompt {index} " + "word " * 290) for index in range(8))]
 
         block = block_for(tmp_path, records)
@@ -95,11 +97,23 @@ class TestCap:
 
 
 class TestDropOrder:
+    @pytest.mark.parametrize("retained_prompt_count", [compaction_context.PROMPT_LIMIT, compaction_context.PROMPT_LIMIT - 1])
+    def test_cap_one_character_below_a_block_drops_only_its_oldest_prompt(self, tmp_path, monkeypatch, retained_prompt_count):
+        prompts = [f"prompt {index} " + "z" * 100 for index in range(compaction_context.PROMPT_LIMIT)]
+        records = [user_prompt(prompt) for prompt in prompts]
+        dropped_count = compaction_context.PROMPT_LIMIT - retained_prompt_count
+        block_to_undercut = block_for(tmp_path, records[dropped_count:])
+
+        monkeypatch.setattr(compaction_context, "BLOCK_CHAR_CAP", len(block_to_undercut) - 1)
+        block = block_for(tmp_path, records)
+
+        assert quoted_messages(block) == prompts[dropped_count + 1:]
+
     def test_dropping_older_prompts_before_skills_keeps_newest_prompt_and_plan_line_at_every_cap(self, tmp_path, monkeypatch):
         records = _skills_and_plan_records(tmp_path / "root")
         records += [user_prompt(f"prompt {index} " + "y" * 400) for index in range(5)]
         full_block = block_for(tmp_path, records)
-        skill_paths = [f"/work/skills/{name}/SKILL.md" for name in reversed(SKILL_NAMES)]
+        skill_paths = [f"{skill_dir(name)}/SKILL.md" for name in reversed(SKILL_NAMES)]
         plan_line = compaction_context.PLAN_LINE_TEMPLATE.format(path=str(tmp_path / "root" / ".claude" / "plans" / "x.md"))
 
         for cap in range(len(full_block), 600, -53):
@@ -184,14 +198,14 @@ class TestReading:
         result = run_cli(tmp_path / "absent.jsonl")
 
         assert result.returncode == 1
-        assert result.stderr.decode() == compaction_context.UNREADABLE_TRANSCRIPT_MESSAGE + "\n"
+        assert result.stderr.decode() == "compaction-context: cannot read the transcript\n"
         assert result.stdout == b""
 
     def test_directory_path_takes_the_same_unreadable_exit(self, tmp_path):
         result = run_cli(tmp_path)
 
         assert result.returncode == 1
-        assert result.stderr.decode() == compaction_context.UNREADABLE_TRANSCRIPT_MESSAGE + "\n"
+        assert result.stderr.decode() == "compaction-context: cannot read the transcript\n"
         assert result.stdout == b""
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 file")
@@ -202,8 +216,15 @@ class TestReading:
         result = run_cli(transcript)
 
         assert result.returncode == 1
-        assert result.stderr.decode() == compaction_context.UNREADABLE_TRANSCRIPT_MESSAGE + "\n"
+        assert result.stderr.decode() == "compaction-context: cannot read the transcript\n"
         assert result.stdout == b""
+
+    def test_missing_transcript_argument_exits_2_with_empty_stdout(self, capfd):
+        with pytest.raises(SystemExit) as exit_info:
+            compaction_context.main(["state"])
+
+        assert exit_info.value.code == 2
+        assert capfd.readouterr().out == ""
 
     def test_empty_file_gives_empty_stdout_and_exit_zero(self, tmp_path):
         transcript = tmp_path / "empty.jsonl"
@@ -232,6 +253,25 @@ class TestReading:
 
 
 class TestOutputSafety:
+    def test_partial_writes_are_continued_until_every_byte_is_written_to_stdout(self, monkeypatch):
+        payload = b"0123456789abcdef"
+        written = bytearray()
+        file_descriptors = []
+
+        def write_three_bytes_at_most(file_descriptor, data):
+            chunk = bytes(data[:3])
+            file_descriptors.append(file_descriptor)
+            written.extend(chunk)
+            return len(chunk)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(compaction_context.os, "write", write_three_bytes_at_most)
+            compaction_context._write_to_stdout(payload)
+
+        assert bytes(written) == payload
+        assert set(file_descriptors) == {1}
+        assert len(file_descriptors) > 1
+
     def test_multi_byte_emoji_lone_surrogate_nul_and_ansi_give_utf8_stdout_without_nul(self, tmp_path):
         text = "héllo 日本 😀 \ud800 nul:\x00: \x1b[31mred\x1b[0m"
         transcript = write_transcript(tmp_path, [user_prompt(text)])
@@ -269,7 +309,7 @@ class TestBlockOrder:
             block.index(compaction_context.BLOCK_HEADER),
             block.index(compaction_context.REREAD_LINE),
             block.index(compaction_context.SKILLS_LABEL),
-            block.index(f"- {SKILL_DIR}/SKILL.md"),
+            block.index(f"- {SKILL_PATH}"),
             block.index(f"`{plan}`"),
             block.index(compaction_context.FRAMING_LINES[0]),
             block.index("older prompt"),
@@ -329,7 +369,7 @@ class TestMalformedRecords:
 
         block = block_for(tmp_path, records)
 
-        assert "Plan file at this branch's plan path" not in block
+        assert PLAN_LINE_PREFIX not in block
         assert quoted_messages(block) == [self.GOOD_PROMPT]
 
     def test_line_that_is_not_valid_utf8_costs_that_line_not_the_block(self, tmp_path):

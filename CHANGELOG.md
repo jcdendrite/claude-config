@@ -6,6 +6,9 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`transcript-analysis.py user-input` no longer counts a compaction summary as a prompt.**
+  - **What moves:** the fresh and follow-up prompt counts, the explicit-correction count, and the `--corrections-only` listing. A summary containing a correction phrase was counted as an explicit correction before, so that count and listing can fall. A session whose first fresh record was a summary now reports its first typed prompt as the initial prompt, not a follow-up.
+  - **What does not move:** `struggle` and `friction-count` still score compaction summaries against the struggle phrases, so the three reports can disagree on the same transcript.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
@@ -557,8 +560,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`compaction-context.py state --transcript PATH` prints the facts a compaction must keep, derived from the transcript on disk.**
   - It adds `claude/.claude/scripts/compaction-context.py` (the `scripts/` directory). Nothing calls it yet, and it changes no compaction.
   - **What it prints:** the skills loaded this session with their SKILL.md paths, the branch's plan file under a provenance sentence, and the engineer's five newest prompts, quoted verbatim, within a 9,000-character cap. It prints nothing when the transcript holds none of them, and exits 1 with one stderr line when the transcript cannot be read.
-  - **What it leaves out:** AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token. Quoted text is not redacted. The record shapes it reads were verified on one Claude Code build, named in `docs/precompact-hook-behavior.md`.
-  - **`transcript-analysis.py user-input` no longer counts compaction summaries as prompts.** The summary was reported as a fresh or follow-up prompt before.
+  - **What it leaves out:** AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token. Quoted text is not redacted. Once a compaction hook injects the block, a secret pasted into one of the five newest prompts returns to context at each compaction while it stays among the newest five, and is copied into later transcript records. The record shapes it reads were verified on one Claude Code build, named in `docs/precompact-hook-behavior.md`.
   - The new script is live on `git pull` when `~/.claude/scripts` is a single tree-folded symlink. If it is a real directory, stow linked each script individually, so re-run `./install.sh` from a separate terminal to link it (not verified against the harness).
 - **A new PreToolUse gate, `deny-default-branch-push.sh`, denies an agent push whose destination is a protected branch.**
   - **Protected set:** the branch `refs/remotes/<remote>/HEAD` names, plus `main` and `master`, plus `develop` when that HEAD does not resolve. It also denies a push whose destination it cannot resolve, and a mutating `gh api` call to a `contents`, `git/refs` or `merges` endpoint. `git push --dry-run` passes.

@@ -18,8 +18,16 @@ _spec.loader.exec_module(compaction_context)
 
 ABSENT = object()
 HUMAN_ORIGIN = {"kind": "human"}
-SKILL_DIR = "/work/repo/.claude/skills/scratch"
+
+
+def skill_dir(name: str) -> str:
+    return f"/work/repo/.claude/skills/{name}"
+
+
+SKILL_DIR = skill_dir("scratch")
+SKILL_PATH = f"{SKILL_DIR}/SKILL.md"
 BRANCH = "feature/scratch"
+PLAN_LINE_PREFIX = "Plan file at this branch's plan path:"
 
 
 def _apply_overrides(rec: dict, overrides: dict) -> dict:
@@ -32,9 +40,9 @@ def _apply_overrides(rec: dict, overrides: dict) -> dict:
 
 
 def user_prompt(text="a typed prompt", *, origin=HUMAN_ORIGIN, entrypoint="cli", **overrides) -> dict:
-    """A typed prompt as an interactive session records it: `origin.kind` human, entrypoint cli."""
+    """A typed prompt as an interactive session records it: `origin.kind` human, entrypoint cli, promptSource typed."""
     rec = {"type": "user", "message": {"role": "user", "content": text}}
-    return _apply_overrides(rec, {"origin": origin, "entrypoint": entrypoint, **overrides})
+    return _apply_overrides(rec, {"origin": origin, "entrypoint": entrypoint, "promptSource": "typed", **overrides})
 
 
 def headless_prompt(text="a headless prompt", *, origin=ABSENT, entrypoint="sdk-cli", **overrides) -> dict:
@@ -68,7 +76,7 @@ def bash_input(command="ls") -> dict:
 
 
 def bash_stdout(output="file.txt") -> dict:
-    return _origin_less_cli_record(f"<bash-stdout>{output}</bash-stdout><bash-stderr></bash-stderr>")
+    return _origin_less_cli_record(f"<bash-stdout>{output}</bash-stdout><bash-stderr></bash-stderr>", turnOrigin="human")
 
 
 def skill_load(directory=SKILL_DIR, *, text="1. First step.", **overrides) -> dict:
@@ -120,6 +128,11 @@ def tool_result_record(output="tool output", **overrides) -> dict:
     return _apply_overrides(rec, overrides)
 
 
+def skill_tool_result_record(**overrides) -> dict:
+    """The `tool_result` record a `Skill` tool call writes: `toolUseResult` keys commandName and success."""
+    return tool_result_record("Launching skill: scratch", toolUseResult={"commandName": "scratch", "success": True}, **overrides)
+
+
 def answer_record(answer="an answer", **overrides) -> dict:
     """An AskUserQuestion answer: one `tool_result` block, `toolUseResult` keys annotations, answers and questions."""
     rec = _origin_less_cli_record(
@@ -131,7 +144,8 @@ def answer_record(answer="an answer", **overrides) -> dict:
 
 def task_notification(summary="done") -> dict:
     text = f"<task-notification><status>completed</status><summary>{summary}</summary></task-notification>"
-    return user_prompt(text, origin={"kind": "task-notification", "producer": "bash", "runId": "run-1"})
+    origin = {"kind": "task-notification", "producer": "bash", "runId": "run-1"}
+    return user_prompt(text, origin=origin, promptSource="system", turnOrigin="task_notification")
 
 
 def assistant_tool_use(tool_name="Bash") -> dict:
@@ -161,6 +175,23 @@ def compact_boundary(*, automatic=False, preserved_uuids=()) -> dict:
     if automatic:
         rec["compactMetadata"]["preservedMessages"] = {"anchorUuid": "uuid-0", "uuids": list(preserved_uuids)}
     return rec
+
+
+def manual_compaction_records() -> list:
+    """The records a manual `/compact` writes after the compacted turns, in recorded order."""
+    return [
+        compact_boundary(), compact_summary(), compact_caveat(), builtin_command(), local_command_stdout(),
+        invoked_skills_attachment(), attachment_record("hook block"),
+    ]
+
+
+def automatic_compaction_records(preserved_prompt_uuid="uuid-p1") -> list:
+    """The records an automatic compaction writes, whose boundary lists one preserved prompt uuid."""
+    return [
+        compact_boundary(automatic=True, preserved_uuids=[preserved_prompt_uuid]),
+        attachment_record(), attachment_record(), attachment_record(), invoked_skills_attachment(),
+        compact_summary(automatic=True), attachment_record("hook block"),
+    ]
 
 
 def at_checkout(rec: dict, *, branch=BRANCH, cwd=ABSENT) -> dict:

@@ -1,46 +1,47 @@
 """Tests for compaction-context.py's skills list, allow-lists, plan line and re-read line."""
+import errno
+import os
 from pathlib import Path
 
 import pytest
 
 from ._compaction_context_helpers import (
     ABSENT,
+    PLAN_LINE_PREFIX,
     SKILL_DIR,
+    SKILL_PATH,
     already_loaded_record,
     assistant_tool_use,
     at_checkout,
+    automatic_compaction_records,
     block_for,
     builtin_command,
     compaction_context,
     headless_prompt,
     invoked_skills_attachment,
     make_plan_checkout,
+    manual_compaction_records,
     quoted_messages,
     sidechain,
+    skill_dir,
     skill_load,
+    skill_tool_result_record,
     skill_tool_use,
     slash_invocation,
     task_notification,
-    tool_result_record,
     user_prompt,
 )
 
-SKILL_PATH = f"{SKILL_DIR}/SKILL.md"
 OTHER_DIR = "/work/repo/.claude/worktrees/branch-b/.claude/skills/scratch"
 SKILLS_LABEL = compaction_context.SKILLS_LABEL
 REREAD_LINE = (
     "The harness may cut a long skill body and drops the oldest past a total budget, "
     "so re-read the SKILL.md of any skill whose step you continue."
 )
-PLAN_LINE_PREFIX = "Plan file at this branch's plan path:"
 
 
 def _listed_paths(block: str) -> list[str]:
     return [line[2:] for line in block.splitlines() if line.startswith("- ")]
-
-
-def _skill_dir(name: str) -> str:
-    return f"/work/repo/.claude/skills/{name}"
 
 
 def _no_plan_scenarios():
@@ -95,11 +96,19 @@ def _no_plan_scenarios():
         (root / ".claude").symlink_to(outside)
         return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
 
+    def no_git_above_cwd(root, monkeypatch):
+        make_plan_checkout(root, "x")
+        (root / ".git").rmdir()
+        holds_git_entry = [ancestor for ancestor in (root, *root.parents) if (ancestor / ".git").exists()]
+        assert holds_git_entry == [], "the row needs a temp directory with no .git above it"
+        return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+
     return [
         pytest.param(head, id="detached_head_branch_with_a_head_plan_file_present"),
         pytest.param(no_branch, id="record_with_no_git_branch"),
         pytest.param(no_cwd, id="record_with_no_cwd"),
         pytest.param(relative_cwd, id="relative_cwd_naming_a_checkout_with_a_plan_file"),
+        pytest.param(no_git_above_cwd, id="plan_file_under_a_directory_with_no_git_entry"),
         pytest.param(missing_plan, id="plan_file_missing"),
         pytest.param(plan_is_directory, id="plan_path_is_a_directory"),
         pytest.param(plan_is_symlink_to_a_file_inside_plans, id="plan_file_is_a_symlink_to_another_file_inside_plans"),
@@ -114,7 +123,7 @@ class TestSkillsList:
         [
             pytest.param([slash_invocation(args=None), skill_load()], id="slash_path_load_is_next_record"),
             pytest.param(
-                [skill_tool_use(), tool_result_record(), skill_load(sourceToolUseID="toolu_1")],
+                [skill_tool_use(), skill_tool_result_record(), skill_load(sourceToolUseID="toolu_1")],
                 id="skill_tool_path_with_tool_result_between_call_and_load",
             ),
         ],
@@ -122,8 +131,22 @@ class TestSkillsList:
     def test_lists_skill_once_with_skill_md_path_on_each_invocation_path(self, tmp_path, records):
         assert _listed_paths(block_for(tmp_path, records)) == [SKILL_PATH]
 
+    @pytest.mark.parametrize(
+        "compaction_records",
+        [
+            pytest.param(manual_compaction_records(), id="earlier_manual_compaction"),
+            pytest.param(automatic_compaction_records(), id="earlier_automatic_compaction"),
+        ],
+    )
+    def test_skill_loaded_before_an_earlier_compaction_is_listed_once_with_its_skill_md_path(
+        self, tmp_path, compaction_records
+    ):
+        records = [skill_load(), *compaction_records, user_prompt("after the compaction")]
+
+        assert _listed_paths(block_for(tmp_path, records)) == [SKILL_PATH]
+
     def test_skill_tool_call_on_already_loaded_skill_keeps_earlier_load_and_quotes_nothing(self, tmp_path):
-        records = [skill_load(), skill_tool_use(), tool_result_record(), already_loaded_record()]
+        records = [skill_load(), skill_tool_use(), skill_tool_result_record(), already_loaded_record()]
 
         block = block_for(tmp_path, records)
 
@@ -131,11 +154,11 @@ class TestSkillsList:
         assert compaction_context.FRAMING_LINES[0] not in block
 
     def test_skill_loaded_again_is_listed_once_at_its_latest_load(self, tmp_path):
-        records = [skill_load(_skill_dir("a")), skill_load(_skill_dir("b")), skill_load(_skill_dir("a"))]
+        records = [skill_load(skill_dir("a")), skill_load(skill_dir("b")), skill_load(skill_dir("a"))]
 
         assert _listed_paths(block_for(tmp_path, records)) == [
-            f"{_skill_dir('a')}/SKILL.md",
-            f"{_skill_dir('b')}/SKILL.md",
+            f"{skill_dir('a')}/SKILL.md",
+            f"{skill_dir('b')}/SKILL.md",
         ]
 
     def test_one_skill_loaded_from_two_base_directories_is_listed_once_per_path(self, tmp_path):
@@ -147,7 +170,7 @@ class TestSkillsList:
         assert block_for(tmp_path, [sidechain(skill_load()), builtin_command("/compact")]) == ""
 
     def test_skill_tool_input_args_text_never_reaches_the_block(self, tmp_path):
-        block = block_for(tmp_path, [skill_tool_use(), tool_result_record(), skill_load()])
+        block = block_for(tmp_path, [skill_tool_use(), skill_tool_result_record(), skill_load()])
 
         assert "/secret/args" not in block
 
@@ -273,6 +296,10 @@ class TestAllowLists:
         assert compaction_context._is_allowed_path("/ab") is True
         assert compaction_context._is_allowed_path(f"/a{character}b") is False
 
+    def test_dot_dot_inside_a_directory_name_is_accepted_and_as_a_whole_segment_is_rejected(self):
+        assert compaction_context._is_allowed_path("/work/a..b/skill") is True
+        assert compaction_context._is_allowed_path("/work/a/../b") is False
+
     @pytest.mark.parametrize("character", list("._/@+-"), ids=lambda c: f"u{ord(c):04x}")
     def test_path_class_accepts_each_character_inside_it(self, character):
         assert compaction_context._is_allowed_path(f"a{character}b") is True
@@ -332,9 +359,7 @@ class TestPlanLine:
             pytest.param("feature/", ".md", id="empty_branch_tail"),
         ],
     )
-    def test_dot_or_empty_branch_tail_names_at_most_a_file_inside_the_plans_directory(
-        self, tmp_path, branch, plan_file_name
-    ):
+    def test_dot_or_empty_branch_tail_names_the_file_inside_the_plans_directory(self, tmp_path, branch, plan_file_name):
         root = tmp_path / "root"
         make_plan_checkout(root, "x")
         plan = root / ".claude" / "plans" / plan_file_name
@@ -342,7 +367,7 @@ class TestPlanLine:
 
         block = block_for(tmp_path, [at_checkout(user_prompt("go"), branch=branch, cwd=str(root))])
 
-        assert PLAN_LINE_PREFIX not in block or f"`{plan}`" in block
+        assert f"`{plan}`" in block
 
     @pytest.mark.parametrize(
         "hostile_slug",
@@ -391,6 +416,69 @@ class TestPlanLine:
         block = block_for(tmp_path, [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(inner))])
 
         assert f"`{plan}`" in block
+
+    def test_checkout_root_reached_through_a_symlinked_ancestor_names_the_plan_under_the_recorded_path(self, tmp_path):
+        real_parent = tmp_path / "real"
+        make_plan_checkout(real_parent / "checkout", "x")
+        link_to_parent = tmp_path / "link"
+        link_to_parent.symlink_to(real_parent)
+        recorded_cwd = link_to_parent / "checkout"
+
+        block = block_for(tmp_path, [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(recorded_cwd))])
+
+        assert f"`{recorded_cwd / '.claude' / 'plans' / 'x.md'}`" in block
+
+    @pytest.mark.parametrize(
+        "compaction_records",
+        [
+            pytest.param(manual_compaction_records(), id="earlier_manual_compaction"),
+            pytest.param(automatic_compaction_records(), id="earlier_automatic_compaction"),
+        ],
+    )
+    def test_checkout_recorded_only_before_an_earlier_compaction_still_yields_the_plan_line(
+        self, tmp_path, compaction_records
+    ):
+        root = tmp_path / "root"
+        plan = make_plan_checkout(root, "x")
+        records = [
+            at_checkout(user_prompt("before the compaction"), branch="feature/x", cwd=str(root)),
+            *compaction_records,
+            user_prompt("after the compaction"),
+        ]
+
+        assert f"`{plan}`" in block_for(tmp_path, records)
+
+    # The stubs raise where the running interpreter's pathlib may not; the real-filesystem twin below covers a real errno.
+    @pytest.mark.parametrize("failing_method", ["exists", "is_symlink", "is_file", "resolve"])
+    def test_oserror_from_a_filesystem_probe_costs_the_plan_line_not_the_block(self, tmp_path, monkeypatch, failing_method):
+        root = tmp_path / "root"
+        plan = make_plan_checkout(root, "x")
+        records = [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+        assert f"`{plan}`" in block_for(tmp_path, records)
+
+        def raise_stale_mount_error(self, *args, **kwargs):
+            raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+        monkeypatch.setattr(Path, failing_method, raise_stale_mount_error)
+        block = block_for(tmp_path, records)
+
+        assert PLAN_LINE_PREFIX not in block
+        assert quoted_messages(block) == ["go"]
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root searches a mode-0 directory")
+    def test_cwd_under_a_non_searchable_ancestor_costs_the_plan_line_not_the_block(self, tmp_path):
+        locked_ancestor = tmp_path / "locked"
+        root = locked_ancestor / "root"
+        make_plan_checkout(root, "x")
+        records = [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+        locked_ancestor.chmod(0)
+        try:
+            block = block_for(tmp_path, records)
+        finally:
+            locked_ancestor.chmod(0o700)
+
+        assert PLAN_LINE_PREFIX not in block
+        assert quoted_messages(block) == ["go"]
 
     def test_plan_line_wording_is_pinned(self, tmp_path):
         root = tmp_path / "root"
