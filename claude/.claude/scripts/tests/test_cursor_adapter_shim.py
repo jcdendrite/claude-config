@@ -1948,10 +1948,10 @@ def _call_run_wrapped(deadline_at: float = 8.0, directory: str = "/", wrapper: s
 class TestShimHookRun:
     @pytest.mark.timing
     def test_a_hook_that_prints_a_deny_and_exits_at_once_denies_every_time_under_cpu_contention(
-        self, tmp_path: Path, gnu_wrapper: str, worker_id: str
+        self, tmp_path: Path, gnu_wrapper: str
     ) -> None:
-        # xdist's `worker_id` is "master" only in a serial session, and the hogs take every core.
-        if worker_id != "master":
+        # xdist sets PYTEST_XDIST_WORKER in each worker process and nowhere else, and the hogs take every core.
+        if os.environ.get("PYTEST_XDIST_WORKER") is not None:
             pytest.skip("starts one busy process per core, so it runs only in a serial session (-n0)")
         deny = json.dumps(
             {
@@ -2701,7 +2701,6 @@ PARSER_EDGES = {
     "lone-surrogate-in-a-key": b'{"\\ud800": 1}',
 }
 
-# Expected outcomes of the classifiers, written by hand per classifier, value and position.
 # `leading-cd` at the middle position puts the value between the path and `&&`, where only ASCII whitespace is allowed.
 MIDDLE_KEEPS_LEADING_CD = {"carriage-return", "vertical-tab", "form-feed", "trailing-newline"}
 
@@ -2937,7 +2936,6 @@ class TestDirectoryPin:
         result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False, cwd=elsewhere)
         assert result.stdout.rstrip("\n") == str(root).rstrip("\n")
         assert result.returncode == 0
-        # The expected prefix is recognized and stripped back to the agent's bytes, even when the directory holds a newline.
         payload = shell_pre_payload(root, command)
         assert _pin(env, payload, tmp_path) == {}
         saved = tmp_path / "saved.json"
@@ -2974,16 +2972,13 @@ class TestDirectoryPin:
         prefixed = _pin(env, payload, tmp_path)["updated_input"]["command"]
         assert prefixed.endswith("\n" + original)
         assert prefixed.count("builtin cd --") == 1
-        # pin-check allows the expected prefix
         check_payload = build_spec("shell_before_execution", root).cursor
         check_payload["command"] = prefixed
         check_payload["workspace_roots"] = roots
         allowed = shim_json(run_shim(env, check_payload, hook_args("PreToolUse", mode="pin-check"), cwd=_scratch(tmp_path)))
         assert allowed == {}
-        # a double fire leaves it unchanged
         payload["tool_input"]["command"] = prefixed
         assert _pin(env, payload, tmp_path) == {}
-        # stripping returns the agent's original bytes to every hook
         saved = tmp_path / "saved.json"
         script = recording_probe_script(tmp_path / "hook.sh", saved)
         run_shim(env, payload, hook_args("PreToolUse", script=script, matcher="Bash"), cwd=_scratch(tmp_path))
@@ -3003,7 +2998,6 @@ class TestDirectoryPin:
         script = recording_probe_script(tmp_path / "hook.sh", saved)
         run_shim(env, payload, hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
         assert json.loads(saved.read_text())["tool_input"]["command"] == lookalike
-        # and a double fire over the re-prefixed lookalike leaves it alone
         assert _pin(env, payload, tmp_path) == {}
 
     @pytest.mark.parametrize("event_spec", ["shell_pre", "shell_post", "shell_before_execution"])

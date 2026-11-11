@@ -30,8 +30,6 @@ def _lib(script: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["bash", "-c", f'. "{LIB_SH}"\n{script}', "_", *args], capture_output=True, text=True, check=False)
 
 
-# The corpus of TestSessionIdPatternMatchesLibSh (scripts/tests/test_author_outcome.py), plus an embedded newline,
-# a slash, and ids of 256 characters or more.
 SESSION_ID_CORPUS = [
     "00000000-0000-0000-000000000001",
     "test_session-1",

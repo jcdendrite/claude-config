@@ -142,7 +142,7 @@ class PayloadSpec:
     spec_id: str
     cursor: dict
     claude_twin: dict
-    # Files to create before the call, as {path: text}. Only write_edit sets one: the file the Write overwrites.
+    # Files to create before the call, as {path: text}.
     setup_files: dict = field(default_factory=dict)
 
 
