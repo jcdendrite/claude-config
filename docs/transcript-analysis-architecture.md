@@ -832,9 +832,9 @@ itself — see `.claude/rules/test-tree-packaging.md` for why its own consumers 
 `_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. A test file that reads
 only package-resident names imports those modules directly, unaliased, as `from
 transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads
-`build_parser` or `main` imports `cli` like any other package module. Older test files that load their
-own copy of `transcript-analysis.py` via `spec_from_file_location` keep working, because the script
-re-exports both names. Such a file imports every package module it reads directly. `tests/conftest.py` carries the
+`build_parser` or `main` imports `cli` like any other package module. A test file that loads its
+own copy of `transcript-analysis.py` via `spec_from_file_location` can read `build_parser` and `main`
+from that copy instead, because the script re-exports both names. Such a file imports every package module it reads directly. `tests/conftest.py` carries the
 shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
@@ -1006,9 +1006,10 @@ directly and relies on the loader-free `fake_projects` fixture. `tests/_commit_g
 module, not a test file itself, holds `_gate_args`, which the commit-gate file and
 `tests/test_transcript_analysis_multi_root_scope.py`'s cross-subcommand header table both read. Both import it
 as `from ._commit_gate_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why.
-`sessions.py` has no test file of its own: that header table covers its header.
-`tests/test_transcript_cli_bootstrap.py` covers its dispatch and the `--paths --include-subagents`
-emission. No test covers the `--paths` refusal. The pr-link method of
+`tests/test_transcript_sessions.py` covers `sessions.py`'s `--paths` refusal.
+The cross-subcommand header table in `tests/test_transcript_analysis_multi_root_scope.py` covers the `sessions`
+resolved-scope header. `tests/test_transcript_cli_bootstrap.py` covers `sessions`' dispatch and its
+`--paths --include-subagents` emission, in a subprocess. The pr-link method of
 `TestPerRecordConsumersCreditPrefixToTheBranchEntered` stays with that class (see the paragraph above).
 
 The context-distribution, context-composition, and cache-efficiency commands each have one test file:

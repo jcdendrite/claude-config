@@ -886,7 +886,7 @@ class TestCheckClaudeMdLength:
         indirectly, via a deny-vs-allow mismatch a maintainer has to trace
         back to the constant. This test adds a direct, single-assertion
         diagnostic for the same drift instead. Mirrors
-        test_transcript_analysis.py's
+        scripts/tests/test_transcript_denials.py's
         test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label,
         which extracts a bash constant out of hook source the same way."""
         match = _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE.search(CHECK_CLAUDE_MD_LENGTH_HOOK.read_text())
