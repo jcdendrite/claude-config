@@ -531,7 +531,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **Python older than 3.14 is no longer supported: install Python 3.14 or newer so its `python3` is first on the PATH Claude Code starts with.**
   - 3.14 is the one minor CI tests. `_config.sh` holds the floor, and a test fails when it, `README.md`'s floor or ruff's `target-version` differs from CI's pin.
   - `install.sh` exits before changing anything when `python3` reports a lower version or none it can read.
-  - `check-python-floor.sh` warns on screen and to the agent at session start and resume when the hooks' `python3` is missing or below the floor, and it cannot stop the session.
+  - `check-python-floor.sh` warns on screen and to the agent at session start and resume when the hooks' `python3` is missing, reports no version, does not answer within 2 seconds, or is below the floor, and it cannot stop the session.
   - The version checks in `ask-new-dependency-disclosure.sh` and `nudge-error-mode-analysis.sh` are gone. `docs/hooks.md` § "Python version" lists what each Python-running hook does when its helper fails.
   - The hook changes are live on `git pull`, and `install.sh` checks on its next run.
   - The code and tests that supported older Python minors are gone, such as `review-cost-by-size`'s hand-rolled rank correlation and the tests that held scripts to the 3.11 grammar.

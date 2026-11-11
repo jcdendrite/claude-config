@@ -18,6 +18,7 @@ from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR
 from .test_bash_floor import README_REQUIREMENTS, _run_in_bash, readme_requirements_bullet
 from .test_git_floor import (
     _BASH_RUN_TIMEOUT_SECONDS,
+    _git_minimum_version,
     _output_of,
     _write_executable,
     python_floor_fields,
@@ -480,7 +481,7 @@ class TestPythonFloorCheckPrecedesEveryMutation:
         result, home = run_install_sh_in_tmp_repo(
             tmp_path,
             python3_stub=f"#!/bin/sh\necho '{_stub_output_and_dotted_version(-1)[0]}'\n",
-            git_version_script="echo 'git version 2.50.0'",
+            git_version_script=f"echo 'git version {_git_minimum_version()}.0'",
         )
 
         assert result.returncode == 1, _output_of(result)

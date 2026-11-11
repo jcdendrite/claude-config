@@ -42,7 +42,7 @@ fi
 
 python3_condition="python3 on the PATH Claude Code started with, in the session's working directory, $python3_state, and claude-config's hooks support Python $python_floor or newer."
 screen_text="$python3_condition $python3_remedy See README.md § \"Requirements\" in the claude-config repository."
-agent_text="$python3_condition Hooks that run python3 are unsupported until then, and docs/hooks.md § \"Python version\" lists what each does if its helper fails. The agent's only duty is to tell the engineer in its next reply and point them to README.md § \"Requirements\", and it does nothing else about this unless the engineer asks."
+agent_text="$python3_condition Hooks that run python3 are unsupported until then, and docs/hooks.md § \"Python version\" in the claude-config repository lists what each does if its helper fails. The agent's only duty is to tell the engineer in its next reply and point them to README.md § \"Requirements\" in the claude-config repository, and it does nothing else about this unless the engineer asks."
 
 # shellcheck disable=SC2016 # single-quoted on purpose: $screen and $agent are jq --arg bindings, not shell variables.
 _lib_jq -c -n --arg screen "$screen_text" --arg agent "$agent_text" \

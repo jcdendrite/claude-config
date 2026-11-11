@@ -455,22 +455,25 @@ README.md's Requirements section states the floor, and `_config.sh` holds it. No
 The notice says the hooks are unsupported below the floor, not that they fail, because nothing keeps the helpers running on older minors.
 
 To recover:
-1. Install Python at the floor or newer from a separate terminal.
-2. Put its `python3` first on the PATH Claude Code starts with (`pyenv global` for pyenv). A project whose own `.python-version` pins a version below the floor overrides `pyenv global`, so the notice repeats at each startup and resume until that pin resolves to the floor or newer.
-3. Check with `env python3 --version` from that shell, run in the directory the notice appeared in. When the notice says `python3` is missing, reported no version or did not answer within 2 seconds, run it before step 1: a version at the floor or newer means the probe only timed out and nothing needs installing.
-4. Re-run `./install.sh`.
-5. Restart Claude Code.
+1. Run `env python3 --version` from the shell that launches Claude Code, in the directory the notice appeared in. If it prints the floor or newer, `python3` was only slow to answer and nothing needs installing.
+2. Install Python at the floor or newer from a separate terminal.
+3. Put its `python3` first on the PATH Claude Code starts with (`pyenv global` for pyenv). A project whose own `.python-version` pins a version below the floor overrides `pyenv global`, so the notice repeats at each startup and resume until that pin resolves to the floor or newer.
+4. Re-run the step 1 command to confirm.
+5. Re-run `./install.sh`.
+6. Restart Claude Code.
 
 Hooks resolve `python3` on the harness PATH, so a version-manager shim can resolve a different `python3` per project.
 Claude Code is expected to start hooks in the session's working directory, which is what makes the shim's per-project choice apply. This is unverified.
-The notice names the session's working directory on that same unverified expectation.
-The probe runs the PATH `python3` from the session's working directory, which may be an untrusted clone. A version-manager shim that reads that directory's pin therefore runs before any tool call. `-I -S` keeps that directory's files out of the interpreter.
+The notice refers to the session's working directory on that same unverified expectation.
+The probe runs the PATH `python3` from the session's working directory, which may be an untrusted clone. A version-manager shim reads that directory's pin file and may select a repository-supplied interpreter, which runs before any tool call. `-I -S` keeps that directory's files out of the interpreter only, not out of the shim. Whether SessionStart hooks fire before the workspace-trust prompt is unverified.
 Whether the notice renders in `-p` mode, and whether SessionStart fires for subagents, is unverified. A headless run needs `python3` fixed beforehand.
 On a stock macOS without the Command Line Tools, running `/usr/bin/python3` may open their install dialog, so the probe may open it at each startup and resume.
 The hook prints nothing in these cases, although `python3` may be missing or below the floor:
-- Neither `timeout` nor `gtimeout` is on PATH. The 2-second cap needs one of them, so the probe runs uncapped and a hung `python3` stalls session start for up to the registration's 10-second timeout, if the harness enforces it. This is unverified.
 - The first `bash` on PATH is below the floor, so `_lib.sh` fails to source.
 - `jq` is missing or hangs.
+- The harness cancels the hook at the registration's 10-second timeout, if it enforces that timeout. This is unverified.
+
+With neither `timeout` nor `gtimeout` on PATH, the 2-second cap is unavailable and the probe runs uncapped. A missing or below-floor `python3` still prints the notice. A hung `python3` or `jq` stalls session start, for up to the registration's 10-second timeout, and the cancellation case above then applies.
 
 What each hook that runs `python3` does when its helper exits nonzero:
 - `require-worktree-for-git-writes.sh` denies every command that reaches its parser, reads included. Where worktree enforcement is active, a command naming `git` reaches the parser from a main-tree session. From a linked worktree it does so when the command holds `cd`, `-C`, `(` or a backtick, when the worktree lock is absent, or when the collision guard denies. With no `python3` on PATH it denies with text naming the recovery routes.
