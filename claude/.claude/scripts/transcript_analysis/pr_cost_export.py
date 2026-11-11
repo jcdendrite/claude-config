@@ -391,3 +391,27 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
         " publishing anything derived from it.",
         file=sys.stderr,
     )
+
+
+def _add_pr_cost_export_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_pr_cost_export = subparsers.add_parser(
+        "pr-cost-export",
+        help=(
+            "Export every declared account's current pr-cost ledger rows -- redacted,"
+            " collapsed to one row per PR -- to a single operator-named TSV. Never writes to"
+            " stdout. Makes no gh call and scans no transcript corpus. See docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--out", metavar="PATH",
+        help=(
+            "Required: destination TSV path, refused if it already exists (never"
+            " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
+            " captured into that session's own transcript."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help="Additional Claude Code config directory to scan (repeatable).",
+    )
+    p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)

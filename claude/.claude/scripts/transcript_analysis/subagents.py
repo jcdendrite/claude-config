@@ -229,3 +229,29 @@ def cmd_subagents(args: argparse.Namespace) -> None:
 # tool name — an MCP server name is a per-account integration identifier, so
 # every MCP tool call collapses into this one row instead of one row per server.
 _MCP_TOOL_BUCKET_LABEL = "mcp__*"
+
+
+def _add_subagents_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_sub = subparsers.add_parser(
+        "subagents",
+        help=(
+            "isSidechain turn counts and model split per branch, plus tool-result bytes"
+            " per thread and per tool name."
+        ),
+    )
+    p_sub.add_argument("--branches", metavar="B1,B2,...")
+    scope._add_project_scope_args(p_sub)
+    p_sub.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Branch names are"
+            " redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than one root is in scope."
+        ),
+    )
+    p_sub.add_argument(
+        "--since", metavar="Nd",
+        help="Limit the reported tables to records with timestamp in the last N days (e.g. 35d).",
+    )
+    p_sub.set_defaults(func=cmd_subagents)

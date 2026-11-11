@@ -97,3 +97,18 @@ def cmd_spend_over_threshold(args: argparse.Namespace) -> None:
         f"{render._pct_of(total_above, total_total):>7}"
     )
     handoff_nudge._print_nudge_log_diagnostic()
+
+
+def _add_spend_over_threshold_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_spend_over_threshold = subparsers.add_parser(
+        "spend-over-threshold",
+        help=(
+            "Per-week share of session dollar spend earned at or above the handoff nudge's"
+            " own fire threshold."
+        ),
+    )
+    scope._add_project_scope_args(p_spend_over_threshold)
+    p_spend_over_threshold.add_argument(
+        "--since", metavar="DATE", type=scope._iso_date, help="Inclusive start date (YYYY-MM-DD)"
+    )
+    p_spend_over_threshold.set_defaults(func=cmd_spend_over_threshold)

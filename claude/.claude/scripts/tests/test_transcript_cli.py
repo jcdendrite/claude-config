@@ -302,9 +302,10 @@ class TestBuildParser:
         otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
         parser = cli.build_parser()
         both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
-        # One subcommand per registration path: `cli.py`'s `_add_project_scope_args` call, the
-        # hand-rolled group in skill_invocation.py, and a module-registered subparser.
-        assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
+        # The walk below skips any subcommand that loses either flag, so each name here guards its
+        # own registrar: cost via `cli.py`'s `_add_project_scope_args` call, skill-invocation via
+        # its hand-rolled group, skill-pair and subagents via their modules' registrars.
+        assert {"cost", "skill-invocation", "skill-pair", "subagents"} <= set(both_flags)
         not_refused = []
         for name in both_flags:
             try:
