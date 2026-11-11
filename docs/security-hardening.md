@@ -550,15 +550,18 @@ Configure the default branch so that direct pushes are blocked for the credentia
 
 Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
 Block force pushes and branch deletion on the default branch as well.
+Give `main` and `master` the same protection when they are not the default branch, because the hook protects them too.
 
 The approving review is a requirement because `deny-default-branch-push.sh` does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
 The agent's credential must not be able to supply the approval.
+Keep "Allow GitHub Actions to create and approve pull requests" off for the repository and for any policy above it that sets it, because a workflow that a feature-branch push starts could otherwise approve with `GITHUB_TOKEN`.
+[GitHub's page on this setting](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) says it controls whether `GITHUB_TOKEN` can approve pull requests, so treat such an approval as counting toward the required reviews.
 
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
-Restrict the scope of any repository secret that can push to the default branch or deploy.
-The hook allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run pushes or deploys with a credential the pull-request rule does not bind.
+Restrict the scope of any secret readable by code the agent can influence through a branch or pull request, when the secret can push to the default branch, deploy, approve pull requests or administer the repository.
+The hook allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run acts with a credential the pull-request rule does not bind.
 
 The hook reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The Known gaps in its header list them, so protection on the remote is the only barrier for steered input.
 
@@ -580,12 +583,14 @@ Check rulesets by listing them with `gh api repos/<owner>/<repo>/rulesets`, then
 - No bypass actor for the credential.
 
 Confirm any of these that the API output does not show in the repository settings page.
+Repeat both checks for `main` and `master` where they exist.
 
 Run these protection reads with the engineer's own credential, not the agent's. The agent's credential is the one the protection must bind and holds no repository-administration rights, so the reads may be refused to it or show less than the full configuration.
 
-Then verify the three credential properties the rules above depend on:
+Then verify the credential properties the rules above depend on:
 - **No administration rights.** In the repository's collaborator and permission settings, confirm the agent's account holds a role below administrator, is on no bypass list and owns no token or app installation with administration scope.
 - **Cannot supply the approval.** Open a pull request from a throwaway branch with the agent's credential. Confirm it stays blocked from merging while the agent's account is the only one that has reviewed it.
+- **No workflow approval.** In the repository's Actions settings, confirm "Allow GitHub Actions to create and approve pull requests" is off, and that no policy above the repository turns it on.
 - **Solo owner.** When the engineer is the only reviewer, the rule must still require an approval that the agent's credential cannot give.
   - The agent needs an account of its own, separate from the engineer's, so that the engineer can approve its pull requests.
   - If the agent runs on the engineer's own credential, no approval comes from a different account, so the rule is satisfied only by a bypass for the engineer's account, which the agent's credential holds too.
@@ -629,7 +634,7 @@ Claude can do without a prompt. The `review-permissions` skill in this repo
 covers the checklist — over-broad globs, command chaining, and shell-
 expansion surface.
 
-**Server-side branch protection.** Verify the default branch's protection, the agent credential's rights and the scope of repository secrets that can push or deploy, as `docs/security-hardening.md` § "Required server-side branch protection" describes.
+**Server-side branch protection.** Verify every requirement in `docs/security-hardening.md` § "Required server-side branch protection", and run every check it lists.
 
 ## Private-fork guidance
 
