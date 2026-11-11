@@ -554,6 +554,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **`compaction-context.py state --transcript PATH` prints the facts a compaction must keep, derived from the transcript on disk.**
+  - It adds `claude/.claude/scripts/compaction-context.py` (the `scripts/` directory). Nothing calls it yet, and it changes no compaction.
+  - **What it prints:** the skills loaded this session with their SKILL.md paths, the branch's plan file under a provenance sentence, and the engineer's five newest prompts, quoted verbatim, within a 9,000-character cap. It prints nothing when the transcript holds none of them, and exits 1 with one stderr line when the transcript cannot be read.
+  - **What it leaves out:** AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token. Quoted text is not redacted. The record shapes it reads were verified on one Claude Code build, named in `docs/precompact-hook-behavior.md`.
+  - **`transcript-analysis.py user-input` no longer counts compaction summaries as prompts.** The summary was reported as a fresh or follow-up prompt before.
+  - The new script is live on `git pull` when `~/.claude/scripts` is a single tree-folded symlink. If it is a real directory, stow linked each script individually, so re-run `./install.sh` from a separate terminal to link it (not verified against the harness).
 - **A new PreToolUse gate, `deny-default-branch-push.sh`, denies an agent push whose destination is a protected branch.**
   - **Protected set:** the branch `refs/remotes/<remote>/HEAD` names, plus `main` and `master`, plus `develop` when that HEAD does not resolve. It also denies a push whose destination it cannot resolve, and a mutating `gh api` call to a `contents`, `git/refs` or `merges` endpoint. `git push --dry-run` passes.
   - **Limits:** wrapped, scripted and HTTP pushes pass, so server-side branch protection stays the barrier against them. The hook header lists the Known gaps and the accepted over-denials.

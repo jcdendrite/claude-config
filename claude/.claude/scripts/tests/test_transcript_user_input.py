@@ -175,13 +175,14 @@ class TestCmdUserInput:
         [
             {"isMeta": True},
             {"isSidechain": True},
+            {"isCompactSummary": True},
             {"toolUseResult": {"stdout": "x"}, "sourceToolUseID": "t1", "sourceToolAssistantUUID": "u1"},
         ],
-        ids=["isMeta", "isSidechain", "tool_result_keys"],
+        ids=["isMeta", "isSidechain", "isCompactSummary", "tool_result_keys"],
     )
     def test_exclusion_guards_exclude_from_fresh_prompt_count(self, extra_fields, fake_projects, capsys):
-        """isMeta=True, isSidechain=True, and toolUseResult/sourceToolUseID/sourceToolAssistantUUID
-        records are excluded from total_fresh_prompts."""
+        """isMeta=True, isSidechain=True, isCompactSummary=True, and
+        toolUseResult/sourceToolUseID/sourceToolAssistantUUID records are excluded from total_fresh_prompts."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _ui_user("genuine prompt", branch="feat"),
             _ui_user("excluded record", branch="feat", **extra_fields),

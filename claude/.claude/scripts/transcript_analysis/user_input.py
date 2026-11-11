@@ -23,6 +23,8 @@ def _is_fresh_user_prompt_for_narrative(rec: dict) -> bool:
     Distinct from `_is_fresh_user_prompt` (judgment-pair's discriminator): this one excludes
     on toolUseResult/sourceToolUseID/sourceToolAssistantUUID keys instead of tool_result content
     blocks, and accepts promptId-bearing list content instead of requiring a bare string.
+    Also excludes isMeta, isSidechain and isCompactSummary records: a compaction summary is
+    harness-written, not something the user typed.
 
     Accepts two content shapes:
     - Plain string (the common case).
@@ -32,7 +34,7 @@ def _is_fresh_user_prompt_for_narrative(rec: dict) -> bool:
     """
     if rec.get("type") != "user":
         return False
-    if rec.get("isMeta") or rec.get("isSidechain"):
+    if rec.get("isMeta") or rec.get("isSidechain") or rec.get("isCompactSummary"):
         return False
     if "toolUseResult" in rec or "sourceToolUseID" in rec or "sourceToolAssistantUUID" in rec:
         return False
