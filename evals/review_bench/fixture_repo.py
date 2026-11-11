@@ -4,13 +4,15 @@ repo, so a reviewer's `git log --all` cannot reach a later commit), holding
 exactly `base_commit` then `head_commit`, plus a `.bench/` directory excluded
 via `.git/info/exclude`.
 
-Builds three kinds of directory:
+Builds four kinds of directory:
 - a defect fixture (`build_defect_fixture`): the two-commit tree, to which
   the caller adds a `bench-<lens>.md` arm file under `.claude/agents/`;
 - the arm-neutral precision-judge fixture (`build_precision_judge_fixture`):
   the same tree, with no `bench-<lens>` file;
 - the recall-judge directory (`build_recall_judge_dir`): no fixture tree at
-  all -- `adjudicate.py` populates its judge file and `.bench/judge-recall.md`.
+  all -- `adjudicate.py` populates its judge file and `.bench/judge-recall.md`;
+- a single-commit repository (`build_single_commit_repo`): one commit holding
+  one source commit's tree, pruned by the caller.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import posixpath
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,12 +88,14 @@ class UnsafeFixtureConfigError(ValueError):
     pass
 
 
-def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    args: list[str], *, cwd: Path, timeout_s: float = _LOCAL_GIT_TIMEOUT_S,
+) -> subprocess.CompletedProcess[str]:
     """Runs git under `isolated_git_environment`, so the engineer's git
     configuration and `GIT_*` variables cannot change what the fixture holds.
     A call that produces diff text also passes `DIFF_TEXT_ARGS`."""
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
+        ["git", *args], cwd=cwd, check=True, timeout=timeout_s,
         capture_output=True, encoding="utf-8", errors="replace", env=isolated_git_environment(),
     )
 
@@ -118,7 +123,9 @@ def _clear_dir_contents(dest_dir: Path) -> None:
             child.unlink()
 
 
-def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None:
+def _extract_commit_tree(
+    source_repo: Path, commit: str, dest_dir: Path, *, timeout_s: float = _LOCAL_GIT_TIMEOUT_S,
+) -> None:
     """Extract `commit`'s tree from `source_repo` into `dest_dir` via `git
     archive` piped through `tarfile`, never a `git worktree`/clone -- the
     fixture repo must never share an object store with the real one,
@@ -126,7 +133,7 @@ def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None
     """
     result = subprocess.run(
         ["git", "archive", commit], cwd=source_repo, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=isolated_git_environment(),
+        timeout=timeout_s, capture_output=True, env=isolated_git_environment(),
     )
     _extract_archive(result.stdout, dest_dir)
 
@@ -246,15 +253,15 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
         _refuse_unsafe_project_settings(raw_settings)
 
 
-def _commit_snapshot(dest_dir: Path, message: str) -> None:
+def _commit_snapshot(dest_dir: Path, message: str, *, timeout_s: float = _LOCAL_GIT_TIMEOUT_S) -> None:
     # --force so a snapshot's tree equals its source commit's tree whatever
     # `.gitignore` or global excludes say: git archive emits only tracked
     # paths, and `add` never descends into `.git`.
-    _run_git(["add", "-A", "--force"], cwd=dest_dir)
+    _run_git(["add", "-A", "--force"], cwd=dest_dir, timeout_s=timeout_s)
     subprocess.run(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
-        check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, encoding="utf-8", errors="replace",
+        check=True, timeout=timeout_s, capture_output=True, encoding="utf-8", errors="replace",
         env={**isolated_git_environment(), **_git_commit_env()},
     )
 
@@ -282,6 +289,21 @@ def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: 
     _extract_commit_tree(source_repo, defect.head_commit, dest_dir)
     _refuse_executable_project_config(dest_dir)
     _commit_snapshot(dest_dir, _FIXTURE_HEAD_COMMIT_MESSAGE)
+
+
+def build_single_commit_repo(
+    source_repo: Path, commit: str, dest_dir: Path, *, prune: Callable[[Path], None], timeout_s: float,
+) -> None:
+    """Build `dest_dir` as a fresh git repository holding exactly one commit:
+    `commit`'s tree, after `prune(dest_dir)` has removed what the caller keeps
+    out of it. `dest_dir` must exist and be empty. As in `build_two_commit_repo`,
+    nothing past `commit` is reachable from it. Raises ValueError for a commit
+    that is not a 40-hex SHA. `timeout_s` bounds every git call."""
+    _validate_sha("commit", commit)
+    _run_git(["init", "-q"], cwd=dest_dir, timeout_s=timeout_s)
+    _extract_commit_tree(source_repo, commit, dest_dir, timeout_s=timeout_s)
+    prune(dest_dir)
+    _commit_snapshot(dest_dir, _FIXTURE_BASE_COMMIT_MESSAGE, timeout_s=timeout_s)
 
 
 @dataclass(frozen=True)

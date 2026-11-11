@@ -20,7 +20,13 @@ Engineer decisions this session, as the labels they selected:
 
 ## Approach
 
-Build `evals/replay_bench/`, a local runner that replays a source repo's past commits as coding tasks. A thin headless dispatcher hands each commit's message to one subagent. Arm `toolkit`, the Context's B, dispatches the production `code-writer` under the account's full config. Arm `bare`, the Context's A, dispatches a fixture-local `bare-writer` with `omitClaudeMd: true` and a one-line body. Every launch gets an environment built from an allowlist. No sandbox contains the subagent, because steered agents are out of scope for this runner (row 47). The runner classifies every line the subagent added as code, comment, docstring, blank or prose, keeps one record and one diff per run under gitignored `evals/replay_bench/.local/`, and prints the paired arm difference over tasks to the terminal only.
+Build `evals/replay_bench/`, a local runner that replays a source repo's past commits as coding tasks. A thin headless dispatcher hands each commit's message to one subagent. Arm `toolkit`, the Context's B, dispatches the production `code-writer` under the account's full config. Arm `bare`, the Context's A, dispatches a fixture-local `bare-writer` with `omitClaudeMd: true` and a one-line body, in a fixture whose settings exclude the account's rule files. Both arms may read the account's agent and skill files through exact Read allow entries, so `code-writer` can read its reviewer files. Every launch gets an environment built from an allowlist. No sandbox contains the subagent, because steered agents are out of scope for this runner (row 47). The runner classifies every line the subagent added as code, comment, docstring, blank or prose, keeps one record and one diff per run under gitignored `evals/replay_bench/.local/`, and prints the paired arm difference over tasks to the terminal only.
+
+The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D4, row 124):
+- The first PR, on this branch, holds Phases 1 and 2 and the `select-tests.py` rows for its own files (Phase 5a). Its last dispatch runs after Verification step 1c. It sets the `--max-base-entries` default, adds the `export-attributes` skip, and refuses a partial clone and a repo whose `info/attributes` sets either attribute (Tasks). It needs no `claude -p` run.
+- The second PR, on a follow-on branch from `main` after the first merges, holds Phases 3 and 4 and the rest of Phase 5 (Phase 5b). Verification step 1b runs at its start, before its Phase 3 dispatch, and the live checks run before it merges.
+- This file stays whole and ships with the first PR, where it is already committed (row 127). The second PR edits it in place, so each later change to the plan ships with the code it governs. Its Phase 3 to 5 sections are the second PR's plan, and main holds that design before its code. M21 names the two alternatives set aside.
+- A step 1b stop re-plans Phases 3 to 5 on top of the merged first PR, whose miner, classifier and fixture builder stand alone. Only abandoning the runner reverts the first PR. That revert stays clean while no file outside the first PR's own files imports its code.
 
 ### How a replay runs
 
@@ -29,6 +35,10 @@ Build `evals/replay_bench/`, a local runner that replays a source repo's past co
   - `--rev` defaults to `HEAD`, and `--max-count` to 500.
   - `--source-repo` and `--trusted-author` have no default. An empty `--trusted-author` exits 2, since it would match a commit with an empty author email.
   - Each source repo must be the top level of a git repository on this machine, a linked worktree's included (rows 6, 7). `git -C <path> rev-parse --show-toplevel` must print the path's own `os.path.realpath`. A subdirectory, a non-repository path and a bare repository each exit 2 naming the path, because `git archive` run from a subdirectory would build a fixture rooted there (row 96).
+  - `tasks` exits 2 naming the path for a partial clone.
+    - A partial clone is a repo where `git config --get-regexp` for `extensions.partialclone` or any `remote.<name>.promisor` prints a line (row 130).
+    - Git fetches a missing object on demand there, which would put network I/O with no timeout into `tasks` and into a fixture build.
+  - A source repo whose own `info/attributes` file, found with `git rev-parse --git-path info/attributes`, holds a line with the text `export-ignore` or `export-subst` exits 2 naming the path, since the attribute would reach every commit's archive (row 131).
   - `--name` must pass `identifiers.validate_campaign_id` (row 60).
 - Author and committer identities come from `git log --no-use-mailmap` with the `%ae` and `%ce` placeholders, for both the trust rule and the printout, and each is compared exactly. A source repo's `.mailmap` therefore cannot map an untrusted email onto a trusted one (row 92).
 - The runner first drops from a commit's changed paths every path the fixture prune removes. The rules below apply to the remaining paths, so a commit that also edited an instruction file still yields a task.
@@ -40,11 +50,15 @@ Build `evals/replay_bench/`, a local runner that replays a source repo's past co
   - no remaining path holds a comma, a control character or a byte git quotes, since the inner prompt lists paths comma-separated;
   - its inner prompt is at most `--max-prompt-chars` (default 4000) characters. A longer one is skipped, never truncated (row 33);
   - its base tree's blobs total at most `--max-base-mb` megabytes, a megabyte being 10^6 bytes, and the tree holds at most `--max-base-entries` entries. Each bound is its own skip reason.
-    - Their defaults, 100 and 100,000, stand unless Verification step 1's build timing lowers them (Fixture).
+    - Their defaults come from the build timing under Fixture.
     - Both bounds come from one `git ls-tree -r -l -z <base>` call once every other rule passes. With `-z`, git prints each path verbatim instead of quoting an unusual name.
     - A non-blob entry, such as a submodule's gitlink, prints `-` for its size, so it counts as zero bytes and one entry and is never read as a file (row 105).
     - Each attempt holds about three copies of that tree, as the fixture's work tree, its `.git` and `baseline.git`, across four worker threads (row 82).
-  - every object `tasks` reads with `git cat-file --batch` is present. A `missing` reply, which a partial clone gives for an object it does not hold, skips the commit under its own reason (row 105);
+  - every object `tasks` reads with `git cat-file --batch` is present. A `missing` reply skips the commit under its own reason (row 105). A partial clone is refused before the walk, so a reply here means an object absent for another reason;
+  - no `.gitattributes` blob in its base tree, at any depth, holds a line with the text `export-ignore` or `export-subst`, under the skip reason `export-attributes`.
+    - `git archive` honors both attributes, so the fixture would lack a path or hold rewritten text that `tasks` sized, counted and measured from the real tree (row 131).
+    - The check finds those blobs in the same `git ls-tree` listing and reads them in the same `git cat-file --batch` call.
+    - It matches the text anywhere on a line, a comment or an unset form included, which skips more than git would apply but needs no attribute parser;
   - its base tree holds no entry the fixture's extraction refuses (rows 100, 103, 104). The check reads the `120000` entries of that same `git ls-tree` call, and their link targets with one `git cat-file --batch` call. Each shape counts under its own skip reason (row 101):
     - a symlink whose own path's first component is `.claude`, matched case-insensitively;
     - a symlink with an absolute target;
@@ -63,17 +77,27 @@ Build `evals/replay_bench/`, a local runner that replays a source repo's past co
   - base density, the comment-plus-docstring words per non-test code line in the base versions of the changed non-test files (row 64). A task whose changed non-test files hold no code line in the base, such as one that only adds new files, keeps a null density and stays in the task set;
   - its base-tree size in bytes and its entry count.
 - A task ID is the first 8 hex digits of the source path's sha256, a hyphen, and the commit's first 12 hex digits.
-- Reading a task file exits 2 on a task that lacks a key, whose ID breaks that grammar, or whose SHAs fail `fixture_repo._validate_sha`.
+- Reading a task file exits 2 on a task that lacks a key, whose ID breaks that grammar, or whose SHAs fail `fixture_repo._validate_sha`. `tasks.py` raises `TaskFileError` for those, and `identifiers.InvalidIdentifierError` for a task-set name that breaks its grammar.
 
 **Fixture.**
 - Every run attempt gets a fresh directory from `msmr._resolved_temp_project_dir(f"{FIXTURE_DIR_PREFIX}replay-")`, using `review_bench.runner.FIXTURE_DIR_PREFIX` so that `RunStore`'s sweep accepts it.
 - The runner logs that directory with `RunStore.record_directory(<task-id>, <dir>, "")` before it writes anything into it (row 57).
 - It exits 2 when the directory lies under `$HOME`, where ancestor instruction files would load.
 - The new `fixture_repo.build_single_commit_repo(source_repo, commit, dest_dir, *, prune, timeout_s)` runs `git init`, extracts the base tree with `_extract_commit_tree`, calls `prune(dest_dir)`, and commits once with `_commit_snapshot`. It keeps the bench's archive-only extraction, so the replayed commit is unreachable from the fixture (rows 27, 28).
-- `--fixture-git-timeout-s` bounds every git call that builds the fixture or reads it after the run, in place of the bench's 10 s `_LOCAL_GIT_TIMEOUT_S` (row 87). The calls do no network I/O, so the limit only bounds a hung git.
+- `--fixture-git-timeout-s` bounds every git call that builds the fixture or reads it after the run, in place of the bench's 10 s `_LOCAL_GIT_TIMEOUT_S` (row 87). The calls do no network I/O, since `tasks` refuses a partial clone, so the limit only bounds a hung git.
   - It defaults to the runner's `FIXTURE_GIT_TIMEOUT_S`. The flag lets a loaded machine raise the limit without a code edit. It changes no result, so it stays out of the manifest comparison.
-  - Verification step 1 times four concurrent fixture builds on each of two synthetic text trees totaling the `--max-base-mb` default: one of about 10,000 files, and one at the `--max-base-entries` default. `FIXTURE_GIT_TIMEOUT_S` is three times the slowest build across both, rounded up to a whole 10 s (rows 88, 106).
-  - The `--max-base-mb` default stays 100 when the 10,000-file tree's slowest build takes 60 s or less, and the `--max-base-entries` default stays 100,000 when the larger tree's does. Otherwise the session halves the slow tree's default and times again until a build fits. The 60 s ceiling and the 100,000 starting point are judgments, not measurements (row 88).
+  - The defaults come from this rule, applied to Verification step 1a's timing of four concurrent fixture builds on synthetic text trees (rows 88, 106):
+    - the `--max-base-mb` default stays 100 when a 10,000-file tree's slowest build takes 60 s or less;
+    - the `--max-base-entries` default starts at 100,000 and halves until a tree of that many files builds within 60 s;
+    - `FIXTURE_GIT_TIMEOUT_S` is three times the slowest build across the fitting trees, the step 1c corner included, rounded up to a whole 10 s.
+  - The 60 s ceiling, the 100,000 starting point and the multiplier are judgments, not measurements.
+  - Step 1a's relay gave no byte total for the halving trees, and nothing measured locates the jump between 12,500 and 25,000 files. So Verification step 1c timed two more trees before the first PR's last dispatch: the corner the bounds admit, 12,500 files totaling 100 MB, and 17,500 files totaling 100 MB.
+    - Neither tree exceeded 60 s, so step 1c did not stop.
+    - Had either exceeded it, the stop would have gone to the engineer, because the 12,500 default is the engineer's accepted figure (row 129).
+  - Row 106 holds the measured series. Under the rule above:
+    - `--max-base-mb` defaults to 100;
+    - `--max-base-entries` defaults to 12,500;
+    - `FIXTURE_GIT_TIMEOUT_S` is 110 s, three times the 33.5 s corner build at 12,500 files totaling 100 MB, rounded up.
 - The replay prune walks the tree without following links. Without it, nested discovery loads a checkout's own instruction files into both arms (rows 23, 24).
   - It removes every entry named `CLAUDE.md`, `CLAUDE.local.md` or `AGENTS.md`, matched case-insensitively, at any depth.
   - It removes every directory named `.claude` at any depth, and the root `.mcp.json`, each matched case-insensitively.
@@ -81,16 +105,31 @@ Build `evals/replay_bench/`, a local runner that replays a source repo's past co
   - Extraction refuses a link with an absolute target, a link that resolves outside the tree, and a link at the root `.claude` path, and `tasks` skips any commit whose base tree holds one (Tasks, row 103).
   - After its removals, the prune resolves every remaining symlink with `os.path.realpath` and raises when one resolves outside the fixture. A link chain can pass both the lexical skip and a tar filter that does not normalize link targets, and an agent's write through such a link would escape the diff (rows 83, 103, 108).
   - A prune or an extraction that raises, an `UnsafeFixtureConfigError` included, fails that run as `fixture-error` before any launch (Retry).
-- After that commit the runner writes `.claude/worktree-optout` and `.claude/agents/bare-writer.md` into every fixture, both arms alike, and adds `/.claude/` to `.git/info/exclude`. The opt-out keeps machine-level worktree enforcement from denying the agent's writes (rows 21, 22). The exclude keeps both files out of the diff.
+- After that commit the runner writes `.claude/worktree-optout` and `.claude/agents/bare-writer.md` into every fixture, both arms alike, plus the arm's fixture settings file when the arm names one (Arms). It adds `/.claude/` to `.git/info/exclude`. The opt-out keeps machine-level worktree enforcement from denying the agent's writes (rows 21, 22). The exclude keeps these files out of the diff.
 - The runner then copies the fixture's `.git` to `<attempt dir>/baseline.git`. The attempt dir is `.local/campaigns/<campaign-id>/attempts/<task-id>-<arm>-<n>-<attempt>/`. Every post-run git call uses that copy, so the diff compares the work tree with the pristine base whatever the agent did to the fixture's own `.git`, a commit, a reset or an edited `.git/config` included (rows 49, 50).
 
-**Arms (`replay_bench/arms.py`).** An arm is data: a name, the agent the dispatcher names, and the instruction loads its subagent must and must not show.
+**Arms (`replay_bench/arms.py`).** An arm is data:
+- a name, and the agent the dispatcher names;
+- the `CLAUDE.md` its dispatcher must load at `session_start`, and the dispatcher loads that fail it;
+- the fixture settings file it writes, if any;
+- the fixture-file loads its subagent may show.
+
+The two arms:
 - `bare` dispatches `bare-writer`.
   - Its frontmatter copies `tools`, `model` and `effort` from the account's `<config-dir>/agents/code-writer.md`, read with `msmr.agent_frontmatter_tools`, `msmr.agent_frontmatter_model` and an `effort` reader over `msmr._frontmatter_block`.
   - It adds `name: bare-writer`, `description: Implements the change the prompt describes.` and `omitClaudeMd: true`.
   - Its body is the one line `You implement the change the prompt describes, in the current repository.`
-- Each arm names the fixture-file loads it allows. `bare` and `toolkit` allow none.
+  - Its fixture settings file, `.claude/settings.json`, holds only `claudeMdExcludes`. `omitClaudeMd` still lets matching path-scoped rules load into the subagent, and one did in Verification step 1a (rows 16, 115).
+  - The exclude list is generated per attempt. For every `.md` file under the account's `rules/` at any depth, it holds the path as the walk reached it and that path's `os.path.realpath`, each an exact absolute path.
+  - The walk follows directory links and skips a directory whose realpath it has already visited.
+  - The generator raises `UnsafeConfigPathError`, naming the path, on a path holding any character the Read allow list refuses (Launch).
+  - The settings file's whole text is the JSON object `{"claudeMdExcludes": [...]}`, with no other key.
+  - The account's `CLAUDE.md` stays off the list. The dispatcher's `session_start` load of it stays the run's positive control, and `omitClaudeMd` already drops it from the subagent (row 15).
+  - Any dispatcher load other than the account's `CLAUDE.md` fails it (Instruction-load check). That covers a managed-policy `CLAUDE.md`, an unexcluded rule and a file the account's `CLAUDE.md` includes, since whether `omitClaudeMd` drops an included file is unverified.
 - `toolkit` dispatches `code-writer` by name, which resolves to the account's stowed user-scope agent. The `SubagentStop` self-review hook, whose matcher is `code-writer`, therefore fires as it does in production and never fires for `bare-writer` (row 13).
+  - It writes no fixture settings file, so its subagent gets the account's rules as production's does.
+  - No dispatcher load fails it.
+- Both arms expect the account's `CLAUDE.md` as their dispatcher's `session_start` load, and both allow no fixture-file load.
 
 Both arms send the same inner prompt. Its delimiters differ from the `<<<` and `>>>` lines that `build_dispatcher_prompt` wraps it in:
 
@@ -103,8 +142,11 @@ END CHANGE DESCRIPTION
 ```
 
 **Account preflight.** Before any launch, the runner probes each source repo once. It refuses the repo, with exit 2, on any failure below.
-- The probe is `direnv exec <source-repo> <sys.executable> -I -c <snippet>`, run from a fresh empty temp dir. The snippet prints JSON holding its working directory, the value of `CLAUDE_CONFIG_DIR`, and a sha256 of each environment variable's value, keyed by name.
-- The runner compares those hashes with its own environment's. It prints, as names only, each variable the `.envrc` set or changed, other than `CLAUDE_CONFIG_DIR` and direnv's own `DIRENV_` variables, since the launch passes none of their `.envrc` values. A dropped provider-selecting variable can leave a launch authenticating through the config dir's own login instead of the route the `.envrc` selects (row 70). The runner never prints or stores a hash.
+- The probe is `direnv exec <source-repo> <sys.executable> -I -c <snippet>`, run from a fresh empty temp dir. The snippet prints JSON holding its working directory, the value of `CLAUDE_CONFIG_DIR`, and the names of the variables in its environment, with no other value. It takes those names as the keys of `os.environ`, never by parsing `env` text, so no line of a multi-line value can reach the output.
+- The runner prints, as names only, every variable in the probe's environment that the launch drops: each name outside the launch allowlist, other than `CLAUDE_CONFIG_DIR` and direnv's own `DIRENV_` variables (row 134).
+  - The list covers variables the runner's own shell set too, so a runner started where direnv already loaded the repo still sees every dropped name.
+  - A dropped provider-selecting variable can leave a launch authenticating through the config dir's own login instead of the route the engineer meant (row 70).
+  - The runner never prints or stores a value.
 - The runner makes that call with its own `subprocess.run`, bounded by `--direnv-timeout-s`. It does not use `_read_environment_field`, whose error text carries the child's stderr (row 58).
   - `--direnv-timeout-s` defaults to `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S`, which was sized for local calls with no network I/O. An `.envrc` that fetches a secret can need longer (row 72).
 - A probe failure prints the repo path and one of these, and never the probe's stdout or stderr:
@@ -122,29 +164,50 @@ END CHANGE DESCRIPTION
   - the resolved config dir lacks `CLAUDE.md` or `agents/code-writer.md`;
   - the account's `code-writer.md` yields no tools, model or effort, which would otherwise hand `bare-writer` an empty field;
   - the account's `settings.json` registers no `SessionStart` command ending in `capture-session-id.sh` (row 54);
+  - the exclude-list or Read-allow-list generator raises `UnsafeConfigPathError` (Arms, Launch). Preflight calls the same generators an attempt calls, so its check and an attempt's cannot drift apart. The message names the path, and a checkout under a path holding a space makes every account refuse;
   - the readiness check below fails.
-- The readiness check runs `claude --version` behind the exact launch prefix from Launch environment, from the probe's temp dir. It takes its limit as a `timeout_s` parameter, which `preflight` reads from `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S` through its module at call time, a constant whose stated purpose includes a hung `claude --version` (row 72). The check shows that `claude` resolves on the allowlisted `PATH` and starts. It does not show that the account is logged in, so `smoke` is the first check that does (row 70).
+- The readiness check runs `claude --version` behind the exact launch prefix from Launch environment, from the probe's temp dir.
+  - Its limit is a `timeout_s` parameter, which `preflight` fills from `review_bench.runner._ENVIRONMENT_READ_TIMEOUT_S` (row 72).
+  - `preflight` reads that constant through its module at call time, so a test's stub reaches it (row 90).
+  - The check shows that `claude` resolves on the allowlisted `PATH` and starts. It does not show that the account is logged in, so `smoke` is the first check that does (row 70).
+  - It refuses a printed version below 2.1.271, the floor `omitClaudeMd` needs (row 15), and a version it cannot parse (row 132).
 - The readiness check and every launch report a failure in the probe's shape: the repo, then `exit <n>`, `timed out after <limit> s`, or `_os_error_detail`'s text. This covers a readiness refusal, a launch exception's `missing_detail`, and a `LaunchAbortedError`, whose text is fixed (row 98).
   - None carries the argv, the child's output or an environment value, because the argv holds every allowlisted value, a proxy URL's credentials included.
   - The readiness check does not use `_read_environment_field`, whose error text carries the command and the child's stderr (row 58).
-- It prints each repo's resolved config dir and the probe's wall clock. It stores and prints no other environment value.- `preflight --tasks <task-set>` runs only this step and launches nothing.
+- It prints each repo's resolved config dir and the probe's wall clock. It stores and prints no other environment value.
+- `preflight --tasks <task-set>` runs only this step and launches nothing.
 
 **Launch environment (`replay_bench/launch.py`).** The child's environment is built from a named allowlist, not inherited (rows 51, 52). Inherited, it would hand the subagent's Bash the runner's own session variables, such as another account's token, and route an honest agent's command to the wrong account.
 - The allowlist, kept as data:
   - `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL` and `LC_CTYPE`;
-  - `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`, which a launch behind a proxy or a private CA needs to reach the API (row 70).
+  - `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, their lowercase forms, `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`, which a launch behind a proxy or a private CA needs to reach the API (row 70). Which proxy forms the CLI reads is unchecked, so the allowlist passes each form the runner's environment sets.
 - The launch argv starts with `/usr/bin/env -i`. Then comes `NAME=value` for each allowlisted variable the runner's environment sets, plus `CLAUDE_CONFIG_DIR` when the probe found it set. A variable the runner does not set is left out, never passed empty.
 - Nothing from the source repo's `.envrc` reaches the child besides `CLAUDE_CONFIG_DIR`, and the `.envrc` runs once per repo, at preflight.
 - `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` stay reachable from the agent's Bash and are not routed by account.
 - `env` replaces itself with `claude`, so `msmr._run_claude_to_completion`'s group kill still reaches the child (row 44).
+- Each allowlisted value sits in `env`'s argv until `env` execs `claude`, so on a shared machine another user's process listing could read a proxy URL's credentials. The runner assumes a single-user machine, and the README says so.
 
 The `--settings` JSON carries one `InstructionsLoaded` command hook and nothing else (rows 17, 19). The hook is `payload=$(cat); printf '%s\n' "$payload" >> <log>`, where `<log>` is the shell-quoted `<attempt dir>/instructions-loaded.jsonl`. It emits each event in one write, so two hooks firing at once cannot split one payload from its newline (row 76).
 
-Nothing contains a subagent beyond `acceptEdits`' working-directory scope and the account's own permission rules (rows 25, 26, 47). The path checks under Validity guard the measurement, not the machine: they find a write or a path outside the fixture after it happened.
+Nothing contains a subagent beyond `acceptEdits`' working-directory scope, the account's own permission rules, and the read-only grants of the Read allow entries under Launch (rows 25, 26, 47). The path checks under Validity guard the measurement, not the machine: they find a write or a path outside the fixture after it happened.
 
-**Launch.** Each attempt runs the `env -i` prefix, then `review_bench.runner.build_dispatch_command(build_dispatcher_prompt(<arm agent>, <inner prompt>), model_id=..., session_id=..., budget_cap_usd=...)` with two additions:
+**Launch.** Each attempt runs the `env -i` prefix, then `review_bench.runner.build_dispatch_command(build_dispatcher_prompt(<arm agent>, <inner prompt>), model_id=..., session_id=..., budget_cap_usd=...)` with three additions:
 - `--permission-mode acceptEdits`, which both arms' subagents inherit (rows 25, 26);
-- the `--settings` JSON above.
+- the `--settings` JSON above;
+- last in the argv, `--allowedTools` followed by the Read allow entries below, each its own argv element (rows 116, 117).
+
+The Read allow entries let `code-writer` read the reviewer and skill files its body names, which `acceptEdits` denies outside the fixture (rows 26, 118). The list is the same in both arms and is generated per attempt:
+- Its roots are the resolved config dir and `$HOME/.claude`, deduplicated by realpath, each only when it exists. `code-writer.md` names its files under `~/.claude`, and the `SubagentStop` evaluator matches a reviewer Read by path suffix (row 118).
+- Under each root it lists every `*.md` file directly under `agents/` and every `skills/<name>/SKILL.md`, skipping a dangling link.
+- Each file gives one entry for the path as listed and one for its `os.path.realpath`, deduplicated, since an allow rule applies only when both paths match (row 117). An entry is `Read(/<absolute path>)`, so it starts with the `//` absolute-path prefix.
+- No entry holds a wildcard. Before it emits any entry, the generator raises `UnsafeConfigPathError`, naming the path, when a path it would emit holds whitespace, a control character, or one of `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `,` or `\`. An exact entry holding one could parse as a pattern or split in two (rows 115, 117).
+- That character check is one function, which both generators call and preflight reaches through them.
+- An attempt whose generator raises records the run missing as `fixture-error`, with the path in `missing_detail`, before launch and with no spend (Retry, row 134).
+- The per-attempt check catches a file added to `agents/` or `skills/` mid-campaign, which the commit-based drift check cannot see.
+- The set is wider than the reviewer files: every agent and skill file under the roots. Parsing the reviewer names from the evaluator or from `code-writer.md`'s table would copy the evaluator's name-to-path rule.
+- A `bare` Read of any listed file still fails `arm-leak`.
+- On a folded stow install every listed realpath lies in the one config checkout. Where stow linked `agents/` or `skills/` file by file into a directory that already existed, the list also grants that directory's own files (row 142).
+- Every refusal or printout that names a path from a config tree, or a variable name from the probe, prints it in Python's `!r` form, as `tasks.py:814-816` prints identities, so a control character or an escape byte in a name cannot reach the terminal raw.
 
 Before launch the runner logs the fixture again with its session ID (row 43). `msmr._run_claude_to_completion` launches the command with the fixture as its working directory. Defaults:
 - `--model-id`: `review_bench.runner.REVIEWER_MODEL_ID`;
@@ -179,9 +242,14 @@ The Bash check splits each command with `shlex`, and resolves `~` against the ho
 - A `tool_use` whose command or target path is missing or not a string, and a token holding a NUL byte, are recorded as unparsed and never resolved.
 - The check reads literal paths only, so it detects and does not contain.
 
-Each run also records how many `tool_result` entries carry a permission-rule `non_execution_kind`, which a hook denial and a permission-flow denial both carry (row 48). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm.
+Each run also records how many `tool_result` entries carry a permission-rule `non_execution_kind`, which a hook denial and a permission-flow denial both carry (row 48). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm. Each run also records its Reads of Read-allow-list paths, each with whether it ran or was denied, and the paths of its denied Reads of other toolkit files.
 
 **Instruction-load check.** The runner reads its own `<attempt dir>/instructions-loaded.jsonl` as untrusted input. It uses the `file_path` values only to classify them.
+- The hook runs asynchronously (row 121). So the runner reads the log only after `wait_for_session_flush` returns and the log's size holds across two polls `SESSION_FLUSH_POLL_INTERVAL_S` apart, bounded by `SESSION_FLUSH_TIMEOUT_S`. It reads both constants from `review_bench.runner` at call time (row 107).
+  - A log absent at one poll and present at the next counts as growth, and a missing file never raises.
+  - At the timeout the runner reads the log as it stands, so a torn last line fails `instrument-log-invalid` and no run hangs.
+  - A `timed_out` attempt skips the wait, as `wait_for_session_flush` does.
+  - This loop mirrors `wait_for_session_flush`'s two-poll rule but watches a file that function does not, so it carries its own tests (Phase 4).
 - A line with no `agent_id` key is the dispatcher's, and a line whose `agent_id` is a non-empty string is the subagent's (row 53).
 - The run fails as `instrument-log-invalid` on any of these:
   - a line that does not parse as a JSON object, a torn last line included;
@@ -191,24 +259,30 @@ Each run also records how many `tool_result` entries carry a permission-rule `no
   - a `session_id` other than the run's;
   - lines carrying more than one distinct `agent_id`.
 - A `file_path` reaches `os.path.realpath` only once its line passes every check above.
-- The run fails as `instrument-missing` when the log is absent or empty, or holds no dispatcher `session_start` load of the account's `CLAUDE.md`. That load is the positive control that the hook fired.
+- A `path_glob_match` line's trigger-path field, under the key step 1b finds (row 146), is kept only when it is a string holding no NUL byte, and is never resolved. Any other value leaves it absent and fails nothing, since only `smoke`'s printed note reads it.
+- The run fails as `instrument-missing` when the log is absent or empty, or holds no dispatcher `session_start` load of the arm's expected `CLAUDE.md`. That load is the positive control that the hook fired.
 - The check resolves every loaded path and every toolkit path with `os.path.realpath` before comparing them, so a stowed file reported by its link target still classifies.
-- Each loaded path falls in one class: toolkit (the account's `CLAUDE.md`, or a file under its `rules/`, `agents/` or `skills/`), fixture (under the fixture), or other.
+- Each loaded path falls in one class: toolkit (the account's `CLAUDE.md`, a file under its `rules/`, `agents/` or `skills/`, or a file on the Read allow list), fixture (under the fixture), or other.
 - `bare` fails as `arm-leak` on any subagent load outside the fixture (row 16).
+- `bare` also fails as `arm-leak` on a dispatcher load its arm names as failing, which is any load other than the account's `CLAUDE.md`. The hook logs no line for what a subagent inherits from its dispatcher (row 18), so a file the dispatcher loaded could reach the subagent unseen.
 - `bare` also fails as `arm-leak` when a Read, Grep, Glob or Bash path resolves to a toolkit file, a read `toolkit` makes by design (row 55).
-- `toolkit` fails as `arm-config-missing` when no subagent load is the account's `CLAUDE.md` (row 18). That load is also the evidence that subagent loads reach the log at all, so `smoke` requires a valid `toolkit` run before it trusts any `bare` run.
+- `toolkit` has no per-run load assertion, because the hook logs no subagent line for an inherited `CLAUDE.md` (row 18). `smoke`'s block checks that inheritance once per account instead (Campaign).
 - Either arm fails as `fixture-instruction-load` on a fixture-file load its arm does not allow.
 - Duplicate loads of one file are counted, never failed.
 - Every run records its subagent loads by class, with each path relative to the config dir or the fixture.
+- Every run also records its subagent's first-turn prompt size, which no check gates (row 120). It is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` in the `message.usage` of the subagent transcript's first assistant entry, or null when any of the three is absent.
 - The run fails as `account-hooks-missing` when `<config-dir>/sessions/` holds no non-symlink file whose first line is the run's session ID. That file shows that the account's hooks ran beside the `--settings` hook, so `toolkit` still carried its `SubagentStop` hook (rows 19, 54).
 
 **Retry.** A failed attempt retries once on a fresh fixture, per `review_bench.runner.ATTEMPTS_PER_RUN`, and then records the run missing with its reason.
 - A retried run's cost and token figures sum both attempts' `extract_result_usage`.
 - An attempt with no cost figure, such as a timeout, a kill or a launch exception, is charged at `--budget-cap-usd` (row 65).
 - Two failures record the run missing at once, because a retry would fail the same way on the same input:
-  - `fixture-error`: building the fixture raised, before any launch. An extraction's `UnsafeFixtureConfigError` lands here too, never as a `main()` exit 2, so the campaign halts through the per-arm stop with exit 1 and `--skip-task` can pass the task;
+  - `fixture-error`: building the fixture or generating its exclude or Read allow list raised, before any launch. An extraction's `UnsafeFixtureConfigError` and a generator's `UnsafeConfigPathError` both land here, and `missing_detail` names a generator's refused path;
   - `analysis-error`: the diff, the classifier or a check raised after the launch, or a post-run git call failed or timed out. The run keeps the attempt's cost.
-- When either failure comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
+- Neither reaches `main()` as an exit 2. The campaign halts through the per-arm stop with exit 1, and Repeated halts covers `--skip-task` for a task-specific failure.
+- When `fixture-error` or `analysis-error` comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
+- One attempt can meet several reasons. An instrument reason outranks every other, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`, kept as one constant.
+- `run` retries an instrument reason once like any other, and `smoke` never does (Campaign).
 - Each attempt's cost reaches the spend file as the attempt ends (Campaign).
 
 **Diff and classifier (`replay_bench/comment_metrics.py`).** After the session ends, the runner never runs git with the fixture's own `.git`, which the agent could have rewritten. It never reads a changed file through its work-tree path either (rows 49, 50).
@@ -327,18 +401,21 @@ The gate puts `smoke`'s checks, and the engineer's read of what it prints, ahead
 - A run that completes every task not skipped exits 0.
 
 **Repeated halts.** A task-specific failure, such as a fixture build that raises or a task whose every attempt times out, halts its block the same way on every resume. `systemic_failure_message` offers only that resume (row 95), and a new campaign would discard the completed paid blocks. So:
-- each per-arm stop records the halt in the manifest, with each failing arm's missing reasons;
-- a per-arm stop on a task that already has a recorded halt prints `halted again`, that task's missing reasons, and the `--skip-task <task-id>` flag. The first per-arm stop on a task prints neither;
+- each per-arm stop records the halt in the manifest, with each failing arm's missing reasons and their `missing_detail` text;
+- a per-arm stop on a task that already has a recorded halt prints `halted again`, that task's missing reasons with the same `missing_detail` text the first stop printed, and the `--skip-task <task-id>` flag. The first per-arm stop on a task prints neither. The detail tells a task-specific `fixture-error` from a generator's refused path, which skipping tasks cannot fix;
 - `run --skip-task <task-id>`, repeatable, records the skip in the manifest. It exits 2 for an ID that is not a task in the task set, or whose block is complete;
 - `run` never reruns a skipped task, on that resume or any later one, a swept one included.
 
-`smoke --tasks <task-set> --task-id <id> [--k 1]` runs one block under a fresh `smoke-` campaign ID. `--task-id` must match the task-ID grammar.
+`smoke --tasks <task-set> --task-id <id>` runs one block under a fresh `smoke-` campaign ID, with one run per arm on that task (row 134). `--task-id` must match the task-ID grammar.
+- Before its first launch, `smoke` prints its nominal ceiling, `campaign_cost_ceiling(1, <arm count>, 1, budget_cap_usd=...).all_retried_usd`.
+- A `smoke` attempt that fails under an instrument reason (Retry) never retries. Its run ends missing under that reason, because such a reason is evidence about the instrument that a clean second attempt would hide. Any other failure retries once, as in `run`.
 
 For each run, `smoke` prints:
 - status and reason;
-- subagent instruction loads by class;
+- subagent instruction loads by class, and the first-turn prompt size;
 - recorded Bash commands, out-of-fixture paths and out-of-session paths;
-- the permission-denial count;
+- the permission-denial count, each denied Read of a path on the Read allow list, and each denied Read of another toolkit file, by name;
+- for a `toolkit` run, the count of its Reads of allow-list paths that ran;
 - the `non_file_entries`, `ignored_paths` and `undecodable_files` tallies;
 - metrics, cost, fixture-build seconds and wall clock.
 
@@ -346,11 +423,38 @@ For each run, `smoke` prints:
 - every file or directory name that appeared during the smoke, two levels deep;
 - every top-level file that already existed and grew, compared by `stat` alone, since a known appender adds rows to an existing file (row 79).
 
-`smoke`'s last line reads `instrument: ok` only when all of these hold:
-- each arm has a valid run;
-- no run failed as `arm-leak`, `arm-config-missing`, `instrument-missing`, `instrument-log-invalid` or `account-hooks-missing`.
+**Block calibration.** The hook cannot show the `CLAUDE.md` a subagent inherits (row 18), and no source read says that `bare`'s exclude holds under `-p` (row 115). So the block's own two runs calibrate the instrument. They share one task, one brief and one inner prompt (rows 136, 137):
+- Positive control: the `toolkit` run's log holds a subagent `path_glob_match` load whose realpath lies under the account's `rules/` directory at any depth, compared by path component, not by string prefix. Otherwise `instrument-missing`, since `bare`'s leak check would then pass blind. These do not count:
+  - a `path_glob_match` load on a dispatcher line;
+  - a subagent load with another `load_reason`;
+  - a `path_glob_match` load of a fixture-class or other-class file;
+  - a `path_glob_match` load of another toolkit file, such as one under `agents/` or `skills/`, or the account's `CLAUDE.md`.
+  - The smoke task must touch a rule-matching path for the control to hold, and a task that does not fails rather than passing empty (row 145).
+- Exclude: the `bare` run's own per-run checks fail it as `arm-leak` on any subagent load outside the fixture and on any dispatcher load besides the account's `CLAUDE.md`. That shows the exclude holding only when `bare`'s subagent read a rule-matching file (row 145).
+- Exclude note, printed and never gated (row 143):
+  - When the `toolkit` control fired and its `path_glob_match` lines name the file that triggered each load (row 146), `smoke` prints whether the `bare` transcript shows a Read that ran of any such file, compared by path relative to each run's fixture. A payload with no trigger field leaves this line out.
+  - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude, and a later `bare` run that reads one fails `arm-leak`."
+- Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=` on unrounded values. Otherwise, or when either size is null, `arm-config-missing`.
+- The verdict is a pure function of both runs' parsed logs and first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It reaches the verdict only when each arm has a valid run, so a missing run reports its own missing reason instead.
+- The verdict returns every failed condition, in the order above, and `smoke` prints them all. The inheritance check is token arithmetic, so it stays computable when the control fails, and one paid block shows every problem it can.
 
-Otherwise the line names the first failed condition, and `smoke` exits 2. On `instrument: ok`, `smoke` writes the account's smoke-pass record with `defects.atomic_write_text` to `.local/smoke-passes/<account digest>.json`. The record holds the account key, its environment reading, the model ID and the arms `smoke` validated. The digest is the first 16 hex digits of the account key's sha256.
+The terms, each a character count over 4:
+- the margin's first term, `0.5 × chars(account CLAUDE.md) / 4`, half the `CLAUDE.md` estimate;
+- the margin's second term, `chars(rule file) / 4` for each rule file the `toolkit` dispatcher loaded at `session_start`, summed and not halved, so an unscoped rule, which `bare`'s exclude drops, cannot stand in for `CLAUDE.md`;
+- the body term, `(chars(code-writer body) − chars(bare-writer body)) / 4`. Each body is its agent file's text after the frontmatter, and `code-writer`'s comes from the account's `<config-dir>/agents/code-writer.md`, the file the dispatcher resolves, never this checkout's copy. It removes the one other known difference between the two subagents' first turns.
+
+`smoke` prints both first-turn sizes, the body term and the margin. Row 138 states the body term's weak point and its fallback.
+
+`smoke`'s last line reads `instrument: ok` only when all of these hold, checked in this order:
+- each arm has a valid run. Otherwise the line names the arm and its run's missing reason;
+- no run failed under an instrument reason;
+- no `toolkit` Read of a path on the Read allow list carries a permission-rule `non_execution_kind`. Otherwise `read-grant-denied` (row 117);
+- the `toolkit` run made at least one Read of an allow-list path that ran. Otherwise `read-grant-unexercised`, since a grant no Read used shows nothing (row 117);
+- the block calibration passed.
+
+A denied Read of a toolkit file off the list prints by name and fails nothing. A `bare` Read of a listed path fails `arm-leak`, never `read-grant-denied`.
+
+Otherwise the line names the first failed condition, `smoke` prints every failed condition it computed, and `smoke` exits 2. On `instrument: ok`, `smoke` writes the account's smoke-pass record with `defects.atomic_write_text` to `.local/smoke-passes/<account digest>.json`. The record holds the account key, its environment reading, the model ID and the arms `smoke` validated. The digest is the first 16 hex digits of the account key's sha256.
 
 `main()` starts in this order:
 - it exits 2 on a Python older than 3.12 (row 59);
@@ -389,6 +493,7 @@ On an interrupt, `main()` calls `msmr.abort_launches()` and prints the resume co
   - Python docstring lines per 100 added code lines;
   - the Python trailing-comment count, the unclassified-line share, and the count of Python files `ast.parse` rejected (row 35);
   - the count of runs with any permission-rule denial;
+  - the mean subagent first-turn prompt size over runs where it is not null;
   - the `non_file_entries`, `ignored_paths` and `undecodable_files` tallies.
 - It breaks every figure down by source repo label, the task ID's first part.
 - A run with no non-test code line still enters its task's sums, and also counts in a separate tally by arm.
@@ -407,22 +512,25 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - `toolkit-copy`: a fixture-local copy of the account's `code-writer` body, named outside the `SubagentStop` matcher, plus the full `CLAUDE.md` through the route;
 - `no-durable`: the same copy with the §Durable text channels removed (D3), plus `CLAUDE.md` without its `### Durable text` subsection, through the same route.
 
-`no-durable − toolkit-copy` isolates the rules. `toolkit − toolkit-copy` measures the route and the hook together. Adding the pair takes arm entries and fixture extras only, with no runner change. `run`'s smoke gate checks the record's arms, so the pair needs its own passing `smoke` on each account before any paid block.
+`no-durable − toolkit-copy` isolates the rules. `toolkit − toolkit-copy` measures the route and the hook together. Adding the pair takes arm entries and fixture extras, plus the `smoke` prompt-size check D2(a) names for it. `run`'s smoke gate checks the record's arms, so the pair needs its own passing `smoke` on each account before any paid block.
 
 ### Open decisions for the engineer
 
 - **D1 (resolved).** For arm A's shape, the engineer selected "Subagent for both arms (Recommended)" (row 3).
 - **D2 (arm C only).** The route that delivers an edited `CLAUDE.md`:
-  - (a) `claudeMdExcludes` in the fixture's `.claude/settings.json` naming the account's `CLAUDE.md`, plus the edited copy as the fixture's root `CLAUDE.md`. Recommended, because it keeps the `CLAUDE.md` channel. Whether `claudeMdExcludes` reaches a user-scope file is unverified, and one `smoke` with the instrument settles it.
+  - (a) `claudeMdExcludes` in the fixture's `.claude/settings.json` naming the account's `CLAUDE.md`, plus the edited copy as the fixture's root `CLAUDE.md`. Recommended, because it keeps the `CLAUDE.md` channel.
+    - The pair's arm data names that fixture copy as the dispatcher's expected `session_start` load, so `instrument-missing` fires when the dispatcher shows none. It names the account's `CLAUDE.md` as a dispatcher load that fails the run.
+    - The memory page does not say whether `claudeMdExcludes` reaches the user-scope `CLAUDE.md` (row 115). The pair's own `smoke` settles that from the dispatcher's log.
+    - The pair's subagents inherit `CLAUDE.md` with no log line (row 18), so the pair's `smoke` needs a prompt-size check of its own, designed with the pair.
   - (b) `omitClaudeMd: true` with the edited text inlined into the agent body, which is a system-prompt channel.
   - (c) A separately logged-in config dir per account. Each needs the engineer's own login and a stow, and copying credentials is barred (row 11).
 - **D3 (arm C only).** What "removes only the §Durable text rules" removes. Both readings are correct:
   - (i) the `### Durable text` subsection of `CLAUDE.md` alone;
-  - (ii) every channel stating those rules to `code-writer`: that subsection, the two `code-writer` baseline sub-bullets that restate it ("Write any comment as a one-line durable fact" and "Don't restate what the code already shows"), the last bullet of its self-review step 6, and the comment-discipline row of its self-review table.
+  - (ii) every channel stating those rules to `code-writer`: that subsection, the two `code-writer` baseline sub-bullets that restate it ("Write any comment as a one-line durable fact" and "Don't restate what the code already shows"), the last bullet of its self-review step 6, the comment-discipline row of its self-review table, and the comment-length bullet of `claude/.claude/rules/shell-script-conventions.md`, which reaches a subagent as a path-scoped rule (row 16).
+  - Under D2(a), removing that rule bullet means excluding the rule file and shipping an edited copy as a fixture rule, which the arm then allows as a fixture-file load.
   - Recommended: (ii). `code-writer` restates the rules and reads `comment-discipline-reviewer` from disk, so (i) can read as "no effect" from redundancy alone.
-- **D4 (resolved).** The engineer selected "Proceed anyway" at each projected diff, most recently about 6,880 lines (row 110), after about 6,200 (row 99) and about 5,100 (row 84).
-  - (a) Keep one PR, as rows 68, 84 and 99 chose.
-  - (b) Split at the Phase 2 to Phase 3 boundary. The first PR holds Phases 1 and 2 with their `select-tests.py` rows, about 1,800 lines, and needs no live probe. The second waits on Verification step 1 in any case.
+- **D4 (resolved).** On the size decision, the engineer said "I accept your recommendation on splitting" (row 124), so the work ships as two PRs split at Phase 2 to Phase 3 (Approach, rows 126, 127). This supersedes the one-PR choice of rows 68, 84, 99 and 110.
+
 ### Alternatives set aside
 
 - `--agents` JSON for `bare-writer`: `omitClaudeMd` is documented as a frontmatter field only (row 15), and the bench already installs arm agents as fixture-local files (row 29).
@@ -444,6 +552,19 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - Reading a changed file's post-change text from its work-tree path: an agent-made symlink would point that read at a FIFO or at a file outside the fixture, where a `baseline.git` blob is exactly what `add -A` indexed (row 77).
 - A spend reservation at each block's nominal ceiling: it is simpler, but it charges a block its whole ceiling until the block ends, so the stops would act on spend that never happened.
 - No smoke gate on `run`, with the per-arm stop as the only guard: a broken premise would first surface in a paid block of `2 × k` runs, and nothing would tie the engineer's read of `smoke`'s printout to the environment `run` uses.
+- `claudeMdExcludes` in both arms: it would strip from `toolkit` the rules production's `code-writer` receives.
+- `claudeMdExcludes` in the `--settings` JSON: the memory page names the user, project, local and managed layers, not the flag layer, and the `--settings` JSON stays the same in both arms (row 115).
+- Excluding the account's `CLAUDE.md` in `bare` too: the dispatcher's `session_start` load of it is the per-run positive control, and `omitClaudeMd` already drops it from the subagent.
+- Read allow entries in the fixture's project settings: a never-trusted folder's `permissions.allow` is not used under `-p` (row 116).
+- `--add-dir <config-dir>`: under `acceptEdits` it auto-approves edits in that directory, and it loads that directory's `CLAUDE.md`, `.claude/rules/*.md` and `CLAUDE.local.md`, per the permissions pages as relayed.
+- `--bare`: it skips hooks discovery and `CLAUDE.md`, and "Hooks still don't run in bare mode when you pass them with `--settings`", per the CLI reference as relayed, so the instrument hook would not run.
+- A wildcard Read rule over `agents/` and `skills/`: `claude/.claude/CLAUDE.md` §Safety says "No wildcards in `permissions.allow`.", and this plan holds `--allowedTools` entries to the same rule.
+- No Read grant, accepting the send-back: every `toolkit` run would go back once, and `code-writer` would write without the reviewer files production gives it (row 118).
+- Sentinel canaries in the account's `CLAUDE.md` to detect inheritance: each needs an edit to a stowed file every account loads, and reading one back is the model self-report M6(a) sets aside.
+- A per-run gate on first-turn prompt size: the size moves with the brief and the agent body, and a campaign run has no paired run on the same attempt to compare with.
+- A smoke-time calibration pair, two extra attempts on a synthetic fixture: it isolated `omitClaudeMd` and the exclude without a body estimate, but it needed its own agent, fixture builder, read sets, retry rules and outcomes. The block's own runs carry the same evidence except the body term (rows 136, 137, 138), and the pair stays the fallback when step 1b finds the body estimate off.
+- Superseded by row 143: a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` attempt, and a missing-reason field on spend-file lines with `summarize` counts. The engineer chose the lighter printed note instead.
+- Matching each run's transcript paths against the account rules' `paths:` globs, to tell whether `bare` read a rule-matching file: it needs a frontmatter-list parser and a `**`-aware matcher whose semantics match Claude Code's, for a note the trigger path reuses for free when the payload carries one (row 146).
 
 ### Assumption ledger
 
@@ -471,22 +592,22 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 13. [verified: `claude/.claude/settings.json:232-242`] The `SubagentStop` hook `send-back-skipped-self-review.sh` has the matcher `code-writer`.
 14. [verified: sub-agents.md, as relayed: settings, managed settings and plugin hooks still apply inside subagents] Both arms' subagents run the account's hooks.
 15. [verified: sub-agents.md, as relayed] `omitClaudeMd` is a subagent frontmatter field (v2.1.271 and later) that drops user, project and local `CLAUDE.md`. Managed policy still loads.
-16. [unverified] Whether `omitClaudeMd` also drops `~/.claude/rules` and nested `.claude/rules` loads is undocumented, so the instrument checks every `bare` run. A leaked rule is not neutral, because that rule sets a comment-length convention. [verified: `claude/.claude/rules/shell-script-conventions.md:49-52`]
+16. [verified: Verification step 1a's `bare` run, as relayed; the sub-agents page, as relayed: "For Explore, Plan, and subagents with `omitClaudeMd`, a subdirectory's `CLAUDE.md` and matching path-scoped rules still load when the subagent works with files there."] `omitClaudeMd` does not stop path-scoped rules: the `bare` subagent loaded a user-scope rule by `path_glob_match`. [verified: `claude/.claude/rules/shell-script-conventions.md:49-52`] A leaked rule is not neutral, because one user rule sets a comment-length convention. So every `bare` fixture carries `claudeMdExcludes` (row 115), and the instrument still checks every `bare` run.
 17. [verified: `docs/case-studies/claude-md-glob-zero-segment.md`, its five `-p` trials and the clean trial's two logged lines] An `InstructionsLoaded` command hook fires under `claude -p` and logs `load_reason` and `file_path`.
-18. [unverified] The hook also fires for loads inside a subagent. Verification step 1 checks it, and every `toolkit` run must show a subagent `CLAUDE.md` load.
-19. [unverified: cli-reference.md's "additional settings" wording, as relayed; not run] `--settings` adds the instrument hook to the account's hooks rather than replacing them. A replacement would strip the `code-writer` `SubagentStop` hook from `toolkit`. Every run checks it through a known account hook's side effect (row 54), which needs no transcript attachment.
-20. [unverified] `direnv exec DIR CMD` runs CMD in the caller's working directory. The preflight probe checks it for each repo and refuses otherwise.
+18. [verified: Verification step 1a's `toolkit` run, as relayed] The hook logs a subagent's lazy loads, such as a `path_glob_match` rule load, but no line for the `CLAUDE.md` a subagent inherits. The `toolkit` subagent's reply quoted text found only in the account `CLAUDE.md`, and the log held no subagent `CLAUDE.md` line. So no per-run check can show a subagent's `CLAUDE.md`, and `smoke`'s block calibration checks inheritance instead.
+19. [verified: Verification step 1a, as relayed] `--settings` adds the instrument hook to the account's hooks rather than replacing them: a `sessions/` file held the run's session ID, and the `toolkit` run's `SubagentStop` evaluator sent the writer back. Every run still checks it through a known account hook's side effect (row 54).
+20. [verified: Verification step 1a, as relayed: `direnv exec <dir> pwd` run from `/tmp` printed `/tmp`] `direnv exec DIR CMD` runs CMD in the caller's working directory on this machine. The preflight probe still checks it for each repo and refuses otherwise, since another machine's direnv could differ.
 21. [verified: `README.md` "Worktree enforcement", lines 341-347; `claude/.claude/hooks/require-worktree-for-file-writes.sh:7-8`] Machine-level worktree enforcement denies Edit and Write in a repo's main tree unless `.claude/worktree-optout` is present. [verified: `claude/.claude/hooks/require-worktree-for-file-writes.sh:6`] The opt-out loses only to a committed `.claude/worktree-required`. [verified: `claude/.claude/hooks/require-worktree-for-git-writes.sh:5-8`] The opt-out also exempts the fixture from the git-writes gate, which reads the same markers. By this plan's design, the prune removes a committed `.claude/worktree-required` with every `.claude` directory (Fixture).
 22. [verified: `claude/.claude/hooks/require-plan-review.sh:13-15`] The plan-review gate passes a repo with no `.claude/plans/`, which the prune also removes.
 23. [verified: `claude/.claude/hooks/tests/test_claude_md_excludes.py:1-21`] In a `claude-config` checkout, nested discovery loads `claude/.claude/CLAUDE.md` and the stow-source rules under `claude/.claude/rules/`. This repo suppresses them only through its root `.claude/settings.json`, which the prune removes, so the prune must remove the nested files itself.
 24. [unverified] Nested `.claude/agents/` and `.claude/skills/` directories can be discovered and could shadow the account's agents. The prune removes every `.claude` directory, so the question never arises.
 25. [verified: `CLAUDE.md` §Working Style "Dispatching cannot clear a denial your child inherits"] A subagent starts in its dispatcher's permission mode, so `--permission-mode acceptEdits` reaches both arms' subagents.
-26. [unverified] Under `-p`, `acceptEdits` approves Edit and Write, and possibly some filesystem Bash commands, inside the working directory only. Every other permission prompt is denied. Verification step 1 checks both.
-27. [verified: `evals/review_bench/fixture_repo.py:121-126`] Extracting with `git archive` into a fresh repository keeps every later commit unreachable from the fixture.
+26. [verified: Verification step 1a, as relayed; the permission-modes page, as relayed] Under `-p`, `acceptEdits` approves Edit and Write inside the working directory. It also auto-approves `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp` and `sed` there, plus the read-only command set. Other Bash needs an allow rule. Step 1a saw `env` denied, and `code-writer`'s Reads of reviewer files outside the fixture denied.
+27. [verified: `evals/review_bench/fixture_repo.py:129-133`] Extracting with `git archive` into a fresh repository keeps every later commit unreachable from the fixture.
 28. [verified: `evals/review_bench/fixture_repo.py:267-284`] `build_two_commit_repo` commits the head tree, so it cannot build a replay fixture.
 29. [verified: `evals/review_bench/fixture_repo.py:8-9`; `evals/README.md` "Building a later arm"] The bench installs an arm's agent as a fixture-local `.claude/agents/` file.
 30. [verified: `evals/review_bench/runner.py:852-991`] `evaluate_run_validity` checks any thin-dispatcher run, and its live-checkout check covers the changed paths passed to it. Its path checks see only Read, Grep and Glob calls. [verified: `evals/review_bench/runner.py:100`]
-31. [unverified] `code-writer`'s `model: sonnet` resolves to `REVIEWER_MODEL_ID`, the `--model-id` default. If it does not, every `toolkit` run fails `model-mismatch` at `smoke`.
+31. [unverified] `code-writer`'s `model: sonnet` resolves to `REVIEWER_MODEL_ID`, the `--model-id` default. If it does not, every run of either arm fails `model-mismatch` at `smoke`. Verification step 1b reads the model ID each subagent observed and stops when it differs.
 32. [unverified] The full-config dispatcher relays the inner prompt verbatim often enough. `smoke`'s `prompt-mismatch` count measures it.
 33. [verified: `evals/README.md:353-355`] A prompt reaches `claude -p` as one argv element and should stay in the low single-digit KB.
 34. [unverified] A commit message is a usable brief. The engineer reads the `tasks` output before any spend, and the brief is identical across arms.
@@ -508,7 +629,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 50. [unverified] With `--git-dir` naming a runner-owned copy, a work-tree `.gitattributes` can name a filter or diff driver but cannot define one, so `add` and `diff` run no command. Phase 4's hostile-config test checks it.
 51. [verified: `evals/measure_subagent_model_resolution.py:720-726`] `_run_claude_to_completion` passes the runner's environment minus git-local variables and `CLAUDECODE`, and takes no environment argument.
 52. [verified: `docs/case-studies/claude-code-sandbox-write-boundary.md:230-236`] Even sandboxed Bash inherits the session's process environment by default, credentials included. So the subagent's Bash, which this plan does not sandbox, sees every variable the launch passes.
-53. [verified: `claude/.claude/hooks/enforce-marker-script-shape.sh:83-87`, quoting the hooks reference's common input fields] A hook's `agent_id` field is present only when the hook fires inside a subagent call. [unverified] `InstructionsLoaded` payloads carry the common fields `session_id` and `agent_id`. Verification step 1 checks it.
+53. [verified: `claude/.claude/hooks/enforce-marker-script-shape.sh:83-87`, quoting the hooks reference's common input fields] A hook's `agent_id` field is present only when the hook fires inside a subagent call. [verified: Verification step 1a, as relayed] `InstructionsLoaded` lines carry `session_id` on every line and `agent_id` on subagent lines only.
 54. [verified: `claude/.claude/hooks/capture-session-id.sh:26-27,96`; `claude/.claude/settings.json:128-133,212-217`] The account's `capture-session-id.sh` runs on SessionStart and SubagentStart. It writes `<config-dir>/sessions/<claude-pid>`, whose first line is the session ID.
 55. [verified: `claude/.claude/agents/code-writer.md:109-110`] `code-writer` reads reviewer files from `~/.claude/agents/` with the Read tool.
 56. [verified: `evals/README.md:1010-1017`] A killed runner's `claude -p` children can keep running. The bench's guidance is to wait at least the command's timeout before resuming.
@@ -535,7 +656,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 73. [verified: `evals/review_bench/runner.py:1090-1106`] An `EnvironmentReference` built from a frozen mapping of `cli_version` and `ambient_config_commit` checks every reading against it. Built without one, it adopts its first reading.
 74. [verified: `evals/review_bench/runner.py:1592-1594`] `all_runs_missing` is true only when none of the records it is given is ok.
 75. [verified: `evals/review_bench/analysis.py:361-370`] `bootstrap_interval` returns no interval for fewer than two clusters.
-76. [unverified] One `printf '%s\n'` of the captured payload reaches the log in one `write` call. Whether the harness ever runs two `InstructionsLoaded` hooks at once is also unchecked. Phase 4's parallel test checks the first, and Verification step 1 records the second.
+76. [unverified] One `printf '%s\n'` of the captured payload reaches the log in one `write` call, which Phase 4's parallel test checks. [verified: Verification step 1a, as relayed] The session-start burst arrived one payload per line. Whether the harness ever runs two `InstructionsLoaded` hooks at once stays unchecked.
 77. [unverified] `git add -A` stores a symlink as its link text and skips a FIFO without opening it. Phase 4's hostile-tree test checks both.
 78. [unverified] `git add -A` leaves out an untracked path that the work tree's ignore rules match, and fails on a nested repository that has no commit. Phase 4's tests pin both outcomes.
 79. [verified: `claude/.claude/hooks/send-back-skipped-self-review.sh:40-41`; `docs/session-config-keys-log.md:3`] A replay session adds to account files that already exist. `toolkit`'s `SubagentStop` hook writes `.code-writer-self-review.log` and `.code-writer-self-review.d` in the config dir. Every session start adds a row to `.session-config-keys-log.jsonl`.
@@ -551,32 +672,108 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 85. [verified: `evals/review_bench/runner.py:1141,1214-1230,1264-1291`] `sweep_abandoned` returns the whole store's pending entries, whichever projects root it is given. An entry with an empty session ID is a directory logged before any run launched against it.
 86. [verified: `evals/review_bench/runner.py:280-313`] `_repair_torn_tail` truncates a JSONL file's unparseable last line back to the last newline, and adds the missing newline to a last line that parses. The bench calls it before a log's next read or append.
 87. [verified: `evals/review_bench/fixture_repo.py:37-41,88-95,121-131,249-259`] `_run_git`, `_extract_commit_tree` and `_commit_snapshot` bound every git call by the module's 10 s `_LOCAL_GIT_TIMEOUT_S`, which its comment calls an empirical guess. `_extract_commit_tree` holds the whole archive in memory, and `_commit_snapshot` runs `git add -A --force` over the whole tree.
-88. [unverified] Three times the slowest of four concurrent builds at the `--max-base-mb` default bounds a hung git without failing a slow but healthy build. Verification step 1 measures the build time. The multiplier and the 60 s ceiling are judgments.
+88. [verified: Verification step 1a's timing, as relayed] The Fixture rule applied to the measured builds gives the defaults Fixture lists. [unverified] Three times the slowest build bounds a hung git without failing a slow but healthy build. The multiplier and the 60 s ceiling are judgments.
 89. [verified: `pyproject.toml:31`; `.github/workflows/tests.yml:26-34,179,186`; `evals/test_review_bench_runner.py:793,810`] CI runs the tests not marked `timing` under `-n auto` and the `timing` tests serially, inside a 25-minute job cap whose comment says to re-derive it whenever either pass grows. The marker is for a test that asserts a wall-clock bound or needs serial isolation.
 90. [verified: `evals/conftest.py:30-47`] The shared autouse fixture stubs `review_bench.runner.default_live_checkout_roots` by module attribute, and only once some test has imported `run_review_bench`. A `from` import binds before the stub, and a process that never imported `run_review_bench` gets no stub.
 91. [verified: `evals/test_review_bench_cli.py:4257,4280-4302`] The bench tests its CLI's owner-only umask and its tightening of a pre-existing local dir to 0700.
 92. [unverified: the git-log documentation, not read this session] With `--no-use-mailmap`, the `%ae` and `%ce` placeholders print the commit's raw identities, whatever the repo's `.mailmap` or `mailmap.file` says. Phase 2's mailmap test checks it.
 93. [unverified: POSIX not read this session] An empty `PATH` entry names the current directory, and a relative entry resolves against it. The launch's current directory is the fixture.
-94. [unverified] The subagent's Bash sees only the launch's allowlisted variables plus those the shell and Claude Code set, with no login profile re-exporting another account's variable. Verification step 1's names-only listing checks it.
+94. [unverified] The subagent's Bash sees only the launch's allowlisted variables plus those the shell and Claude Code set, with no login profile re-exporting another account's variable. Step 1a's `env` listing was denied (row 26), so Verification step 1b runs the names-only listing from a scratch script under one exact Bash allow entry.
 95. [verified: `evals/review_bench/runner.py:1600-1608`] `systemic_failure_message` tells the engineer that resuming under the same campaign ID reruns the block.
-96. [verified: `evals/review_bench/fixture_repo.py:127-130`] `_extract_commit_tree` runs `git archive <commit>` with the source repo as its working directory. [unverified: the git-archive documentation, not read this session] Run from a subdirectory, it archives only that subdirectory, while the task's changed paths are relative to the repo root.
+96. [verified: `evals/review_bench/fixture_repo.py:134-137`] `_extract_commit_tree` runs `git archive <commit>` with the source repo as its working directory. [unverified: the git-archive documentation, not read this session] Run from a subdirectory, it archives only that subdirectory, while the task's changed paths are relative to the repo root.
 97. [verified: `evals/run_review_bench.py:880,2339-2342`] The bench CLI returns 1 when a run stops short, such as on a held store lock, and 2 for a refusal.
 98. [verified: `evals/measure_subagent_model_resolution.py:682-683,719,741`] `LaunchAbortedError` is raised only with fixed text.
 99. [engineer-verified: "Proceed anyway"] Superseded by row 110 for the current figure. The engineer chose to keep an earlier revision of this plan as one PR at its `Projected diff:` of about 6,200 changed lines, over the 400-line threshold.
 100. [engineer-verified: "Skip up front in `tasks` (Recommended)"] For a base tree holding a link the fixture's extraction refuses, the engineer chose to skip the commit up front in `tasks`.
 101. [unverified] The session's proposal, not the engineer's words: `tasks` counts each refused shape under its own skip reason, so its printout shows what the skip drops.
 102. [unverified] The session's proposal, not the engineer's words: `fixture_repo.py` gets no change for this skip. `tasks` reuses `fixture_repo._has_git_path_component`, `_first_path_component_casefolded`, `_BENCH_DIR_NAME` and `_PROJECT_CONFIG_DIR_NAME`, so its predicates match extraction's own.
-103. [verified: `evals/review_bench/fixture_repo.py:145-193`] `_extract_archive` raises before any write on a member with a `.git` path component, a link whose target has one, a member under `.bench`, and a link whose own path starts with `.claude`. It extracts through tarfile's `data` filter, which its docstring says refuses a member that resolves outside the destination and a link with an absolute target. [unverified: the Python tarfile documentation, not read this session] The filter resolves a relative link's target with `os.path.realpath`, so it could refuse a link that `tasks`' lexical check passes. Phase 2's parity table pins where the two agree on the running interpreter, and a commit they disagree on fails as `fixture-error`, which `--skip-task` covers.
+103. [verified: `evals/review_bench/fixture_repo.py:152-200`] `_extract_archive` raises before any write on a member with a `.git` path component, a link whose target has one, a member under `.bench`, and a link whose own path starts with `.claude`. It extracts through tarfile's `data` filter, which its docstring says refuses a member that resolves outside the destination and a link with an absolute target. [unverified: the Python tarfile documentation, not read this session] The filter resolves a relative link's target with `os.path.realpath`, so it could refuse a link that `tasks`' lexical check passes. Phase 2's parity table pins where the two agree on the running interpreter, and a commit they disagree on fails as `fixture-error`, which `--skip-task` covers.
 104. [unverified] The session's extension, not the engineer's choice: the skip also covers the non-link entries extraction refuses, an entry with a `.git` path component and one under a root `.bench`, because each fails every attempt as `fixture-error` the same way a refused link does.
-105. [unverified: the `git-ls-tree` and `git-cat-file` documentation, which two reviewers cite and this session did not read] With `-l`, `git ls-tree` prints `-` as the size of a non-blob entry such as a gitlink. Without `-z` it quotes a path that holds an unusual character, and with `-z` it prints the path verbatim. `git cat-file --batch` answers `<oid> missing` for an object the repository does not hold, as in a partial clone. Phase 2's gitlink, non-ASCII and `missing` cases check all three.
-106. [unverified] A fixture build's time grows with the base tree's entry count as well as its bytes, so a tree at the byte bound with many small files builds slower than one with 10,000. Verification step 1 times both shapes.
+105. [unverified: the `git-ls-tree` and `git-cat-file` documentation, which two reviewers cite and this session did not read] With `-l`, `git ls-tree` prints `-` as the size of a non-blob entry such as a gitlink. Without `-z` it quotes a path that holds an unusual character, and with `-z` it prints the path verbatim. `git cat-file --batch` answers `<oid> missing` for an object the repository does not hold. Phase 2's gitlink, non-ASCII and `missing` cases check all three. The `missing` case covers an object absent for a reason other than a partial clone (Tasks, row 130).
+106. [verified: Verification step 1a's timing, as relayed; step 1c's `timing.py` output, which the engineer ran and pasted this session] A fixture build's time grows with the base tree's entry count, and nothing measured explains the jump between 12,500 and 25,000 entries. The slowest of four concurrent builds took the times below. The halving trees in the first list have no byte total.
+    - 21.9 s at 10,000 files, and 23.3 s on a rerun;
+    - 29.5 s at 12,500;
+    - 148.6 s at 25,000;
+    - 179.7 s at 50,000;
+    - 211.1 s at 100,000.
+
+    Step 1c, which the engineer ran on this branch with `timing.py`, measured two synthetic single-commit text repos on their own, with the same four concurrent builds:
+    - 12,500 files, 100,000,000 bytes of blobs: 33.5 s;
+    - 17,500 files, 99,400,000 bytes of blobs: 42.3 s.
+
+    The corner's 33.5 s supersedes the 29.5 s figure in the timeout rule, which had set `FIXTURE_GIT_TIMEOUT_S` at 90 s.
 107. [verified: `evals/review_bench/runner.py:388-389,407-424`] `wait_for_session_flush` reads `SESSION_FLUSH_TIMEOUT_S` and `SESSION_FLUSH_POLL_INTERVAL_S` as module globals at call time. It sleeps one poll interval before it can return, and polls to the timeout when the transcript or the sidecar is missing.
 108. [unverified: CPython 3.14.10 `tarfile.py:879-893`, as one reviewer read it; not read this session] The `data` filter rewrites a link's target with `os.path.normpath` before it resolves it with `os.path.realpath`. Whether every Python 3.12 patch release does the same is unconfirmed. Without that rewrite, a chain such as `a -> d/e/f/..` with `d/e/f -> ../..` passes both the filter and `tasks`' lexical check yet resolves outside the fixture, so the prune's own realpath check fails it.
 109. [verified: `evals/test_review_bench_fixtures.py:941-1000,1089`] The bench's fixture tests build synthetic archives with `_tar_with_link` and its sibling helpers. They pin `.benchmark/`, `docs/.bench/` and `.claude-plugin/` as names extraction allows.
-110. [engineer-verified: "Proceed anyway"] The engineer chose to keep this plan as one PR at its revised `Projected diff:` of about 6,880 changed lines, over the 400-line threshold. This supersedes row 99.
+110. [engineer-verified: "Proceed anyway"] Superseded by row 124. The engineer chose to keep this plan as one PR at its revised `Projected diff:` of about 6,880 changed lines, over the 400-line threshold. This supersedes row 99.
+111. [engineer-verified: "I say option 1. what does the architect think?"] For the instrument revision that Verification step 1a forced, the engineer picked the session's option 1 and asked for the architect's view.
+112. [unverified] The session's wording, not the engineer's: option 1 narrows the hook check to file and rule loads, sets `claudeMdExcludes` to drop user rules, and settles `CLAUDE.md` inheritance with probes.
+113. [engineer-verified: "can you fetch or have a subagent fetch the items that the architect needs under the things that the architect did not verify in case that changes the plan? And then let's go with your recommendations."] The engineer adopted the session's relay of the architect consult as the direction, once the consult's unverified items were fetched.
+114. [unverified] The session's relay, not the engineer's words: the recommendations were `claudeMdExcludes` in `bare` fixtures only; exact per-file Read allow entries, the same in both arms, so `code-writer` can read its reviewer files; and a smoke-time calibration pair in place of sentinel canaries. The engineer specified no mechanism, so every mechanism that carries them out is this plan's design.
+115. [verified: the memory page, as relayed: "You can configure `claudeMdExcludes` at any settings layer: user, project, local, or managed policy."; it matches "against absolute file paths using glob syntax"; "A pattern that matches either path excludes the file. Before v2.1.239, only a pattern that matched the link target excluded the file."] The fixture's project settings file is a documented layer for the key. `omitClaudeMd` needs v2.1.271 (row 15), and preflight refuses an older CLI. Past v2.1.239 the link-path entry alone should match, so the realpath entry is a second match. [unverified] Verification step 1b settles four questions the page leaves open, and `smoke`'s `bare` run re-checks the first three on every account whenever it reads a rule-matching file (row 145). Whether the key reaches:
+    - user-scope `rules/` files;
+    - rules loaded lazily by path;
+    - a subagent's loads;
+    - a never-trusted folder's project settings file under `-p`, which step 1b tests apart from the other three through a probe-only exclude of a fixture `CLAUDE.md`.
+116. [verified: the headless and permissions pages, as relayed] A `-p` session in a never-trusted folder does not use the project settings' `permissions.allow` or `additionalDirectories`, and does use its hooks and `env`. So the Read allow entries go on the command line.
+117. [verified: the permissions page, as relayed: "Allow rules: apply only when both the requested path and the file it resolves to match."; `//path` is an absolute path; `--allowedTools` "uses the same rule syntax"] A stowed file needs one entry for its link path and one for its target. [unverified] A single-file `Read(//<path>)` rule passed through `--allowedTools`, each entry its own argv element after the flag, grants that one Read. The page shows no such entry verbatim. Verification step 1b and `smoke`'s `read-grant-denied` condition settle it, and `read-grant-unexercised` keeps a run with no such Read from passing it vacuously.
+118. [verified: `claude/.claude/hooks/evaluate-code-writer-self-review.py:8-13,74-88`; Verification step 1a, as relayed] The `SubagentStop` evaluator requires a Read of each reviewer its checks name, and matches a Read by its path suffix under `agents/` or `skills/`. It counted step 1a's denied Reads as failed, so with no allow entry every `toolkit` run is sent back once. [verified: `claude/.claude/agents/code-writer.md:47-48,110-111`] `code-writer.md` names its reviewer and skill files under `~/.claude/agents/` and `~/.claude/skills/<name>/SKILL.md`.
+119. [unverified] Superseded by row 138. It held the margin judgment for the smoke-time calibration pair, which row 136 removed.
+120. [unverified] The subagent transcript's first assistant entry carries `message.usage` with `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens`, and their sum is the subagent's first-turn prompt size. Verification step 1b reads it, and `smoke` fails `arm-config-missing` when either arm's run has a null size.
+121. [verified: the hooks page, as relayed: `InstructionsLoaded` "runs asynchronously for observability purposes", and cannot block] A log line can land after the session's own files stop growing. [unverified] A hook already running when `claude -p` exits still finishes its write. A load fires on a tool call, and a tool result always goes back to the model before a session ends, so a lost line would need a hook slower than one model turn. The runner reads the log only once its size holds across two polls. No probe tests the premise (row 134). The plan and the README state the residual: losing a hook line needs an append slower than the model turn that follows its load.
+122. [verified: the permission-modes page, as relayed; Verification step 1a, as relayed] Both arms meet the same permission rules, so a Bash command outside `acceptEdits`' set and the account's allow rules, such as a test runner, is denied in either arm. How often each arm meets a denial can differ, and the permission-denial count records it. The README states the caveat.
+123. [unverified] Superseded by row 139. It held the premise that a rule matches a file of the calibration pair's synthetic fixture, which row 136 removed.
+124. [engineer-verified: "I accept 2 to 4, and I accept your recommendation on splitting."] The engineer accepted the session's items 2, 3 and 4, and the session's recommendation to split the work into two PRs.
+125. [unverified] The session's numbering and descriptions, not the engineer's words:
+    - item 1 was the projected-diff size, about 7,680 lines, as one PR or as a split at Phase 2 to Phase 3;
+    - item 2 was the Read grant over every `agents/*.md` and `skills/<name>/SKILL.md` under the config dir and `~/.claude`, by link path and realpath, with no wildcards, in both arms;
+    - item 3 was Verification step 1b, three paid runs before Phase 3;
+    - item 4 was the stricter `bare` check, which fails on any dispatcher load other than the account's `CLAUDE.md`.
+126. [unverified] The session's recommendation, not the engineer's words: split at the Phase 2 to Phase 3 boundary, with about 1,830 lines in the first PR. That figure was this plan's estimate. [verified: line counts of Phase 2's output before the first PR's last dispatch, taken by an earlier dispatch of this plan's revision] Phases 1 and 2 hold 2,592 lines in their five new files, so the first PR's `Projected diff:` is larger than the figure the recommendation carried.
+127. [verified: repo `CLAUDE.md` "a plan committed under `.claude/plans/` ships in the same PR as the implementation"; this branch's commit 9239b6f1 "Plan replay_bench docstring-verbosity experiment", from the dispatch's git status] A plan ships with the code it governs, and this file is already committed on the first PR's branch.
+128. [verified: `claude/.claude/hooks/require-plan-review.sh:4-16`] The plan-review gate blocks Write and Edit while a plan file under `.claude/plans/` is uncommitted or modified and no review marker covers its exact state. A committed, unmodified plan passes. So each edit to this file, on either branch, needs a fresh `/plan-review` before the next code edit.
+129. [engineer-verified: "Accept the new sizes (Recommended)"] Superseded by row 141 for its first, second and fourth items, the sizes and the refactor's move. Its third item stands. The engineer selected this label when asked whether to accept four items. The label covers acceptance of those sizes and that scope shift, nothing more. The option's description was the session's proposal. The items:
+    - the first PR's `Projected diff:` of about 2,750 lines, where row 126 had carried about 1,830;
+    - the two PRs' combined about 8,650 lines;
+    - the `--max-base-entries` default change from 100,000 to 12,500;
+    - the `write_fixture_extras` refactor's move to the second PR.
+130. [verified: the code-writer's run of Phase 2's test on Apple Git 2.50.1, as it reported] On Apple Git 2.50.1 a real `--filter=blob:none` clone sets `remote.<name>.promisor=true` and no `extensions.partialclone`. The refusal therefore reads `git config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$'` and refuses on any output. [unverified: the git partial-clone documentation, which a reviewer cites and this session did not read] A partial clone records `extensions.partialClone` in its config. Git fetches a missing object on demand from `cat-file`, `diff` and `archive`. Phase 2's test (Phase 2) holds the clone recipe.
+131. [verified: `evals/review_bench/local_git.py:4-5,29-30`] `isolated_git_environment` leaves a repository's own `.git/info/attributes` and tracked `.gitattributes` in effect. [unverified: the gitattributes and git-archive documentation, which a reviewer cites and this session did not read] `git archive` drops an `export-ignore` path and rewrites an `export-subst` file's bytes. Phase 2's live-git case archives a tree whose `.gitattributes` says `tests export-ignore` and checks that `tests/` is absent.
+132. [unverified] `claude --version` prints a dotted `<major>.<minor>.<patch>` version first, which the readiness check parses for its floor. Verification step 1b records the printed line, and a version the check cannot parse refuses the account.
+133. [verified: `evals/replay_bench/tasks.py:26`; `evals/review_bench/runner.py:41-42,60`; `claude/.claude/scripts/select-tests.py:80-82,608-617`] The first PR's `tasks.py` imports `review_bench.runner`, which imports `measure_subagent_model_resolution`, `run_skill_evals` and `_config_dir`, so the first PR's closure already reaches every row Phase 5a names. `_is_review_bench_change`'s predicate covers `EVALS_CONFTEST`, whose comment lists the tests it applies to as an exact set.
+134. [engineer-verified: "Apply all six cuts (Recommended)"] The engineer accepted the adversarial architect consult's six-item cut list. The label covers acceptance of that list, nothing more.
+135. [unverified] The consult's cut list, as the session relayed it, not the engineer's words:
+    - delete the 30 s delayed second hook and its step 1b stop condition, and state row 121's residual instead;
+    - drop `--smoke-stop-usd` and `smoke`'s `--k`, fixing `smoke` at one run per arm and keeping the printed ceiling;
+    - fold `unsafe-config-path` into `fixture-error`, with the path in `missing_detail`, keeping the refusal inside the generators;
+    - cut the character test matrix to one row per class against the shared check, plus one wiring case per generator;
+    - delete the `.envrc` marking and the per-value hashes, keeping the full list of dropped variable names;
+    - delete the realpath containment check on the Read grant and its test.
+136. [engineer-verified: "Replace the pair (Recommended)"] The engineer accepted replacing the smoke-time calibration pair with the consult's proposal. The label covers acceptance of that proposal, nothing more.
+137. [unverified] The consult's proposal, as the session relayed it, not the engineer's words: `smoke`'s own block calibrates, with `toolkit` and `bare` on one task. A `toolkit` subagent rule load is the positive control, and `toolkit`'s first-turn size minus `bare`'s, minus an estimate of `code-writer`'s body, must reach the margin. The detailed mechanism under Campaign is this plan's design.
+138. [unverified] The block calibration's arithmetic is a judgment. A character count over 4 is a rough token estimate, and halving the `CLAUDE.md` estimate leaves room for tokenizer variance. The body term is the weak point, because its error adds straight into the gap that the margin judges. Verification step 1b measures the body's real share, and when the estimate misses by more than half the margin, the plan falls back to the calibration pair. Within that bound, and with the `CLAUDE.md` estimate right, a missing `CLAUDE.md` cannot pass the check. In the same conditions a present one cannot fail it. The margin's rule term covers the unscoped rules `bare`'s exclude drops. [verified: `claude/.claude/rules/*.md` frontmatter] All nine user rules in this repository are path-scoped today, so the term is zero for an account whose only rules are these. [verified: a reviewer's character counts of this repository's files, relayed by the dispatch] Here the account `CLAUDE.md` is about 2.6 times the `code-writer` body, so the margin is about 3,812 tokens by the estimate and the body term about 2,965. The headroom shrinks if `CLAUDE.md` shrinks toward the body's size, and step 1b's one measurement ages with edits to either file. The other first-turn inputs match across the two subagents:
+    - [verified: `claude/.claude/settings.json:212-231`] both get the same `SubagentStart` hooks, since the one with a matcher names `plan-architect`;
+    - [verified: `claude/.claude/agents/code-writer.md:1-7`] `code-writer`'s frontmatter preloads no skill, and `bare-writer` copies its tools, model and effort (Arms);
+    - both carry the same brief and inner prompt.
+139. [verified: `claude/.claude/rules/*.md` frontmatter] Superseded by row 145, under row 143's choice. This repository's rules match `**/*.py`, `**/*.sh`, `**/*.sql`, `**/*.tf` and `**/Dockerfile`, among other globs. [unverified] A subagent's Read of such a file loads the rule. `smoke`'s `--rule-path` names one such changed path present in the base tree.
+    - A run that never reads it fails `control-unexercised` or `exclude-unexercised`, not `instrument-missing`, so a bad pick is told apart from a silent hook.
+    - A `toolkit` run that read it and logged no rule load fails `instrument-missing`.
+    - An account whose history keeps no task with a rule-matching changed path needs a larger `--max-count`, or a task set from another source repo on the same account.
+    - A residual: the engineer's pick could match no rule while the `toolkit` subagent loads a rule from another file, and then `bare`'s clean read of the pick shows nothing.
+140. [unverified] Superseded by row 145, under row 143's choice. With the rule-path read required of both runs, the `bare` smoke run shows the exclude holding for that path. In a campaign, a broken exclude voids only the `bare` runs that touch a rule-matching file, so the leak stop halts the campaign at the first `arm-leak` attempt, a retried one included, rather than letting the per-arm stop wait for a block with no valid `bare` run.
+141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
+142. [verified: a reviewer's read-only check of this machine, relayed by the dispatch] Here `~/.claude/agents` and `~/.claude/skills`, and each other account's, are directory links into the one config checkout, so every granted realpath is an in-tree file. [unverified] That holds only on a folded stow install. A consumer whose `agents/` or `skills/` already existed as a real directory gets per-file links beside their own files, which the grant then covers too.
+143. [engineer-verified: "Take the lighter fix (Recommended)"] Asked whether to keep the round-2 fix for the vacuous `bare` smoke check or take a lighter one, the engineer chose the lighter fix. The label covers that choice, nothing more.
+144. [unverified] The session's proposal, not the engineer's words: keep only a printed note at smoke time when the `bare` run read no rule-matching file, state the residual in the ledger and the README, and rely on the per-run `arm-leak` check on later `bare` runs. The round-2 fix it replaced was a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` and a missing-reason field on spend-file lines. The note's detection is this plan's design (Campaign).
+145. [verified: `claude/.claude/rules/*.md` frontmatter] This repository's rules match `**/*.py`, `**/*.sh`, `**/*.sql`, `**/*.tf` and `**/Dockerfile`, among other globs. [unverified] A subagent's Read of such a file loads the rule. The residuals the lighter fix accepts:
+    - a `smoke` task whose `toolkit` run reads no rule-matching file fails `instrument-missing`, the reason a silent hook also gives, and the engineer tells them apart from the printed loads and the `toolkit` transcript, then picks another task;
+    - an account whose history keeps no task with a rule-matching changed path needs a larger `--max-count`, or a task set from another source repo on the same account;
+    - a `bare` smoke run that read no rule-matching file passes without testing the exclude, and only the printed note shows it;
+    - in a campaign, a broken exclude fails `arm-leak` only on the `bare` runs that read a rule-matching file. The per-arm stop halts only a block with no valid `bare` run, so the campaign can go on with a `bare` sample filtered by what it touched, and a clean retry of a leaking attempt leaves no record of the leak. `summarize`'s counts by missing reason show the `arm-leak` runs that ended missing.
+146. [unverified] A `path_glob_match` payload names the file that triggered the load. The relayed hooks-page excerpt names no such field. Verification step 1b records whether the probe's lines carry one and under what key. Without one, `smoke` prints only the residual sentence.
 
 **Mechanisms:**
-- **M1. Task mining from first-parent commits of top-level repos, with pruned paths dropped, a trusted-author list over raw identities, delimiter skips, base-tree size and entry-count bounds read from a NUL-delimited tree listing, a `missing-object` skip, an up-front skip of base trees the fixture cannot extract, merge-commit briefs, reference metrics and a nullable base density.** anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109.
+- **M1. Task mining from first-parent commits of top-level repos, with pruned paths dropped, a trusted-author list over raw identities, delimiter skips, base-tree size and entry-count bounds read from a NUL-delimited tree listing, a `missing-object` skip, an up-front skip of base trees the fixture cannot extract or whose archive would drop or rewrite a path, a partial-clone refusal, merge-commit briefs, reference metrics and a nullable base density.** anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
 - **M2. A single-commit archive fixture with a case-insensitive, link-safe prune that realpath-checks every remaining symlink, the worktree opt-out, a pre-launch copy of its `.git`, and a git timeout measured at both base-tree bounds and overridable by flag.** Lighter primitives checked:
   - (a) a `git worktree add` or `git clone` of the base commit is lighter, but both share or copy the object store, so the replayed commit stays reachable (row 27);
   - (b) a bench two-commit fixture fails the same way (row 28).
@@ -586,46 +783,70 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
   - (b) `--append-system-prompt` carrying `code-writer`'s body into a main session delivers that body through a different channel than production's agent body, and the session still carries the Main-session rules.
   - anchors: root, row3, row8, row12, row13, row14.
 - **M4. `bare-writer` as a fixture-local agent file that copies `code-writer`'s tools, model and effort.** `--agents` JSON is lighter, but `omitClaudeMd` is documented only as frontmatter. anchors: row12, row15, row29, row80.
-- **M5. Per-repo account resolution through one direnv probe that also names the variables an `.envrc` set, a readiness check with a passed limit, a launch environment built from an allowlist, a `PATH` refusal, and failure text that never carries a child's output or the argv.** Lighter primitives checked:
+- **M5. Per-repo account preflight and an allowlisted launch environment, as Account preflight and Launch environment state.** Lighter primitives checked:
   - (a) the runner's own account for every repo breaks row 5;
   - (b) a `direnv exec` launch prefix hands the agent the runner's whole environment with the `.envrc`'s exports on top (rows 51, 52).
-  - anchors: G2, row5, row20, row44, row51, row52, row58, row69, row70, row72, row93, row94, row98.
-- **M6. The `InstructionsLoaded` hook log, one write per event, attributed by `agent_id` and checked against a dispatcher positive control, as each run's arm check.** Lighter primitives checked:
+  - anchors: G2, row5, row15, row20, row44, row51, row52, row58, row69, row70, row72, row93, row94, row98, row132, row134.
+- **M6. The `InstructionsLoaded` hook log, one write per event, read once it stops growing, attributed by `agent_id`, and checked against a dispatcher positive control, as each run's arm check. It fails `bare` on any subagent load outside the fixture or any dispatcher load besides the account's `CLAUDE.md`, and only records `toolkit`'s loads.** Lighter primitives checked:
   - (a) the model's self-report is not mechanical and would contaminate the run;
-  - (b) the subagent's first-turn input-token size cannot name which file loaded, and rules load mid-run on file reads;
-  - (c) transcript `nested_memory` attachment records are documented only for interactive sessions, per row 23's source. [verified: `docs/session-config-keys-log.md:59,81`] Whether a `-p` run keeps a hook attachment is untested.
-  - anchors: row16, row17, row18, row19, row53, row76.
+  - (b) the subagent's first-turn input-token size cannot name which file loaded, and rules load mid-run on file reads, so it serves only `smoke`'s block calibration (M20);
+  - (c) transcript `nested_memory` attachment records: this repository has observed them only in an interactive session's transcript (`claude/.claude/hooks/tests/test_claude_md_excludes.py:15-18`), and no source read says whether a `-p` run or a subagent transcript keeps them. [verified: `docs/session-config-keys-log.md:81`] Whether a `-p` run keeps even a hook attachment is untested.
+  - anchors: row16, row17, row18, row19, row53, row76, row121.
 - **M7. `evaluate_run_validity` unchanged, plus the runner's write-path, Bash-path and account-hook checks, and retry-then-missing.** anchors: row30, row31, row32, row48, row54, row55.
 - **M8. Whole-line classification of `baseline.git` blobs by extension table, with Python through `tokenize` and the bench's docstring finder, a test-path rule, and word counts.** anchors: row35, row36, row38, row63, row77, row78.
 - **M9. `RunStore` for the lock, write-ahead and sweep, with each fixture logged before it is filled, per-run atomic record files, and cleanup of attempt dirs and session-ID files on every exit path and by validated name on resume.** anchors: row43, row54, row56, row57, row79, row85.
 - **M10. One block per task, environment readings and repo-to-account keys against a pinned manifest, a per-attempt spend file repaired at resume, cap charges only for launched attempts with no spend line, written so a later resume sees them, spend guards before every block and a resume ceiling over the remaining blocks, a per-arm stop after it, a recorded skip for a repeatedly halting task, per-block progress with an exit code for every halt, and an arm-keyed smoke pass per account before `run`.** anchors: G3, G4, row2, row37, row65, row73, row74, row85, row86, row95, row97.
 - **M11. `summarize` to the terminal only, over complete blocks, with a pre-registered ratio-of-sums word outcome, a base-density split that sets null densities aside, a paired bootstrap, and spend, skip and incomplete-block counts.** anchors: G3, row4, row9, row10, row62, row63, row64, row75.
-- **M12. `--permission-mode acceptEdits` on the dispatcher.** anchors: row25, row26.
+- **M12. `--permission-mode acceptEdits` on the dispatcher, with its Bash denials recorded and stated rather than lifted.** anchors: row25, row26, row122.
 - **M13. Arm C as a gated pair sharing one route.** anchors: row2, row11, row13.
-- **M14. `select-tests.py` wiring that follows the `measure_explore_recall.py` precedent, plus the hand-audited agents-directory reader and the no-relative-import check.** anchors: row39, row40, row67, row80, row81.
+- **M14. `select-tests.py` wiring that follows the `measure_explore_recall.py` precedent, plus the hand-audited agents-directory reader, the no-relative-import check with a scanned-set control, and a declared row that selects it after a replay edit.** anchors: row39, row40, row67, row80, row81, row133.
 - **M15. The `.gitignore` entry in Phase 1, the startup ignore check, the Python and git guards, the owner-only umask, and the README section with its trust warning and residual risk.** anchors: row4, row41, row42, row45, row47, row59, row61, row66, row71, row91.
 - **M16. A runner-owned copy of the fixture's pre-launch `.git` for every post-run git call.** Lighter primitives checked:
   - (a) `-c` overrides on the fixture's own `.git` form a denylist that misses any key it does not name;
   - (b) a Python diff of the work tree reimplements `git diff` and its symlink handling.
   - anchors: row49, row50.
 - **M17. Test isolation and timing: a local stub of the live-checkout roots, near-zero flush constants set by module attribute, `timing` markers and stated deadlines on the hang-prone and wall-clock tests, `exec`'d sleepers in fakes, and a CI duration check with per-test durations against the job cap.** anchors: row89, row90, row107.
+- **M18. `claudeMdExcludes` in `bare` fixtures only, listing each account rule file's exact link path and realpath, with the account's `CLAUDE.md` left off.** Lighter primitives checked:
+  - (a) `omitClaudeMd` alone still lets matching path-scoped rules load (row 16);
+  - (b) the `--settings` JSON is not a layer the memory page names for the key (row 115).
+  - anchors: row15, row16, row111, row112, row113, row114, row115.
+- **M19. Exact `Read` allow entries on the command line, the same in both arms, as Launch states.** Lighter primitives checked:
+  - (a) entries in the fixture's project settings are not used in a never-trusted folder (row 116);
+  - (b) no grant sends every `toolkit` run back once and withholds the reviewer files production's `code-writer` reads (row 118).
+  - anchors: row26, row55, row113, row114, row116, row117, row118, row134, row142.
+- **M20. `smoke`'s block as its own calibration, with a printed exclude note, as Campaign states.** Lighter primitives checked:
+  - (a) sentinel canaries need an edit to a stowed `CLAUDE.md` and read back through the model's self-report;
+  - (b) a per-run `toolkit` load assertion cannot see an inherited `CLAUDE.md` (row 18).
+  - The heavier calibration pair, two extra attempts with their own agent and fixture, stays the fallback (Alternatives set aside).
+  - Superseded by row 143: the round-2 leak stop and spend-file attempt reasons behind it in `run`.
+  - anchors: row18, row113, row114, row115, row117, row120, row121, row134, row135, row136, row137, row138, row141, row143, row144, row145, row146.
+- **M21. Two PRs split at Phase 2 to Phase 3, with this file shipping whole in the first and edited in place by the second, the lightest delivery that keeps every plan change with its code.** Alternatives set aside:
+  - (a) a new plan file for the follow-on branch would split one ledger, whose later rows anchor to earlier ones, across two files, and would rerun `/plan-it` and `/plan-review` over material already reviewed;
+  - (b) shipping this file only with the second PR would merge the first PR's code with no plan (row 127), and the plan would have to come out of a branch that already committed it.
+  - anchors: row124, row125, row126, row127, row128, row141.
 
 ## Critical files
 
-**Dispatch split:** five `code-writer` dispatches, run in order, one per phase. Each phase's output is the next one's input:
+**Dispatch split:** `code-writer` dispatches run in order, one per phase. Each phase's output is the next one's input:
 - the classifier feeds the task miner's metrics;
-- the run checks parse the log and transcript shapes that Verification step 1 captures;
+- the run checks parse the log and transcript shapes that Verification steps 1a and 1b capture;
 - the runner composes all three;
 - the test-selection wiring needs the final file names and imports.
 
-Phase 4 stays one dispatch because the arms, launch settings, runner and CLI share the record, fixture and settings contracts. The session runs Verification step 1 before dispatching Phase 3.
+The two PRs (Approach) divide the phases:
+- **First PR, this branch.** Phases 1 and 2 need one more dispatch, after Verification step 1c. It holds Phase 2's amendments and Phase 5a, two disjoint file sets.
+- **Second PR, the follow-on branch.** Verification step 1b runs first. Then come one dispatch each for Phase 3, Phase 4 and Phase 5b. Phase 4 stays one dispatch because the arms, launch settings, runner and CLI share the record, fixture and settings contracts.
 
-**Phase 1 — classifier and ignore rule.** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_comment_metrics.py`, then `git check-ignore -q evals/replay_bench/.local/tasks/probe.json`.
+The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks.py` and `evals/test_replay_bench_tasks.py` in the second PR (Phase 4).
+
+**Phase 1 — classifier and ignore rule (first PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_comment_metrics.py`, then `git check-ignore -q evals/replay_bench/.local/tasks/probe.json`.
 - `.gitignore`: ignore `evals/replay_bench/.local/`, under a one-line comment that it holds task files, run records and diffs carrying other repositories' commit text and code.
 - `evals/replay_bench/__init__.py` (new): one docstring line naming the package.
 - `evals/replay_bench/comment_metrics.py` (new):
   - the extension table and the test-path rule from Approach, as data;
-  - added line numbers per path from a `-U0` diff, where a hunk header with no count means one line and a count of zero adds none;
+  - added line numbers per path from a `-U0` diff:
+    - a hunk header with no count means one line, and a count of zero adds none;
+    - `tasks` runs the diff it hands to this parser with `--src-prefix=a/ --dst-prefix=b/`, so a repo-local `diff.noprefix` cannot change the path form;
   - each changed entry's new mode and blob from a `--raw -z` listing, with symlink and gitlink entries counted as non-file entries;
   - per-file classification of added lines from post-change bytes the caller supplies, decoded as UTF-8 with a BOM stripped, with word counts and the undecodable tally;
   - block grouping, and a run-level aggregate with `to_dict` and `from_dict`, the `ast.parse` rejection tally included.
@@ -678,21 +899,47 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
     - a path git still quotes;
   - a `--raw -z` listing with a regular file, a symlink and a gitlink, the last two counted as non-file entries.
 
-**Phase 2 — tasks and fixture.** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_tasks.py evals/test_review_bench_fixtures.py`.
+**Phase 2 — tasks and fixture (first PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_tasks.py evals/test_review_bench_fixtures.py`.
 - `evals/review_bench/fixture_repo.py`:
   - add a keyword-only `timeout_s` to `_run_git`, `_extract_commit_tree` and `_commit_snapshot`, defaulting to `_LOCAL_GIT_TIMEOUT_S` so every existing caller keeps its bound (row 87);
   - add `build_single_commit_repo(source_repo, commit, dest_dir, *, prune, timeout_s)`. It validates `commit` with `_validate_sha` and composes `_run_git(["init", "-q"], ...)`, `_extract_commit_tree`, `prune(dest_dir)` and `_commit_snapshot`, passing `timeout_s` to each;
   - add its directory kind to the module docstring's list. Make no other change.
 - `evals/replay_bench/tasks.py` (new):
-  - `ReplayTask` with `to_dict` and `from_dict`, and task-set read and write with `defects.atomic_write_text`, where writing validates the task-set name and reading validates each task's keys, ID grammar and SHAs;
-  - `TaskSourceError`, raised naming the path for a source repo that is not a top level and for an empty trusted author, which `main()` turns into exit 2;
+  - `ReplayTask` with `to_dict` and `from_dict`;
+  - task-set read and write through `defects.atomic_write_text`:
+    - writing validates the task-set name;
+    - reading validates each task's keys;
+    - reading validates the type of each string, count and density field;
+    - reading validates the ID grammar and SHAs;
+    - reading validates that the ID equals the one `make_task_id` derives from `source_repo` and `commit`;
+    - writing and reading each reject a duplicate task ID;
+    - `mine_tasks` raises `TaskSourceError` when two `--source-repo` arguments resolve to one repository, the only source of duplicate IDs;
+  - `TaskSourceError`, which `main()` turns into exit 2, raised naming the path or the repo and commit for:
+    - a source repo that is not a top level, and an empty trusted author;
+    - a per-commit git or parse failure during mining;
+    - an author or committer identity holding a control character, which no honest email does;
+  - a subject is never rejected for a control character. The `git log` formats are NUL-framed and parsed in field-count groups, so a subject cannot shift a field;
   - commit selection: the pruned-path drop, the trusted-author rule over raw identities, the delimiter and path-character skips, the size and entry-count bounds from one `git ls-tree -r -l -z` call, the `missing-object` skip, the skip of base trees the extraction refuses through `fixture_repo`'s own path helpers (row 102), and the brief, merge commits included;
   - the per-repo progress lines, and the skip-reason counts, identity counts and largest kept tasks that `tasks` prints;
-  - the prune predicate and `prune_instruction_files(dest_dir)`, with its realpath check of every remaining symlink;
-  - `build_task_fixture(..., timeout_s)`, which calls `build_single_commit_repo` with that `timeout_s`, writes the opt-out, the `bare-writer` file and the exclude line, and copies `.git` to the attempt dir's `baseline.git`;
+  - the prune predicate and `prune_instruction_files(dest_dir)`, with its realpath check of every remaining symlink:
+    - `is_pruned_path` applies the prune's per-entry rule to each path component;
+    - `is_pruned_path` and the prune each count a last component named `.claude` as pruned only for a directory or link;
+    - `is_pruned_path` counts a child under a pruned root directory as pruned, for example `.claude/x`, and `.mcp.json/x` when `.mcp.json` is a directory;
+    - a parity test runs one shared row list through both;
+    - a base tree holding a regular file named `.claude` at its root is not pruned, so `tasks` does not skip it, and `build_task_fixture` fails closed on it as a `fixture-error`;
+  - `build_task_fixture(task, dest_dir, baseline_git_dir, *, bare_writer_markdown, timeout_s) -> str`, which runs in this order:
+    - re-run the partial-clone and `info/attributes` refusals on `task.source_repo`, because a repo may have gained either property after mining, and raise `TaskSourceError`;
+    - call `build_single_commit_repo` with that `timeout_s`;
+    - write the opt-out, the `bare-writer` file and the exclude line;
+    - copy `.git` to `baseline_git_dir`;
+    - return the fixture commit's SHA from a `rev-parse HEAD` under `timeout_s`;
   - `build_inner_prompt(task)`, which renders the inner-prompt text from Approach;
   - reference metrics and base density, reading a commit's post-change files and its base files in one `git cat-file --batch` call each, with a null density when the base holds no non-test code line.
   - Every git call runs under `local_git.isolated_git_environment()`.
+- `evals/replay_bench/tasks.py` amendments, in the first PR's last dispatch:
+  - `SelectionLimits.max_base_entries` defaults to 12,500 (Fixture), under a one-line comment citing this plan's Fixture section as its basis. Any test that pins 100,000 changes with it;
+  - the partial-clone refusal and the `info/attributes` refusal, each a `TaskSourceError` naming the path (Tasks);
+  - the `export-attributes` skip, over the `.gitattributes` blobs the existing `git ls-tree` listing finds, read in the existing `git cat-file --batch` call (Tasks);
 - `evals/test_replay_bench_tasks.py` (new). It builds every repository under `tmp_path`. Cases:
   - a qualifying commit;
   - a commit that also edits a nested `CLAUDE.md`, kept with that path out of its changed list and its metrics;
@@ -768,14 +1015,25 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
     - a symlink loop inside the fixture passes the realpath check without raising (row 83);
     - a fixture-internal link to a directory holding a `CLAUDE.md` keeps the link and loses the file;
   - a fixture whose `git log --all` holds one commit and every pruned path is absent, whose `git status --porcelain` is empty after the extras are written, and whose `baseline.git` copy resolves the same commit.
+- `evals/test_replay_bench_tasks.py` amendments, in the first PR's last dispatch. Cases:
+  - a `--filter=blob:none` clone of a `tmp_path` repository over `file://`, with `uploadpack.allowFilter` set on the source, raises `TaskSourceError` naming the path, and a full clone of the same repository is accepted (row 130);
+  - a source repo whose `info/attributes` holds `* export-ignore` raises `TaskSourceError` naming the path;
+  - skipped as `export-attributes`: a root `.gitattributes` holding `tests export-ignore`, a nested `sub/.gitattributes` holding `*.txt export-subst`, and one holding only a commented `# export-ignore` line, pinned as the deliberate over-skip;
+  - kept: a `.gitattributes` holding only `*.py text eol=lf`;
+  - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path;
+  - the shared default, through a `subprocess.run` spy: `fixture_repo._run_git`, `_extract_commit_tree` and `_commit_snapshot`, each called with no `timeout_s`, pass `timeout=_LOCAL_GIT_TIMEOUT_S`, so every review-bench caller keeps its bound (row 87). The case lives here because `evals/test_review_bench_fixtures.py` is outside this plan's files.
 
-**Phase 3 — run checks.** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py`.
+**Phase 3 — run checks (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py`.
 - `evals/replay_bench/checks.py` (new):
-  - the hook-log parser with its field-shape checks, and the instruction-load check from Approach;
+  - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;
+  - the subagent's first-turn prompt size from its transcript;
+  - the optional trigger-path field on a `path_glob_match` line, and the exclude note from Campaign: whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture;
+  - the block-calibration verdict from Campaign, a pure function of the `toolkit` and `bare` runs' parsed logs and first-turn sizes, the account `CLAUDE.md`'s character count, the two agent bodies' character counts, and the character counts of the rule files the `toolkit` dispatcher loaded at `session_start`. It returns every failed condition in order;
+  - the instrument reasons as one constant, which the runner's retry rule reads (Retry);
   - the account-hook check under `<config-dir>/sessions/`;
   - the write-path and Bash-path checks over the subagent transcript's `tool_use` entries, reusing `review_bench.runner`'s `live_checkout_leak_targets`, `is_changed_file_leak` and `is_config_dir_leak`;
-  - the permission-denial count.
-- `evals/test_replay_bench_checks.py` (new). Its log fixtures use the payload shape Verification step 1 captured, with placeholder paths. Cases:
+  - the permission-denial count, and the record of Reads of Read-allow-list paths that ran or were denied, with denied Reads of other toolkit files by path.
+- `evals/test_replay_bench_checks.py` (new). Its log and transcript fixtures keep the key structure of the shapes Verification steps 1a and 1b captured, with every value synthetic: paths, session and message IDs, `transcript_path`, `cwd`, CLI version and every `usage` count. The margin cases compute from the fixtures' own numbers. Cases:
   - `instrument-missing`: an empty log, an absent log, and a log with no dispatcher `CLAUDE.md` load;
   - `instrument-log-invalid`: a torn last line, a foreign `session_id`, and two `agent_id` values;
   - field shapes, each one mutation of a captured line, and each failing `instrument-log-invalid` without raising:
@@ -785,7 +1043,45 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
     - a string `file_path` holding a NUL byte, which never reaches `os.path.realpath`;
   - attribution: a subagent-only `session_start` load, credited to the subagent; a duplicate dispatcher load, not credited to it;
   - a stowed `CLAUDE.md` and `rules/` file reported by link target, still classed toolkit;
-  - `bare` with a toolkit rule load, and with an other-class load; `toolkit` with no subagent `CLAUDE.md` load; a fixture-file load;
+  - arm outcomes:
+    - `bare` failing `arm-leak`, one case each:
+      - a subagent toolkit rule load;
+      - a subagent other-class load;
+      - a dispatcher rule load;
+      - a dispatcher load of an other-class `CLAUDE.md`;
+    - `bare` whose only loads are the dispatcher's `CLAUDE.md`, passing;
+    - `toolkit` with subagent rule loads and with no subagent load at all, each passing with its loads recorded by class;
+    - a fixture-file load failing `fixture-instruction-load`;
+    - a load of a file on the Read allow list classed toolkit;
+  - first-turn prompt size: the sum of the three usage fields, null when one is absent, and null when the transcript holds no assistant entry;
+  - the block-calibration verdict, each case asserting the returned list of reasons:
+    - a passing block;
+    - a `toolkit` log with no subagent `path_glob_match` rule load, failing `instrument-missing`;
+    - a `toolkit` log whose only rule-shaped loads fail `instrument-missing`, one case each:
+      - a `path_glob_match` load on a dispatcher line;
+      - a subagent rule load with `load_reason` `session_start`;
+      - one with `include`;
+      - a subagent `path_glob_match` load of a fixture-class file;
+      - one of an other-class file;
+      - one of a file under `agents/`, one under `skills/`, and one of the account's `CLAUDE.md`;
+      - one of `<config-dir>/rules-extra/x.md`, which a string-prefix match would pass;
+    - a `toolkit` rule load reported by its link target, and one of a rule nested below `rules/`, each passing;
+    - a gap, after the body term, exactly at the margin passing, and one token short failing `arm-config-missing`;
+    - an account `CLAUDE.md` of 10,001 characters, whose first margin term is 1,250.125, with equal bodies: a gap of 1,250 failing and one of 1,251 passing, which pins `>=` on unrounded values;
+    - a `code-writer` body 4,000 characters longer than `bare-writer`'s, which raises the gap the check needs by exactly 1,000;
+    - a body difference of 4,001 characters, whose body term is 1,000.25: a gap of the margin plus 1,000 failing and of the margin plus 1,001 passing, so floor division of the difference fails the case;
+    - a dispatcher-loaded rule in the `toolkit` run raising the margin by its character count over 4, not halved;
+    - two dispatcher-loaded rules of 4,001 and 4,003 characters, whose term is 2,001.0, which pins summing the exact quotients rather than flooring each;
+    - a null size in either run failing `arm-config-missing`;
+    - order, the list asserted whole:
+      - a control failure with a null size returns `instrument-missing` then `arm-config-missing`;
+      - a control failure with a short gap returns the same two;
+  - the exclude note, which never changes the verdict:
+    - a trigger path the `bare` transcript shows a Read of that ran prints the exercised line, compared relative to each fixture;
+    - a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
+    - a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising;
+    - the residual sentence prints in every case;
+  - Read-allow-list records: a listed Read that ran, a listed Read denied by a hook and one denied by the permission flow, and a denied Read of an unlisted toolkit file recorded by path;
   - a forged log written into the fixture, never read;
   - `bare` reading a toolkit agent file through Read and through Bash fails `arm-leak`, and the same reads pass `toolkit`;
   - write paths: an Edit inside the fixture passes, and a Write outside it fails;
@@ -799,21 +1095,35 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - permission-rule denials from the permission flow and from a hook, each counted;
   - the account-hook check: a found file passes, an absent file fails `account-hooks-missing`, and a symlink and a file for another session each count as absent.
 
-**Phase 4 — arms, launch, runner, CLI.** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_arms.py evals/test_replay_bench_runner.py`.
-- `evals/replay_bench/arms.py` (new): the `Arm` record with its allowed fixture loads, the `bare` and `toolkit` registry, and the `bare-writer` file text built from the account's `code-writer.md` frontmatter.
-- `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, and the `--settings` JSON with the instrument hook.
+**Phase 4 — arms, launch, runner, CLI (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_arms.py evals/test_replay_bench_runner.py evals/test_replay_bench_tasks.py`.
+- `evals/replay_bench/tasks.py` (edit):
+  - make no `write_fixture_extras` split. `build_task_fixture` has been the extras' only caller since the calibration fixture was removed (row 136), so row 129's move of the split to this PR is moot, and row 141 records the drop;
+  - `build_task_fixture(task, dest_dir, baseline_git_dir, *, bare_writer_markdown, timeout_s, settings_text=None) -> str` writes `.claude/settings.json` from `settings_text` when one is given, beside its other extras.
+- `evals/test_replay_bench_tasks.py` (edit):
+  - its `_build_fixture` helper passes the new keyword where a case needs it, and every first-PR case still passes unchanged;
+  - a `settings_text` given to `build_task_fixture` lands at `.claude/settings.json` byte for byte with `git status --porcelain` still empty, and no settings file exists without one.
+- `evals/replay_bench/arms.py` (new): the `Arm` record with its expected and failing dispatcher loads, its fixture settings and its allowed fixture loads; the `bare` and `toolkit` registry; `bare`'s `claudeMdExcludes` generator with its call of the shared character check and its settings text; the `bare-writer` file text built from the account's `code-writer.md` frontmatter; and both agents' body character counts for the block calibration, `code-writer`'s read from the account's `<config-dir>/agents/code-writer.md`.
+- `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, the `--settings` JSON with the instrument hook, `UnsafeConfigPathError` with the one character check both generators share, and the Read allow-list generator with the `--allowedTools` argv tail.
 - `evals/replay_bench/runner.py` (new):
-  - the account preflight, its account key, its `PATH` check and its readiness check, with failure text in the probe's shape;
-  - `FIXTURE_GIT_TIMEOUT_S`, under a one-line comment naming its basis, as the `--fixture-git-timeout-s` default, with its value and the `--max-base-mb` and `--max-base-entries` defaults set from Verification step 1's timing;
+  - the account preflight, its account key, its `PATH` check, its call of both generators, and its readiness check with the CLI version floor, with failure text in the probe's shape;
+  - the preflight's names-only list of every variable the launch drops;
+  - `FIXTURE_GIT_TIMEOUT_S`:
+    - its value is 110 (Fixture);
+    - it is the `--fixture-git-timeout-s` default;
+    - a one-line comment cites this plan's Fixture section as its basis;
+  - the `--max-base-mb` and `--max-base-entries` flags, defaulting to `tasks.DEFAULT_LIMITS`;
+  - the hook-log read that waits for the log's size to hold across two polls, as Instruction-load check states;
   - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`;
-  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error` and `analysis-error` without a retry;
+  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` without a retry;
+  - the instrument reason outranking every other reason on one attempt;
+  - every config-tree path and variable name it prints, in `!r` form;
   - the spend file and its torn-tail repair at resume;
   - the block and campaign loop with its pinned environment, smoke gate, spend guards, per-arm stop, per-block progress line, halt messages and exit codes, and `ReplayRunRecord`;
   - recorded halts, `halted again`, and `--skip-task`;
   - `RunStore` use, the per-account sweep, and the resume's cap charges with their `null` attempt fields and validated-name deletions;
   - the manifest's repo-to-account pin, the resume's ceiling over the incomplete, non-skipped blocks, and `--fixture-git-timeout-s` outside the manifest comparison;
-  - the preflight's names-only printout of the variables an `.envrc` set;
-  - `smoke`'s printout and its arm-keyed smoke-pass record, and `summarize`.
+  - `smoke`'s one-run-per-arm block, printed ceiling, no-retry rule for instrument reasons, printout with the exclude note, block calibration, `read-grant-denied` and `read-grant-unexercised` conditions, and arm-keyed smoke-pass record;
+  - `summarize`.
 - `runner.py`'s reuse from `review_bench.runner`:
   - prompts and launch: `build_dispatcher_prompt`, `build_dispatch_command`, `wait_for_session_flush`, `extract_result_usage`;
   - validity: `evaluate_run_validity`, `own_session_paths_for`, `default_live_checkout_roots` through its module, `_worktree_top_levels`, `session_store_dir_for`, `_os_error_detail`;
@@ -821,8 +1131,8 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - constants: `FIXTURE_DIR_PREFIX`, `REVIEWER_MODEL_ID`, `REVIEWER_TIMEOUT_S`, `ATTEMPTS_PER_RUN`, `_ENVIRONMENT_READ_TIMEOUT_S`.
 - `runner.py`'s reuse from `measure_subagent_model_resolution`: `_run_claude_to_completion`, `_resolved_temp_project_dir`, `abort_launches`, `LaunchAbortedError`, `PER_RUN_BUDGET_CAP_USD`, `agent_frontmatter_tools`, `agent_frontmatter_model` and `_frontmatter_block`.
 - `runner.py`'s reuse from the rest of `review_bench`: `analysis.bootstrap_interval`, `identifiers.validate_campaign_id`, `defects.atomic_write_text`, `fixture_repo._validate_sha`, and `local_git`'s `isolated_git_environment` and `DIFF_TEXT_ARGS`.
-- `evals/run_replay_bench.py` (new): the subcommands `tasks`, `preflight`, `smoke`, `run` and `summarize`, with `DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"`, `--local-dir`, `--skip-task`, `--fixture-git-timeout-s` and `--max-base-entries`. `main()` runs the startup steps in Approach's order. An `UnsafeFixtureConfigError` never reaches it, because an attempt records it as `fixture-error` (Retry). It returns 2 on any of these:
-  - `HarnessInvalidatedError` or `TaskSourceError`;
+- `evals/run_replay_bench.py` (new): the subcommands `tasks`, `preflight`, `smoke`, `run` and `summarize`, with `DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"`, `--local-dir`, `--skip-task`, `--fixture-git-timeout-s` and `--max-base-entries`. `smoke` takes no `--k`. `main()` runs the startup steps in Approach's order. Neither an `UnsafeFixtureConfigError` nor an attempt's `UnsafeConfigPathError` reaches it, because an attempt records each as `fixture-error` (Retry). It returns 2, with the offending file path or name in the message, on any of these:
+  - `HarnessInvalidatedError`, `TaskSourceError`, `TaskFileError`, or `identifiers.InvalidIdentifierError`, which `tasks.py` raises for a task-set name that breaks its grammar;
   - a preflight, spend, smoke-gate, skip or local-dir refusal;
   - an environment-pin mismatch;
   - a Python or git below its floor.
@@ -830,7 +1140,14 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
 - `evals/test_replay_bench_arms.py` (new). Cases:
   - one test method, taking only `self`, reads this checkout's `claude/.claude/agents/code-writer.md`. It checks that the generated `bare-writer.md`, parsed with `msmr.agent_frontmatter_tools`, `msmr.agent_frontmatter_model` and the `effort` reader, has the same `tools`, `model` and `effort`, plus `name: bare-writer` and `omitClaudeMd: true` (row 80);
   - the `effort` reader returns nothing for a frontmatter without the key;
-  - the registry's `bare` and `toolkit` allow no fixture loads.
+  - the registry's `bare` and `toolkit` allow no fixture loads, and both expect the account's `CLAUDE.md`;
+  - the body character counts: `code-writer`'s body and `bare-writer`'s one-line body, each counted after the frontmatter of a `tmp_path` agent file, with a frontmatter-only file counting zero;
+  - with two different `code-writer.md` files, one under a `tmp_path` account config dir and one under a `tmp_path` checkout, the count comes from the account's;
+  - `bare`'s exclude list, for a `tmp_path` config dir in each stow shape, a `rules` directory link to a tree holding a nested rule and a real `rules` directory of per-file links, lists each rule's link path and realpath, holds no glob character, and leaves out the account's `CLAUDE.md`;
+  - the exclude list leaves out a `.txt` file and a `.md.bak` file under `rules/`;
+  - a `rules` tree holding a directory-link loop yields a finite list;
+  - `bare`'s settings text parses as JSON equal to `{"claudeMdExcludes": [...]}`, with no other key;
+  - `toolkit` writes no settings file.
 - `evals/test_replay_bench_runner.py` (new).
   - It stubs every `claude` call, and every `direnv` call outside the preflight cases below. An injected `launch=` writes a synthetic dispatcher transcript and subagent sidecar under a `tmp_path` projects root, and fakes the fixture edits.
   - It builds transcripts with `test_review_bench_runner.py`'s scenario helpers by import, not by copy.
@@ -845,7 +1162,28 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - Twenty parallel hooks: every invocation joined within 30 s.
   - The FIFO case runs the post-run analysis in a daemon thread joined with a 30 s deadline, and fails with a message naming the FIFO when the deadline passes.
 - `evals/test_replay_bench_runner.py` launch and environment cases:
-  - launch argv: the `env -i` prefix, `--permission-mode acceptEdits`, and a `--settings` JSON holding only the instrument hook, compared as parsed JSON;
+  - launch argv: the `env -i` prefix, `--permission-mode acceptEdits`, a `--settings` JSON holding only the instrument hook, compared as parsed JSON, and `--allowedTools` with its entries last;
+  - Read allow list, for a `tmp_path` home whose `.claude` and a separate `tmp_path` config dir each hold stowed-style links into a third directory:
+    - each agent and skill file appears once by link path and once by realpath, as `Read(//...)`;
+    - one root that is the other's realpath yields no duplicate;
+    - a nested `agents/sub/x.md`, a non-`SKILL.md` file under `skills/<name>/` and a dangling link under `agents/` are each left out;
+    - no entry holds `*`, and the list is identical for both arms;
+  - the shared character check, one parametrized row per class (row 134):
+    - each refused class raises `UnsafeConfigPathError`: a space, a tab, a newline, another control character, `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `,` and `\`;
+    - each kept lookalike passes: `-`, `_`, `.`, `+`, `@`, `~`, `#`, `!`, `:`, `=` and a non-ASCII letter;
+  - one wiring case per emitted form of each generator, so a check of one form alone fails:
+    - the exclude generator on a rule file whose link path holds `*`, and on one whose realpath alone holds `[`;
+    - the Read-allow-list generator on a `skills/<name>/SKILL.md` whose link path holds `(`, and on one whose realpath alone holds a space, each naming the offending path;
+  - escaped printing: a rule file name and a probe variable name each holding an ESC byte and a newline, refused or listed, print in `!r` form, and neither byte reaches the captured terminal output raw;
+  - preflight calls the same generators: a refused path exits 2 naming the path, after the probe and before the readiness check and any launch;
+  - an attempt whose generator raises records `fixture-error` with the path in `missing_detail`, no launch, no retry and no spend line;
+  - the hook-log read, on a real log file in `tmp_path` with `time.sleep` patched as `TestWaitForSessionFlushSettlesOnlyUpToTheTimeout` at `evals/test_review_bench_runner.py:826-900` patches it. Each case sets the constants it needs and asserts the sleep count:
+    - a line appended during the first poll interval is read, and the sleep count shows the loop went on past one sample;
+    - a log whose size holds across two polls returns after the fewest sleeps;
+    - a log that grows on every poll stops at the timeout and is read as it stands, so a torn last line fails `instrument-log-invalid`;
+    - a log absent at the first poll and present at the second counts as growth, with no raise on the first `stat`;
+    - a `timed_out` attempt makes no sleep;
+  - the allowlist passes `https_proxy`, `http_proxy`, `no_proxy`, `ALL_PROXY` and `all_proxy` when the runner sets them;
   - an allowlisted variable the runner does not set is absent from the argv, never `NAME=`, and `CLAUDE_CONFIG_DIR` is absent when the probe found it unset;
   - the instrument hook, run with `sh -c`, appends a JSON line to a log whose path holds a space and a single quote;
   - twenty parallel hook invocations on distinct JSON lines leave a log whose every line parses (row 76);
@@ -865,8 +1203,10 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - a fake that sleeps past `--direnv-timeout-s` is refused with a message naming the limit and the flag;
   - a probe failure whose message holds none of the probe's stderr, and whose `exit <n>` carries the `direnv exec <repo> true` hint;
   - each other refusal, a `code-writer.md` with no `effort` included;
-  - a fake whose `.envrc` stand-in exports `SENTINEL_PROFILE=sentinel-value` before it `exec`s prints the name `SENTINEL_PROFILE`, and the output holds neither the value nor any hash;
+  - a fake whose `.envrc` stand-in exports `SENTINEL_PROFILE` with a value of three lines, one of them shaped `LEAKED_NAME=sentinel-value`, before it `exec`s, prints the name `SENTINEL_PROFILE`. Neither the output nor the probe's JSON holds any line of the value, `LEAKED_NAME` included, so a text filter over `env` output would fail the case;
+  - a runner environment already holding `AMBIENT_PROFILE=sentinel-value`, behind a fake that changes nothing, prints `AMBIENT_PROFILE`, and prints no allowlisted name;
   - readiness: a `PATH` with no `claude`, and a fake `claude --version` that exits 1, each refused before any launch;
+  - version floor: a fake `claude --version` printing `2.1.270`, and one printing text with no version, each refused; one printing `2.1.271` passes;
   - a fixture under a monkeypatched `$HOME`, refused.
 - Git and diff cases, with real `git` and a stub launch that acts after `build_task_fixture` returns:
   - the agent rewrites its own history, and the diff equals the uncommitted-edit diff after each of these:
@@ -898,6 +1238,8 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
     - in both, the per-arm stop halts the campaign with exit 1, never `main()`'s exit 2, and a resume with `--skip-task` for that task runs the next task's block.
 - Retry cases:
   - an attempt that fails validity twice records missing with summed cost, and leaves no fixture, attempt dir or `sessions/` file;
+  - in `run`, a `bare` attempt failing `arm-leak` retries once, and a clean retry records a valid run;
+  - on one attempt, a timeout whose log also shows a `bare` subagent rule load records `arm-leak`;
   - a fail-once-then-succeed run takes its diff from the second fixture, and the first fixture and attempt dir are gone;
   - a launch timeout and a launch exception are each charged at the cap;
   - an empty stdout records `launch-no-output`;
@@ -955,7 +1297,8 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - an unparseable line that is not the last counts at the cap;
   - the spend-file appender called from four threads, N appends each, leaves 4N lines that all parse, with the total equal to the sum.
 - CLI cases:
-  - exit 2 for `run` without `--k` or `--cumulative-stop-usd`, for a `--task-id` breaking its grammar, and for a `tasks` call that raises `TaskSourceError`;
+  - exit 2 for `run` without `--k` or `--cumulative-stop-usd`, and for a `--task-id` breaking its grammar;
+  - exit 2, with the path or name in the message and no traceback, for a `tasks` call that raises `TaskSourceError`, a `run` whose task file raises `TaskFileError`, and a `tasks --name` that raises `identifiers.InvalidIdentifierError`;
   - a `--local-dir` refusal for each condition, each exiting 2 with the target path still absent:
     - a relative path;
     - a path through a symlink;
@@ -980,101 +1323,187 @@ Phase 4 stays one dispatch because the arms, launch settings, runner and CLI sha
   - one paired task, printed with no interval;
   - the per-repo breakdown by the task ID's first part;
   - the block-length histogram at blocks of 1, 2, 3, 4 and 5 lines;
-  - per arm, the permission-denial count, the unclassified-line share, the `ast.parse` rejection count and the three tallies;
+  - per arm, the permission-denial count, the unclassified-line share, the `ast.parse` rejection count, the mean first-turn prompt size over non-null runs, and the three tallies;
   - the mixed-environment exit.
 - `smoke` cases:
   - `instrument: ok`, with its smoke-pass record written, naming the arms it validated;
-  - each run's printout carrying its fixture-build seconds;
-  - each failed condition naming itself, with no record written;
+  - each run's printout carrying its fixture-build seconds and first-turn prompt size, and the block's body term and margin;
+  - each failed condition naming itself, with no record written, `read-grant-denied`, `read-grant-unexercised` and each block-calibration outcome included;
+  - one run per arm: a block launches exactly one `toolkit` run and one `bare` run on the given task, and `smoke --k 2` is a usage error;
+  - no retry on instrument reasons, through a stub launch, one case per row:
+    - `bare` attempts of `arm-leak` then clean end the run missing as `arm-leak` with one attempt launched, and no smoke-pass record is written;
+    - `toolkit` attempts of `instrument-missing` then clean end the same way;
+    - an attempt of `launch-no-output`, a timeout or `result-error`, then clean, retries once and lets the block calibration run;
+    - one parametrized case over the shared instrument-reason constant: each of its five reasons, `fixture-instruction-load` included, ends a `smoke` run missing with one attempt launched;
+    - a timed-out attempt whose log carries a `bare` subagent rule load records `arm-leak` and launches no retry;
+    - `launch-no-output` then `arm-leak` ends the run missing as `arm-leak` with two attempts launched;
+  - the exclude note prints after the block's runs, and a `bare` run that read no trigger path still writes the smoke-pass record when every condition holds;
+  - order across the whole list: a block where `bare` fails `arm-leak`, the `toolkit` run makes no listed Read, and the calibration gap is short names `arm-leak` on its last line and prints all three;
+  - a `toolkit` run that ended missing on a timeout reports `toolkit` and `timeout`, and the verdict never runs;
+  - Read grant, through a stub launch, one case per row:
+    - a `toolkit` run with one listed Read that ran passes;
+    - a `toolkit` run with no listed Read fails `read-grant-unexercised`;
+    - a `toolkit` run whose listed Read was denied fails `read-grant-denied`, with a hook denial and a permission-flow denial each counted (row 48);
+    - a denied Read of an unlisted toolkit file prints by path and fails nothing;
+    - a `bare` run's denied Read of a listed path fails `arm-leak`, never `read-grant-denied`;
+  - the printed ceiling equals `campaign_cost_ceiling(1, 2, 1, ...)`'s `all_retried_usd`, printed before any launch;
   - a config-dir file that grew, listed by name.
 
-**Phase 5 — test selection and docs.** Verify: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` and `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
+**Phase 5a — test selection for the first PR's files (first PR).** Verify: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` and `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
 - `claude/.claude/scripts/select-tests.py`:
-  - add `REPLAY_BENCH_DIR`, `REPLAY_BENCH_RUNNER`, `REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"` and `REPLAY_BENCH_ARMS_TEST = "evals/test_replay_bench_arms.py"`;
-  - add a `DOMAIN_RULES` row that selects `REPLAY_BENCH_TEST_GLOB` for a path under the directory, the runner, or a glob member;
-  - add `REPLAY_BENCH_TEST_GLOB` to the targets of the `_is_review_bench_change` row and of the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` and `SKILL_EVALS_RUNNER` cross-domain rows, because the runner imports `review_bench` and `measure_subagent_model_resolution` and, through them, `run_skill_evals` (row 39);
+  - add `REPLAY_BENCH_DIR` and `REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"`;
+  - add a `DOMAIN_RULES` row that selects `REPLAY_BENCH_TEST_GLOB` for a path under the directory or a glob member;
+  - add `REPLAY_BENCH_TEST_GLOB` to the targets of all three rows now: the `_is_review_bench_change` row, whose predicate also covers `EVALS_CONFTEST`, and the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` and `SKILL_EVALS_RUNNER` cross-domain rows (row 133);
+  - add a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change under `REPLAY_BENCH_DIR`, beside `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`'s at `:832`, with a header-comment entry like the one at `:812-818`. `test_select_tests.py` reads the replay package's files from a function body, which `TestCrossDomainReadCompleteness` cannot see, so without the row a scoped run after a replay edit skips the guards below;
+  - update the comments that name these rows' target sets, `:80-81`'s "exactly" list for `EVALS_CONFTEST` among them, and those at `:603-607` and `:787-808`.
+- `claude/.claude/scripts/tests/test_select_tests.py`:
+  - add `REPLAY_BENCH_TEST_GLOB` to every set-equality assertion over the review-bench target set, `test_config_dir_module_change_selects_all_four_declared_importer_sets` at `:1575-1596` and the `SKILL_EVALS_RUNNER` equality case near `:690` included (row 67);
+  - add cases for a replay package file and a replay test file, and one where a change under `evals/replay_bench/` selects `SELECT_TESTS_TEST_PATH`;
+  - add a replay counterpart of the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` membership loop at `:798-806`;
+  - add `REPLAY_BENCH_DIR` to `test_review_bench_directory_constants_exist_on_disk`;
+  - add `replay_bench/*.py` to the import-closure test's seed list, as that test's docstring asks of a sibling eval script, and keep `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` equal to the closure. The seeds guard the second PR's later imports. The row targets above rest on row 133, not on this test;
+  - add a test that parses every file in `evals/replay_bench/` and finds no `ImportFrom` with `level > 0`, with a seeded relative import as its failing control. It also asserts that its scanned set holds `tasks.py` and `comment_metrics.py`, so a glob that resolves to nothing fails. The closure test maps every relative import to `review_bench`, so the replay package must import by absolute path (row 81).
+
+**Phase 5b — the rest of test selection, and docs (second PR).** Verify: as Phase 5a.
+- `claude/.claude/scripts/select-tests.py`:
+  - add `REPLAY_BENCH_RUNNER` and `REPLAY_BENCH_ARMS_TEST = "evals/test_replay_bench_arms.py"`;
+  - add the runner to Phase 5a's `DOMAIN_RULES` row, and to Phase 5a's standalone row, since `run_replay_bench.py` joins the guards' scanned set;
   - add `REPLAY_BENCH_ARMS_TEST` to the `AGENTS_DIR` cross-domain row's targets at `:876-879` (row 80);
   - add a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change to `REPLAY_BENCH_ARMS_TEST`, beside `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`'s at `:832` (row 80);
   - add a header-comment entry for that standalone row, like the one at `:812-818`.
 - `claude/.claude/scripts/tests/test_select_tests.py`:
-  - add `REPLAY_BENCH_TEST_GLOB` to every set-equality assertion over the review-bench target set, `test_config_dir_module_change_selects_all_four_declared_importer_sets` at `:1575-1596` included (row 67);
-  - add cases for a replay package file, the replay runner, and a replay test file;
-  - add a replay counterpart of the `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` membership loop at `:798-806`;
-  - add `REPLAY_BENCH_RUNNER` to `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`;
-  - add `REPLAY_BENCH_ARMS_TEST` to `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`;
+  - add a case for the replay runner;
+  - add `REPLAY_BENCH_RUNNER` and `REPLAY_BENCH_ARMS_TEST` to `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`;
   - add `REPLAY_BENCH_ARMS_TEST` to `_FILE_TARGETS`;
-  - add `REPLAY_BENCH_DIR` to `test_review_bench_directory_constants_exist_on_disk`;
   - add `REPLAY_BENCH_ARMS_TEST`, with its real-file reader's test name, to `_HAND_AUDITED_AGENTS_DIR_READERS` (row 80);
-  - add `replay_bench/*.py` and `run_replay_bench.py` to the import-closure test's seed list, as that test's docstring asks of a sibling eval script, and keep `_REVIEW_BENCH_SCRIPTS_DEPENDENCIES` equal to the closure;
-  - add a test that parses every file in `evals/replay_bench/` and `run_replay_bench.py` and finds no `ImportFrom` with `level > 0`, with a seeded relative import as its failing control. The closure test maps every relative import to `review_bench`, so the replay package must import by absolute path (row 81).
+  - add `run_replay_bench.py` to the import-closure test's seed list, to the no-relative-import test, and to that test's scanned-set assertion;
+  - add a case where a change to `run_replay_bench.py` selects `SELECT_TESTS_TEST_PATH`.
 - `evals/README.md`: a "Replay bench" section after "Review bench". It covers:
   - what the runner measures, and usage for the five subcommands;
   - `run`'s exit codes, its per-block progress line, and `--skip-task` for a task that halts again;
   - the account preflight with its readiness check, `--direnv-timeout-s` and the `direnv exec <repo> true` hint, the allowlisted launch environment, and the refusal of a `PATH` with an empty or relative entry;
-  - that `preflight` names each variable an `.envrc` set that the launch drops, and that `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` are not routed by account;
-  - `tasks`' base-tree bounds, `--max-base-mb` in units of 10^6 bytes and `--max-base-entries`, its printout of the largest kept tasks, and `--fixture-git-timeout-s` for a machine where healthy builds time out;
+  - that `preflight` names every variable the launch drops, ambient ones included, so the engineer reads that list per account before the first `run`;
+  - that `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` are not routed by account;
+  - that the runner assumes a single-user machine, since a proxy URL's credentials sit in `env`'s argv until it execs `claude`;
+  - `tasks`' base-tree bounds:
+    - `--max-base-mb`, in units of 10^6 bytes, and `--max-base-entries`;
+    - the printout of the largest kept tasks;
+    - `--fixture-git-timeout-s` for a machine where healthy builds time out;
+    - `--fixture-git-timeout-s` again for a `--max-base-entries` raised past its measured default;
+  - that `tasks` refuses a partial clone and a repo whose `info/attributes` sets `export-ignore` or `export-subst`, and skips a commit whose tree's `.gitattributes` does;
   - that `run` needs a passing `smoke` on each account under its current environment and for every arm it runs, so a CLI update, a `git pull` of the config checkout, or a new arm calls for a new `smoke`;
-  - the residual risk: nothing contains a replay agent beyond `acceptEdits`' working-directory scope and the account's permission rules, so a steered agent can read or write anything those rules allow (rows 45, 47);
+  - that `bare` fixtures exclude the account's rule files through `claudeMdExcludes`;
+  - that both arms may read every agent and skill file under the config dir and under `$HOME/.claude`, the second a root under every account, through exact Read allow entries. On an install where stow linked `agents/` or `skills/` file by file into a directory that already existed, that includes files the config checkout does not hold;
+  - that preflight and each attempt refuse a generated path holding whitespace, a control character or a pattern character, so a config checkout under such a path refuses every account;
+  - that `smoke` runs one block of one run per arm and prints its ceiling before launch;
+  - that the `smoke` task must modify a file the base tree holds that one of the account's rules matches, and that an account with no such task needs a larger `--max-count` or another source repo;
+  - what `instrument-missing`, `arm-leak`, `arm-config-missing`, `read-grant-denied` and `read-grant-unexercised` each mean in `smoke`, and its printed exclude note;
+  - the residual, in one sentence: a `bare` run that reads no rule-matching file passes without testing the exclude, and a broken exclude fails `arm-leak` only on later `bare` runs that read one (row 145);
+  - that the block calibration's body term is a character-count estimate, so a gap close to the margin is weak evidence either way;
+  - the residual that a hook line can be lost only when its append takes longer than the model turn that follows its load (row 121);
+  - that Bash commands outside `acceptEdits`' auto-approved set and the account's allow rules are denied in both arms, so a replay agent cannot run, for example, a test suite the account does not allow, and the permission-denial count shows how often (row 122);
+  - the residual risk: nothing contains a replay agent beyond `acceptEdits`' working-directory scope, the account's permission rules and the runner's Read grants, so a steered agent can read or write anything those allow (rows 45, 47);
   - the bench's trust warning (row 45);
   - the trusted-author list's purpose, which is risk reduction and not containment: it limits how much third-party text reaches an agent holding Bash. It reads raw identities, so a `.mailmap` cannot widen it. Its limits (row 61):
     - an author email is a string the committer sets;
     - under a squash-merge host the author is the pull request's author, so the list leaves out outside contributors;
     - under a rebase or merge-commit workflow, an outside branch can carry a trusted email;
     - the delimiter skip stops no injected instruction that does not need to close its block;
-  - that a machine with a managed-policy `CLAUDE.md` fails every `bare` run;
+  - that a machine with a managed-policy `CLAUDE.md`, or an account whose `CLAUDE.md` includes another file, fails every `bare` run;
   - the account files a replay adds to and the cleanup leaves: `.code-writer-self-review.log`, `.code-writer-self-review.d` and `.session-config-keys-log.jsonl` (row 79);
   - where `.local/` lives, that removing a worktree deletes it, and `--local-dir`;
   - that a resume needs the same `TMPDIR` as the run it resumes;
   - that results are not a publication instrument, because the runner refuses no wider corpus (row 10);
-  - that it needs Python 3.12 or newer and git 2.32 or newer, run through `scripts/venv-run.sh python3`;
+  - that it needs Python 3.12 or newer, git 2.32 or newer and Claude Code 2.1.271 or newer, run through `scripts/venv-run.sh python3`;
   - a pointer to this plan for the design.
 
-Projected diff: about 6,880 lines, the sum of these parts: about 2,750 for the new package and CLI, 3,850 for the five new test files, 150 across `select-tests.py` and its test, 96 for `evals/README.md`, 30 for `fixture_repo.py`, and 4 for `.gitignore` (row 110).
+The second PR's files are those of Phases 3, 4 and 5b. This plan estimates them at about 6,550 lines, and the second PR restates the figure when it edits this file. That is about 250 above the 6,300 row 141 accepted, for the round 2 review's test cases, the security fixes and the exclude note.
+
+Projected diff: about 2,910 lines for the first PR, the sum of these parts: 2,592 in the five new files as Phase 2 left them (row 126), about 125 for the Phase 2 amendments and their tests, about 150 across `select-tests.py` and its test for Phase 5a, 40 for `fixture_repo.py`, and 3 for `.gitignore`. That is about 20 above the 2,890 row 141 accepted, for the shared-default spy case.
 
 ## Verification
 
-1. Before Phase 3, the session runs one manual probe to settle rows 15, 18, 19, 20, 26, 53, 76, 88, 94 and 106 before the runner depends on them.
-   - Build a scratch git repo under the system temp dir with `.claude/worktree-optout` and a `bare-writer.md`.
-   - Run `claude -p` once per arm with the Launch argv, the `env -i` prefix and the `--settings` JSON, on a one-line edit task.
-   - In the `toolkit` run, the task also asks the subagent to run `env | cut -d= -f1`, a names-only listing. Compare those names with the allowlist.
-   - Read the hook log's full payloads, the subagent transcript, `<config-dir>/sessions/`, and `git status`.
-   - Note whether the session-start burst of hook-log lines arrived one payload per line.
-   - Run `direnv exec <a directory with an .envrc> pwd` from another directory.
-   - Save one dispatcher line and one subagent line of the hook log, with every path replaced by a placeholder, for Phase 3's fixtures.
-   - Time four concurrent Phase 2 `build_task_fixture` calls, through `scripts/venv-run.sh python3`, on each of two synthetic source repos under the system temp dir. Both base trees total the `--max-base-mb` default:
-     - one holds about 10,000 text files;
-     - the other holds as many files as the `--max-base-entries` default, the larger shape.
-   - The slowest build across both sets Phase 4's `FIXTURE_GIT_TIMEOUT_S`, `--max-base-mb` default and `--max-base-entries` default by the rules under Fixture.
+Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
+
+1. Three manual probes. Step 1a has run, step 1c gates the first PR's last dispatch, and step 1b gates the second PR's Phase 3. None gates the first PR's merge.
+   - **1a, already run.** It ran three things, and its results stand in rows 16, 18, 19, 20, 26, 53, 76, 88, 94 and 106 and set the Fixture defaults:
+     - `claude -p` once per arm with the Launch argv, the `env -i` prefix and the `--settings` JSON, on a one-line edit task in a scratch repo;
+     - `direnv exec <dir> pwd` from `/tmp`;
+     - four concurrent `build_task_fixture` builds per synthetic tree.
+   - Step 1a hit two stop conditions, a missing subagent `CLAUDE.md` line and a rule load in `bare`, and so forced this revision.
+   - **1c**, local and unpaid, runs on this branch before the first PR's last dispatch. It times two synthetic source repos under the system temp dir, each on its own, with four concurrent `build_task_fixture` builds through `scripts/venv-run.sh python3`:
+     - 12,500 text files totaling 100 MB, the corner the bounds admit;
+     - 17,500 text files totaling 100 MB.
+   - The harness passes `timeout_s=600`, ten times the 60 s stop line, so a slow build records its time instead of timing out. The figure is a judgment.
+   - Step 1c records each tree's file count, byte total and slowest build in row 106. The Fixture rule sets `FIXTURE_GIT_TIMEOUT_S` from the corner.
+   - Afterwards it deletes both source repos and every fixture and `baseline.git` copy it built.
+   - Stop and bring step 1c's timing to the engineer before the last dispatch when either holds:
+     - the corner's slowest build exceeds 60 s, so the accepted 12,500 default fails the Fixture rule (row 129);
+     - the 17,500-file tree's slowest build exceeds 60 s, so the default sits within 40% of the unexplained slowdown.
+   - **1b** runs on the follow-on branch before its Phase 3 dispatch. It settles rows 31, 94, 115, 117, 120, 132, 138 and 146 before Phases 3 and 4 depend on them. It makes three paid runs on one one-line edit task to a `.py` file, which this repository's Python rule matches, so that file is the probe's rule-matching file (row 145). Its steps, in the order they run:
+     - Build three scratch git repos under the system temp dir, each holding that `.py` file, `.claude/worktree-optout` and `bare-writer.md`.
+     - In the `bare` repo, add `bare`'s generated settings file, plus a probe-only root `CLAUDE.md` that the settings file's `claudeMdExcludes` also names. That entry tests row 115's never-trusted-folder question apart from the three rule questions.
+     - In the third repo, add a probe-only `.claude/agents/probe-inherit.md`: `bare-writer`'s file with `omitClaudeMd` left out and its own name. It exists only for this probe, so the runner never ships it.
+     - Write `list-env-names.py` into a fresh directory under the system temp dir with mode 0700, outside every fixture. Its body is `import os; print("\n".join(sorted(os.environ)))`, so it emits names from the process environment by construction, and no value byte can reach its output.
+     - The engineer reads the script. It is then run once from a terminal with a synthetic variable whose value spans three lines, and its output must hold that variable's name and none of its value lines.
+     - Before the first launch, print the probe's nominal ceiling: three runs at `msmr.PER_RUN_BUDGET_CAP_USD` each.
+     - Run `toolkit`, `bare` and `probe-inherit`, each in its own repo, with one inner prompt and one argv for all three. The prompt asks for the one-line edit and for running exactly the listing command. The argv is the full Launch argv, Read allow entries included, plus one exact `Bash(<absolute python3 path> -I <script path>)` allow entry. So their first turns differ only in the agent and the `bare` repo's settings.
+     - Record each run's cost and wall clock beside the cap. This is the first real replay-shaped figure behind row 37.
+     - Read the hook logs, each subagent transcript's first assistant `message.usage`, observed model ID and Read of the `.py` file, each `toolkit` Read of an allow-list path with its result, each run's listing, and the `claude --version` line printed behind the launch prefix.
+     - Record whether the `toolkit` run's `path_glob_match` line carries a field naming the `.py` file that triggered it, and under what key (row 146). Its absence is not a stop: `smoke`'s exclude note then prints only its residual sentence.
+     - Compute by hand, from Campaign's formulas, since Phase 3's verdict does not exist yet:
+       - the block calibration on the `toolkit` and `bare` sizes;
+       - the body's real share, `toolkit`'s first-turn size minus `probe-inherit`'s, against the body term (row 138). Both inherit the same `CLAUDE.md` and rules and differ only in the agent body;
+       - the inherited instructions' real share, `probe-inherit`'s size minus `bare`'s, against the margin.
+     - Save one dispatcher line, one subagent `path_glob_match` line, and one subagent transcript's first assistant entry for Phase 3's fixtures. Keep their key structure and replace every value with a synthetic one: paths, session and message IDs, `transcript_path`, `cwd`, the CLI version and every `usage` count.
+     - Clean up: delete the three scratch repos, the script's directory, the three runs' session stores under `<config-dir>/projects/`, and each `<config-dir>/sessions/` file whose first line is one of the three session IDs. Row 79's appended account files stay, as accepted residue.
    - Stop and re-plan with the engineer before Phase 3 when any of these holds:
-     - the hook log shows no subagent `CLAUDE.md` load for `toolkit`, or any `CLAUDE.md` load for `bare`;
-     - a subagent load line carries no `agent_id`, or a line carries no `session_id`;
-     - no `sessions/` file holds the run's session ID;
-     - the session fails to start or to authenticate under the allowlisted environment;
-     - a hook-log line holds two payloads, or one payload spans two lines;
-     - the names-only listing shows a name outside the allowlist that neither the shell nor Claude Code sets, such as a token or a cloud-profile variable.
+     - the `toolkit` run shows no Read of the `.py` file that ran, so the control went unexercised;
+     - the `toolkit` run read it and logs no subagent `path_glob_match` load of an account rule;
+     - the `bare` run shows no Read of the `.py` file that ran, so the exclude went unexercised;
+     - the `bare` run logs a subagent load outside its fixture;
+     - `bare`'s dispatcher logs a load of the probe-only `CLAUDE.md`, so a never-trusted folder's project settings do not apply `claudeMdExcludes` (row 115);
+     - `bare`'s dispatcher logs any other load besides the account's `CLAUDE.md`;
+     - `bare`'s dispatcher shows no `session_start` load of the account's `CLAUDE.md`;
+     - a run's first assistant entry lacks one of the three usage fields;
+     - `probe-inherit`'s first-turn prompt size exceeds `bare`'s by less than the margin;
+     - the body term misses `toolkit`'s first-turn size minus `probe-inherit`'s by more than half the margin. The re-plan then restores the calibration pair this design replaced (rows 136, 138);
+     - the hand-computed block calibration fails;
+     - a subagent's observed model ID differs from `REVIEWER_MODEL_ID` (row 31);
+     - the `claude --version` line does not parse as a dotted version (row 132);
+     - a `toolkit` Read of an allow-list path is denied;
+     - the `toolkit` run makes no Read of an allow-list path;
+     - the writer is sent back for a missing reviewer Read;
+     - a run's listing is denied;
+     - a run's listing names a variable outside the allowlist that neither the shell nor Claude Code sets, such as a token or a cloud-profile variable;
+     - a run stops at the per-run cap, so a replay does not fit it and every printed ceiling rests on a wrong cap (rows 37, 65).
 2. Each phase's own command in Critical files, run by that phase's dispatch.
-3. For the whole change, `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. It selects the full suite on its own, because `select-tests.py` is one of its global trigger paths (row 40). Then run `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
-   - After the PR's first CI run, compare the `tests` job's duration with the latest `main` run's, against the 25-minute `timeout-minutes` cap (row 89).
+3. For each PR's whole change, `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. Both PRs edit `select-tests.py`, one of its global trigger paths, so it selects the full suite on its own (row 40). Then run `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
+   - After each PR's first CI run, compare the `tests` job's duration with the latest `main` run's, against the 25-minute `timeout-minutes` cap (row 89).
    - A duration within 5 minutes of the cap goes to the engineer before merge, because re-deriving the cap edits `.github/workflows/tests.yml`, a file outside this plan's list.
-   - Record `scripts/venv-run.sh pytest --durations=20` over the five new test files beside that comparison, so a slow test shows by name (row 107).
-4. `git check-ignore -q evals/replay_bench/.local/tasks/probe.json` exits 0.
+   - Record `scripts/venv-run.sh pytest --durations=20` over that PR's new and edited replay test files beside that comparison, so a slow test shows by name (row 107).
+4. First PR: `git check-ignore -q evals/replay_bench/.local/tasks/probe.json` exits 0.
 5. A review check covering:
    - every new test builds its repositories, transcripts and config dirs under `tmp_path`;
-   - every committed log or transcript fixture carries placeholder paths only;
+   - no committed log or transcript fixture carries a captured value: its paths, IDs, CLI versions and `usage` counts are all synthetic;
    - no committed file names or mines a real repository (row 9).
-6. Live checks the engineer runs from a terminal through `scripts/venv-run.sh python3`, never in CI. They spend subscription quota. Their output stays in the terminal and `.local/`, and the PR body may say whether they passed but cites no figure (rows 9, 10).
+6. Second PR, before it merges: live checks the engineer runs from a terminal through `scripts/venv-run.sh python3`, never in CI. These checks spend subscription quota. The first PR has none, because it ships no CLI. Their output stays in the terminal and `.local/`, and the PR body may say whether they passed but cites no figure (rows 9, 10).
    - `scripts/venv-run.sh python3 evals/run_replay_bench.py tasks --source-repo <this repository's main checkout> --trusted-author <the engineer's commit email> --name own-history --max-tasks 5`, then read the briefs, the printed identities, and the largest kept tasks by size and by entry count.
-   - `scripts/venv-run.sh python3 evals/run_replay_bench.py preflight --tasks own-history` resolves one account with no refusal, its readiness check included. The same check on a task set from one other local repo, whose direnv configuration sets `CLAUDE_CONFIG_DIR`, resolves that account's config dir.
-   - `scripts/venv-run.sh python3 evals/run_replay_bench.py smoke --tasks own-history --task-id <id>`, where `<id>` is the task `tasks` named as largest by entry count, passes when all of these hold:
+   - `scripts/venv-run.sh python3 evals/run_replay_bench.py preflight --tasks own-history` resolves one account with no refusal, its readiness check included. The same check on a task set from one other local repo, whose direnv configuration sets `CLAUDE_CONFIG_DIR`, resolves that account's config dir. The engineer reads each account's list of dropped variables before the first `run`.
+   - `scripts/venv-run.sh python3 evals/run_replay_bench.py smoke --tasks own-history --task-id <id>` uses one task, so no second smoke task is needed.
+     - `<id>` is the task with the most base-tree entries among those that modify a `.py` or `.sh` file the base tree already holds, which this repository's rules match (row 145). The engineer reads the candidates' changed paths from the task file. A file the commit only adds may never be read.
+     - The task need not be the largest by entry count overall, because step 1c already timed the bounds' corner locally.
+   - That `smoke` passes when all of these hold:
      - its last line reads `instrument: ok`, and it wrote the account's smoke-pass record;
+     - the engineer has read the exclude note and its residual sentence, which gate nothing;
      - each arm's valid run has a non-empty diff;
      - both arms observed the same model;
-     - each run's fixture-build seconds are under a third of the `--fixture-git-timeout-s` in force;
+     - each run's fixture-build seconds are under a third of the `--fixture-git-timeout-s` in force. A smoke block builds two fixtures at once, so this holds at two-way concurrency, while the timeout was derived at four-way;
      - the engineer recognizes every recorded Bash command, out-of-fixture path and out-of-session path;
      - every name `smoke` reports under the config dir, and every file it reports as grown, is one of three things: a file the cleanup already removes, one of row 79's known appenders, or a file added to the cleanup before any `run`.
    - In their own terminal, the engineer counts the keys under the top-level `projects` object of the account's `.claude.json` before and after that `smoke`, and notes only whether the count grew. A growth is an open question for the engineer before any `run`, and the runner never edits `.claude.json`.
    - A `run` on any other account first needs one passing `smoke` on a task from that account, and `run` refuses otherwise.
-   - On a failed smoke, stop before any `run` and bring the failing premise to the engineer: row 16, 18, 19, 20, 26, 31, 32, 37, 70, 88 or 106.
+   - On a failed smoke, stop before any `run` and bring the failing premise to the engineer: row 16, 18, 19, 20, 26, 31, 32, 37, 70, 88, 106, 115, 117, 120, 132, 138, 145 or 146.
 
 ## Out of scope
 
@@ -1092,3 +1521,12 @@ Projected diff: about 6,880 lines, the sum of these parts: about 2,750 for the n
 - Changing `_LOCAL_GIT_TIMEOUT_S` for the review bench's own callers. The replay runner passes its own limit through the new `timeout_s` keyword (row 87).
 - Re-deriving the CI job's `timeout-minutes` cap. Verification step 3 brings a job near the cap to the engineer instead (row 89).
 - A `CHANGELOG.md` entry. The change adds contributor-side eval tooling, and the one stowed file it edits is `select-tests.py`'s rule table.
+- Allowing Bash commands beyond `acceptEdits`' auto-approved set and the account's allow rules, such as a source repo's test command. Both arms meet the same rules, the permission-denial count shows the effect, and the README states it (row 122).
+- Archive-time `text`, `eol`, `ident` and `filter` conversions, which can rewrite a file's bytes but keep every path. The `export-attributes` skip covers only the two attributes that drop a path or substitute text (row 131).
+- Narrowing the Read grant to the reviewer files by importing the evaluator's `ACCEPTED_REVIEWERS`. The engineer accepted the wider set (rows 124, 125).
+- A containment check that every granted realpath lies inside the config checkout. The engineer accepted cutting it (rows 134, 135). The grant is read-only and its entries are exact. Its files are the config checkout's own only on a folded stow install, and the README says the grant can include other files elsewhere (row 142).
+- Refusing a proxy URL that carries credentials. The README states the single-user assumption instead, and the print-hygiene tests already use such a URL.
+- A `smoke` spend stop and a `smoke --k`. `smoke` runs one run per arm and prints its ceiling, and the engineer accepted dropping both (rows 134, 135).
+- A probe of row 121's premise, such as a delayed second hook. The engineer accepted dropping it (rows 134, 135), and the README states the residual.
+- A scanned-set control and a declared selection row for `review_bench`'s own import-closure guard, which has the gap Phase 5a closes for the replay package. It is outside this plan's files (Axis 1).
+- A per-run check that a `toolkit` subagent received the account's `CLAUDE.md`. The hook logs no line for an inherited `CLAUDE.md` (row 18), so `smoke`'s block calibration checks inheritance once per account.
