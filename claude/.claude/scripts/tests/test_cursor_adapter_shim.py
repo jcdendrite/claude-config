@@ -1436,19 +1436,28 @@ class TestShimLogConcurrency:
         root = _workspace(tmp_path)
         args = hook_args("PreToolUse", mode="classify", label="L" * 64, fail_closed=False)
         payload = json.dumps(shell_pre_payload(root, "ls")).encode()
-        processes = [
-            subprocess.Popen(
-                shim_argv(*args),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=_scratch(tmp_path),
-                env=shim_process_env(env),
-            )
-            for _ in range(40)
-        ]
-        for process in processes:
-            process.communicate(payload, timeout=120)
+        processes = []
+        try:
+            for _ in range(40):
+                process = subprocess.Popen(
+                    shim_argv(*args),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=_scratch(tmp_path),
+                    env=shim_process_env(env),
+                )
+                processes.append(process)
+                # Delivered at spawn, so each shim's read deadline times only that shim.
+                process.stdin.write(payload)
+                process.stdin.close()
+            for process in processes:
+                process.communicate(timeout=120)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
         lines = env.log_path.read_text().splitlines()
         assert len(lines) == 40
         for line in lines:
@@ -1721,7 +1730,7 @@ class TestShimExecCount:
 
 class TestUnknownToolsAndCap:
     def _classify(
-        self, tmp_path: Path, tool_name: str, *, fail_closed: bool = True, shim: Path = SHIM, env: ShimEnv | None = None
+        self, tmp_path: Path, tool_name: object, *, fail_closed: bool = True, shim: Path = SHIM, env: ShimEnv | None = None
     ) -> dict:
         env = env or make_shim_env(tmp_path)
         root = _workspace(tmp_path) if not (tmp_path / "workspace").exists() else (tmp_path / "workspace").resolve()
@@ -1752,6 +1761,17 @@ class TestUnknownToolsAndCap:
         env = make_shim_env(tmp_path)
         self._classify(tmp_path, "Brand New Tool!", env=env)
         assert read_log_lines(env)[-1]["tool"] == SHIM_MODULE.LOG_OVERFLOW_TOKEN
+
+    @pytest.mark.parametrize("tool_name", [5, True, ["Shell"], {"name": "Shell"}], ids=["number", "bool", "list", "object"])
+    def test_a_non_string_tool_name_denies_on_a_fail_closed_classify_entry_and_prints_empty_on_an_informational_one(
+        self, tmp_path: Path, tool_name: object
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        output = self._classify(tmp_path, tool_name, env=env)
+        assert output["permission"] == "deny"
+        assert "unknown-tool" in output["agent_message"]
+        assert read_log_lines(env)[-1]["out"] == "unknown-tool"
+        assert self._classify(tmp_path, tool_name, env=env, fail_closed=False) == {}
 
     @pytest.mark.parametrize("refusal", ["missing-key", "session-id-grammar", "payload-malformed"])
     def test_other_refusals_log_the_call_event_and_tool(self, tmp_path: Path, refusal: str) -> None:
@@ -2880,9 +2900,9 @@ BEHAVIOUR_PARAMS = [pytest.param(row, shell, id=f"{row}-{shell}") for row, shell
 
 DIRECTORY_INPUT_REFUSAL_TEXT = (
     "The Shell tool's directory input must be empty. To work in a directory inside a workspace root, start the command with "
-    "`cd <absolute path> &&`, as its only leading `cd`, naming a directory whose path holds no `$`, `~` or backtick and does "
-    "not resolve outside the roots. If the call is refused again with the input empty, or the directory is outside every "
-    "workspace root, stop and tell the engineer in chat."
+    "`cd <absolute path> &&`, as its only leading `cd`, naming a directory whose path holds no `$`, `~` or backtick, holds no "
+    "backslash unless single-quoted, and does not resolve outside the roots. If the call is refused again with the input "
+    "empty, or the directory is outside every workspace root, stop and tell the engineer in chat."
 )
 
 
@@ -3203,6 +3223,44 @@ class TestDirectoryPin:
         assert "dir-input-refused" in output["agent_message"]
         assert not _probe_ran(tmp_path)
         assert read_log_lines(env)[-1]["out"] == "dir-input-refused"
+
+    def test_a_double_quoted_leading_cd_path_holding_a_backslash_takes_no_exception_and_a_plain_one_does(
+        self, tmp_path: Path
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        inside = root / "inside"
+        # A shell removes a backslash-newline pair inside double quotes, so it reads this path as `inside/../..`.
+        # The shim reads it as `inside` through a directory literally named `.\<newline>.`.
+        (inside / ".\\\n.").mkdir(parents=True)
+        backslash_path = f"{inside}/.\\\n./.."
+        denied = _prefixed(env, tmp_path, root, f'cd "{backslash_path}" && make')
+        assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        # A shell reads `\"` as a literal quote and keeps the word going, while the shim's quoted group ends at the quote.
+        # The shim reads the path as `inside/d\`, a directory that exists here.
+        (inside / "d\\").mkdir()
+        denied_at_quote = _prefixed(env, tmp_path, root, f'cd "{inside}/d\\" && make')
+        assert denied_at_quote.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        accepted = _prefixed(env, tmp_path, root, f'cd "{inside}" && make')
+        assert accepted.startswith(f"builtin cd -- '{inside}' || exit 1\n")
+
+    def test_a_single_quoted_leading_cd_path_holding_a_backslash_takes_the_exception(self, tmp_path: Path) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        backslash_directory = root / "inside" / "d\\"
+        backslash_directory.mkdir(parents=True)
+        # A shell reads a single-quoted backslash literally, so the shim's path and the shell's path are the same.
+        pinned = _prefixed(env, tmp_path, root, f"cd '{backslash_directory}' && make")
+        assert pinned.startswith(f"builtin cd -- '{backslash_directory}' || exit 1\n")
+
+    def test_an_unquoted_leading_cd_path_holding_a_backslash_takes_no_exception(self, tmp_path: Path) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        backslash_directory = root / "inside" / "d\\"
+        backslash_directory.mkdir(parents=True)
+        # A shell reads an unquoted `\ ` as an escaped space, so it reads this path as `inside/d `, not `inside/d\`.
+        denied = _prefixed(env, tmp_path, root, f"cd {backslash_directory} && make")
+        assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
 
     @pytest.mark.parametrize("name", ["déjà", "ファイル"], ids=["accented", "katakana"])
     def test_a_leading_cd_into_a_root_or_a_directory_inside_one_with_a_non_ascii_name_takes_the_exception(

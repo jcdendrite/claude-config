@@ -39,7 +39,7 @@ MODES = ("hook", "pin", "pin-check", "classify")
 # The default is a project choice with no vendor value.
 DEFAULT_DEADLINE_SECONDS = 10
 MIN_DEADLINE_SECONDS = 2
-# A project choice with no documented source. It puts the entry `timeout` at 65 s, and no documented Cursor ceiling backs that.
+# A project choice with no documented source or Cursor ceiling.
 MAX_DEADLINE_SECONDS = 60
 # The wrapper's `-k` value, a project choice: how long a hook that ignores the TERM gets before the KILL.
 GRACE_PERIOD_SECONDS = 2
@@ -131,8 +131,9 @@ _DEADLINE_RE = re.compile(r"[0-9]{1,3}", re.ASCII)
 
 # --- the directory pin ---
 
-# The pin prefix is the line `builtin cd -- '<dir>' || exit 1` and a newline. `builtin` stops a `cd` function or alias
-# from turning a failed cd into a success, and `exit` stays plain because `builtin exit` fails on a shell with no `builtin`.
+# The pin prefix is the line `builtin cd -- '<dir>' || exit 1` and a newline.
+# `builtin` stops a `cd` function or alias from turning a failed cd into a success.
+# `exit` stays plain because `builtin exit` fails on a shell with no `builtin`.
 PIN_LINE_HEAD = "builtin cd -- '"
 PIN_LINE_TAIL = "' || exit 1"
 # A project choice: the most newlines the recognition tries as the end of a pin line, which bounds the work a long
@@ -148,7 +149,8 @@ NO_ABSOLUTE_DIR_DETAIL = (
 DIRECTORY_INPUT_DETAIL = (
     "The Shell tool's directory input must be empty. To work in a directory inside a workspace root, start the command "
     "with `cd <absolute path> &&`, as its only leading `cd`, naming a directory whose path holds no `$`, `~` or "
-    "backtick and does not resolve outside the roots. If the call is refused again with the input empty, or the "
+    "backtick, holds no backslash unless single-quoted, and does not resolve outside the roots. If the call is "
+    "refused again with the input empty, or the "
     "directory is outside every workspace root, stop and tell the engineer in chat."
 )
 PIN_CHECK_DETAIL = (
@@ -659,9 +661,9 @@ class Roots:
         """The directory the pin gives a Shell command, or None when no absolute directory is known.
 
         The default is the first workspace root, or $HOME with none.
-        A command that starts with `cd <path> &&` gets the path instead when all of these hold:
+        A command whose leading `cd <path> &&` leading_cd_candidate recognizes gets the path instead when all of these hold:
         - the path is absolute and holds no NUL, `$`, `~` or backtick;
-        - the path exists;
+        - the path is an existing directory;
         - the path is a workspace root or lies inside one, by the containment test on its realpath form.
 
         The test runs no git and no other program."""
@@ -704,9 +706,15 @@ class Roots:
 
 
 def leading_cd_candidate(command):
-    """The path of a leading `cd <path> &&`, quotes removed, or None. The syntax is ASCII; the path may hold any character."""
+    """The path of a leading `cd <path> &&`, quotes removed, or None. The syntax is ASCII; the path may be non-ASCII.
+
+    A double-quoted path holding any backslash gives None.
+    A shell reads a backslash before a newline, a double quote or a backslash as an escape, not as those two characters,
+    so the path read literally can differ from the shell's path."""
     match = _LEADING_CD_RE.match(command)
     if match is None:
+        return None
+    if match.group(1) is not None and "\\" in match.group(1):
         return None
     for group in (match.group(3), match.group(2), match.group(1)):
         if group:

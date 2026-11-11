@@ -40,7 +40,7 @@ A 1.4 MB payload (a 1.4 MB command string; 20 runs, so p95 and p99 rest on one o
 ## Limits of the comparison
 
 - The Python version covered the common allow path only. It omitted the directory pin, full install-record validation, the `timeout` wrapper, output size caps, most tool translations, the log line and the real hook-output mapping. The Python figures are therefore somewhat optimistic. The added in-process work was not measured.
-- The hook's `timeout` wrapper, which this timing omitted, now runs on every hook call. Its cost sits outside the figures above.
+- The hook's `timeout` wrapper runs on every hook call. The timing above did not include it, so its cost sits outside the figures above.
 - It was one pass on one machine under load.
 
 ## Does this apply to other hooks in this toolkit
@@ -58,4 +58,4 @@ The adapter requires python3 3.14 or later. The installer is to refuse an older 
 
 ## Costs of the Python choice
 
-The Python shim's inner deadline bounds only the read from Cursor and the hook run. Its other in-process steps include the parse, the `lstat` and `realpath` of path resolution, the `stat` of a Write's target and the reads of its own config files. They have no time bound, where the bash shim capped every step with `timeout`. Only Cursor's own kill ends a stuck step, and a fail-closed entry blocks on that kill. A Python parse also removes the bash-to-jq separator and NUL-byte limits that made the bash shim refuse some inputs.
+The Python shim's inner deadline bounds only the read from Cursor and the hook run. Its other in-process steps include the parse, the `lstat` and `realpath` of path resolution, the `stat` of a Write's target and the reads of its own config files. They have no time bound, unlike the bash design compared above, which capped every step with `timeout`. Only Cursor's own kill ends a stuck step, and a fail-closed entry blocks on that kill. A Python parse also removes the bash-to-jq separator and NUL-byte limits that made the bash shim refuse some inputs.

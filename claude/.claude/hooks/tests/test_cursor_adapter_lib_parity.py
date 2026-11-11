@@ -108,7 +108,7 @@ def _gnu_realpath() -> str | None:
 
 
 # Cases whose resolution is expected to differ between `realpath -m` and os.path.realpath's non-strict mode, by id.
-# Each is run for the shim's result only: it must return an absolute path and raise nothing.
+# Each is run for the shim's result only, which keeps the lexical path: the loop and the unreadable directory stay unresolved.
 EXPECTED_TO_DIFFER = ("symlink-loop", "unreadable-part")
 
 
@@ -160,9 +160,7 @@ class TestRealpathParity:
         assert roots.canonicalize(str(tree / "missing" / ".." / "x")) == str(tree / "x")
 
     @pytest.mark.parametrize("case_id", EXPECTED_TO_DIFFER)
-    def test_a_case_expected_to_differ_still_resolves_to_an_absolute_path_and_raises_nothing(
-        self, tree: Path, case_id: str
-    ) -> None:
+    def test_a_case_expected_to_differ_resolves_to_its_lexical_path(self, tree: Path, case_id: str) -> None:
         closed = tree / "closed"
         if case_id == "symlink-loop":
             target = str(tree / "loop-a" / "child")
@@ -175,7 +173,7 @@ class TestRealpathParity:
         finally:
             if closed.exists():
                 closed.chmod(0o700)
-        assert resolved.startswith("/")
+        assert resolved == target
 
     def test_a_target_holding_a_nul_raises_the_error_the_shim_catches_before_any_resolution(self) -> None:
         with pytest.raises(ValueError):

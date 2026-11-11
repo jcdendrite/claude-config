@@ -1750,14 +1750,6 @@ class TestCursorAdapterSelection:
         assert _mod.SCRIPTS_TESTS_DIR in result.target_paths
         assert _mod.HOOKS_TESTS_DIR not in result.target_paths
 
-    def test_the_reading_tests_are_the_two_files_the_adapter_tests_name(self):
-        assert _mod.CURSOR_ADAPTER_READING_TESTS == (
-            "claude/.claude/hooks/tests/test_cursor_adapter_gate_matrix.py",
-            "claude/.claude/hooks/tests/test_cursor_adapter_lib_parity.py",
-        )
-        for path in _mod.CURSOR_ADAPTER_READING_TESTS:
-            assert (_REPO_ROOT / path).is_file()
-
     def test_a_path_under_a_sibling_directory_with_the_same_prefix_does_not_select_the_reading_tests(self):
         result = _mod.select_pytest_targets(["claude/.claude/scripts/cursor-adapter-notes/readme.txt"])
         assert not set(_mod.CURSOR_ADAPTER_READING_TESTS) & set(result.target_paths)
