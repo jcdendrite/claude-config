@@ -53,18 +53,6 @@ toward the same question, dispatch the question instead of continuing inline.
   `code-writer` section below for the narrow exception.
 - The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
-**A dispatch must return something the parent does not already have.**
-Never dispatch an agent — of any type — whose instructions are to do no work:
-
-- Report back immediately.
-- Occupy the turn.
-- Hold while other dispatches finish.
-
-A no-op agent returns at once, so it waits for nothing — waiting isn't an
-action a dispatch can perform. It still pays a full agent's context cost
-for an empty return. When pending dispatches are all that remain, end the
-turn without a tool call and let their completion drive the next one.
-
 **Plan mode.** From a session in plan mode, call `ExitPlanMode` and wait
 for the plan's approval before delegating execution: a spawned subagent
 inherits the plan-mode reminder and typically returns a plan instead of
@@ -168,7 +156,10 @@ still accumulates in the parent either way. A review round is the ADDRESS/DEFER/
 `/code-review` or `/ready-for-review` invocation, not a span across multiple re-review loop iterations. Dispatch
 one `code-writer` per round, `model: sonnet`, carrying: every ADDRESS row verbatim (finding, `file:line`,
 suggested fix); the diff scope; and the verification command. Never dispatch a DEFER or SETTLED row. The parent keeps the
-commit, the `/code-review` re-run, and the marker. Two further carve-outs, neither size-based:
+commit, the `/code-review` re-run, and the marker. When the return's **Still uncertain** names a claim the
+writer changed or left unwritten, or another site that states it, the parent either has it fixed before the next
+review or records it as an ADDRESS row. It never drops the entry, and forwarding it to the next reviewer as a known
+leftover does not count. Two further carve-outs, neither size-based:
 
 - Not code (the review-findings PR-body block, a `respond-pr` reply, a plan-file edit) — stays inline.
 - Still being re-decided — fails condition (1), stays inline.

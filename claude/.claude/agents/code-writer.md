@@ -194,6 +194,8 @@ the `**Self-review:**` ledger.
   If you shipped new behavior without a test because the codebase has no test
   convention (per the baseline rule), name the test-coverage gap as an
   explicit item — do not omit it. If there is nothing else, say "nothing."
+  Anything you did not verify, such as a check limited to part of a claim,
+  goes here even when the dispatch adds a separate verification field.
   The parent uses this to target its review.
 
 No padding, no praise, no restating the dispatch prompt. If the change is
