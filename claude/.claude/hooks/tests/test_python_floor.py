@@ -1,17 +1,5 @@
 """Tests for the Python floor: the constants and probe in `_config.sh`, install.sh's check, and the statements tied to CI's pin.
 
-Sections:
-
-- the predicate `_python_version_meets_floor`, over a version matrix;
-- the probe `_python3_floor_status`, against stub `python3` executables under default and `set -uo pipefail`
-  shell options, and against the real interpreter;
-- the constants: an inherited value cannot move the floor, and sourcing twice succeeds;
-- install.sh's check, extracted by its INSTALL_TEST_FIXTURE markers and run under `set -e`;
-- the whole script, which must exit before its first mutation of `$HOME`;
-- the presence check for an absent `python3`;
-- the floor equals CI's pin, ruff's `target-version` and the README Requirements bullet;
-- install.sh's ensurepip hint reads the variable the floor check assigns.
-
 `_config.sh` is sourced before PATH narrows to the stub directory, because it calls `dirname` while loading.
 """
 from __future__ import annotations
@@ -21,6 +9,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -54,9 +43,30 @@ _FLOOR_CHANGE_SITES = (
 )
 
 
+def _floor_major() -> str:
+    return python_floor_fields()[0]
+
+
+def _floor_minor() -> str:
+    return python_floor_fields()[1]
+
+
 def _floor_version() -> str:
-    major, minor = python_floor_fields()
-    return f"{major}.{minor}"
+    return f"{_floor_major()}.{_floor_minor()}"
+
+
+def _stub_output_and_dotted_version(minor_offset: int) -> tuple[str, str]:
+    """The probe stub's `<major> <minor>` output and the dotted version the probe prints, `minor_offset` minors from the floor."""
+    shifted_minor = int(_floor_minor()) + minor_offset
+    return f"{_floor_major()} {shifted_minor}", f"{_floor_major()}.{shifted_minor}"
+
+
+def _floor_stub_output() -> str:
+    return _stub_output_and_dotted_version(0)[0]
+
+
+def _major_relative_to_floor(major_offset: int) -> str:
+    return str(int(_floor_major()) + major_offset)
 
 
 def _digits(count: int) -> str:
@@ -134,62 +144,67 @@ def _run_install_block(bin_dir: Path) -> subprocess.CompletedProcess:
     )
 
 
+# Parametrize values that depend on the floor are zero-argument callables resolved in the test body.
+# A failed floor read then fails one test instead of aborting collection.
 class TestPredicate:
     @pytest.mark.parametrize(
-        ("major", "minor"),
+        "fields",
         [
-            pytest.param("3", "14", id="exactly-the-floor"),
-            pytest.param("3", "15", id="minor-above"),
-            pytest.param("3", "100", id="three-digit-minor-above-numerically-but-below-lexically"),
-            pytest.param("4", "0", id="higher-major-with-a-lower-minor"),
-            pytest.param("3", "014", id="leading-zero-minor-is-decimal-14-not-octal-12"),
-            pytest.param("08", "0", id="leading-zero-major-is-decimal-8-not-an-octal-error"),
+            pytest.param(lambda: (_floor_major(), _floor_minor()), id="exactly-the-floor"),
+            pytest.param(lambda: (_floor_major(), str(int(_floor_minor()) + 1)), id="minor-above"),
+            pytest.param(lambda: (_floor_major(), "100"), id="three-digit-minor-above-numerically-but-below-lexically"),
+            pytest.param(lambda: (_major_relative_to_floor(1), "0"), id="higher-major-with-a-lower-minor"),
+            pytest.param(lambda: (_floor_major(), f"0{_floor_minor()}"), id="leading-zero-minor-is-the-decimal-floor-not-octal"),
+            pytest.param(lambda: ("08", "0"), id="leading-zero-major-is-decimal-8-not-an-octal-error"),
         ],
     )
-    def test_at_or_above_the_floor_returns_0(self, major: str, minor: str) -> None:
+    def test_at_or_above_the_floor_returns_0(self, fields: Callable[[], tuple[str, str]]) -> None:
+        major, minor = fields()
         result = _run_predicate(major, minor)
 
         assert result.returncode == 0, _output_of(result)
         assert result.stderr == "", _output_of(result)
 
     @pytest.mark.parametrize(
-        ("major", "minor"),
+        "fields",
         [
-            pytest.param("3", "13", id="one-minor-below"),
-            pytest.param("3", "9", id="single-digit-minor-below-numerically-but-above-lexically"),
-            pytest.param("3", "08", id="leading-zero-is-decimal-not-octal"),
-            pytest.param("2", "99", id="lower-major-with-a-higher-minor"),
+            pytest.param(lambda: (_floor_major(), str(int(_floor_minor()) - 1)), id="one-minor-below"),
+            pytest.param(lambda: (_floor_major(), "9"), id="single-digit-minor-below-numerically-but-above-lexically"),
+            pytest.param(lambda: (_floor_major(), "08"), id="leading-zero-is-decimal-not-octal"),
+            pytest.param(lambda: (_major_relative_to_floor(-1), "99"), id="lower-major-with-a-higher-minor"),
         ],
     )
-    def test_below_the_floor_returns_1(self, major: str, minor: str) -> None:
+    def test_below_the_floor_returns_1(self, fields: Callable[[], tuple[str, str]]) -> None:
+        major, minor = fields()
         result = _run_predicate(major, minor)
 
         assert result.returncode == 1, _output_of(result)
         assert result.stderr == "", _output_of(result)
 
     @pytest.mark.parametrize(
-        ("major", "minor"),
+        "fields",
         [
-            pytest.param("", "", id="both-empty"),
-            pytest.param("3", "", id="empty-minor"),
-            pytest.param("3", "14a", id="trailing-letter"),
-            pytest.param("x", "y", id="non-numeric"),
-            pytest.param("x", "14", id="non-numeric-major-with-a-valid-minor"),
-            pytest.param("", "14", id="empty-major-with-a-valid-minor"),
-            pytest.param(_digits(10), "0", id="ten-digit-major"),
-            pytest.param(_digits(1000), "14", id="thousand-digit-major"),
-            pytest.param("3", _digits(10), id="ten-digit-minor"),
-            pytest.param("3", _digits(20), id="twenty-digit-minor"),
-            pytest.param("3", _digits(1000), id="thousand-digit-minor"),
+            pytest.param(lambda: ("", ""), id="both-empty"),
+            pytest.param(lambda: (_floor_major(), ""), id="empty-minor"),
+            pytest.param(lambda: (_floor_major(), f"{_floor_minor()}a"), id="trailing-letter"),
+            pytest.param(lambda: ("x", "y"), id="non-numeric"),
+            pytest.param(lambda: ("x", _floor_minor()), id="non-numeric-major-with-a-valid-minor"),
+            pytest.param(lambda: ("", _floor_minor()), id="empty-major-with-a-valid-minor"),
+            pytest.param(lambda: (_digits(10), "0"), id="ten-digit-major"),
+            pytest.param(lambda: (_digits(1000), _floor_minor()), id="thousand-digit-major"),
+            pytest.param(lambda: (_floor_major(), _digits(10)), id="ten-digit-minor"),
+            pytest.param(lambda: (_floor_major(), _digits(20)), id="twenty-digit-minor"),
+            pytest.param(lambda: (_floor_major(), _digits(1000)), id="thousand-digit-minor"),
         ],
     )
-    def test_a_field_that_is_not_one_to_nine_digits_returns_2(self, major: str, minor: str) -> None:
+    def test_a_field_that_is_not_one_to_nine_digits_returns_2(self, fields: Callable[[], tuple[str, str]]) -> None:
+        major, minor = fields()
         result = _run_predicate(major, minor)
 
         assert result.returncode == 2, _output_of(result)
 
     def test_nine_digit_minor_is_still_a_number(self) -> None:
-        result = _run_predicate("3", _digits(9))
+        result = _run_predicate(_floor_major(), _digits(9))
 
         assert result.returncode == 0, _output_of(result)
 
@@ -201,16 +216,17 @@ class TestPredicate:
 
 class TestProbeAgainstStubs:
     @pytest.mark.parametrize(
-        ("reported", "expected_version"),
+        "stub_output_and_version",
         [
-            pytest.param("3 14", "3.14", id="exactly-the-floor"),
-            pytest.param("3 15", "3.15", id="minor-above"),
-            pytest.param("3 100", "3.100", id="three-digit-minor"),
+            pytest.param(lambda: _stub_output_and_dotted_version(0), id="exactly-the-floor"),
+            pytest.param(lambda: _stub_output_and_dotted_version(1), id="minor-above"),
+            pytest.param(lambda: (f"{_floor_major()} 100", f"{_floor_major()}.100"), id="three-digit-minor"),
         ],
     )
     def test_at_or_above_the_floor_returns_0_and_prints_the_dotted_version(
-        self, tmp_path: Path, shell_options: str, reported: str, expected_version: str
+        self, tmp_path: Path, shell_options: str, stub_output_and_version: Callable[[], tuple[str, str]]
     ) -> None:
+        reported, expected_version = stub_output_and_version()
         _write_python3_stub(tmp_path / "bin", f"echo '{reported}'")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
@@ -219,46 +235,53 @@ class TestProbeAgainstStubs:
         assert result.stdout == f"{expected_version}\n", _output_of(result)
 
     def test_below_the_floor_returns_1_and_prints_the_dotted_version(self, tmp_path: Path, shell_options: str) -> None:
-        _write_python3_stub(tmp_path / "bin", "echo '3 13'")
+        reported, expected_version = _stub_output_and_dotted_version(-1)
+        _write_python3_stub(tmp_path / "bin", f"echo '{reported}'")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
 
         assert result.returncode == 1, _output_of(result)
-        assert result.stdout == "3.13\n", _output_of(result)
+        assert result.stdout == f"{expected_version}\n", _output_of(result)
 
     def test_only_the_first_line_counts_when_a_later_line_is_below_the_floor(self, tmp_path: Path, shell_options: str) -> None:
-        _write_python3_stub(tmp_path / "bin", "echo '3 14'; echo '3 9'")
+        below_floor, _ = _stub_output_and_dotted_version(-1)
+        _write_python3_stub(tmp_path / "bin", f"echo '{_floor_stub_output()}'; echo '{below_floor}'")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
 
         assert result.returncode == 0, _output_of(result)
-        assert result.stdout == "3.14\n", _output_of(result)
+        assert result.stdout == f"{_floor_version()}\n", _output_of(result)
 
     def test_only_the_first_line_counts_when_a_later_line_is_junk(self, tmp_path: Path, shell_options: str) -> None:
-        _write_python3_stub(tmp_path / "bin", "echo '3 13'; echo 'ZQXJ line two'")
+        reported, expected_version = _stub_output_and_dotted_version(-1)
+        _write_python3_stub(tmp_path / "bin", f"echo '{reported}'; echo 'ZQXJ line two'")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
 
         assert result.returncode == 1, _output_of(result)
-        assert result.stdout == "3.13\n", _output_of(result)
+        assert result.stdout == f"{expected_version}\n", _output_of(result)
 
     @pytest.mark.parametrize(
         "stub_body",
         [
-            pytest.param("exit 0", id="empty-output"),
-            pytest.param("echo garbage", id="garbage"),
-            pytest.param("echo 3", id="one-field"),
-            pytest.param("echo '3 14 1'", id="three-fields"),
-            pytest.param("exit 1", id="exit-1-with-no-output"),
-            pytest.param("echo '3 14'; exit 1", id="valid-line-then-exit-1"),
-            pytest.param("echo 'Python launcher banner'; echo '3 14'", id="banner-line-before-the-version"),
-            pytest.param(f"echo '3 {_digits(1000)}'", id="thousand-digit-minor"),
-            pytest.param("echo 'ZQXJ 14'", id="non-numeric-major"),
-            pytest.param(f"echo '{_digits(1000)} 14'", id="thousand-digit-major"),
+            pytest.param(lambda: "exit 0", id="empty-output"),
+            pytest.param(lambda: "echo garbage", id="garbage"),
+            pytest.param(lambda: f"echo {_floor_major()}", id="one-field"),
+            pytest.param(lambda: f"echo '{_floor_stub_output()} 1'", id="three-fields"),
+            pytest.param(lambda: "exit 1", id="exit-1-with-no-output"),
+            pytest.param(lambda: f"echo '{_floor_stub_output()}'; exit 1", id="valid-line-then-exit-1"),
+            pytest.param(
+                lambda: f"echo 'Python launcher banner'; echo '{_floor_stub_output()}'", id="banner-line-before-the-version"
+            ),
+            pytest.param(lambda: f"echo '{_floor_major()} {_digits(1000)}'", id="thousand-digit-minor"),
+            pytest.param(lambda: f"echo 'ZQXJ {_floor_minor()}'", id="non-numeric-major"),
+            pytest.param(lambda: f"echo '{_digits(1000)} {_floor_minor()}'", id="thousand-digit-major"),
         ],
     )
-    def test_an_unreadable_version_returns_2_and_prints_nothing(self, tmp_path: Path, shell_options: str, stub_body: str) -> None:
-        _write_python3_stub(tmp_path / "bin", stub_body)
+    def test_an_unreadable_version_returns_2_and_prints_nothing(
+        self, tmp_path: Path, shell_options: str, stub_body: Callable[[], str]
+    ) -> None:
+        _write_python3_stub(tmp_path / "bin", stub_body())
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
 
@@ -277,11 +300,11 @@ class TestProbeAgainstStubs:
     def test_a_glob_character_in_the_output_is_not_expanded_against_the_working_directory(
         self, tmp_path: Path, shell_options: str
     ) -> None:
-        """An unquoted field split would expand `*` to the file named 14 and read `3 14`."""
-        _write_python3_stub(tmp_path / "bin", "echo '3 *'")
+        """An unquoted field split would expand `*` to the file named after the floor's minor and read the floor version."""
+        _write_python3_stub(tmp_path / "bin", f"echo '{_floor_major()} *'")
         workdir = tmp_path / "workdir"
         workdir.mkdir()
-        (workdir / "14").write_text("")
+        (workdir / _floor_minor()).write_text("")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options, cwd=workdir)
 
@@ -289,7 +312,7 @@ class TestProbeAgainstStubs:
         assert result.stdout == "", _output_of(result)
 
     def test_stderr_from_python3_does_not_reach_stderr(self, tmp_path: Path, shell_options: str) -> None:
-        _write_python3_stub(tmp_path / "bin", "echo '3 14'; echo 'shim noise' >&2")
+        _write_python3_stub(tmp_path / "bin", f"echo '{_floor_stub_output()}'; echo 'shim noise' >&2")
 
         result = _run_probe(tmp_path / "bin", shell_options=shell_options)
 
@@ -297,24 +320,24 @@ class TestProbeAgainstStubs:
         assert result.stderr == "", _output_of(result)
 
     def test_a_caller_ifs_without_a_space_does_not_change_the_result(self, tmp_path: Path) -> None:
-        """The field split reads `3 14` on a space, so a caller's `IFS=$'\\n'` must not leave it as one field."""
-        _write_python3_stub(tmp_path / "bin", "echo '3 14'")
+        """The field split reads the two version fields on a space, so a caller's `IFS=$'\\n'` must not merge them."""
+        _write_python3_stub(tmp_path / "bin", f"echo '{_floor_stub_output()}'")
 
         result = _run_probe(tmp_path / "bin", caller_setup="IFS=$'\\n'")
 
         assert result.returncode == 0, _output_of(result)
-        assert result.stdout == "3.14\n", _output_of(result)
+        assert result.stdout == f"{_floor_version()}\n", _output_of(result)
 
     def test_a_runner_is_invoked_with_python3_and_the_isolating_flags(self, tmp_path: Path) -> None:
         argv_record = tmp_path / "runner-argv"
         runner = tmp_path / "recording-runner"
         _write_executable(runner, f"#!/bin/sh\nprintf '%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" > '{argv_record}'\nexec \"$@\"\n")
-        _write_python3_stub(tmp_path / "bin", "echo '3 14'")
+        _write_python3_stub(tmp_path / "bin", f"echo '{_floor_stub_output()}'")
 
         result = _run_probe(tmp_path / "bin", runner=(str(runner),))
 
         assert result.returncode == 0, _output_of(result)
-        assert result.stdout == "3.14\n", _output_of(result)
+        assert result.stdout == f"{_floor_version()}\n", _output_of(result)
         assert argv_record.read_text().splitlines() == ["python3", "-I", "-S", "-c"], _output_of(result)
 
 
@@ -370,16 +393,17 @@ class TestConstants:
 
 class TestInstallBlock:
     @pytest.mark.parametrize(
-        ("reported", "expected_version"),
+        "stub_output_and_version",
         [
-            pytest.param("3 14", "3.14", id="exactly-the-floor"),
-            pytest.param("3 15", "3.15", id="minor-above"),
-            pytest.param("3 100", "3.100", id="three-digit-minor"),
+            pytest.param(lambda: _stub_output_and_dotted_version(0), id="exactly-the-floor"),
+            pytest.param(lambda: _stub_output_and_dotted_version(1), id="minor-above"),
+            pytest.param(lambda: (f"{_floor_major()} 100", f"{_floor_major()}.100"), id="three-digit-minor"),
         ],
     )
     def test_at_or_above_the_floor_is_silent_and_captures_the_dotted_version(
-        self, tmp_path: Path, reported: str, expected_version: str
+        self, tmp_path: Path, stub_output_and_version: Callable[[], tuple[str, str]]
     ) -> None:
+        reported, expected_version = stub_output_and_version()
         _write_python3_stub(tmp_path / "bin", f"echo '{reported}'")
 
         result = _run_install_block(tmp_path / "bin")
@@ -389,15 +413,16 @@ class TestInstallBlock:
         assert result.stdout == f"{_AFTER_BLOCK_SENTINEL} {expected_version}\n", _output_of(result)
 
     @pytest.mark.parametrize(
-        ("reported", "expected_version"),
+        "stub_output_and_version",
         [
-            pytest.param("3 13", "3.13", id="one-minor-below"),
-            pytest.param("3 9", "3.9", id="single-digit-minor-below"),
+            pytest.param(lambda: _stub_output_and_dotted_version(-1), id="one-minor-below"),
+            pytest.param(lambda: (f"{_floor_major()} 9", f"{_floor_major()}.9"), id="single-digit-minor-below"),
         ],
     )
     def test_below_the_floor_exits_1_naming_the_version_the_floor_the_path_and_the_readme(
-        self, tmp_path: Path, reported: str, expected_version: str
+        self, tmp_path: Path, stub_output_and_version: Callable[[], tuple[str, str]]
     ) -> None:
+        reported, expected_version = stub_output_and_version()
         _write_python3_stub(tmp_path / "bin", f"echo '{reported}'")
 
         result = _run_install_block(tmp_path / "bin")
@@ -454,7 +479,7 @@ class TestPythonFloorCheckPrecedesEveryMutation:
         """Runs a tmp copy of install.sh, so a block moved below the first `mkdir` leaves files under HOME."""
         result, home = run_install_sh_in_tmp_repo(
             tmp_path,
-            python3_stub="#!/bin/sh\necho '3 13'\n",
+            python3_stub=f"#!/bin/sh\necho '{_stub_output_and_dotted_version(-1)[0]}'\n",
             git_version_script="echo 'git version 2.50.0'",
         )
 

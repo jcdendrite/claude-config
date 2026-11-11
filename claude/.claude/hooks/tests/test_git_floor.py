@@ -15,6 +15,7 @@ shows whether the run got past the block.
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -231,6 +232,7 @@ class TestGitFloorCheckDiagnostics:
         assert 'printed "<nothing>"' in result.stderr, _output_of(result)
 
 
+@functools.cache
 def python_floor_fields() -> tuple[str, str]:
     """The Python floor's major and minor as `_config.sh` holds them, read by sourcing it."""
     result = subprocess.run(

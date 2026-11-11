@@ -52,9 +52,9 @@
 #      allow. Both mean "the tool to evaluate is unavailable", not "the
 #      content is unevaluable" -- kept distinct from step 5/7's degraded
 #      ask, and checked before step 7 so a broken interpreter can never
-#      be misread as a helper content-parse failure. A python3 below
-#      README.md's Python floor gets no check of its own, and a helper it
-#      cannot run fails step 7, which degrades to ask.
+#      be misread as a helper content-parse failure. A python3 that
+#      passes step 6 but cannot run the helper fails step 7, which
+#      degrades to ask.
 #   7. spawn the helper under _lib_capped. Nonzero exit, or an empty
 #      output file, -> degraded ask. Zero new dependencies -> silent
 #      allow. Otherwise -> ask, naming every new dependency.
