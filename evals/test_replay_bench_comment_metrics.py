@@ -381,6 +381,14 @@ class TestParseAddedLines:
         added = _added_lines_in(tmp_path, {"a.py": "x = 1", "b.py": "y = 2\n"})
         assert added == {"a.py": (1,), "b.py": (1,)}
 
+    def test_a_missing_newline_marker_inside_an_open_hunk_does_not_swallow_the_later_lines_or_files(self, tmp_path):
+        before = {"a.py": "x = 1\ny = 2"}
+        after = {"a.py": "x = 1\ny = 2\nz = 3\nw = 4\n", "b.py": "p = 1\nq = 2\n"}
+
+        added = _added_lines_in(tmp_path, after, before)
+
+        assert added == {"a.py": (2, 3, 4), "b.py": (1, 2)}
+
     def test_a_path_with_spaces_is_returned_without_git_trailing_tab(self, tmp_path):
         added = _added_lines_in(tmp_path, {"dir with space/my file.py": "x = 1\n"})
         assert added == {"dir with space/my file.py": (1,)}

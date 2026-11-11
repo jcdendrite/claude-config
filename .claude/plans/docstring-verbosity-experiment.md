@@ -771,6 +771,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - a `bare` smoke run that read no rule-matching file passes without testing the exclude, and only the printed note shows it;
     - in a campaign, a broken exclude fails `arm-leak` only on the `bare` runs that read a rule-matching file. The per-arm stop halts only a block with no valid `bare` run, so the campaign can go on with a `bare` sample filtered by what it touched, and a clean retry of a leaking attempt leaves no record of the leak. `summarize`'s counts by missing reason show the `arm-leak` runs that ended missing.
 146. [unverified] A `path_glob_match` payload names the file that triggered the load. The relayed hooks-page excerpt names no such field. Verification step 1b records whether the probe's lines carry one and under what key. Without one, `smoke` prints only the residual sentence.
+147. [engineer-verified: "Add file to Critical files"] Asked whether to keep the code-review round 5 move of the shared-default timeout case and the `build_single_commit_repo` cases into `evals/test_review_bench_fixtures.py`, which Critical files had not listed, the engineer selected this label. Critical files now lists the file.
 
 **Mechanisms:**
 - **M1. Task mining from first-parent commits of top-level repos, with pruned paths dropped, a trusted-author list over raw identities, delimiter skips, base-tree size and entry-count bounds read from a NUL-delimited tree listing, a `missing-object` skip, an up-front skip of base trees the fixture cannot extract or whose archive would drop or rewrite a path, a partial-clone refusal, merge-commit briefs, reference metrics and a nullable base density.** anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
@@ -904,6 +905,9 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - add a keyword-only `timeout_s` to `_run_git`, `_extract_commit_tree` and `_commit_snapshot`, defaulting to `_LOCAL_GIT_TIMEOUT_S` so every existing caller keeps its bound (row 87);
   - add `build_single_commit_repo(source_repo, commit, dest_dir, *, prune, timeout_s)`. It validates `commit` with `_validate_sha` and composes `_run_git(["init", "-q"], ...)`, `_extract_commit_tree`, `prune(dest_dir)` and `_commit_snapshot`, passing `timeout_s` to each;
   - add its directory kind to the module docstring's list. Make no other change.
+- `evals/test_review_bench_fixtures.py`: add cases for `fixture_repo.py`, which belong beside that module's other tests (row 147). Make no other change. The cases:
+  - the shared default, through a `subprocess.run` spy: `fixture_repo._run_git`, `_extract_commit_tree` and `_commit_snapshot`, each called with no `timeout_s`, pass `timeout=_LOCAL_GIT_TIMEOUT_S`, so every review-bench caller keeps its bound (row 87);
+  - the `build_single_commit_repo` cases.
 - `evals/replay_bench/tasks.py` (new):
   - `ReplayTask` with `to_dict` and `from_dict`;
   - task-set read and write through `defects.atomic_write_text`:
@@ -913,9 +917,10 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - reading validates the ID grammar and SHAs;
     - reading validates that the ID equals the one `make_task_id` derives from `source_repo` and `commit`;
     - writing and reading each reject a duplicate task ID;
-    - `mine_tasks` raises `TaskSourceError` when two `--source-repo` arguments resolve to one repository, the only source of duplicate IDs;
   - `TaskSourceError`, which `main()` turns into exit 2, raised naming the path or the repo and commit for:
     - a source repo that is not a top level, and an empty trusted author;
+    - two `--source-repo` arguments resolving to one repository, the only source of duplicate task IDs;
+    - one commit examined from more than one source repo, such as a linked worktree and its main checkout, or a clone and its origin. Their paths differ, so their task IDs differ and the duplicate-task-ID rejection above cannot see the repeat;
     - a per-commit git or parse failure during mining;
     - an author or committer identity holding a control character, which no honest email does;
   - a subject is never rejected for a control character. The `git log` formats are NUL-framed and parsed in field-count groups, so a subject cannot shift a field;
@@ -1021,8 +1026,6 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - skipped as `export-attributes`: a root `.gitattributes` holding `tests export-ignore`, a nested `sub/.gitattributes` holding `*.txt export-subst`, and one holding only a commented `# export-ignore` line, pinned as the deliberate over-skip;
   - kept: a `.gitattributes` holding only `*.py text eol=lf`;
   - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path;
-  - the shared default, through a `subprocess.run` spy: `fixture_repo._run_git`, `_extract_commit_tree` and `_commit_snapshot`, each called with no `timeout_s`, pass `timeout=_LOCAL_GIT_TIMEOUT_S`, so every review-bench caller keeps its bound (row 87). The case lives here because `evals/test_review_bench_fixtures.py` is outside this plan's files.
-
 **Phase 3 — run checks (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py`.
 - `evals/replay_bench/checks.py` (new):
   - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;
@@ -1419,7 +1422,14 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 
 The second PR's files are those of Phases 3, 4 and 5b. This plan estimates them at about 6,550 lines, and the second PR restates the figure when it edits this file. That is about 250 above the 6,300 row 141 accepted, for the round 2 review's test cases, the security fixes and the exclude note.
 
-Projected diff: about 2,910 lines for the first PR, the sum of these parts: 2,592 in the five new files as Phase 2 left them (row 126), about 125 for the Phase 2 amendments and their tests, about 150 across `select-tests.py` and its test for Phase 5a, 40 for `fixture_repo.py`, and 3 for `.gitignore`. That is about 20 above the 2,890 row 141 accepted, for the shared-default spy case.
+Projected diff: about 3,620 lines for the first PR, measured with `git diff --numstat origin/main` over every file but this plan after the code-review fixes (3,589 added, 34 removed). The parts:
+- the new `replay_bench` files and their tests hold most of it;
+- `select-tests.py` and its test, about 130;
+- `fixture_repo.py`, 40;
+- `evals/test_review_bench_fixtures.py`, about 66;
+- `.gitignore`, 3.
+
+That is about 730 above the 2,890 row 141 accepted. The engineer's earlier "Proceed anyway" on this plan's size is on record in row 110.
 
 ## Verification
 

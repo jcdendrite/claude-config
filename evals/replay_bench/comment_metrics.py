@@ -74,7 +74,6 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _RAW_ENTRY_RE = re.compile(r"^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])\d*$")
 # Python string prefixes hold letters, so they are the one delimiter that would otherwise count as a word.
 _PYTHON_QUOTES_OPENER_RE = re.compile(r"""^\s*[rRuUbBfF]{0,2}(?:"{3}|'{3})""")
-_PYTHON_QUOTES_CLOSER_RE = re.compile(r"""(?:"{3}|'{3})\s*$""")
 
 
 def is_test_path(path: str) -> bool:
@@ -283,15 +282,13 @@ def _python_comment_rows(text: str, lines: list[str]) -> tuple[set[int], set[int
 
 
 def _comment_words(lines: list[str], classes: Mapping[int, LineClass]) -> dict[int, int]:
-    """Comment delimiters such as `#`, `//` and `*/` hold no letter or digit, so they never count
-    as a word. Python's string prefix and quotes are removed from docstring lines."""
     words: dict[int, int] = {}
     for number, line_class in classes.items():
         if line_class not in _BLOCK_CLASSES:
             continue
         text = lines[number - 1]
         if line_class is LineClass.DOCSTRING:
-            text = _PYTHON_QUOTES_CLOSER_RE.sub("", _PYTHON_QUOTES_OPENER_RE.sub("", text, count=1), count=1)
+            text = _PYTHON_QUOTES_OPENER_RE.sub("", text, count=1)
         words[number] = count_words(text)
     return words
 

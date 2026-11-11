@@ -2,10 +2,11 @@
 single-commit fixture a task runs in.
 
 A task replays one commit: the fixture holds the commit's first-parent tree, the
-brief is the commit message, and `reference_metrics` classifies what the commit
-itself added. Every git call here runs under `local_git.isolated_git_environment()`.
-Mining calls carry no timeout, since the command is interactive and Ctrl-C ends a
-hung call. `build_task_fixture` bounds its calls by the caller's `timeout_s`.
+brief is the commit message plus the merged commits' subjects for a merge commit, and
+`reference_metrics` classifies what the commit itself added. Every git call here runs under
+`local_git.isolated_git_environment()`. Mining calls carry no timeout, since the command is
+interactive and Ctrl-C ends a hung call. `build_task_fixture` bounds its calls by the caller's
+`timeout_s`.
 """
 from __future__ import annotations
 
@@ -326,16 +327,22 @@ def build_task_fixture(
     task: ReplayTask, dest_dir: Path, baseline_git_dir: Path, *, bare_writer_markdown: str, timeout_s: float,
 ) -> str:
     """Builds `dest_dir` as a one-commit repository of the task's base tree, pruned by
-    `prune_instruction_files`, and returns that commit's SHA. It then writes the worktree
-    opt-out and `.claude/agents/bare-writer.md` (excluded from git through
-    `.git/info/exclude`, so neither reaches a diff), and copies the repository's `.git` to
-    `baseline_git_dir`, which must not exist. `dest_dir` must exist and be empty.
+    `prune_instruction_files`, and returns that commit's SHA.
 
-    Raises TaskSourceError when the source repository has become a partial clone or sets an export
-    attribute in `info/attributes` since mining. Raises UnsafeFixtureConfigError for a refused
-    archive member or a symlink resolving outside the fixture, ValueError for a commit that is not a
-    40-hex SHA, and CalledProcessError, TimeoutExpired or OSError for a failed step. A raise after
-    the build starts leaves `dest_dir` and `baseline_git_dir` partly built."""
+    `dest_dir` must exist and be empty. `baseline_git_dir` must not exist.
+
+    After the commit it writes the worktree opt-out and `.claude/agents/bare-writer.md`.
+    It lists `.claude/` in `.git/info/exclude`, so neither file reaches a diff.
+    It then copies the repository's `.git` to `baseline_git_dir`.
+
+    Raises:
+    - TaskSourceError: the source repository has become a partial clone or sets an export
+      attribute in `info/attributes` since mining.
+    - UnsafeFixtureConfigError: a refused archive member, or a symlink resolving outside the fixture.
+    - ValueError: a commit that is not a 40-hex SHA.
+    - CalledProcessError, TimeoutExpired or OSError: a failed step.
+
+    A raise after the build starts leaves `dest_dir` and `baseline_git_dir` partly built."""
     source_repo = Path(task.source_repo)
     _refuse_partial_clone(source_repo, source_repo, timeout_s=timeout_s)
     _refuse_export_attributes_in_info_file(source_repo, source_repo, timeout_s=timeout_s)
@@ -523,19 +530,27 @@ class MiningReport:
 
 
 def resolve_source_repo(path: Path) -> Path:
-    """The real path of `path`, which must be the top level of a git work tree, a linked
-    worktree's included. Raises TaskSourceError naming `path` for a subdirectory, a non-repository
-    path or a bare repository, since `git archive` run from a subdirectory would build a fixture
-    rooted there. It also raises for a partial clone, where git fetches a missing object on demand
-    and would put untimed network I/O into mining and fixture builds, and for a repository whose
-    `info/attributes` sets an export attribute, which would reach every commit's archive."""
+    """The real path of `path`, which must be the top level of a git work tree. A linked
+    worktree's top level is accepted.
+
+    Raises TaskSourceError naming `path` for:
+    - A subdirectory: `git archive` run from there would build a fixture rooted there.
+    - A non-repository path or a bare repository.
+    - A partial clone: git fetches a missing object on demand, which would put untimed network
+      I/O into mining and fixture builds.
+    - A repository whose `info/attributes` sets an export attribute: it would reach every
+      commit's archive."""
     resolved = Path(os.path.realpath(path))
     result = subprocess.run(
         ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
         capture_output=True, env=isolated_git_environment(),
     )
-    top_level = os.path.realpath(os.fsdecode(result.stdout).rstrip("\n")) if result.returncode == 0 else None
-    if top_level != str(resolved):
+    if result.returncode != 0:
+        raise TaskSourceError(
+            f"{path} is not the top level of a git work tree: git rev-parse exited {result.returncode}: "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
+    if os.path.realpath(os.fsdecode(result.stdout).rstrip("\n")) != str(resolved):
         raise TaskSourceError(f"{path} is not the top level of a git work tree")
     _refuse_partial_clone(path, resolved)
     _refuse_export_attributes_in_info_file(path, resolved)
@@ -643,8 +658,8 @@ def _measure_change(
         return SkipReason.BINARY
     raw_listing, entries = _changed_entries(repo, base_commit, commit, changed_paths)
     diff_text = _git(
-        repo, "--literal-pathspecs", "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", *DIFF_TEXT_ARGS,
-        "--src-prefix=a/", "--dst-prefix=b/", base_commit, commit, "--", *changed_paths,
+        repo, "--literal-pathspecs", "-c", "core.quotePath=false", "diff", "-U0", "--inter-hunk-context=0", "--no-renames",
+        *DIFF_TEXT_ARGS, "--src-prefix=a/", "--dst-prefix=b/", base_commit, commit, "--", *changed_paths,
     ).decode("utf-8", errors="replace")
     regular_entries = [entry for entry in entries if entry.new_mode in comment_metrics.REGULAR_FILE_MODES]
     try:
@@ -759,10 +774,17 @@ def mine_tasks(
     progress: Callable[[str], None] = print,
 ) -> MiningReport:
     """Walks each repo's first-parent history newest first and keeps up to `limits.max_tasks`
-    qualifying commits per repo. Raises TaskSourceError for no trusted author, an empty one, a
-    source repo that is not a work tree's top level, two source repos that resolve to one path,
-    or a commit whose git read or parse fails, naming the repo and commit. `progress` receives a
-    line for each repo every `PROGRESS_INTERVAL_COMMITS` commits examined and when the repo finishes."""
+    qualifying commits per repo. `progress` receives a line for each repo every
+    `PROGRESS_INTERVAL_COMMITS` commits examined and when the repo finishes.
+
+    Raises TaskSourceError for:
+    - No trusted author, or an empty one.
+    - A source repo that is not a work tree's top level.
+    - Two source repos that resolve to one path.
+    - One commit examined from two source repos, such as a linked worktree and its main checkout
+      or a clone and its origin. The task ID hashes the repo path, so the commit would enter the
+      task set twice under two IDs.
+    - A commit whose git read or parse fails, naming the repo and commit."""
     if not trusted_authors or "" in trusted_authors:
         raise TaskSourceError("--trusted-author must name at least one non-empty author email")
     resolved_repos = [resolve_source_repo(path) for path in source_repos]
@@ -770,11 +792,15 @@ def mine_tasks(
     if repeated_repos:
         raise TaskSourceError(f"--source-repo names the same repository more than once: {repeated_repos}")
     report = MiningReport()
+    repo_by_examined_commit: dict[str, Path] = {}
     for repo in resolved_repos:
         examined = kept = 0
         for record in _read_log(repo, limits):
             if kept >= limits.max_tasks:
                 break
+            first_repo = repo_by_examined_commit.setdefault(record.commit, repo)
+            if first_repo != repo:
+                raise TaskSourceError(f"commit {record.commit} is examined from both {first_repo} and {repo}")
             examined += 1
             report.author_counts[record.author_email] += 1
             report.committer_counts[record.committer_email] += 1

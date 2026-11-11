@@ -10,7 +10,6 @@ import os
 import re
 import subprocess
 import tarfile
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -285,6 +284,18 @@ class TestQualifyingCommit:
         assert task.brief.startswith("Merge feature")
         assert "- Add the first helper" in task.brief
 
+    def test_a_merge_commit_brief_lists_the_merged_subjects_newest_first_under_a_heading(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _git(repo, "switch", "-q", "-c", "feature")
+        _change(repo, {"src/app.py": _app_with(11)}, message="Add the first helper")
+        _change(repo, {"src/app.py": _app_with(12)}, message="Add the second helper")
+        _git(repo, "switch", "-q", "-")
+        _git(repo, "merge", "-q", "--no-ff", "-m", "Merge feature", "feature")
+
+        task = _mine_one_task(repo)
+
+        assert task.brief == "Merge feature\n\nMerged commits:\n- Add the second helper\n- Add the first helper"
+
     def test_reference_metrics_count_the_comment_words_and_code_lines_the_commit_added(self, tmp_path):
         repo = _make_repo(tmp_path)
         _change(repo)
@@ -420,6 +431,20 @@ class TestSkippedCommits:
 
         _assert_only_skipped_as(_mine(repo), SkipReason.TOO_MANY_FILES)
 
+    def test_pruned_paths_do_not_count_toward_the_file_bound(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {**QUALIFYING_CHANGE, "a/CLAUDE.md": "rules\n", "b/CLAUDE.md": "rules\n"})
+
+        task = _mine_one_task(repo, max_files=2)
+
+        assert task.changed_paths == ("src/app.py",)
+
+    def test_a_pruned_path_holding_a_comma_does_not_make_the_commit_unsafe(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {**QUALIFYING_CHANGE, "notes,draft/CLAUDE.md": "rules\n"})
+
+        assert _mine_one_task(repo).changed_paths == ("src/app.py",)
+
     def test_a_commit_that_only_edits_pruned_paths_is_skipped_for_too_few_code_lines(self, tmp_path):
         repo = _make_repo(tmp_path, {"CLAUDE.md": "old\n"})
         _change(repo, {"CLAUDE.md": "new\n"})
@@ -515,6 +540,23 @@ class TestThresholdsAreInclusive:
         assert bool(report.tasks) is kept
         if not kept:
             _assert_only_skipped_as(report, SkipReason.TOO_MANY_CODE_LINES)
+
+    def test_code_lines_added_only_under_tests_do_not_count_toward_the_minimum(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {"tests/test_app.py": "".join(f"value_{n} = {n}\n" for n in range(12))})
+
+        _assert_only_skipped_as(_mine(repo, min_code_lines=10), SkipReason.TOO_FEW_CODE_LINES)
+
+    def test_code_lines_added_under_tests_do_not_count_toward_the_maximum(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        _change(repo, {
+            "src/app.py": _app_with(12), "tests/test_app.py": "".join(f"value_{n} = {n}\n" for n in range(20)),
+        })
+
+        task = _mine_one_task(repo, max_code_lines=12)
+
+        assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 12
+        assert task.reference_metrics.line_counts["test"][LineClass.CODE.value] == 20
 
     @pytest.mark.parametrize(("file_count", "kept"), [(3, True), (4, False)])
     def test_max_files(self, tmp_path, file_count, kept):
@@ -637,6 +679,15 @@ class TestBaseTreesExtractionAccepts:
         assert task.base_tree_bytes == len(_APP_BASE) + len("12345")
         assert task.base_tree_entries == 3
 
+    def test_a_base_tree_holding_a_non_utf_8_path_is_kept_since_only_changed_paths_enter_the_task(self, tmp_path):
+        legacy_tree = {"keep.txt": "x\n", b"legacy\xff.txt": "x\n"}
+        repo = _repo_from_trees(tmp_path, legacy_tree, {**legacy_tree, "src": {"app.py": _app_with(12)}})
+
+        task = _mine_one_task(repo)
+
+        assert task.changed_paths == ("src/app.py",)
+        assert task.base_tree_entries == 2
+
     @pytest.mark.parametrize("directory", ["docs", _NON_ASCII_DIR], ids=["ascii", "non-ascii"])
     @pytest.mark.parametrize(
         ("target", "reason"),
@@ -725,8 +776,9 @@ class TestExtractionParity:
         assert _extraction_refuses(archive, dest_dir) is refused
 
     def test_a_link_chain_through_a_dotdot_target_is_kept_by_the_skip_and_never_leaves_the_fixture(self, tmp_path):
-        # `a` normalizes lexically to `d/e`, so the skip keeps it. Python 3.14's `data` filter rewrites the target
-        # to `d/e` on extraction. A filter that does not would leave `a` resolving outside, which the prune refuses.
+        # `a` normalizes lexically to `d/e`, so the skip keeps it. In CPython 3.14.10 `tarfile._get_filtered_attrs`
+        # replaces a link's target with its `os.path.normpath` form, `d/e`, on extraction. That behavior is read in
+        # 3.14.10 only. A filter that does not would leave `a` resolving outside, which the prune refuses.
         members = [("d/e/f", "../.."), ("a", "d/e/f/..")]
         dest_dir = tmp_path / "fixture"
         dest_dir.mkdir()
@@ -788,6 +840,37 @@ class TestSourceRepos:
         _git(repo, "worktree", "add", "-q", "--detach", str(linked))
 
         assert len(_mine(linked).tasks) == 1
+
+    def test_a_linked_worktree_and_its_main_checkout_are_refused_naming_the_shared_commit_and_both_repos(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        commit = _change(repo)
+        linked = tmp_path / "linked"
+        _git(repo, "worktree", "add", "-q", "--detach", str(linked))
+        both_repos = f"{re.escape(str(repo.resolve()))} and {re.escape(str(linked.resolve()))}"
+
+        with pytest.raises(tasks.TaskSourceError, match=f"commit {commit} is examined from both {both_repos}"):
+            _mine(repo, linked)
+
+    def test_a_clone_and_its_origin_are_refused_naming_the_shared_commit_and_both_repos(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        commit = _change(repo)
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", "-q", str(repo), str(clone))
+        both_repos = f"{re.escape(str(repo.resolve()))} and {re.escape(str(clone.resolve()))}"
+
+        with pytest.raises(tasks.TaskSourceError, match=f"commit {commit} is examined from both {both_repos}"):
+            _mine(repo, clone)
+
+    def test_a_failing_rev_parse_of_the_top_level_is_refused_with_gits_own_message(self, tmp_path):
+        plain_dir = tmp_path / "plain"
+        plain_dir.mkdir()
+
+        refusal = f"{re.escape(str(plain_dir))} is not the top level .*git rev-parse exited 128"
+
+        with pytest.raises(tasks.TaskSourceError, match=refusal):
+            _mine(plain_dir)
 
     def test_a_partial_clone_is_refused_naming_the_path_and_a_full_clone_is_accepted(self, tmp_path):
         source = _make_repo(tmp_path)
@@ -855,6 +938,17 @@ class TestTrustedAuthors:
         assert any(attacker in line for line in tasks.format_mining_summary(report))
 
 
+    def test_a_mailmap_cannot_map_an_untrusted_merged_author_onto_a_trusted_one(self, tmp_path):
+        attacker = "attacker@example.com"
+        repo = _make_repo(tmp_path, {".mailmap": f"Trusted Dev <{TRUSTED}> <{attacker}>\n"})
+        _git(repo, "switch", "-q", "-c", "feature")
+        _change(repo, message="Attacker helper", author=attacker)
+        _git(repo, "switch", "-q", "-")
+        _git(repo, "merge", "-q", "--no-ff", "-m", "Merge feature", "feature")
+
+        _assert_only_skipped_as(_mine(repo), SkipReason.UNTRUSTED_MERGED_AUTHOR)
+
+
 class TestLogFields:
     def test_a_commit_message_holding_the_unit_separator_reaches_the_brief_unchanged(self, tmp_path):
         repo = _make_repo(tmp_path)
@@ -901,6 +995,14 @@ class TestLogFields:
         assert f"- Add{control_character}the first helper" in _mine_one_task(repo).brief
 
 
+class TestLogFieldFraming:
+    def test_log_output_whose_field_count_is_not_a_multiple_of_the_record_width_is_refused_naming_the_repo(self, tmp_path):
+        refusal = f"{re.escape(str(tmp_path))}: git log output holds 3 fields, not a multiple of 2"
+
+        with pytest.raises(tasks.TaskSourceError, match=refusal):
+            tasks._log_fields(tmp_path, b"first\0second\0third\0", 2)
+
+
 class TestRepoLocalDiffConfig:
     """`isolated_git_environment` strips only global and system config, so a repo's own diff settings still apply."""
 
@@ -915,6 +1017,17 @@ class TestRepoLocalDiffConfig:
         assert task.changed_paths == ("b/x.py",)
         assert task.reference_metrics.changed_paths == ["b/x.py"]
         assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 12
+
+    def test_a_repo_local_inter_hunk_context_does_not_turn_unchanged_lines_into_added_ones(self, tmp_path):
+        base_lines = [f"value_{n} = {n}" for n in range(8)]
+        repo = _make_repo(tmp_path, {"src/lib.py": "\n".join(base_lines) + "\n"})
+        _git(repo, "config", "diff.interHunkContext", "8")
+        edited_lines = ["value_0 = 100", *base_lines[1:6], "value_6 = 600", base_lines[7]]
+        _change(repo, {"src/lib.py": "\n".join(edited_lines) + "\n"})
+
+        task = _mine_one_task(repo, min_code_lines=1)
+
+        assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 2
 
 
 class TestPerCommitFailures:
@@ -958,6 +1071,13 @@ class TestRev:
         with pytest.raises(tasks.TaskSourceError, match=rf"{re.escape(str(repo.resolve()))}: git log no-such-branch failed"):
             _mine(repo, rev="no-such-branch")
 
+    def test_a_rev_named_like_a_tracked_path_is_read_as_the_rev(self, tmp_path):
+        repo = _make_repo(tmp_path, {"side": "tracked file\n"})
+        _git(repo, "branch", "side")
+        _change(repo)
+
+        assert _mine(repo, rev="side").tasks == []
+
     def test_a_branch_name_is_walked_in_place_of_head(self, tmp_path):
         repo = _make_repo(tmp_path)
         _git(repo, "branch", "side")
@@ -970,7 +1090,8 @@ class TestRev:
 class TestWalk:
     @staticmethod
     def _repo_with_new_file_commits(tmp_path: Path, name: str, count: int) -> tuple[Path, list[str]]:
-        repo = _make_repo(tmp_path, name=name)
+        # A base file named for the repo keeps two repos' commit ids apart whatever the commit clock reads.
+        repo = _make_repo(tmp_path, {"owner.txt": name}, name=name)
         commits = [
             _change(repo, {f"src/module_{n}.py": "".join(f"value_{i} = {i}\n" for i in range(12))}, message=f"Add {n}")
             for n in range(count)
@@ -986,6 +1107,16 @@ class TestWalk:
         assert [task.commit for task in report.tasks] == [
             first_commits[2], first_commits[1], second_commits[2], second_commits[1],
         ]
+
+    @pytest.mark.parametrize("max_count", [3, 2])
+    def test_max_count_bounds_the_commits_examined_to_the_newest_ones(self, tmp_path, max_count):
+        repo, commits = self._repo_with_new_file_commits(tmp_path, "repo", 5)
+
+        report = _mine(repo, max_count=max_count)
+
+        assert [task.commit for task in report.tasks] == commits[::-1][:max_count]
+        assert sum(report.author_counts.values()) == max_count
+        assert dict(report.skip_counts) == {}
 
     def test_progress_lines_name_each_repo_every_interval_and_when_it_finishes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(tasks, "PROGRESS_INTERVAL_COMMITS", 2)
@@ -1067,13 +1198,15 @@ class TestTaskFiles:
             lambda data: data.update(id="not-an-id"),
             lambda data: data.pop("brief"),
             lambda data: data.update(changed_paths="src/app.py"),
+            lambda data: data.update(changed_paths=[1]),
             lambda data: data.pop("reference_metrics"),
             lambda data: data.update(reference_metrics={}),
             lambda data: data.update(source_repo="/another/repo"),
             lambda data: data.update(commit="f" * 40),
         ],
         ids=[
-            "non-hex-commit", "short-base-commit", "bad-id-grammar", "missing-key", "paths-not-a-list", "missing-metrics",
+            "non-hex-commit", "short-base-commit", "bad-id-grammar", "missing-key", "paths-not-a-list", "path-not-a-string",
+            "missing-metrics",
             "malformed-metrics", "id-not-derived-from-source-repo", "id-not-derived-from-commit",
         ],
     )
@@ -1388,6 +1521,14 @@ class TestBuildTaskFixture:
         assert set(timeouts) == {FIXTURE_TIMEOUT_S}
 
 
+    def test_a_root_dot_claude_regular_file_fails_the_build_as_an_os_error(self, tmp_path):
+        repo = _make_source_repo(tmp_path, {".claude": "old\n"})
+        _change(repo, {**QUALIFYING_CHANGE, ".claude": "new\n"})
+        task = _mine_one_task(repo)
+
+        with pytest.raises(OSError):
+            _build_fixture(tmp_path, task)
+
     def test_a_source_repo_that_became_a_partial_clone_after_mining_is_refused_before_anything_is_built(self, tmp_path):
         repo = _make_source_repo(tmp_path)
         _change(repo)
@@ -1410,70 +1551,6 @@ class TestBuildTaskFixture:
             _build_fixture(tmp_path, task)
 
         assert list((tmp_path / "fixture").iterdir()) == []
-
-
-class TestSharedGitTimeoutDefault:
-    """The `timeout_s` parameters default to the bound every review-bench caller already runs under."""
-
-    @staticmethod
-    def _timeouts_of(monkeypatch, call) -> set[float | None]:
-        timeouts: list[float | None] = []
-        real_run = subprocess.run
-
-        def spy(*args, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            return real_run(*args, **kwargs)
-
-        with monkeypatch.context() as patch:
-            patch.setattr(subprocess, "run", spy)
-            call()
-        assert timeouts
-        return set(timeouts)
-
-    def test_run_git_extract_commit_tree_and_commit_snapshot_keep_the_review_bench_bound_without_a_timeout(
-        self, tmp_path, monkeypatch,
-    ):
-        repo = _make_source_repo(tmp_path)
-        commit = _git_text(repo, "rev-parse", "HEAD").strip()
-        extracted = tmp_path / "extracted"
-        extracted.mkdir()
-        _git(extracted, "init", "-q")
-
-        run_git_timeouts = self._timeouts_of(
-            monkeypatch, lambda: fixture_repo._run_git(["--version"], cwd=tmp_path),
-        )
-        extract_timeouts = self._timeouts_of(
-            monkeypatch, lambda: fixture_repo._extract_commit_tree(repo, commit, extracted),
-        )
-        snapshot_timeouts = self._timeouts_of(
-            monkeypatch, lambda: fixture_repo._commit_snapshot(extracted, "snapshot"),
-        )
-
-        assert run_git_timeouts == extract_timeouts == snapshot_timeouts == {fixture_repo._LOCAL_GIT_TIMEOUT_S}
-
-
-class TestBuildSingleCommitRepo:
-    def test_a_commit_that_is_not_a_full_sha_is_refused_before_any_git_call(self, tmp_path):
-        dest_dir = tmp_path / "dest"
-        dest_dir.mkdir()
-
-        with pytest.raises(ValueError, match="40-hex"):
-            fixture_repo.build_single_commit_repo(tmp_path, "HEAD", dest_dir, prune=lambda _dir: None, timeout_s=1.0)
-
-        assert list(dest_dir.iterdir()) == []
-
-    def test_the_prune_runs_after_extraction_and_before_the_commit(self, tmp_path):
-        repo = _make_source_repo(tmp_path)
-        commit = _git_text(repo, "rev-parse", "HEAD").strip()
-        dest_dir = tmp_path / "dest"
-        dest_dir.mkdir()
-
-        fixture_repo.build_single_commit_repo(
-            repo, commit, dest_dir, prune=lambda directory: (directory / "src" / "app.py").unlink(), timeout_s=30.0,
-        )
-
-        assert _tracked_paths(dest_dir) == []
-        assert Counter(_git_text(dest_dir, "log", "--format=%s").split()) == {"base": 1}
 
 
 # --- private data stays out of the public repository -------------------------
