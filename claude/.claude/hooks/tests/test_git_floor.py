@@ -26,10 +26,9 @@ import pytest
 import yaml
 from helpers import REPO_ROOT
 
-from .test_bash_floor import README_REQUIREMENTS, exact_output_env
+from .test_bash_floor import README_REQUIREMENTS, exact_output_env, readme_requirements_bullet
 
 _INSTALL_SH = REPO_ROOT / "install.sh"
-_README = REPO_ROOT / "README.md"
 _WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _PIN_STEP_ID = "pin-git"
 _CONFIG_SH_REPO_PATH = Path("claude") / ".claude" / "hooks" / "_config.sh"
@@ -46,8 +45,8 @@ _STUB_USAGE_EXIT_STATUS = 64
 # Bounds a hung local bash run; no vendor value applies.
 _BASH_RUN_TIMEOUT_SECONDS = 10
 
-# Tools install.sh's presence check requires, other than the `git` and `claude` stubs the whole-script run writes itself.
-_TOOLS_THAT_JUST_EXIT_ZERO = ("stow", "gh", "jq", "sha256sum", "python3")
+# Tools install.sh's presence check requires, other than the `git`, `python3` and `claude` stubs the whole-script run writes.
+_TOOLS_THAT_JUST_EXIT_ZERO = ("stow", "gh", "jq", "sha256sum")
 
 
 def _extract_git_floor_check_block() -> str:
@@ -232,34 +231,74 @@ class TestGitFloorCheckDiagnostics:
         assert 'printed "<nothing>"' in result.stderr, _output_of(result)
 
 
+def python_floor_fields() -> tuple[str, str]:
+    """The Python floor's major and minor as `_config.sh` holds them, read by sourcing it."""
+    result = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            '. "$1" && printf "%s %s" "$_PYTHON_FLOOR_MAJOR" "$_PYTHON_FLOOR_MINOR"',
+            "_",
+            str(REPO_ROOT / _CONFIG_SH_REPO_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_BASH_RUN_TIMEOUT_SECONDS,
+    )
+    fields = result.stdout.split(" ")
+    assert result.returncode == 0 and len(fields) == 2 and all(field.isdigit() for field in fields), (
+        f"_config.sh did not yield the Python floor's two numeric fields: {_output_of(result)}"
+    )
+    return fields[0], fields[1]
+
+
+def run_install_sh_in_tmp_repo(
+    tmp_path: Path, *, python3_stub: str, git_version_script: str
+) -> tuple[subprocess.CompletedProcess, Path]:
+    """Run a tmp copy of install.sh with stub tools first on PATH; return the result and the empty HOME it ran under.
+
+    `python3_stub` is the whole text of the `python3` executable.
+    `git_version_script` is the body of the stub `git`'s `--version` branch."""
+    tmp_repo = tmp_path / "repo"
+    (tmp_repo / _CONFIG_SH_REPO_PATH.parent).mkdir(parents=True)
+    (tmp_repo / "install.sh").write_text(_INSTALL_SH.read_text())
+    (tmp_repo / _CONFIG_SH_REPO_PATH).write_text((REPO_ROOT / _CONFIG_SH_REPO_PATH).read_text())
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir()
+    for tool in _TOOLS_THAT_JUST_EXIT_ZERO:
+        _write_executable(stub_dir / tool, "#!/bin/sh\nexit 0\n")
+    _write_executable(stub_dir / "python3", python3_stub)
+    _write_executable(stub_dir / "claude", "#!/bin/sh\necho '2.1.295 (Claude Code)'\n")
+    _write_git_stub(stub_dir, version_script=git_version_script)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {k: v for k, v in exact_output_env().items() if k != "CLAUDE_CONFIG_DIR"}
+    env["HOME"] = str(home)
+    env["PATH"] = f"{stub_dir}:/usr/bin:/bin"
+
+    result = subprocess.run(
+        [_BASH, str(tmp_repo / "install.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_repo,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        timeout=_BASH_RUN_TIMEOUT_SECONDS,
+    )
+    return result, home
+
+
 class TestGitFloorCheckPrecedesEveryMutation:
     def test_a_below_floor_git_ends_the_whole_script_before_it_changes_home(self, tmp_path: Path) -> None:
         """Runs a tmp copy of install.sh, so a block moved below the first `mkdir` leaves files under HOME."""
-        tmp_repo = tmp_path / "repo"
-        (tmp_repo / _CONFIG_SH_REPO_PATH.parent).mkdir(parents=True)
-        (tmp_repo / "install.sh").write_text(_INSTALL_SH.read_text())
-        (tmp_repo / _CONFIG_SH_REPO_PATH).write_text((REPO_ROOT / _CONFIG_SH_REPO_PATH).read_text())
-        stub_dir = tmp_path / "stubs"
-        stub_dir.mkdir()
-        for tool in _TOOLS_THAT_JUST_EXIT_ZERO:
-            _write_executable(stub_dir / tool, "#!/bin/sh\nexit 0\n")
-        _write_executable(stub_dir / "claude", "#!/bin/sh\necho '2.1.295 (Claude Code)'\n")
-        _write_git_stub(stub_dir, version_script="echo 'git version 2.42.0'")
-        home = tmp_path / "home"
-        home.mkdir()
-        env = {k: v for k, v in exact_output_env().items() if k != "CLAUDE_CONFIG_DIR"}
-        env["HOME"] = str(home)
-        env["PATH"] = f"{stub_dir}:/usr/bin:/bin"
+        python_floor_major, python_floor_minor = python_floor_fields()
 
-        result = subprocess.run(
-            [_BASH, str(tmp_repo / "install.sh")],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=tmp_repo,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            timeout=_BASH_RUN_TIMEOUT_SECONDS,
+        result, home = run_install_sh_in_tmp_repo(
+            tmp_path,
+            python3_stub=f"#!/bin/sh\necho '{python_floor_major} {python_floor_minor}'\n",
+            git_version_script="echo 'git version 2.42.0'",
         )
 
         assert result.returncode == 1, _output_of(result)
@@ -274,13 +313,9 @@ class TestMinimumVersionMatchesTheDocumentedRequirement:
     def test_readme_requirements_bullet_states_the_minimum_version_as_the_requirement(self) -> None:
         """The constant is the executable copy of the version `README.md` § "Requirements" states as the requirement."""
         minimum_version = _git_minimum_version()
-        readme_text = _README.read_text()
-        requirements_section = re.search(r"^## Requirements\n(.*?)(?=^## )", readme_text, re.MULTILINE | re.DOTALL)
-        assert requirements_section, "README.md has no Requirements section"
-        bullets = [line for line in requirements_section.group(1).splitlines() if line.startswith("- **`git` version:**")]
-        assert len(bullets) == 1, f"expected one git version bullet in Requirements, got {bullets!r}"
-        stated_requirement = re.match(r"- \*\*`git` version:\*\* git ([0-9]+\.[0-9]+) or newer", bullets[0])
-        assert stated_requirement, f"README Requirements git bullet does not open with 'git X.Y or newer': {bullets[0]!r}"
+        bullet = readme_requirements_bullet("- **`git` version:**")
+        stated_requirement = re.match(r"- \*\*`git` version:\*\* git ([0-9]+\.[0-9]+) or newer", bullet)
+        assert stated_requirement, f"README Requirements git bullet does not open with 'git X.Y or newer': {bullet!r}"
         assert stated_requirement.group(1) == minimum_version, (
             f"README Requirements states git {stated_requirement.group(1)} but install.sh enforces {minimum_version}"
         )

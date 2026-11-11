@@ -528,6 +528,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Removed
 
+- **Python older than 3.14 is no longer supported: install Python 3.14 or newer so its `python3` is first on the PATH Claude Code starts with.**
+  - 3.14 is the one minor CI tests. `_config.sh` holds the floor, and a test fails when it, `README.md`'s floor or ruff's `target-version` differs from CI's pin.
+  - `install.sh` exits before changing anything when `python3` reports a lower version or none it can read.
+  - ruff now lints for 3.14 from a newer series. After pulling, contributors re-run `./install-dev.sh` from the main checkout. Until then, the older ruff in their shared venv may fail on `target-version = "py314"`. A branch still on the older target that lints with the upgraded shared venv may show new lint findings until it rebases.
+  - **Migration:** from the shell that launches Claude Code, and also from inside any project that pins its own version, run `python3 --version`. If it is below 3.14, install Python 3.14 or newer so its `python3` resolves first on PATH (`pyenv install`, then `pyenv global` for pyenv), or raise or remove the project's own pin where that project is the one below 3.14, restart Claude Code from that shell, and re-run `./install.sh`.
 - **git older than 2.43 is no longer supported: install git 2.43 or newer first on the PATH Claude Code starts with.**
   - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`). `install.sh` refuses git 2.40 through 2.42 although the code runs on them.
   - `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read.

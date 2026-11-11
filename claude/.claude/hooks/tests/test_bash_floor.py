@@ -67,6 +67,16 @@ HOOKS_DOC_GATE_DEADLOCK_RECOVERY = Citation("docs/hooks.md", "Gate deadlock reco
 HOOKS_DOC_BASH_VERSION = Citation("docs/hooks.md", "Bash version")
 
 
+def readme_requirements_bullet(opener: str) -> str:
+    """The one bullet of README.md's Requirements section that starts with `opener`."""
+    readme_text = (REPO_ROOT / README_REQUIREMENTS.document).read_text()
+    requirements_section = re.search(r"^## Requirements\n(.*?)(?=^## )", readme_text, re.MULTILINE | re.DOTALL)
+    assert requirements_section, "README.md has no Requirements section"
+    bullets = [line for line in requirements_section.group(1).splitlines() if line.startswith(opener)]
+    assert len(bullets) == 1, f"expected one bullet starting {opener!r} in Requirements, got {bullets!r}"
+    return bullets[0]
+
+
 def exact_output_env() -> dict[str, str]:
     """An environment for runs whose output is compared exactly: no startup
     files injected into the child bash, and a fixed locale."""
@@ -75,13 +85,23 @@ def exact_output_env() -> dict[str, str]:
     return env
 
 
-def _run_in_bash(script: str, *args: str, bash: str = _BASH) -> subprocess.CompletedProcess:
+def _run_in_bash(
+    script: str,
+    *args: str,
+    bash: str = _BASH,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """`env` defaults to `exact_output_env()`; pass it only to replace the whole environment."""
     return subprocess.run(
         [bash, "-c", script, "_", *args],
         capture_output=True,
         text=True,
         check=False,
-        env=exact_output_env(),
+        env=exact_output_env() if env is None else env,
+        cwd=cwd,
+        timeout=timeout,
     )
 
 
