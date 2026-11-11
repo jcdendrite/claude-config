@@ -560,7 +560,7 @@ Keep ["Allow GitHub Actions to create and approve pull requests"](https://docs.g
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
-Restrict the scope of any credential that can push to the default branch, deploy, approve pull requests or administer the repository, so that code the agent can influence through a branch or pull request cannot use it before that code passes the pull-request rule.
+Restrict the scope of any credential that can deploy, approve pull requests, administer the repository, or push to the default branch or to a `main`, `master` or `develop` branch, so that code the agent can influence through a branch or pull request cannot use it before that code passes the pull-request rule.
 The hook allows a feature-branch push, and that push can change a workflow file or the code a workflow runs, so the run acts with a credential the pull-request rule does not bind.
 
 The hook reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The Known gaps in its header list them, so protection on the remote is the only barrier for steered input.
