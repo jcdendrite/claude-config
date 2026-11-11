@@ -649,8 +649,8 @@ class TestRedaction:
     def test_redact_ordinal_label_appears_and_real_root_path_absent_under_default_redaction(
         self, fake_projects, capsys
     ):
-        """Mirrors cost's own account-N diagnostic assertions (test_transcript_analysis.py
-        TestCostMultiRootReport, e.g. :6419) -- the per-root scan-diagnostic label is the only
+        """Mirrors cost's own account-N diagnostic assertions (test_transcript_cost.py's
+        TestCostMultiRootReport) -- the per-root scan-diagnostic label is the only
         place `redact` actually changes context-composition's printed output (root_label =
         "account-N" if redact else str(root.parent)); every other TestRedaction test here would
         still pass even if that branch were deleted, since item text is discarded structurally

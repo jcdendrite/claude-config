@@ -105,6 +105,7 @@ TEST_FILES = (
     "test_transcript_turn_shape.py",
     "test_transcript_commit_gate.py",
     "test_transcript_pr_link.py",
+    "test_transcript_sessions.py",
     "test_transcript_context_distribution.py",
     "test_transcript_context_composition.py",
     "test_transcript_cache_efficiency.py",

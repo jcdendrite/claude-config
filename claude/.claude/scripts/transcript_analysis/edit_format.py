@@ -82,8 +82,7 @@ _EDIT_OLD_STRING_SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
 _EDIT_OLD_STRING_SIZE_OVERFLOW_LABEL = "1500+"
 
 # ~4 chars/token, a standard rough estimate (not a per-tokenizer
-# measurement) for English/code text — the same ratio measure_overhead.py
-# used to produce this plan's headline token figures.
+# measurement) for English/code text.
 _EDIT_FORMAT_CHARS_PER_TOKEN = 4
 
 
