@@ -9,6 +9,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **`transcript-analysis.py user-input` no longer counts a compaction summary as a prompt.**
   - **What moves:** the fresh and follow-up prompt counts, the explicit-correction count, and the `--corrections-only` listing. A summary containing a correction phrase was counted as an explicit correction before, so that count and listing can fall. A session whose first fresh record was a summary now reports its first typed prompt as the initial prompt, not a follow-up. Any other figure derived from the prompt list can also fall: a session whose only fresh records were summaries leaves the session count and the session listing, the top struggle phrases line drops phrases that appeared only in a summary, and the date range and a session's header shift when its first fresh record was a summary.
   - **What does not move:** `struggle` and `friction-count` still score compaction summaries against the struggle phrases, so the three reports can disagree on the same transcript.
+- **CI now runs the parallel and the `timing` pytest passes as two matrix legs of one job, so each pass gets its own 25-minute job cap.**
+  - The required `tests` job is now a small aggregate that keeps the id `tests` and passes only when `needs.test-slice.result` is `success`.
+  - Each leg pays its own runner setup, and the two legs hold two runner slots at once.
+  - `claude/.claude/hooks/tests/test_ci_workflow_gates.py` replaces `test_ci_watch_workflow_parity.py`.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
