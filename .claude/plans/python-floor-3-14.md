@@ -297,7 +297,7 @@ After every dispatch, run the commands from `CLAUDE.md` § "Commands" in the wor
   - an unconditional final `exit 0`.
 
   Required content of the notice, not final prose:
-  - screen: `python3` on the PATH Claude Code started with, in this directory, is `<X.Y>`, or is missing or reported no version, and claude-config's hooks support Python `<floor>` or newer. Install Python `<floor>` or newer, put its `python3` first on that PATH, and restart Claude Code. See `README.md` § "Requirements" in the claude-config repository;
+  - screen: `python3` on the PATH Claude Code started with, in this directory, is `<X.Y>`, or is missing, reported no version, or did not answer within 2 seconds, and claude-config's hooks support Python `<floor>` or newer. Run `env python3 --version` in this directory before installing, because a slow answer is not a missing Python. If it is below the floor, install Python `<floor>` or newer, put its `python3` first on that PATH, and restart Claude Code. See `README.md` § "Requirements" in the claude-config repository;
   - agent: the same, plus: hooks that run `python3` are unsupported until then, and `docs/hooks.md` § "Python version" lists what each does if its helper fails. In your next reply, tell the engineer and point them to `README.md` § "Requirements". Do nothing else about it unless the engineer asks.
 - `claude/.claude/hooks/tests/test_check_python_floor.py` (new). PATH is a stub directory followed by a `build_path_without("python3", …)` farm of the real PATH (row 47). Stubs log each call. Every case asserts empty stderr. Payloads carry `hook_event_name` `SessionStart` and `source` `startup` unless a case says otherwise. Cases:
   - a stub printing `3 14` or `3 15`, and a `python3` link to `sys.executable`: exit 0, no stdout;
@@ -312,7 +312,7 @@ After every dispatch, run the commands from `CLAUDE.md` § "Commands" in the wor
     - a `3 13` stub with the farm built by `build_path_without("jq", …)` instead;
   - the registration, modeled on `test_record_session_config_keys.py:478-499`: exactly one SessionStart group registers `~/.claude/hooks/check-python-floor.sh`, and no other event does. Its matcher is `startup|resume`, it has no `if`, its `timeout` is 10, and the hook file exists and is executable.
 - `claude/.claude/settings.json`: a SessionStart entry with `"matcher": "startup|resume"` and `"timeout": 10`, after the `record-session-config-keys.sh` entry (`:203-209`).
-- `claude/.claude/hooks/tests/test_python_floor.py`: add `docs/hooks.md` § "Python version" to the cited-heading case.
+- `claude/.claude/hooks/tests/test_bash_floor.py`: add `docs/hooks.md` § "Python version" to `TestFloorMessageCitationsResolve`'s parametrization (rows 48, 59).
 - `docs/hooks.md`:
   - a `- **`check-python-floor.sh`** (SessionStart, `matcher: startup|resume`, informational)` bullet beside the `record-session-config-keys.sh` one (`:204`). Required facts:
     - what the hook warns about;
