@@ -313,6 +313,13 @@ class TestOutputTable:
             assert mapped["out"] == {}
             assert mapped["dropped"] == 1
 
+    @pytest.mark.parametrize("updated_output", ["plain text", ["a"], 7, True])
+    def test_a_non_object_updated_tool_output_on_an_mcp_tool_is_dropped_and_counted(self, updated_output: object) -> None:
+        stdout = json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedToolOutput": updated_output}})
+        mapped = map_output(stdout, event="postToolUse", tool_cursor="MCP:some_tool")
+        assert mapped["out"] == {}
+        assert mapped["dropped"] == 1
+
     @pytest.mark.parametrize(
         ("status", "followup"),
         [("completed", followup_text("send-back", "Block with reason")), ("error", None), ("aborted", None)],
@@ -541,6 +548,23 @@ class TestOutputTable:
     )
     def test_a_null_known_key_counts_as_absent(self, stdout: dict) -> None:
         assert map_output(json.dumps(stdout), event="preToolUse") == {"out": {}, "outcome": "ok", "dropped": 0}
+
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    @pytest.mark.parametrize("event", PRE_CALL_EVENTS)
+    @pytest.mark.parametrize("decision", ["deny", "allow"])
+    def test_a_decision_string_outside_block_and_approve_is_an_unknown_field(
+        self, decision: str, event: str, fail_closed: bool
+    ) -> None:
+        mapped = map_output(json.dumps({"decision": decision}), event=event, fail_closed=fail_closed)
+        assert mapped["outcome"] == "unknown-field"
+        if fail_closed:
+            assert mapped["out"]["permission"] == "deny"
+        else:
+            assert mapped["out"] == {}
+
+    @pytest.mark.parametrize(("decision", "outcome"), [("block", "deny"), ("approve", "ok")])
+    def test_the_block_and_approve_decision_strings_are_not_unknown_fields(self, decision: str, outcome: str) -> None:
+        assert map_output(json.dumps({"decision": decision}), event="preToolUse")["outcome"] == outcome
 
     def test_a_shim_authored_deny_carries_the_hook_name_the_outcome_and_the_recovery_sentence(self) -> None:
         message = map_output(exit_code=1, hook="named-hook")["out"]["agent_message"]
@@ -1197,6 +1221,16 @@ def _settings_registrations() -> set[str]:
     return {registration_key(*triple) for triple in settings_registrations()}
 
 
+_PLAIN_MATCHER_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _names_outside_plain_grammar(matcher: str) -> list[str]:
+    """The `|`-separated parts of `matcher` that are not plain names. A `*` matcher selects everything and has none."""
+    if matcher == "*":
+        return []
+    return [name for name in matcher.split("|") if _PLAIN_MATCHER_NAME.fullmatch(name) is None]
+
+
 # Tool names Cursor's hooks doc lists for preToolUse, and the names seen in recorded Cursor payloads. Both are Cursor's spellings.
 DOC_TOOL_NAMES = {"Shell", "Read", "Write", "Grep", "Delete", "Task"}
 OBSERVED_TOOL_NAMES = {"Shell", "Read", "Write", "Delete", "Grep", "Task"}
@@ -1245,6 +1279,28 @@ class TestParityExceptions:
             if event in ("PreToolUse", "PostToolUse") and matcher != "*":
                 names = matcher.split("|")
                 assert any(name in claude_tool_names for name in names), f"{key}: no mapped tool for its matcher"
+
+    def test_every_settings_matcher_is_empty_a_star_or_a_list_of_plain_names(self) -> None:
+        """The shim re-checks a matcher with a whole-name regex, which agrees with an exact-name list only for plain names."""
+        for event, matcher, script in settings_registrations():
+            assert _names_outside_plain_grammar(matcher) == [], f"{event}|{matcher}|{script} is not a plain-name matcher"
+
+    @pytest.mark.parametrize(
+        ("matcher", "outside"),
+        [
+            ("*", []),
+            ("Edit", []),
+            ("Edit|Write|MultiEdit", []),
+            ("mcp__server__tool", []),
+            ("^Bash$", ["^Bash$"]),
+            ("Bash|mcp__.*", ["mcp__.*"]),
+            ("Edit|", [""]),
+        ],
+    )
+    def test_the_plain_name_matcher_check_flags_an_anchored_a_prefix_and_an_empty_alternative(
+        self, matcher: str, outside: list[str]
+    ) -> None:
+        assert _names_outside_plain_grammar(matcher) == outside
 
     def test_the_git_write_worktree_gate_and_the_commit_stall_hook_are_listed_as_pending_phase(self) -> None:
         pending = {e["key"] for e in load_json(PARITY_EXCEPTIONS_JSON)["entries"] if e["reason"] == "pending-phase"}
@@ -1402,6 +1458,8 @@ def _write_kind_setup(root: Path, kind: str) -> str:
         (source / "plain.txt").write_text("old text")
         return str(source / "plain.txt" / OVERWRITE_FILE_NAME)
     elif kind == "relative":
+        # The shim runs in `root`, so the name resolves to the file the `regular` kind names by absolute path.
+        target.write_text("old text")
         return f"src/{OVERWRITE_FILE_NAME}"
     return str(target)
 
@@ -1599,8 +1657,8 @@ class TestWriteTranslation:
     def test_the_audit_filter_catches_a_scratch_shim_that_opens_the_file_path_of_an_absent_target(
         self, tmp_path: Path, kind: str
     ) -> None:
-        """The controls above open an existing target. These kinds name a path that is not a regular file, and the filter must
-        still see an open of the path the payload names."""
+        """The controls above open an existing target. These kinds name a path that is missing, is not a regular file or is not
+        absolute, and the filter must still see an open of the path the payload names."""
         root = tmp_path.resolve()
         named = {
             "missing": str(root / "src" / OVERWRITE_FILE_NAME),

@@ -158,7 +158,8 @@ PIN_CHECK_DETAIL = (
     "another entry replaced the command, so the gates cannot know which directory the command runs in."
 )
 
-# Cursor events whose output has a way to block: a deny, or `continue: false`.
+# Cursor events whose deny takes the `permission: deny` shape.
+# `beforeSubmitPrompt` blocks with `continue: false` and is handled apart.
 DENY_SHAPE_EVENTS = frozenset({"preToolUse", "beforeShellExecution", "beforeReadFile", "subagentStart"})
 PRE_CALL_EVENTS = frozenset({"preToolUse", "beforeShellExecution", "beforeReadFile"})
 # Claude events whose matcher selects on a name the payload or the entry fixes.

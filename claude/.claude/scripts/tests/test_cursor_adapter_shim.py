@@ -1144,6 +1144,28 @@ class TestPayloadValidation:
         output, _ = _run_hook_body(tmp_path, "printf 'x\\0y'\necho 'no' >&2\nexit 2\n")
         assert output["agent_message"] == "no"
 
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    @pytest.mark.parametrize(
+        ("spec_id", "own_event", "other_event"),
+        [("shell_pre", "PreToolUse", "PostToolUse"), ("shell_post", "PostToolUse", "PreToolUse")],
+    )
+    def test_an_entry_registered_for_another_claude_event_skips_the_call_without_running_its_hook(
+        self, tmp_path: Path, spec_id: str, own_event: str, other_event: str, fail_closed: bool
+    ) -> None:
+        payload = build_spec(spec_id, _workspace(tmp_path)).cursor
+
+        output, env = _run_probe(tmp_path, payload, claude_event=other_event, fail_closed=fail_closed)
+
+        assert output == {}
+        assert not _probe_ran(tmp_path)
+        assert read_log_lines(env)[-1]["out"] == "skipped"
+
+        control_dir = tmp_path / "control"
+        control_dir.mkdir()
+        control_output, _ = _run_probe(control_dir, payload, claude_event=own_event, fail_closed=fail_closed)
+        assert control_output == {}
+        assert _probe_ran(control_dir), "the entry on its own event never ran its hook, so the skip above proved nothing"
+
 
 # --- prologue ---
 
@@ -1304,8 +1326,9 @@ class TestShimPrologue:
 
         The names under the home, the config dir and TMPDIR are enumerated before the call, while the hook runs, and after.
         While the hook runs, and after a kill, they equal the names before. After a normal end they add only the log, the
-        first-call directory and the first-call mark, which is named by the call's session id by design, so the id fields
-        carry a canary only in the one row that expects that mark name."""
+        first-call directory and the first-call mark.
+        The mark is named by the call's session id by design.
+        So the id fields carry a canary only in the one row that expects that mark name."""
         canary = "CANARY-5f3a9c-do-not-persist"
         root = _workspace(tmp_path)
         padding = "x" * (1024 * 1024)
