@@ -1,6 +1,6 @@
 """Tests for evals/replay_bench/comment_metrics. Sources are synthetic. Diff and
 raw-listing inputs are real `git diff` output from a tmp-path repository, built
-with the same flags the runner uses. No test launches `claude`.
+with the flags `measure_diff`'s docstring names. No test launches `claude`.
 """
 from __future__ import annotations
 

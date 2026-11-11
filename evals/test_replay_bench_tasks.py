@@ -120,6 +120,43 @@ def _git_text(directory: Path, *args: str) -> str:
     return _git(directory, *args).decode()
 
 
+GITLINK_BASE_SHA = "a" * 40
+GITLINK_BUMPED_SHA = "b" * 40
+RENAMED_FILE_CONTENT = "".join(f"renamed_{n} = {n}\n" for n in range(3))
+
+
+def _repo_for_non_additive_commit(tmp_path: Path) -> Path:
+    """A repository whose base holds what `_commit_with_non_additive_changes` deletes, renames, flips and bumps."""
+    return _make_repo(
+        tmp_path,
+        {"docs/old.py": "x = 1\n", "scripts/run.sh": "echo run\n", "src/renamed_from.py": RENAMED_FILE_CONTENT},
+        gitlinks={"vendor/lib": GITLINK_BASE_SHA},
+    )
+
+
+def _commit_with_non_additive_changes(repo: Path) -> str:
+    """Commits `QUALIFYING_CHANGE` together with a deleted file, a renamed file (a delete plus an add of the
+    same content), an executable-bit flip and a gitlink bump."""
+    _git(repo, "update-index", "--chmod=+x", "scripts/run.sh")
+    _git(repo, "update-index", "--cacheinfo", f"160000,{GITLINK_BUMPED_SHA},vendor/lib")
+    return _change(
+        repo, {**QUALIFYING_CHANGE, "docs/old.py": None, "src/renamed_from.py": None, "src/renamed_to.py": RENAMED_FILE_CONTENT},
+    )
+
+
+def _record_subprocess_run_calls(monkeypatch) -> list[dict]:
+    """Records the keyword arguments of each `subprocess.run` call made after this returns."""
+    calls: list[dict] = []
+    real_run = subprocess.run
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    return calls
+
+
 def _repo_from_trees(tmp_path: Path, base_tree: dict, change_tree: dict) -> Path:
     """A repository whose HEAD commit holds `change_tree` over a root commit holding `base_tree`. A tree maps a
     name (str or bytes) to a str of blob content or a nested tree. `git add` refuses a `.git` path and APFS
@@ -307,6 +344,37 @@ class TestQualifyingCommit:
         assert metrics.comment_words["non_test"] == 5
 
 
+class TestNonAdditiveChanges:
+    def test_a_commit_that_also_deletes_renames_flips_a_mode_and_bumps_a_gitlink_is_kept_with_its_added_lines_only(
+        self, tmp_path,
+    ):
+        repo = _repo_for_non_additive_commit(tmp_path)
+        _commit_with_non_additive_changes(repo)
+
+        task = _mine_one_task(repo)
+
+        expected_paths = [
+            "docs/old.py", "scripts/run.sh", "src/app.py", "src/renamed_from.py", "src/renamed_to.py", "vendor/lib",
+        ]
+        assert list(task.changed_paths) == expected_paths
+        assert task.reference_metrics.changed_paths == expected_paths
+        # The renamed file's new side counts as added, so its three lines join the twelve of `QUALIFYING_CHANGE`.
+        assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 12 + 3
+        assert task.reference_metrics.non_file_entries == 1
+
+    def test_a_commit_that_turns_a_dot_claude_file_into_a_symlink_is_kept_without_that_path(self, tmp_path):
+        repo = _make_repo(tmp_path, {".claude": "old\n"})
+        (repo / ".claude").unlink()
+        _write_symlinks(repo, {".claude": "src"})
+        _git(repo, "--literal-pathspecs", "add", "--", ".claude")
+        _change(repo)
+
+        task = _mine_one_task(repo)
+
+        assert task.changed_paths == ("src/app.py",)
+        assert task.reference_metrics.changed_paths == ["src/app.py"]
+
+
 class TestBaseDensity:
     def test_density_is_the_base_comment_words_per_base_code_line_of_the_changed_non_test_files(self, tmp_path):
         repo = _make_repo(tmp_path)
@@ -321,6 +389,21 @@ class TestBaseDensity:
 
         # Six docstring words ("Module", "summary", "spanning", "two", "lines", "here.") over the one code line.
         assert _mine_one_task(repo).base_density == pytest.approx(6 / 1)
+
+    def test_density_over_several_files_is_the_ratio_of_the_summed_words_and_code_lines_not_the_mean_of_ratios(
+        self, tmp_path,
+    ):
+        wordy_base = "# one two three four\nx = 1\n"
+        terse_base = "a = 1\nb = 2\nc = 3\n"
+        repo = _make_repo(tmp_path, {"src/wordy.py": wordy_base, "src/terse.py": terse_base})
+        added_code = "".join(f"value_{n} = {n}\n" for n in range(6))
+        _change(repo, {"src/wordy.py": wordy_base + added_code, "src/terse.py": terse_base + added_code})
+
+        task = _mine_one_task(repo)
+
+        assert task.changed_paths == ("src/terse.py", "src/wordy.py")
+        # Four words over four code lines. Averaging the files' own ratios, 4 and 0, would give 2.
+        assert task.base_density == pytest.approx(4 / 4)
 
     def test_a_base_test_file_counts_in_neither_the_numerator_nor_the_denominator(self, tmp_path):
         base_test_file = "# a long note of many words about this test\ny = 1\ny = 2\n"
@@ -1029,6 +1112,53 @@ class TestRepoLocalDiffConfig:
 
         assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 2
 
+    def test_a_repo_local_ignore_submodules_setting_does_not_hide_a_gitlink_bump(self, tmp_path):
+        repo = _repo_for_non_additive_commit(tmp_path)
+        _git(repo, "config", "diff.ignoreSubmodules", "all")
+        _commit_with_non_additive_changes(repo)
+
+        task = _mine_one_task(repo)
+
+        assert "vendor/lib" in task.changed_paths
+        assert task.reference_metrics.changed_paths == list(task.changed_paths)
+        assert task.reference_metrics.non_file_entries == 1
+
+    def test_a_repo_local_diff_algorithm_does_not_change_which_lines_count_as_added(self, tmp_path):
+        base_text = "".join(f"{line}\n" for line in ("e = 5", "e = 5", "b = 2", "c = 3", "e = 5", "d = 4"))
+        edited_text = "".join(
+            f"{line}\n" for line in ("a = 1", "e = 5", "a = 1", "d = 4", "c = 3", "e = 5", "b = 2", "b = 2", "f = 6")
+        )
+        repo = _make_repo(tmp_path, {"src/lib.py": base_text})
+        _git(repo, "config", "diff.algorithm", "patience")
+        commit = _change(repo, {"src/lib.py": edited_text})
+
+        def diff_with(algorithm: str) -> str:
+            return _git_text(repo, "diff", "-U0", "--indent-heuristic", f"--diff-algorithm={algorithm}", f"{commit}~1", commit)
+
+        assert diff_with("myers") != diff_with("patience")
+
+        task = _mine_one_task(repo, min_code_lines=1)
+
+        # Myers adds six of the nine lines. Patience adds seven.
+        assert task.reference_metrics.line_counts["non_test"][LineClass.CODE.value] == 6
+
+
+class TestIsolatedGitEnvironment:
+    def test_every_git_call_mining_makes_runs_under_the_isolated_environment_despite_an_inherited_git_dir(
+        self, tmp_path, monkeypatch,
+    ):
+        repo = _make_repo(tmp_path)
+        _change(repo)
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "decoy.git"))
+        calls = _record_subprocess_run_calls(monkeypatch)
+
+        _mine_one_task(repo)
+
+        assert calls
+        for call in calls:
+            assert call.get("env") == local_git.isolated_git_environment()
+            assert "GIT_DIR" not in call["env"]
+
 
 class TestPerCommitFailures:
     def test_a_diff_the_metrics_cannot_parse_is_reported_with_the_repo_and_commit(self, tmp_path, monkeypatch):
@@ -1506,19 +1636,31 @@ class TestBuildTaskFixture:
         repo = _make_source_repo(tmp_path)
         _change(repo)
         task = _mine_one_task(repo)
-        timeouts: list[float | None] = []
-        real_run = subprocess.run
-
-        def spy(*args, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            return real_run(*args, **kwargs)
-
-        monkeypatch.setattr(subprocess, "run", spy)
+        calls = _record_subprocess_run_calls(monkeypatch)
 
         _build_fixture(tmp_path, task, timeout_s=FIXTURE_TIMEOUT_S)
 
-        assert len(timeouts) >= 5  # init, archive, add, commit, rev-parse
+        timeouts = [call.get("timeout") for call in calls]
+        assert timeouts
         assert set(timeouts) == {FIXTURE_TIMEOUT_S}
+
+    def test_every_git_call_the_build_makes_runs_under_the_isolated_environment_despite_an_inherited_git_dir(
+        self, tmp_path, monkeypatch,
+    ):
+        repo = _make_source_repo(tmp_path)
+        _change(repo)
+        task = _mine_one_task(repo)
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "decoy.git"))
+        calls = _record_subprocess_run_calls(monkeypatch)
+
+        _build_fixture(tmp_path, task)
+
+        assert calls
+        for call in calls:
+            # The fixture commit call adds its fixed author and committer identity to the isolated environment.
+            env_without_identity = {key: value for key, value in call["env"].items() if key not in fixture_repo._git_commit_env()}
+            assert env_without_identity == local_git.isolated_git_environment()
+            assert "GIT_DIR" not in call["env"]
 
 
     def test_a_root_dot_claude_regular_file_fails_the_build_as_an_os_error(self, tmp_path):

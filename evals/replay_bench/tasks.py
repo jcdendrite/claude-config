@@ -62,6 +62,8 @@ _MERGED_COMMIT_LOG_FIELD_COUNT = 2
 _SYMLINK_MODE = "120000"
 # The side of a raw diff entry that holds no file, as on an added or a deleted path.
 _ABSENT_MODE = "000000"
+# Each option overrides a repo-local diff setting that changes the entry list or the added-line set.
+_STABLE_DIFF_ARGS = ("--no-renames", "--diff-algorithm=myers", "--indent-heuristic", "--ignore-submodules=none")
 _GITATTRIBUTES_NAME = ".gitattributes"
 # `git archive` honors both attributes, so a fixture extracted from such a tree differs from the tree
 # the miner sized and measured. The guard covers only these two: `git archive` also applies the `text`,
@@ -70,7 +72,7 @@ _EXPORT_ATTRIBUTES = (b"export-ignore", b"export-subst")
 
 
 class TaskSourceError(ValueError):
-    """A source repository or trusted-author argument the miner refuses."""
+    """A source repository, rev or trusted-author argument the miner refuses, or a commit it cannot read safely."""
 
 
 class TaskFileError(ValueError):
@@ -157,10 +159,14 @@ class ReplayTask:
 
     @classmethod
     def from_dict(cls, data: Mapping) -> ReplayTask:
-        """Raises ValueError for a missing key, a malformed ID or SHA, an ID other than the one
-        `make_task_id` derives from `source_repo` and `commit`, a string, count, density or
-        `changed_paths` field of the wrong type, or a `reference_metrics` that `CommentMetrics.from_dict`
-        cannot read. The inner values of `reference_metrics` are not type-checked."""
+        """Raises ValueError for:
+        - A missing key.
+        - A malformed ID or SHA.
+        - An ID other than the one `make_task_id` derives from `source_repo` and `commit`.
+        - A field of the wrong type: a string field, a count, the density or `changed_paths`.
+        - A `reference_metrics` that `CommentMetrics.from_dict` cannot read.
+
+        The inner values of `reference_metrics` are not type-checked."""
         missing_keys = [key for key in _TASK_KEYS if key not in data]
         if missing_keys:
             raise ValueError(f"task lacks keys {missing_keys}")
@@ -434,7 +440,7 @@ def _changed_entries(
 ) -> tuple[str, list[comment_metrics.ChangedEntry]]:
     pathspec = ["--", *paths] if paths else []
     raw_listing = _git(
-        repo, "--literal-pathspecs", "diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, commit, *pathspec,
+        repo, "--literal-pathspecs", "diff", "--raw", "-z", "--no-abbrev", *_STABLE_DIFF_ARGS, base, commit, *pathspec,
     ).decode("utf-8", errors="surrogateescape")
     return raw_listing, comment_metrics.parse_raw_listing(raw_listing)
 
@@ -651,15 +657,15 @@ def _measure_change(
 ) -> CommentMetrics | SkipReason:
     """The classifier run over the commit's diff of `changed_paths`, or why the diff cannot be measured."""
     numstat = _git(
-        repo, "--literal-pathspecs", "diff", "--numstat", "-z", "--no-renames", base_commit, commit,
+        repo, "--literal-pathspecs", "diff", "--numstat", "-z", *_STABLE_DIFF_ARGS, base_commit, commit,
         "--", *changed_paths,
     )
     if any(row.startswith("-\t-\t") for row in numstat.decode("utf-8", errors="surrogateescape").split("\0")):
         return SkipReason.BINARY
     raw_listing, entries = _changed_entries(repo, base_commit, commit, changed_paths)
     diff_text = _git(
-        repo, "--literal-pathspecs", "-c", "core.quotePath=false", "diff", "-U0", "--inter-hunk-context=0", "--no-renames",
-        *DIFF_TEXT_ARGS, "--src-prefix=a/", "--dst-prefix=b/", base_commit, commit, "--", *changed_paths,
+        repo, "--literal-pathspecs", "-c", "core.quotePath=false", "diff", "-U0", "--inter-hunk-context=0", "--submodule=short",
+        *_STABLE_DIFF_ARGS, *DIFF_TEXT_ARGS, "--src-prefix=a/", "--dst-prefix=b/", base_commit, commit, "--", *changed_paths,
     ).decode("utf-8", errors="replace")
     regular_entries = [entry for entry in entries if entry.new_mode in comment_metrics.REGULAR_FILE_MODES]
     try:
