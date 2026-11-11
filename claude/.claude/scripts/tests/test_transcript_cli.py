@@ -304,7 +304,7 @@ class TestBuildParser:
         both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
         # One subcommand per registration path: `cli.py`'s `_add_project_scope_args` call, the
         # hand-rolled group in skill_invocation.py, and a module-registered subparser.
-        assert {"subagents", "skill-invocation", "skill-pair"} <= set(both_flags)
+        assert {"cost", "skill-invocation", "skill-pair"} <= set(both_flags)
         not_refused = []
         for name in both_flags:
             try:

@@ -10,8 +10,7 @@ both, and calls `main()`. Everything else lives in the `transcript_analysis/` pa
 (`claude/.claude/scripts/transcript_analysis/`).
 
 `cli.py` imports the command-group modules, and no package module imports `cli.py`, so no circular
-import is possible. `build_parser()` wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS`
-and `read_scope.py`'s `cmd_read_scope` from `cli.py`.
+import is possible.
 A command-group module may import another by module (attribute access). Among the review modules,
 `reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_trace.py` imports `reviewer_yield.py` (for
 `_is_reviewer_subagent_type`) and `skill_invocation.py` (for `_normalize_skill_name`), and it imports
@@ -20,27 +19,9 @@ A command-group module may import another by module (attribute access). Among th
 `STRUGGLE_PHRASES`), and `user_input.py` imports `struggle.py` (for `STRUGGLE_PHRASES`).
 `turn_shape.py` imports `denials.py` (for `_drop_denial_command_flag_values`).
 `context_composition.py` imports `read_scope.py` (for `_READ_SCOPE_CHARS_PER_TOKEN`) and `subagents.py` (for `_MCP_TOOL_BUCKET_LABEL`).
-`build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
-`--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
-`cmd_pr_cost_export` from `cli.py`.
-`build_parser()` likewise wires up `cache_rebuild.py`'s `cmd_cache_rebuild` and its two
-`--since`/`--threshold` default constants (`_CACHE_REBUILD_DEFAULT_SINCE`,
-`_CACHE_REBUILD_DEFAULT_THRESHOLD`) from `cli.py`.
-`build_parser()` likewise wires up `audit_routing.py`'s `cmd_audit_routing`,
-`cmd_audit_routing_shape`, and `cmd_audit_routing_samples` from `cli.py`.
-`build_parser()` likewise wires up `subagents.py`'s `cmd_subagents` and `subagent_mix.py`'s
-`cmd_subagent_mix`/`cmd_cost_counts` from `cli.py`.
-`build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
-`spend_over_threshold.py`'s `cmd_spend_over_threshold` from `cli.py`.
-`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary`,
-`handoff_signal_response.py`'s `cmd_handoff_signal_response`, and `period_cost.py`'s `cmd_period_cost`
-from `cli.py`.
-`build_parser()` registers judgment-pair, skill-invocation, skill-pair, buckets, fail-seq, struggle,
-user-input, duration, friction-count, pr-link, commit-gate, turn-shape, turn-shape-samples,
-turn-shape-holdout-samples, sessions, context-distribution, context-composition, cache-efficiency, edit-format,
-instrument-authoring, review-cost-by-size, read-cost, and routing-guard by calling each owning
-module's `_add_<command>_subparser` from `cli.py` at that command's place in registration order. Each
-module's own registration binds `set_defaults(func=...)` to its own handler.
+`build_parser()` registers every subcommand by calling its owning module's `_add_<command>_subparser` from
+`cli.py` at that command's place in registration order, except the five the `cli.py` section below names.
+Each module's own registration binds `set_defaults(func=...)` to its own handler.
 A test that needs to steer a command patches the module whose binding the
 handler reads at call time, not `cli.py`.
 
@@ -252,6 +233,7 @@ verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit 
 public name here, read by `cost_ledger.py`'s own `_cost_ledger_report` as
 `reviewer_yield.compute_reviewer_yield_data`. `_is_reviewer_subagent_type` is read by `review_trace.py`, via
 `reviewer_yield._is_reviewer_subagent_type` (attribute access). `cli.py` does not import it.
+`_add_reviewer_yield_subparser` is the one name `build_parser()` reaches bare.
 
 ### `review_rounds.py`
 
@@ -324,7 +306,8 @@ docstrings for the append-lock mechanism `review-ledger.sh`'s
 write depends on.
 
 Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
-(attribute access), matching `review_rounds.py`'s own convention. See
+(attribute access), matching `review_rounds.py`'s own convention.
+`_add_author_outcome_subparser` is the one name `build_parser()` reaches bare. See
 `docs/transcript-analysis.md`'s author-outcome section for the full failure definition, output
 shape, and documented scope gaps.
 
@@ -358,8 +341,8 @@ line-by-line `shlex` segmenter, not `corpus.split_command_segments`, which split
 operator nor a newline.
 `_review_trace_session_events` reads `skill_invocation._normalize_skill_name` for the emitted display
 label's directory-only strip.
-`cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names `cli.py`'s `build_parser()` reaches
-bare. `compute_deny_summary_data` is read by `cost_ledger.py`'s own `_cost_ledger_report` as
+`_add_review_trace_subparser` is the one name `build_parser()` reaches bare.
+`compute_deny_summary_data` is read by `cost_ledger.py`'s own `_cost_ledger_report` as
 `review_trace.compute_deny_summary_data`, a normal cross-module package read.
 
 ### `read_scope.py`
@@ -367,8 +350,8 @@ bare. `compute_deny_summary_data` is read by `cost_ledger.py`'s own `_cost_ledge
 The read-scope command family: `cmd_read_scope` and every helper used only by it — the Read-call
 census by cohort and scope (`_scan_read_scope_session`), repeat-whole-file-read detection, and
 per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render`, and `scope` all
-by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` is the one name
-reached bare from `cli.py`. `context_composition.py` reads `_READ_SCOPE_CHARS_PER_TOKEN` as
+by module (attribute access), matching `cost.py`'s convention. `_add_read_scope_subparser` is the one
+name `build_parser()` reaches bare. `context_composition.py` reads `_READ_SCOPE_CHARS_PER_TOKEN` as
 `read_scope._READ_SCOPE_CHARS_PER_TOKEN`.
 
 ### `read_cost.py`
@@ -454,8 +437,8 @@ cost command group, not the reverse. `cmd_pr_cost`, `_PR_COST_ASOF_WINDOW_DAYS_D
 The pr-cost-export command family: `cmd_pr_cost_export` and every helper used only by it —
 collapsing every declared account's pr-cost ledger to current rows, redacting them, and publishing
 one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common`, `pr_cost_ledger`,
-`pricing`, `redaction`, `review_rounds`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
-`cli.py`.
+`pricing`, `redaction`, `review_rounds`, and `scope` all by module. `_add_pr_cost_export_subparser` is the one name `build_parser()` reaches
+bare.
 
 ### `cache_rebuild_rules.py`
 
@@ -472,16 +455,17 @@ The cache-rebuild command family: `cmd_cache_rebuild` and its report. Imports `c
 convention. Unlike every other command-group module, it also imports `cache_rebuild_rules.py`'s 31
 constants and pure functions by name, since none is reassigned at runtime. A test that
 monkeypatches one of those 31 names must patch both `cache_rebuild_rules`'s own binding and this
-module's separate imported binding to take effect. `cmd_cache_rebuild`,
-`_CACHE_REBUILD_DEFAULT_SINCE`, and `_CACHE_REBUILD_DEFAULT_THRESHOLD` are the three names reached
-bare from `cli.py`.
+module's separate imported binding to take effect. `_add_cache_rebuild_subparser` is the one name
+`build_parser()` reaches bare.
 
 ### `audit_routing.py`
 
 The audit-routing command family: the three `cmd_*` functions (`cmd_audit_routing`,
 `cmd_audit_routing_shape`, `cmd_audit_routing_samples`) and every helper only they use. Imports
 `corpus`, `pricing`, `redaction`, `render`, and `scope` all by module (attribute access), matching
-`cost.py`'s convention. The three `cmd_*` functions are the only names reached bare from `cli.py`.
+`cost.py`'s convention. Its three registrars, `_add_audit_routing_subparser`,
+`_add_audit_routing_shape_subparser`, and `_add_audit_routing_samples_subparser`, are the only names
+`build_parser()` reaches bare.
 
 ### `cost_ledger.py`
 
@@ -493,7 +477,7 @@ a ledger's guard checks stay in the same function as its write; the git-tracked 
 the already-shared `ledger_common._ledger_path_is_git_tracked`. Imports `cost`, `ledger_common`,
 `pricing`, `render`, `review_trace`, `reviewer_yield`, and `scope` all by module (attribute access),
 matching `cost.py`'s convention. Binds `config_dir` by name from `_config_dir`, the same pattern
-`pr_cost_ledger.py` uses. `cmd_cost_ledger` is the one name reached bare from `cli.py`.
+`pr_cost_ledger.py` uses. `_add_cost_ledger_subparser` is the one name `build_parser()` reaches bare.
 
 ### `workstream_cost.py`
 
@@ -501,8 +485,8 @@ The workstream-cost command: `cmd_workstream_cost` and `_print_workstream_sessio
 per-branch session count and continuation "startup burn" dollars, via `cost._compute_workstream_dollars`
 (the cost command group's own bare-caller-retained helper), plus an optional `--check-pr-status` gh
 classification pass reusing pr-cost's own repo-pinning machinery. Imports `cost`, `gh_cli`, `render`,
-and `scope` all by module (attribute access), matching `cost.py`'s convention. `cmd_workstream_cost`
-is the one name reached bare from `cli.py`.
+and `scope` all by module (attribute access), matching `cost.py`'s convention.
+`_add_workstream_cost_subparser` is the one name `build_parser()` reaches bare.
 
 ### `subagents.py`
 
@@ -510,8 +494,8 @@ The subagents command: `cmd_subagents` and `_MCP_TOOL_BUCKET_LABEL` — per-bran
 counts by model family, plus tool-result text bytes per thread and per producing tool, with every
 `mcp__<server>__<tool>` name collapsed into the one bucket label (an MCP server name is a per-account
 integration identifier). Imports `corpus`, `pricing`, `redaction`, `render`, and `scope` all by
-module (attribute access), matching `cost.py`'s convention. `cmd_subagents` is the one name reached
-bare from `cli.py`, which `build_parser()` wires up. `context_composition.py` reads
+module (attribute access), matching `cost.py`'s convention. `_add_subagents_subparser` is the one name
+`build_parser()` reaches bare. `context_composition.py` reads
 `_MCP_TOOL_BUCKET_LABEL` as `subagents._MCP_TOOL_BUCKET_LABEL`.
 
 ### `subagent_mix.py`
@@ -524,8 +508,8 @@ fallback `subagent_type`. Imports `corpus`, `pricing`, `redaction`, `render`, `r
 `scope` all by module (attribute access), matching `cost.py`'s convention.
 `cmd_cost_counts` reads its one root, `config_dir() / "projects"`, as `scope.config_dir()` by
 attribute access, per the rule under `scope.py` above, so `fake_projects`' existing
-`scope.config_dir` patch isolates it with no further patch. `cmd_subagent_mix` and `cmd_cost_counts`
-are the two names reached bare from `cli.py`, from `build_parser()`.
+`scope.config_dir` patch isolates it with no further patch. `_add_subagent_mix_subparser` and
+`_add_cost_counts_subparser` are the two names `build_parser()` reaches bare.
 
 ### `handoff_nudge.py`
 
@@ -552,8 +536,8 @@ nudge-to-handoff conversion classifier (`_nudge_conversion_from_log`), and the p
 disclosure line (`_rearm_backtest_log_size_lines`). Imports `handoff_nudge`, `render`, and `scope` all
 by module (attribute access), matching `cost.py`'s convention. The multi-root `--no-redact` refusal
 stays inline in `_rearm_backtest_report`, ahead of any output, in addition to
-`scope._resolve_cost_roots`' own CLI-level refusal. `cmd_rearm_backtest` is the one name reached bare
-from `cli.py`, from `build_parser()`.
+`scope._resolve_cost_roots`' own CLI-level refusal. `_add_rearm_backtest_subparser` is the one name
+`build_parser()` reaches bare.
 
 ### `spend_over_threshold.py`
 
@@ -561,8 +545,8 @@ The spend-over-threshold command: `cmd_spend_over_threshold` — each ISO week's
 earned at or above the hook's fire threshold, followed by the nudge-log diagnostic footer. Reads its
 per-session turns through `handoff_nudge._extract_rearm_session_turns` and prints the footer through
 `handoff_nudge._print_nudge_log_diagnostic`. Imports `corpus`, `handoff_nudge`, `render`, and `scope`
-all by module (attribute access), matching `cost.py`'s convention. `cmd_spend_over_threshold` is the
-one name reached bare from `cli.py`, from `build_parser()`.
+all by module (attribute access), matching `cost.py`'s convention. `_add_spend_over_threshold_subparser`
+is the one name `build_parser()` reaches bare.
 
 ### `plan_boundary.py`
 
@@ -573,7 +557,7 @@ pairwise work-inflation breakeven (`_plan_boundary_work_inflation_breakeven`). I
 `handoff_nudge`, `pricing`, `render`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. The multi-root `--no-redact` refusal is inline in `_plan_boundary_report`,
 ahead of any output, in addition to `scope._resolve_cost_roots`' own CLI-level refusal.
-`cmd_plan_boundary` is the one name reached bare from `cli.py`, from `build_parser()`.
+`_add_plan_boundary_subparser` is the one name `build_parser()` reaches bare.
 
 ### `handoff_signal_response.py`
 
@@ -586,8 +570,8 @@ benchmark, and the aggregate and markdown renderers. Imports `corpus`, `cost`, `
 convention. The multi-root `--no-redact` refusal lives inline in `cmd_handoff_signal_response`, since
 `scope.resolve_scan_roots` refuses nothing. Its `.handoff-nudge.log` read goes through
 `scope.config_dir()` by attribute access, per the rule under `scope.py` above, so `fake_projects`'
-existing `scope.config_dir` patch isolates it. `cmd_handoff_signal_response` is the one name reached
-bare from `cli.py`, from `build_parser()`.
+existing `scope.config_dir` patch isolates it. `_add_handoff_signal_response_subparser` is the one name
+`build_parser()` reaches bare.
 
 ### `judgment_pair.py`
 
@@ -778,7 +762,8 @@ The routing-guard command: `cmd_routing_guard` and the `_add_routing_guard_subpa
 `build_parser()`, which composes every subcommand's parser, and `main()`, which parses the command line,
 handles the top-level `--config-dir`, and calls the chosen subcommand's handler. `main()` refuses the
 top-level `--config-dir` for every subcommand in `scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR`, and
-otherwise reassigns `scope.PROJECTS_DIR`. `build_parser()` registers 23 subcommands inline. Every other
+otherwise reassigns `scope.PROJECTS_DIR`. `build_parser()` registers five subcommands inline: cost,
+cost-trend, pr-cost, review-round-cost, and period-cost. Every other
 subcommand registers through its owning module's `_add_<command>_subparser`, the form a new subcommand
 uses. `transcript-analysis.py` re-exports both functions.
 
@@ -795,10 +780,11 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 `.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
 the existing tests live.
 
-`tests/test_transcript_cli.py` holds one test that is an exception to the rule's bullet on one command's CLI
-wiring: `TestBuildParser`'s `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts`. It belongs
-in `tests/test_transcript_review_cost_by_size.py`, which is over the line limit, so the move waits for a split
-of that file at a named seam.
+`tests/test_transcript_cli.py` holds two tests that are exceptions to the rule's bullet on one command's CLI
+wiring, both in `TestBuildParser`. `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts` belongs
+in `tests/test_transcript_review_cost_by_size.py`, and `test_review_trace_parses_omit_plan_review_spawns`
+belongs in `tests/test_transcript_review_trace.py`. Both files are over the line limit, so each move waits
+for a split of its file at a named seam.
 
 `corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
 `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
