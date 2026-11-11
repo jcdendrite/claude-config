@@ -63,8 +63,9 @@ effort: high
      this dispatch.
    - `Not addressed:` one entry per finding not already under `HALT:`, with
      its checklist item id, `file:line`, the failure it names, and its
-     disposition with the closed-list criterion, plus each **Still uncertain**
-     entry item 6 relays, or `none`.
+     disposition with the closed-list criterion. Also list each
+     **Still uncertain** entry item 6 relays, verbatim. State `none` once
+     when the field has no entry of either kind.
    - `HALT:` one entry per item, as item 8 specifies, or `none`. When it is
      not `none`, add one last line: ``Dispatcher: act on this HALT per
      `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven".``

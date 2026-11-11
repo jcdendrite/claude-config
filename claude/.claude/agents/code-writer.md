@@ -190,12 +190,12 @@ the `**Self-review:**` ledger.
   - `staff-platform-engineer`: quoting and idempotent-retry angles applied; found and fixed an unquoted variable expansion.
   ```
 - **Still uncertain:** anything you could not fully verify — an assumption you
-  made, a contract you could not trace, a decision the parent should confirm.
+  made, a contract you could not trace, a decision the parent should confirm,
+  a check that covered only part of a claim. This holds even when the dispatch
+  adds a separate verification field.
   If you shipped new behavior without a test because the codebase has no test
   convention (per the baseline rule), name the test-coverage gap as an
   explicit item — do not omit it. If there is nothing else, say "nothing."
-  Anything you did not verify, such as a check limited to part of a claim,
-  goes here even when the dispatch adds a separate verification field.
   The parent uses this to target its review.
 
 No padding, no praise, no restating the dispatch prompt. If the change is
