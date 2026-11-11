@@ -1268,6 +1268,14 @@ class TestShimPrologue:
         while not started.exists() and time.monotonic() < give_up:
             time.sleep(0.05)
         assert started.exists()
+        # Positive control: the same match sees the live sleep before the kill, so an empty match afterwards means it ended.
+        give_up = time.monotonic() + 15
+        while time.monotonic() < give_up:
+            running = subprocess.run(["pgrep", "-f", f"sleep {sleep_argument}"], capture_output=True, text=True, check=False)
+            if running.stdout.strip() != "":
+                break
+            time.sleep(0.05)
+        assert running.stdout.strip() != "", "the match does not see the hook's sleep while it runs"
         process.send_signal(signal.SIGKILL)
         process.wait(timeout=15)
         give_up = time.monotonic() + SHIM_MODULE.worst_case_wall_seconds(deadline) + SHIM_MODULE.MARGIN_SECONDS
@@ -1630,6 +1638,8 @@ class TestShimLogConcurrency:
 
 # The top-level modules a `hook`-mode call may have loaded when it ends, measured on Python 3.14 under the audit wrapper
 # (whose `runpy.run_path` loads `runpy` and `pkgutil`). A new name here is a new import cost.
+# The list depends on the interpreter's own imports: re-measure it by printing `loaded - ALLOWED_TOP_LEVEL_MODULES` from the
+# row below under the new interpreter, and add only names the shim's imports or the interpreter's startup explain.
 ALLOWED_TOP_LEVEL_MODULES = frozenset(
     {
         "abc", "builtins", "codecs", "collections", "contextlib", "copyreg", "encodings", "enum", "errno", "fcntl",
@@ -2742,8 +2752,8 @@ PARSER_EDGES = {
     "lone-surrogate-in-a-key": b'{"\\ud800": 1}',
 }
 
-# `leading-cd` at the middle position puts the value between the path and `&&`, where only ASCII whitespace is allowed.
-MIDDLE_KEEPS_LEADING_CD = {"carriage-return", "vertical-tab", "form-feed", "trailing-newline"}
+# `leading-cd` at the middle position puts the value between the path and `&&`, where only a space, tab or newline is allowed.
+MIDDLE_KEEPS_LEADING_CD = {"trailing-newline"}
 
 
 class TestShimTextRules:
@@ -2875,25 +2885,35 @@ def _candidate_shells() -> dict[str, str]:
     return found
 
 
-def _has_builtin(path: str) -> bool:
-    """A runtime probe, never the platform: whether `builtin cd .` exits 0 under this shell."""
-    return subprocess.run([path, "-c", "builtin cd ."], capture_output=True, check=False).returncode == 0
+# A project choice: the probe runs at collection, so a candidate shell whose startup file hangs must not hang the suite.
+SHELL_PROBE_TIMEOUT_SECONDS = 10
+
+
+def _has_builtin(path: str) -> bool | None:
+    """A runtime probe, never the platform: whether `builtin cd .` exits 0 under this shell; None when the probe timed out."""
+    try:
+        completed = subprocess.run(
+            [path, "-c", "builtin cd ."], capture_output=True, check=False, timeout=SHELL_PROBE_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    return completed.returncode == 0
 
 
 CANDIDATE_SHELLS = _candidate_shells()
 SHELL_PROBES = {name: _has_builtin(path) for name, path in CANDIDATE_SHELLS.items()}
-BUILTIN_SHELL_PARAMS = [pytest.param(name, id=name) for name, ok in SHELL_PROBES.items() if ok]
-NO_BUILTIN_SHELL_PARAMS = [pytest.param(name, id=name) for name, ok in SHELL_PROBES.items() if not ok]
+BUILTIN_SHELL_PARAMS = [pytest.param(name, id=name) for name, ok in SHELL_PROBES.items() if ok is True]
+NO_BUILTIN_SHELL_PARAMS = [pytest.param(name, id=name) for name, ok in SHELL_PROBES.items() if ok is False]
 BEHAVIOUR_ROW_IDS = ["pin-failure-runs-nothing", "trailing-backslash", "extglob-line", "cd-shadowed-by-function", "chpwd-hook"]
 # A row needs a shell that has the construct it tests: a `cd` function and `export -f` are bash and POSIX-mode sh,
 # and a `chpwd` hook is zsh's.
 ZSH_ONLY_ROWS = {"chpwd-hook"}
 _ROW_SHELLS = {
-    "pin-failure-runs-nothing": [name for name, ok in SHELL_PROBES.items() if ok],
-    "trailing-backslash": [name for name, ok in SHELL_PROBES.items() if ok],
-    "extglob-line": [name for name, ok in SHELL_PROBES.items() if ok],
-    "cd-shadowed-by-function": [name for name, ok in SHELL_PROBES.items() if ok and name in ("bash", "sh")],
-    "chpwd-hook": [name for name, ok in SHELL_PROBES.items() if ok and name == "zsh"],
+    "pin-failure-runs-nothing": [name for name, ok in SHELL_PROBES.items() if ok is True],
+    "trailing-backslash": [name for name, ok in SHELL_PROBES.items() if ok is True],
+    "extglob-line": [name for name, ok in SHELL_PROBES.items() if ok is True],
+    "cd-shadowed-by-function": [name for name, ok in SHELL_PROBES.items() if ok is True and name in ("bash", "sh")],
+    "chpwd-hook": [name for name, ok in SHELL_PROBES.items() if ok is True and name == "zsh"],
 }
 BEHAVIOUR_PARAMS_BY_ROW_ORDER = [(row, shell) for row in BEHAVIOUR_ROW_IDS for shell in _ROW_SHELLS[row]]
 BEHAVIOUR_PARAMS = [pytest.param(row, shell, id=f"{row}-{shell}") for row, shell in BEHAVIOUR_PARAMS_BY_ROW_ORDER]
@@ -3224,6 +3244,22 @@ class TestDirectoryPin:
         assert not _probe_ran(tmp_path)
         assert read_log_lines(env)[-1]["out"] == "dir-input-refused"
 
+    def _directory_bash_enters(self, leading_cd: str, cwd: Path) -> str:
+        """Where the recorded bash is after `leading_cd`; empty when the `cd` fails or the line is a syntax error."""
+        # The startup-file variables are dropped so the caller's shell setup cannot change where `cd` lands or hang the run.
+        scrubbed_env = {name: value for name, value in os.environ.items() if name not in ("BASH_ENV", "ENV")}
+        result = subprocess.run(
+            [CANDIDATE_SHELLS["bash"], "-c", f"{leading_cd} && pwd -P"],
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+            env=scrubbed_env,
+            stdin=subprocess.DEVNULL,
+            timeout=SHELL_PROBE_TIMEOUT_SECONDS,
+        )
+        # Bytes, because text mode would turn a carriage return in the directory name into a newline.
+        return result.stdout.decode().removesuffix("\n")
+
     def test_a_double_quoted_leading_cd_path_holding_a_backslash_takes_no_exception_and_a_plain_one_does(
         self, tmp_path: Path
     ) -> None:
@@ -3233,16 +3269,21 @@ class TestDirectoryPin:
         # A shell removes a backslash-newline pair inside double quotes, so it reads this path as `inside/../..`.
         # The shim reads it as `inside` through a directory literally named `.\<newline>.`.
         (inside / ".\\\n.").mkdir(parents=True)
-        backslash_path = f"{inside}/.\\\n./.."
-        denied = _prefixed(env, tmp_path, root, f'cd "{backslash_path}" && make')
+        backslash_leading_cd = f'cd "{inside}/.\\\n./.."'
+        denied = _prefixed(env, tmp_path, root, f"{backslash_leading_cd} && make")
         assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        assert self._directory_bash_enters(backslash_leading_cd, root) not in ("", str(inside))
         # A shell reads `\"` as a literal quote and keeps the word going, while the shim's quoted group ends at the quote.
         # The shim reads the path as `inside/d\`, a directory that exists here.
         (inside / "d\\").mkdir()
-        denied_at_quote = _prefixed(env, tmp_path, root, f'cd "{inside}/d\\" && make')
+        quote_leading_cd = f'cd "{inside}/d\\"'
+        denied_at_quote = _prefixed(env, tmp_path, root, f"{quote_leading_cd} && make")
         assert denied_at_quote.startswith(f"builtin cd -- '{root}' || exit 1\n")
-        accepted = _prefixed(env, tmp_path, root, f'cd "{inside}" && make')
+        assert self._directory_bash_enters(quote_leading_cd, root) != str(inside / "d\\")
+        plain_leading_cd = f'cd "{inside}"'
+        accepted = _prefixed(env, tmp_path, root, f"{plain_leading_cd} && make")
         assert accepted.startswith(f"builtin cd -- '{inside}' || exit 1\n")
+        assert self._directory_bash_enters(plain_leading_cd, root) == str(inside)
 
     def test_a_single_quoted_leading_cd_path_holding_a_backslash_takes_the_exception(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
@@ -3250,8 +3291,10 @@ class TestDirectoryPin:
         backslash_directory = root / "inside" / "d\\"
         backslash_directory.mkdir(parents=True)
         # A shell reads a single-quoted backslash literally, so the shim's path and the shell's path are the same.
-        pinned = _prefixed(env, tmp_path, root, f"cd '{backslash_directory}' && make")
+        leading_cd = f"cd '{backslash_directory}'"
+        pinned = _prefixed(env, tmp_path, root, f"{leading_cd} && make")
         assert pinned.startswith(f"builtin cd -- '{backslash_directory}' || exit 1\n")
+        assert self._directory_bash_enters(leading_cd, root) == str(backslash_directory)
 
     def test_an_unquoted_leading_cd_path_holding_a_backslash_takes_no_exception(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
@@ -3259,8 +3302,45 @@ class TestDirectoryPin:
         backslash_directory = root / "inside" / "d\\"
         backslash_directory.mkdir(parents=True)
         # A shell reads an unquoted `\ ` as an escaped space, so it reads this path as `inside/d `, not `inside/d\`.
-        denied = _prefixed(env, tmp_path, root, f"cd {backslash_directory} && make")
+        leading_cd = f"cd {backslash_directory}"
+        denied = _prefixed(env, tmp_path, root, f"{leading_cd} && make")
         assert denied.startswith(f"builtin cd -- '{root}' || exit 1\n")
+        assert self._directory_bash_enters(leading_cd, root) != str(backslash_directory)
+
+    @pytest.mark.parametrize("blank", ["\r", "\x0b", "\x0c"], ids=["carriage-return", "vertical-tab", "form-feed"])
+    def test_a_carriage_return_vertical_tab_or_form_feed_around_the_leading_cd_path_is_not_a_blank_and_takes_no_exception(
+        self, tmp_path: Path, blank: str
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        inside = root / "inside"
+        inside.mkdir(parents=True)
+        # A shell keeps the character in the path word, so `inside<blank>` names a directory that does not exist.
+        for command in (f"cd {inside}{blank}&& make", f"cd{blank}{inside} && make"):
+            assert _prefixed(env, tmp_path, root, command).startswith(f"builtin cd -- '{root}' || exit 1\n")
+
+    @pytest.mark.parametrize("blank", [" ", "\t"], ids=["space", "tab"])
+    def test_a_space_or_tab_around_the_leading_cd_path_takes_the_exception(self, tmp_path: Path, blank: str) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        inside = root / "inside"
+        inside.mkdir(parents=True)
+        pinned = _prefixed(env, tmp_path, root, f"cd{blank}{inside}{blank}&& make")
+        assert pinned.startswith(f"builtin cd -- '{inside}' || exit 1\n")
+
+    @pytest.mark.parametrize("blank", ["\r", "\x0b", "\x0c"], ids=["carriage-return", "vertical-tab", "form-feed"])
+    def test_an_unquoted_leading_cd_path_ending_in_such_a_character_takes_the_exception_for_the_directory_the_shell_enters(
+        self, tmp_path: Path, blank: str
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        root = (tmp_path / "root").resolve()
+        sibling = root / f"inside{blank}"
+        sibling.mkdir(parents=True)
+        (root / "inside").mkdir()
+        leading_cd = f"cd {sibling}"
+        pinned = _prefixed(env, tmp_path, root, f"{leading_cd}&& make")
+        assert pinned.startswith(f"builtin cd -- '{sibling}' || exit 1\n")
+        assert self._directory_bash_enters(leading_cd, root) == str(sibling)
 
     @pytest.mark.parametrize("name", ["déjà", "ファイル"], ids=["accented", "katakana"])
     def test_a_leading_cd_into_a_root_or_a_directory_inside_one_with_a_non_ascii_name_takes_the_exception(
@@ -3381,15 +3461,50 @@ class TestDirectoryPin:
         assert SHIM_MODULE.Roots([f"{repo}/"], "").canonical == [str(repo)]
         assert self._pin_directory([f"{repo}/"], f"cd '{elsewhere}' && make") == str(repo)
 
+    def test_recognition_tries_at_most_the_newline_cap_of_candidate_pin_lines_however_many_lines_the_command_has(self) -> None:
+        class CountingRoots:
+            candidate_pin_lines_examined = 0
+
+            def shell_pin_directory(self, original):
+                self.candidate_pin_lines_examined += 1
+
+        pin_shaped_line = SHIM_MODULE.PIN_LINE_HEAD + "x" + SHIM_MODULE.PIN_LINE_TAIL
+        command = "\n".join([pin_shaped_line] * 1_000) + "\nmake"
+        assert command.count("\n") > SHIM_MODULE.PIN_MAX_NEWLINES
+        roots = CountingRoots()
+        assert SHIM_MODULE.recognize_pin(command, roots) == (command, False)
+        assert roots.candidate_pin_lines_examined == SHIM_MODULE.PIN_MAX_NEWLINES
+
+    @pytest.mark.parametrize(
+        ("newlines_in_name", "recognized"),
+        [(SHIM_MODULE.PIN_MAX_NEWLINES - 1, True), (SHIM_MODULE.PIN_MAX_NEWLINES, False)],
+        ids=["terminating-newline-is-the-cap-th", "terminating-newline-is-past-the-cap"],
+    )
+    def test_a_valid_pin_line_is_recognized_only_when_its_terminating_newline_is_within_the_newline_cap(
+        self, tmp_path: Path, newlines_in_name: int, recognized: bool
+    ) -> None:
+        directory = (tmp_path / ("a" + "\n" * newlines_in_name + "b")).resolve()
+        directory.mkdir()
+        roots = SHIM_MODULE.Roots([str(directory)], "")
+        command = SHIM_MODULE.pin_line(str(directory)) + "\nmake"
+        assert SHIM_MODULE.recognize_pin(command, roots) == (("make", True) if recognized else (command, False))
+
+    def test_a_pin_line_whose_directory_name_holds_a_few_newlines_is_still_recognized(self, tmp_path: Path) -> None:
+        directory = (tmp_path / "one\ntwo\nthree\nfour").resolve()
+        directory.mkdir()
+        roots = SHIM_MODULE.Roots([str(directory)], "")
+        command = SHIM_MODULE.pin_line(str(directory)) + "\nmake"
+        assert SHIM_MODULE.recognize_pin(command, roots) == ("make", True)
+
     @pytest.mark.timing
-    def test_a_long_single_line_command_is_classified_in_linear_time(self, tmp_path: Path) -> None:
+    def test_a_200_kb_single_line_command_is_classified_within_the_payload_size_smoke_bound(self, tmp_path: Path) -> None:
         roots = SHIM_MODULE.Roots([str(tmp_path)], "")
         started = time.monotonic()
         assert SHIM_MODULE.recognize_pin("echo " + "a" * 200_000, roots)[1] is False
         assert time.monotonic() - started < 2.0
 
     @pytest.mark.timing
-    def test_a_pin_prefixed_200_kb_command_is_recognized_in_linear_time(self, tmp_path: Path) -> None:
+    def test_a_pin_prefixed_200_kb_command_is_recognized_within_the_payload_size_smoke_bound(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
         root = _workspace(tmp_path)
         original = "echo " + "a" * 200_000
@@ -3414,6 +3529,7 @@ class TestDirectoryPin:
             check=False,
             cwd=cwd,
             env={**os.environ, **(env_extra or {})},
+            timeout=SHELL_PROBE_TIMEOUT_SECONDS,
         )
 
     def _same_as_unprefixed(self, tmp_path: Path, shell: str, command: str) -> None:
@@ -3470,6 +3586,16 @@ class TestDirectoryPin:
         result = self._run_in(shell, prefixed, tmp_path)
         assert result.stdout == b""
         assert result.returncode == 1
+
+
+def test_a_shell_probe_that_times_out_is_neither_a_builtin_shell_nor_a_no_builtin_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hanging_shell = tmp_path / "hanging-shell"
+    hanging_shell.write_text("#!/bin/sh\nexec sleep 30\n")
+    hanging_shell.chmod(0o755)
+    monkeypatch.setattr(sys.modules[__name__], "SHELL_PROBE_TIMEOUT_SECONDS", 0.2)
+    assert _has_builtin(str(hanging_shell)) is None
 
 
 def test_the_recorded_bash_is_probed_as_having_builtin_and_runs_every_shell_independent_behaviour_row() -> None:

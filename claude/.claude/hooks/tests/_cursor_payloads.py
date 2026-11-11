@@ -88,7 +88,6 @@ def phase_number(entry: dict) -> int:
 
 
 def symlink_bin_dir(parent: Path, *names: str, dirname: str = "bin-only") -> Path:
-    """A bin directory under `parent` holding only symlinks to the named tools."""
     directory = parent / dirname
     directory.mkdir(exist_ok=True)
     for name in names:
@@ -700,25 +699,21 @@ def run_shim(
 
 
 def shim_json(result: subprocess.CompletedProcess) -> dict:
-    """Parse the shim's stdout, which must be exactly one JSON object."""
     return json.loads(result.stdout.decode())
 
 
 def write_hook_script(path: Path, body: str) -> Path:
-    """Write an executable bash hook script whose body follows the shebang."""
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
 
 def recording_probe_script(path: Path, record_to: Path, stdout_text: str = "", exit_code: int = 0) -> Path:
-    """A hook that saves its stdin to `record_to`, prints `stdout_text`, and exits `exit_code`."""
     body = f"cat > '{record_to}'\nprintf '%s' '{stdout_text}'\nexit {exit_code}\n"
     return write_hook_script(path, body)
 
 
 def read_log_lines(env: ShimEnv) -> list[dict]:
-    """Parse the shim's log into one {name: value} dict per line."""
     if not env.log_path.exists():
         return []
     return [dict(pair.split("=", 1) for pair in line.split(" ")) for line in env.log_path.read_text().splitlines()]

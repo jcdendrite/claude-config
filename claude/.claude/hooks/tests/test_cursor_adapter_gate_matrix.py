@@ -223,8 +223,6 @@ EXPECTED_ADDED = {
     "stop": {"session_id", "cwd"},
     "after_agent_response": {"session_id", "cwd", "last_assistant_message", "prompt_id"},
 }
-# Fields the table renames or transforms, compared by value.
-COMPARED_BY_VALUE = ("hook_event_name", "session_id", "cwd", "tool_name", "tool_input", "tool_response")
 
 
 # The probe runs `write_edit` under an Edit-selecting matcher, which pairs with that spec's literal `Edit` twin.
@@ -251,17 +249,12 @@ def _run_probe(tmp_path: Path, spec_id: str) -> tuple[dict, dict]:
 
 class TestTranslatedPayload:
     @pytest.mark.parametrize("spec_id", SPEC_IDS)
-    def test_the_probe_receives_the_twin_for_every_renamed_or_transformed_field(self, spec_id: str, tmp_path: Path) -> None:
-        spec = build_spec(spec_id, tmp_path.resolve())
-        _, received = _run_probe(tmp_path, spec_id)
-        for field in COMPARED_BY_VALUE:
-            assert received.get(field) == spec.claude_twin.get(field), (spec_id, field)
-
-    @pytest.mark.parametrize("spec_id", SPEC_IDS)
     def test_the_probe_receives_exactly_the_twins_keys(self, spec_id: str, tmp_path: Path) -> None:
         spec = build_spec(spec_id, tmp_path.resolve())
         _, received = _run_probe(tmp_path, spec_id)
-        assert received == spec.claude_twin
+        all_fields = received.keys() | spec.claude_twin.keys()
+        differing_fields = sorted(field for field in all_fields if received.get(field) != spec.claude_twin.get(field))
+        assert received == spec.claude_twin, (spec_id, differing_fields)
 
     @pytest.mark.parametrize("spec_id", SPEC_IDS)
     def test_the_dropped_and_added_keys_are_the_per_event_literals(self, spec_id: str, tmp_path: Path) -> None:

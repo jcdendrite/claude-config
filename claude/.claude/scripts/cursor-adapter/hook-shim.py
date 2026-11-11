@@ -50,8 +50,7 @@ MARGIN_SECONDS = 2
 # A project choice. GNU timeout reads a duration of 0 as no timeout, so a time left below this takes the timeout outcome.
 TIME_LEFT_FLOOR_SECONDS = 0.1
 
-# Exit statuses, from the GNU coreutils timeout manual unless noted. 124: the command timed out. 125: timeout itself failed.
-# 137: the command was killed by KILL (128 plus signal 9). A status above 128 is 128 plus the signal that ended the command.
+# Exit statuses, from the GNU coreutils timeout manual unless noted.
 TIMEOUT_STATUS_TIMED_OUT = 124
 TIMEOUT_STATUS_OWN_FAILURE = 125
 TIMEOUT_STATUS_KILLED = 137
@@ -140,7 +139,8 @@ PIN_LINE_TAIL = "' || exit 1"
 # command can cost while allowing a directory name that holds a few newlines.
 PIN_MAX_NEWLINES = 64
 _WHITESPACE = " \t\n\v\f\r"
-_LEADING_CD_RE = re.compile(r"""cd[ \t\n\v\f\r]+(?:"([^"]*)"|'([^']*)'|([^\[\]\s;&|<>()$`\\"']+))[ \t\n\v\f\r]*&&""", re.ASCII)
+# A shell reads a carriage return, vertical tab or form feed as part of the path word, so only space, tab and newline are blanks.
+_LEADING_CD_RE = re.compile(r"""cd[ \t\n]+(?:"([^"]*)"|'([^']*)'|([^\[\] \t\n;&|<>()$`\\"']+))[ \t\n]*&&""", re.ASCII)
 
 NO_ABSOLUTE_DIR_DETAIL = (
     "No absolute directory is known for this call: the first workspace root is not absolute, or there is no workspace "
@@ -211,7 +211,6 @@ class Arguments:
 
 
 def worst_case_wall_seconds(deadline):
-    """The `--deadline` plus the grace period and the drain bound."""
     return deadline + GRACE_PERIOD_SECONDS + DRAIN_BOUND_SECONDS
 
 
@@ -363,7 +362,6 @@ def deny_text(label, outcome, detail):
 
 
 def deny_document(event, text):
-    """The block output for `event`'s channel, or `{}` for an event with none."""
     if event in DENY_SHAPE_EVENTS:
         return {"permission": "deny", "user_message": text, "agent_message": text}
     if event == "beforeSubmitPrompt":
@@ -547,7 +545,6 @@ def hook_environment(record):
 
 
 def recorded_wrapper(record):
-    """The recorded `timeout` or `gtimeout` path, in that order, or None."""
     tool_paths = record.get("tool_paths") or {}
     return tool_paths.get("timeout") or tool_paths.get("gtimeout")
 
@@ -1113,7 +1110,6 @@ def build_claude_payload(payload, facts, spec, claude_name, directory, original_
 
 
 def _is_known(value, kind):
-    """True when a non-null `value` has the JSON type the table gives its key."""
     if kind == "any":
         return True
     return type_ok(value, kind)
@@ -1171,8 +1167,11 @@ def _ask_in_chat(event, reason):
 
 def _followup(meta, reason):
     # Cursor submits a follow-up as the engineer's next turn, so the text says a hook sent it.
-    # The reason is quoted as a JSON string, so text a hook echoes cannot add a line or a quote that reads as the engineer's.
-    quoted = json.dumps(reason, ensure_ascii=False)
+    # The reason is quoted as an ASCII-only JSON string, so text a hook echoes cannot add a line, a quote, a Unicode line
+    # separator or a bidi control that reads as the engineer's.
+    # ASCII quoting expands each non-ASCII character to 6 characters (12 outside the BMP), and HOOK_REASON_CAP_CHARS
+    # bounds the reason before quoting, so the quoted text can reach 12 times the cap.
+    quoted = json.dumps(reason, ensure_ascii=True)
     return {
         "followup_message": f"Automated message from the {meta['hook']} hook, not from the engineer. "
         f"The hook's text, quoted as a JSON string: {quoted}"

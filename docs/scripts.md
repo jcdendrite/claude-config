@@ -454,6 +454,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
     - Arguments:
       - An argument the parser rejects, an abbreviated flag included, ends the run with exit 1 and no output.
       - `--claude-event` (the Claude Code event) is required, and so is `--script` in `hook` mode.
+      - Every generated command carries `--contract-version` equal to the shim's `CONTRACT_VERSION`. An absent or different value, and a record of a different version, deny as `stale-install`.
       - `--mode` is `hook`, `pin`, `pin-check` or `classify`.
       - `--matcher` is a Claude matcher the shim re-checks.
       - `--label` names the registration in the log and takes characters of `[0-9A-Za-z._:+-]` only. Any other label is logged as `unlabeled`.
