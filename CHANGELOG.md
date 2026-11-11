@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **CI now runs the parallel and the `timing` pytest passes as two matrix legs of one job, so each pass gets its own 25-minute job cap.**
+  - The required `tests` job is now a small aggregate that keeps the id `tests` and passes only when `needs.test-slice.result` is `success`.
+  - Each leg pays its own runner setup, and the two legs hold two runner slots at once.
+  - `claude/.claude/hooks/tests/test_ci_workflow_gates.py` replaces `test_ci_watch_workflow_parity.py`.
 - **On macOS, `deny-invisible-commit-content.sh` and `require-respond-pr.sh` no longer fail open when a command holds a blank line.**
   - `_lib_mask_shell_quotes` and `require-respond-pr.sh`'s flattening awk now read the whole command as one record: `RS` is SOH, not NUL, because BSD awk reads NUL as paragraph mode and splits the command at each blank line.
   - **Verdict change:** a chained second `git commit` after a blank line in a commit message, such as `git commit -m "a<blank line>b" && git commit -m "c"`, is now denied. `gh api`, a blank line and then the URL is now denied by `require-respond-pr.sh`.
