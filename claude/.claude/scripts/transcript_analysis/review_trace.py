@@ -559,7 +559,7 @@ def _runs_plan_review_deactivate(rec: dict) -> bool:
     """True iff an assistant record's Bash tool_use has a line with a segment that opens as `marker.sh deactivate plan-review`.
 
     Each line of the command is lexed on its own, and a call counts only when it opens a segment of a line;
-    the known-miss tests in test_transcript_review_trace.py pin which shapes that misses or over-reads.
+    the known-miss tests in test_transcript_review_trace_spawn_rounds.py pin which shapes that misses or over-reads.
     Every line up to _MAX_LEXED_LINE_CHARS is lexed, and a call on a longer line is not read, so that window stays open.
     """
     if rec.get("type") != "assistant":

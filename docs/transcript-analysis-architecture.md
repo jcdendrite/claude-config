@@ -780,11 +780,10 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 `.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
 the existing tests live.
 
-`tests/test_transcript_cli.py` holds two tests that are exceptions to the rule's bullet on one command's CLI
-wiring, both in `TestBuildParser`. `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts` belongs
-in `tests/test_transcript_review_cost_by_size.py`, and `test_review_trace_parses_omit_plan_review_spawns`
-belongs in `tests/test_transcript_review_trace.py`. Both files are over the line limit, so each move waits
-for a split of its file at a named seam.
+`tests/test_transcript_cli.py` holds one test that is an exception to the rule's bullet on one command's CLI
+wiring, in `TestBuildParser`. `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts` belongs
+in `tests/test_transcript_review_cost_by_size.py`, which is over the line limit, so the move waits for a
+split of that file at a named seam.
 
 `corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
 `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
@@ -801,7 +800,9 @@ shared per-session step, staleness rule, and canary return values, and
 its stability promise relies on, live in `tests/test_transcript_session_pricing.py`. Every other package module has its own per-command-group (or, for `denials.py`,
 per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py`'s in
 `tests/test_transcript_denials.py`, `review_trace.py`'s in
-`tests/test_transcript_review_trace.py`, `read_scope.py`'s in
+`tests/test_transcript_review_trace.py` and three seam files
+(`tests/test_transcript_review_trace_detection.py`, `tests/test_transcript_review_trace_deny_summary.py`,
+`tests/test_transcript_review_trace_spawn_rounds.py`), `read_scope.py`'s in
 `tests/test_transcript_read_scope.py`, `ledger_common.py`'s (`TestMachineIdentity`) in
 `tests/test_transcript_ledger_common.py`, `pr_cost_ledger.py`'s in
 `tests/test_transcript_pr_cost_ledger.py`, and `pr_cost_export.py`'s per-account gating, ordinals,
