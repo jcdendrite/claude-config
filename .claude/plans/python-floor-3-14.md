@@ -131,6 +131,7 @@ Paths are relative to the repository root.
 55. `[unverified]` No test reaches the ensurepip hint at `install.sh:1054-1058`. It reads `python3_found_version`, which only the python block assigns, so a rename at one site would print `python-venv` unnoticed. `anchors: M1`
 56. `[verified: gh api repos/astral-sh/ruff/releases/tags/0.17.4, assets list]` Astral's GitHub release for 0.17.4 attaches `ruff-aarch64-apple-darwin.tar.gz` and its `.sha256`, `ruff-x86_64-apple-darwin.tar.gz` and its `.sha256`, and `dist-manifest.json`, and no wheel. The engineer asked "Why not pip?" when offered the GitHub archive. `staff-platform-engineer` advised pip, with the trust basis stated as same-origin integrity only: the PyPI digest guards corruption or a swap between download and install, not a compromised publisher. The engineer has not yet approved that basis; the session proceeds only on their go-ahead. `anchors: M6`
 57. `[unverified]` The session's disposition, not the engineer's: row 38's answer stands for this revision's projected diff of about 1,340 lines (Critical files), up from the about 1,030 it answered, because the one-PR, three-commit shape is unchanged. The engineer is not asked again. `anchors: row38`
+58. `[engineer-verified: "Fix the findings under 0.17.4"]` Ruff 0.17.4, linted from a scratch venv at `py312` and `py314`, reports `SIM115` (2), `UP031` (3) and `UP037` (2) in the three test files named under Phase 1, none of which is otherwise in this plan. The engineer chose to fix them over trying an older series. The engineer then confirmed the shared `.venv` upgrade from 0.6.9 to 0.17.4 and ran it; `scripts/venv-run.sh ruff --version` reports 0.17.4. `anchors: M6`
 
 **Mechanisms:**
 - **M1 — the floor and its install-time check.** `_config.sh` holds the floor directly after the bash floor's `fi` (`:68`), outside the bash-3.2 region, in three parts: `anchors: row1, row8, row9, row10, row11, row12, row18, row29, row34, row48, row54, row55`
@@ -261,7 +262,11 @@ After every dispatch, run the commands from `CLAUDE.md` § "Commands" in the wor
   - `install.sh` exits before changing anything when `python3` reports a lower version or none it can read.
 - `.github/workflows/tests.yml:103-105`: three comment lines. The pin sets the Python minor. `install-dev.sh`, `test_ci_python_matches_dev_interpreter.py` and `test_python_floor.py` read it. `test_python_floor.py` fails when `_config.sh`'s floor, `README.md`'s floor or ruff's `target-version` differs from it.
 - `pyproject.toml:3`: `target-version = "py314"`.
-- `requirements-dev.txt:3`: `ruff==<the confirmed series>.*`.
+- `requirements-dev.txt:3`: `ruff==<the confirmed series>.*`. The confirmed series is 0.17 (row 58).
+- Lint fixes that ruff 0.17.4 requires (row 58). Each is a mechanical change with no behavior change:
+  - `claude/.claude/hooks/tests/test_log_reviewer_round.py:167,197`: `SIM115`, two `tempfile.TemporaryFile("w+")` calls. The fix is the `with` form or an `ExitStack`, keeping the file open for the same span the test needs;
+  - `claude/.claude/hooks/tests/test_send_back_skipped_self_review.py:799,1974,1975`: `UP031`, three `%` formats. The fix is an f-string with the same padding;
+  - `claude/.claude/scripts/tests/test_transcript_period_cost.py:1901,1905`: `UP037`, two quoted return annotations. The fix is `ruff check --fix` on those two lines.
 - `CHANGELOG.md`: a `### Removed` entry first under `:529` (M8). Required content:
   - lead: Python older than 3.14 is no longer supported. Install Python 3.14 or newer so its `python3` is first on the PATH Claude Code starts with;
   - 3.14 is the one minor CI tests. `_config.sh` holds the floor, and a test fails when it, `README.md`'s floor or ruff's `target-version` differs from CI's pin;
