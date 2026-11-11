@@ -549,19 +549,19 @@ Configure the default branch so that direct pushes are blocked for the credentia
 - Or a repository ruleset that targets the default branch, requires a pull request with at least one approving review and lists no bypass actor for the credential.
 
 Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
-Block force pushes and branch deletion on the default branch as well.
-Give `main` and `master` the same protection when they are not the default branch, because the hook protects them too.
+
+- Block force pushes and branch deletion on the default branch as well.
+- Give `main` and `master` the same protection when they are not the default branch, because the hook protects them too.
 
 The approving review is a requirement because `deny-default-branch-push.sh` does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
 The agent's credential must not be able to supply the approval.
-Keep "Allow GitHub Actions to create and approve pull requests" off for the repository and for any policy above it that sets it, because a workflow that a feature-branch push starts could otherwise approve with `GITHUB_TOKEN`.
-[GitHub's page on this setting](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) says it controls whether `GITHUB_TOKEN` can approve pull requests, so treat such an approval as counting toward the required reviews.
+Keep ["Allow GitHub Actions to create and approve pull requests"](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) off for the repository and for any policy above it that sets it, because a workflow that a feature-branch push starts could otherwise approve with `GITHUB_TOKEN`.
 
 Give the agent a credential without repository-administration rights.
 `deny-default-branch-push.sh` does not cover any mutating call (`PUT`, `PATCH`, `POST` or `DELETE`) to the branch-protection and ruleset endpoints, so a credential that can administer the repository can weaken or remove the protection above.
 
-Restrict the scope of any secret readable by code the agent can influence through a branch or pull request, when the secret can push to the default branch, deploy, approve pull requests or administer the repository.
-The hook allows a feature-branch push, and that push can edit a workflow file whose run step uses such a secret, so the run acts with a credential the pull-request rule does not bind.
+Restrict the scope of any credential that can push to the default branch, deploy, approve pull requests or administer the repository, so that code the agent can influence through a branch or pull request cannot use it before that code passes the pull-request rule.
+The hook allows a feature-branch push, and that push can change a workflow file or the code a workflow runs, so the run acts with a credential the pull-request rule does not bind.
 
 The hook reads command text, so it misses a push that another program runs and a spelling its parser reads differently from bash, git or gh. The Known gaps in its header list them, so protection on the remote is the only barrier for steered input.
 
@@ -583,7 +583,7 @@ Check rulesets by listing them with `gh api repos/<owner>/<repo>/rulesets`, then
 - No bypass actor for the credential.
 
 Confirm any of these that the API output does not show in the repository settings page.
-Repeat both checks for `main` and `master` where they exist.
+Repeat the branch-protection and ruleset checks for `main` and `master` where they exist.
 
 Run these protection reads with the engineer's own credential, not the agent's. The agent's credential is the one the protection must bind and holds no repository-administration rights, so the reads may be refused to it or show less than the full configuration.
 
