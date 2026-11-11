@@ -572,7 +572,7 @@ Test trees under `claude/.claude/` that carry their own `conftest.py` are Python
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
-CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`. It runs pytest in two passes: a parallel pass for everything not marked `timing`, then a serial pass for the `timing` tests, which flake under sibling-worker load. To reproduce the serial pass locally, add `-m timing -n0` to the pytest command above.
+CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`. It runs pytest in two passes, each a matrix leg of one `test-slice` job: a parallel pass for everything not marked `timing`, and a serial pass for the `timing` tests, which flake under sibling-worker load. The required `tests` job passes only when every leg succeeds. To reproduce the serial pass locally, add `-m timing -n0` to the pytest command above.
 
 For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite:
 

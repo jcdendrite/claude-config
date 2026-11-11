@@ -23,14 +23,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
-from helpers import REPO_ROOT
+from helpers import REPO_ROOT, ci_test_slice_job
 
 from .test_bash_floor import README_REQUIREMENTS, exact_output_env
 
 _INSTALL_SH = REPO_ROOT / "install.sh"
 _README = REPO_ROOT / "README.md"
-_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _PIN_STEP_ID = "pin-git"
 _CONFIG_SH_REPO_PATH = Path("claude") / ".claude" / "hooks" / "_config.sh"
 _BASH = shutil.which("bash") or "bash"
@@ -287,8 +285,8 @@ class TestMinimumVersionMatchesTheDocumentedRequirement:
 
 
 def _pin_step() -> dict:
-    """The `pin-git` step of tests.yml's `tests` job, located by id through yaml.safe_load."""
-    steps = yaml.safe_load(_WORKFLOW.read_text())["jobs"]["tests"]["steps"]
+    """The `pin-git` step of tests.yml's `test-slice` job, located by id through yaml.safe_load."""
+    steps = ci_test_slice_job()["steps"]
     pin_steps = [step for step in steps if step.get("id") == _PIN_STEP_ID]
     assert len(pin_steps) == 1, (
         f"Expected exactly one step with id: {_PIN_STEP_ID} in tests.yml -- did the step move or get renamed?"
