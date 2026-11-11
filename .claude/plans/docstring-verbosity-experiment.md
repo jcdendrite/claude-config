@@ -23,7 +23,7 @@ Engineer decisions this session, as the labels they selected:
 Build `evals/replay_bench/`, a local runner that replays a source repo's past commits as coding tasks. A thin headless dispatcher hands each commit's message to one subagent. Arm `toolkit`, the Context's B, dispatches the production `code-writer` under the account's full config. Arm `bare`, the Context's A, dispatches a fixture-local `bare-writer` with `omitClaudeMd: true` and a one-line body, in a fixture whose settings exclude the account's rule files. Both arms may read the account's agent and skill files through exact Read allow entries, so `code-writer` can read its reviewer files. Every launch gets an environment built from an allowlist. No sandbox contains the subagent, because steered agents are out of scope for this runner (row 47). The runner classifies every line the subagent added as code, comment, docstring, blank or prose, keeps one record and one diff per run under gitignored `evals/replay_bench/.local/`, and prints the paired arm difference over tasks to the terminal only.
 
 The work ships as two pull requests, split at the Phase 2 to Phase 3 boundary (D4, row 124):
-- The first PR, on this branch, holds Phases 1 and 2 and the `select-tests.py` rows for its own files (Phase 5a). Its last dispatch runs after Verification step 1c. It sets the `--max-base-entries` default, adds the `export-attributes` skip, and refuses a partial clone and a repo whose `info/attributes` sets either attribute (Tasks). It needs no `claude -p` run.
+- The first PR, merged as #1452, holds Phases 1 and 2 and the `select-tests.py` rows for its own files (Phase 5a). Its last dispatch ran after Verification step 1c. It set the `--max-base-entries` default, adds the `export-attributes` skip, and refuses a partial clone and a repo whose `info/attributes` sets either attribute (Tasks). It needs no `claude -p` run.
 - The second PR, on a follow-on branch from `main` after the first merges, holds Phases 3 and 4 and the rest of Phase 5 (Phase 5b). Verification step 1b runs at its start, before its Phase 3 dispatch, and the live checks run before it merges.
 - This file stays whole and ships with the first PR, where it is already committed (row 127). The second PR edits it in place, so each later change to the plan ships with the code it governs. Its Phase 3 to 5 sections are the second PR's plan, and main holds that design before its code. M21 names the two alternatives set aside.
 - A step 1b stop re-plans Phases 3 to 5 on top of the merged first PR, whose miner, classifier and fixture builder stand alone. Only abandoning the runner reverts the first PR. That revert stays clean while no file outside the first PR's own files imports its code.
@@ -279,10 +279,10 @@ Each run also records how many `tool_result` entries carry a permission-rule `no
 - Two failures record the run missing at once, because a retry would fail the same way on the same input:
   - `fixture-error`: building the fixture or generating its exclude or Read allow list raised, before any launch. An extraction's `UnsafeFixtureConfigError` and a generator's `UnsafeConfigPathError` both land here, and `missing_detail` names a generator's refused path;
   - `analysis-error`: the diff, the classifier or a check raised after the launch, or a post-run git call failed or timed out. The run keeps the attempt's cost.
-- Neither reaches `main()` as an exit 2. The campaign halts through the per-arm stop with exit 1, and Repeated halts covers `--skip-task` for a task-specific failure.
+- Neither reaches `main()` as an exit 2. A task-specific one costs its own block, and the per-arm stop (Campaign) halts the campaign with exit 1 only after two such blocks in a row.
 - When `fixture-error` or `analysis-error` comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
 - One attempt can meet several reasons. An instrument reason outranks every other, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`, kept as one constant.
-- `run` retries an instrument reason once like any other, and `smoke` never does (Campaign).
+- Neither `run` nor `smoke` retries an instrument reason. The attempt's run ends missing under that reason, because such a reason is evidence about the instrument that a clean second attempt would hide, and `run` then halts at the block's end (Campaign).
 - Each attempt's cost reaches the spend file as the attempt ends (Campaign).
 
 **Diff and classifier (`replay_bench/comment_metrics.py`).** After the session ends, the runner never runs git with the fixture's own `.git`, which the agent could have rewritten. It never reads a changed file through its work-tree path either (rows 49, 50).
@@ -323,10 +323,7 @@ A comment block is a maximal run of consecutive added lines of one class, commen
 - the three tallies above;
 - the paths it changed.
 
-**Cleanup.** Every attempt ends in a `finally`, whether it was valid, invalid, timed out, raised or interrupted. A valid attempt captures its diff and metrics first. The `finally` deletes:
-- the fixture and the attempt's session store;
-- the attempt dir;
-- the `<config-dir>/sessions/` file from the instruction-load check, after it checks again, at delete time, that the entry is a non-symlink file whose first line is the run's session ID.
+**Cleanup.** Every attempt ends in a `finally`, whether it was valid, invalid, timed out, raised or interrupted. A valid attempt captures its diff and metrics first. The `finally` deletes the fixture, the attempt's session store and the attempt dir. It leaves the attempt's `<config-dir>/sessions/` file, as every Claude Code session does (row 154).
 
 A retry starts only after the failed attempt's `finally` has run.
 
@@ -334,36 +331,37 @@ A retry starts only after the failed attempt's `finally` has run.
 - A block reads `review_bench.runner.read_environment_record` at its start and its end. Its checkout root is the parent of the account's resolved `CLAUDE.md`.
 - Each account's `EnvironmentReference` is built from the reading the manifest pinned for that account, so drift halts the campaign across a resume too (row 73). A drift halt prints the block's attempt count and its spend from the spend file.
 - `build_block_plan(task_id, arm_names, k, seed)` orders the block's runs, and `run_skill_evals.DEFAULT_WORKERS` threads run them.
-- Once the block's end reading matches, the runner writes one `ReplayRunRecord` JSON per run to `.local/campaigns/<campaign-id>/runs/<task-id>/<arm>-<n>.json` with `defects.atomic_write_text`. It writes each diff beside its record, then calls `RunStore.mark_block_complete`.
+- Once the block's end reading matches, the runner writes one `ReplayRunRecord` JSON per run to `.local/campaigns/<campaign-id>/runs/<task-id>/<arm>-<n>.json` with `defects.atomic_write_text`. It writes each diff beside its record, then calls `RunStore.mark_block_complete`, before the per-arm stop below decides whether to halt.
   - A block rerun after a crash overwrites its own files, so reading needs no dedupe.
-  - A crash before that point loses the block's records, at most `2 × k` runs with up to two attempts each. The spend file still holds their cost. The plan accepts the lost records so that each block's drift check stays whole.
-- After each complete block, `run` prints one line: the task ID, the ok and missing counts per arm, the block's spend, and the cumulative and account totals against their stops.
-- `ReplayRunRecord` keeps `status`, `missing_reason` and `missing_detail` in the bench's meanings, so `count_outcomes`, `all_runs_missing` and `systemic_failure_message` apply to it as they are.
+  - A crash before that point loses the block's records, at most `2 × k` runs with up to two attempts each. The spend file still holds the cost of their ended attempts. The plan accepts the lost records so that each block's drift check stays whole.
+- After each block, `run` prints one line: the task ID, the ok and missing counts per arm, each arm with no valid run and its missing reasons, the running count per arm, since this invocation started, of tasks dropped for having no valid run in that arm, the block's spend, and the cumulative and account totals against their stops.
+- `ReplayRunRecord` keeps `status`, `missing_reason` and `missing_detail` in the bench's meanings, so `count_outcomes` and `all_runs_missing` apply to it as they are. No halt prints `systemic_failure_message`. Its fixed text says the block is not marked complete and a resume reruns it (row 95), and a block that ends in a per-arm halt is always complete.
 - `RunStore(.local/campaigns/<campaign-id>/store)` supplies the lock, the write-ahead entries, and the resume sweep (row 43).
 
 **Spend file.** `.local/campaigns/<campaign-id>/spend.jsonl` holds one JSON line per ended attempt: the task ID, arm, run index, attempt number, account key, session ID, cost, and whether that cost is a cap charge.
 - The runner appends each line with one `os.write` on an `O_APPEND` descriptor, under a lock its worker threads share.
+- An append that fails, such as on a full disk or an I/O error, fails closed: `run` halts with exit 1, printing the error, before the block is marked complete.
 - A crash mid-append can leave a torn last line. A resume repairs it with `review_bench.runner._repair_torn_tail` before its first append, so the torn bytes never fuse with the next line (row 86).
 - A line that still does not parse counts at `--budget-cap-usd` against the cumulative stop and every account stop.
-- A resume's cap-charge line for a swept entry cannot know the attempt's arm, run index or attempt number, since a write-ahead entry holds only a task ID, a directory and a session ID (row 85). Those three fields hold JSON `null`, and the reader accepts `null` there only on a cap-charge line.
-- That line carries the swept entry's session ID, so a later resume finds the ID carried and charges it no second time.
 - `run`'s stops sum this file, never the run records.
+- A launched attempt writes no line when a hard kill, such as SIGKILL, an out-of-memory kill or a power loss, ends the runner before the attempt ends (row 155).
+  - Each hard kill can leave up to one launched attempt per worker thread uncharged, `run_skill_evals.DEFAULT_WORKERS` in all.
+  - The undercount adds up over kills: each hard kill can add up to `DEFAULT_WORKERS` times the per-run cap.
+  - The cap is a nominal figure, not a proven bound on one attempt's spend (row 65).
 
 A resume does these things, in order, before its first launch:
 - it exits 2 naming the repo when the probe resolves a source repo to an account key other than the manifest's;
 - it compares each account's current environment reading with the manifest's pinned one, and exits 2 naming the account and the field that differs;
+- it takes the store's lock with `RunStore.acquire_lock`, which every later step runs under (row 156);
 - it repairs the spend file's torn tail;
-- it runs `sweep_abandoned` once for each account projects root in the campaign. Each call returns the whole store's pending entries (row 85), so the resume merges them into one set and reruns each swept task's block once, unless the task is skipped. A skipped task's swept entries are still charged and cleaned below;
-- it appends one cap charge for each distinct non-empty session ID in that set that no spend line carries, since that attempt ended before recording its cost. The charge goes on the account of the entry's task's source repo.
-  - An entry with an empty session ID logs a fixture before its launch (row 57), so it is never charged.
-  - An attempt whose torn spend line the repair removed has no spend line left, so this step charges it once.
+- it runs `sweep_abandoned` once for each account projects root in the campaign. Each call returns the whole store's pending entries (row 85), so the resume merges them into one set and reruns each swept task's block once. It charges no swept entry (Spend file);
+- it prints the count of swept entries that carry a session ID and have no spend line, as `<N> launched attempts have no spend line and were not charged`. When N is above zero, the resume's total line below and its ceiling line (spend guards) each say they leave those attempts out;
 - it prints the spend file's total for blocks not yet complete;
-- it deletes each swept entry's `<config-dir>/sessions/` file, matched by first line, under that entry's own account only;
-- it deletes each entry of the campaign's `attempts/` whose name parses and that is a non-symlink direct child of `attempts/`. A name parses as `<task-id>-<arm>-<n>-<attempt>` when all of these hold:
-  - it starts with a task ID in the task set and a hyphen;
-  - it ends with a hyphen, a run index and an attempt number, each in range;
-  - what lies between is an arm name in the manifest, so an arm name may hold hyphens;
-- it prints the count of `attempts/` entries deleted, and the count left because no name matched.
+- it deletes the campaign's `attempts/` directory whole with `remove_tree_reporting_failure`:
+  - an `attempts/` that is a symlink makes `run` refuse with exit 2, naming the path, before any delete;
+  - an absent `attempts/` is no failure, so the resume checks that it exists first and prints nothing.
+
+The attempt-dir creator creates `attempts/` when it is absent. It refuses a same-named attempt dir that already exists, and that attempt records `fixture-error` with the path in `missing_detail`, before any launch.
 
 `run`'s inputs:
 - `--k` and `--cumulative-stop-usd` are required, with no default for either.
@@ -371,7 +369,6 @@ A resume does these things, in order, before its first launch:
 - `--campaign-id` must pass `identifiers.validate_campaign_id`.
 - The first start pins a manifest of the task-set hash, arms, k, seed, model ID, each source repo's account key, and each account's environment reading, read before the first launch. A resume whose task-set hash, arms, k, seed or model ID differs exits 2.
 - `--fixture-git-timeout-s` stays out of the manifest and its comparison, since it changes no result.
-- The manifest also holds each task's recorded halts and skips (Repeated halts). Neither enters the task-set hash or the resume comparison, and the runner rewrites the manifest with `defects.atomic_write_text` when either changes.
 
 `run` exits 2 before its first launch for any account in the task set that has no smoke pass. An account has none in each of these cases:
 - no smoke-pass record exists for it;
@@ -388,27 +385,26 @@ The gate puts `smoke`'s checks, and the engineer's read of what it prints, ahead
 - Before its first launch, `run` prints the run count and the campaign's nominal ceiling.
 - It exits 2 before its first launch when one block's ceiling exceeds either stop.
 - It also exits 2 before its first launch when the campaign's ceiling exceeds the cumulative stop, unless `--allow-early-stop` acknowledges that the campaign will stop before its last task.
-- On a resume, the printed run count covers only the incomplete, non-skipped blocks. The campaign's ceiling there is the spend file's total so far plus those blocks' ceilings.
+- On a resume, the printed run count covers only the incomplete blocks. The campaign's ceiling there is the spend file's total so far plus those blocks' ceilings.
 - Before each block, it stops when the block's ceiling would carry either total past its stop:
   - the spend file's total, against the cumulative stop;
   - the block's account's spend, against the account stop.
 - Either stop halts the whole campaign, so a resume with a raised stop goes on in task-file order.
-- After each block, it stops when any arm has no valid run in it, by `all_runs_missing` over that arm's records, and prints `systemic_failure_message` for the task and arm. The block stays incomplete, so a resume reruns it. `all_runs_missing` over the whole block would miss one arm failing alone, as `bare` does on a machine with a managed-policy `CLAUDE.md` (row 74).
+- After each block, the per-arm stop checks each arm by `all_runs_missing` over that arm's records, so an arm fails only when none of its runs is valid. `all_runs_missing` over the whole block would miss one arm failing alone, as `bare` does on a machine with a managed-policy `CLAUDE.md` (row 74). A block where any arm fails is a failed block. Every block that reaches this check, failed or not, is already complete, with its missing runs recorded as missing, so no resume reruns it:
+  - An instrument failure halts at the first block. It triggers on any attempt that ends under an instrument reason (Retry), whatever the arm's other runs did. The block's other runs finish, and `run` halts at the block's end with exit 1, naming the task, the arm and the reason. So each instrument halt costs at most one task, and a resume after the cause is fixed goes on to the next task (row 160).
+  - Every other failed block is task-specific. `summarize` leaves its task out of the pairs and counts it.
+  - After two task-specific failed blocks in a row, `run` halts with exit 1. Its message names each failing arm with its missing reasons and `missing_detail` text, names the two tasks now lost from the sample, and says a resume goes on past them.
+  - The count of failed blocks in a row lives in memory for one invocation. It starts at 0 on every start and resume, and any block with a valid run in every arm resets it (rows 153, 159).
+- A persistent failure meets the pre-block spend stops and the two-in-a-row halt. Failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them (row 153).
 
 `run`'s halts and exit codes:
-- Every halt prints its reason: environment drift, the cumulative stop, the account stop naming its account, or the per-arm stop naming its task and arm.
+- Every halt prints its reason: environment drift, the cumulative stop, the account stop naming its account, an instrument failure naming its task, arm and reason, or two task-specific failed blocks naming both tasks and their failing arms.
 - `run` then exits 1, the bench CLI's code for a run that stopped short, and keeps exit 2 for refusals (row 97).
-- A run that completes every task not skipped exits 0.
-
-**Repeated halts.** A task-specific failure, such as a fixture build that raises or a task whose every attempt times out, halts its block the same way on every resume. `systemic_failure_message` offers only that resume (row 95), and a new campaign would discard the completed paid blocks. So:
-- each per-arm stop records the halt in the manifest, with each failing arm's missing reasons and their `missing_detail` text;
-- a per-arm stop on a task that already has a recorded halt prints `halted again`, that task's missing reasons with the same `missing_detail` text the first stop printed, and the `--skip-task <task-id>` flag. The first per-arm stop on a task prints neither. The detail tells a task-specific `fixture-error` from a generator's refused path, which skipping tasks cannot fix;
-- `run --skip-task <task-id>`, repeatable, records the skip in the manifest. It exits 2 for an ID that is not a task in the task set, or whose block is complete;
-- `run` never reruns a skipped task, on that resume or any later one, a swept one included.
+- A run that completes every task exits 0, even when its last block failed alone. When its last two blocks fail so that the two-in-a-row halt fires, exit 1 wins.
 
 `smoke --tasks <task-set> --task-id <id>` runs one block under a fresh `smoke-` campaign ID, with one run per arm on that task (row 134). `--task-id` must match the task-ID grammar.
 - Before its first launch, `smoke` prints its nominal ceiling, `campaign_cost_ceiling(1, <arm count>, 1, budget_cap_usd=...).all_retried_usd`.
-- A `smoke` attempt that fails under an instrument reason (Retry) never retries. Its run ends missing under that reason, because such a reason is evidence about the instrument that a clean second attempt would hide. Any other failure retries once, as in `run`.
+- A `smoke` attempt that fails under an instrument reason never retries, as in `run` (Retry). Any other failure retries once, as in `run`.
 
 For each run, `smoke` prints:
 - status and reason;
@@ -419,22 +415,18 @@ For each run, `smoke` prints:
 - the `non_file_entries`, `ignored_paths` and `undecodable_files` tallies;
 - metrics, cost, fixture-build seconds and wall clock.
 
-`smoke` also prints two lists under the account config dir, outside `projects/` and `sessions/`, and never reads a file's contents:
-- every file or directory name that appeared during the smoke, two levels deep;
-- every top-level file that already existed and grew, compared by `stat` alone, since a known appender adds rows to an existing file (row 79).
-
 **Block calibration.** The hook cannot show the `CLAUDE.md` a subagent inherits (row 18), and no source read says that `bare`'s exclude holds under `-p` (row 115). So the block's own two runs calibrate the instrument. They share one task, one brief and one inner prompt (rows 136, 137):
 - Positive control: the `toolkit` run's log holds a subagent `path_glob_match` load whose realpath lies under the account's `rules/` directory at any depth, compared by path component, not by string prefix. Otherwise `instrument-missing`, since `bare`'s leak check would then pass blind. These do not count:
   - a `path_glob_match` load on a dispatcher line;
   - a subagent load with another `load_reason`;
   - a `path_glob_match` load of a fixture-class or other-class file;
   - a `path_glob_match` load of another toolkit file, such as one under `agents/` or `skills/`, or the account's `CLAUDE.md`.
-  - The smoke task must touch a rule-matching path for the control to hold, and a task that does not fails rather than passing empty (row 145).
+- The smoke task must touch a rule-matching path for the positive control to hold, and a task that does not fails rather than passing empty (row 145).
 - Exclude: the `bare` run's own per-run checks fail it as `arm-leak` on any subagent load outside the fixture and on any dispatcher load besides the account's `CLAUDE.md`. That shows the exclude holding only when `bare`'s subagent read a rule-matching file (row 145).
 - Exclude note, printed and never gated (row 143):
   - When the `toolkit` control fired and its `path_glob_match` lines name the file that triggered each load (row 146), `smoke` prints whether the `bare` transcript shows a Read that ran of any such file, compared by path relative to each run's fixture. A payload with no trigger field leaves this line out.
   - `smoke` always prints one residual sentence: "A `bare` run that read no rule-matching file passes without testing the exclude, and a later `bare` run that reads one fails `arm-leak`."
-- Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=` on unrounded values. Otherwise, or when either size is null, `arm-config-missing`.
+- Inheritance: the `toolkit` run's first-turn prompt size, minus the `bare` run's, minus the body term, is at least the margin. The comparison is `>=`. Otherwise, or when either size is null, `arm-config-missing`.
 - The verdict is a pure function of both runs' parsed logs and first-turn sizes, the character counts below, and the rule files the `toolkit` dispatcher loaded at `session_start`. It reaches the verdict only when each arm has a valid run, so a missing run reports its own missing reason instead.
 - The verdict returns every failed condition, in the order above, and `smoke` prints them all. The inheritance check is token arithmetic, so it stays computable when the control fails, and one paid block shows every problem it can.
 
@@ -476,27 +468,20 @@ On an interrupt, `main()` calls `msmr.abort_launches()` and prints the resume co
 **Summary (`summarize --campaign-id <id>`).** It prints to the terminal and writes no file (rows 4, 10).
 - It exits 2 when one account's records span more than one CLI version or ambient config commit.
 - It reads only the records of blocks that `RunStore.completed_block_ids()` lists. A crash between record writes and `mark_block_complete` can leave an incomplete block's records on disk, and `summarize` leaves them out and counts that block as incomplete.
-- It prints counts by arm, status and missing reason, and the counts of complete blocks, skipped blocks, and other incomplete blocks.
-- It lists each skipped task with the missing reasons its halts recorded.
-- It prints the spend file's spend by account, with the share of each account's spend that is cap charges.
+- It prints counts by arm, status and missing reason, and the counts of complete and incomplete blocks.
+- It prints the spend file's spend by account. A line that does not parse, and so names no readable account, counts at `--budget-cap-usd` against every account, as the stops count it, and `summarize` says so beside the figures.
 - The primary outcome, fixed before any run, is comment-plus-docstring words per added non-test code line (row 63).
   - For each task and arm it is a ratio of sums: the words over that arm's valid runs of the task, divided by their non-test code lines.
-  - `summarize` reports the paired difference `toolkit − bare` over tasks with a valid run and at least one non-test code line in both arms. Every other task is left out of the pairs and counted by why. It uses `analysis.bootstrap_interval` over tasks as singleton clusters, and prints no interval for fewer than two paired tasks (row 75).
-  - It repeats that difference for paired tasks strictly below the median base density, by `statistics.median`, and for the rest, ties at the median included (row 64).
-  - The median is over the non-null densities. A paired task with a null base density stays in the primary difference, falls in neither half, and is counted.
+  - `summarize` reports the paired difference `toolkit − bare` over tasks with a valid run and at least one non-test code line in both arms. It uses `analysis.bootstrap_interval` over tasks as singleton clusters, and prints no interval for fewer than two paired tasks (row 75).
+  - Directly under that difference it prints `paired <n> of <M> complete tasks`, and then the excluded tasks in four counts, each with its missing reasons: `toolkit` with no valid run, `bare` with no valid run, both arms with no valid run, and no non-test code line. It prints no threshold warning.
 - A null primary difference shows only that the writing agent's instructions leave its first draft's comment density unchanged on these tasks. It cannot show that the verbosity is built-in, because no arm runs the review loop through which the toolkit also shapes comments (row 62).
-- Secondary outcomes, each per arm beside the task's reference metrics:
-  - comment-plus-docstring lines per added code line;
-  - blocks per 100 added code lines;
-  - mean lines and mean words per block;
-  - a block-length histogram of 1, 2, 3, and 4 or more lines;
-  - Python docstring lines per 100 added code lines;
-  - the Python trailing-comment count, the unclassified-line share, and the count of Python files `ast.parse` rejected (row 35);
+- Secondary outcome, per arm beside the task's reference metrics: Python docstring lines per 100 added code lines.
+- Diagnostics, per arm:
+  - the unclassified-line share, and the count of Python files `ast.parse` rejected (row 35);
   - the count of runs with any permission-rule denial;
-  - the mean subagent first-turn prompt size over runs where it is not null;
   - the `non_file_entries`, `ignored_paths` and `undecodable_files` tallies.
-- It breaks every figure down by source repo label, the task ID's first part.
 - A run with no non-test code line still enters its task's sums, and also counts in a separate tally by arm.
+- Every other figure the records hold, such as the base-density split, stays out of `summarize` (row 157).
 
 ### Why both arms dispatch a subagent
 
@@ -546,7 +531,9 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
   - the path checks and `baseline.git`, on measurement (rows 49, 50);
   - the trusted-author filter, on risk reduction: it limits how much third-party text reaches an agent holding Bash (rows 45, 61);
   - the README trust warning, on disclosure of the residual risk (row 45).
-- Dropping a repeatedly halting task by editing the task set: the manifest pins the task-set hash, so the edit forces a new campaign that discards every completed paid block.
+- A per-arm stop at the first block for a task-specific failure, such as a fixture build that raises. That block then halts every resume at the same place. Moving past it needs a skip mechanism or a task-set edit. The manifest's task-set hash turns such an edit into a new campaign, which discards every completed paid block. The chosen rule instead marks the block complete, so a resume always has a way forward.
+- Holding a failed block incomplete until the next block passes. Any halt in between leaves it incomplete, so a resume reruns and pays for it again. Two failed blocks next to each other halt every resume at the same pair.
+- Charging each swept attempt that has no spend line at the cap on resume. A write-ahead entry holds only a task ID, a directory and a session ID (row 85), so the charge needs spend lines with no arm, run index or attempt number. It also needs a rule against charging one attempt twice. Both serve to close an undercount of up to `DEFAULT_WORKERS` attempts per hard kill (row 155), which the resume prints instead.
 - A stated minimum Python patch level for the tar filter's link normalization, instead of the prune's realpath check: no CPython changelog was read, and the check holds on any interpreter for about ten lines (row 108).
 - Raising `_LOCAL_GIT_TIMEOUT_S` itself: it widens the hang bound for every review-bench caller, none of which this change needs to alter. Keeping it and lowering `--max-base-mb` until a build fits 10 s instead would drop the larger repos from the task source.
 - Reading a changed file's post-change text from its work-tree path: an agent-made symlink would point that read at a FIFO or at a file outside the fixture, where a `baseline.git` blob is exactly what `add -A` indexed (row 77).
@@ -563,7 +550,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - Sentinel canaries in the account's `CLAUDE.md` to detect inheritance: each needs an edit to a stowed file every account loads, and reading one back is the model self-report M6(a) sets aside.
 - A per-run gate on first-turn prompt size: the size moves with the brief and the agent body, and a campaign run has no paired run on the same attempt to compare with.
 - A smoke-time calibration pair, two extra attempts on a synthetic fixture: it isolated `omitClaudeMd` and the exclude without a body estimate, but it needed its own agent, fixture builder, read sets, retry rules and outcomes. The block's own runs carry the same evidence except the body term (rows 136, 137, 138), and the pair stays the fallback when step 1b finds the body estimate off.
-- Superseded by row 143: a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` attempt, and a missing-reason field on spend-file lines with `summarize` counts. The engineer chose the lighter printed note instead.
+- Superseded by row 143: a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, and a missing-reason field on spend-file lines with `summarize` counts. The engineer chose the lighter printed note instead. `run`'s instrument halt stops a campaign at the first `arm-leak` attempt (row 160).
 - Matching each run's transcript paths against the account rules' `paths:` globs, to tell whether `bare` read a rule-matching file: it needs a frontmatter-list parser and a `**`-aware matcher whose semantics match Claude Code's, for a note the trigger path reuses for free when the payload carries one (row 146).
 
 ### Assumption ledger
@@ -660,7 +647,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 77. [unverified] `git add -A` stores a symlink as its link text and skips a FIFO without opening it. Phase 4's hostile-tree test checks both.
 78. [unverified] `git add -A` leaves out an untracked path that the work tree's ignore rules match, and fails on a nested repository that has no commit. Phase 4's tests pin both outcomes.
 79. [verified: `claude/.claude/hooks/send-back-skipped-self-review.sh:40-41`; `docs/session-config-keys-log.md:3`] A replay session adds to account files that already exist. `toolkit`'s `SubagentStop` hook writes `.code-writer-self-review.log` and `.code-writer-self-review.d` in the config dir. Every session start adds a row to `.session-config-keys-log.jsonl`.
-80. [verified: `claude/.claude/scripts/select-tests.py:812-832,876-879`; `claude/.claude/scripts/tests/test_select_tests.py:425-431,1092-1105,2138-2149`] A test that reads the real agents directory through a production function is a hand-audited `AGENTS_DIR` reader. `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST` carries the wiring one needs:
+80. Superseded by row 158. [verified: `claude/.claude/scripts/select-tests.py:812-832,876-879`; `claude/.claude/scripts/tests/test_select_tests.py:425-431,1092-1105,2138-2149`] A test that reads the real agents directory through a production function is a hand-audited `AGENTS_DIR` reader. `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST` carries the wiring one needs:
     - a target in the `AGENTS_DIR` row;
     - an entry in `_HAND_AUDITED_AGENTS_DIR_READERS`;
     - a `_FILE_TARGETS` entry;
@@ -687,7 +674,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 100. [engineer-verified: "Skip up front in `tasks` (Recommended)"] For a base tree holding a link the fixture's extraction refuses, the engineer chose to skip the commit up front in `tasks`.
 101. [unverified] The session's proposal, not the engineer's words: `tasks` counts each refused shape under its own skip reason, so its printout shows what the skip drops.
 102. [unverified] The session's proposal, not the engineer's words: `fixture_repo.py` gets no change for this skip. `tasks` reuses `fixture_repo._has_git_path_component`, `_first_path_component_casefolded`, `_BENCH_DIR_NAME` and `_PROJECT_CONFIG_DIR_NAME`, so its predicates match extraction's own.
-103. [verified: `evals/review_bench/fixture_repo.py:152-200`] `_extract_archive` raises before any write on a member with a `.git` path component, a link whose target has one, a member under `.bench`, and a link whose own path starts with `.claude`. It extracts through tarfile's `data` filter, which its docstring says refuses a member that resolves outside the destination and a link with an absolute target. [unverified: the Python tarfile documentation, not read this session] The filter resolves a relative link's target with `os.path.realpath`, so it could refuse a link that `tasks`' lexical check passes. Phase 2's parity table pins where the two agree on the running interpreter, and a commit they disagree on fails as `fixture-error`, which `--skip-task` covers.
+103. [verified: `evals/review_bench/fixture_repo.py:152-200`] `_extract_archive` raises before any write on a member with a `.git` path component, a link whose target has one, a member under `.bench`, and a link whose own path starts with `.claude`. It extracts through tarfile's `data` filter, which its docstring says refuses a member that resolves outside the destination and a link with an absolute target. [unverified: the Python tarfile documentation, not read this session] The filter resolves a relative link's target with `os.path.realpath`, so it could refuse a link that `tasks`' lexical check passes. Phase 2's parity table pins where the two agree on the running interpreter. A commit they disagree on fails as `fixture-error`, a task-specific failure that costs its own block and halts the campaign only after a second such block in a row (row 153).
 104. [unverified] The session's extension, not the engineer's choice: the skip also covers the non-link entries extraction refuses, an entry with a `.git` path component and one under a root `.bench`, because each fails every attempt as `fixture-error` the same way a refused link does.
 105. [unverified: the `git-ls-tree` and `git-cat-file` documentation, which two reviewers cite and this session did not read] With `-l`, `git ls-tree` prints `-` as the size of a non-blob entry such as a gitlink. Without `-z` it quotes a path that holds an unusual character, and with `-z` it prints the path verbatim. `git cat-file --batch` answers `<oid> missing` for an object the repository does not hold. Phase 2's gitlink, non-ASCII and `missing` cases check all three. The `missing` case covers an object absent for a reason other than a partial clone (Tasks, row 130).
 106. [verified: Verification step 1a's timing, as relayed; step 1c's `timing.py` output, which the engineer ran and pasted this session] A fixture build's time grows with the base tree's entry count, and nothing measured explains the jump between 12,500 and 25,000 entries. The slowest of four concurrent builds took the times below. The halving trees in the first list have no byte total.
@@ -709,7 +696,12 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 111. [engineer-verified: "I say option 1. what does the architect think?"] For the instrument revision that Verification step 1a forced, the engineer picked the session's option 1 and asked for the architect's view.
 112. [unverified] The session's wording, not the engineer's: option 1 narrows the hook check to file and rule loads, sets `claudeMdExcludes` to drop user rules, and settles `CLAUDE.md` inheritance with probes.
 113. [engineer-verified: "can you fetch or have a subagent fetch the items that the architect needs under the things that the architect did not verify in case that changes the plan? And then let's go with your recommendations."] The engineer adopted the session's relay of the architect consult as the direction, once the consult's unverified items were fetched.
-114. [unverified] The session's relay, not the engineer's words: the recommendations were `claudeMdExcludes` in `bare` fixtures only; exact per-file Read allow entries, the same in both arms, so `code-writer` can read its reviewer files; and a smoke-time calibration pair in place of sentinel canaries. The engineer specified no mechanism, so every mechanism that carries them out is this plan's design.
+114. [unverified] The session's relay, not the engineer's words. The recommendations were:
+    - `claudeMdExcludes` in `bare` fixtures only;
+    - exact per-file Read allow entries, the same in both arms, so `code-writer` can read its reviewer files;
+    - a smoke-time calibration pair in place of sentinel canaries.
+
+    The engineer specified no mechanism, so every mechanism that carries them out is this plan's design.
 115. [verified: the memory page, as relayed: "You can configure `claudeMdExcludes` at any settings layer: user, project, local, or managed policy."; it matches "against absolute file paths using glob syntax"; "A pattern that matches either path excludes the file. Before v2.1.239, only a pattern that matched the link target excluded the file."] The fixture's project settings file is a documented layer for the key. `omitClaudeMd` needs v2.1.271 (row 15), and preflight refuses an older CLI. Past v2.1.239 the link-path entry alone should match, so the realpath entry is a second match. [unverified] Verification step 1b settles four questions the page leaves open, and `smoke`'s `bare` run re-checks the first three on every account whenever it reads a rule-matching file (row 145). Whether the key reaches:
     - user-scope `rules/` files;
     - rules loaded lazily by path;
@@ -751,7 +743,14 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - delete the realpath containment check on the Read grant and its test.
 136. [engineer-verified: "Replace the pair (Recommended)"] The engineer accepted replacing the smoke-time calibration pair with the consult's proposal. The label covers acceptance of that proposal, nothing more.
 137. [unverified] The consult's proposal, as the session relayed it, not the engineer's words: `smoke`'s own block calibrates, with `toolkit` and `bare` on one task. A `toolkit` subagent rule load is the positive control, and `toolkit`'s first-turn size minus `bare`'s, minus an estimate of `code-writer`'s body, must reach the margin. The detailed mechanism under Campaign is this plan's design.
-138. [unverified] The block calibration's arithmetic is a judgment. A character count over 4 is a rough token estimate, and halving the `CLAUDE.md` estimate leaves room for tokenizer variance. The body term is the weak point, because its error adds straight into the gap that the margin judges. Verification step 1b measures the body's real share, and when the estimate misses by more than half the margin, the plan falls back to the calibration pair. Within that bound, and with the `CLAUDE.md` estimate right, a missing `CLAUDE.md` cannot pass the check. In the same conditions a present one cannot fail it. The margin's rule term covers the unscoped rules `bare`'s exclude drops. [verified: `claude/.claude/rules/*.md` frontmatter] All nine user rules in this repository are path-scoped today, so the term is zero for an account whose only rules are these. [verified: a reviewer's character counts of this repository's files, relayed by the dispatch] Here the account `CLAUDE.md` is about 2.6 times the `code-writer` body, so the margin is about 3,812 tokens by the estimate and the body term about 2,965. The headroom shrinks if `CLAUDE.md` shrinks toward the body's size, and step 1b's one measurement ages with edits to either file. The other first-turn inputs match across the two subagents:
+138. [unverified] The block calibration's arithmetic is a judgment:
+    - A character count over 4 is a rough token estimate, and halving the `CLAUDE.md` estimate leaves room for tokenizer variance. The body term is the weak point, because its error adds straight into the gap that the margin judges. Verification step 1b measures the body's real share, and when the estimate misses by more than half the margin, the plan falls back to the calibration pair.
+    - Within that bound, and with the `CLAUDE.md` estimate right, a missing `CLAUDE.md` cannot pass the check. In the same conditions a present one cannot fail it.
+    - The margin's rule term covers the unscoped rules `bare`'s exclude drops. [verified: `claude/.claude/rules/*.md` frontmatter] All nine user rules in this repository are path-scoped today, so the term is zero for an account whose only rules are these.
+    - [verified: a reviewer's character counts of this repository's files, relayed by the dispatch] Here the account `CLAUDE.md` is about 2.6 times the `code-writer` body, so the margin is about 3,812 tokens by the estimate and the body term about 2,965.
+    - The numbers age two ways: the headroom shrinks if `CLAUDE.md` shrinks toward the body's size, and step 1b's one measurement ages with edits to either file.
+
+    The other first-turn inputs match across the two subagents:
     - [verified: `claude/.claude/settings.json:212-231`] both get the same `SubagentStart` hooks, since the one with a matcher names `plan-architect`;
     - [verified: `claude/.claude/agents/code-writer.md:1-7`] `code-writer`'s frontmatter preloads no skill, and `bare-writer` copies its tools, model and effort (Arms);
     - both carry the same brief and inner prompt.
@@ -764,19 +763,61 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
 142. [verified: a reviewer's read-only check of this machine, relayed by the dispatch] Here `~/.claude/agents` and `~/.claude/skills`, and each other account's, are directory links into the one config checkout, so every granted realpath is an in-tree file. [unverified] That holds only on a folded stow install. A consumer whose `agents/` or `skills/` already existed as a real directory gets per-file links beside their own files, which the grant then covers too.
 143. [engineer-verified: "Take the lighter fix (Recommended)"] Asked whether to keep the round-2 fix for the vacuous `bare` smoke check or take a lighter one, the engineer chose the lighter fix. The label covers that choice, nothing more.
-144. [unverified] The session's proposal, not the engineer's words: keep only a printed note at smoke time when the `bare` run read no rule-matching file, state the residual in the ledger and the README, and rely on the per-run `arm-leak` check on later `bare` runs. The round-2 fix it replaced was a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` and a missing-reason field on spend-file lines. The note's detection is this plan's design (Campaign).
+144. [unverified] Superseded by row 160 for the campaign leak stop at the first `arm-leak`, which `run`'s instrument halt provides. The session's proposal, not the engineer's words: keep only a printed note at smoke time when the `bare` run read no rule-matching file, state the residual in the ledger and the README, and rely on the per-run `arm-leak` check on later `bare` runs. The round-2 fix it replaced was a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` and a missing-reason field on spend-file lines. The note's detection is this plan's design (Campaign).
 145. [verified: `claude/.claude/rules/*.md` frontmatter] This repository's rules match `**/*.py`, `**/*.sh`, `**/*.sql`, `**/*.tf` and `**/Dockerfile`, among other globs. [unverified] A subagent's Read of such a file loads the rule. The residuals the lighter fix accepts:
     - a `smoke` task whose `toolkit` run reads no rule-matching file fails `instrument-missing`, the reason a silent hook also gives, and the engineer tells them apart from the printed loads and the `toolkit` transcript, then picks another task;
     - an account whose history keeps no task with a rule-matching changed path needs a larger `--max-count`, or a task set from another source repo on the same account;
     - a `bare` smoke run that read no rule-matching file passes without testing the exclude, and only the printed note shows it;
-    - in a campaign, a broken exclude fails `arm-leak` only on the `bare` runs that read a rule-matching file. The per-arm stop halts only a block with no valid `bare` run, so the campaign can go on with a `bare` sample filtered by what it touched, and a clean retry of a leaking attempt leaves no record of the leak. `summarize`'s counts by missing reason show the `arm-leak` runs that ended missing.
+    - in a campaign, a broken exclude fails `arm-leak` only on the `bare` runs that read a rule-matching file. The first such attempt halts `run` at its block's end (row 160), so a broken exclude goes unseen only while no `bare` run reads a rule-matching file.
 146. [unverified] A `path_glob_match` payload names the file that triggered the load. The relayed hooks-page excerpt names no such field. Verification step 1b records whether the probe's lines carry one and under what key. Without one, `smoke` prints only the residual sentence.
 147. [engineer-verified: "Add file to Critical files"] Asked whether to keep the code-review round 5 move of the shared-default timeout case and the `build_single_commit_repo` cases into `evals/test_review_bench_fixtures.py`, which Critical files had not listed, the engineer selected this label. Critical files now lists the file.
 148. [engineer-verified: "Fix docs and log pin (Recommended)"] Asked how to treat the code-review round 9 findings, one of which needs `evals/review_bench/local_git.py` (not in Critical files), the engineer selected this label. Critical files now lists the file for the one docstring sentence only. [unverified] The option description was the session's proposal: it also covered the comment fixes and `--no-show-signature` on the two `git log` calls.
+149. [engineer-verified: "Keep it (Recommended)"] Asked whether the second PR's `tasks` CLI should exit 2, naming the flag, for zero, negative or inverted selection limits, which the Ask does not call for, the engineer selected this label. Row 150 records where the guard lives and which values it refuses.
+    - [verified: `evals/replay_bench/tasks.py:108-120`] `SelectionLimits` is a plain frozen dataclass with no validation, so it accepts those values today.
+    - [unverified] The option description was the session's proposal: a guard at the one place a person types the limits. Row 150's placement replaces it.
+150. [engineer-verified: "In SelectionLimits (Recommended)"] Asked where the guard lives, the engineer selected this label. The guard and what it refuses:
+    - `SelectionLimits.__post_init__` raises `TaskSourceError`, which `main()` already maps to exit 2.
+    - [engineer-verified: "Reject: all integer limits at least 1 (Recommended)"] Asked whether `--min-code-lines 0` is valid, the engineer selected this label. Every integer limit is at least 1, and `min_code_lines` may not exceed `max_code_lines`, with equal valid.
+    - [verified: a reviewer's run of `git rev-list --count -n -1 HEAD` in this repository, relayed by the dispatch, printed the whole history, 1,058 commits] A negative `max_count` removes the 500-commit bound.
+    - [unverified] Both option descriptions were the session's proposals.
+151. [engineer-verified: "Guard shrink + group A (Recommended)"] Asked which cuts to the second PR to apply, the engineer selected this label and also "Item 7: simpler halting (Recommended)", "Items 9 and 10 (Recommended)" and "Item 8: no cap charges for swept attempts". The labels cover those selections, nothing more. [unverified] The item numbers and option descriptions were the architect consult's and the session's proposals, not the engineer's words:
+    - the guard shrink: rows 149 and 150's `__post_init__`, one parametrized refusal case, one boundary pair, one CLI case, and the limit flags passed by field name (row 152);
+    - group A: `summarize` cut to the primary outcome, its bootstrap, one docstring outcome and diagnostics (row 157); each attempt's `sessions/` file left in place (row 154); the campaign's `attempts/` deleted whole on resume (row 156); fewer block-calibration arithmetic cases, with row 138's heuristic unchanged; and the trigger-path code built only when step 1b finds a trigger field (row 146);
+    - item 7: the per-arm stop halting on two blocks in a row, with no recorded halts or `--skip-task` (row 153);
+    - item 8: no resume cap charge for a swept attempt that has no spend line (row 155);
+    - item 9: a manual listing of the account config dir in Verification step 6, in place of `smoke`'s own;
+    - item 10: the arms test reading a `tmp_path` agent file, not this checkout's (row 158).
+152. [unverified] The session's design, not the engineer's words: `tasks`' flags for the nine `SelectionLimits` fields, `--rev` included, default to `None`, and `main()` passes only the flags given to `SelectionLimits`, by field name. `SelectionLimits` then holds the only defaults, and no flag can reach another field. The CLI case that gives all nine flags distinct values pins the wiring.
+153. [unverified] The session's design under row 159, not the engineer's words:
+    - A task-specific failed block, one where an arm has no valid run and no attempt in the block ended under an instrument reason, is marked complete and never rerun. Its task leaves the pairs, and `summarize` counts it.
+    - Two such blocks in a row halt `run` with both complete. The count lives in memory for one invocation and starts at 0 on every start and resume, so a resume goes on past the pair, and those two tasks are lost from the sample. A one-block transient failure also loses its task for good.
+    - A persistent failure meets the pre-block spend stops and the two-in-a-row halt, so it costs at most one block beyond the first.
+    - Two residuals stay, which the README and Out of scope also name:
+      - [unverified: how `claude -p` behaves at a usage limit] a usage-limit, auth or overload event that fails every run of two blocks marks two tasks that no agent really tried complete, and drops both from the sample;
+      - failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them.
+    - An instrument failure halts at its block's end with the block complete (row 160), so it never blocks a resume.
+154. [verified: `claude/.claude/hooks/capture-session-id.sh:96`; `claude/.claude/hooks/_lib.sh:3695-3706`; a search of `evals/` Python files, which name no `sessions/` path, and of `claude/.claude/` outside its tests, which found no code that deletes a `sessions/` entry] `capture-session-id.sh` rewrites `<config-dir>/sessions/<claude-pid>` at each session start. `_lib_registered_live_sid` reads an entry as absent when its recorded start time does not match the live process. Nothing deletes an interactive session's or a review-bench launch's entry. So each replay attempt leaves one file there too, as accepted residue beside row 79's files.
+    - [verified: `claude/.claude/scripts/post-crash-sessions.py:18,127,158,161`] `post-crash-sessions.py` reads these files as its source D, and its crash-evidence window is 14,400 seconds.
+    - [unverified: a reviewer's read of `post-crash-sessions.py:1347-1393`] A leftover replay file, whose PID is dead and whose session store the cleanup deleted, lists there as `unknown` while its mtime is inside that window. It lists as `confirmed-clean-exit` instead if the SessionEnd hook fires under `claude -p`, which is unverified.
+    - So for four hours after a campaign, the engineer may see replay attempts listed in that report, as accepted residue.
+    - [unverified] No other reader under `claude-skills/` or a script outside `claude/.claude/` minds a stale entry, since the search did not cover them.
+155. [unverified] The plan's design, not a measurement:
+    - `main()` routes SIGHUP and SIGTERM into `KeyboardInterrupt`, and an aborted launch is charged at the cap (Retry). A Phase 4 case checks that an interrupted in-flight attempt writes its charge.
+    - A hard kill, such as SIGKILL, an out-of-memory kill or a power loss, can end a launched attempt with no spend line. So can a failed append, which halts `run` before its block is marked complete. Either way the attempt's entry stays pending, and the next resume counts it among the uncharged attempts it prints.
+    - After each hard kill, up to `run_skill_evals.DEFAULT_WORKERS` (4, row 82) launched attempts, one per worker thread, may go uncharged. The undercount adds up over kills, each adding at most `DEFAULT_WORKERS` times the per-run cap, a nominal figure (row 65).
+    - The README states this as accepted residue, beside row 79's files.
+156. [verified: `evals/review_bench/runner.py:1128,1168-1177,1636-1638`] The store's lock is `lock.pid`, taken with a non-blocking exclusive `flock`, and the review bench takes it before its sweep. The replay resume takes it before its sweep and its `attempts/` delete (Campaign), so no attempt of the campaign runs then. [verified: `evals/review_bench/runner.py:1294-1300`] `remove_tree_reporting_failure` runs `shutil.rmtree` with an `onexc` handler and prints each failure, so the resume checks for a symlinked or an absent `attempts/` itself before it calls the helper.
+157. [unverified] The plan's design: each run's record keeps its metrics, first-turn prompt size and diff, each task keeps its base density, and each spend line keeps its cap-charge flag. So a later change can compute any figure `summarize` leaves out, Out of scope's list included, with no rerun.
+158. [unverified] The session's design, not the engineer's words: `evals/test_replay_bench_arms.py` builds `bare-writer.md` from a `tmp_path` `code-writer.md`, so it reads no real agents directory and needs none of row 80's wiring. That file uses distinctive non-default `tools`, `model` and `effort` values and a multi-line `description`, so a hard-coded value or a reader that handles only one-line values fails. Preflight still refuses, unpaid, an account `code-writer.md` that yields no tools, model or effort (Account preflight). No test catches a change to the real file's frontmatter that the generator reads into a wrong but present value.
+159. [engineer-verified: "Mark complete, halt after two in a row (Recommended)"] Asked how the per-arm stop treats a failed block, in place of holding it, the engineer selected this label and "Halt at the first block (Recommended)". The labels cover those selections, nothing more. [unverified] The option descriptions were the session's proposals, not the engineer's words. By the session's relay, the first label covers task-specific failed blocks and the second covers instrument failures. Row 153 holds the design that carries them out.
+160. [unverified] The design for an instrument failure under row 159's "Halt at the first block (Recommended)", from a second architect consult the session relayed, not the engineer's words:
+    - It triggers on any attempt that ends under an instrument reason. Neither `run` nor `smoke` retries such an attempt, because a clean retry would hide the evidence (Retry).
+    - `run` halts at the block's end, after the block's other runs finish and the block is marked complete with the failing runs recorded missing. No resume reruns it, so each instrument halt costs at most one task and never blocks a resume.
+    - The way forward is to fix the cause and resume. Because the halt comes at the first `arm-leak` attempt, a broken `bare` exclude shows on the first `bare` run that reads a rule-matching file (row 145).
 
 **Mechanisms:**
-- **M1. Task mining from first-parent commits of top-level repos, with pruned paths dropped, a trusted-author list over raw identities, delimiter skips, base-tree size and entry-count bounds read from a NUL-delimited tree listing, a `missing-object` skip, an up-front skip of base trees the fixture cannot extract or whose archive would drop or rewrite a path, a partial-clone refusal, merge-commit briefs, reference metrics and a nullable base density.** anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
-- **M2. A single-commit archive fixture with a case-insensitive, link-safe prune that realpath-checks every remaining symlink, the worktree opt-out, a pre-launch copy of its `.git`, and a git timeout measured at both base-tree bounds and overridable by flag.** Lighter primitives checked:
+- **M1. Task mining from first-parent commits.** Tasks states the selection rules, refusals, briefs and recorded fields. anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
+- **M2. A single-commit archive fixture.** Fixture states its prune, opt-out, `.git` copy and git timeout. Lighter primitives checked:
   - (a) a `git worktree add` or `git clone` of the base commit is lighter, but both share or copy the object store, so the replayed commit stays reachable (row 27);
   - (b) a bench two-commit fixture fails the same way (row 28).
   - anchors: row21, row22, row23, row24, row27, row28, row83, row87, row88, row103, row106, row108.
@@ -784,30 +825,30 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
   - (a) a headless main session per arm fails for the reasons in "Why both arms dispatch a subagent";
   - (b) `--append-system-prompt` carrying `code-writer`'s body into a main session delivers that body through a different channel than production's agent body, and the session still carries the Main-session rules.
   - anchors: root, row3, row8, row12, row13, row14.
-- **M4. `bare-writer` as a fixture-local agent file that copies `code-writer`'s tools, model and effort.** `--agents` JSON is lighter, but `omitClaudeMd` is documented only as frontmatter. anchors: row12, row15, row29, row80.
+- **M4. `bare-writer` as a fixture-local agent file that copies `code-writer`'s tools, model and effort.** `--agents` JSON is lighter, but `omitClaudeMd` is documented only as frontmatter. anchors: row12, row15, row29, row158.
 - **M5. Per-repo account preflight and an allowlisted launch environment, as Account preflight and Launch environment state.** Lighter primitives checked:
   - (a) the runner's own account for every repo breaks row 5;
   - (b) a `direnv exec` launch prefix hands the agent the runner's whole environment with the `.envrc`'s exports on top (rows 51, 52).
   - anchors: G2, row5, row15, row20, row44, row51, row52, row58, row69, row70, row72, row93, row94, row98, row132, row134.
-- **M6. The `InstructionsLoaded` hook log, one write per event, read once it stops growing, attributed by `agent_id`, and checked against a dispatcher positive control, as each run's arm check. It fails `bare` on any subagent load outside the fixture or any dispatcher load besides the account's `CLAUDE.md`, and only records `toolkit`'s loads.** Lighter primitives checked:
+- **M6. The `InstructionsLoaded` hook log as each run's arm check.** Instruction-load check states how the log is written, read and attributed, and what fails each arm. Lighter primitives checked:
   - (a) the model's self-report is not mechanical and would contaminate the run;
   - (b) the subagent's first-turn input-token size cannot name which file loaded, and rules load mid-run on file reads, so it serves only `smoke`'s block calibration (M20);
   - (c) transcript `nested_memory` attachment records: this repository has observed them only in an interactive session's transcript (`claude/.claude/hooks/tests/test_claude_md_excludes.py:15-18`), and no source read says whether a `-p` run or a subagent transcript keeps them. [verified: `docs/session-config-keys-log.md:81`] Whether a `-p` run keeps even a hook attachment is untested.
   - anchors: row16, row17, row18, row19, row53, row76, row121.
 - **M7. `evaluate_run_validity` unchanged, plus the runner's write-path, Bash-path and account-hook checks, and retry-then-missing.** anchors: row30, row31, row32, row48, row54, row55.
 - **M8. Whole-line classification of `baseline.git` blobs by extension table, with Python through `tokenize` and the bench's docstring finder, a test-path rule, and word counts.** anchors: row35, row36, row38, row63, row77, row78.
-- **M9. `RunStore` for the lock, write-ahead and sweep, with each fixture logged before it is filled, per-run atomic record files, and cleanup of attempt dirs and session-ID files on every exit path and by validated name on resume.** anchors: row43, row54, row56, row57, row79, row85.
-- **M10. One block per task, environment readings and repo-to-account keys against a pinned manifest, a per-attempt spend file repaired at resume, cap charges only for launched attempts with no spend line, written so a later resume sees them, spend guards before every block and a resume ceiling over the remaining blocks, a per-arm stop after it, a recorded skip for a repeatedly halting task, per-block progress with an exit code for every halt, and an arm-keyed smoke pass per account before `run`.** anchors: G3, G4, row2, row37, row65, row73, row74, row85, row86, row95, row97.
-- **M11. `summarize` to the terminal only, over complete blocks, with a pre-registered ratio-of-sums word outcome, a base-density split that sets null densities aside, a paired bootstrap, and spend, skip and incomplete-block counts.** anchors: G3, row4, row9, row10, row62, row63, row64, row75.
+- **M9. `RunStore` for the lock, write-ahead and sweep, with each fixture logged before it is filled, per-run atomic record files, cleanup of fixtures and attempt dirs on every exit path, and deletion of the campaign's whole `attempts/` on resume.** anchors: row43, row54, row56, row57, row79, row85, row154, row156.
+- **M10. One block per task, with a pinned environment and spend guards.** Campaign and Spend file state the manifest, spend file, stops, per-arm stop, exit codes and smoke gate. anchors: G3, G4, row2, row37, row65, row73, row74, row85, row86, row95, row97, row153, row155, row159, row160.
+- **M11. `summarize` to the terminal only, over complete blocks, with a pre-registered ratio-of-sums word outcome, a paired bootstrap, one docstring secondary outcome, diagnostics, and spend and block counts.** anchors: G3, row4, row9, row10, row62, row63, row75, row157.
 - **M12. `--permission-mode acceptEdits` on the dispatcher, with its Bash denials recorded and stated rather than lifted.** anchors: row25, row26, row122.
 - **M13. Arm C as a gated pair sharing one route.** anchors: row2, row11, row13.
-- **M14. `select-tests.py` wiring that follows the `measure_explore_recall.py` precedent, plus the hand-audited agents-directory reader, the no-relative-import check with a scanned-set control, and a declared row that selects it after a replay edit.** anchors: row39, row40, row67, row80, row81, row133.
-- **M15. The `.gitignore` entry in Phase 1, the startup ignore check, the Python and git guards, the owner-only umask, and the README section with its trust warning and residual risk.** anchors: row4, row41, row42, row45, row47, row59, row61, row66, row71, row91.
+- **M14. `select-tests.py` wiring that follows the `measure_explore_recall.py` precedent, plus the no-relative-import check with a scanned-set control, and a declared row that selects it after a replay edit.** anchors: row39, row40, row67, row81, row133, row158.
+- **M15. Local-storage and startup guards, with the README's trust warning.** Phase 1's `.gitignore` entry, `main()`'s startup order and Local dir state them. anchors: row4, row41, row42, row45, row47, row59, row61, row66, row71, row91.
 - **M16. A runner-owned copy of the fixture's pre-launch `.git` for every post-run git call.** Lighter primitives checked:
   - (a) `-c` overrides on the fixture's own `.git` form a denylist that misses any key it does not name;
   - (b) a Python diff of the work tree reimplements `git diff` and its symlink handling.
   - anchors: row49, row50.
-- **M17. Test isolation and timing: a local stub of the live-checkout roots, near-zero flush constants set by module attribute, `timing` markers and stated deadlines on the hang-prone and wall-clock tests, `exec`'d sleepers in fakes, and a CI duration check with per-test durations against the job cap.** anchors: row89, row90, row107.
+- **M17. Test isolation and timing.** Phase 4's runner-test setup and Verification step 3 state the stubs, markers, deadlines and duration check. anchors: row89, row90, row107.
 - **M18. `claudeMdExcludes` in `bare` fixtures only, listing each account rule file's exact link path and realpath, with the account's `CLAUDE.md` left off.** Lighter primitives checked:
   - (a) `omitClaudeMd` alone still lets matching path-scoped rules load (row 16);
   - (b) the `--settings` JSON is not a layer the memory page names for the key (row 115).
@@ -820,8 +861,8 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
   - (a) sentinel canaries need an edit to a stowed `CLAUDE.md` and read back through the model's self-report;
   - (b) a per-run `toolkit` load assertion cannot see an inherited `CLAUDE.md` (row 18).
   - The heavier calibration pair, two extra attempts with their own agent and fixture, stays the fallback (Alternatives set aside).
-  - Superseded by row 143: the round-2 leak stop and spend-file attempt reasons behind it in `run`.
-  - anchors: row18, row113, row114, row115, row117, row120, row121, row134, row135, row136, row137, row138, row141, row143, row144, row145, row146.
+  - Superseded by row 143: the spend-file attempt reasons that backed a campaign leak stop. `run`'s instrument halt stops a campaign at the first `arm-leak` attempt (row 160).
+  - anchors: row18, row113, row114, row115, row117, row120, row121, row134, row135, row136, row137, row138, row141, row143, row144, row145, row146, row160.
 - **M21. Two PRs split at Phase 2 to Phase 3, with this file shipping whole in the first and edited in place by the second, the lightest delivery that keeps every plan change with its code.** Alternatives set aside:
   - (a) a new plan file for the follow-on branch would split one ledger, whose later rows anchor to earlier ones, across two files, and would rerun `/plan-it` and `/plan-review` over material already reviewed;
   - (b) shipping this file only with the second PR would merge the first PR's code with no plan (row 127), and the plan would have to come out of a branch that already committed it.
@@ -836,7 +877,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
 - the test-selection wiring needs the final file names and imports.
 
 The two PRs (Approach) divide the phases:
-- **First PR, this branch.** Phases 1 and 2 need one more dispatch, after Verification step 1c. It holds Phase 2's amendments and Phase 5a, two disjoint file sets.
+- **First PR, merged as #1452.** Phases 1 and 2 needed one more dispatch, after Verification step 1c. It holds Phase 2's amendments and Phase 5a, two disjoint file sets.
 - **Second PR, the follow-on branch.** Verification step 1b runs first. Then come one dispatch each for Phase 3, Phase 4 and Phase 5b. Phase 4 stays one dispatch because the arms, launch settings, runner and CLI share the record, fixture and settings contracts.
 
 The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks.py` and `evals/test_replay_bench_tasks.py` in the second PR (Phase 4).
@@ -1033,7 +1074,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 - `evals/replay_bench/checks.py` (new):
   - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;
   - the subagent's first-turn prompt size from its transcript;
-  - the optional trigger-path field on a `path_glob_match` line, and the exclude note from Campaign: whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture;
+  - the exclude note from Campaign. Only when Verification step 1b finds a trigger field (row 146) does this file read the optional trigger-path field on a `path_glob_match` line and check whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture. Without one, the note is the residual sentence alone, and neither that code nor its exclude-note cases below exist;
   - the block-calibration verdict from Campaign, a pure function of the `toolkit` and `bare` runs' parsed logs and first-turn sizes, the account `CLAUDE.md`'s character count, the two agent bodies' character counts, and the character counts of the rule files the `toolkit` dispatcher loaded at `session_start`. It returns every failed condition in order;
   - the instrument reasons as one constant, which the runner's retry rule reads (Retry);
   - the account-hook check under `<config-dir>/sessions/`;
@@ -1072,21 +1113,18 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
       - one of a file under `agents/`, one under `skills/`, and one of the account's `CLAUDE.md`;
       - one of `<config-dir>/rules-extra/x.md`, which a string-prefix match would pass;
     - a `toolkit` rule load reported by its link target, and one of a rule nested below `rules/`, each passing;
-    - a gap, after the body term, exactly at the margin passing, and one token short failing `arm-config-missing`;
-    - an account `CLAUDE.md` of 10,001 characters, whose first margin term is 1,250.125, with equal bodies: a gap of 1,250 failing and one of 1,251 passing, which pins `>=` on unrounded values;
+    - an account `CLAUDE.md` of 8,000 characters, equal bodies and no dispatcher-loaded rule, so the margin is 1,000 tokens: a gap of 1,000 passing, and one of 999 failing `arm-config-missing`;
     - a `code-writer` body 4,000 characters longer than `bare-writer`'s, which raises the gap the check needs by exactly 1,000;
-    - a body difference of 4,001 characters, whose body term is 1,000.25: a gap of the margin plus 1,000 failing and of the margin plus 1,001 passing, so floor division of the difference fails the case;
     - a dispatcher-loaded rule in the `toolkit` run raising the margin by its character count over 4, not halved;
-    - two dispatcher-loaded rules of 4,001 and 4,003 characters, whose term is 2,001.0, which pins summing the exact quotients rather than flooring each;
     - a null size in either run failing `arm-config-missing`;
     - order, the list asserted whole:
       - a control failure with a null size returns `instrument-missing` then `arm-config-missing`;
       - a control failure with a short gap returns the same two;
-  - the exclude note, which never changes the verdict:
-    - a trigger path the `bare` transcript shows a Read of that ran prints the exercised line, compared relative to each fixture;
-    - a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
-    - a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising;
-    - the residual sentence prints in every case;
+  - the exclude note. Phase 4's `smoke` cases show that it never changes the verdict:
+    - without the trigger-path code, one case: the note is the residual sentence alone;
+    - with it, a trigger path the `bare` transcript shows a Read of that ran prints the exercised line, compared relative to each fixture;
+    - with it, a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
+    - with it, a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising, and each of these cases also prints the residual sentence;
   - Read-allow-list records: a listed Read that ran, a listed Read denied by a hook and one denied by the permission flow, and a denied Read of an unlisted toolkit file recorded by path;
   - a forged log written into the fixture, never read;
   - `bare` reading a toolkit agent file through Read and through Bash fails `arm-leak`, and the same reads pass `toolkit`;
@@ -1104,10 +1142,18 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 **Phase 4 — arms, launch, runner, CLI (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_arms.py evals/test_replay_bench_runner.py evals/test_replay_bench_tasks.py`.
 - `evals/replay_bench/tasks.py` (edit):
   - make no `write_fixture_extras` split. `build_task_fixture` has been the extras' only caller since the calibration fixture was removed (row 136), so row 129's move of the split to this PR is moot, and row 141 records the drop;
-  - `build_task_fixture(task, dest_dir, baseline_git_dir, *, bare_writer_markdown, timeout_s, settings_text=None) -> str` writes `.claude/settings.json` from `settings_text` when one is given, beside its other extras.
+  - `build_task_fixture(task, dest_dir, baseline_git_dir, *, bare_writer_markdown, timeout_s, settings_text=None) -> str` writes `.claude/settings.json` from `settings_text` when one is given, beside its other extras;
+  - `SelectionLimits.__post_init__` raises `TaskSourceError` for a limit outside its range (row 149), and `TaskSourceError`'s docstring names a selection limit among the arguments it refuses:
+    - each of the eight integer fields (`max_count`, `max_tasks`, `max_files`, `min_code_lines`, `max_code_lines`, `max_prompt_chars`, `max_base_mb`, `max_base_entries`) must be at least 1. The message names the flag, which is the field name with underscores as hyphens;
+    - `min_code_lines` above `max_code_lines` is refused, naming both flags. Equal values are valid, since Tasks makes both bounds inclusive. The check compares the resolved values after defaults, so `--max-code-lines 5` alone is refused against the default minimum of 10;
+    - no other pair is checked, because `--max-tasks` above `--max-count` just caps the task count;
+    - `max_count` below 1 is refused because `git log -n -1` walks the whole history, so a negative value would silently remove the 500-commit bound.
 - `evals/test_replay_bench_tasks.py` (edit):
   - its `_build_fixture` helper passes the new keyword where a case needs it, and every first-PR case still passes unchanged;
-  - a `settings_text` given to `build_task_fixture` lands at `.claude/settings.json` byte for byte with `git status --porcelain` still empty, and no settings file exists without one.
+  - a `settings_text` given to `build_task_fixture` lands at `.claude/settings.json` byte for byte with `git status --porcelain` still empty, and no settings file exists without one;
+  - `SelectionLimits` cases:
+    - each of the eight integer fields at 0 and at -1 is refused, naming its flag, with `max_count=-1` among them;
+    - `min_code_lines == max_code_lines` is accepted, and a minimum one above the maximum is refused with both flag names in the message.
 - `evals/replay_bench/arms.py` (new): the `Arm` record with its expected and failing dispatcher loads, its fixture settings and its allowed fixture loads; the `bare` and `toolkit` registry; `bare`'s `claudeMdExcludes` generator with its call of the shared character check and its settings text; the `bare-writer` file text built from the account's `code-writer.md` frontmatter; and both agents' body character counts for the block calibration, `code-writer`'s read from the account's `<config-dir>/agents/code-writer.md`.
 - `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, the `--settings` JSON with the instrument hook, `UnsafeConfigPathError` with the one character check both generators share, and the Read allow-list generator with the `--allowedTools` argv tail.
 - `evals/replay_bench/runner.py` (new):
@@ -1117,34 +1163,32 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - its value is 110 (Fixture);
     - it is the `--fixture-git-timeout-s` default;
     - a one-line comment cites this plan's Fixture section as its basis;
-  - the `--max-base-mb` and `--max-base-entries` flags, defaulting to `tasks.DEFAULT_LIMITS`;
   - the hook-log read that waits for the log's size to hold across two polls, as Instruction-load check states;
   - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`;
-  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` without a retry;
+  - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` and every instrument reason without a retry;
   - the instrument reason outranking every other reason on one attempt;
   - every config-tree path and variable name it prints, in `!r` form;
   - the spend file and its torn-tail repair at resume;
-  - the block and campaign loop with its pinned environment, smoke gate, spend guards, per-arm stop, per-block progress line, halt messages and exit codes, and `ReplayRunRecord`;
-  - recorded halts, `halted again`, and `--skip-task`;
-  - `RunStore` use, the per-account sweep, and the resume's cap charges with their `null` attempt fields and validated-name deletions;
-  - the manifest's repo-to-account pin, the resume's ceiling over the incomplete, non-skipped blocks, and `--fixture-git-timeout-s` outside the manifest comparison;
+  - the block and campaign loop with its pinned environment, smoke gate, spend guards, per-arm stop with its instrument halt and in-memory count of failed blocks in a row, per-block progress line, halt messages and exit codes, and `ReplayRunRecord`;
+  - `RunStore` use with the lock taken before the sweep, the per-account sweep, the printed count of uncharged swept attempts, the resume's deletion of the whole `attempts/`, and the attempt-dir creator;
+  - the manifest's repo-to-account pin, the resume's ceiling over the incomplete blocks, and `--fixture-git-timeout-s` outside the manifest comparison;
   - `smoke`'s one-run-per-arm block, printed ceiling, no-retry rule for instrument reasons, printout with the exclude note, block calibration, `read-grant-denied` and `read-grant-unexercised` conditions, and arm-keyed smoke-pass record;
   - `summarize`.
 - `runner.py`'s reuse from `review_bench.runner`:
   - prompts and launch: `build_dispatcher_prompt`, `build_dispatch_command`, `wait_for_session_flush`, `extract_result_usage`;
   - validity: `evaluate_run_validity`, `own_session_paths_for`, `default_live_checkout_roots` through its module, `_worktree_top_levels`, `session_store_dir_for`, `_os_error_detail`;
-  - campaign: `read_environment_record`, `EnvironmentReference`, `build_block_plan`, `RunStore`, `count_outcomes`, `all_runs_missing`, `systemic_failure_message`, `campaign_cost_ceiling`, `remove_tree_reporting_failure`, `_repair_torn_tail`;
+  - campaign: `read_environment_record`, `EnvironmentReference`, `build_block_plan`, `RunStore`, `count_outcomes`, `all_runs_missing`, `campaign_cost_ceiling`, `remove_tree_reporting_failure`, `_repair_torn_tail`;
   - constants: `FIXTURE_DIR_PREFIX`, `REVIEWER_MODEL_ID`, `REVIEWER_TIMEOUT_S`, `ATTEMPTS_PER_RUN`, `_ENVIRONMENT_READ_TIMEOUT_S`.
 - `runner.py`'s reuse from `measure_subagent_model_resolution`: `_run_claude_to_completion`, `_resolved_temp_project_dir`, `abort_launches`, `LaunchAbortedError`, `PER_RUN_BUDGET_CAP_USD`, `agent_frontmatter_tools`, `agent_frontmatter_model` and `_frontmatter_block`.
 - `runner.py`'s reuse from the rest of `review_bench`: `analysis.bootstrap_interval`, `identifiers.validate_campaign_id`, `defects.atomic_write_text`, `fixture_repo._validate_sha`, and `local_git`'s `isolated_git_environment` and `DIFF_TEXT_ARGS`.
-- `evals/run_replay_bench.py` (new): the subcommands `tasks`, `preflight`, `smoke`, `run` and `summarize`, with `DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"`, `--local-dir`, `--skip-task`, `--fixture-git-timeout-s` and `--max-base-entries`. `smoke` takes no `--k`. `main()` runs the startup steps in Approach's order. Neither an `UnsafeFixtureConfigError` nor an attempt's `UnsafeConfigPathError` reaches it, because an attempt records each as `fixture-error` (Retry). It returns 2, with the offending file path or name in the message, on any of these:
-  - `HarnessInvalidatedError`, `TaskSourceError`, `TaskFileError`, or `identifiers.InvalidIdentifierError`, which `tasks.py` raises for a task-set name that breaks its grammar;
-  - a preflight, spend, smoke-gate, skip or local-dir refusal;
+- `evals/run_replay_bench.py` (new): the subcommands `tasks`, `preflight`, `smoke`, `run` and `summarize`, with `DEFAULT_LOCAL_DIR = EVALS_DIR / "replay_bench" / ".local"`, `--local-dir` and `--fixture-git-timeout-s`. `tasks` takes one flag per `SelectionLimits` field, `--rev` included, named as the field with underscores as hyphens and defaulting to `None`, and `main()` passes only the flags given, by field name (row 152). `smoke` takes no `--k`. `main()` runs the startup steps in Approach's order. Neither an `UnsafeFixtureConfigError` nor an attempt's `UnsafeConfigPathError` reaches it, because an attempt records each as `fixture-error` (Retry). It returns 2, with the offending file path or name in the message, on any of these:
+  - `HarnessInvalidatedError`, `TaskSourceError` (an out-of-range selection limit included), `TaskFileError`, or `identifiers.InvalidIdentifierError`, which `tasks.py` raises for a task-set name that breaks its grammar;
+  - a preflight, spend, smoke-gate or local-dir refusal, or a resume's refusal of a symlinked `attempts/`;
   - an environment-pin mismatch;
   - a Python or git below its floor.
-- `run` returns 1 on every halt, and 0 when it completes every task not skipped.
+- `run` returns 1 on every halt, a failed spend append included, and 0 when it completes every task.
 - `evals/test_replay_bench_arms.py` (new). Cases:
-  - one test method, taking only `self`, reads this checkout's `claude/.claude/agents/code-writer.md`. It checks that the generated `bare-writer.md`, parsed with `msmr.agent_frontmatter_tools`, `msmr.agent_frontmatter_model` and the `effort` reader, has the same `tools`, `model` and `effort`, plus `name: bare-writer` and `omitClaudeMd: true` (row 80);
+  - a `bare-writer.md` generated from a `tmp_path` `code-writer.md` and parsed with `msmr.agent_frontmatter_tools`, `msmr.agent_frontmatter_model` and the `effort` reader has that file's `tools`, `model` and `effort`, plus `name: bare-writer` and `omitClaudeMd: true`. That `code-writer.md` mirrors the real file's keys, with a multi-line `description` and distinctive non-default `tools`, `model` and `effort` values. No case reads this checkout's agents directory (row 158);
   - the `effort` reader returns nothing for a frontmatter without the key;
   - the registry's `bare` and `toolkit` allow no fixture loads, and both expect the account's `CLAUDE.md`;
   - the body character counts: `code-writer`'s body and `bare-writer`'s one-line body, each counted after the frontmatter of a `tmp_path` agent file, with a frontmatter-only file counting zero;
@@ -1241,38 +1285,39 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - extraction refusals, each recording `fixture-error` on every run with no launch, and leaving no fixture or attempt dir:
     - a base tree whose `_extract_archive` pre-check raises `UnsafeFixtureConfigError`;
     - a base tree whose tar filter refuses a member after earlier members reached disk;
-    - in both, the per-arm stop halts the campaign with exit 1, never `main()`'s exit 2, and a resume with `--skip-task` for that task runs the next task's block.
+    - in both, the campaign goes on to the next task's block, and `main()` never exits 2.
 - Retry cases:
-  - an attempt that fails validity twice records missing with summed cost, and leaves no fixture, attempt dir or `sessions/` file;
-  - in `run`, a `bare` attempt failing `arm-leak` retries once, and a clean retry records a valid run;
+  - an attempt that fails validity twice records missing with summed cost, and leaves no fixture or attempt dir;
+  - in `run`, a `bare` attempt failing `arm-leak` launches no retry, and its run ends missing as `arm-leak`;
   - on one attempt, a timeout whose log also shows a `bare` subagent rule load records `arm-leak`;
   - a fail-once-then-succeed run takes its diff from the second fixture, and the first fixture and attempt dir are gone;
   - a launch timeout and a launch exception are each charged at the cap;
   - an empty stdout records `launch-no-output`;
   - an exception from the analysis after a launch records `analysis-error` with the attempt's cost, and no second launch happens;
   - a prune that raises records `fixture-error` with no launch;
-  - the `analysis-error` and `fixture-error` cases each leave no fixture, attempt dir or `sessions/` file.
+  - the `analysis-error` and `fixture-error` cases each leave no fixture or attempt dir.
 - Cleanup cases, each with a `tmp_path` config dir:
-  - a valid run's record, diff file, metrics and cleanup, the `sessions/` file included;
-  - a `sessions/` file whose first line changes between lookup and delete survives;
-  - a symlink at that name survives, and so does its target;
-  - an `attempts/` entry that is a symlink to a sentinel dir, and one whose name breaks the grammar, are both left, with the sentinel intact;
-  - an attempt dir name with a hyphenated arm such as `toolkit-copy` round-trips through its formatter and parser, and the resume deletes it by name;
-  - a swept entry from one account deletes nothing under another account's `sessions/`.
+  - a valid run's record, diff file, metrics and cleanup, with its `sessions/` file left in place;
+  - `attempts/` on resume:
+    - an `attempts/` holding a nested attempt dir is gone after the resume, and the next attempt creates `attempts/` and its own dir;
+    - an absent `attempts/` prints nothing to the captured stderr;
+    - an `attempts/` that is a symlink to a sentinel dir makes `run` exit 2 naming the path, with the sentinel intact;
+    - an attempt whose dir already exists records `fixture-error` with the path in `missing_detail`, and launches nothing.
 - Campaign cases:
   - environment drift at block start and at block end halts the campaign, writes no record, never calls `mark_block_complete`, and prints the block's spend;
   - a resume after an account's environment changed exits 2 before any launch, naming the account and the field;
-  - a block whose `bare` runs all fail while its `toolkit` runs pass stops the campaign and stays incomplete, and a resume reruns it;
-  - each halt prints its reason and exits 1, with one case each for drift, the cumulative stop, the account stop and the per-arm stop. A campaign that completes exits 0;
-  - each complete block prints its progress line with the task ID, per-arm counts, the block's spend and the totals against their stops;
-  - repeated halts:
-    - the first halt on a task prints neither `halted again` nor the `--skip-task` flag;
-    - a block whose `bare` runs fail the same way twice prints `halted again` with its missing reasons on the second halt;
-    - a resume with `--skip-task` for that task passes the manifest comparison and goes on to the next task;
-    - a later resume without the flag still never reruns it;
-    - a skipped task with a pending entry whose session ID no spend line carries is charged once, its fixture and `sessions/` file are deleted, its block is not rerun, and `summarize` counts it as skipped, not incomplete;
-    - a campaign whose last remaining task is skipped exits 0;
-    - `--skip-task` for an ID outside the task set, and for a complete block, each exit 2;
+  - the per-arm stop, each through a stub launch whose task-specific failures carry no instrument reason:
+    - four tasks that fail, pass, fail and pass complete all four, and `run` exits 0, since a passing block resets the count;
+    - two failing tasks followed by a third halt `run` with exit 1 and both failing blocks complete, and the stub asserts the third task never launches. The printout names each failing arm with its missing reasons and `missing_detail`;
+    - two failing tasks where the second is the task set's last also halt with exit 1, not the exit 0 a lone failed last block gets;
+    - one failing task that is the task set's last, after a passing one, ends with exit 0;
+    - the failing arm is `toolkit` in one case and both arms in another;
+    - a block with k of 2 or more, in which one arm has exactly one valid run among failures, is not a failed block;
+    - a resume after a two-in-a-row halt reruns neither failed block and goes on to the next task;
+    - with k of 2, a block where one `bare` attempt ends under `arm-leak` and the other `bare` run is valid launches no retry, lets the block's other runs finish, marks the block complete and halts `run` at its end with exit 1, naming the task, arm and reason. A resume does not rerun that block and goes on to the next task;
+    - a failing block followed by one that drift or a spend stop halts leaves the failing block complete;
+  - each halt prints its reason and exits 1, with one case each for drift, the cumulative stop, the account stop, an instrument failure and two task-specific failed blocks in a row. A campaign that completes exits 0;
+  - each block prints its progress line with the task ID, per-arm counts, each arm with no valid run and its missing reasons, the running per-arm count of dropped tasks, the block's spend and the totals against their stops;
   - a resume whose probe resolves a source repo to another account key than the manifest's exits 2 before any launch, naming the repo;
   - a resume with a changed `--fixture-git-timeout-s` passes the manifest comparison;
   - smoke gate: `run` exits 2 before any launch for an account in each of these cases:
@@ -1282,29 +1327,30 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a record that does not parse, with no traceback;
     - a record whose stored account key does not hash to its file name's digest;
   - a crash between record writes and `mark_block_complete`, then a rerun, leaves exactly one file set;
-  - a two-account resume sweeps each account root, reruns each swept block once, deletes stale attempt dirs by name, and prints the count;
+  - a two-account resume sweeps each account root and reruns each swept block once;
   - the manifest-mismatch exit, one case per field: task-set hash, arms, k, seed and model ID.
 - Spend cases:
   - a block ceiling over a stop exits 2 before any launch;
   - a campaign ceiling over the cumulative stop exits 2 without `--allow-early-stop`. With it, the campaign runs until the cumulative stop halts it before the block that would pass it;
-  - a resume after one complete block and one skipped task prints the run count of the remaining blocks, and compares the spend so far plus their ceilings with the cumulative stop. Its stop sits between that figure and the all-tasks ceiling, so only that reading passes without `--allow-early-stop`;
+  - a resume after one complete block prints the run count of the remaining blocks, and compares the spend so far plus their ceilings with the cumulative stop. Its stop sits between that figure and the all-tasks ceiling, so only that reading passes without `--allow-early-stop`;
   - the cumulative stop and the account stop each fire before the next block, and the account stop halts the whole campaign;
   - two repos with one config dir share one account's spend, and two with different config dirs do not;
   - after a crash between launches and `mark_block_complete`, the resume's stops count the lost block's spend lines when deciding whether the next block launches;
-  - resume cap charges, on a `tmp_path` store and spend file with two accounts:
-    - a pre-launch entry with an empty session ID is charged nothing;
-    - an attempt that has a spend line and still has its empty-ID entry pending gets no new line;
-    - an entry with a session ID and no spend line, returned by both account roots, gets exactly one cap charge, on the account of its task's repo;
-    - a halted block whose attempts all have spend lines gets no charge at all;
-    - the stop arithmetic after that resume matches the sum of the spend lines;
-    - the charge line holds `null` arm, run index and attempt number and the swept session ID, and the stops' own parser reads it as one charge at `--budget-cap-usd`;
-    - a second resume over the same store appends no line for that entry, and the stop arithmetic is unchanged;
-  - a torn last spend line is truncated at resume before the first append. The next appended line parses, and the sweep charges the truncated line's attempt once at the cap;
+  - a swept entry with a session ID and no spend line is swept and its block reruns, it gets no charge, the resume's stop arithmetic equals the sum of the spend lines, and the resume prints `1 launched attempts have no spend line and were not charged` with its total and ceiling lines saying they leave it out;
+  - a spend append that raises `OSError` halts `run` with exit 1 and leaves its block incomplete;
+  - an interrupt during a live launch leaves the aborted attempt's cap-charge line in the spend file when `main()` returns;
+  - a torn last spend line is truncated at resume before the first append, and the next appended line parses;
   - an unparseable line that is not the last counts at the cap;
   - the spend-file appender called from four threads, N appends each, leaves 4N lines that all parse, with the total equal to the sum.
 - CLI cases:
   - exit 2 for `run` without `--k` or `--cumulative-stop-usd`, and for a `--task-id` breaking its grammar;
-  - exit 2, with the path or name in the message and no traceback, for a `tasks` call that raises `TaskSourceError`, a `run` whose task file raises `TaskFileError`, and a `tasks --name` that raises `identifiers.InvalidIdentifierError`;
+  - exit 2, with the flag, path or name in the message and no traceback, for each of these:
+    - `tasks --max-count 0`, whose `SelectionLimits` raises `TaskSourceError`. The message holds `--max-count`, and a stubbed `mine_tasks` that fails when called is never called;
+    - a `run` whose task file raises `TaskFileError`;
+    - a `tasks --name` that raises `identifiers.InvalidIdentifierError`;
+  - limit wiring, with `mine_tasks` stubbed to capture its `limits`:
+    - `tasks` with no limit flag passes limits equal to `tasks.DEFAULT_LIMITS`;
+    - `tasks` giving all nine flags, the eight integer limits and `--rev`, distinct non-default values lands each value in its own field;
   - a `--local-dir` refusal for each condition, each exiting 2 with the target path still absent:
     - a relative path;
     - a path through a symlink;
@@ -1319,17 +1365,12 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - an interrupt calls `abort_launches` and prints the resume command with its wait and its `TMPDIR` line.
 - `summarize` cases, on synthetic records, each asserting printed values parsed back as numbers:
   - the ratio-of-sums primary;
-  - a task with a valid run in one arm only, left out of the pairs;
+  - the line under the paired difference, on records holding one paired task, one task with no valid `toolkit` run, two with no valid `bare` run, one with neither and one with no non-test code line in one arm: `paired 1 of 6 complete tasks`, and the four exclusion counts 1, 2, 1 and 1, each parsed back as a number and each with its missing reasons;
   - a task with no non-test code line in one arm, left out of the pairs and counted in the zero-code-line tally;
-  - the base-density split with an even task count, with a tie at the median, and with a single task;
-  - a paired task with a null base density, kept in the primary difference, in neither half, and counted;
-  - spend by account and each account's cap-charged share, from a synthetic spend file;
+  - spend by account, from a synthetic spend file, with an unparseable line counted at the cap against every account;
   - a partial incomplete block's records on disk, left out of every figure and counted as incomplete;
-  - a skipped task, listed with its recorded missing reasons and counted;
   - one paired task, printed with no interval;
-  - the per-repo breakdown by the task ID's first part;
-  - the block-length histogram at blocks of 1, 2, 3, 4 and 5 lines;
-  - per arm, the permission-denial count, the unclassified-line share, the `ast.parse` rejection count, the mean first-turn prompt size over non-null runs, and the three tallies;
+  - per arm, the Python docstring lines per 100 added code lines, the permission-denial count, the unclassified-line share, the `ast.parse` rejection count, and the three tallies;
   - the mixed-environment exit.
 - `smoke` cases:
   - `instrument: ok`, with its smoke-pass record written, naming the arms it validated;
@@ -1352,8 +1393,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - a `toolkit` run whose listed Read was denied fails `read-grant-denied`, with a hook denial and a permission-flow denial each counted (row 48);
     - a denied Read of an unlisted toolkit file prints by path and fails nothing;
     - a `bare` run's denied Read of a listed path fails `arm-leak`, never `read-grant-denied`;
-  - the printed ceiling equals `campaign_cost_ceiling(1, 2, 1, ...)`'s `all_retried_usd`, printed before any launch;
-  - a config-dir file that grew, listed by name.
+  - the printed ceiling equals `campaign_cost_ceiling(1, 2, 1, ...)`'s `all_retried_usd`, printed before any launch.
 
 **Phase 5a — test selection for the first PR's files (first PR).** Verify: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py` and `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/`.
 - `claude/.claude/scripts/select-tests.py`:
@@ -1372,21 +1412,21 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 
 **Phase 5b — the rest of test selection, and docs (second PR).** Verify: as Phase 5a.
 - `claude/.claude/scripts/select-tests.py`:
-  - add `REPLAY_BENCH_RUNNER` and `REPLAY_BENCH_ARMS_TEST = "evals/test_replay_bench_arms.py"`;
-  - add the runner to Phase 5a's `DOMAIN_RULES` row, and to Phase 5a's standalone row, since `run_replay_bench.py` joins the guards' scanned set;
-  - add `REPLAY_BENCH_ARMS_TEST` to the `AGENTS_DIR` cross-domain row's targets at `:876-879` (row 80);
-  - add a standalone row that selects `SELECT_TESTS_TEST_PATH` for a change to `REPLAY_BENCH_ARMS_TEST`, beside `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`'s at `:832` (row 80);
-  - add a header-comment entry for that standalone row, like the one at `:812-818`.
+  - add `REPLAY_BENCH_RUNNER`;
+  - add the runner to Phase 5a's `DOMAIN_RULES` row, and to Phase 5a's standalone row, since `run_replay_bench.py` joins the guards' scanned set. `evals/test_replay_bench_arms.py` reads no real agents directory, so it needs no `AGENTS_DIR` wiring (row 158).
 - `claude/.claude/scripts/tests/test_select_tests.py`:
   - add a case for the replay runner;
-  - add `REPLAY_BENCH_RUNNER` and `REPLAY_BENCH_ARMS_TEST` to `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`;
-  - add `REPLAY_BENCH_ARMS_TEST` to `_FILE_TARGETS`;
-  - add `REPLAY_BENCH_ARMS_TEST`, with its real-file reader's test name, to `_HAND_AUDITED_AGENTS_DIR_READERS` (row 80);
+  - add `REPLAY_BENCH_RUNNER` to `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`;
   - add `run_replay_bench.py` to the import-closure test's seed list, to the no-relative-import test, and to that test's scanned-set assertion;
   - add a case where a change to `run_replay_bench.py` selects `SELECT_TESTS_TEST_PATH`.
 - `evals/README.md`: a "Replay bench" section after "Review bench". It covers:
   - what the runner measures, and usage for the five subcommands;
-  - `run`'s exit codes, its per-block progress line, and `--skip-task` for a task that halts again;
+  - `run`'s exit codes, its per-block progress line, and the per-arm stop:
+    - the first attempt that ends under an instrument reason halts `run` at its block's end, with no retry and the block complete, so at most that task is lost and the way forward is to fix the cause and resume;
+    - a task-specific failed block is marked complete and its task is left out of the pairs;
+    - two task-specific failed blocks in a row halt `run`, and a resume is the way forward: it goes on past both, and those two tasks are lost from the sample. Exit 1 then wins over the exit 0 a lone failed last block gets;
+    - a persistent failure meets the pre-block spend stops and the two-in-a-row halt;
+    - two residuals: a usage-limit, auth or overload event that fails every run of two blocks drops two tasks no agent really tried, and failures on alternating tasks never make two in a row, so only `--cumulative-stop-usd` bounds them;
   - the account preflight with its readiness check, `--direnv-timeout-s` and the `direnv exec <repo> true` hint, the allowlisted launch environment, and the refusal of a `PATH` with an empty or relative entry;
   - that `preflight` names every variable the launch drops, ambient ones included, so the engineer reads that list per account before the first `run`;
   - that `HOME` passes, so file-based credentials such as `~/.config/gh`, `~/.aws` and `~/.ssh` are not routed by account;
@@ -1416,35 +1456,37 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - under a rebase or merge-commit workflow, an outside branch can carry a trusted email;
     - the delimiter skip stops no injected instruction that does not need to close its block;
   - that a machine with a managed-policy `CLAUDE.md`, or an account whose `CLAUDE.md` includes another file, fails every `bare` run;
-  - the account files a replay adds to and the cleanup leaves: `.code-writer-self-review.log`, `.code-writer-self-review.d` and `.session-config-keys-log.jsonl` (row 79);
+  - the account files a replay adds to and the cleanup leaves: `.code-writer-self-review.log`, `.code-writer-self-review.d` and `.session-config-keys-log.jsonl` (row 79), and one `sessions/<pid>` file per launch, as every Claude Code session leaves (row 154). For four hours after a campaign, `post-crash-sessions.py` may list those replay attempts;
+  - that after each hard kill, such as SIGKILL, an out-of-memory kill or a power loss, up to one launched attempt per worker thread (`run_skill_evals.DEFAULT_WORKERS`) may go uncharged. The undercount adds up over kills, each adding at most that many times the per-run cap, a nominal figure, and a resume prints how many swept attempts it did not charge (row 155);
   - where `.local/` lives, that removing a worktree deletes it, and `--local-dir`;
   - that a resume needs the same `TMPDIR` as the run it resumes;
   - that results are not a publication instrument, because the runner refuses no wider corpus (row 10);
   - that it needs Python 3.12 or newer, git 2.32 or newer and Claude Code 2.1.271 or newer, run through `scripts/venv-run.sh python3`;
   - a pointer to this plan for the design.
 
-The second PR's files are those of Phases 3, 4 and 5b. This plan estimates them at about 6,550 lines, and the second PR restates the figure when it edits this file. That is about 250 above the 6,300 row 141 accepted, for the round 2 review's test cases, the security fixes and the exclude note.
+The second PR's files are those of Phases 3, 4 and 5b. This plan estimates them at about 6,000 lines, and the second PR restates the figure when it edits this file. The figure is an estimate, not a count: it takes about 15 lines per listed test case plus a share of the code each case exercises. That is about 300 below the 6,300 row 141 accepted. It drops by about 60 more when Verification step 1b finds no trigger field (row 146).
 
-Projected diff: about 3,620 lines for the first PR, measured with `git diff --numstat origin/main` over every file but this plan after the code-review fixes (3,589 added, 34 removed). The parts:
+Projected diff: about 3,790 lines for the first PR as merged (3,755 added, 36 removed). `git show --numstat 330a03a2` measures it over every file but this plan, after the code-review fixes. The parts:
 - the new `replay_bench` files and their tests hold most of it;
 - `select-tests.py` and its test, about 130;
 - `fixture_repo.py`, 40;
 - `evals/test_review_bench_fixtures.py`, about 66;
+- `evals/review_bench/local_git.py`, 5;
 - `.gitignore`, 3.
 
-That is about 730 above the 2,890 row 141 accepted. The engineer's earlier "Proceed anyway" on this plan's size is on record in row 110.
+That is about 900 above the 2,890 row 141 accepted. The engineer's earlier "Proceed anyway" on this plan's size is on record in row 110.
 
 ## Verification
 
 Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
 
-1. Three manual probes. Step 1a has run, step 1c gates the first PR's last dispatch, and step 1b gates the second PR's Phase 3. None gates the first PR's merge.
+1. Three manual probes. Steps 1a and 1c have run, and step 1b gates the second PR's Phase 3.
    - **1a, already run.** It ran three things, and its results stand in rows 16, 18, 19, 20, 26, 53, 76, 88, 94 and 106 and set the Fixture defaults:
      - `claude -p` once per arm with the Launch argv, the `env -i` prefix and the `--settings` JSON, on a one-line edit task in a scratch repo;
      - `direnv exec <dir> pwd` from `/tmp`;
      - four concurrent `build_task_fixture` builds per synthetic tree.
    - Step 1a hit two stop conditions, a missing subagent `CLAUDE.md` line and a rule load in `bare`, and so forced this revision.
-   - **1c**, local and unpaid, runs on this branch before the first PR's last dispatch. It times two synthetic source repos under the system temp dir, each on its own, with four concurrent `build_task_fixture` builds through `scripts/venv-run.sh python3`:
+   - **1c**, local and unpaid, ran on the first PR's branch before that PR's last dispatch. It timed two synthetic source repos under the system temp dir, each on its own, with four concurrent `build_task_fixture` builds through `scripts/venv-run.sh python3`:
      - 12,500 text files totaling 100 MB, the corner the bounds admit;
      - 17,500 text files totaling 100 MB.
    - The harness passes `timeout_s=600`, ten times the 60 s stop line, so a slow build records its time instead of timing out. The figure is a judgment.
@@ -1469,7 +1511,7 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
        - the body's real share, `toolkit`'s first-turn size minus `probe-inherit`'s, against the body term (row 138). Both inherit the same `CLAUDE.md` and rules and differ only in the agent body;
        - the inherited instructions' real share, `probe-inherit`'s size minus `bare`'s, against the margin.
      - Save one dispatcher line, one subagent `path_glob_match` line, and one subagent transcript's first assistant entry for Phase 3's fixtures. Keep their key structure and replace every value with a synthetic one: paths, session and message IDs, `transcript_path`, `cwd`, the CLI version and every `usage` count.
-     - Clean up: delete the three scratch repos, the script's directory, the three runs' session stores under `<config-dir>/projects/`, and each `<config-dir>/sessions/` file whose first line is one of the three session IDs. Row 79's appended account files stay, as accepted residue.
+     - Clean up: delete the three scratch repos, the script's directory, and the three runs' session stores under `<config-dir>/projects/`. Row 79's appended account files and the three runs' `sessions/` files stay, as accepted residue (row 154).
    - Stop and re-plan with the engineer before Phase 3 when any of these holds:
      - the `toolkit` run shows no Read of the `.py` file that ran, so the control went unexercised;
      - the `toolkit` run read it and logs no subagent `path_glob_match` load of an account rule;
@@ -1512,9 +1554,9 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
      - each arm's valid run has a non-empty diff;
      - both arms observed the same model;
      - each run's fixture-build seconds are under a third of the `--fixture-git-timeout-s` in force. A smoke block builds two fixtures at once, so this holds at two-way concurrency, while the timeout was derived at four-way;
-     - the engineer recognizes every recorded Bash command, out-of-fixture path and out-of-session path;
-     - every name `smoke` reports under the config dir, and every file it reports as grown, is one of three things: a file the cleanup already removes, one of row 79's known appenders, or a file added to the cleanup before any `run`.
-   - In their own terminal, the engineer counts the keys under the top-level `projects` object of the account's `.claude.json` before and after that `smoke`, and notes only whether the count grew. A growth is an open question for the engineer before any `run`, and the runner never edits `.claude.json`.
+     - the engineer recognizes every recorded Bash command, out-of-fixture path and out-of-session path.
+   - In their own terminal, before and after that `smoke`, the engineer lists the account config dir two levels deep, outside `projects/` and `sessions/`, with each file's size, and reads names only, never a file's contents. Every name that appeared and every file that grew is either one of row 79's known appenders or a file added to the cleanup before any `run`.
+   - Beside that listing, the engineer counts the keys under the top-level `projects` object of the account's `.claude.json` before and after that `smoke`, and notes only whether the count grew. A growth is an open question for the engineer before any `run`, and the runner never edits `.claude.json`.
    - A `run` on any other account first needs one passing `smoke` on a task from that account, and `run` refuses otherwise.
    - On a failed smoke, stop before any `run` and bring the failing premise to the engineer: row 16, 18, 19, 20, 26, 31, 32, 37, 70, 88, 106, 115, 117, 120, 132, 138, 145 or 146.
 
@@ -1527,8 +1569,13 @@ Each step names its PR. Steps 2, 3 and 5 run for each PR over its own files.
 - Source repos that are not on this machine (row 6).
 - A headless main-session arm, the review-and-ship loop, as a further arm. It can be added later as arm data. Until it exists, a null result cannot show the verbosity is built-in (row 62).
 - Containing a replay agent, by a sandbox, a credential deny list or a tool-deny set. Steered agents are out of scope for this runner (row 47), and the README states the residual risk (row 45).
-- Writing each run's record as it finishes, so that a crash loses no paid run's record. A resumed block reruns whole, so per-run records would need a drift rule of their own. The spend file already keeps a lost block's cost.
-- Deleting the rows that replay sessions add to the account's shared logs (row 79). The README lists them as accepted residue.
+- Writing each run's record as it finishes, so that a crash loses no paid run's record. A resumed block reruns whole, so per-run records would need a drift rule of their own. The spend file already keeps the cost of a lost block's ended attempts.
+- Deleting the rows that replay sessions add to the account's shared logs (row 79), or the `sessions/` file each launch leaves (row 154). `post-crash-sessions.py` lists those files for four hours after a campaign. The README lists both as accepted residue.
+- Charging, at resume, a launched attempt that a hard kill left with no spend line. After each hard kill, up to one such attempt per worker thread (`run_skill_evals.DEFAULT_WORKERS`) stays uncharged. The undercount adds up over kills, each adding at most that many times the nominal per-run cap (row 65). The resume prints the count, and the README lists this as accepted residue (row 155).
+- Telling a usage-limit, auth or overload event apart from a task-specific failure. Such an event that fails every run of two blocks marks two tasks no agent really tried complete and drops them, and how `claude -p` behaves at a usage limit is unverified (row 153).
+- A stop for failures on alternating tasks, which never make two failed blocks in a row. Only `--cumulative-stop-usd` bounds them (row 153).
+- `summarize` figures beyond the primary outcome, the docstring outcome and the diagnostics: comment-plus-docstring lines per added code line, blocks per 100 added code lines, mean lines and words per block, the block-length histogram, the Python trailing-comment count, the base-density split (row 64), the mean first-turn prompt size, the per-repo breakdown, and each account's cap-charged share of spend. The records keep what each needs, so a later change adds any of them with no rerun (row 157).
+- A `smoke` listing of the account config dir. Verification step 6 has the engineer take it by hand.
 - A login check in preflight. Whether the installed CLI has a login-status command is unchecked, so `smoke` is the first check that authenticates (row 70).
 - Moving the bench's shared pieces (validity, run store, environment record) into a common module. That would end this runner's reads of names with a leading underscore in `review_bench.runner` and `measure_subagent_model_resolution`. It is a separate refactor (Axis 4). Until then, `select-tests.py` reruns the replay tests on every review-bench change (row 39).
 - Changing `_LOCAL_GIT_TIMEOUT_S` for the review bench's own callers. The replay runner passes its own limit through the new `timeout_s` keyword (row 87).
