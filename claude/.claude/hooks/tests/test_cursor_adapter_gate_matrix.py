@@ -507,6 +507,7 @@ DELIVERED_GATE_ARMS = frozenset(
         "PreToolUse|Bash|deny-reviewer-tree-mutation.sh",
         "PreToolUse|Bash|deny-repo-relocation.sh",
         "PreToolUse|Bash|deny-network-installs.sh",
+        "PreToolUse|Bash|deny-default-branch-push.sh",
         "PreToolUse|Edit|Write|MultiEdit|require-plan-review.sh",
         "PreToolUse|Edit|Write|MultiEdit|require-memory-skill.sh",
         "PreToolUse|Edit|Write|MultiEdit|deny-reviewer-tree-mutation.sh",
@@ -788,6 +789,9 @@ TRIGGERS: dict[str, tuple[Trigger, ...]] = {
     ),
     "deny-credential-bash-reads.sh": (
         Trigger("cat-credentials", "Shell", _const(_bash("cat /foo/credentials.json")), _const(_bash("cat /foo/notes.txt"))),
+    ),
+    "deny-default-branch-push.sh": (
+        Trigger("push-main", "Shell", _const(_bash("git push origin main")), _const(_bash("git push origin feature"))),
     ),
     "deny-network-installs.sh": (
         Trigger("npm-install", "Shell", _const(_bash("npm install lodash")), _const(_bash("npm run build"))),
