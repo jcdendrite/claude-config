@@ -539,8 +539,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Migration:**
     1. Run `python3 --version` from the shell that launches Claude Code, and also from inside any project that pins its own version.
     2. If it is below 3.14, install Python 3.14 or newer so its `python3` resolves first on PATH (`pyenv install`, then `pyenv global` for pyenv). Where a project's own pin is the one below 3.14, raise or remove that pin instead.
-    3. Restart Claude Code from that shell.
-    4. Re-run `./install.sh`.
+    3. Re-run `./install.sh`.
+    4. Restart Claude Code from that shell.
 - **git older than 2.43 is no longer supported: install git 2.43 or newer first on the PATH Claude Code starts with.**
   - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`). `install.sh` refuses git 2.40 through 2.42 although the code runs on them.
   - `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read.

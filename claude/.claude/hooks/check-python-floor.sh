@@ -26,6 +26,7 @@ payload_source=$(printf '%s\n' "$INPUT" \
   | _lib_jq -r 'select(.hook_event_name == "SessionStart" and (.source == "startup" or .source == "resume")) | .source') || exit 0
 [ -n "$payload_source" ] || exit 0
 
+# A chosen ceiling, not a measured shim cold start.
 python3_probe_cap_seconds=2
 python3_floor_status=0
 python3_found_version=$(_python3_floor_status _lib_capped_for "$python3_probe_cap_seconds") || python3_floor_status=$?

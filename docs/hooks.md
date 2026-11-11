@@ -455,7 +455,7 @@ README.md's Requirements section states the floor, and `_config.sh` holds it. No
 The notice says the hooks are unsupported below the floor, not that they fail, because nothing keeps the helpers running on older minors.
 
 To recover:
-1. Run `env python3 --version` from the shell that launches Claude Code, in the directory the notice appeared in. If it prints the floor or newer, `python3` was only slow to answer and nothing needs installing.
+1. Run `env python3 --version` from the shell that launches Claude Code, in the directory the notice appeared in. If it prints the floor or newer, `python3` was only slow to answer and nothing needs installing. If `python3` is correct but persistently slow, the registration switch in the `check-python-floor.sh` bullet of `docs/hooks.md` § "Utility hooks" stops the repeat.
 2. Install Python at the floor or newer from a separate terminal.
 3. Put its `python3` first on the PATH Claude Code starts with (`pyenv global` for pyenv). A project whose own `.python-version` pins a version below the floor is expected to override `pyenv global`, so the notice repeats at each startup and resume until that pin resolves to the floor or newer.
 4. Re-run the step 1 command to confirm.
@@ -478,14 +478,16 @@ The hook prints nothing in these cases, although `python3` may be missing or bel
 
 With neither `timeout` nor `gtimeout` on PATH, the 2-second cap is unavailable and the probe runs uncapped. A missing or below-floor `python3` still prints the notice. A hung `python3` or `jq` stalls session start, for up to the registration's 10-second timeout, and the cancellation case above then applies.
 
-What each stowed hook that runs `python3` does when its helper exits nonzero. This list does not cover the skill-management plugin's hooks:
+What each other stowed hook that runs `python3`, directly or through a shared helper, does when that `python3` call exits nonzero. This list does not cover the skill-management plugin's hooks:
 - `require-worktree-for-git-writes.sh` denies every command that reaches its parser, reads included. Where worktree enforcement is active, a command naming `git` reaches the parser from a main-tree session. From a linked worktree it does so when the command holds `cd`, `-C`, `(` or a backtick, when the worktree lock is absent, or when the collision guard denies. With no `python3` on PATH it denies with text naming the recovery routes.
-- The hooks that call `_lib_command_words` deny, with a clause naming `python3` among the failed tools.
+- The hooks that call `_lib_command_words` deny, with a clause naming `python3` among the failed tools, only after `xargs` cannot split the command (see `claude/.claude/hooks/_lib.sh` `_lib_command_words`), not for every commit or PR command.
 - `send-back-skipped-self-review.sh` allows and logs.
 - `ask-new-dependency-disclosure.sh` allows silently for an absent `python3` or one that fails `python3 -c ''`. For any other `python3` whose helper fails, it degrades to a generic ask.
 - `nudge-error-mode-analysis.sh` stays silent.
 
-Scripts run `python3` too, for example `marker.sh clear-stale`, and the floor covers them.
+The project-plugin reconciler's lock probe also runs `python3`, and `docs/hooks.md` § "Utility hooks" states the consequence in its `lock_unavailable` row.
+
+Scripts such as `marker.sh clear-stale` also run `python3`. The floor applies to those scripts, and this section does not list their below-floor behavior.
 
 ## Gate deadlock recovery
 
