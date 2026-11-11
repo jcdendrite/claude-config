@@ -4,8 +4,8 @@ single-commit fixture a task runs in.
 A task replays one commit: the fixture holds the commit's first-parent tree, the
 brief is the commit message plus the merged commits' subjects for a merge commit, and
 `reference_metrics` classifies what the commit itself added. Every git call here runs under
-`local_git.isolated_git_environment()`. Mining calls carry no timeout, since the command is
-interactive and Ctrl-C ends a hung call. `build_task_fixture` bounds its calls by the caller's
+`local_git.isolated_git_environment()`. Mining calls carry no timeout, since a person
+runs mining by hand and Ctrl-C ends a hung call. `build_task_fixture` bounds its calls by the caller's
 `timeout_s`.
 """
 from __future__ import annotations
@@ -238,8 +238,11 @@ def write_task_set(tasks_dir: Path, name: str, tasks: Sequence[ReplayTask]) -> P
 
 
 def read_task_set(tasks_dir: Path, name: str) -> list[ReplayTask]:
-    """Raises TaskFileError naming the file for unparseable JSON, a task that breaks the task grammar,
-    or two tasks that share an ID."""
+    """Raises TaskFileError, naming the file, for:
+    - An unreadable file or unparseable JSON.
+    - A top-level value that is not a list, or an element that is not an object.
+    - A task that breaks the task grammar.
+    - Two tasks that share an ID."""
     path = task_set_path(tasks_dir, name)
     try:
         raw_tasks = json.loads(path.read_text())
@@ -505,6 +508,8 @@ def _base_density_entries(changed_paths: Sequence[str], base_entries: Sequence[T
 
 
 def _base_density(density_entries: Sequence[TreeEntry], base_blobs: Mapping[str, bytes]) -> float | None:
+    # A base `.py` file that `ast.parse` rejects counts its docstring lines as code, which lowers density.
+    # An undecodable base file adds nothing to either side of the ratio.
     words = code_lines = 0
     for entry in density_entries:
         data = base_blobs[entry.oid]
@@ -609,7 +614,7 @@ def _read_log(repo: Path, limits: SelectionLimits) -> list[_LogRecord]:
         raise TaskSourceError(str(exc)) from exc
     try:
         output = _git(
-            repo, "log", "--first-parent", "--no-use-mailmap", "-z", f"--format={_GIT_LOG_FORMAT}",
+            repo, "log", "--first-parent", "--no-use-mailmap", "--no-show-signature", "-z", f"--format={_GIT_LOG_FORMAT}",
             "-n", str(limits.max_count), limits.rev, "--",
         )
     except subprocess.CalledProcessError as exc:
@@ -643,7 +648,8 @@ def _merged_commits(repo: Path, record: _LogRecord) -> list[tuple[str, str]]:
     TaskSourceError for a control character in an author email. A subject is read as it is."""
     first_parent, *merged_parents = record.parents
     output = _git(
-        repo, "log", "--no-use-mailmap", "-z", f"--format={_MERGED_COMMIT_LOG_FORMAT}", *merged_parents, f"^{first_parent}",
+        repo, "log", "--no-use-mailmap", "--no-show-signature", "-z", f"--format={_MERGED_COMMIT_LOG_FORMAT}",
+        *merged_parents, f"^{first_parent}",
     )
     merged = []
     for author_email, subject in _log_fields(repo, output, _MERGED_COMMIT_LOG_FIELD_COUNT):
@@ -656,6 +662,8 @@ def _measure_change(
     repo: Path, base_commit: str, commit: str, changed_paths: Sequence[str],
 ) -> CommentMetrics | SkipReason:
     """The classifier run over the commit's diff of `changed_paths`, or why the diff cannot be measured."""
+    # The binary skip comes from `--numstat`, which reads attributes from the source repo's checked-out work tree, so
+    # re-mining from another checked-out branch may skip a different set.
     numstat = _git(
         repo, "--literal-pathspecs", "diff", "--numstat", "-z", *_STABLE_DIFF_ARGS, base_commit, commit,
         "--", *changed_paths,
@@ -790,6 +798,10 @@ def mine_tasks(
     - One commit examined from two source repos, such as a linked worktree and its main checkout
       or a clone and its origin. The task ID hashes the repo path, so the commit would enter the
       task set twice under two IDs.
+    - An invalid or unknown `limits.rev`, or a `git log` that fails.
+    - A control character in an author, committer or merged-author email.
+    - A partial clone, or a repo whose `info/attributes` sets an export attribute, as
+      `resolve_source_repo` refuses.
     - A commit whose git read or parse fails, naming the repo and commit."""
     if not trusted_authors or "" in trusted_authors:
         raise TaskSourceError("--trusted-author must name at least one non-empty author email")

@@ -817,7 +817,7 @@ def _extraction_refuses(archive: bytes, dest_dir: Path) -> bool:
     return False
 
 
-# Each row is a name, then its (path, link target or None) members, then whether both must refuse.
+# Each row is a name, then its (path, link target or None) member, then whether both must refuse.
 _SINGLE_MEMBER_PARITY_ROWS = [
     ("claude-root-symlink", (".claude", "x"), True),
     ("claude-case-variant-symlink", (".Claude", "x"), True),
@@ -1087,7 +1087,7 @@ class TestLogFieldFraming:
 
 
 class TestRepoLocalDiffConfig:
-    """`isolated_git_environment` strips only global and system config, so a repo's own diff settings still apply."""
+    """`isolated_git_environment` leaves a repository's own `.git/config` in force, so a repo-local diff setting still applies."""
 
     @pytest.mark.parametrize("setting", ["diff.noprefix", "diff.mnemonicPrefix"])
     def test_a_repo_local_diff_prefix_setting_leaves_the_measured_metrics_unchanged(self, tmp_path, setting):

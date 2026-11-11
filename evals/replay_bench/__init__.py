@@ -1,1 +1,2 @@
-"""Replay bench (evals/replay_bench): counts the comments and docstrings agents write when replaying past commits."""
+"""Replay bench (evals/replay_bench): mines past commits into replay tasks and counts the comments and docstrings
+a change adds."""

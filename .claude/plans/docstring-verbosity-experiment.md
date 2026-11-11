@@ -772,6 +772,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - in a campaign, a broken exclude fails `arm-leak` only on the `bare` runs that read a rule-matching file. The per-arm stop halts only a block with no valid `bare` run, so the campaign can go on with a `bare` sample filtered by what it touched, and a clean retry of a leaking attempt leaves no record of the leak. `summarize`'s counts by missing reason show the `arm-leak` runs that ended missing.
 146. [unverified] A `path_glob_match` payload names the file that triggered the load. The relayed hooks-page excerpt names no such field. Verification step 1b records whether the probe's lines carry one and under what key. Without one, `smoke` prints only the residual sentence.
 147. [engineer-verified: "Add file to Critical files"] Asked whether to keep the code-review round 5 move of the shared-default timeout case and the `build_single_commit_repo` cases into `evals/test_review_bench_fixtures.py`, which Critical files had not listed, the engineer selected this label. Critical files now lists the file.
+148. [engineer-verified: "Fix docs and log pin (Recommended)"] Asked how to treat the code-review round 9 findings, one of which needs `evals/review_bench/local_git.py` (not in Critical files), the engineer selected this label. Critical files now lists the file for the one docstring sentence only. [unverified] The option description was the session's proposal: it also covered the comment fixes and `--no-show-signature` on the two `git log` calls.
 
 **Mechanisms:**
 - **M1. Task mining from first-parent commits of top-level repos, with pruned paths dropped, a trusted-author list over raw identities, delimiter skips, base-tree size and entry-count bounds read from a NUL-delimited tree listing, a `missing-object` skip, an up-front skip of base trees the fixture cannot extract or whose archive would drop or rewrite a path, a partial-clone refusal, merge-commit briefs, reference metrics and a nullable base density.** anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
@@ -908,6 +909,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 - `evals/test_review_bench_fixtures.py`: add cases for `fixture_repo.py`, which belong beside that module's other tests (row 147). Make no other change. The cases:
   - the shared default, through a `subprocess.run` spy: `fixture_repo._run_git`, `_extract_commit_tree` and `_commit_snapshot`, each called with no `timeout_s`, pass `timeout=_LOCAL_GIT_TIMEOUT_S`, so every review-bench caller keeps its bound (row 87);
   - the `build_single_commit_repo` cases.
+- `evals/review_bench/local_git.py`: correct the module docstring's sentence about the miners, which says their git calls do not use `isolated_git_environment`. Say that the review bench's `mine_szz`, `mine_pr_comments` and `mine_review_rounds` do not use it and that the replay miner's git calls do (row 148). The reason for the three is that a fetch there may need the engineer's credential configuration. Make no other change.
 - `evals/replay_bench/tasks.py` (new):
   - `ReplayTask` with `to_dict` and `from_dict`;
   - task-set read and write through `defects.atomic_write_text`:
@@ -944,7 +946,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
 - `evals/replay_bench/tasks.py` amendments, in the first PR's last dispatch:
   - `SelectionLimits.max_base_entries` defaults to 12,500 (Fixture), under a one-line comment citing this plan's Fixture section as its basis. Any test that pins 100,000 changes with it;
   - the partial-clone refusal and the `info/attributes` refusal, each a `TaskSourceError` naming the path (Tasks);
-  - the `export-attributes` skip, over the `.gitattributes` blobs the existing `git ls-tree` listing finds, read in the existing `git cat-file --batch` call (Tasks);
+  - the `export-attributes` skip, over the `.gitattributes` blobs the existing `git ls-tree` listing finds, read in the existing `git cat-file --batch` call (Tasks).
 - `evals/test_replay_bench_tasks.py` (new). It builds every repository under `tmp_path`. Cases:
   - a qualifying commit;
   - a commit that also edits a nested `CLAUDE.md`, kept with that path out of its changed list and its metrics;
@@ -1025,7 +1027,8 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - a source repo whose `info/attributes` holds `* export-ignore` raises `TaskSourceError` naming the path;
   - skipped as `export-attributes`: a root `.gitattributes` holding `tests export-ignore`, a nested `sub/.gitattributes` holding `*.txt export-subst`, and one holding only a commented `# export-ignore` line, pinned as the deliberate over-skip;
   - kept: a `.gitattributes` holding only `*.py text eol=lf`;
-  - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path;
+  - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path.
+
 **Phase 3 — run checks (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py`.
 - `evals/replay_bench/checks.py` (new):
   - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;

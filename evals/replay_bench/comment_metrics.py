@@ -52,7 +52,8 @@ _EXTENSIONS_BY_SYNTAX: dict[CommentSyntax, tuple[str, ...]] = {
     DASH_SYNTAX: ("sql", "lua", "hs"),
 }
 
-# Extend these tables to add a language. Python is separate: it classifies through `tokenize`.
+# Extend these tables to add a language. Python is separate: it classifies comments through `tokenize` and docstrings through
+# `mine_szz._python_docstring_lines`.
 COMMENT_SYNTAX_BY_EXTENSION: dict[str, CommentSyntax] = {
     extension: syntax for syntax, extensions in _EXTENSIONS_BY_SYNTAX.items() for extension in extensions
 }
@@ -63,7 +64,7 @@ PROSE_EXTENSIONS = frozenset({"md", "markdown", "rst", "txt"})
 TEST_PATH_SEGMENTS = frozenset({"test", "tests", "__tests__", "spec"})
 TEST_BASENAME_PATTERNS = ("test_*", "*_test.*", "*.test.*", "*.spec.*", "conftest.py")
 
-# Modes of a `git diff --raw` entry's new side.
+# Modes of a `git diff --raw` entry's side.
 REGULAR_FILE_MODES = frozenset({"100644", "100755"})
 NON_FILE_MODES = frozenset({"120000", "160000"})
 
