@@ -31,8 +31,13 @@ from helpers import (
 
 from .conftest import requires_jq
 from .test_bash_floor import HOOKS_DOC_PYTHON_VERSION, README_REQUIREMENTS, SUB_FLOOR_BASH, requires_sub_floor_bash
-from .test_git_floor import _output_of, _write_executable, python_floor_fields
-from .test_python_floor import _link_real_python3, _write_python3_stub
+from .test_git_floor import _output_of, _write_executable
+from .test_python_floor import (
+    _floor_version,
+    _link_real_python3,
+    _stub_output_and_dotted_version,
+    _write_python3_stub,
+)
 
 HOOK = HOOKS_DIR / "check-python-floor.sh"
 REGISTERED_COMMAND = "~/.claude/hooks/check-python-floor.sh"
@@ -56,21 +61,9 @@ REPORT_ONLY_DIRECTIVE = "does nothing else about this unless the engineer asks"
 ENGINEER_IMPERATIVES = ("Install Python", "Run `env python3")
 # Parametrize values stay lazy so a failed floor read fails one test, not collection.
 BELOW_FLOOR_AND_NO_VERSION_STUB_BODIES = [
-    pytest.param(lambda: f"echo '{_version_relative_to_floor(-1)[0]}'", id="below-the-floor"),
+    pytest.param(lambda: f"echo '{_stub_output_and_dotted_version(-1)[0]}'", id="below-the-floor"),
     pytest.param(lambda: "exit 1", id="no-readable-version"),
 ]
-
-
-def _floor_version() -> str:
-    major, minor = python_floor_fields()
-    return f"{major}.{minor}"
-
-
-def _version_relative_to_floor(minor_offset: int) -> tuple[str, str]:
-    """The probe's `<major> <minor>` stub output and the `<major>.<minor>` notice text, `minor_offset` minors from the floor."""
-    major, minor = python_floor_fields()
-    shifted_minor = int(minor) + minor_offset
-    return f"{major} {shifted_minor}", f"{major}.{shifted_minor}"
 
 
 def _session_start_payload(**overrides: object) -> dict:
@@ -186,7 +179,7 @@ class TestAtOrAboveTheFloor:
         [pytest.param(0, id="exactly-the-floor"), pytest.param(1, id="minor-above")],
     )
     def test_stub_at_or_above_the_floor_prints_nothing(self, rig: _HookRig, minor_offset: int) -> None:
-        reported, _ = _version_relative_to_floor(minor_offset)
+        reported, _ = _stub_output_and_dotted_version(minor_offset)
         rig.write_python3_stub(f"echo '{reported}'")
 
         result = rig.run(_session_start_payload())
@@ -206,7 +199,7 @@ class TestAtOrAboveTheFloor:
 class TestBelowTheFloor:
     @pytest.mark.parametrize("source", REGISTERED_SOURCES)
     def test_notice_names_the_found_version_the_floor_and_the_readme(self, rig: _HookRig, source: str) -> None:
-        reported, found_version = _version_relative_to_floor(-1)
+        reported, found_version = _stub_output_and_dotted_version(-1)
         rig.write_python3_stub(f"echo '{reported}'")
 
         result = rig.run(_session_start_payload(source=source))
@@ -251,7 +244,7 @@ class TestBelowTheFloor:
             assert sentence.rstrip(".").lower() not in agent_text.lower(), agent_text
 
     def test_a_junk_second_line_does_not_reach_the_notice(self, rig: _HookRig) -> None:
-        reported, found_version = _version_relative_to_floor(-1)
+        reported, found_version = _stub_output_and_dotted_version(-1)
         rig.write_python3_stub(f"echo '{reported}'; echo 'ZQXJ line two'")
 
         result = rig.run(_session_start_payload())
@@ -266,7 +259,7 @@ class TestWithoutTimeoutOrGtimeout:
     """Without a capping binary the probe runs uncapped, so the hook must not depend on `timeout` to run it."""
 
     def test_a_below_floor_python3_prints_the_notice_naming_the_found_version(self, rig_without_timeout: _HookRig) -> None:
-        reported, found_version = _version_relative_to_floor(-1)
+        reported, found_version = _stub_output_and_dotted_version(-1)
         rig_without_timeout.write_python3_stub(f"echo '{reported}'")
 
         result = rig_without_timeout.run(_session_start_payload())
@@ -276,7 +269,7 @@ class TestWithoutTimeoutOrGtimeout:
         assert rig_without_timeout.python3_calls() != [], "the probe never ran"
 
     def test_an_at_floor_python3_prints_nothing(self, rig_without_timeout: _HookRig) -> None:
-        reported, _ = _version_relative_to_floor(0)
+        reported, _ = _stub_output_and_dotted_version(0)
         rig_without_timeout.write_python3_stub(f"echo '{reported}'")
 
         result = rig_without_timeout.run(_session_start_payload())
@@ -330,7 +323,7 @@ class TestProbeWorkingDirectory:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         probe_cwd_record = tmp_path / "probe-cwd"
-        reported, _ = _version_relative_to_floor(0)
+        reported, _ = _stub_output_and_dotted_version(0)
         rig.write_python3_stub(f"pwd -P > '{probe_cwd_record}'\necho '{reported}'")
 
         result = rig.run(_session_start_payload(), cwd=project_dir)
@@ -368,7 +361,7 @@ class TestEventAndSourceFilter:
     """Each case runs a below-floor stub, so a hook that skips its filter prints a notice and calls the stub."""
 
     def _assert_filtered_out(self, rig: _HookRig, stdin: str | dict) -> None:
-        reported, _ = _version_relative_to_floor(-1)
+        reported, _ = _stub_output_and_dotted_version(-1)
         rig.write_python3_stub(f"echo '{reported}'")
 
         result = rig.run(stdin)
@@ -401,7 +394,7 @@ class TestEventAndSourceFilter:
 
 class TestMissingJq:
     def test_without_jq_the_hook_prints_nothing_and_exits_0(self, rig_without_jq: _HookRig) -> None:
-        reported, _ = _version_relative_to_floor(-1)
+        reported, _ = _stub_output_and_dotted_version(-1)
         rig_without_jq.write_python3_stub(f"echo '{reported}'")
 
         result = rig_without_jq.run(_session_start_payload())
@@ -414,7 +407,7 @@ class TestMissingJq:
 @requires_sub_floor_bash
 class TestBelowTheBashFloor:
     def test_a_first_bash_below_the_floor_prints_nothing_and_exits_0(self, rig: _HookRig, tmp_path: Path) -> None:
-        reported, _ = _version_relative_to_floor(-1)
+        reported, _ = _stub_output_and_dotted_version(-1)
         rig.write_python3_stub(f"echo '{reported}'")
         payload = _session_start_payload()
         # Liveness control: the same payload prints the notice under the ambient bash, so silence below is the below-floor bash.

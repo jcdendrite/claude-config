@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 from helpers import (
@@ -738,9 +739,8 @@ class TestRequireWorktreeForGitWrites:
             if real_capping_binary:
                 (stub_bin / capping_binary).symlink_to(real_capping_binary)
         link_bash_into(stub_bin)
-        real_python3 = shutil.which("python3")
-        if not real_python3:
-            pytest.skip("python3 not found in PATH")
+        # A PATH `python3` may be a version-manager shim that cannot run from this narrowed PATH.
+        real_python3 = sys.executable
         if parser_exit_code is None:
             (stub_bin / "python3").symlink_to(real_python3)
         else:
