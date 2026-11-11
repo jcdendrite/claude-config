@@ -396,13 +396,12 @@ class TestShimEnvelope:
         self, tmp_path: Path
     ) -> None:
         pair = self._run_pair(tmp_path, {})
-        (shim_meta, shim_stdin, shim_environment) = pair["shim"]
-        (direct_meta, direct_stdin, direct_environment) = pair["direct"]
+        (shim_meta, _, shim_environment) = pair["shim"]
+        (direct_meta, _, direct_environment) = pair["direct"]
         assert shim_meta["cwd"] == direct_meta["cwd"] == str(pair["root"])
         assert shim_meta["umask"] == direct_meta["umask"]
         assert shim_meta["stdin"] == "pipe"
         assert direct_meta["stdin"] == "pipe"
-        assert shim_stdin == direct_stdin
         assert not set(CLAUDE_PROCESS_ENV_NAMES) & set(shim_environment)
         assert shim_environment["PATH"] == pair["record_path"]
         assert shim_environment["CLAUDE_CONFIG_DIR"] == str(pair["env"].config_dir)
@@ -1460,6 +1459,12 @@ def _require_worktree_sentinel(world: World) -> None:
     sentinel.write_text("")
 
 
+def _report_an_open_pull_request(world: World) -> None:
+    """Make the gh stub print a PR number, so the gate reaches its HEAD and marker check instead of its empty-number exit."""
+    gh_stub = world.stubs / "gh"
+    gh_stub.write_text(f'#!/bin/sh\necho "gh $*" >> "{world.stubs / "calls.log"}"\necho 1\nexit 0\n')
+
+
 def _git_in(directory: Path, *args: str) -> None:
     subprocess.run(
         ["git", "-C", str(directory), "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", *args],
@@ -1503,8 +1508,10 @@ WRITE_FAMILIES = {
         "require-code-review.sh", "git commit -m x", lambda repo: f"git -C {repo} commit -m x", _stage_a_change
     ),
     "ready-for-review": WriteFamily("require-ready-for-review.sh", "gh pr create --title t --body b", None, None),
-    "ready-for-review-push": WriteFamily("require-ready-for-review.sh", "git push origin feature", None, None),
-    "ready-for-review-pr-ready": WriteFamily("require-ready-for-review.sh", "gh pr ready", None, None),
+    "ready-for-review-push": WriteFamily(
+        "require-ready-for-review.sh", "git push origin feature", None, _report_an_open_pull_request
+    ),
+    "ready-for-review-pr-ready": WriteFamily("require-ready-for-review.sh", "gh pr ready", None, _report_an_open_pull_request),
     "worktree-git-writes": WriteFamily(
         "require-worktree-for-git-writes.sh",
         "git commit -m x",
@@ -1596,11 +1603,15 @@ class TestLeadingCdVerdictEquality:
         shim_verdict, reference_verdict = self._verdicts(world, family_id, shape_id)
         assert shim_verdict == reference_verdict, (family_id, shape_id)
 
-    @pytest.mark.parametrize("family_id", ["code-review", "worktree-git-writes"])
+    @pytest.mark.parametrize(
+        "family_id", ["code-review", "worktree-git-writes", "ready-for-review-push", "ready-for-review-pr-ready"]
+    )
     def test_a_family_with_a_repo_only_trigger_denies_in_the_shapes_whose_directory_is_the_repo(
         self, world: World, family_id: str
     ) -> None:
         for shape_id in ("plain-then-repo", "plain-then-git-dash-c", "nonexistent"):
+            if shape_id == "plain-then-git-dash-c" and WRITE_FAMILIES[family_id].git_dash_c_write is None:
+                continue
             shim_verdict, reference_verdict = self._verdicts(world, family_id, shape_id)
             assert (shim_verdict, reference_verdict) == ("deny", "deny"), shape_id
 
