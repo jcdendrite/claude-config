@@ -551,7 +551,7 @@ Configure the default branch so that direct pushes are blocked for the credentia
 Either way, the pull-request rule dismisses stale approvals when new commits are pushed (or requires approval of the most recent push), so the agent cannot push a follow-up commit to an approved pull request and then merge it.
 
 - Block force pushes and branch deletion on the default branch as well.
-- Give the repository's `main`, `master` or `develop` branch the same protection when it is not the default branch, whatever a given clone's remote HEAD names, because the hook protects `main` and `master` always and `develop` where the remote HEAD does not resolve.
+- Give a `main`, `master` or `develop` branch that is not the default branch the same protection, whatever a given clone's remote HEAD names. The hook protects `main` and `master` always and `develop` where the remote HEAD does not resolve.
 
 The approving review is a requirement because `deny-default-branch-push.sh` does not cover `gh api repos/<owner>/<repo>/pulls/<n>/merge` (GH-1077): with no approval required, the agent can open a pull request and merge it with that call.
 The agent's credential must not be able to supply the approval.
