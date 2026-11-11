@@ -131,6 +131,7 @@ Paths are relative to the repository root.
 55. `[unverified]` No test reaches the ensurepip hint at `install.sh:1054-1058`. It reads `python3_found_version`, which only the python block assigns, so a rename at one site would print `python-venv` unnoticed. `anchors: M1`
 56. `[verified: gh api repos/astral-sh/ruff/releases/tags/0.17.4, assets list]` Astral's GitHub release for 0.17.4 attaches `ruff-aarch64-apple-darwin.tar.gz` and its `.sha256`, `ruff-x86_64-apple-darwin.tar.gz` and its `.sha256`, and `dist-manifest.json`, and no wheel. The engineer asked "Why not pip?" when offered the GitHub archive. `staff-platform-engineer` advised pip, with the trust basis stated as same-origin integrity only: the PyPI digest guards corruption or a swap between download and install, not a compromised publisher. The engineer has not yet approved that basis; the session proceeds only on their go-ahead. `anchors: M6`
 57. `[unverified]` The session's disposition, not the engineer's: row 38's answer stands for this revision's projected diff of about 1,340 lines (Critical files), up from the about 1,030 it answered, because the one-PR, three-commit shape is unchanged. The engineer is not asked again. `anchors: row38`
+59. `[engineer-verified: "Add test_bash_floor.py to the plan (Recommended)"]` The Phase 1 review's SDET finding on duplicated helpers is fixed by one shared `readme_requirements_bullet` in `test_bash_floor.py`, a file the approved Critical files did not list. The engineer chose to add the file. `anchors: M2`
 58. `[engineer-verified: "Fix the findings under 0.17.4"]` Ruff 0.17.4, linted from a scratch venv at `py312` and `py314`, reports `SIM115` (2), `UP031` (3) and `UP037` (2) in the three test files named under Phase 1, none of which is otherwise in this plan. The engineer chose to fix them over trying an older series. The engineer then confirmed the shared `.venv` upgrade from 0.6.9 to 0.17.4 and ran it; `scripts/venv-run.sh ruff --version` reports 0.17.4. `anchors: M6`
 
 **Mechanisms:**
@@ -253,6 +254,7 @@ After every dispatch, run the commands from `CLAUDE.md` § "Commands" in the wor
 - `claude/.claude/hooks/tests/test_git_floor.py`:
   - `:50`: drop `python3` from `_TOOLS_THAT_JUST_EXIT_ZERO`;
   - `:236-263`: move the whole-script setup and run into a module-level helper that takes the `python3` and `git` stub scripts. The git test passes a `python3` stub printing the floor's two fields, read by sourcing `_config.sh`, and `test_python_floor.py` imports the helper.
+- `claude/.claude/hooks/tests/test_bash_floor.py`: add `readme_requirements_bullet(opener)`, the one README Requirements-bullet lookup that `test_git_floor.py` and `test_python_floor.py` both use (row 59).
 - `README.md:111`: replace the bullet per M2. Required content, Phase 1 facts only:
   - opens "`python3` 3.14 or newer, first on the PATH Claude Code starts with";
   - the floor is the one minor CI tests, the `python-version` pin in `.github/workflows/tests.yml`;
