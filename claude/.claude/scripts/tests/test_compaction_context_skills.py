@@ -1,6 +1,7 @@
 """Tests for compaction-context.py's skills list, allow-lists, plan line and re-read line."""
 import errno
 import os
+import string
 from pathlib import Path
 
 import pytest
@@ -315,6 +316,22 @@ class TestAllowLists:
     @pytest.mark.parametrize("character", list("._:-"), ids=lambda c: f"u{ord(c):04x}")
     def test_slash_name_class_accepts_each_character_inside_it_including_the_plugin_colon(self, character):
         assert compaction_context._is_allowed_slash_name(f"a{character}b") is True
+
+    def test_path_class_accepts_exactly_the_documented_characters_across_the_latin_1_range(self):
+        swept = [chr(code_point) for code_point in range(0x100)] + ["\u00a0", "\u2028"]
+        documented = set(string.ascii_letters + string.digits + "._/@+-")
+
+        accepted = {c for c in swept if compaction_context._is_allowed_path(f"a{c}b")}
+
+        assert accepted == documented
+
+    def test_slash_name_class_accepts_exactly_the_documented_characters_across_the_latin_1_range(self):
+        swept = [chr(code_point) for code_point in range(0x100)] + ["\u00a0", "\u2028"]
+        documented = set(string.ascii_letters + string.digits + "._:-")
+
+        accepted = {c for c in swept if compaction_context._is_allowed_slash_name(f"a{c}b")}
+
+        assert accepted == documented
 
     @pytest.mark.parametrize(
         ("predicate", "accepted", "ends_in_newline"),
