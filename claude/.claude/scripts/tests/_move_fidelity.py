@@ -13,7 +13,6 @@ Each finding prints as one line prefixed with its check name. Exit status is 0 w
 
 `nodes --rename` reverses a NEW name only where it occurs as code, including inside an f-string replacement field,
 so a NEW name in a string literal, docstring, or comment is compared as written.
-`nodes --rename` needs the f-string tokens Python 3.12's `tokenize` reports, and exits 2 on an interpreter without them.
 `capture --all-help` also writes `<label>.parser` for the top level and each subcommand: one line per argparse action,
 mutually exclusive group, and `set_defaults` entry, with each callable rendered as `<callable MODULE:QUALNAME>`
 and the captured script's own module as `<script>`.
@@ -282,9 +281,6 @@ def check_nodes(
     reverse_map = {new: old for old, new in renames}
     if len(reverse_map) != len(renames):
         raise BadInput("two --rename entries share the same NEW name")
-    # The attribute is read at call time so the module still imports, and the other subcommands still run, below Python 3.12.
-    if renames and not hasattr(tokenize, "FSTRING_MIDDLE"):
-        raise BadInput("--rename needs Python 3.12 or later: tokenize reports no f-string tokens")
     reverse_pattern = _name_boundary_pattern(reverse_map)
 
     before = _load_source(before_path)

@@ -1504,8 +1504,7 @@ class TestLock:
         The probe runs from the bootstrap directory, so the cwd half of the plant is also kept out by the `cd`.
         `fcntl` is a builtin on some Python builds and cannot be shadowed, so `sitecustomize` (which `site` imports
         from PYTHONPATH at startup) carries the `-I` check on those builds. It fires only for a `python3 -c`
-        invocation, because the `claude` shim is also a python3 script and inherits the same PYTHONPATH.
-        It reads `sys.orig_argv`, which needs Python 3.10 or newer; the repo floor is 3.11."""
+        invocation, because the `claude` shim is also a python3 script and inherits the same PYTHONPATH."""
         repo = tmp_path / "repo"
         init_reconciler_repo(repo, enabled_plugins={"foo@bar": True})
         config_dir = tmp_path / "cfg"
