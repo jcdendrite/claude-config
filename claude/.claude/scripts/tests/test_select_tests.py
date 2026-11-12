@@ -821,10 +821,41 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
 
+    def test_replay_bench_runner_change_selects_the_replay_tests_and_test_select_tests(self):
+        """The runner joins the scanned set of the guards in test_select_tests.py, so a scoped run
+        after a runner edit must include that file."""
+        result = _mod.select_pytest_targets([_mod.REPLAY_BENCH_RUNNER])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB, _mod.SELECT_TESTS_TEST_PATH}
+
     def test_replay_bench_test_glob_member_change_selects_itself(self):
         result = _mod.select_pytest_targets(["evals/test_replay_bench_tasks.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.REPLAY_BENCH_TEST_GLOB}
+
+    def test_every_replay_bench_test_and_helper_file_on_disk_selects_the_replay_tests(self):
+        """The helper-only *_support.py modules and evals/conftest.py hold no test of their own, so a
+        narrowed predicate could leave an edit to one unselected without any test failing."""
+        evals_dir = _REPO_ROOT / "evals"
+        replay_test_files = sorted(evals_dir.glob("test_replay_bench*.py"))
+        assert {path.name for path in replay_test_files} >= {
+            "test_replay_bench_runner.py", "test_replay_bench_runner_support.py",
+            "test_replay_bench_checks_support.py", "test_replay_bench_tasks_limits.py",
+        }
+        for changed_file in (*replay_test_files, evals_dir / "conftest.py"):
+            relative_path = changed_file.relative_to(_REPO_ROOT).as_posix()
+            result = _mod.select_pytest_targets([relative_path])
+            assert result.is_full_suite is False, relative_path
+            assert _mod.REPLAY_BENCH_TEST_GLOB in result.target_paths, relative_path
+
+    def test_every_replay_bench_package_module_on_disk_selects_the_replay_tests(self):
+        module_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
+        assert {path.name for path in module_files} >= {"tasks.py", "runner.py", "checks.py"}
+        for module_file in module_files:
+            relative_path = module_file.relative_to(_REPO_ROOT).as_posix()
+            result = _mod.select_pytest_targets([relative_path])
+            assert result.is_full_suite is False, relative_path
+            assert _mod.REPLAY_BENCH_TEST_GLOB in result.target_paths, relative_path
 
     def test_replay_bench_scripts_dependency_change_also_selects_replay_bench_tests(self):
         """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REPLAY_BENCH_TEST_GLOB:
@@ -883,6 +914,7 @@ class TestSelectPytestTargets:
             evals_dir / "measure_subagent_model_resolution.py",
             evals_dir / "measure_explore_recall.py",
             *(evals_dir / "replay_bench").glob("*.py"),
+            evals_dir / "run_replay_bench.py",
         ]
         reached: set[Path] = set()
         while pending:
@@ -895,6 +927,9 @@ class TestSelectPytestTargets:
                 if (module_file := resolve_module_file(name)) is not None
             )
 
+        # No seeded module imports the runner, so it enters `reached` only as a seed. Without this control, dropping the
+        # seed changes nothing while every module the runner imports today is reached through another seed.
+        assert evals_dir / "run_replay_bench.py" in reached, "the replay runner is not a seed of the walk"
         reached_scripts_files = {
             source_file.relative_to(_REPO_ROOT).as_posix()
             for source_file in reached if source_file.is_relative_to(scripts_dir)
@@ -914,8 +949,8 @@ class TestSelectPytestTargets:
     def test_replay_bench_files_import_by_absolute_path(self):
         """The import-closure test above maps every relative import to review_bench, so a relative
         import in the replay package would be attributed to the wrong package."""
-        replay_files = sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py"))
-        assert {path.name for path in replay_files} >= {"tasks.py", "comment_metrics.py"}
+        replay_files = [*sorted((_REPO_ROOT / _mod.REPLAY_BENCH_DIR).glob("*.py")), _REPO_ROOT / _mod.REPLAY_BENCH_RUNNER]
+        assert {path.name for path in replay_files} >= {"tasks.py", "comment_metrics.py", "run_replay_bench.py"}
         for replay_file in replay_files:
             assert self._relative_import_line_numbers(replay_file.read_text()) == [], replay_file.name
 
@@ -2174,6 +2209,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
     _mod.REVIEW_BENCH_RUNNER,
+    _mod.REPLAY_BENCH_RUNNER,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL,
