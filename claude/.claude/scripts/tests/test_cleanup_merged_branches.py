@@ -21,6 +21,23 @@ from pathlib import Path
 import pytest
 from helpers import assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_shim
 
+from ._branch_records_helpers import (
+    REVIEW_FILES,
+    SENTINEL_NAME,
+    account_component,
+    archive_root,
+    assert_cleanup_manifest,
+    assert_output_never_mentions_the_archive,
+    build_archive_env,
+    complete_snapshots,
+    expected_ledger_key,
+    list_tree,
+    make_fifo_in_agent_reviews,
+    porcelain_paths,
+    read_tree,
+    reason_variables,
+    worktree_holding_reviews,
+)
 from .conftest import (
     _base_test_env,
     _break_worktree_git_link,
@@ -4647,3 +4664,219 @@ class TestListRemovableFlags:
         assert result.stdout == ""
         assert "Usage:" in result.stderr
         assert "[--dry-run | --list-removable]" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Branch-records archive (docs/agent-branch-records.md)
+# ---------------------------------------------------------------------------
+
+_MERGED_PR = {"number": 900, "mergedAt": "2026-05-01"}
+
+
+def _remote_branch_exists(repo: Path, branch: str) -> bool:
+    heads = subprocess.run(
+        ["git", "ls-remote", "--heads", "origin", branch], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    return heads.strip() != ""
+
+
+class TestBranchRecordsArchive:
+    def test_ready_real_run_snapshots_the_reviews_before_removing_the_worktree(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        _make_feature_branch(local, "feat/no-tree")
+        tip_sha = _rev_parse(local, "feat/reviewed")
+        main_path, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh({
+            "feat/reviewed": _MERGED_PR,
+            "feat/no-tree": {"number": 901, "mergedAt": "2026-05-01"},
+        }))
+
+        result = _run_script(local, env)
+
+        account_dir = archive_root(env) / account_component(Path(env["CLAUDE_CONFIG_DIR"]))
+        ledger_key = expected_ledger_key(porcelain_path, "feat/reviewed")
+        (snapshot,) = complete_snapshots(env, ledger_key)
+        assert result.returncode == 0, result.stderr
+        assert f"Archive: ready ({account_dir})" in result.stdout
+        assert f"    archive:        {snapshot}" in result.stdout
+        assert read_tree(snapshot / "agent-reviews") == (REVIEW_FILES, {"round1"})
+        assert_cleanup_manifest(
+            snapshot, trigger="cleanup-merged-branches.sh", branch="feat/reviewed", tip_sha=tip_sha,
+            main_worktree_path=main_path, worktree_path=porcelain_path,
+        )
+        assert not wt_path.exists()
+        assert not _local_branch_exists(local, "feat/reviewed")
+        assert not _remote_branch_exists(local, "feat/reviewed")
+        assert not _local_branch_exists(local, "feat/no-tree")
+        assert not _remote_branch_exists(local, "feat/no-tree")
+        assert [path.name for path in (account_dir / "branches").iterdir()] == [ledger_key]
+
+    def test_worktree_whose_archive_fails_is_kept_while_the_next_one_is_archived_and_removed(
+        self, tmp_path, fake_gh
+    ):
+        """Branches are walked in refname order, so the refused worktree comes first."""
+        local, _ = _make_repo_with_remote(tmp_path)
+        refused_path = tmp_path / "refused-tree"
+        accepted_path = tmp_path / "accepted-tree"
+        worktree_holding_reviews(local, "feat/a-refused", refused_path)
+        worktree_holding_reviews(local, "feat/b-accepted", accepted_path)
+        make_fifo_in_agent_reviews(refused_path)
+        _, refused_porcelain_path = porcelain_paths(local, "feat/a-refused")
+        _, accepted_porcelain_path = porcelain_paths(local, "feat/b-accepted")
+        env = build_archive_env(tmp_path, fake_gh({
+            "feat/a-refused": _MERGED_PR,
+            "feat/b-accepted": {"number": 901, "mergedAt": "2026-05-01"},
+        }))
+
+        result = _run_script(local, env)
+
+        refusal = reason_variables()["UNSUPPORTED_ENTRY"]
+        assert result.returncode == 1, result.stderr
+        assert f"    worktree:       kept (archive failed: {refusal})" in result.stdout
+        assert "Skipped (archive failed): feat/a-refused" in result.stdout
+        assert refused_path.exists()
+        assert _local_branch_exists(local, "feat/a-refused")
+        assert _remote_branch_exists(local, "feat/a-refused")
+        assert complete_snapshots(env, expected_ledger_key(refused_porcelain_path, "feat/a-refused")) == []
+        assert len(complete_snapshots(env, expected_ledger_key(accepted_porcelain_path, "feat/b-accepted"))) == 1
+        assert not accepted_path.exists()
+        assert not _local_branch_exists(local, "feat/b-accepted")
+        assert not _remote_branch_exists(local, "feat/b-accepted")
+
+    def test_missing_sentinel_refuses_the_real_run_before_removing_anything(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        _make_feature_branch(local, "feat/no-tree")
+        env = build_archive_env(tmp_path, fake_gh({
+            "feat/reviewed": _MERGED_PR,
+            "feat/no-tree": {"number": 901, "mergedAt": "2026-05-01"},
+        }), create_sentinel=False)
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 1
+        assert reason_variables()["SENTINEL"] in result.stderr
+        assert "docs/agent-branch-records.md" in result.stderr
+        assert SENTINEL_NAME not in result.stderr
+        assert str(archive_root(env)) not in result.stderr
+        assert wt_path.exists()
+        assert _local_branch_exists(local, "feat/reviewed")
+        assert _remote_branch_exists(local, "feat/reviewed")
+        assert _local_branch_exists(local, "feat/no-tree")
+        assert _remote_branch_exists(local, "feat/no-tree")
+
+    def test_manifest_names_the_main_checkout_when_the_script_runs_from_a_linked_worktree(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        runner_path = tmp_path / "runner-tree"
+        _make_runner_worktree_with_main_on(local, runner_path, "main")
+        tip_sha = _rev_parse(local, "feat/reviewed")
+        main_path, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}))
+
+        result = _run_script(runner_path, env)
+
+        (snapshot,) = complete_snapshots(env, expected_ledger_key(porcelain_path, "feat/reviewed"))
+        assert result.returncode == 0, result.stderr
+        assert_cleanup_manifest(
+            snapshot, trigger="cleanup-merged-branches.sh", branch="feat/reviewed", tip_sha=tip_sha,
+            main_worktree_path=main_path, worktree_path=porcelain_path,
+        )
+
+    def test_stale_locked_worktree_whose_archive_fails_is_kept_and_stays_locked(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "locked-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        make_fifo_in_agent_reviews(wt_path)
+        _lock_worktree(local, wt_path, f"test (pid {_dead_pid()})")
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}))
+
+        result = _run_script(local, env)
+
+        refusal = reason_variables()["UNSUPPORTED_ENTRY"]
+        assert result.returncode == 1, result.stderr
+        assert f"    worktree:       kept (archive failed: {refusal})" in result.stdout
+        assert "unlocked stale lock" not in result.stdout
+        assert wt_path.exists()
+        assert _worktree_lock_states(local)[wt_path.resolve()] is True
+        assert _local_branch_exists(local, "feat/reviewed")
+        assert _remote_branch_exists(local, "feat/reviewed")
+
+    def test_dirty_worktree_is_archived_before_git_refuses_it_and_a_rerun_reuses_the_snapshot(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "dirty-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        (wt_path / "leftover.txt").write_text("in-progress work")
+        _, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}))
+
+        results = [_run_script(local, env), _run_script(local, env)]
+
+        for result in results:
+            assert result.returncode == 0, result.stderr
+            assert "remove failed (manual step needed)" in result.stdout
+            assert "Skipped (archive failed)" not in result.stdout
+        (snapshot,) = complete_snapshots(env, expected_ledger_key(porcelain_path, "feat/reviewed"))
+        assert read_tree(snapshot / "agent-reviews") == (REVIEW_FILES, {"round1"})
+        assert (wt_path / "leftover.txt").exists()
+        assert _local_branch_exists(local, "feat/reviewed")
+        assert _remote_branch_exists(local, "feat/reviewed")
+
+    def test_list_removable_with_a_missing_sentinel_prints_no_list_line_and_exits_one(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        worktree_holding_reviews(local, "feat/reviewed", tmp_path / "reviewed-tree")
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}), create_sentinel=False)
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert reason_variables()["SENTINEL"] in result.stderr
+
+    def test_list_removable_with_a_ready_archive_prints_only_the_list_line(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        main_path, porcelain_path = porcelain_paths(local, "feat/reviewed")
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}))
+        root_before = list_tree(archive_root(env))
+
+        result = _list_removable(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{main_path}\tfeat/reviewed\t{porcelain_path}\n"
+        assert "Archive:" not in result.stderr
+        assert list_tree(archive_root(env)) == root_before
+
+    def test_dry_run_with_a_ready_archive_prints_the_ready_line_and_writes_nothing(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}))
+        root_before = list_tree(archive_root(env))
+
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0, result.stderr
+        assert "Archive: ready (" in result.stdout
+        assert wt_path.exists()
+        assert list_tree(archive_root(env)) == root_before
+
+    def test_key_off_removes_the_worktree_and_branches_without_touching_the_archive_root(self, tmp_path, fake_gh):
+        local, _ = _make_repo_with_remote(tmp_path)
+        wt_path = tmp_path / "reviewed-tree"
+        worktree_holding_reviews(local, "feat/reviewed", wt_path)
+        env = build_archive_env(tmp_path, fake_gh({"feat/reviewed": _MERGED_PR}), key_line=None, create_root=False)
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 0, result.stderr
+        assert not wt_path.exists()
+        assert not _local_branch_exists(local, "feat/reviewed")
+        assert not _remote_branch_exists(local, "feat/reviewed")
+        assert not (Path(env["HOME"]) / ".local" / "state").exists()
+        assert_output_never_mentions_the_archive(result.stdout + result.stderr, tmp_path)

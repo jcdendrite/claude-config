@@ -4,6 +4,7 @@
 per-command environment, so no case can resolve the engineer's real archive root.
 `run_lib` sources `_branch-records-lib.sh` in `bash -c`, and `archive_successfully` is the
 only way a case turns an archive result into a path it may modify.
+The cleanup-script tests share the worktree, manifest and output assertions at the end of the module.
 """
 from __future__ import annotations
 
@@ -21,9 +22,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR, ignore_agent_reviews
 
-from .conftest import _INHERITED_GIT_VARIABLES, _clean_env, _commit, _git, _init_repo, _make_worktree
+from .conftest import (
+    _INHERITED_GIT_VARIABLES,
+    _clean_env,
+    _commit,
+    _git,
+    _init_repo,
+    _make_feature_branch,
+    _make_worktree,
+)
 
 ARCHIVE_ROOT_RELATIVE_PATH = Path(".local") / "state" / "agent-branch-records"
 SENTINEL_NAME = ".agent-branch-records-root"
@@ -352,3 +361,65 @@ def quoted_archive_arguments(target: ArchiveWorktree, empty_argument: str | None
     if empty_argument is not None:
         arguments[empty_argument] = ""
     return " ".join(shlex.quote(value) for value in arguments.values())
+
+
+REVIEW_FILES = {"round1/finding.md": "text\n", ".hidden": "dot\n"}
+
+
+def worktree_holding_reviews(local: Path, branch: str, wt_path: Path) -> None:
+    """A branch pushed to origin and checked out at `wt_path`, whose ignored agent-reviews/ holds REVIEW_FILES."""
+    ignore_agent_reviews(local)
+    _make_feature_branch(local, branch)
+    _make_worktree(local, branch, wt_path)
+    write_tree(wt_path / "agent-reviews", REVIEW_FILES)
+
+
+def porcelain_paths(main: Path, branch: str) -> tuple[str, str]:
+    """The main worktree's path and `branch`'s worktree path, as `git worktree list --porcelain` prints them."""
+    records = [record.splitlines() for record in _git(main, "worktree", "list", "--porcelain").split("\n\n") if record]
+    main_path = records[0][0].removeprefix("worktree ")
+    for record in records:
+        if f"branch refs/heads/{branch}" in record:
+            return main_path, record[0].removeprefix("worktree ")
+    raise AssertionError(f"no worktree is checked out on {branch}")
+
+
+def complete_snapshots(env: dict[str, str], ledger_key: str) -> list[Path]:
+    """Every snapshot under `ledger_key`'s key directory that holds a manifest."""
+    directory = key_directory(env, ledger_key)
+    if not directory.is_dir():
+        return []
+    return sorted(path for path in directory.iterdir() if (path / "manifest.json").is_file())
+
+
+def make_fifo_in_agent_reviews(worktree: Path) -> None:
+    """Leaves an entry in agent-reviews/ that is neither a regular file nor a directory, which the archive refuses."""
+    reviews_dir = worktree / "agent-reviews"
+    reviews_dir.mkdir(exist_ok=True)
+    os.mkfifo(reviews_dir / "pipe")
+
+
+def assert_cleanup_manifest(
+    snapshot: Path, *, trigger: str, branch: str, tip_sha: str, main_worktree_path: str, worktree_path: str
+) -> None:
+    """Holds a cleanup script's snapshot to the fields the script itself decides.
+
+    The paths and tip are read before the run, because the script removes the worktree and its branch.
+    """
+    manifest = read_manifest(snapshot)
+    assert manifest["trigger"] == trigger
+    assert manifest["branch"] == branch
+    assert manifest["tip_sha"] == tip_sha
+    assert manifest["worktree_path"] == worktree_path
+    assert manifest["main_worktree_path"] == main_worktree_path
+    assert manifest["agent_reviews"] == "copied"
+
+
+def assert_output_never_mentions_the_archive(output: str, tmp_path: Path) -> None:
+    """Fails when `output` says `archive` in any letter case, ignoring every occurrence of `tmp_path`.
+
+    The stripping keeps the check independent of the test's own name, which pytest puts in `tmp_path`.
+    """
+    for prefix in sorted({str(tmp_path), str(tmp_path.resolve())}, key=len, reverse=True):
+        output = output.replace(prefix, "")
+    assert "archive" not in output.lower(), output

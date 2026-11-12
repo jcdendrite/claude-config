@@ -28,6 +28,44 @@ Archived findings can contain secrets quoted from reviewed code. Rotating a flag
 - On a volume that ignores POSIX modes, such as FAT, exFAT, NTFS or many SMB mounts, any other local account can read, modify or replace the archive unless the volume is remounted with your own uid and gid and an owner-only umask.
 - No check refuses a symlink at the account directory, `branches` or a key directory. An account that can write the root or an account directory can therefore redirect later snapshots to a directory it controls.
 
+## Snapshots
+
+A snapshot is a verified copy of one worktree's `agent-reviews/` plus a `manifest.json`.
+
+- **Path:** `<account directory>/branches/<repo-hash>.<branch-hash>/<UTC stamp>.<pid>.<n>/`. The key directory's two hashes are the SHA-256 of the worktree's `git rev-parse --show-toplevel` and of the branch name, the formula the review ledger's branch-scope file names use. The directory holds `agent-reviews/` when the worktree had one, and `manifest.json`.
+- **Completeness:** a snapshot is complete if and only if its `manifest.json` exists, and the manifest is written last. Readers ignore a snapshot directory without one.
+- **Manifest fields:**
+  - `schema_version`, which is `1`.
+  - `archived_at`, in UTC as `YYYY-MM-DDTHH:MM:SSZ`.
+  - `trigger`, the calling script's file name.
+  - `branch`, `tip_sha` (empty when the branch does not resolve) and `worktree_path`, as `git worktree list --porcelain` reports it.
+  - `main_worktree_path`.
+  - `ledger_repo_root`, the string that was hashed into the key.
+  - `ledger_key`.
+  - `agent_reviews`: `copied`, or `absent` when the worktree had no `agent-reviews/`.
+- **Reuse:** when the newest complete snapshot under the key directory has the worktree's current `tip_sha`, `ledger_key` and `agent_reviews` value, and its copy still matches the worktree's `agent-reviews/`, the script reuses it and adds none. Any other outcome makes a new snapshot, except a cap kill in the reuse check, which refuses with the stalled reason and makes none. A worktree git refuses to remove, such as a dirty one, is archived before the refusal, so repeated runs rely on this reuse to avoid adding a snapshot each time.
+
+## The cleanup scripts
+
+With the key on, `cleanup-merged-branches.sh` and `cleanup-idle-open-pr-worktrees.sh` archive each worktree right before they run `git worktree remove` on it. A worktree whose archive fails is kept, and the script exits 1 after its summary. `cleanup-merged-branches.sh` also keeps that worktree's local and remote branch.
+
+| Output | Meaning |
+|---|---|
+| `Archive: ready (<account directory>)` | A real run or `--dry-run` found the key on and the root usable. It does not promise a copy will succeed, because a later directory, copy or manifest refusal can still keep a worktree. |
+| `Archive: unavailable (<reason>); a real run removes nothing ...` | `--dry-run` found the archive unavailable. The preview continues and exits 0. |
+| `archive:        <snapshot path>` (merged), `<branch>: archived to <snapshot path>` (idle) | The snapshot that holds the worktree's current state, new or reused. |
+| `worktree:       kept (archive failed: <reason>)` (merged), `<branch>: kept (archive failed: <reason>)` (idle) | The archive refused. The reason is one in the table under "When a script refuses". |
+| `Skipped (archive failed): <branch>` | `cleanup-merged-branches.sh` prints one per kept branch after its summary. |
+
+- **Unavailable on a real run:** the archive is unavailable when the key is on and the root is unusable, and also when the account's config cannot be resolved whatever the key is set to (see Fail direction). A real run then prints the reason on stderr and exits 1 before it classifies or removes anything in the repo it is processing. Under `--all-projects`, a repo processed earlier keeps whatever it already removed. `cleanup-idle-open-pr-worktrees.sh` checks before its first `gh` call.
+- **List mode:** `cleanup-merged-branches.sh --list-removable` prints no `Archive:` line, because its stdout carries list lines only. When the archive is unavailable it prints no list line for that repo, names the reason on stderr and exits 1. Under `--all-projects`, earlier repos have already printed their list lines, so discard the list on any nonzero exit. The real run can still keep a listed worktree whose archive fails.
+- **Key off:** the output is unchanged and nothing under the root is read or written, as long as the account's config directory resolves and its schema can be read and has the key's row (see Fail direction).
+- **Account under `--all-projects`:** `cleanup-merged-branches.sh` reads the key and resolves the account directory after it loads each repo's environment. `cleanup-idle-open-pr-worktrees.sh` loads no repo environment, so it always uses the invoking environment's account. For `cleanup-merged-branches.sh`:
+  - Without `direnv`, every repo uses the invoking environment's account.
+  - With `direnv`, a repo whose allowed `.envrc` sets `CLAUDE_CONFIG_DIR` archives into that account.
+  - With `direnv`, any other repo gets the environment that `direnv`'s resync leaves. If the invoking shell's `CLAUDE_CONFIG_DIR` was itself set by `direnv`, the resync can revert it to its earlier value for a repo outside that `.envrc`'s tree, usually unset, which resolves to the default account (`$HOME/.claude`).
+  - **Warning:** if that default account has the key off, that repo's worktrees are removed with no snapshot. The only sign is a missing `Archive: ready` line under that repo's banner.
+
 ## When a script refuses
 
 A cleanup script that cannot archive a worktree keeps it and exits 1. An agent that sees a refusal reports it to you. It never creates the root or the sentinel, and never changes the key.
@@ -52,7 +90,7 @@ By default the Claude Code sandbox denies writes outside the session's working d
 ## Fail direction
 
 - A malformed or unreadable enabling line reads as off, with only `_config.sh`'s stderr warning. The scripts then behave as with the key off.
-- An unavailable archive keeps every worktree. That includes an account whose key is off, when `_config.sh` cannot resolve the config directory or read the schema, until the install is fixed or the change reverted.
+- An unavailable archive keeps every worktree. That includes an account whose key is off, when `_config.sh` cannot resolve the config directory, cannot read the schema, or finds no row for the key, until the install is fixed or the change reverted.
 - A missing or unreadable config directory or `claude-config.toml` reads as off, with an absent `Archive: ready` line as the only sign.
 - List mode prints no `Archive:` line, so it gives no sign that the key read as on.
 - A failed stat of `agent-reviews` or `.git` for want of search permission on the worktree or an ancestor reads as `absent`. The same permissions stop `git worktree remove` deleting the entry, so the findings stay on disk. With an unsearchable ancestor, git may still unregister the worktree, which leaves a directory holding findings that the snapshot records as `absent`.

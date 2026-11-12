@@ -48,11 +48,19 @@
 # rather than re-checked immediately before each removal: this is a
 # manually-invoked, single-operator tool, and the next paragraph's "cost of a
 # wrong call" argument for skipping an interactive prompt applies here too.
+# With the `agent_branch_records` key on, each earlier candidate's archive runs
+# between the process snapshot and a later candidate's removal, which lengthens
+# that window, and agent-reviews/ data written after a candidate's copy is lost
+# with its worktree.
 #
 # No interactive prompt (unlike cleanup-merged-branches.sh's Tier B): once a
 # worktree passes every check above, there's no comparable judgment call to
 # prompt about, and the cost of a wrong call is a `git worktree add` +
 # reinstall, not lost work. `--dry-run` covers "review before acting".
+#
+# Branch-records archive: with the `agent_branch_records` key on, each
+# candidate's agent-reviews/ is copied into a snapshot before its removal, and
+# a candidate whose archive fails is kept. See docs/agent-branch-records.md.
 #
 # Usage:
 #   cleanup-idle-open-pr-worktrees.sh
@@ -63,17 +71,24 @@
 #   0  success (including no-op)
 #   1  gh missing/unauthenticated, no 'origin' remote, the gh pr list
 #      query failed (non-zero exit, or a zero exit with an unparseable body),
-#      or the bash floor check in `_config.sh` failed
+#      the bash floor check in `_config.sh` failed, a real run found the
+#      archive unavailable (checked before any gh call), or a candidate was
+#      kept because its archive failed
 #   2  bad arguments
 
 set -euo pipefail
 
-# shellcheck source=../hooks/_config.sh
-. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
+# `_lib.sh` sources `_config.sh` first, so the bash floor check still runs before anything else.
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 # Shares the helpers in `_worktree-lib.sh` with cleanup-merged-branches.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
+
+# branch_records_status / branch_records_archive_worktree, shared with cleanup-merged-branches.sh.
+# shellcheck source=_branch-records-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_branch-records-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -102,6 +117,25 @@ if ! [[ "$IDLE_HOURS" =~ ^[0-9]+$ ]]; then
   usage
   exit 2
 fi
+
+# ---------------------------------------------------------------------------
+# Archive availability — checked before any gh call
+# ---------------------------------------------------------------------------
+
+branch_records_status
+case "$BRANCH_RECORDS_STATE" in
+  ready)
+    echo "Archive: ready (${BRANCH_RECORDS_ACCOUNT_DIR})"
+    ;;
+  unavailable)
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "Archive: unavailable (${BRANCH_RECORDS_REASON}); a real run removes nothing and exits 1"
+    else
+      echo "ERROR: archive unavailable (${BRANCH_RECORDS_REASON}); nothing was removed. See docs/agent-branch-records.md and ask the engineer." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -358,12 +392,21 @@ fi
 # ---------------------------------------------------------------------------
 
 REMOVED_COUNT=0
+declare -a ARCHIVE_KEPT_BRANCHES=()
 
 if [ "${#CANDIDATE_BRANCHES[@]}" -gt 0 ]; then
   echo "Removed:"
   for _c_i in "${!CANDIDATE_BRANCHES[@]}"; do
     BRANCH="${CANDIDATE_BRANCHES[$_c_i]}"
     WORKTREE_TO_REMOVE="${CANDIDATE_PATHS[$_c_i]}"
+    if ! branch_records_archive_worktree "$WORKTREE_TO_REMOVE" "$BRANCH" "$MAIN_WORKTREE_PATH" "${BASH_SOURCE[0]##*/}"; then
+      echo "  ${BRANCH}: kept (archive failed: ${BRANCH_RECORDS_REASON})"
+      ARCHIVE_KEPT_BRANCHES+=("$BRANCH")
+      continue
+    fi
+    if [ -n "$BRANCH_RECORDS_SNAPSHOT" ]; then
+      echo "  ${BRANCH}: archived to ${BRANCH_RECORDS_SNAPSHOT}"
+    fi
     # Captured rather than called bare: an unguarded `git worktree remove`
     # that exits non-zero on one candidate (e.g. uncommitted/untracked
     # changes — git itself refuses removal in that case, no --force here)
@@ -394,3 +437,7 @@ for BRANCH in "${SKIPPED_IN_USE_BRANCHES[@]}"; do
 done
 
 print_summary "removed" "$REMOVED_COUNT"
+
+if [ "${#ARCHIVE_KEPT_BRANCHES[@]}" -gt 0 ]; then
+  exit 1
+fi

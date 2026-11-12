@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_shim
+from helpers import SCRIPTS_DIR, assert_cap_engaged, ignore_agent_reviews, scaled_shim_sleep, write_scaled_timeout_shim
 
 from ._branch_records_helpers import (
     ARCHIVE_ARGUMENT_NAMES,
@@ -251,8 +251,7 @@ class TestArchiveWorktree:
         env = build_archive_env(tmp_path)
         ancestor = tmp_path / "unsearchable_ancestor"
         linked = make_archive_worktree(tmp_path, "feat/hidden-entry", "unsearchable_ancestor/linked_worktree")
-        with (archive_worktree.main / ".git" / "info" / "exclude").open("a") as exclude_file:
-            exclude_file.write("agent-reviews/\n")
+        ignore_agent_reviews(archive_worktree.main)
         finding = linked.worktree / "agent-reviews" / "finding.md"
         write_tree(finding.parent, {finding.name: "text\n"})
         ignore_check = subprocess.run(
