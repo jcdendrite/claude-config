@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "dropped_keys": ["workspace_roots", "cursor_version", "conversation_id", "generation_id"],
   "common_fields": [
     {"claude": "hook_event_name", "rule": "claude_event_name", "status": "observed"},

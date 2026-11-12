@@ -105,7 +105,6 @@ def load_json(path: Path) -> dict:
 
 
 def shim_argv(*args: str, shim: Path = SHIM) -> list[str]:
-    """The argv that starts the shim as the generated command does: this interpreter, `-I -S`, the shim, then `args`."""
     return [sys.executable, *SHIM_INTERPRETER_FLAGS, str(shim), *args]
 
 
@@ -526,7 +525,6 @@ def build_spec(spec_id: str, root: Path) -> PayloadSpec:
 
 
 def shell_pre_payload(root: Path, command: str, **tool_input_extra) -> dict:
-    """A preToolUse Shell payload with an arbitrary command, for tests that vary the command."""
     payload = copy.deepcopy(build_spec("shell_pre", root).cursor)
     payload["tool_input"] = {"command": command, **tool_input_extra}
     return payload
@@ -563,7 +561,6 @@ class ShimEnv:
 
 
 def recorded_tool_paths() -> dict:
-    """Absolute paths of the tools the install record names, from the host."""
     paths = {}
     for name in ("bash", "jq", "git", "timeout", "gtimeout", "gh", "python3"):
         found = shutil.which(name)
@@ -585,7 +582,7 @@ def make_shim_env(
     record_dir = home / ".cursor" / "cursor-adapter"
     record_dir.mkdir(parents=True)
     config_dir.mkdir()
-    # `install` creates the state dir, 0700, and the shim only logs into it.
+    # The world fixture creates the state dir, 0700, and the shim only logs into it.
     (config_dir / "cursor-adapter-state").mkdir(mode=0o700)
     record_path = record_dir / "install.json"
     if record is None:

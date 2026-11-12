@@ -59,6 +59,8 @@ from ._cursor_payloads import (
 )
 
 GATE_CLASSES = ("gate", "turn-gate", "batch-gate")
+# A project choice, the same bound as run_shim's default: a hook blocked on a child fails as a TimeoutExpired.
+DIRECT_HOOK_TIMEOUT_SECONDS = 60
 
 # --- builders ---
 
@@ -382,7 +384,12 @@ class TestShimEnvelope:
         direct_env = {k: v for k, v in start_env.items() if k not in CLAUDE_PROCESS_ENV_NAMES}
         direct_env.update({"OUT": str(direct_out), "PATH": record_path_value, "CLAUDE_CONFIG_DIR": str(env.config_dir)})
         direct = subprocess.Popen([str(probe)], stdin=subprocess.PIPE, cwd=root, env=direct_env)
-        direct.communicate(shim_stdin)
+        try:
+            direct.communicate(shim_stdin, timeout=DIRECT_HOOK_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            direct.kill()
+            direct.communicate()
+            raise
         direct_meta, direct_stdin, direct_environment = self._read(direct_out)
         return {
             "root": root,
@@ -567,7 +574,6 @@ class World:
         self.outside.mkdir()
         for directory in (self.home, self.config, self.tmp, self.repo, self.stubs):
             directory.mkdir(parents=True)
-        # `install` creates the state dir, 0700, and the shim only logs into it.
         (self.config / "cursor-adapter-state").mkdir(mode=0o700)
         self.home = self.home.resolve()
         self.config = self.config.resolve()
@@ -628,7 +634,7 @@ class World:
         for label, directory in self.watched.items():
             for path in sorted(directory.rglob("*")):
                 relative = path.relative_to(self.root)
-                # The state dir itself exists in every pristine world, as `install` creates it. Its files are the shim's log.
+                # The state dir's files are the shim's log.
                 if (
                     ".git/index" in str(relative)
                     or relative.name == "cursor-adapter-state"
@@ -1097,11 +1103,17 @@ def _arm_args(registration: Registration) -> list[str]:
 
 
 def _run_outside(world: World, command: list[str], payload: dict) -> subprocess.CompletedProcess:
-    """Run `command` with the payload on stdin from outside every repository, under Cursor's environment."""
+    """Run `command` under Cursor's environment."""
     environment = world.cursor_env()
     assert_outside_any_repository(world.outside, environment)
     return subprocess.run(
-        command, input=json.dumps(payload).encode(), capture_output=True, check=False, cwd=world.outside, env=environment
+        command,
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        check=False,
+        cwd=world.outside,
+        env=environment,
+        timeout=DIRECT_HOOK_TIMEOUT_SECONDS,
     )
 
 
@@ -1111,13 +1123,19 @@ def _shim_arm(world: World, registration: Registration, payload: dict) -> subpro
 
 
 def _import_arm(world: World, registration: Registration, payload: dict) -> subprocess.CompletedProcess:
-    """The raw Cursor payload straight to the script, from outside every repository."""
+    """The raw Cursor payload straight to the script."""
     return _run_outside(world, [str(registration.path)], payload)
 
 
 def _direct(world: World, registration: Registration, payload: dict, *, cwd: Path, env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [str(registration.path)], input=json.dumps(payload).encode(), capture_output=True, check=False, cwd=cwd, env=env
+        [str(registration.path)],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        check=False,
+        cwd=cwd,
+        env=env,
+        timeout=DIRECT_HOOK_TIMEOUT_SECONDS,
     )
 
 
@@ -1140,7 +1158,6 @@ def _import_decisions(registration: Registration) -> tuple[str, ...]:
 
 
 def _reference_reason(result: subprocess.CompletedProcess) -> str:
-    """The text a direct run of a hook gives as the reason for its deny."""
     if result.returncode == 2:
         return result.stderr.decode().strip()
     output = json.loads(result.stdout)
@@ -1334,7 +1351,6 @@ class TestGateMatrix:
         before = world.snapshot(ignore_state=False)
         result = _shim_arm(world, registration, payload)
         assert result.returncode == 0, result.stderr
-        # `{}` with an `ok` log line shows the hook ran and had no opinion. A skipped call and a shim fault print `{}` or a deny.
         assert result.stdout.decode().strip() == "{}"
         assert _last_logged_outcome(world) == "ok"
         assert_no_effects(before, world.snapshot(ignore_state=True), world)
@@ -1654,7 +1670,15 @@ class TestEffectDetectorsHavePositiveControls:
         script = write_hook_script(world.base / "scratch.sh", "cat > /dev/null\ncurl https://example.invalid\n")
         world.reset()
         before = world.snapshot(ignore_state=False)
-        subprocess.run([str(script)], input=b"{}", capture_output=True, check=False, cwd=world.outside, env=world.cursor_env())
+        subprocess.run(
+            [str(script)],
+            input=b"{}",
+            capture_output=True,
+            check=False,
+            cwd=world.outside,
+            env=world.cursor_env(),
+            timeout=DIRECT_HOOK_TIMEOUT_SECONDS,
+        )
         with pytest.raises(AssertionError):
             assert_no_effects(before, world.snapshot(ignore_state=False), world)
 
@@ -1726,7 +1750,13 @@ class TestBootstrapProjectPluginsRow:
         environment = world.cursor_env({"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CONFIG_DIR": str(world.config)})
         payload = {"hook_event_name": "SessionStart", "session_id": CONVERSATION_ID, "cwd": str(world.repo), "source": "startup"}
         subprocess.run(
-            [str(hook)], input=json.dumps(payload).encode(), capture_output=True, check=False, cwd=world.outside, env=environment
+            [str(hook)],
+            input=json.dumps(payload).encode(),
+            capture_output=True,
+            check=False,
+            cwd=world.outside,
+            env=environment,
+            timeout=DIRECT_HOOK_TIMEOUT_SECONDS,
         )
         deadline = time.monotonic() + LAUNCH_DEADLINE_SECONDS
         while not launched.exists() and time.monotonic() < deadline:

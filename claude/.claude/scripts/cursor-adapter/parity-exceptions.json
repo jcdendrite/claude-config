@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "reasons": ["unsupported", "declined", "pending-phase", "withheld-premise"],
   "kinds": ["registration", "permission-deny", "adapter-gate", "cursor-tool"],
   "entries": [

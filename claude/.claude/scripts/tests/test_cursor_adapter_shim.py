@@ -91,6 +91,14 @@ def _assert_deny_text_rules(output: dict) -> None:
     assert "shim.log" not in text
 
 
+class TestRecoverySentence:
+    def test_the_recovery_sentence_tells_an_agent_to_run_no_recovery_command_and_to_report_the_deny(self) -> None:
+        # The deny rules compare against the constant itself, so only a literal pins the wording an agent reads.
+        assert "The engineer, not the agent, follows the Recovery section." in RECOVERY_SENTENCE
+        assert "An agent runs no command from that section" in RECOVERY_SENTENCE
+        assert "stops and reports this deny in chat" in RECOVERY_SENTENCE
+
+
 def _probe_ran(tmp_path: Path) -> bool:
     return (tmp_path / "saved.json").exists()
 
@@ -825,6 +833,16 @@ class TestShimArguments:
         "abbreviated-flag": lambda: ["--claude-eve", "PreToolUse"],
         "flag-without-value": lambda: ["--label"],
         "stray-positional": lambda: ["extra"],
+        "repeated-contract-version": lambda: ["--contract-version", CONTRACT_VERSION],
+        "repeated-claude-event": lambda: ["--claude-event", "PreToolUse"],
+        "repeated-mode": lambda: ["--mode", "hook"],
+        "repeated-matcher": lambda: ["--matcher", "Shell", "--matcher", "Read"],
+        "repeated-script": lambda: ["--script", "/x.sh"],
+        "repeated-label": lambda: ["--label", "other-hook"],
+        "repeated-deadline": lambda: ["--deadline", "10"],
+        "repeated-fail-closed": lambda: ["--fail-closed", "--fail-closed"],
+        "repeated-fail-open": lambda: ["--fail-open", "--fail-open"],
+        "fail-closed-with-fail-open": lambda: ["--fail-closed", "--fail-open"],
     }
 
     @pytest.mark.parametrize("variant", list(USAGE_VARIANTS))
@@ -856,6 +874,19 @@ class TestShimArguments:
         assert output["permission"] == "deny"
         assert "payload-malformed" in output["agent_message"]
         assert not _probe_ran(tmp_path)
+
+    @pytest.mark.parametrize(
+        "switches", [["--fail-closed", "--fail-open"], ["--fail-open", "--fail-closed"]], ids=["closed-first", "open-first"]
+    )
+    def test_a_command_line_with_one_of_each_fail_switch_is_a_usage_outcome_in_either_order(
+        self, tmp_path: Path, switches: list[str]
+    ) -> None:
+        # No third switch, so the conflict between the two is the only thing the parser can reject.
+        env = make_shim_env(tmp_path)
+        args = ["--contract-version", CONTRACT_VERSION, "--claude-event", "PreToolUse", "--script", "/x.sh", *switches]
+        result = run_shim(env, shell_pre_payload(_workspace(tmp_path), "ls"), args, cwd=_scratch(tmp_path))
+        assert (result.returncode, result.stdout, result.stderr) == (1, b"", b"")
+        assert read_log_lines(env)[-1]["out"] == "usage"
 
     def test_a_command_line_without_a_contract_version_parses_with_an_empty_one(self) -> None:
         arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", contract_version=None))
@@ -1337,7 +1368,6 @@ class TestShimPrologue:
 
     @staticmethod
     def _path_names(*roots: Path) -> set[str]:
-        """Every file and directory name under the roots, as full paths."""
         names = set()
         for root in roots:
             for directory, subdirectories, files in os.walk(root):
@@ -1729,6 +1759,37 @@ class TestShimExecCount:
         _, events, _ = self._run(tmp_path, payload, hook_args("PreToolUse", mode=mode))
         assert events == []
 
+    @pytest.mark.parametrize("mode", ["pin", "hook"])
+    def test_a_leading_cd_into_a_directory_inside_a_root_starts_no_process_beyond_the_wrapper(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        root = _workspace(tmp_path)
+        script = write_hook_script(tmp_path / "hook.sh", "cat > /dev/null\n")
+        args = hook_args("PreToolUse", script=script) if mode == "hook" else hook_args("PreToolUse", mode=mode)
+        result, events, _ = self._run(tmp_path, shell_pre_payload(root, f"cd {root / 'src'} && make"), args)
+        assert [event["event"] for event in events] == (["subprocess.Popen"] if mode == "hook" else [])
+        if mode == "pin":
+            # A refusal also exits 0 with no process, and the first-root fallback pins `root`: the line must name the cd target.
+            pinned = json.loads(result.stdout)["updated_input"]["command"]
+            assert pinned.startswith(f"builtin cd -- '{root / 'src'}' || exit 1\n")
+
+    @pytest.mark.parametrize("tool", ["Read", "Write", "Delete"])
+    def test_a_file_tool_call_resolving_an_agent_named_path_starts_no_process_beyond_the_wrapper(
+        self, tmp_path: Path, tool: str
+    ) -> None:
+        # The target sits under the second root, so the first-root fallback and the file-tool branch start the hook in
+        # different directories.
+        first = _workspace(tmp_path)
+        second = (tmp_path / "second").resolve()
+        (second / "src").mkdir(parents=True)
+        where = tmp_path / "where"
+        script = write_hook_script(tmp_path / "hook.sh", f"pwd -P > '{where}'\ncat > /dev/null\n")
+        payload = file_tool_payload(first, tool, str(second / "src" / "target.txt"))
+        payload["workspace_roots"] = [str(first), str(second)]
+        _, events, _ = self._run(tmp_path, payload, hook_args("PreToolUse", script=script))
+        assert [event["event"] for event in events] == ["subprocess.Popen"]
+        assert where.read_text().strip() == str(second)
+
     def test_a_call_the_matcher_does_not_select_starts_no_process(self, tmp_path: Path) -> None:
         script = write_hook_script(tmp_path / "hook.sh", "cat > /dev/null\n")
         _, events, _ = self._run(
@@ -1871,24 +1932,30 @@ class TestUnknownToolsAndCap:
         env = make_shim_env(tmp_path, tool_map=recorded)
         assert self._classify(tmp_path, "Task", env=env)["permission"] == "deny"
 
-    def _write_payload_of_size(self, root: Path, size: int, tail: str = "") -> bytes:
+    def _write_payload_of_size(self, root: Path, size: int, head: str = "", tail: str = "") -> bytes:
         payload = file_tool_payload(root, "Write", str(root / "src" / "big.txt"), content="")
         encoded = json.dumps(payload).encode()
-        padding = size - len(encoded) - len(tail)
-        payload["tool_input"]["content"] = "x" * padding + tail
+        padding = size - len(encoded) - len(head) - len(tail)
+        payload["tool_input"]["content"] = head + "x" * padding + tail
         return json.dumps(payload).encode()
 
     def test_a_payload_past_the_cap_denies_naming_the_cap_and_never_runs_the_hook(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)
         root = _workspace(tmp_path)
         credential_shape = "ghp_" + "A1b2C3d4" * 5
-        data = self._write_payload_of_size(root, PAYLOAD_CAP + 1024, tail=credential_shape)
+        # The head is read before the cap on every platform. The tail is read only when the refusing read also carries it.
+        head_credential_shape = "ghp_" + "Z9y8X7w6" * 5
+        data = self._write_payload_of_size(root, PAYLOAD_CAP + 1024, head=head_credential_shape, tail=credential_shape)
         script = recording_probe_script(tmp_path / "hook.sh", tmp_path / "saved.json")
-        output = shim_json(run_shim(env, data, hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path)))
+        result = run_shim(env, data, hook_args("PreToolUse", script=script), cwd=_scratch(tmp_path))
+        output = shim_json(result)
         assert output["permission"] == "deny"
         assert "payload-over-cap" in output["agent_message"]
         assert str(PAYLOAD_CAP) in output["agent_message"]
         assert not (tmp_path / "saved.json").exists()
+        for canary in (credential_shape, head_credential_shape):
+            assert canary.encode() not in result.stdout
+            assert canary not in env.log_path.read_text()
 
     def test_a_payload_past_the_cap_prints_empty_output_on_an_informational_entry(self, tmp_path: Path) -> None:
         env = make_shim_env(tmp_path)

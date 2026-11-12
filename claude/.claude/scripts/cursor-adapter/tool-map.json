@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "tools": {
     "Shell": {"claude": "Bash", "translation": "shell"},
     "Read": {"claude": "Read", "translation": "read"},

@@ -38,6 +38,7 @@ MODES = ("hook", "pin", "pin-check", "classify")
 # The deadline is the entry's `--deadline`, in whole seconds.
 # The default is a project choice with no vendor value.
 DEFAULT_DEADLINE_SECONDS = 10
+# A project choice with no vendor value. It is also the deadline of the self-check's hook run.
 MIN_DEADLINE_SECONDS = 2
 # A project choice with no documented source or Cursor ceiling.
 MAX_DEADLINE_SECONDS = 60
@@ -64,7 +65,7 @@ TRANSIENT_ERRNO_SYMBOLS = frozenset({"EAGAIN", "EMFILE", "ENFILE", "ENOMEM"})
 # A project choice, set above the largest Cursor payload observed (about 1.4 MB on `postToolUse`):
 # `.claude/plans/cursor-adapter.md` § "Payload".
 PAYLOAD_CAP_BYTES = 8 * 1024 * 1024
-# Each of a hook's stdout and stderr is kept up to this size.
+# Each of a hook's stdout and stderr is kept up to this size. A project choice with no documented source.
 HOOK_OUTPUT_CAP_BYTES = 1024 * 1024
 # A project choice: the characters of a hook's stderr or JSON reason the shim keeps, so one deny stays a readable message.
 # A reason past it is cut without a marker.
@@ -101,7 +102,7 @@ EXIT_FAULT = 1
 
 LOG_OVERFLOW_TOKEN = "overflow"
 LOG_VALUE_PATTERN = r"[0-9A-Za-z._:+-]+"
-# One line is at most this many bytes with its newline.
+# One line is at most this many bytes with its newline. A project choice with no documented source.
 LOG_LINE_MAX_BYTES = 1024
 # Field order and maxima. `runmode` is first written by the installer (not yet written).
 LOG_FIELDS = (
@@ -354,7 +355,6 @@ def compile_matcher(text):
 
 
 def deny_text(label, outcome, detail):
-    """The one text a shim-authored deny carries in both message fields."""
     return (
         f"Blocked by the Cursor adapter shim (hook {label}, outcome {outcome}): {detail} "
         f"See the Recovery section of docs/cursor-adapter.md in the claude-config repository. {RECOVERY_SENTENCE}"
@@ -565,16 +565,19 @@ def _is_valid_deadline(text):
 
 
 def parse_arguments(argv):
-    """The parsed command line, or None when it holds anything this shim does not accept, abbreviations included."""
+    """The parsed command line, or None when it holds anything this shim does not accept: abbreviations, repeated flags."""
     values = {}
     index = 0
     while index < len(argv):
         flag = argv[index]
         if flag in SWITCH_FLAGS:
+            # One key serves both switches, so a repeated switch and a closed-with-open pair are both repeats.
+            if "fail_closed" in values:
+                return None
             values["fail_closed"] = flag == "--fail-closed"
             index += 1
         elif flag in VALUE_FLAGS:
-            if index + 1 >= len(argv):
+            if flag in values or index + 1 >= len(argv):
                 return None
             values[flag] = argv[index + 1]
             index += 2
@@ -1083,7 +1086,6 @@ def tool_response_from_output(output):
 
 
 def build_claude_payload(payload, facts, spec, claude_name, directory, original_command):
-    """The Claude Code payload a harness hook reads, from the field table."""
     result = {}
     for field in [*spec["common_fields"], *facts.event_spec["fields"]]:
         rule = field.get("rule")
@@ -1190,7 +1192,6 @@ def _followup_allowed(meta):
 
 
 def abnormal_output(meta, outcome, detail):
-    """An outcome that is neither a parsed decision nor a no-opinion: a deny on a fail-closed entry, `{}` otherwise."""
     output = deny_document(meta["event"], deny_text(meta["hook"], outcome, detail)) if meta["fail_closed"] else {}
     return {"out": output, "outcome": outcome, "dropped": 0}
 
@@ -1567,7 +1568,7 @@ def run_hook(call, arguments, record, facts, roots, payload, spec, deadline_at):
 
 
 def log_call(call):
-    """Logs the call when the state dir is usable. A failure to log never changes the call's decision."""
+    """A failure to log never changes the call's decision."""
     if not call.state_dir:
         return
     fields = {
