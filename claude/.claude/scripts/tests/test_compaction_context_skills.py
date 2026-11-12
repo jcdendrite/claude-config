@@ -90,6 +90,15 @@ def _no_plan_scenarios():
         plan.parent.symlink_to(outside)
         return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
 
+    def plans_directory_is_symlink_to_a_sibling_directory_inside_the_checkout(root, monkeypatch):
+        plan = make_plan_checkout(root, "x")
+        sibling = root / "docs"
+        sibling.mkdir()
+        plan.rename(sibling / "x.md")
+        plan.parent.rmdir()
+        plan.parent.symlink_to(sibling)
+        return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+
     def claude_directory_is_symlink_to_outside_directory(root, monkeypatch):
         make_plan_checkout(root, "x")
         outside = root.parent / "outside-claude"
@@ -114,6 +123,10 @@ def _no_plan_scenarios():
         pytest.param(plan_is_directory, id="plan_path_is_a_directory"),
         pytest.param(plan_is_symlink_to_a_file_inside_plans, id="plan_file_is_a_symlink_to_another_file_inside_plans"),
         pytest.param(plans_directory_is_symlink_to_outside_directory, id="plans_directory_is_a_symlink_to_an_outside_directory"),
+        pytest.param(
+            plans_directory_is_symlink_to_a_sibling_directory_inside_the_checkout,
+            id="plans_directory_is_a_symlink_to_a_sibling_directory_inside_the_checkout",
+        ),
         pytest.param(claude_directory_is_symlink_to_outside_directory, id="claude_directory_is_a_symlink_to_outside_directory"),
     ]
 
@@ -205,6 +218,16 @@ class TestSkillsList:
 
     def test_skill_load_prefix_without_a_directory_adds_no_skill(self, tmp_path):
         assert block_for(tmp_path, [skill_load(directory=None)]) == ""
+
+    def test_body_line_naming_a_clean_directory_does_not_rescue_a_first_line_failing_the_allow_list(self, tmp_path):
+        body_line = f"Base directory for this skill: {SKILL_DIR}"
+
+        assert block_for(tmp_path, [skill_load("/work/re$po/skill", text=body_line)]) == ""
+
+    def test_body_line_naming_a_second_clean_directory_adds_no_skill_beyond_the_first_line_directory(self, tmp_path):
+        body_line = f"Base directory for this skill: {OTHER_DIR}"
+
+        assert _listed_paths(block_for(tmp_path, [skill_load(SKILL_DIR, text=body_line)])) == [SKILL_PATH]
 
     @pytest.mark.parametrize(
         "records",

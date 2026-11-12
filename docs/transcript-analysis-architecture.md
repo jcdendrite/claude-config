@@ -642,11 +642,12 @@ the preceding model family, and the `_add_struggle_subparser` registration. Impo
 ### `user_input.py`
 
 The user-input command: `cmd_user_input`, the per-session narrative of fresh user prompts classified as
-initial, follow-up, or explicit correction, the prompt-classification helpers only it uses
+initial, follow-up, or explicit correction, the prompt-classification helpers
 (`_is_fresh_user_prompt_for_narrative`, `_is_unrecognized_user_list_record`, `_classify_prompt`,
 `_attribute_model_to_prompt`, `_truncate_prompt_text`), and the `_add_user_input_subparser`
-registration. Imports `corpus`, `redaction`, `render`, `scope`, and `struggle` all by module
-(attribute access), matching `cost.py`'s convention; `_classify_prompt` reads
+registration. Of those helpers, only `_is_fresh_user_prompt_for_narrative` has a caller outside the
+module (see "Sibling scripts"). Imports `corpus`, `redaction`, `render`, `scope`, and `struggle` all by
+module (attribute access), matching `cost.py`'s convention; `_classify_prompt` reads
 `struggle.STRUGGLE_PHRASES`. It scans `scope.PROJECTS_DIR` only, ignoring declared roots. Its
 `--redact` map comes from `redaction._build_redact_map`'s default root. `_add_user_input_subparser`
 is the one name `build_parser()` reaches bare.
@@ -774,6 +775,17 @@ uses. `transcript-analysis.py` re-exports both functions.
 scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 `importlib.util.spec_from_file_location` to reach a handful of helpers. Both also import
 `render.py`'s `_fam`/`_content_text` rather than maintaining their own copies.
+
+`compaction-context.py` imports `render`, `review_rounds`, `scope`, and `user_input` by module and reads
+these underscore-prefixed names:
+
+- `user_input._is_fresh_user_prompt_for_narrative` and `user_input._fence_for_text`.
+- `render._content_text` and `render._is_fresh_user_prompt`.
+- `scope._branch_tag` and `scope._DETACHED_HEAD_BRANCH`.
+- `review_rounds._SLASH_COMMAND_RE`.
+
+A rename of any of them breaks that script when it runs, so grep `compaction-context.py` before
+changing one. Tightening `_is_fresh_user_prompt_for_narrative` also narrows the prompts that script quotes.
 
 ## Tests
 
