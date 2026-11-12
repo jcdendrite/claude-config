@@ -217,7 +217,6 @@ def _set_path(*keys_and_value) -> Callable[[ShimEnv, dict], bool]:
     return mutate
 
 
-# The tools the shim translates.
 TRANSLATED_TOOLS = ("Shell", "Read", "Write", "Delete", "Grep", "Task")
 
 INSTALL_RECORD_FAULT_ROWS: dict[str, Row] = {

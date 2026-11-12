@@ -54,6 +54,8 @@ TRANSCRIPT_PATH_NAME = "transcript.jsonl"
 # Environment names that mark a Claude Code process. The shim removes them from a hook's environment.
 CLAUDE_PROCESS_ENV_NAMES = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID")
 
+# The highest phase of `.claude/plans/cursor-adapter.md` that this tree delivers.
+# A `pending-phase` parity entry must name a later one.
 DELIVERED_PHASE_NUMBER = 2
 
 

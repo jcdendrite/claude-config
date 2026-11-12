@@ -78,7 +78,7 @@ RECOVERY_SENTENCE = (
     "retries only where this deny's own text says to, and otherwise stops and reports this deny in chat."
 )
 
-# Files beside this one that the shim reads on every call.
+# Names of the data files beside this one, of the install record under the home directory, and of the state directory and its log.
 FIELD_TABLE_FILE_NAME = "field-table.json"
 PARITY_EXCEPTIONS_FILE_NAME = "parity-exceptions.json"
 INSTALL_RECORD_RELATIVE_PATH = ".cursor/cursor-adapter/install.json"
