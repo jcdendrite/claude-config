@@ -1569,6 +1569,7 @@ class TestLeadingCdVerdictEquality:
     def _verdicts(self, world: World, family_id: str, shape_id: str) -> tuple[str, str]:
         family = WRITE_FAMILIES[family_id]
         registration = self._registration(family)
+        world.reset()
         world.apply_setup(family.setup)
         if shape_id in LINKED_WORKTREE_SHAPE_IDS:
             _add_linked_worktrees(world)

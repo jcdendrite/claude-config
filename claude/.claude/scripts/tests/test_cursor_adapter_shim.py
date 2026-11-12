@@ -2597,6 +2597,24 @@ class TestShimFaults:
         failures = SHIM_MODULE.self_check(wrapper)
         assert failures == ["translation: RuntimeError"]
 
+    @pytest.mark.parametrize("returned", [{}, {"tool_name": "Shell"}], ids=["no-tool-name", "cursor-tool-name"])
+    def test_a_translation_that_returns_another_tool_name_than_the_records_fails_the_translation_check(
+        self, monkeypatch: pytest.MonkeyPatch, wrapper: str, returned: dict
+    ) -> None:
+        monkeypatch.setattr(SHIM_MODULE, "build_claude_payload", lambda *arguments, **keywords: returned)
+        assert SHIM_MODULE.self_check(wrapper) == ["translation: SelfCheckMismatch"]
+
+    def test_a_tool_resolution_that_returns_the_cursor_name_as_the_claude_name_fails_the_translation_check(
+        self, monkeypatch: pytest.MonkeyPatch, wrapper: str
+    ) -> None:
+        real_resolve_tool = SHIM_MODULE.resolve_tool
+        monkeypatch.setattr(
+            SHIM_MODULE,
+            "resolve_tool",
+            lambda name, record, parity: {**real_resolve_tool(name, record, parity), "claude": name},
+        )
+        assert SHIM_MODULE.self_check(wrapper) == ["translation: SelfCheckMismatch"]
+
     def test_a_hook_run_that_raises_fails_the_hook_run_check(self, monkeypatch: pytest.MonkeyPatch, wrapper: str) -> None:
         def raising(*arguments, **keywords):
             raise RuntimeError(CANARY)
@@ -2615,16 +2633,31 @@ class TestShimFaults:
         monkeypatch.setattr(SHIM_MODULE, "run_wrapped_hook", lambda *arguments, **keywords: returned)
         assert SHIM_MODULE.self_check(wrapper) == ["hook-run: SelfCheckMismatch"]
 
+    @pytest.mark.parametrize(
+        ("field_table_present", "expected_names"),
+        [
+            (False, ["field-table", "hook-run", "parity-exceptions"]),
+            (True, ["hook-run", "parity-exceptions", "translation"]),
+        ],
+        ids=["without-field-table", "with-field-table"],
+    )
     def test_the_failure_names_are_distinct_per_check(
-        self, monkeypatch: pytest.MonkeyPatch, wrapper: str, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        wrapper: str,
+        tmp_path: Path,
+        field_table_present: bool,
+        expected_names: list[str],
     ) -> None:
         copied = copy_adapter(tmp_path)
-        (copied.parent / "field-table.json").unlink()
+        if not field_table_present:
+            (copied.parent / "field-table.json").unlink()
         (copied.parent / "parity-exceptions.json").unlink()
         module = load_shim(copied)
+        monkeypatch.setattr(module, "build_claude_payload", lambda *arguments, **keywords: {})
         monkeypatch.setattr(module, "run_wrapped_hook", lambda *arguments, **keywords: (4, b"", b""))
         names = [failure.split(":")[0] for failure in module.self_check(wrapper)]
-        assert sorted(names) == ["field-table", "hook-run", "parity-exceptions"]
+        assert sorted(names) == expected_names
 
     def test_a_passing_run_starts_exactly_one_process_opens_no_log_for_writing_and_writes_no_line(
         self, tmp_path: Path, wrapper: str

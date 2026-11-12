@@ -1738,14 +1738,15 @@ def self_check(wrapper):
 
     def check_translation():
         record = _self_check_record()
-        record["tool_map"]["tools"]["Shell"] = {"claude": "Bash", "translation": "shell"}
+        shell_entry = {"claude": "Bash", "translation": "shell"}
+        record["tool_map"]["tools"]["Shell"] = shell_entry
         arguments = parse_arguments(["--claude-event", "PreToolUse", "--script", "self-check"])
         payload = _self_check_payload()
         facts = examine_payload(payload, arguments, record, state["spec"], None)
         roots = Roots(facts.roots, "/")
         directory = resolve_directory(facts, roots)
-        built = build_claude_payload(payload, facts, state["spec"], "Bash", directory, facts.command)
-        if built.get("tool_name") != "Bash":
+        built = build_claude_payload(payload, facts, state["spec"], facts.tool["claude"], directory, facts.command)
+        if built.get("tool_name") != shell_entry["claude"]:
             raise SelfCheckMismatch("translation")
 
     def check_hook_run():
