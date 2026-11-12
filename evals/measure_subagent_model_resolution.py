@@ -700,7 +700,29 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
 
 
-def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+@dataclass
+class LaunchOutcome:
+    """What _run_claude_to_completion learned about the child beyond its stdout:
+    the exit status (negative when a signal ended it) and a bounded stderr tail."""
+
+    exit_status: int | None = None
+    stderr_tail: str = ""
+
+
+# Bounds the stderr text a LaunchOutcome keeps, so one chatty child cannot bloat a caller's log.
+_STDERR_TAIL_BYTES = 4096
+
+
+def _read_stderr_tail(stderr_file) -> str:
+    stderr_file.seek(0, os.SEEK_END)
+    size = stderr_file.tell()
+    stderr_file.seek(max(0, size - _STDERR_TAIL_BYTES))
+    return stderr_file.read().decode("utf-8", errors="replace")
+
+
+def _run_claude_to_completion(
+    cmd: list[str], cwd: Path, timeout_s: int, *, outcome: LaunchOutcome | None = None,
+) -> tuple[list[bytes], bool]:
     """Run cmd to completion (or timeout_s), returning (raw stdout lines,
     timed_out).
 
@@ -714,52 +736,65 @@ def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tupl
     child's whole process group is killed on timeout or on any exception,
     including KeyboardInterrupt. abort_launches() ends it the same way from
     another thread.
+
+    With outcome=None the child's stderr is discarded. With an outcome, stderr
+    goes to an owner-only temp file, so no pipe can fill and block the child,
+    and the outcome receives the exit status and the file's tail after exit.
     """
     if _launches_aborted.is_set():
         raise LaunchAbortedError("launch aborted before spawning")
     env = environment_without_git_local_vars()
     env.pop("CLAUDECODE", None)
-    proc = subprocess.Popen(
-        cmd, cwd=str(cwd), env=env,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    stdout_fd = proc.stdout.fileno()
-    buf = b""
-    all_lines: list[bytes] = []
-    deadline = time.monotonic() + timeout_s
-    timed_out = False
-    reached_eof = False
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            rlist, _, _ = select.select([stdout_fd], [], [], min(remaining, _ABORT_POLL_INTERVAL_S))
-            if _launches_aborted.is_set():
-                raise LaunchAbortedError("launch aborted while the child was running")
-            if not rlist:
-                continue
-            # os.read returns what is available; a buffered read(n) would
-            # block until n bytes or EOF and never reach the deadline check.
-            chunk = os.read(stdout_fd, 4096)
-            if not chunk:
-                reached_eof = True
-                break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                all_lines.append(line)
-    finally:
-        if timed_out or not reached_eof:
-            _kill_process_group(proc)
+    # tempfile.TemporaryFile creates its file with mode 0600.
+    with tempfile.TemporaryFile() if outcome is not None else contextlib.nullcontext() as stderr_file:
+        proc = subprocess.Popen(
+            cmd, cwd=str(cwd), env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=stderr_file if stderr_file is not None else subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        stdout_fd = proc.stdout.fileno()
+        buf = b""
+        all_lines: list[bytes] = []
+        deadline = time.monotonic() + timeout_s
+        timed_out = False
+        reached_eof = False
         try:
-            proc.wait(timeout=_CHILD_EXIT_WAIT_S)
-        except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
-            proc.wait()
-        proc.stdout.close()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                rlist, _, _ = select.select([stdout_fd], [], [], min(remaining, _ABORT_POLL_INTERVAL_S))
+                if _launches_aborted.is_set():
+                    raise LaunchAbortedError("launch aborted while the child was running")
+                if not rlist:
+                    continue
+                # os.read returns what is available; a buffered read(n) would
+                # block until n bytes or EOF and never reach the deadline check.
+                chunk = os.read(stdout_fd, 4096)
+                if not chunk:
+                    reached_eof = True
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    all_lines.append(line)
+        finally:
+            if timed_out or not reached_eof:
+                _kill_process_group(proc)
+            try:
+                proc.wait(timeout=_CHILD_EXIT_WAIT_S)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                proc.wait()
+            if outcome is not None:
+                # Recorded before any other fallible step: a caller treats a None status as "the child never ran".
+                outcome.exit_status = proc.returncode
+                # The tail is diagnostic only, so a failed read must not discard stdout or replace an in-flight exception.
+                with contextlib.suppress(OSError):
+                    outcome.stderr_tail = _read_stderr_tail(stderr_file)
+            proc.stdout.close()
     return all_lines, timed_out
 
 

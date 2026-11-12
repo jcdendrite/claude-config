@@ -707,6 +707,135 @@ class TestRunClaudeToCompletion:
 
         assert not marker.exists()
 
+    def test_outcome_receives_the_exit_status_and_the_stderr_tail(self, tmp_path: Path) -> None:
+        outcome = msmr.LaunchOutcome()
+
+        lines, timed_out = msmr._run_claude_to_completion(
+            ["sh", "-c", "echo out; echo problem >&2; exit 3"], tmp_path, 10, outcome=outcome,
+        )
+
+        assert lines == [b"out"]
+        assert timed_out is False
+        assert outcome.exit_status == 3
+        assert outcome.stderr_tail == "problem\n"
+
+    def test_a_child_writing_over_64kb_to_stderr_before_its_first_stdout_line_neither_blocks_nor_times_out(
+        self, tmp_path: Path,
+    ) -> None:
+        outcome = msmr.LaunchOutcome()
+        bytes_written = 200_000
+
+        lines, timed_out = msmr._run_claude_to_completion(
+            [
+                "sh", "-c",
+                f"{{ printf LEADING-MARKER; head -c {bytes_written} /dev/zero | tr '\\0' x; printf TRAILING-MARKER; }} >&2; "
+                "echo first-line",
+            ],
+            tmp_path, 10, outcome=outcome,
+        )
+
+        assert lines == [b"first-line"]
+        assert timed_out is False
+        assert outcome.exit_status == 0
+        assert 0 < len(outcome.stderr_tail) <= msmr._STDERR_TAIL_BYTES
+        assert outcome.stderr_tail.endswith("TRAILING-MARKER")
+        assert "LEADING-MARKER" not in outcome.stderr_tail
+
+    @pytest.mark.timing
+    def test_a_signal_killed_child_reports_a_negative_exit_status(self, tmp_path: Path) -> None:
+        outcome = msmr.LaunchOutcome()
+
+        _, timed_out = msmr._run_claude_to_completion(["sh", "-c", "sleep 30"], tmp_path, 1, outcome=outcome)
+
+        assert timed_out is True
+        assert outcome.exit_status is not None
+        assert outcome.exit_status < 0
+
+    def test_the_exit_status_is_recorded_even_when_closing_stdout_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        outcome = msmr.LaunchOutcome()
+        real_popen = subprocess.Popen
+
+        class StdoutWhoseCloseFails:
+            def __init__(self, real_stdout: object) -> None:
+                self._real_stdout = real_stdout
+
+            def fileno(self) -> int:
+                return self._real_stdout.fileno()
+
+            def close(self) -> None:
+                self._real_stdout.close()
+                raise OSError("close failed")
+
+        def popen_with_failing_stdout_close(*args: object, **kwargs: object) -> subprocess.Popen:
+            proc = real_popen(*args, **kwargs)
+            proc.stdout = StdoutWhoseCloseFails(proc.stdout)
+            return proc
+
+        monkeypatch.setattr(msmr.subprocess, "Popen", popen_with_failing_stdout_close)
+
+        with pytest.raises(OSError, match="close failed"):
+            msmr._run_claude_to_completion(["sh", "-c", "echo out; exit 3"], tmp_path, 10, outcome=outcome)
+
+        assert outcome.exit_status == 3
+
+    def test_a_failing_stderr_tail_read_keeps_the_stdout_lines_and_the_exit_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        outcome = msmr.LaunchOutcome()
+
+        def failing_stderr_tail_read(_stderr_file: object) -> str:
+            raise OSError("stderr read failed")
+
+        monkeypatch.setattr(msmr, "_read_stderr_tail", failing_stderr_tail_read)
+
+        lines, timed_out = msmr._run_claude_to_completion(
+            ["sh", "-c", "echo out; echo problem >&2; exit 3"], tmp_path, 10, outcome=outcome,
+        )
+
+        assert lines == [b"out"]
+        assert timed_out is False
+        assert outcome.exit_status == 3
+        assert outcome.stderr_tail == ""
+
+    def test_a_failing_stderr_tail_read_does_not_replace_an_in_flight_exception(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        outcome = msmr.LaunchOutcome()
+
+        def interrupted_read(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("in-flight failure")
+
+        def failing_stderr_tail_read(_stderr_file: object) -> str:
+            raise OSError("stderr read failed")
+
+        monkeypatch.setattr(msmr.select, "select", interrupted_read)
+        monkeypatch.setattr(msmr, "_read_stderr_tail", failing_stderr_tail_read)
+
+        with pytest.raises(RuntimeError, match="in-flight failure"):
+            msmr._run_claude_to_completion(["sh", "-c", "sleep 30"], tmp_path, 10, outcome=outcome)
+
+        assert outcome.exit_status is not None
+        assert outcome.exit_status < 0
+
+    def test_without_an_outcome_stderr_stays_devnull_and_the_return_is_the_two_value_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        popen_kwargs: dict = {}
+        real_popen = subprocess.Popen
+
+        def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen:
+            popen_kwargs.update(kwargs)
+            return real_popen(*args, **kwargs)
+
+        monkeypatch.setattr(msmr.subprocess, "Popen", recording_popen)
+
+        result = msmr._run_claude_to_completion(["sh", "-c", "echo out; echo ignored >&2"], tmp_path, 10)
+
+        assert popen_kwargs["stderr"] is subprocess.DEVNULL
+        assert result == ([b"out"], False)
+
 
 class TestModelFamily:
     @pytest.mark.parametrize(

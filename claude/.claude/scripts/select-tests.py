@@ -96,9 +96,20 @@ MEASURE_EXPLORE_RECALL_TEST = "evals/test_measure_explore_recall.py"
 # test is its only automated-test consumer. The recall scorer also reads it,
 # but at runtime via --fixtures, not through a test.
 MEASURE_EXPLORE_RECALL_FIXTURE = "evals/fixtures/explore-recall-cases.json"
-# Applies to every test under evals/, which are exactly the review_bench
-# tests, the replay_bench tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
-# MEASURE_EXPLORE_RECALL_TEST.
+# The one-time Main session adherence gate: its module imports measure_subagent_model_resolution,
+# measure_explore_recall, run_skill_evals and review_bench.runner, so an edit to any of them also needs its tests.
+MEASURE_MAIN_SESSION_RULE_ADHERENCE = "evals/measure_main_session_rule_adherence.py"
+MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST = "evals/test_measure_main_session_rule_adherence.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST = "evals/test_main_session_rule_adherence_fixtures.py"
+MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR = "evals/fixtures/main-session-rule-adherence"
+# Every evals test a review_bench, measure_subagent_model_resolution, measure_explore_recall, run_skill_evals or
+# _config_dir edit selects.
+EVALS_TEST_TARGETS = (
+    REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    MEASURE_EXPLORE_RECALL_TEST, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+    MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
+)
+# Applies to every test under evals/, which are exactly EVALS_TEST_TARGETS.
 EVALS_CONFTEST = "evals/conftest.py"
 
 # Every claude/.claude/scripts module the review_bench sources import,
@@ -639,9 +650,12 @@ def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
+        or _is_under(path, MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR)
         or path in (
             REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, MEASURE_EXPLORE_RECALL_FIXTURE, EVALS_CONFTEST,
+            MEASURE_MAIN_SESSION_RULE_ADHERENCE, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
+            MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
@@ -663,13 +677,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
-    (
-        _is_review_bench_change,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
+    (_is_review_bench_change, EVALS_TEST_TARGETS),
     (_is_replay_bench_change, (REPLAY_BENCH_TEST_GLOB,)),
 )
 
@@ -875,20 +883,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # would run test_select_tests.py on every replay test edit.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (
-        lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
-    (
-        lambda p: p == SKILL_EVALS_RUNNER,
-        (
-            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL_TEST,
-        ),
-    ),
+    (lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, EVALS_TEST_TARGETS),
+    (lambda p: p == SKILL_EVALS_RUNNER, EVALS_TEST_TARGETS),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),
