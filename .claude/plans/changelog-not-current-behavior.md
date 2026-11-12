@@ -32,7 +32,7 @@ paths:
 ---
 ```
 
-Then a blank line, the H2 heading `Changelog entries are records, not current behavior`, a blank line, and this body, verbatim: "A changelog entry or other preserved record (Scope discipline, Axis 3) shows what changed when it was written. For how something behaves now, cite the code or a living doc."
+Then a blank line, the H2 heading `Changelog entries are records, not current behavior`, a blank line, and this body, verbatim: "For how something behaves now, cite the code or a living doc. A changelog entry or other preserved record (Scope discipline, Axis 3) shows what changed when it was written." These are the issue's two sentences with the instruction moved first, so the body leads with what to do.
 
 The rule reaches an agent that opens CHANGELOG.md with `Read`, a line-range read included (row 8). It does not reach an agent that quotes a CHANGELOG.md line straight from `Grep` output without opening the file (row 9). That gap is listed in Out of scope.
 
@@ -75,6 +75,7 @@ A hook, a deny rule and a `verify-sources` clause are heavier than a rule file, 
 18. [verified: `claude/.claude/CLAUDE.md:62,71,73`; `.claude/rules/citation-grammar.md`] "Scope discipline" and "Axis 3" are the global `CLAUDE.md`'s own names, and Axis 3's item 2 is "Changelog entries documenting past events". The parenthetical therefore resolves for every agent that loads the global file. It carries no `§`, so the citation grammar does not apply to it.
 19. [verified: `claude/.claude/CLAUDE.md:61`] Agents are told to `Grep` for the part they need and then `Read` that range, so a header note at the top of CHANGELOG.md is outside most reads.
 20. [unverified] How the motivating `plan-architect` dispatch reached the CHANGELOG entry, by `Grep` output or by a `Read`, was not checked. If it was by `Grep` alone, this rule would not have reached it (row 9).
+21. [engineer-verified: "Instruction first (Recommended)"] The rule body keeps the issue's two sentences with the instruction sentence first, shown to the engineer as the option "Instruction first (Recommended)" against "Issue's order verbatim".
 
 **Mechanisms:**
 - **M1. New `.claude/rules/changelog-entries.md` with `paths: ["CHANGELOG.md"]` and the issue's sentence as its body.** anchors: root, row1, row2, row7, row8, row10, row11, row12, row13, row18.
