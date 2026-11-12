@@ -450,7 +450,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   ```
 
 - **`cursor-adapter/`** — the translation core that lets this repo's hooks run under Cursor's local IDE, with no file in a consuming repo. The installer and generator that wire it to Cursor are specified in `.claude/plans/cursor-adapter.md`. Its files:
-  - `hook-shim.py` runs one unchanged hook on a Cursor payload and prints Cursor's hook output. It needs Python 3.14 or later and imports only the standard library. A generated command is to run it as `python3 -I -S hook-shim.py` with the recorded python3, so no `PYTHON*` variable, user site directory, `.pth` file or neighbouring module reaches it. The shim has a command-line contract, a record it reads and a set of faults it hands to its caller:
+  - `hook-shim.py` runs one unchanged hook on a Cursor payload and prints Cursor's hook output. The adapter supports python3 3.14 or later, the version CI runs. The shim imports only the standard library. A generated command is to run it as `python3 -I -S hook-shim.py` with the recorded python3, so no `PYTHON*` variable, user site directory, `.pth` file or neighbouring module reaches it. The shim has a command-line contract, a record it reads and a set of faults it hands to its caller:
     - Arguments:
       - An argument the parser rejects, an abbreviated flag included, ends the run with exit 1 and no output.
       - `--claude-event` (the Claude Code event) is required, and so is `--script` in `hook` mode.
@@ -491,6 +491,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
     - Context with no Cursor channel (any event other than `postToolUse` and `sessionStart`) is dropped until the Cursor-side hooks of Phase 5b carry it.
     - Output replacement (`updatedToolOutput`) is delivered for `MCP:` tools only, so `redact-credential-values.sh` does not redact tools' output under Cursor. The dropped replacement shows in the log's `drop` count.
     - A hook's deny, block or ask on an event with no channel for it delivers nothing. On `stop` and `subagentStop`, `continue: false` wins over a block decision, so no follow-up is sent.
+    - A `--fail-open` entry prints `{}` on every refusal, including `payload-malformed` and `payload-over-cap`, which a payload's author can cause, for example with a lone-surrogate escape in a Write's `content`. A Cursor entry that turns a hook's ask into a deny on a write tool must therefore be wired `--fail-closed`, or its targets covered by an independent fail-closed gate. Phase 3's generator is to wire such entries that way.
     - A fail-closed deny reaches Cursor only on an event with a block channel: `preToolUse`, `beforeShellExecution`, `beforeReadFile`, `beforeSubmitPrompt` and `subagentStart`. Cursor does not enforce `subagentStart`'s deny. Every other event prints `{}`.
     - A child that a hook leaves in its process group when it exits gets no signal from the wrapper, and a child outside the group gets none either. Each runs on until it exits. A call whose pipes such a child holds open ends at the shim's bound with the timeout outcome.
     - A workspace root of `/` makes the leading-`cd` exception accept every existing directory, because nothing lies outside `/`.

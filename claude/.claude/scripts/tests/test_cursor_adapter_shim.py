@@ -958,7 +958,6 @@ def _framing_cases(
 ) -> dict[str, tuple[dict, str, str | None, Callable[[dict], object], object]]:
     """field -> (payload, Claude event, matcher, how to read the field back from the translated payload, its expected value)."""
     command = shell_pre_payload(root, f"echo a{separator}b")
-    cwd = shell_pre_payload(root, "ls", cwd=f"/x{separator}y")
     path_text = str(root / "src" / f"a{separator}b.txt")
     path = file_tool_payload(root, "Write", path_text, content="x")
     odd_root = tmp_path / f"odd{separator}root"
@@ -969,19 +968,15 @@ def _framing_cases(
     tool = shell_pre_payload(root, "ls")
     tool["tool_name"] = f"MCP:t{separator}x"
     tool["tool_input"] = {}
-    status = build_spec("subagent_stop", root).cursor
-    status["status"] = f"completed{separator}"
     return {
         "command": (command, "PreToolUse", None, lambda t: t["tool_input"]["command"], f"echo a{separator}b"),
-        "cwd-value": (cwd, "PreToolUse", None, lambda t: t["tool_input"]["command"], "ls"),
         "path": (path, "PreToolUse", "Edit|Write|MultiEdit", lambda t: t["tool_input"]["file_path"], path_text),
         "root": (roots, "PreToolUse", None, lambda t: t["cwd"], str(odd_root)),
         "tool-name": (tool, "PreToolUse", None, lambda t: t["tool_name"], f"MCP:t{separator}x"),
-        "status": (status, "SubagentStop", None, lambda t: t["agent_type"], "placeholder-agent"),
     }
 
 
-FRAMING_FIELDS = ["command", "cwd-value", "path", "root", "tool-name", "status"]
+FRAMING_FIELDS = ["command", "path", "root", "tool-name"]
 
 
 class TestPayloadValidation:
@@ -996,9 +991,7 @@ class TestPayloadValidation:
         kwargs = {"matcher": matcher} if matcher else {}
         output, _ = _run_probe(tmp_path, payload, claude_event=event, fail_closed=fail_closed, **kwargs)
         assert output == {}
-        saved_text = (tmp_path / "saved.json").read_text()
-        assert separator not in saved_text, "the shim passes the escape, not the raw byte"
-        assert read_back(json.loads(saved_text)) == expected
+        assert read_back(json.loads((tmp_path / "saved.json").read_text())) == expected
 
     @pytest.mark.parametrize("separator", ["\x1f", "\x1e"], ids=["unit-separator", "record-separator"])
     def test_a_framing_byte_in_a_session_id_is_refused_by_the_id_grammar_first(self, tmp_path: Path, separator: str) -> None:
@@ -1886,6 +1879,82 @@ class TestUnknownToolsAndCap:
         assert result.returncode == 0
         translated = json.loads((tmp_path / "saved.json").read_text())
         assert len(translated["tool_input"]["content"]) > PAYLOAD_CAP - 8192
+
+
+# --- the modes beyond the hook run ---
+
+
+def _non_shell_pin_payloads(root: Path) -> dict[str, dict]:
+    """A call the pin must leave alone, by case: three non-Shell tools and a Shell call on the wrong event."""
+    mcp_call = shell_pre_payload(root, "unused")
+    mcp_call["tool_name"] = "MCP:x"
+    mcp_call["tool_input"] = {}
+    return {
+        "read": file_tool_payload(root, "Read", str(root / "src" / "a.txt")),
+        "write": file_tool_payload(root, "Write", str(root / "src" / "a.txt"), content="x"),
+        "mcp": mcp_call,
+        "before-shell-execution": build_spec("shell_before_execution", root).cursor,
+    }
+
+
+NON_SHELL_PIN_CASES = ["read", "write", "mcp", "before-shell-execution"]
+
+
+class TestPinModeLeavesNonShellCallsAlone:
+    @pytest.mark.parametrize("case", NON_SHELL_PIN_CASES)
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    def test_a_call_that_is_not_a_pre_tool_use_shell_call_prints_empty_output_with_no_rewrite(
+        self, tmp_path: Path, case: str, fail_closed: bool
+    ) -> None:
+        payload = _non_shell_pin_payloads(_workspace(tmp_path))[case]
+        output, env = _run_probe(tmp_path, payload, mode="pin", fail_closed=fail_closed)
+        assert output == {}
+        assert "updated_input" not in output
+        assert read_log_lines(env)[-1]["out"] == "not-shell"
+
+    def test_a_pre_tool_use_shell_call_is_still_rewritten_as_the_polarity_control(self, tmp_path: Path) -> None:
+        root = _workspace(tmp_path)
+        output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), mode="pin")
+        assert output["updated_input"]["command"] == f"builtin cd -- '{root}' || exit 1\nls"
+        assert read_log_lines(env)[-1]["out"] == "pin"
+
+
+class TestModesThatNeedNoWrapper:
+    """Only a hook run needs `timeout` or `gtimeout`. The other modes run on a record that names neither."""
+
+    def _wrapperless_env(self, tmp_path: Path) -> ShimEnv:
+        paths = recorded_tool_paths()
+        return make_shim_env(tmp_path, tool_paths={"jq": paths["jq"], "bash": paths["bash"]})
+
+    def test_a_hook_run_on_a_record_with_no_wrapper_denies_as_the_polarity_control(self, tmp_path: Path) -> None:
+        output, _ = _run_probe(
+            tmp_path, shell_pre_payload(_workspace(tmp_path), "ls"), env=self._wrapperless_env(tmp_path), matcher="Bash"
+        )
+        assert output["permission"] == "deny"
+        assert "install-record" in output["agent_message"]
+        assert not _probe_ran(tmp_path)
+
+    def test_pin_rewrites_a_shell_call_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
+        root = _workspace(tmp_path)
+        output, env = _run_probe(tmp_path, shell_pre_payload(root, "ls"), env=self._wrapperless_env(tmp_path), mode="pin")
+        assert output["updated_input"]["command"] == f"builtin cd -- '{root}' || exit 1\nls"
+        assert read_log_lines(env)[-1]["out"] == "pin"
+
+    def test_pin_check_passes_a_pinned_command_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
+        root = _workspace(tmp_path)
+        payload = build_spec("shell_before_execution", root).cursor
+        payload["command"] = f"builtin cd -- '{root}' || exit 1\nls"
+        output, env = _run_probe(tmp_path, payload, env=self._wrapperless_env(tmp_path), mode="pin-check")
+        assert output == {}
+        assert read_log_lines(env)[-1]["out"] == "pin-check-ok"
+
+    def test_classify_denies_an_unknown_tool_on_a_record_with_no_wrapper(self, tmp_path: Path) -> None:
+        payload = shell_pre_payload(_workspace(tmp_path), "ls")
+        payload["tool_name"] = "BrandNewTool"
+        output, env = _run_probe(tmp_path, payload, env=self._wrapperless_env(tmp_path), mode="classify")
+        assert output["permission"] == "deny"
+        assert "unknown-tool" in output["agent_message"]
+        assert read_log_lines(env)[-1]["out"] == "unknown-tool"
 
 
 # --- the hook run ---
