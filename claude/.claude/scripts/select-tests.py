@@ -134,10 +134,10 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 # production constant TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 TRANSCRIPT_REDACTION_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_redaction.py"
-# test_transcript_review_trace.py reads SKILL.md files by path. It is a
+# test_transcript_review_trace_spawn_rounds.py reads SKILL.md files by path. It is a
 # SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
 # selecting that whole domain from a SKILL.md edit.
-TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
+TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace_spawn_rounds.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -728,12 +728,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. test_pr_create_preflight.py
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
-# 1 and 8 name to the script's. test_transcript_review_trace.py
+# 1 and 8 name to the script's. test_transcript_review_trace_spawn_rounds.py
 # (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
 # step names. test_pr_diff_against_base.py (SCRIPTS_TESTS_DIR) reads it for the
 # DIFF_EMPTY: token step 3 keys its halt on. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
-# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
+# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH
 # (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate
 # and completion recipes. Standalone row for the same reason as
 # CODE_REVIEW_SKILL_MD's second row; it names the one reading file rather
@@ -900,7 +900,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_TEST_PATH,)),
+    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH,)),
     (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PLAN_IT_SKILL_MD, (PLAN_SHAPE_TEST_PATH,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
