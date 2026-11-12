@@ -267,6 +267,8 @@ class TestAllowLists:
         [
             pytest.param("/work/re$po/skill", id="skill_dir_with_character_outside_the_path_class"),
             pytest.param("/work/../skill", id="skill_dir_with_dot_dot_segment"),
+            pytest.param("../skill", id="skill_dir_with_leading_dot_dot_segment"),
+            pytest.param("/work/repo/..", id="skill_dir_with_trailing_dot_dot_segment"),
             pytest.param("/work/re`po/skill", id="skill_dir_with_backtick"),
             pytest.param("/work/re'po/skill", id="skill_dir_with_single_quote"),
             pytest.param("/work/re;po/skill", id="skill_dir_with_semicolon"),
@@ -341,9 +343,32 @@ class TestAllowLists:
         assert compaction_context._is_allowed_path("/ab") is True
         assert compaction_context._is_allowed_path(f"/a{character}b") is False
 
-    def test_dot_dot_inside_a_directory_name_is_accepted_and_as_a_whole_segment_is_rejected(self):
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("../a", id="dot_dot_as_the_first_segment"),
+            pytest.param("/work/a/../b", id="dot_dot_as_an_interior_segment"),
+            pytest.param("/work/a/..", id="dot_dot_as_the_last_segment"),
+        ],
+    )
+    def test_dot_dot_as_a_whole_segment_is_rejected_in_any_position(self, path):
+        assert compaction_context._is_allowed_path(path) is False
+
+    def test_dot_dot_inside_a_directory_name_is_accepted(self):
         assert compaction_context._is_allowed_path("/work/a..b/skill") is True
-        assert compaction_context._is_allowed_path("/work/a/../b") is False
+        assert compaction_context._is_allowed_path("/work/a/..b") is True
+        assert compaction_context._is_allowed_path("/work/a/b..") is True
+
+    def test_cwd_holding_a_dot_dot_segment_gives_no_plan_line_though_the_resolved_plan_exists(self, tmp_path):
+        root = tmp_path / "root"
+        plan = make_plan_checkout(root, "x")
+        (root / "sub").mkdir()
+        dot_dot_cwd = root / "sub" / ".."
+        dot_dot_records = [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(dot_dot_cwd))]
+        control_records = [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+
+        assert PLAN_LINE_PREFIX not in block_for(tmp_path, dot_dot_records)
+        assert f"`{plan}`" in block_for(tmp_path, control_records)
 
     @pytest.mark.parametrize("character", list("._/@+-"), ids=lambda c: f"u{ord(c):04x}")
     def test_path_class_accepts_each_character_inside_it(self, character):
@@ -477,6 +502,16 @@ class TestPlanLine:
         block = block_for(tmp_path, [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(inner))])
 
         assert f"`{plan}`" in block
+
+    def test_worktree_nested_under_a_main_checkout_names_the_nested_plan_not_the_outer_one(self, tmp_path):
+        outer_plan = make_plan_checkout(tmp_path / "main", "x")
+        nested_root = tmp_path / "main" / ".claude" / "worktrees" / "feature-x"
+        nested_plan = make_plan_checkout(nested_root, "x", git_as_file=True)
+
+        block = block_for(tmp_path, [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(nested_root))])
+
+        assert f"`{nested_plan}`" in block
+        assert f"`{outer_plan}`" not in block
 
     def test_checkout_root_reached_through_a_symlinked_ancestor_names_the_plan_under_the_recorded_path(self, tmp_path):
         real_parent = tmp_path / "real"
