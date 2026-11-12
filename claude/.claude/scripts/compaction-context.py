@@ -210,6 +210,8 @@ def _quoted_text(thread: Sequence[dict], index: int) -> str | None:
     if not _is_prompt_candidate(rec):
         return None
     text = _record_text(rec)
+    # A prompt holding a command-name tag after other text is quoted as `/NAME args` when a skill-load record
+    # follows it directly, which drops the text around the tag.
     slash_match = review_rounds._SLASH_COMMAND_RE.search(text)
     if slash_match and index + 1 < len(thread) and _is_skill_load(thread[index + 1]):
         return _slash_invocation_quote(slash_match.group(1), text)

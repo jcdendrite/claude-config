@@ -201,11 +201,29 @@ class TestCmdUserInput:
         ])
         user_input.cmd_user_input(_user_input_args())
         out = capsys.readouterr().out
-        assert "INITIAL" in out
-        assert "~~~text\ntyped prompt\n~~~" in out
+        assert "**[? · INITIAL · unknown]**\n~~~text\ntyped prompt\n~~~" in out
         assert "- Fresh prompts: 1" in out
         assert "- Explicit corrections (struggle-phrase match): 0" in out
         assert "EXPLICIT_CORRECTION" not in out
+
+    def test_compact_summary_with_a_correction_phrase_after_the_typed_prompt_is_not_a_correction(self, fake_projects, capsys):
+        """A summary record after the typed prompt reaches the correction classifier when the
+        exclusion fails, so it is counted and listed by --corrections-only."""
+        summary_text = "You hallucinated the earlier answer."
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("typed prompt", branch="feat"),
+            _ui_user(summary_text, branch="feat", isCompactSummary=True),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "- Explicit corrections (struggle-phrase match): 0" in out
+        assert summary_text not in out
+        assert "- Fresh prompts: 1" in out
+
+        user_input.cmd_user_input(_user_input_args(corrections_only=True))
+        out_corrections_only = capsys.readouterr().out
+        assert summary_text not in out_corrections_only
+        assert "EXPLICIT_CORRECTION" not in out_corrections_only
 
     def test_empty_string_plain_content_included_no_strip_guard(self):
         """Pin actual behavior: the plain-string content path has no .strip() guard,
