@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -62,3 +63,21 @@ def isolate_git_from_the_hosts_global_config(monkeypatch: pytest.MonkeyPatch):
     overrides this."""
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def fresh_launch_abort_flag(monkeypatch: pytest.MonkeyPatch):
+    """`msmr.abort_launches()` sets a process-wide flag that is never cleared. A block whose worker fails calls
+    it, and it would then make every later real `_run_claude_to_completion` call in the same worker raise."""
+    import measure_subagent_model_resolution as msmr
+
+    monkeypatch.setattr(msmr, "_launches_aborted", threading.Event())
+
+
+@pytest.fixture
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A replay world under `tmp_path`: an account config dir, a fixture temp dir, an ignored local dir and a
+    source repo with one qualifying commit. Replay tests that need more build their own with the builder."""
+    from test_replay_bench_runner_support import build_replay_world
+
+    return build_replay_world(tmp_path, monkeypatch)

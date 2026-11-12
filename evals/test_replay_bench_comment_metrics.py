@@ -264,7 +264,7 @@ class TestDecoding:
         assert classification.words == {1: 1}
 
     def test_an_added_line_number_past_the_end_of_the_text_raises(self):
-        with pytest.raises(ValueError, match="m.py has 1 lines"):
+        with pytest.raises(ValueError, match="'m.py' has 1 lines"):
             comment_metrics.classify_file("m.py", b"x = 1", [2])
 
 

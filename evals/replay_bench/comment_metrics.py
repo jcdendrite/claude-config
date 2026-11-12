@@ -189,7 +189,7 @@ def classify_file(path: str, data: bytes, added_line_numbers: Iterable[int]) -> 
         return FileClassification({number: LineClass.UNCLASSIFIED for number in numbers}, {}, undecodable=True)
     lines = text.split("\n")
     if numbers and max(numbers) > len(lines):
-        raise ValueError(f"{path} has {len(lines)} lines but the diff adds line {max(numbers)}")
+        raise ValueError(f"{path!r} has {len(lines)} lines but the diff adds line {max(numbers)}")
     if is_python:
         return _classify_python(text, lines, numbers)
     if is_prose:

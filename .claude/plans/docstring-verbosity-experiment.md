@@ -236,10 +236,18 @@ An attempt whose stdout holds no line fails as `launch-no-output` before `evalua
   - a path under the local dir;
   - a path in another `FIXTURE_DIR_PREFIX` directory.
 
-The Bash check splits each command with `shlex`, and resolves `~` against the home and relative tokens against the fixture.
-- The run's record keeps every Bash command, and every absolute token outside the fixture that no rule above fails.
+The module docstring of `evals/replay_bench/checks.py` holds the full contract. In summary, the Bash check is a bounded scan of the command text (row 161). The summary leaves out two rules the docstring states: a directory that holds a guarded path while inside its tree is a hit, and a command `shlex` cannot split is also scanned as raw text. `<live>/.git` is among the guarded roots.
+- It removes backslash-newline, splits the command per line, then splits each line with `shlex`. Each word and its shell-separator pieces is a candidate.
+- A candidate over `MAX_PATH_CHARS` is skipped and recorded as unparsed.
+- Only `~`, `$HOME`, `${HOME}`, `$PWD` and `${PWD}` expand, and `$PWD` is the fixture dir. Relative tokens resolve against the fixture.
+- Containment is bounded to the config dir, the live checkout roots and `.git`, the local dir, and the `FIXTURE_DIR_PREFIX` directories. A word at or below a target is a hit.
 - A command `shlex` cannot split is recorded as unparsed.
+
+Both checks, and `check_tool_call_paths` as a whole:
+- The run's record keeps every Bash command, and every absolute token outside the fixture that no rule above fails.
 - A `tool_use` whose command or target path is missing or not a string, and a token holding a NUL byte, are recorded as unparsed and never resolved.
+- A denied Bash command or write tool reached nothing, so it fails neither `out-of-fixture-path` nor `out-of-fixture-write`. It still counts toward a `bare` run's toolkit reach.
+- `check_tool_call_paths` also returns `transcript-unreadable` (`runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE`) when the transcript is unreadable, its last line is torn or lines were skipped. Phase 4 calls it on the subagent sidecar of every attempt.
 - The check reads literal paths only, so it detects and does not contain.
 
 Each run also records how many `tool_result` entries carry a permission-rule `non_execution_kind`, which a hook denial and a permission-flow denial both carry (row 48). A denied write can empty one arm's diff without failing validity, so `smoke` prints the count and `summarize` reports it by arm. Each run also records its Reads of Read-allow-list paths, each with whether it ran or was denied, and the paths of its denied Reads of other toolkit files.
@@ -281,8 +289,15 @@ Each run also records how many `tool_result` entries carry a permission-rule `no
   - `analysis-error`: the diff, the classifier or a check raised after the launch, or a post-run git call failed or timed out. The run keeps the attempt's cost.
 - Neither reaches `main()` as an exit 2. A task-specific one costs its own block, and the per-arm stop (Campaign) halts the campaign with exit 1 only after two such blocks in a row.
 - When `fixture-error` or `analysis-error` comes from a git timeout, its `missing_detail` reads `git timed out after <limit> s; raise --fixture-git-timeout-s`, naming the limit in force.
-- One attempt can meet several reasons. An instrument reason outranks every other, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`, kept as one constant.
-- Neither `run` nor `smoke` retries an instrument reason. The attempt's run ends missing under that reason, because such a reason is evidence about the instrument that a clean second attempt would hide, and `run` then halts at the block's end (Campaign).
+- One attempt can meet several reasons. One attempt can meet several reasons. The instrument reasons are every reason the instruction-load check or the account-hook check returns: `arm-leak`, `instrument-missing`, `instrument-log-invalid`, `fixture-instruction-load` and `account-hooks-missing`. All five sit in one constant, and the precedence between them is:
+  - `arm-leak` and `fixture-instruction-load` outrank every other reason, so a timed-out attempt whose log shows a `bare` leak records `arm-leak`;
+  - `instrument-missing`, `instrument-log-invalid` and `account-hooks-missing` outrank only when the run reached its end;
+  - a timeout, `launch-no-output`, `launch-error`, `no-result-event` or a missing session store keeps its own reason, because a run that never finished leaves a log that is often absent or torn;
+  - `result-error`, `budget` and `api-error-final-record` count as reaching the end.
+
+  [unverified] An auth or API error reported as a result event before the hooks fire would then record the absence reasons and halt the campaign instead of retrying. Whether the hooks fire before the first model call is unchecked.
+- A launch call that raises `OSError` records `launch-error`, charged at the cap and retried once. It is not an instrument reason. Its detail carries no argv or environment value.
+- Neither `run` nor `smoke` retries an instrument reason. The attempt's run ends missing under that reason. A clean second attempt would hide it, because such a reason is evidence about the instrument. `run` then halts at the block's end (Campaign).
 - Each attempt's cost reaches the spend file as the attempt ends (Campaign).
 
 **Diff and classifier (`replay_bench/comment_metrics.py`).** After the session ends, the runner never runs git with the fixture's own `.git`, which the agent could have rewritten. It never reads a changed file through its work-tree path either (rows 49, 50).
@@ -355,7 +370,7 @@ A resume does these things, in order, before its first launch:
 - it takes the store's lock with `RunStore.acquire_lock`, which every later step runs under (row 156);
 - it repairs the spend file's torn tail;
 - it runs `sweep_abandoned` once for each account projects root in the campaign. Each call returns the whole store's pending entries (row 85), so the resume merges them into one set and reruns each swept task's block once. It charges no swept entry (Spend file);
-- it prints the count of swept entries that carry a session ID and have no spend line, as `<N> launched attempts have no spend line and were not charged`. When N is above zero, the resume's total line below and its ceiling line (spend guards) each say they leave those attempts out;
+- it prints the count of swept entries that carry a session ID and have no spend line, as `<N> logged attempts with a session ID have no spend line and were not charged`, since an attempt killed before its launch counts too. When N is above zero, the resume's total line below and its ceiling line (spend guards) each say they leave those attempts out;
 - it prints the spend file's total for blocks not yet complete;
 - it deletes the campaign's `attempts/` directory whole with `remove_tree_reporting_failure`:
   - an `attempts/` that is a symlink makes `run` refuse with exit 2, naming the path, before any delete;
@@ -760,7 +775,7 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - An account whose history keeps no task with a rule-matching changed path needs a larger `--max-count`, or a task set from another source repo on the same account.
     - A residual: the engineer's pick could match no rule while the `toolkit` subagent loads a rule from another file, and then `bare`'s clean read of the pick shows nothing.
 140. [unverified] Superseded by row 145, under row 143's choice. With the rule-path read required of both runs, the `bare` smoke run shows the exclude holding for that path. In a campaign, a broken exclude voids only the `bare` runs that touch a rule-matching file, so the leak stop halts the campaign at the first `arm-leak` attempt, a retried one included, rather than letting the per-arm stop wait for a block with no valid `bare` run.
-141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
+141. [engineer-verified: "Accept the trimmed sizes (Recommended)"] Superseded by row 163 for the second PR's figure. The engineer selected this label when asked whether to accept the trimmed plan's sizes, about 2,890 lines for the first PR, about 6,300 for the second and about 9,190 together, and the dropped `write_fixture_extras` refactor. The label covers acceptance of those figures and that drop, nothing more. The option's description was the session's proposal.
 142. [verified: a reviewer's read-only check of this machine, relayed by the dispatch] Here `~/.claude/agents` and `~/.claude/skills`, and each other account's, are directory links into the one config checkout, so every granted realpath is an in-tree file. [unverified] That holds only on a folded stow install. A consumer whose `agents/` or `skills/` already existed as a real directory gets per-file links beside their own files, which the grant then covers too.
 143. [engineer-verified: "Take the lighter fix (Recommended)"] Asked whether to keep the round-2 fix for the vacuous `bare` smoke check or take a lighter one, the engineer chose the lighter fix. The label covers that choice, nothing more.
 144. [unverified] Superseded by row 160 for the campaign leak stop at the first `arm-leak`, which `run`'s instrument halt provides. The session's proposal, not the engineer's words: keep only a printed note at smoke time when the `bare` run read no rule-matching file, state the residual in the ledger and the README, and rely on the per-run `arm-leak` check on later `bare` runs. The round-2 fix it replaced was a required `smoke --rule-path`, the `control-unexercised` and `exclude-unexercised` outcomes, a campaign leak stop at the first `arm-leak` and a missing-reason field on spend-file lines. The note's detection is this plan's design (Campaign).
@@ -814,6 +829,17 @@ Arm C ships later as a pair of arms sharing one delivery route, so their contras
     - It triggers on any attempt that ends under an instrument reason. Neither `run` nor `smoke` retries such an attempt, because a clean retry would hide the evidence (Retry).
     - `run` halts at the block's end, after the block's other runs finish and the block is marked complete with the failing runs recorded missing. No resume reruns it, so each instrument halt costs at most one task and never blocks a resume.
     - The way forward is to fix the cause and resume. Because the halt comes at the first `arm-leak` attempt, a broken `bare` exclude shows on the first `bare` run that reads a rule-matching file (row 145).
+161. [verified: `evals/replay_bench/checks.py`, committed as `681edfb5`; 263 passing tests] Phase 3 narrowed the Bash scan to the bounded contract under Approach, after a third-round architect consult found the lexical scan accreting defensive layers. Accepted residuals, which the README states:
+    - heredoc and quoted-pattern false hits, such as `grep -rn "~/.claude"`;
+    - `grep -r x ~` and `bash -c` text;
+    - a denied Read, Grep or Glob call, since the runner's validity step has no notion of denial;
+    - a Read of `<live>/.git` and of a linked worktree's common git dir;
+    - the denial marker was verified on one CLI build only.
+
+    Phase 4 shows each failing token in the run record or `smoke`.
+162. [unverified] The session's design: `block_calibration_verdict` reads only the `toolkit` log, so the "both logs" wording of earlier rows is vestigial. The forged-log invariant lives in Phase 4. The runner takes the attempt dir and the fixture dir. It derives the verdict from the attempt path only, so a log written into the fixture is never read. Phase 3's pure functions cannot show that.
+163. [engineer-verified: "Proceed anyway (Recommended)"] Asked whether to proceed past the diff-size gate for the second PR as one PR after the architect recommended one PR, the engineer selected this label. The gate showed the measured Phase 3 size of 2,658 lines, not the 7,500 to 8,000 projection. The label covers proceeding as one PR past the gate, nothing more. [unverified] The projected final size of 7,500 to 8,000 lines is the architect's inference, and the engineer has not accepted that figure by name. Row 141's 6,300 stands as the last figure the engineer accepted by name until they do.
+164. [verified: Verification step 1b, as relayed] Step 1b ran against model `claude-sonnet-5` and CLI `2.1.322`. It found a `SubagentStop` send-back shape, which Phase 4 reads. It left eight environment names unverified, and Phase 4 treats them as a residual the README states: `AI_AGENT`, `CLAUDE_EFFORT`, `CLAUDE_PID`, `COREPACK_ENABLE_AUTO_PIN`, `GIT_EDITOR`, `NoDefaultCurrentDirectoryInExePath`, `PYTEST_ADDOPTS` and `__CF_USER_TEXT_ENCODING`. No figure from step 1b is published (rows 9, 10).
 
 **Mechanisms:**
 - **M1. Task mining from first-parent commits.** Tasks states the selection rules, refusals, briefs and recorded fields. anchors: row6, row7, row9, row33, row34, row45, row46, row61, row64, row82, row92, row96, row100, row101, row102, row103, row104, row105, row106, row109, row130, row131.
@@ -1070,12 +1096,12 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - kept: a `.gitattributes` holding only `*.py text eol=lf`;
   - live git, pinning row 131: `git archive` of a tree whose `.gitattributes` says `tests export-ignore` lists no `tests/` path.
 
-**Phase 3 — run checks (second PR).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py`.
+**Phase 3 — run checks (second PR; committed as `681edfb5`).** Verify: `scripts/venv-run.sh pytest evals/test_replay_bench_checks.py evals/test_replay_bench_checks_transcript.py`. The tests split across `evals/test_replay_bench_checks.py`, `evals/test_replay_bench_checks_transcript.py` and the helper-only `evals/test_replay_bench_checks_support.py`, each under the 1,000-line cap.
 - `evals/replay_bench/checks.py` (new):
   - the hook-log parser with its field-shape checks, and the instruction-load check from Approach, driven by the arm's expected and failing dispatcher loads;
   - the subagent's first-turn prompt size from its transcript;
   - the exclude note from Campaign. Only when Verification step 1b finds a trigger field (row 146) does this file read the optional trigger-path field on a `path_glob_match` line and check whether a transcript shows a Read that ran of a trigger path, compared relative to each run's fixture. Without one, the note is the residual sentence alone, and neither that code nor its exclude-note cases below exist;
-  - the block-calibration verdict from Campaign, a pure function of the `toolkit` and `bare` runs' parsed logs and first-turn sizes, the account `CLAUDE.md`'s character count, the two agent bodies' character counts, and the character counts of the rule files the `toolkit` dispatcher loaded at `session_start`. It returns every failed condition in order;
+  - the block-calibration verdict from Campaign, a pure function of the `toolkit` run's parsed log (row 162), both runs' first-turn sizes, the account `CLAUDE.md`'s character count, the two agent bodies' character counts, and the character counts of the rule files the `toolkit` dispatcher loaded at `session_start`. It returns every failed condition in order;
   - the instrument reasons as one constant, which the runner's retry rule reads (Retry);
   - the account-hook check under `<config-dir>/sessions/`;
   - the write-path and Bash-path checks over the subagent transcript's `tool_use` entries, reusing `review_bench.runner`'s `live_checkout_leak_targets`, `is_changed_file_leak` and `is_config_dir_leak`;
@@ -1126,7 +1152,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - with it, a `bare` transcript with no such Read, and one whose only such Read was denied, print the not-exercised line;
     - with it, a trigger field that is absent, not a string, or holds a NUL byte leaves the line out without raising, and each of these cases also prints the residual sentence;
   - Read-allow-list records: a listed Read that ran, a listed Read denied by a hook and one denied by the permission flow, and a denied Read of an unlisted toolkit file recorded by path;
-  - a forged log written into the fixture, never read;
+  - the forged-log case moves to Phase 4's runner tests (row 162);
   - `bare` reading a toolkit agent file through Read and through Bash fails `arm-leak`, and the same reads pass `toolkit`;
   - write paths: an Edit inside the fixture passes, and a Write outside it fails;
   - Bash paths:
@@ -1156,7 +1182,16 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - `min_code_lines == max_code_lines` is accepted, and a minimum one above the maximum is refused with both flag names in the message.
 - `evals/replay_bench/arms.py` (new): the `Arm` record with its expected and failing dispatcher loads, its fixture settings and its allowed fixture loads; the `bare` and `toolkit` registry; `bare`'s `claudeMdExcludes` generator with its call of the shared character check and its settings text; the `bare-writer` file text built from the account's `code-writer.md` frontmatter; and both agents' body character counts for the block calibration, `code-writer`'s read from the account's `<config-dir>/agents/code-writer.md`.
 - `evals/replay_bench/launch.py` (new): the environment allowlist as data, the `env -i` prefix, the readiness argv, the `--settings` JSON with the instrument hook, `UnsafeConfigPathError` with the one character check both generators share, and the Read allow-list generator with the `--allowedTools` argv tail.
-- `evals/replay_bench/runner.py` (new):
+- The runner entry below is split across modules so each file stays under the 1,000-line cap, by this map:
+  - `account.py`: the account preflight and its readiness check;
+  - `attempt.py`: one attempt, its retry and its reason precedence;
+  - `campaign.py`: the block and campaign loop, resume and the sweep;
+  - `spend.py`: the spend file;
+  - `smoke.py` and `smoke_pass.py`: `smoke` and the smoke-pass record;
+  - `summary.py`: `summarize`;
+  - `diffing.py`, `records.py` and `render.py`: the attempt diff, the run record, and the escaping every printed refusal and `missing_detail` goes through;
+  - `runner.py`: `FIXTURE_GIT_TIMEOUT_S`, `run_block` and the environment read.
+- The runner behavior, under the modules above (new):
   - the account preflight, its account key, its `PATH` check, its call of both generators, and its readiness check with the CLI version floor, with failure text in the probe's shape;
   - the preflight's names-only list of every variable the launch drops;
   - `FIXTURE_GIT_TIMEOUT_S`:
@@ -1164,7 +1199,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
     - it is the `--fixture-git-timeout-s` default;
     - a one-line comment cites this plan's Fixture section as its basis;
   - the hook-log read that waits for the log's size to hold across two polls, as Instruction-load check states;
-  - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`;
+  - one attempt: fixture, launch, validity, checks, diff, metrics, and cleanup in a `finally`. The checks step calls `check_tool_call_paths` with `config_dir` on the subagent sidecar. The dispatcher transcript stays `evaluate_run_validity`'s. The step fails the run on `transcript-unreadable` (Validity, the Bash-check contract);
   - retry-then-missing, with the cap charge, `launch-no-output`, and `fixture-error`, a generator's `UnsafeConfigPathError` included with its path in `missing_detail`, and `analysis-error` and every instrument reason without a retry;
   - the instrument reason outranking every other reason on one attempt;
   - every config-tree path and variable name it prints, in `!r` form;
@@ -1211,6 +1246,16 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - Direnv and readiness timeouts: a limit of 1 s, passed to the readiness check as its `timeout_s` parameter, a fake that sleeps 10 s, and the refusal asserted within 5 s.
   - Twenty parallel hooks: every invocation joined within 30 s.
   - The FIFO case runs the post-run analysis in a daemon thread joined with a 30 s deadline, and fails with a message naming the FIFO when the deadline passes.
+- `evals/test_replay_bench_runner.py` attempt-validity cases, each with a stub `launch=`, run for both arms:
+  - forged log (row 162). The stub writes a real log into the attempt dir and a differing log under the same file name at the fixture root. Both directions are asserted on the run's verdict:
+    - a real log with no dispatcher `CLAUDE.md` load plus a forged log with one gives `instrument-missing`;
+    - a clean real log plus a poisoned forged log passes;
+  - `transcript-unreadable` from `check_tool_call_paths` on the subagent sidecar. The damaged sidecar passes `evaluate_run_validity` first, with valid findings text and the damage in a non-final line, so only the new call can produce the reason:
+    - a skipped line and a torn tail each fail the run `transcript-unreadable`;
+    - an OSError on the sidecar is a control that does not count toward the wiring, since `evaluate_run_validity` returns the same reason for it;
+  - `config_dir` and the other reasons reach the record: a Bash command `ls <config_dir>` fails `out-of-fixture-path`, and a Write outside the fixture fails `out-of-fixture-write`. Each asserts the reason, the failing token or command in the run record and in `smoke`'s printout;
+  - these three reasons are not in `INSTRUMENT_REASONS`, so each retries once, and a Retry case pins that;
+  - a no-false-hit control: the scan over command shapes taken from the Verification step 1a and 1b transcripts, such as heredocs with paths in prose, leaves a `bare` run clean. Values stay synthetic.
 - `evals/test_replay_bench_runner.py` launch and environment cases:
   - launch argv: the `env -i` prefix, `--permission-mode acceptEdits`, a `--settings` JSON holding only the instrument hook, compared as parsed JSON, and `--allowedTools` with its entries last;
   - Read allow list, for a `tmp_path` home whose `.claude` and a separate `tmp_path` config dir each hold stowed-style links into a third directory:
@@ -1336,7 +1381,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - the cumulative stop and the account stop each fire before the next block, and the account stop halts the whole campaign;
   - two repos with one config dir share one account's spend, and two with different config dirs do not;
   - after a crash between launches and `mark_block_complete`, the resume's stops count the lost block's spend lines when deciding whether the next block launches;
-  - a swept entry with a session ID and no spend line is swept and its block reruns, it gets no charge, the resume's stop arithmetic equals the sum of the spend lines, and the resume prints `1 launched attempts have no spend line and were not charged` with its total and ceiling lines saying they leave it out;
+  - a swept entry with a session ID and no spend line is swept and its block reruns, it gets no charge, the resume's stop arithmetic equals the sum of the spend lines, and the resume prints `1 logged attempts with a session ID have no spend line and were not charged` with its total and ceiling lines saying they leave it out;
   - a spend append that raises `OSError` halts `run` with exit 1 and leaves its block incomplete;
   - an interrupt during a live launch leaves the aborted attempt's cap-charge line in the spend file when `main()` returns;
   - a torn last spend line is truncated at resume before the first append, and the next appended line parses;
@@ -1448,6 +1493,15 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - that the block calibration's body term is a character-count estimate, so a gap close to the margin is weak evidence either way;
   - the residual that a hook line can be lost only when its append takes longer than the model turn that follows its load (row 121);
   - that Bash commands outside `acceptEdits`' auto-approved set and the account's allow rules are denied in both arms, so a replay agent cannot run, for example, a test suite the account does not allow, and the permission-denial count shows how often (row 122);
+  - the reason `launch-error`: a launch call that raises `OSError` is charged at the cap, retried once, and not an instrument reason;
+  - the Retry section's two-tier precedence rule, with the reached-the-end exception for the three absence reasons;
+  - accepted residuals, which the README states:
+    - the run-check residuals of row 161: heredoc and quoted-pattern false hits, which fail a `bare` run `arm-leak` and halt `run` at the block's end (row 160); `grep -r x ~` and `bash -c` text; denied Read, Grep and Glob calls; a Read of `<live>/.git` and of a linked worktree's common git dir; and the single CLI build the denial marker was verified on;
+    - the eight environment names step 1b left unverified (row 164);
+    - that the charged cost is the dispatcher's `total_cost_usd`, and whether it covers the subagent's spend is unverified, so the spend stops may undercount (row 65);
+    - a descendant an agent leaves running after a normal end of stream, or a grandchild of a hung `direnv` probe, can outlive its attempt;
+    - an interrupt can take as long as one fixture build;
+    - that the instrument log's absolute path appears in the child's `--settings` argv (row 47);
   - the residual risk: nothing contains a replay agent beyond `acceptEdits`' working-directory scope, the account's permission rules and the runner's Read grants, so a steered agent can read or write anything those allow (rows 45, 47);
   - the bench's trust warning (row 45);
   - the trusted-author list's purpose, which is risk reduction and not containment: it limits how much third-party text reaches an agent holding Bash. It reads raw identities, so a `.mailmap` cannot widen it. Its limits (row 61):
@@ -1464,7 +1518,7 @@ The revisions since step 1a add no new file. They edit `evals/replay_bench/tasks
   - that it needs Python 3.12 or newer, git 2.32 or newer and Claude Code 2.1.271 or newer, run through `scripts/venv-run.sh python3`;
   - a pointer to this plan for the design.
 
-The second PR's files are those of Phases 3, 4 and 5b. This plan estimates them at about 6,000 lines, and the second PR restates the figure when it edits this file. The figure is an estimate, not a count: it takes about 15 lines per listed test case plus a share of the code each case exercises. That is about 300 below the 6,300 row 141 accepted. It drops by about 60 more when Verification step 1b finds no trigger field (row 146).
+The second PR's files are those of Phases 3, 4 and 5b. Phase 3 measures 2,658 lines (895 in `checks.py`, 1,763 in three test files). The architect's inference from that is a final size of about 7,500 to 8,000 lines, which is above the 6,300 row 141 accepted. Phases 4 and 5b are still estimates, not counts, and the second PR restates the figure again when it edits this file. The engineer's "Proceed anyway" on the diff-size gate is on record in row 163, which says what that label does and does not cover.
 
 Projected diff: about 3,790 lines for the first PR as merged (3,755 added, 36 removed). `git show --numstat 330a03a2` measures it over every file but this plan, after the code-review fixes. The parts:
 - the new `replay_bench` files and their tests hold most of it;

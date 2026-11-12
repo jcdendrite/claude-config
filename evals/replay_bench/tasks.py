@@ -46,6 +46,7 @@ _ROOT_MCP_CONFIG_NAME = ".mcp.json"
 
 _WORKTREE_OPTOUT_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "worktree-optout"
 BARE_WRITER_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "agents" / "bare-writer.md"
+FIXTURE_SETTINGS_RELPATH = Path(fixture_repo._PROJECT_CONFIG_DIR_NAME) / "settings.json"
 _PROJECT_CONFIG_EXCLUDE_LINE = f"/{fixture_repo._PROJECT_CONFIG_DIR_NAME}/\n"
 
 _TASK_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{12}")
@@ -72,7 +73,8 @@ _EXPORT_ATTRIBUTES = (b"export-ignore", b"export-subst")
 
 
 class TaskSourceError(ValueError):
-    """A source repository, rev or trusted-author argument the miner refuses, or a commit it cannot read safely."""
+    """A source repository, rev, trusted-author or selection-limit argument the miner refuses, or a commit it
+    cannot read safely."""
 
 
 class TaskFileError(ValueError):
@@ -118,6 +120,27 @@ class SelectionLimits:
     # Basis: the fixture-build timing measured for 12,500 files totaling 100 MB, in the Fixture section of
     # .claude/plans/docstring-verbosity-experiment.md.
     max_base_entries: int = 12_500
+
+    def __post_init__(self) -> None:
+        """Raises TaskSourceError for an integer limit below 1, naming its flag, and for a minimum above the
+        maximum. A negative `max_count` would make `git log -n` walk the whole history."""
+        for field_name in _INTEGER_LIMIT_FIELDS:
+            if getattr(self, field_name) < 1:
+                raise TaskSourceError(f"{_flag_for(field_name)} must be at least 1, got {getattr(self, field_name)}")
+        if self.min_code_lines > self.max_code_lines:
+            raise TaskSourceError(
+                f"--min-code-lines {self.min_code_lines} is above --max-code-lines {self.max_code_lines}"
+            )
+
+
+_INTEGER_LIMIT_FIELDS = (
+    "max_count", "max_tasks", "max_files", "min_code_lines", "max_code_lines", "max_prompt_chars", "max_base_mb",
+    "max_base_entries",
+)
+
+
+def _flag_for(field_name: str) -> str:
+    return "--" + field_name.replace("_", "-")
 
 
 DEFAULT_LIMITS = SelectionLimits()
@@ -334,14 +357,16 @@ def _refuse_symlinks_leaving(dest_dir: Path) -> None:
 
 def build_task_fixture(
     task: ReplayTask, dest_dir: Path, baseline_git_dir: Path, *, bare_writer_markdown: str, timeout_s: float,
+    settings_text: str | None = None,
 ) -> str:
     """Builds `dest_dir` as a one-commit repository of the task's base tree, pruned by
     `prune_instruction_files`, and returns that commit's SHA.
 
     `dest_dir` must exist and be empty. `baseline_git_dir` must not exist.
 
-    After the commit it writes the worktree opt-out and `.claude/agents/bare-writer.md`.
-    It lists `.claude/` in `.git/info/exclude`, so neither file reaches a diff.
+    After the commit it writes the worktree opt-out and `.claude/agents/bare-writer.md`, plus
+    `.claude/settings.json` when `settings_text` is given.
+    It lists `.claude/` in `.git/info/exclude`, so none of them reaches a diff.
     It then copies the repository's `.git` to `baseline_git_dir`.
 
     Raises:
@@ -361,6 +386,8 @@ def build_task_fixture(
     (dest_dir / BARE_WRITER_RELPATH).parent.mkdir(parents=True)
     (dest_dir / _WORKTREE_OPTOUT_RELPATH).write_text("")
     (dest_dir / BARE_WRITER_RELPATH).write_text(bare_writer_markdown)
+    if settings_text is not None:
+        (dest_dir / FIXTURE_SETTINGS_RELPATH).write_text(settings_text)
     exclude_path = dest_dir / ".git" / "info" / "exclude"
     exclude_path.parent.mkdir(parents=True, exist_ok=True)
     existing_excludes = exclude_path.read_text() if exclude_path.exists() else ""
