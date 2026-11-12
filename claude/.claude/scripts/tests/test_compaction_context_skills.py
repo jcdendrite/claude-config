@@ -544,7 +544,7 @@ class TestPlanLine:
 
         assert f"`{plan}`" in block_for(tmp_path, records)
 
-    # The stubs raise where the running interpreter's pathlib may not; the real-filesystem twin below covers a real errno.
+    # Only these stubs pin the OSError handler: the real-filesystem test below does not reach it on Python 3.14, where pathlib absorbs the permission error.
     @pytest.mark.parametrize("failing_method", ["exists", "is_symlink", "is_file", "resolve"])
     def test_oserror_from_a_filesystem_probe_costs_the_plan_line_not_the_block(self, tmp_path, monkeypatch, failing_method):
         root = tmp_path / "root"
