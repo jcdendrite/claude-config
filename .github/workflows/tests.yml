@@ -100,6 +100,10 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Probe — deliberately fail the parallel leg
+        if: matrix.slice == 'parallel'
+        run: exit 1
+
       - name: Skip — no test-relevant changes
         if: steps.detect.outputs.changed != 'true'
         run: echo "No test-relevant files changed; skipping pytest and ruff."
