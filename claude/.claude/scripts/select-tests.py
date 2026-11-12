@@ -709,6 +709,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
 # above, for a shell script under claude/.claude/scripts/ rather than
 # plugins/lovable-cloud/scripts/ or /lib/.
+# test_python_floor.py (HOOKS_TESTS_DIR) reads _ci-python-pin-lib.sh by path.
 # test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) globs
 # SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
 # corresponding exception below over-selects for a nested SCRIPTS_DIR script

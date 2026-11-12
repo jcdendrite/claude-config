@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 from helpers import (
@@ -719,6 +720,64 @@ class TestRequireWorktreeForGitWrites:
         )
         assert reason is not None
         assert "python3" in reason
+
+    def _stub_bin_with_python3_parser_exit(self, tmp_path, parser_exit_code):
+        """Stub PATH whose `python3` exits `parser_exit_code` when asked to run
+        the git-command parser (or runs the real interpreter when the code is
+        None), with the other tools this hook's main-tree path invokes
+        symlinked in like test_python3_absent_denies, except the capping binary is optional."""
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "jq"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
+        # Optional: _lib_capped runs the parser uncapped when neither capping binary is on PATH.
+        for capping_binary in ("timeout", "gtimeout"):
+            real_capping_binary = shutil.which(capping_binary)
+            if real_capping_binary:
+                (stub_bin / capping_binary).symlink_to(real_capping_binary)
+        link_bash_into(stub_bin)
+        # A PATH `python3` may be a version-manager shim that cannot run from this narrowed PATH.
+        real_python3 = sys.executable
+        if parser_exit_code is None:
+            (stub_bin / "python3").symlink_to(real_python3)
+        else:
+            python3_stub = stub_bin / "python3"
+            python3_stub.write_text(
+                f'#!/bin/sh\ncase "$1" in *parse-git-command.py) exit {parser_exit_code} ;; esac\nexec "{real_python3}" "$@"\n'
+            )
+            python3_stub.chmod(0o755)
+        return stub_bin
+
+    def test_python3_present_but_parser_exits_abnormally_denies_a_read(self, opted_in_repo, tmp_path):
+        """A python3 that is present but whose parser exits nonzero (a below-floor
+        interpreter, for one) must fail closed, even for a read command that
+        the parser would have allowed."""
+        stub_bin = self._stub_bin_with_python3_parser_exit(tmp_path, parser_exit_code=1)
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git status"),
+            cwd=opted_in_repo,
+            extra_env={"PATH": str(stub_bin)},
+        )
+        assert reason is not None
+        assert "the command parser exited abnormally (exit 1)" in reason
+
+    def test_python3_present_and_parser_succeeds_allows_the_same_read(self, opted_in_repo, tmp_path, isolated_home):
+        """Allow path paired with the deny above: the same stub PATH and command,
+        with the parser exiting normally."""
+        stub_bin = self._stub_bin_with_python3_parser_exit(tmp_path, parser_exit_code=None)
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git status"),
+                cwd=opted_in_repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
 
     def test_run_hook_payload_returns_deny_stand_in_on_exit_2(self, tmp_path):
         """run_hook_payload returns {"permissionDecision": "deny"} as a

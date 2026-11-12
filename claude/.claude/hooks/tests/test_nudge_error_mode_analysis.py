@@ -35,6 +35,7 @@ from helpers import (
     TRAVERSAL_SESSION_ID,
     assert_cap_engaged,
     assert_cap_not_engaged,
+    build_path_without,
     link_bash_into,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
@@ -157,26 +158,13 @@ def _fake_bin_dir(tmp_path: Path, name: str) -> Path:
     return d
 
 
-def _restricted_path_without_python3(fake_bin: Path) -> str:
-    """Build a PATH containing only a symlinked-tool directory that has every
-    binary the hook needs except python3, so `command -v python3` fails. `bash`
-    is linked in for the hook's `env bash` shebang."""
-    for tool in ("cat", "jq", "mkdir", "find", "touch", "timeout"):
-        real = Path("/usr/bin") / tool
-        if real.exists():
-            (fake_bin / tool).symlink_to(real)
-    link_bash_into(fake_bin)
-    return str(fake_bin)
-
-
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
     superset entry this hook's own bootstrap does not call,
     `mkdir`/`find` for the checkpoint dir, `python3` for
     transcript-analysis.py, `touch` for the enabled-marker fixture, `bash` for
-    the hook's shebang), omitting both timeout(1) and gtimeout(1). Mirrors
-    _restricted_path_without_python3's stub-of-symlinks shape; skips (does
+    the hook's shebang), omitting both timeout(1) and gtimeout(1). Skips (does
     not silently under-symlink) when a needed real binary is itself absent
     from the test machine."""
     for tool in ("cat", "dirname", "find", "jq", "mkdir", "python3", "touch"):
@@ -404,28 +392,31 @@ class TestNudgeErrorModeAnalysis:
         assert result.stdout.strip() == ""
 
     def test_python3_missing_is_silent(self, tmp_path):
-        """No python3 on PATH: hook exits 0 with no stdout (fail-open preflight)."""
+        """No python3 on PATH: step 7's presence check exits 0 with no stdout, before the
+        checkpoint directory is created. The PATH mirrors the real one minus python3, so the
+        hook reaches step 7 on hosts whose /usr/bin lacks `cat` or `mkdir`."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "no-python3")
-        restricted_path = _restricted_path_without_python3(fake_bin)
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": restricted_path})
+        path_without_python3 = build_path_without("python3", fake_bin)
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": path_without_python3})
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+        assert not (tmp_path / ".claude" / ".error-mode-nudge-checkpoint.d").exists()
 
-    def test_python3_too_old_is_silent(self, tmp_path):
-        """python3 present but reporting < 3.11 via the version preflight:
-        hook exits 0 with no stdout."""
+    def test_python3_that_fails_every_call_is_silent(self, tmp_path):
+        """python3 present but exiting 1 on every call: hook exits 0 with no stdout."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
-        fake_bin = _fake_bin_dir(tmp_path, "old-python3")
+        fake_bin = _fake_bin_dir(tmp_path, "failing-python3")
         shim_path = _fake_python3(
             fake_bin,
-            '#!/bin/bash\n[ "$1" = "-c" ] && exit 1\nexit 1\n',
+            '#!/bin/bash\nexit 1\n',
         )
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+        assert (tmp_path / ".claude" / ".error-mode-nudge-checkpoint.d").is_dir(), "the hook exited before it spawned python3"
 
     def test_checkpoint_flag_passed_with_session_scoped_path(self, tmp_path):
         """--checkpoint <session-scoped-path> is included on every friction-count
@@ -440,7 +431,6 @@ class TestNudgeErrorModeAnalysis:
         shim_path = _fake_python3(
             fake_bin,
             f'#!/bin/bash\n'
-            f'[ "$1" = "-c" ] && exit 0\n'
             f'echo "$@" >> {invocation_log}\n'
             f'echo 0\n',
         )
@@ -491,14 +481,13 @@ class TestNudgeErrorModeAnalysis:
 
     def test_non_integer_stdout_is_silent(self, tmp_path):
         """friction-count producing non-integer stdout (simulated via a python3
-        shim that passes the version preflight but emits garbage otherwise):
-        hook exits 0 with no stdout."""
+        shim that emits garbage): hook exits 0 with no stdout."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "garbage-output")
         shim_path = _fake_python3(
             fake_bin,
-            '#!/bin/bash\n[ "$1" = "-c" ] && exit 0\necho "not-a-number"\nexit 0\n',
+            '#!/bin/bash\necho "not-a-number"\nexit 0\n',
         )
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
@@ -517,7 +506,7 @@ class TestNudgeErrorModeAnalysis:
         write_scaled_timeout_shim(fake_bin)
         shim_path = _fake_python3(
             fake_bin,
-            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep {scaled_shim_sleep(15)}\necho 99\n',
+            f'#!/bin/bash\nsleep {scaled_shim_sleep(15)}\necho 99\n',
         )
         with assert_cap_engaged(fake_bin, production_cap=10):
             result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
@@ -539,7 +528,7 @@ class TestNudgeErrorModeAnalysis:
         write_scaled_timeout_shim(fake_bin)
         shim_path = _fake_python3(
             fake_bin,
-            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep {scaled_under_cap_sleep(3.5)}\necho {FRICTION_THRESHOLD}\n',
+            f'#!/bin/bash\nsleep {scaled_under_cap_sleep(3.5)}\necho {FRICTION_THRESHOLD}\n',
         )
         with assert_cap_not_engaged(fake_bin, production_cap=10):
             result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
