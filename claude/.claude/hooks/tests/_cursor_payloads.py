@@ -32,7 +32,6 @@ SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 ADAPTER_DIR = REPO_ROOT / "claude" / ".claude" / "scripts" / "cursor-adapter"
 LIB_SH = HOOKS_DIR / "_lib.sh"
 SHIM = ADAPTER_DIR / "hook-shim.py"
-# The interpreter flags the generated command passes the shim, in order.
 SHIM_INTERPRETER_FLAGS = ("-I", "-S")
 # The one name every loader registers the shim under, because the file name holds a hyphen.
 SHIM_MODULE_NAME = "cursor_hook_shim"

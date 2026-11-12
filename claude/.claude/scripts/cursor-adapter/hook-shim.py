@@ -62,7 +62,7 @@ TRANSIENT_ERRNO_SYMBOLS = frozenset({"EAGAIN", "EMFILE", "ENFILE", "ENOMEM"})
 
 # A bound on the bytes the shim reads into memory.
 # A project choice, set above the largest Cursor payload observed (about 1.4 MB on `postToolUse`):
-# `.claude/plans/cursor-adapter.md` § "Payload (O1, O3, O8, O15)".
+# `.claude/plans/cursor-adapter.md` § "Payload".
 PAYLOAD_CAP_BYTES = 8 * 1024 * 1024
 # Each of a hook's stdout and stderr is kept up to this size.
 HOOK_OUTPUT_CAP_BYTES = 1024 * 1024
@@ -89,7 +89,6 @@ LOG_FILE_NAME = "shim.log"
 TRANSLATION_VOCABULARY = ("shell", "read", "write", "delete", "grep", "task", "passthrough")
 # The tools every usable tool map names.
 TRANSLATED_TOOLS = ("Shell", "Read", "Write", "Delete", "Grep", "Task")
-# PATH after the recorded tool directories.
 SYSTEM_PATH_DIRECTORIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 CLAUDE_PROCESS_ENV_NAMES = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID")
 
@@ -579,7 +578,8 @@ def parse_arguments(argv):
         return None
     if "--deadline" in values and not _is_valid_deadline(values["--deadline"]):
         return None
-    if values.get("--mode", "hook") == "hook" and values.get("--script", "") == "":
+    # The wrapper runs from the resolved directory, so a relative script would not name the file `check_script` tested.
+    if values.get("--mode", "hook") == "hook" and not is_valid_tool_path(values.get("--script", "")):
         return None
     arguments = Arguments(values)
     try:
@@ -1740,7 +1740,7 @@ def self_check(wrapper):
         record = _self_check_record()
         shell_entry = {"claude": "Bash", "translation": "shell"}
         record["tool_map"]["tools"]["Shell"] = shell_entry
-        arguments = parse_arguments(["--claude-event", "PreToolUse", "--script", "self-check"])
+        arguments = parse_arguments(["--claude-event", "PreToolUse", "--script", "/self-check"])
         payload = _self_check_payload()
         facts = examine_payload(payload, arguments, record, state["spec"], None)
         roots = Roots(facts.roots, "/")

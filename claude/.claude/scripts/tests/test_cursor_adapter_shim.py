@@ -217,7 +217,7 @@ def _set_path(*keys_and_value) -> Callable[[ShimEnv, dict], bool]:
     return mutate
 
 
-# The tools the shim translates. A record whose tool map lacks any of them is unusable.
+# The tools the shim translates.
 TRANSLATED_TOOLS = ("Shell", "Read", "Write", "Delete", "Grep", "Task")
 
 INSTALL_RECORD_FAULT_ROWS: dict[str, Row] = {
@@ -871,6 +871,38 @@ class TestShimArguments:
     def test_a_hook_mode_command_line_with_an_empty_script_is_rejected(self) -> None:
         assert SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="")) is None
 
+    @pytest.mark.parametrize("script", ["hooks/gate.sh", "./gate.sh", "gate.sh", "~/hooks/gate.sh"])
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    def test_a_hook_script_that_is_not_an_absolute_path_is_a_usage_outcome(
+        self, tmp_path: Path, script: str, fail_closed: bool
+    ) -> None:
+        # A relative script is checked from the shim's working directory and run from the hook's, so it can name two files.
+        env = make_shim_env(tmp_path)
+        args = hook_args("PreToolUse", script=script, fail_closed=fail_closed)
+        result = run_shim(env, shell_pre_payload(_workspace(tmp_path), "ls"), args, cwd=_scratch(tmp_path))
+        assert (result.returncode, result.stdout, result.stderr) == (1, b"", b"")
+        assert read_log_lines(env)[-1]["out"] == "usage"
+
+    @pytest.mark.parametrize("script", ["/hooks/a:b.sh", "/hooks/../gate.sh", "/hooks/gate\n.sh"])
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    def test_an_absolute_hook_script_outside_the_tool_path_grammar_is_a_usage_outcome(
+        self, tmp_path: Path, script: str, fail_closed: bool
+    ) -> None:
+        env = make_shim_env(tmp_path)
+        args = hook_args("PreToolUse", script=script, fail_closed=fail_closed)
+        result = run_shim(env, shell_pre_payload(_workspace(tmp_path), "ls"), args, cwd=_scratch(tmp_path))
+        assert (result.returncode, result.stdout, result.stderr) == (1, b"", b"")
+        assert read_log_lines(env)[-1]["out"] == "usage"
+
+    def test_an_absolute_hook_script_with_a_dotted_component_that_is_not_dot_dot_parses(self) -> None:
+        arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/hooks/a..b/gate.sh"))
+        assert arguments is not None
+
+    def test_an_absolute_hook_script_parses(self) -> None:
+        arguments = SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/opt/.claude/hooks/gate.sh"))
+        assert arguments is not None
+        assert arguments.script == "/opt/.claude/hooks/gate.sh"
+
     def test_an_unknown_mode_is_rejected(self) -> None:
         assert SHIM_MODULE.parse_arguments(hook_args("PreToolUse", script="/x.sh", mode="bogus")) is None
 
@@ -1317,11 +1349,8 @@ class TestShimPrologue:
     def test_no_payload_or_hook_output_byte_reaches_a_path_name(self, tmp_path: Path, payload_field: str) -> None:
         """A canary in a payload of at least 1 MiB is at no path name while the hook runs, nor after a SIGKILL to the shim.
 
-        The names under the home, the config dir and TMPDIR are enumerated before the call, while the hook runs, and after.
-        While the hook runs, and after a kill, they equal the names before. After a normal end they add only the log, the
-        first-call directory and the first-call mark.
-        The mark is named by the call's session id by design.
-        So the id fields carry a canary only in the one row that expects that mark name."""
+        After a normal end the names under the home, the config dir and TMPDIR add only the log, the first-call directory and
+        the first-call mark."""
         canary = "CANARY-5f3a9c-do-not-persist"
         root = _workspace(tmp_path)
         padding = "x" * (1024 * 1024)
@@ -1335,7 +1364,8 @@ class TestShimPrologue:
             payload["tool_output"] = json.dumps({"stdout": f"{padding}{canary}{padding}", "exitCode": 0})
             claude_event = "PostToolUse"
         else:
-            # The parent id is the call's session id and so names the first-call mark. Every other field is no path name.
+            # The parent id is the call's session id and so names the first-call mark by design. Only this row puts a canary in
+            # an id field, and every other field is no path name.
             session_id = f"{canary}-parent"
             payload = shell_pre_payload(root, f"echo {canary}", description=canary)
             payload.update(

@@ -299,6 +299,26 @@ class TestOutputTable:
         mapped = map_output(BLOCK_STDOUT, event="postToolUse")
         assert mapped["out"] == {"additional_context": "Block with reason"}
 
+    def test_a_post_tool_use_context_and_block_reason_are_joined_by_a_blank_line_in_that_order(self) -> None:
+        stdout = json.dumps(
+            {
+                "decision": "block",
+                "reason": "Block with reason",
+                "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "extra context"},
+            }
+        )
+        mapped = map_output(stdout, event="postToolUse")
+        assert mapped["out"] == {"additional_context": "extra context\n\nBlock with reason"}
+        assert mapped["outcome"] == "context"
+        assert mapped["dropped"] == 0
+
+    @pytest.mark.parametrize("event", ["postToolUse", "sessionStart"])
+    def test_an_empty_additional_context_emits_no_context(self, event: str) -> None:
+        stdout = json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ""}})
+        mapped = map_output(stdout, event=event)
+        assert mapped["out"] == {}
+        assert mapped["outcome"] == "ok"
+
     @pytest.mark.parametrize(
         ("tool", "replaced"),
         [("MCP:some_tool", True), ("Shell", False), ("Read", False)],
@@ -373,6 +393,15 @@ class TestOutputTable:
         mapped = map_output(json.dumps({"decision": "block", "reason": "go on"}), event=event, hook="h")
         assert mapped["out"] == {"followup_message": followup_text("h", "go on")}
         assert mapped["dropped"] == 0
+
+    def test_a_permission_deny_on_stop_becomes_a_follow_up_carrying_its_reason_where_subagent_stop_drops_it(self) -> None:
+        stopped = map_output(DENY_STDOUT, event="stop", hook="h")
+        assert stopped == {
+            "out": {"followup_message": followup_text("h", "Blocked by test gate: no")},
+            "outcome": "followup",
+            "dropped": 0,
+        }
+        assert map_output(DENY_STDOUT, event="subagentStop", hook="h") == {"out": {}, "outcome": "ok", "dropped": 1}
 
     @pytest.mark.parametrize("event", ["afterAgentResponse", "sessionEnd", "preCompact", "sessionStart"])
     @pytest.mark.parametrize("stdout_name", ["deny", "ask", "block"])
@@ -1593,7 +1622,9 @@ class TestWriteTranslation:
                 raise ValueError("canary") if raised == "value-error" else OSError(99999, "canary")
             return real_stat(path, *args, **kwargs)
 
-        arguments = SHIM.parse_arguments(["--claude-event", "PreToolUse", "--script", "x", "--matcher", EDIT_SELECTING_MATCHER])
+        arguments = SHIM.parse_arguments(
+            ["--claude-event", "PreToolUse", "--script", "/x.sh", "--matcher", EDIT_SELECTING_MATCHER]
+        )
         facts = SHIM.Facts()
         facts.tool_class, facts.event, facts.paths = "write", "preToolUse", [str(target)]
         # The control: the same file, unstubbed, is an overwrite.
