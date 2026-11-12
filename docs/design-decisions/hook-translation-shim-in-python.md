@@ -49,7 +49,7 @@ Not measured. By the startup medians above (`jq` 8.2 ms, interpreter 32.2 ms), a
 
 ## Alternatives set aside
 
-- **Keep bash+jq and cut processes.** The bash shim wrapped each step in `timeout`, which accounted for 7 of its 17 counted processes. Removing steps removes the caps they provide.
+- **Keep bash+jq and cut processes.** The bash shim wrapped each step in `timeout`, and those wrappers were a large share of its counted processes. Removing steps removes the caps they provide.
 - **Accept the cost.** The accepted budget is 2 s at the 95th percentile of added hook time per Shell, Read or Write call. A call can match several hook entries, and the tables above time one entry. A benchmark of the bash shim's whole installed entry set against the imported hooks alone gave 1.65 s at p95 with a small payload and 2.22 s with 1.4 MB of output. Only the second figure is past the budget. Both figures are unverified: their source is not recorded, and their command and output are not kept in this repository. The number of entries a call starts was not recorded.
 
 ## Python version floor
