@@ -347,6 +347,11 @@ class TestPinnedValues:
         )
 
 
+    def test_block_char_cap_is_the_size_the_survival_probe_verified(self):
+        # docs/precompact-hook-behavior.md survival findings: 9,000 characters arrived intact, nothing above it was probed.
+        assert compaction_context.BLOCK_CHAR_CAP == 9_000
+
+
 class TestMalformedRecords:
     GOOD_PROMPT = "GOOD prompt after the malformed record"
 

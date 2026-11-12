@@ -97,7 +97,15 @@ Empirical results from seven scratch sessions that measured what a compaction ke
   - LM compacted twice by bare `/compact` after a synthetic load of 16 prompts and large tool outputs sent through `claude -p`.
   - LA, LA2 and LA3 each compacted once, automatically, after the same kind of load. LA and LA2 compacted before most steps had run. LA3 ran every step but the HOOK-SENTINEL invocation.
   - INT interrupted one turn during a tool run and did not compact.
-- Planted texts: EARLY-SENTINEL (first prompt); MID-SENTINEL (last line of a pasted paragraph of about 1,500 characters); ANSWER-SENTINEL and SELECTED-SENTINEL (a free-text `AskUserQuestion` answer and a selected option's label); BANG-SENTINEL (a `!` command's output); TAG-SENTINEL (a typed prompt opening with a tag-shaped token); REFERENT-ONE and REFERENT-TWO (two options that a typed "Yes for #1" chose between); HOOK-SENTINEL (a slash invocation's arguments); BG-SENTINEL (a background script's output).
+- Planted texts:
+  - EARLY-SENTINEL: the first prompt.
+  - MID-SENTINEL: the last line of a pasted paragraph of about 1,500 characters.
+  - ANSWER-SENTINEL and SELECTED-SENTINEL: a free-text `AskUserQuestion` answer and a selected option's label.
+  - BANG-SENTINEL: a `!` command's output.
+  - TAG-SENTINEL: a typed prompt opening with a tag-shaped token.
+  - REFERENT-ONE and REFERENT-TWO: two options that a typed "Yes for #1" chose between.
+  - HOOK-SENTINEL: a slash invocation's arguments.
+  - BG-SENTINEL: a background script's output.
 - A text counts as kept word for word when it appears in `compact_summary` as an exact substring once each side's whitespace runs collapse to one space. A mixed result across a sentinel's occurrences counts as lost.
 - The scratch skill loaded through the `Skill` tool, a bare slash command and a slash command with arguments.
 
@@ -196,4 +204,4 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
 - **Not exercised:** the answer, `!`-record and interrupt-key exclusions are not exercised on real no-`origin` `cli` records, because the no-`origin` exclusion drops each such record first. The script's unit tests cover them with `sdk-cli` copies.
 - **Invocation:** `python3 -I compaction-context.py` exits 1 with `ModuleNotFoundError` for `transcript_analysis`, because `-I` removes the script's directory from `sys.path`. `transcript-analysis.py` imports its package the same way. Callers must run it without `-I`.
 - **Admission and plan line:** the quoted `claude -p` load prompts pass the three-field no-`origin` rule, because the recorded records carry `entrypoint` `sdk-cli` with `promptSource` and `turnOrigin` both `"sdk"`. Every plan line names an absolute path that exists on disk, and the scratch checkout root passes the path allow-list.
-- **Script attested:** the script blob whose git SHA begins `73e3d9ac6708` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.
+- **Script attested:** the script blob whose git SHA begins `0a2f3e7ec6c8` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.

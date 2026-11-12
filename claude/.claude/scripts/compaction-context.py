@@ -8,9 +8,10 @@ plan file, and the engineer's newest prompts, quoted from the transcript. A skil
 absolute path (checkout root included) holds a character outside the path allow-list, is left out silently.
 It prints nothing and exits 0 when the transcript holds none of those.
 It exits 1 with one fixed stderr line when the transcript cannot be read.
-It exits 3 with one stderr line naming the exception type on an unexpected internal error, a failed write of the
-block included, so a caller that logs exit codes can tell that apart from an unreadable file. A record or line the
-script cannot interpret costs that record, not the block.
+It exits 3 with one stderr line naming the exception type on an unexpected internal error.
+A failed write of the block is included.
+A caller that logs exit codes can then tell that apart from an unreadable file.
+A record or line the script cannot interpret costs that record, not the block.
 
 The record shapes this script reads were verified on the Claude Code build that the survival findings
 section of docs/precompact-hook-behavior.md names. That section holds the re-verify-by date.
@@ -210,8 +211,8 @@ def _quoted_text(thread: Sequence[dict], index: int) -> str | None:
     if not _is_prompt_candidate(rec):
         return None
     text = _record_text(rec)
-    # A prompt holding a command-name tag after other text is quoted as `/NAME args` when a skill-load record
-    # follows it directly, which drops the text around the tag.
+    # The match is a search, so a typed prompt holding a command-name tag mid-text loses the text around it when a
+    # skill-load record follows, or is dropped whole when the tag has no args or its name fails the allow-list.
     slash_match = review_rounds._SLASH_COMMAND_RE.search(text)
     if slash_match and index + 1 < len(thread) and _is_skill_load(thread[index + 1]):
         return _slash_invocation_quote(slash_match.group(1), text)
