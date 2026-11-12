@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 21 keys in `config-keys.psv`, this table traces the
+For every one of the 22 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -172,7 +172,7 @@ Column legend:
   only the boundary text. An unresolvable config dir also yields no
   statement, because `autonomous_shipping` fails toward not shipping.
 
-## Remaining sixteen keys
+## Remaining seventeen keys
 
 ### `permission_prompt_tracking`
 
@@ -479,3 +479,21 @@ Column legend:
   `config-keys.psv` or an absent `plugin_bootstrap` row exits the hook (the
   `_config_enabled` statuses 3 and 4). A malformed or wrong-type value in
   `claude-config.toml` falls back to the schema default `true`.
+
+### `agent_branch_records`
+
+- Call site: `branch_records_status` in `_branch-records-lib.sh`, a single
+  `_config_enabled agent_branch_records` ahead of any archive-root read. Both
+  cleanup scripts call it.
+- Resolution: **config-dir**. `_config_enabled` reads only the resolved
+  config dir — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all, so there is no legacy file for
+  `migrate-legacy-config.sh` to import from either location.
+- Fail direction on resolution failure: **keep every item**. The
+  `_config_enabled` statuses 2, 3 and 4 make the archive `unavailable`, so a
+  cleanup script removes no worktree and exits 1.
+- Fail direction on a malformed or unreadable enabling line: **off**. The line
+  resolves to the schema default `false`, so the consumer acts as with the key
+  off. Only `_config.sh`'s stderr warning marks the line.
