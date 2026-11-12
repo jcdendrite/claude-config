@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from transcript_analysis import cli, review_cost_by_size, scope
+from transcript_analysis import cli, scope
 
 from .conftest import _asst, _write_jsonl
 
@@ -323,15 +323,6 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
-
-    def test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts(self):
-        parser = cli.build_parser()
-        with_flag = parser.parse_args(["review-cost-by-size", "--this-repo", "--all-accounts"])
-        without_flag = parser.parse_args(["review-cost-by-size", "--this-repo"])
-        assert with_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert with_flag.all_accounts is True
-        assert without_flag.func is review_cost_by_size.cmd_review_cost_by_size
-        assert without_flag.all_accounts is False
 
 
 class TestProjectsFlagHasNoArgparseType:

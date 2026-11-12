@@ -794,11 +794,6 @@ changing one. Tightening `_is_fresh_user_prompt_for_narrative` also narrows the 
 `.claude/rules/transcript-analysis-tests.md` sets which file a new test goes in. This section records where
 the existing tests live.
 
-`tests/test_transcript_cli.py` holds one test that is an exception to the rule's bullet on one command's CLI
-wiring, in `TestBuildParser`. `test_review_cost_by_size_all_accounts_flag_wires_to_all_accounts` belongs
-in `tests/test_transcript_review_cost_by_size.py`, which is over the line limit, so the move waits for a
-split of that file at a named seam.
-
 `corpus.py`'s, `pricing.py`'s, `redaction.py`'s, and `render.py`'s tests live in
 `tests/test_transcript_corpus.py`, `tests/test_transcript_pricing.py`,
 `tests/test_transcript_redaction.py`, and `tests/test_transcript_render.py`. `scope.py`'s
@@ -816,7 +811,9 @@ per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py
 `tests/test_transcript_denials.py`, `review_trace.py`'s in
 `tests/test_transcript_review_trace.py` and three seam files
 (`tests/test_transcript_review_trace_detection.py`, `tests/test_transcript_review_trace_deny_summary.py`,
-`tests/test_transcript_review_trace_spawn_rounds.py`), `read_scope.py`'s in
+`tests/test_transcript_review_trace_spawn_rounds.py`), `review_cost_by_size.py`'s in
+`tests/test_transcript_review_cost_by_size.py` and `tests/test_transcript_review_cost_by_size_aggregates.py`,
+`read_scope.py`'s in
 `tests/test_transcript_read_scope.py`, `ledger_common.py`'s (`TestMachineIdentity`) in
 `tests/test_transcript_ledger_common.py`, `pr_cost_ledger.py`'s in
 `tests/test_transcript_pr_cost_ledger.py`, and `pr_cost_export.py`'s per-account gating, ordinals,
