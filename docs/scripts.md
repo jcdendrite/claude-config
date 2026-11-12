@@ -34,6 +34,42 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`transcript-analysis.py`** — analysis toolkit for Claude Code transcripts (`<config-dir>/projects/*/*.jsonl`, unioned by default across every root declared in `~/.claude/transcript-config-dirs`, with single-account exceptions listed in `docs/transcript-analysis.md` § "Corpus scope: the declared-roots file"; single-account scope alone does not make a figure publishable, see `docs/private-project-redaction.md` § "Publishing a tooling measurement"); local-only reads except the subcommands `docs/transcript-analysis.md` lists as calling `gh` or writing to disk. Invoked directly: `python3 ~/.claude/scripts/transcript-analysis.py <subcommand>`. See [`docs/transcript-analysis.md`](transcript-analysis.md) for per-subcommand reference; the `/transcript-analysis` skill documents which subcommand answers which question. For where each piece of its logic lives (the `transcript_analysis/` package vs. the script itself), see [`docs/transcript-analysis-architecture.md`](transcript-analysis-architecture.md).
 
+- **`compaction-context.py`** — derives the facts a compaction must keep verbatim from one session transcript. `state --transcript PATH` prints a block of three things:
+
+  - The skills loaded this session, each with its SKILL.md path, most recently loaded first.
+  - The branch's plan file.
+  - The engineer's five newest prompts, quoted from the transcript, oldest first. A prompt longer than 1,500 characters is cut to its first and last 750 characters around an omission marker, `… [N characters omitted] …`, that names how many characters it dropped. A prompt only slightly over 1,500 characters stays whole when the cut would not shorten it. A skill slash invocation is quoted as `/NAME <args>`.
+
+  The plan line names the absolute `<checkout root>/.claude/plans/<slug>.md`. It carries a sentence saying the block does not check who wrote the file or whether the session used it. The script reads the file `PATH` names and checks the checkout's `.git` and plan file on disk. It makes no network call and writes nothing.
+
+  The plan line is silently left out when:
+
+  - the plan file does not exist;
+  - the plan path, which holds the checkout root and the branch slug, has a character outside `[A-Za-z0-9._/@+-]` or a `..` segment;
+  - the recorded `cwd` is relative or has no `.git` ancestor;
+  - the plan file is a symlink;
+  - `.claude` or `plans` is a symlink, or the plan otherwise resolves outside `<root>/.claude/plans`;
+  - no main-thread record carries both a branch and a cwd, or the branch is detached HEAD;
+  - a filesystem probe raises an error.
+
+  ```bash
+  python3 ~/.claude/scripts/compaction-context.py state --transcript <path-to-session>.jsonl
+  ```
+
+  Limits and omissions:
+
+  - **Output limits:** the block stays within 9,000 characters. Over that it drops older prompts first, then the least recently loaded skills, and never drops the newest prompt or the plan line. The one exception is a block whose framing text, plan line and newest prompt alone exceed 9,000 characters. That takes a newest prompt made almost entirely of `~` characters, whose fences grow with it, together with a plan path near the longest the filesystem accepts. Each prompt is also cut to the per-message limit above.
+  - **Exit codes:** it prints nothing and exits 0 when the transcript holds no skill, prompt or plan file. It exits 1 with one stderr line when the file cannot be opened. Exit 1 is also the interpreter's default code for an import-time or other uncaught failure outside `main`, with a traceback and no `compaction-context:` stderr line, so exit 1 alone does not show the transcript was the problem. An argparse usage error exits 2. It exits 3 with one stderr line naming the exception type on an unexpected internal error, a failed write of the block included. A record or line it cannot interpret costs that record or line, not the block.
+  - **Silent omissions:** a skill directory holding a space, a non-ASCII letter, another character outside `[A-Za-z0-9._/@+-]` or a `..` segment yields no skill line. The plan line has its own omission list above. The block also omits AskUserQuestion answers, typed prompts older than the fifth newest, and a typed prompt that opens with a tag-shaped token.
+  - **Redaction limit:** do not paste a hand-run block into a PR, issue or channel: it carries the engineer's prompts and absolute paths and is not safe to publish, whatever the channel.
+    - Quoted text is not redacted.
+    - Leaving the quoted prompts unredacted holds only while the block reaches the model as SessionStart `additionalContext` after the summary, never as PreCompact stdout.
+    - Once a compaction hook injects the block, a secret pasted into one of the five newest prompts returns to context at each compaction that quotes it and is copied into later transcript records.
+    - The quoted set is the last five admitted prompts by transcript file order, so a prompt from a rewound branch that remains in the file may be quoted.
+    - A secret can also persist in later compaction summaries beyond the five-prompt window, with no lifetime the script controls.
+    - The output can contain raw terminal control bytes, so view a hand-run block through something that escapes them.
+  - **Verified build and Python target:** the record shapes it reads were verified on one Claude Code build, which `docs/precompact-hook-behavior.md` § "What survives compaction — survival probe findings" names alongside the re-verify-by date. It targets Python 3.14, the version CI pins and the README's floor.
+
 - **`post-crash-sessions.py`** — enumerates Claude Code sessions orphaned by an unclean shutdown, including a same-day crash that never rebooted the machine, and prints a `cd <cwd> && claude --resume <id>` command for each one that's recoverable. Cross-references the session registry (`<config-dir>/sessions/<pid>.json`), scheduled-task lock files (`<project>/.claude/scheduled_tasks.lock`), the transcript corpus, capture-session-id.sh's `<config-dir>/sessions/<pid>` lookup files, and record-session-end.sh's `<config-dir>/session-end-records/<pid>` SessionEnd records — see the script's module docstring for the per-source evidence-weighting rationale. `--config-dir DIR` (repeatable) also scans an additional Claude Code config profile; absent this flag, every root declared in `~/.claude/transcript-config-dirs` is scanned by default too, and passing `--config-dir` explicitly overrides that default. `--redact` maps project directories and session ids to ordinals and drops git branch names, for pasting into a public issue or channel — unredacted is the default, and the text report always carries a not-publish-safe footer either way. Stdlib-only, no `requirements-dev.txt` dependency. Complements `resume-context.sh` below: this discovers *which* sessions are recoverable at all and prints the raw `claude --resume` invocation, while `resume-context.sh` handles the deliberately-authored `/handoff`/`/brief` continuity-file path. Read-only — writes no file, ever.
 
   ```bash
