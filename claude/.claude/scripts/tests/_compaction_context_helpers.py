@@ -216,9 +216,10 @@ def quoted_messages(block: str) -> list[str]:
     return [match.group(2) for match in _FENCED_MESSAGE_RE.finditer(block)]
 
 
-def write_transcript(directory: Path, records: list) -> Path:
+def write_transcript(directory: Path, records: list, *, ensure_ascii=True) -> Path:
+    """Writes one JSON record per line. ensure_ascii=False writes non-ASCII characters as raw UTF-8 bytes."""
     path = directory / "session.jsonl"
-    path.write_text("\n".join(json.dumps(rec) for rec in records) + "\n", encoding="utf-8")
+    path.write_text("\n".join(json.dumps(rec, ensure_ascii=ensure_ascii) for rec in records) + "\n", encoding="utf-8")
     return path
 
 

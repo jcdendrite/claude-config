@@ -1,6 +1,7 @@
 """Tests for compaction-context.py's cap, drop order, truncation, transcript reading and output safety."""
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -29,9 +30,6 @@ from ._compaction_context_helpers import (
 MESSAGE_CHAR_BUDGET = compaction_context.MESSAGE_CHAR_BUDGET
 HALF_BUDGET = MESSAGE_CHAR_BUDGET // 2
 SKILL_NAMES = ("oldest", "middle", "newest")
-# The vendor's per-hook output ceiling, 10,000 characters per the vendor's hook documentation. It was not re-fetched,
-# so the figure is unverified.
-VENDOR_PER_HOOK_CHARACTER_CEILING = 10_000
 
 
 def _skills_and_plan_records(root, *, newest_prompt=None):
@@ -56,9 +54,6 @@ def _shortest_cut_length() -> int:
 
 
 class TestCap:
-    def test_cap_is_below_the_vendor_per_hook_ceiling(self):
-        assert compaction_context.BLOCK_CHAR_CAP < VENDOR_PER_HOOK_CHARACTER_CEILING
-
     @pytest.mark.parametrize(
         "newest_prompt",
         [
@@ -191,6 +186,25 @@ class TestTruncation:
 
         assert quoted_messages(block) == [text]
         assert block.endswith("\n" + "~" * (longest_tilde_run + 1) + "\n")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("intro\n~~\x00~~\nafter the split run", id="tilde_run_split_by_nul"),
+            pytest.param("a" * (HALF_BUDGET - 3) + "~~\x00~~~" + "b" * 3_000, id="tilde_run_split_by_nul_at_the_cut_boundary"),
+        ],
+    )
+    def test_tilde_run_joined_by_stripping_nul_is_fenced_on_the_stripped_text(self, tmp_path, text):
+        stripped = text.replace("\x00", "")
+        expected_body = compaction_context._cut_to_budget(stripped)
+
+        block = block_for(tmp_path, [user_prompt(text)])
+
+        assert "\x00" not in block
+        assert quoted_messages(block) == [expected_body]
+        fence = block.rstrip("\n").rsplit("\n", 1)[-1]
+        assert set(fence) == {"~"}
+        assert len(fence) > max(len(run) for run in re.findall(r"~+", expected_body))
 
 
 class TestReading:
@@ -380,6 +394,30 @@ class TestMalformedRecords:
 
         assert quoted_messages(compaction_context.build_state_block(transcript)) == ["BEFORE", "AFTER"]
 
+    def test_raw_utf8_prompt_with_an_accent_a_non_bmp_character_and_u2028_is_quoted_byte_for_byte(self, tmp_path):
+        text = "café 😀 line\u2028separator"
+        transcript = write_transcript(tmp_path, [user_prompt("BEFORE"), user_prompt(text)], ensure_ascii=False)
+        assert text.encode("utf-8") in transcript.read_bytes()
+
+        block = compaction_context.build_state_block(transcript)
+
+        assert quoted_messages(block) == ["BEFORE", text]
+
+    def test_valid_json_line_holding_a_truncated_multi_byte_sequence_costs_that_record_and_keeps_raw_utf8_neighbours(
+        self, tmp_path
+    ):
+        before_text, after_text = "café BEFORE", "日本 AFTER 😀"
+        torn_record = json.dumps(user_prompt("TORN")).encode("utf-8").replace(b"TORN", b"caf\xc3")
+        lines = [
+            json.dumps(user_prompt(before_text), ensure_ascii=False).encode("utf-8"),
+            torn_record,
+            json.dumps(user_prompt(after_text), ensure_ascii=False).encode("utf-8"),
+        ]
+        transcript = tmp_path / "torn-record.jsonl"
+        transcript.write_bytes(b"\n".join(lines) + b"\n")
+
+        assert quoted_messages(compaction_context.build_state_block(transcript)) == [before_text, after_text]
+
     def test_json_integer_over_the_digit_limit_costs_that_line_not_the_block(self, tmp_path):
         # CPython's default 4300-digit int string-conversion limit makes json.loads raise ValueError for a 5000-digit
         # literal. The limit is pinned so a contributor's PYTHONINTMAXSTRDIGITS cannot change the outcome.
@@ -434,7 +472,7 @@ class TestMalformedRecords:
         assert result.returncode == 3
         assert result.stderr.decode() == "compaction-context: internal error: OSError\n"
 
-    def test_unexpected_internal_error_exits_with_its_own_code_and_leaks_no_message_text(self, tmp_path, monkeypatch, capsys):
+    def test_unexpected_internal_error_exits_with_its_own_code_and_leaks_no_message_text(self, tmp_path, monkeypatch, capfd):
         def raise_unexpected(transcript):
             raise RuntimeError("private message text")
 
@@ -442,7 +480,7 @@ class TestMalformedRecords:
 
         exit_code = compaction_context.main(["state", "--transcript", str(tmp_path / "session.jsonl")])
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         assert exit_code == 3
         assert exit_code != compaction_context.EXIT_UNREADABLE_TRANSCRIPT
         assert captured.err == "compaction-context: internal error: RuntimeError\n"

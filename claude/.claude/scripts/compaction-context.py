@@ -307,8 +307,7 @@ def build_state_block(transcript: Path) -> str:
     if not (skill_paths or plan_line or messages):
         return ""
 
-    # Over the cap: older prompts go first, then the least recently loaded skills. The newest prompt and the plan line stay.
-    # Boundary: with dozens of loaded skills the skill lines can crowd out the earlier prompts before any skill is dropped.
+    # With dozens of loaded skills the skill lines can crowd out the earlier prompts before any skill is dropped.
     while len(block := _render_block(skill_paths, plan_line, messages)) > BLOCK_CHAR_CAP:
         if len(messages) > 1:
             messages = messages[1:]

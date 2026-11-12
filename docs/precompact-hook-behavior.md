@@ -188,7 +188,7 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
 - **Pass, pasted prompt:** the cut keeps the first 750 characters (the opening `pasted_content` wrapper with its `id`) and the last 750 (MID-SENTINEL and the closing tag), with an omitted count of 72, which is 1,572 minus 1,500.
 - **Pass, skills:** the scratch skill appears exactly once, with a path under which a SKILL.md exists, in every cut taken at or after its first load, and in no earlier cut. All three invocation paths are covered. The skill-load first line uses a colon and a space after the prefix.
 - **Pass, plan line:** it matches the script's constant word for word in all 62 cuts. In M1 it names the first plan file in the cut before the move and the second in the cut taken at the first main-thread record with the worktree's `cwd`, which is the assistant `tool_use` record.
-- **Rules each Absent item pins:**
+- **Rules that exclude each record listed as absent above:**
   - No `origin` on `cli`: answers, `!` records, interrupt markers, the already-loaded record, skill-load records, `/compact` and `isCompactSummary`.
   - `origin.kind` `"task-notification"`: task notifications.
   - Tag-opening exclusion, with `origin.kind` `"human"`: the tag-opening prompt.
@@ -196,4 +196,4 @@ Every cut was copied with `head -n`, and none was rewritten. Results:
 - **Not exercised:** the answer, `!`-record and interrupt-key exclusions are not exercised on real no-`origin` `cli` records, because the no-`origin` exclusion drops each such record first. The script's unit tests cover them with `sdk-cli` copies.
 - **Invocation:** `python3 -I compaction-context.py` exits 1 with `ModuleNotFoundError` for `transcript_analysis`, because `-I` removes the script's directory from `sys.path`. `transcript-analysis.py` imports its package the same way. Callers must run it without `-I`.
 - **Admission and plan line:** the quoted `claude -p` load prompts pass the three-field no-`origin` rule, because the recorded records carry `entrypoint` `sdk-cli` with `promptSource` and `turnOrigin` both `"sdk"`. Every plan line names an absolute path that exists on disk, and the scratch checkout root passes the path allow-list.
-- **Script attested:** the script blob whose git SHA begins `82698d93adbf` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.
+- **Script attested:** the script blob whose git SHA begins `2db8fd71ce7d` reproduces, byte for byte, the output scored for each of the 62 cuts above (`git hash-object` prefix, script alone, shortened to stay under the repository's long-hex redaction detector). The `transcript_analysis` package was read from the working tree.

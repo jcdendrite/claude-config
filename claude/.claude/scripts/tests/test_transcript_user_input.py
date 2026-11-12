@@ -192,6 +192,21 @@ class TestCmdUserInput:
         assert "- Fresh prompts: 1" in out
         assert "excluded record" not in out
 
+    def test_compact_summary_with_a_correction_phrase_before_the_typed_prompt_leaves_it_initial(self, fake_projects, capsys):
+        """A summary record ahead of the first typed prompt takes neither the INITIAL slot nor an
+        EXPLICIT_CORRECTION count, so the typed prompt classifies INITIAL."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("You hallucinated the earlier answer.", branch="feat", isCompactSummary=True),
+            _ui_user("typed prompt", branch="feat"),
+        ])
+        user_input.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "INITIAL" in out
+        assert "~~~text\ntyped prompt\n~~~" in out
+        assert "- Fresh prompts: 1" in out
+        assert "- Explicit corrections (struggle-phrase match): 0" in out
+        assert "EXPLICIT_CORRECTION" not in out
+
     def test_empty_string_plain_content_included_no_strip_guard(self):
         """Pin actual behavior: the plain-string content path has no .strip() guard,
         so an empty string is NOT excluded — unlike the list-of-blocks path, which
