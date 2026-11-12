@@ -2910,6 +2910,43 @@ PARSER_EDGES = {
 MIDDLE_KEEPS_LEADING_CD = {"trailing-newline"}
 
 
+def _nesting_depth_between_encoder_and_decoder_limits() -> int:
+    """A nesting depth that this interpreter's JSON decoder accepts and its encoder rejects."""
+
+    def first_failing_depth(fails: Callable[[int], bool]) -> int:
+        passing, failing = 1, 200_000
+        while failing - passing > 1:
+            middle = (passing + failing) // 2
+            if fails(middle):
+                failing = middle
+            else:
+                passing = middle
+        return failing
+
+    def decoder_fails(depth: int) -> bool:
+        try:
+            json.loads("[" * depth + "]" * depth)
+        except RecursionError:
+            return True
+        return False
+
+    def encoder_fails(depth: int) -> bool:
+        nested: list = []
+        for _ in range(depth):
+            nested = [nested]
+        try:
+            json.dumps(nested)
+        except RecursionError:
+            return True
+        return False
+
+    decoder_limit = first_failing_depth(decoder_fails)
+    encoder_limit = first_failing_depth(encoder_fails)
+    if encoder_limit >= decoder_limit:
+        pytest.skip("this interpreter has no depth the decoder accepts and the encoder rejects")
+    return (encoder_limit + decoder_limit) // 2
+
+
 class TestShimTextRules:
     @pytest.mark.parametrize("edge", list(PARSER_EDGES))
     @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
@@ -2920,6 +2957,34 @@ class TestShimTextRules:
         assert not _probe_ran(tmp_path)
         assert read_log_lines(env)[-1]["out"] == "payload-malformed"
         assert (output["permission"] == "deny") if fail_closed else (output == {})
+
+    @pytest.mark.parametrize("fail_closed", [True, False], ids=["fail-closed", "informational"])
+    def test_nesting_the_parser_accepts_but_the_encoder_rejects_takes_the_payload_malformed_outcome_never_a_shim_fault(
+        self, tmp_path: Path, fail_closed: bool
+    ) -> None:
+        depth = _nesting_depth_between_encoder_and_decoder_limits()
+        template = json.dumps(shell_pre_payload(_workspace(tmp_path), "echo a", description="@@")).encode()
+        payload = template.replace(b'"@@"', b"[" * depth + b"]" * depth)
+        assert len(payload) > 2 * depth
+
+        output, env = _run_probe(tmp_path, payload, fail_closed=fail_closed)
+
+        assert not _probe_ran(tmp_path)
+        assert read_log_lines(env)[-1]["out"] == "payload-malformed"
+        assert (output["permission"] == "deny") if fail_closed else (output == {})
+
+    def test_serialize_refuses_a_document_nested_past_the_encoder_limit_on_any_interpreter_with_the_payload_malformed_outcome(
+        self,
+    ) -> None:
+        nested: list = []
+        # Far beyond any interpreter's json recursion limit, so the depth needs no per-platform tuning.
+        for _ in range(200_000):
+            nested = [nested]
+
+        with pytest.raises(SHIM_MODULE.Refusal) as refusal:
+            SHIM_MODULE.serialize(nested)
+
+        assert refusal.value.outcome == "payload-malformed"
 
     @pytest.mark.parametrize("name", [name for name, value in TEXT_RULE_CORPUS.items() if value != "\ud800"])
     def test_a_corpus_value_in_a_command_reaches_the_hook_as_json_the_hook_parses_under_jq(

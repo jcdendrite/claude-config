@@ -390,8 +390,14 @@ def deny_event_for(call):
 
 
 def serialize(document):
-    """The document's bytes, ASCII-only JSON that a hook's parser reads as the shim decided, with a newline."""
-    return json.dumps(document, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii") + b"\n"
+    """The document's bytes, ASCII-only JSON that a hook's parser reads as the shim decided, with a newline.
+
+    Raises Refusal for nesting the decoder accepts but the encoder cannot write."""
+    try:
+        text = json.dumps(document, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    except RecursionError as error:
+        raise Refusal("payload-malformed", "The payload or the hook output is nested too deeply to write.") from error
+    return text.encode("ascii") + b"\n"
 
 
 def write_all(descriptor, data):
@@ -1589,9 +1595,11 @@ def log_call(call):
 
 
 def emit(call, document):
-    # The outcome is logged before the document is written, so a failed write adds a second, shim-fault line.
+    # The document is serialized first, so a too-deep refusal logs once. The outcome is logged before the document is
+    # written, so a failed write adds a second, shim-fault line.
+    data = serialize(document)
     log_call(call)
-    write_all(1, serialize(document))
+    write_all(1, data)
     return EXIT_OK
 
 

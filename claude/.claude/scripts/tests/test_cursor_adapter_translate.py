@@ -1456,7 +1456,10 @@ class TestDeleteTranslation:
         allowed = subprocess.run(
             [str(hook)], input=json.dumps(reviewer), capture_output=True, text=True, check=False, cwd=tmp_path
         )
-        assert "deny" not in allowed.stdout
+        # The hook denies by exit 2 with the reason on stderr as well as by JSON on stdout, so check both.
+        assert allowed.returncode == 0, allowed.stderr
+        allowed_output = json.loads(allowed.stdout) if allowed.stdout.strip() else {}
+        assert allowed_output.get("hookSpecificOutput", {}).get("permissionDecision", "none") in ("none", "allow")
         control = {**reviewer, "tool_input": {"command": "sed -i s/a/b/ x"}}
         denied = subprocess.run([str(hook)], input=json.dumps(control), capture_output=True, text=True, check=False, cwd=tmp_path)
         assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"

@@ -6,7 +6,7 @@ The Cursor adapter's translation shim is written in Python, not bash+jq. A bash+
 
 ## What was measured
 
-The bash+jq shim ran about 4 processes per translate-only run and about 17 counted processes per run with a hook, plus the hook script's own.
+The bash+jq shim ran about 4 processes per translate-only run and about 17 counted processes per run with a hook, plus the hook script's own. Both counts are unverified: their source is not recorded, and their command and output are not kept in this repository.
 
 The test used 100 runs per path, interleaved (shim, Python, shim, Python, ...) so machine load affected both alike. It ran on one macOS laptop, with Python 3.15 from Homebrew and Homebrew `jq`. Other work was running on the same machine, so the load average was about 10. Medians are more trustworthy than p99 under that load. Each figure is wall time of a subprocess call in milliseconds, so it includes fork and exec. The harness and per-run data behind the tables are not kept in this repository.
 
@@ -49,7 +49,7 @@ Not measured. By the startup medians above (`jq` 8.2 ms, interpreter 32.2 ms), a
 
 ## Alternatives set aside
 
-- **Keep bash+jq and cut processes.** The bash shim wrapped each step in `timeout`, and those wrappers were a large share of its counted processes. Removing steps removes the caps they provide.
+- **Keep bash+jq and cut processes.** The bash shim wrapped each step in `timeout`, and those wrappers were a large share of its counted processes. That share is unverified: it rests on the unverified process counts above. Removing steps removes the caps they provide.
 - **Accept the cost.** The accepted budget is 2 s at the 95th percentile of added hook time per Shell, Read or Write call. A call can match several hook entries, and the tables above time one entry. A benchmark of the bash shim's whole installed entry set against the imported hooks alone gave 1.65 s at p95 with a small payload and 2.22 s with 1.4 MB of output. Only the second figure is past the budget. Both figures are unverified: their source is not recorded, and their command and output are not kept in this repository. The number of entries a call starts was not recorded.
 
 ## Python version floor
