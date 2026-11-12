@@ -796,7 +796,7 @@ def _dispatch_prompt_record():
 def _records_for(calls):
     records = [_dispatch_prompt_record()]
     for index, call in enumerate(calls):
-        call_id = "call_%04d" % index
+        call_id = f"call_{index:04d}"
         records.append(_assistant(call_id, call.name, call.tool_input))
         if call.outcome == PENDING:
             continue
@@ -1971,8 +1971,8 @@ def test_several_thousand_records_with_hundreds_of_edited_paths_finish_within_ha
     read_count = 3000
     calls = [_reviewer_read("staff-backend-engineer")]
     for index in range(edited_count):
-        calls.append(_edit_call(workspace.make_file("src/module_%03d.py" % index, "x = 1\n")))
-    calls.extend(_call("Read", {"file_path": "/placeholder/other/file_%04d.txt" % index}) for index in range(read_count))
+        calls.append(_edit_call(workspace.make_file(f"src/module_{index:03d}.py", "x = 1\n")))
+    calls.extend(_call("Read", {"file_path": f"/placeholder/other/file_{index:04d}.txt"}) for index in range(read_count))
     calls.append(_git_diff_call())
     report = "**Self-review:**\n- `staff-backend-engineer`: clean"
     workspace.write_transcript(calls)

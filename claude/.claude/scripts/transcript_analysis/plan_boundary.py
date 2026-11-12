@@ -330,3 +330,40 @@ def _plan_boundary_report(args: argparse.Namespace, today: date, roots: Sequence
         print("cache_miss_reason at boundary+1, for those sessions:")
         for reason in sorted(cache_miss_reason_counts):
             print(f"  {reason}: {cache_miss_reason_counts[reason]:,}")
+
+
+def _add_plan_boundary_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_plan_boundary = subparsers.add_parser(
+        "plan-boundary",
+        help=(
+            "Re-price each Opus-anchored session's own post-plan-boundary main-thread turns under"
+            " three arms -- continue on Opus, switch to Sonnet in place, fresh Sonnet handoff --"
+            " plus the work-inflation breakeven for each arm pair. Aggregate-only, redacted by"
+            " default."
+        ),
+    )
+    scope._add_project_scope_args(p_plan_boundary)
+    p_plan_boundary.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help=(
+            "Additional Claude Code config directory to scan (repeatable). The default resolved"
+            " config dir is always scanned first. Each supplied directory must contain a projects/"
+            " subdirectory, or it is rejected. Composes with --this-repo, scoping to this repo"
+            " across every resulting root; --no-redact is refused once this puts more than one"
+            " root in scope."
+        ),
+    )
+    p_plan_boundary.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to sessions with a first timestamp in the last N days (e.g. 35d); whole-session scope.",
+    )
+    p_plan_boundary.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "This report's output is aggregate-only (no project names or session IDs, no plan"
+            " text), so --no-redact has no effect on its content, but it still prints the DO NOT"
+            " PUBLISH banner and enforces the same multi-root refusal as cost, for CLI parity."
+            " Refused when --config-dir puts more than one root in scope."
+        ),
+    )
+    p_plan_boundary.set_defaults(func=cmd_plan_boundary)

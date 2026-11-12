@@ -966,3 +966,25 @@ def _print_author_outcome_report(result: dict, *, agent_type: str, since_raw: st
     dq_label_width = max(len(label) for label in _DATA_QUALITY_KEYS)
     for key in _DATA_QUALITY_KEYS:
         print(f"  {key:<{dq_label_width}} {data_quality[key]:>3}")
+
+
+def _add_author_outcome_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_author_outcome = subparsers.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
+            " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
+            " round/dispatch structure and the review-narrative-ledger rows each session wrote for"
+            " disposition. Corpus-wide, no gh calls."
+        ),
+    )
+    scope._add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)

@@ -704,3 +704,30 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     print(f"cost-ledger: recorded {week_str} / {machine}")
+
+
+def _add_cost_ledger_subparser(subparsers: argparse._SubParsersAction) -> None:
+    p_cost_ledger = subparsers.add_parser(
+        "cost-ledger",
+        help=(
+            "Read or append the local per-week cost/efficiency ledger (see COST_LEDGER_PATH)."
+            " Default: print existing rows plus any live-corpus weeks not yet recorded."
+        ),
+    )
+    scope._add_project_scope_args(p_cost_ledger)
+    p_cost_ledger.add_argument(
+        "--record", action="store_true",
+        help=(
+            "Append the current ISO week's row. Requires the cost_ledger_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
+    )
+    p_cost_ledger.add_argument(
+        "--force", action="store_true",
+        help="With --record, overwrite an existing row for the same (week, machine) instead of refusing.",
+    )
+    p_cost_ledger.add_argument(
+        "--note", metavar="TEXT", default="",
+        help="Free-text note for --record's row: what changed in the workflow this week.",
+    )
+    p_cost_ledger.set_defaults(func=cmd_cost_ledger)

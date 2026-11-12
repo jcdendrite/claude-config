@@ -59,6 +59,10 @@ CLAUDE_TESTS_DIR = "claude/.claude/tests"
 REVIEW_BENCH_DIR = "evals/review_bench"
 REVIEW_BENCH_RUNNER = "evals/run_review_bench.py"
 REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
+# evals/replay_bench's own domain, shaped like review_bench's: its source tree
+# and its flat test files.
+REPLAY_BENCH_DIR = "evals/replay_bench"
+REPLAY_BENCH_TEST_GLOB = "evals/test_replay_bench*.py"
 # A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
 # evals/review_bench/, and hyphenated review-bench, not review_bench.
 # test_review_bench_runner.py loads its scenarios from here.
@@ -78,7 +82,8 @@ MEASURE_EXPLORE_RECALL_TEST = "evals/test_measure_explore_recall.py"
 # but at runtime via --fixtures, not through a test.
 MEASURE_EXPLORE_RECALL_FIXTURE = "evals/fixtures/explore-recall-cases.json"
 # Applies to every test under evals/, which are exactly the review_bench
-# tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and MEASURE_EXPLORE_RECALL_TEST.
+# tests, the replay_bench tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and
+# MEASURE_EXPLORE_RECALL_TEST.
 EVALS_CONFTEST = "evals/conftest.py"
 
 # Every claude/.claude/scripts module the review_bench sources import,
@@ -129,10 +134,10 @@ TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcri
 # production constant TestCrossDomainReadCompleteness's scan cannot see.
 TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 TRANSCRIPT_REDACTION_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_redaction.py"
-# test_transcript_review_trace.py reads SKILL.md files by path. It is a
+# test_transcript_review_trace_spawn_rounds.py reads SKILL.md files by path. It is a
 # SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
 # selecting that whole domain from a SKILL.md edit.
-TRANSCRIPT_REVIEW_TRACE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace.py"
+TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_trace_spawn_rounds.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -610,7 +615,9 @@ def _is_test_source_change(path: str) -> bool:
 # flat test files (matched by glob, since evals/ keeps test_*.py beside its
 # source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION,
 # MEASURE_EXPLORE_RECALL, and their test files -- see each constant's own
-# comment above.
+# comment above. Its target set also holds REPLAY_BENCH_TEST_GLOB, since
+# evals/replay_bench imports review_bench and the shared EVALS_CONFTEST applies
+# to both test sets.
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
@@ -621,6 +628,10 @@ def _is_review_bench_change(path: str) -> bool:
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
+
+
+def _is_replay_bench_change(path: str) -> bool:
+    return _is_under(path, REPLAY_BENCH_DIR) or (path.startswith("evals/test_replay_bench") and path.endswith(".py"))
 
 
 # (predicate, target paths added when it matches) — a plain domain rule.
@@ -637,8 +648,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
     (
         _is_review_bench_change,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
+        (
+            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            MEASURE_EXPLORE_RECALL_TEST,
+        ),
     ),
+    (_is_replay_bench_change, (REPLAY_BENCH_TEST_GLOB,)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -695,6 +710,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
 # above, for a shell script under claude/.claude/scripts/ rather than
 # plugins/lovable-cloud/scripts/ or /lib/.
+# test_python_floor.py (HOOKS_TESTS_DIR) reads _ci-python-pin-lib.sh by path.
 # test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) globs
 # SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
 # corresponding exception below over-selects for a nested SCRIPTS_DIR script
@@ -713,12 +729,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. test_pr_create_preflight.py
 # (SCRIPTS_TESTS_DIR) reads it too, to tie the keys and the script path steps
-# 1 and 8 name to the script's. test_transcript_review_trace.py
+# 1 and 8 name to the script's. test_transcript_review_trace_spawn_rounds.py
 # (SCRIPTS_TESTS_DIR) reads it for the round= token the [SILENT-SKIP] recovery
 # step names. test_pr_diff_against_base.py (SCRIPTS_TESTS_DIR) reads it for the
 # DIFF_EMPTY: token step 3 keys its halt on. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
-# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_TEST_PATH
+# PLAN_REVIEW_SKILL_MD (second row): TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH
 # (SCRIPTS_TESTS_DIR) reads plan-review/SKILL.md by path, for the deactivate
 # and completion recipes. Standalone row for the same reason as
 # CODE_REVIEW_SKILL_MD's second row; it names the one reading file rather
@@ -804,6 +820,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # shared SKILLS_TESTS_DIR target below, because that predicate also matches
 # every plugins/skill-management/scripts/*.py change, which has no
 # review_bench dependency.
+# REPLAY_BENCH_TEST_GLOB (the same two rows): evals/replay_bench/tasks.py
+# imports review_bench.runner, which imports run_skill_evals.py and
+# _config_dir.py. A change to one also needs the replay tests re-run, and the
+# dependencies row over-selects it for the transcript_analysis modules.
 # MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES
 # and SKILL_EVALS_RUNNER rows):
 # measure_subagent_model_resolution.py imports run_skill_evals.py, which
@@ -825,18 +845,30 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # review_bench edit.
 # The other files in _HAND_AUDITED_AGENTS_DIR_READERS are covered by the
 # SELECT_TESTS_TEST_PATH comment.
+# REPLAY_BENCH_DIR (standalone row): SELECT_TESTS_TEST_PATH's own tests read the
+# replay package's files by path from a function body, which
+# TestCrossDomainReadCompleteness cannot see.
+# The row is standalone because folding this target into the replay domain row
+# would run test_select_tests.py on every replay test edit.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
     (
         lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
+        (
+            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            MEASURE_EXPLORE_RECALL_TEST,
+        ),
     ),
     (
         lambda p: p == SKILL_EVALS_RUNNER,
-        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, MEASURE_EXPLORE_RECALL_TEST),
+        (
+            REVIEW_BENCH_TEST_GLOB, REPLAY_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            MEASURE_EXPLORE_RECALL_TEST,
+        ),
     ),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
+    (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (
@@ -869,7 +901,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_TEST_PATH,)),
+    (lambda p: p == PLAN_REVIEW_SKILL_MD, (TRANSCRIPT_REVIEW_TRACE_SPAWN_ROUNDS_TEST_PATH,)),
     (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PLAN_IT_SKILL_MD, (PLAN_SHAPE_TEST_PATH,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),

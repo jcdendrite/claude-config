@@ -53,7 +53,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `install-dev.sh` now builds `.venv` from the `python<X.Y>` pinned in `.github/workflows/tests.yml` and rebuilds a `.venv` on another minor. It fails if it has to build `.venv` and that interpreter is not installed. A test fails when the suite's interpreter differs from the pin.
   - Most tests that check the error path for too-deeply-nested input now inject a `RecursionError` instead of building input deep enough to overflow, because the overflow depth differs between 3.12 and 3.14 and with the host's stack size.
   - A canary in `evals/test_review_bench_cli.py` still builds input deep enough to overflow, to confirm CPython raises `RecursionError` instead of crashing.
-  - The README's Python floor for stow users stays 3.11, and CI exercises only 3.14. Code that needs a newer stdlib API or newer behavior than 3.11 passes CI and can fail on a stow user's Python.
+  - The README's Python floor for stow users was 3.11 when CI moved to 3.14, so code that needed a newer stdlib API or newer behavior than 3.11 passed CI and could fail on a stow user's Python. The entry under `### Removed` raises the floor to 3.14.
 - **One architect-consult process now serves every code review: it re-arms every three reviewed states, counts `/ready-for-review` reviews, and replaces `/ready-for-review`'s Cap consult.** The design is in `docs/design-decisions/round-cap-consult-rearm.md`.
   - `require-architect-consult.sh` still fires at a branch's first threshold, then demands the next `plan-architect` consult after three more reviewed states. A consult restarts the branch's count by deleting its state file.
   - `/ready-for-review` reviews now count and can trip the gate. A consult interrupts a run at a denied reviewer spawn. It routinely does so once the run needs a fix. It can also land on a pass that would have come out clean.
@@ -528,6 +528,19 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Removed
 
+- **Python older than 3.14 is no longer supported: install Python 3.14 or newer so its `python3` is first on the PATH Claude Code starts with.**
+  - 3.14 is the one minor CI tests. `_config.sh` holds the floor, and a test fails when it, `README.md`'s floor or ruff's `target-version` differs from CI's pin.
+  - `install.sh` exits before changing anything when `python3` reports a lower version or none it can read.
+  - `check-python-floor.sh` warns on screen and to the agent at session start and resume when the hooks' `python3` is missing, reports no version, does not answer within 2 seconds, or is below the floor, and it cannot stop the session.
+  - The version checks in `ask-new-dependency-disclosure.sh` and `nudge-error-mode-analysis.sh` are gone. `docs/hooks.md` § "Python version" lists what each Python-running hook does when its helper fails.
+  - The hook changes are live on `git pull`, and `install.sh` checks on its next run.
+  - The code and tests that supported older Python minors are gone, such as `review-cost-by-size`'s hand-rolled rank correlation and the tests that held scripts to the 3.11 grammar.
+  - ruff now lints for 3.14 from a newer series. After pulling, contributors re-run `./install-dev.sh` from the main checkout. Until then, the older ruff in their shared venv may fail on `target-version = "py314"`. A branch still on the older target that lints with the upgraded shared venv may show new lint findings until it rebases.
+  - **Migration:**
+    1. Run `python3 --version` from the shell that launches Claude Code, and also from inside any project that pins its own version.
+    2. If it is below 3.14, install Python 3.14 or newer so its `python3` resolves first on PATH (`pyenv install`, then `pyenv global` for pyenv). Where a project's own pin is the one below 3.14, raise or remove that pin instead.
+    3. Re-run `./install.sh`.
+    4. Restart Claude Code from that shell.
 - **git older than 2.43 is no longer supported: install git 2.43 or newer first on the PATH Claude Code starts with.**
   - 2.43 is the git Ubuntu 24.04 ships. The code itself needs only git 2.40 (`git merge-tree --merge-base`). `install.sh` refuses git 2.40 through 2.42 although the code runs on them.
   - `install.sh` exits before changing anything when `git --version` reports a lower version or none it can read.
@@ -562,7 +575,6 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **A new PreToolUse gate, `deny-default-branch-push.sh`, denies an agent push whose destination is a protected branch.**
   - **Protected set:** the branch `refs/remotes/<remote>/HEAD` names, plus `main` and `master`, plus `develop` when that HEAD does not resolve. It also denies a push whose destination it cannot resolve, and a mutating `gh api` call to a `contents`, `git/refs` or `merges` endpoint. `git push --dry-run` passes.
   - **Limits:** wrapped, scripted and HTTP pushes pass, so server-side branch protection stays the barrier against them. The hook header lists the Known gaps and the accepted over-denials.
-  - **Re-run `./install.sh` from a separate terminal after pulling if `~/.claude/hooks` is a real directory rather than a symlink into this checkout.** Until then the gate is registered but not linked, and every Bash call blocks.
   - **Plugin:** the `skill-management` plugin's patch bump, 5.0.1 to 5.0.2, comes from the shared `_LIB_GIT_GLOBAL_VALUE_FLAGS` constant its `_lib.sh` now carries. The stowed and plugin copies of that constant must match, and a test pins it. The change alters no behavior, so updating the installed plugin is optional.
 - **`cleanup-merged-branches.sh --list-removable` prints one tab-separated `<main worktree path> <branch> <worktree path>` line per Tier A worktree a real run would remove, and exits 1 when it could not evaluate a candidate. The `--dry-run` tags, the real run's lock line and its re-lock after a refused removal change with it.**
   - It removes nothing but runs the same `git fetch` and `git remote set-head` as `--dry-run`, and it is not auto-approved. It cannot be combined with `--dry-run`: the pair exits 2.
