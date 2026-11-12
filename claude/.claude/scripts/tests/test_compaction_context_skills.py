@@ -99,6 +99,15 @@ def _no_plan_scenarios():
         plan.parent.symlink_to(sibling)
         return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
 
+    def plans_directory_is_symlink_to_a_sibling_directory_inside_claude(root, monkeypatch):
+        plan = make_plan_checkout(root, "x")
+        sibling = root / ".claude" / "skills" / "scratch"
+        sibling.mkdir(parents=True)
+        plan.rename(sibling / "x.md")
+        plan.parent.rmdir()
+        plan.parent.symlink_to(sibling)
+        return [at_checkout(user_prompt("go"), branch="feature/x", cwd=str(root))]
+
     def claude_directory_is_symlink_to_outside_directory(root, monkeypatch):
         make_plan_checkout(root, "x")
         outside = root.parent / "outside-claude"
@@ -126,6 +135,10 @@ def _no_plan_scenarios():
         pytest.param(
             plans_directory_is_symlink_to_a_sibling_directory_inside_the_checkout,
             id="plans_directory_is_a_symlink_to_a_sibling_directory_inside_the_checkout",
+        ),
+        pytest.param(
+            plans_directory_is_symlink_to_a_sibling_directory_inside_claude,
+            id="plans_directory_is_a_symlink_to_a_sibling_directory_inside_claude",
         ),
         pytest.param(claude_directory_is_symlink_to_outside_directory, id="claude_directory_is_a_symlink_to_outside_directory"),
     ]
@@ -314,6 +327,14 @@ class TestAllowLists:
         records = [slash_invocation(name=name, args="ARGS-SENTINEL"), skill_load()]
 
         assert "ARGS-SENTINEL" not in block_for(tmp_path, records)
+
+    def test_slash_invocation_followed_by_a_skill_load_failing_the_directory_allow_list_is_still_quoted(self, tmp_path):
+        records = [slash_invocation(name="scratch", args="alpha beta"), skill_load("/work/my repo/skill")]
+
+        block = block_for(tmp_path, records)
+
+        assert quoted_messages(block) == ["/scratch alpha beta"]
+        assert SKILLS_LABEL not in block
 
     @pytest.mark.parametrize("character", list("`'\";*$!(){}<>|&~#%, :\\é中\t"), ids=lambda c: f"u{ord(c):04x}")
     def test_path_class_rejects_each_character_outside_it(self, character):
