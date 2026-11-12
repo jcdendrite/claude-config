@@ -2706,11 +2706,23 @@ def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     )
 
 
+CI_TEST_SLICE_JOB_ID = "test-slice"
+
+
+def ci_tests_workflow_jobs() -> dict:
+    """The parsed `jobs` mapping of tests.yml."""
+    return yaml.safe_load(_CI_DETECT_STEP_WORKFLOW.read_text())["jobs"]
+
+
+def ci_test_slice_job() -> dict:
+    """The parsed `test-slice` job of tests.yml, the job whose matrix legs run the pytest passes."""
+    return ci_tests_workflow_jobs()[CI_TEST_SLICE_JOB_ID]
+
+
 def extract_ci_detect_step_run_block() -> str:
     """Pull the `run:` script for tests.yml's step with `id: detect` via
     pyyaml, locating the step by id rather than regexing the YAML."""
-    workflow = yaml.safe_load(_CI_DETECT_STEP_WORKFLOW.read_text())
-    steps = workflow["jobs"]["tests"]["steps"]
+    steps = ci_test_slice_job()["steps"]
     detect_steps = [step for step in steps if step.get("id") == "detect"]
     assert len(detect_steps) == 1, (
         "Expected exactly one step with id: detect in tests.yml — did "
