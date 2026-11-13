@@ -22,9 +22,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
 from helpers import (
     REPO_ROOT,
+    ci_test_slice_job,
     init_ci_detect_step_test_repo,
     run_ci_detect_step,
 )
@@ -201,11 +201,6 @@ class TestDetectStepFailOpenSetsChanged:
         )
 
 
-def _tests_job_steps() -> list[dict]:
-    workflow = yaml.safe_load(_WORKFLOW_PATH.read_text())
-    return workflow["jobs"]["tests"]["steps"]
-
-
 def _matching_pytest_line(step: dict, *required_phrases: str) -> str | None:
     """Returns the first `run:` line of `step` that invokes pytest and contains
     every one of `required_phrases` as a whitespace-bounded phrase. Scoped to
@@ -232,37 +227,26 @@ class TestPytestTwoPassSplit:
     """The parallel/timing marker split must survive an unrelated workflow
     edit. Parses the workflow with yaml.safe_load rather than regex --
     unlike SKIP_REGEX above, which is a shell-embedded string, this is
-    checking real YAML structure (the `tests` job's step list). Asserts on
-    full step dicts, not just `run:` substrings, so the two invocations are
-    pinned to distinct steps and the timing step's own `if:` condition is
-    checked — a substring-only check would pass even if both invocations
-    were concatenated into a single step's `run:` body."""
+    checking real YAML structure (the `test-slice` job's step list). Asserts
+    on full step dicts, not just `run:` substrings, so the two invocations
+    are pinned to distinct steps — a substring-only check would pass even if
+    both invocations were concatenated into a single step's `run:` body."""
 
     def test_parallel_and_timing_passes_are_distinct_steps(self):
-        steps = _tests_job_steps()
+        steps = ci_test_slice_job()["steps"]
         parallel_step = _pytest_step_matching(steps, '-m "not timing"')
         timing_step = _pytest_step_matching(steps, "-m timing", "-n0")
 
         assert parallel_step is not None, f"no step runs the parallel (not timing) pass; steps: {steps}"
         assert timing_step is not None, f"no step runs the serial (timing, -n0) pass; steps: {steps}"
         assert parallel_step is not timing_step, (
-            "the parallel and timing passes must run as separate steps — a parallel-pass "
-            f"failure must not prevent the timing step from running; steps: {steps}"
-        )
-
-    def test_timing_pass_step_runs_even_if_parallel_pass_was_cancelled(self):
-        steps = _tests_job_steps()
-        timing_step = _pytest_step_matching(steps, "-m timing", "-n0")
-
-        assert timing_step is not None, f"no step runs the serial (timing, -n0) pass; steps: {steps}"
-        assert "!cancelled()" in timing_step.get("if", ""), (
-            "the timing pass step's if: must use !cancelled() (not a bare condition) so a "
-            f"parallel-pass failure doesn't suppress this step's own report; step: {timing_step}"
+            "the parallel and timing passes must run as separate steps so that each runs "
+            f"in its own matrix leg; steps: {steps}"
         )
 
 
 def _parallel_pytest_argv() -> list[str]:
-    steps = _tests_job_steps()
+    steps = ci_test_slice_job()["steps"]
     pytest_line = next(
         (line for step in steps if (line := _matching_pytest_line(step, '-m "not timing"')) is not None),
         None,
