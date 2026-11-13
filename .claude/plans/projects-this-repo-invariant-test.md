@@ -64,7 +64,7 @@ The walked set is unchanged today (row 3). A subcommand outside the map that los
 - Keeping the `<=` check: its comment (:305-307) states its purpose as catching flag loss on four registrar paths, and the pin now covers every registrar. It also fails when one of the four is unregistered, which other files already catch (row 8).
 - A count assertion on the walked set fails without naming the change.
 
-**The `sessions --paths` test** (rows 9-16), in `tests/test_transcript_sessions.py`. :5 becomes `from .conftest import _asst, _write_jsonl, _write_subagent_dispatch, _write_subagent_jsonl`. After :19 come two blank lines, then:
+**The `sessions --paths` test** (rows 9-16), in `tests/test_transcript_sessions.py`. :3 becomes `from transcript_analysis import cli, corpus`, and :5 becomes `from .conftest import _asst, _write_jsonl, _write_subagent_dispatch, _write_subagent_jsonl`. After :19 come two blank lines, then:
 
 ```python
 @pytest.mark.parametrize(
@@ -81,12 +81,12 @@ The walked set is unchanged today (row 3). A subcommand outside the map that los
 def test_sessions_paths_emits_subagent_paths_only_under_include_subagents(
     fake_projects, capsys, argv, expected_relative_paths
 ):
-    """Plain --paths must not print subagent paths.
+    """--include-subagents prints direct subagent transcripts only, not their sidecars or workflow-nested files.
 
-    --include-subagents prints subagent transcripts only, not their sidecars.
     That case shows the seeded subagent file would print, so the plain case cannot pass vacuously.
     The orphan subagent directory has no main transcript, so it must not print in either case.
-    The tail session sorts after the session with subagents and has no subagents directory, so it prints only its own transcript.
+    The tail session sorts after the session with subagents.
+    It has no subagents directory, so it prints only its own transcript.
     """
     _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-5")])
     _write_jsonl(fake_projects / "tail.jsonl", [_asst("claude-sonnet-5")])
@@ -94,6 +94,9 @@ def test_sessions_paths_emits_subagent_paths_only_under_include_subagents(
         fake_projects, "sess", "agent-probe", "toolu_probe", [_asst("claude-sonnet-5", sidechain=True)]
     )
     _write_subagent_jsonl(fake_projects, "orphan", "agent-orphan", [_asst("claude-sonnet-5", sidechain=True)])
+    workflow_dir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR / "workflows" / "wf_probe"
+    workflow_dir.mkdir(parents=True)
+    _write_jsonl(workflow_dir / "agent-nested.jsonl", [_asst("claude-sonnet-5", sidechain=True)])
     args = cli.build_parser().parse_args(argv)
 
     args.func(args)
@@ -110,6 +113,7 @@ What each assertion catches:
 - The `.meta.json` sidecar beside the seeded subagent file sits in the real `subagents/` directory (`corpus.py:33`). The control case's exact list therefore fails if `sessions.py:48`'s `glob("*.jsonl")` widens to `glob("*")`.
 - The oracle spells `subagents` literally while the seed, sidecar included, goes through `_write_subagent_dispatch` and `SUBAGENT_SUBDIR` (row 13). The control case therefore also fails if that constant drifts from the on-disk name.
 - The orphan subagent directory has no main transcript. The control case fails if the subagent paths come from a scope-wide glob instead of from each emitted session.
+- The workflow-nested file under `sess/subagents/workflows/wf_probe/` is not a direct child of `subagents/`, matching the reader's direct-children-only set (`tests/test_transcript_corpus.py:59-70`). The control case fails if `sessions.py:48`'s glob widens to a recursive pattern.
 - The `tail.jsonl` session has no `subagents/` directory and sorts after `sess.jsonl`. The control case fails if the per-session derivation raises on a session without one, or carries the previous session's subagent paths into it.
 
 **Alternatives set aside for the sessions test.** The control case is heavier than a single plain case, which passes vacuously if the seed misses the directory `cmd_sessions` reads. Lighter primitives checked for proving the seed:
@@ -158,7 +162,7 @@ Other drivers set aside:
 21. None of this diff's paths triggers a full-suite run. `[verified: staff-sdet's in-process call of select_pytest_targets on this diff's paths returned is_full_suite=False, reported to the dispatching session; Verification step 6 observes it]`
 22. Both test files are tracked, so `test_ticket_reference_discipline.py`'s `git ls-files` corpus covers them with no staging step. `[verified: the session-start git status lists only this plan file as untracked]`
 23. `_move_fidelity.py test-ids` compares per-test outcomes across junit runs, with `--rename` and `--expect-new` (`tests/_move_fidelity.py:9`, `:928-941`). `[verified: read]`
-24. ruff runs with `line-length = 130` and the rules `E`, `F`, `B`, `I`, `UP` and `SIM` (`pyproject.toml:1-6`). The longest prescribed lines are the two docstrings, at about 119 columns each. `[verified: read; column counts of the prescribed lines]`
+24. ruff runs with `line-length = 130` and the rules `E`, `F`, `B`, `I`, `UP` and `SIM` (`pyproject.toml:1-6`). Every prescribed line is under 130 columns. `[verified: read; column counts of the prescribed lines]`
 
 **Mechanisms:**
 - M1: The `_SUBCOMMANDS_LACKING_A_SCOPE_FLAG` map, and the renamed test asserting the registrar's map equals it. `anchors: root, row1, row2, row4, row7`. The alternatives are under "Alternatives set aside for the pin".
@@ -181,15 +185,15 @@ Other drivers set aside:
 
 **Modify:**
 - `claude/.claude/scripts/tests/test_transcript_cli.py` (the new constant before :278, :293-297 and :304-308 only);
-- `claude/.claude/scripts/tests/test_transcript_sessions.py` (:5, and the new test after :19).
+- `claude/.claude/scripts/tests/test_transcript_sessions.py` (:3, :5, and the new test after :19).
 
 **Also in the diff:** `.claude/plans/projects-this-repo-invariant-test.md`.
 
-**Reuse:** `fake_projects`, `_asst`, `_write_jsonl`, `_write_subagent_dispatch` and `_write_subagent_jsonl` from `tests/conftest.py`; `TestBuildParser._subcommand_flags`; `cli.build_parser()`. No new helper or fixture.
+**Reuse:** `fake_projects`, `_asst`, `_write_jsonl`, `_write_subagent_dispatch` and `_write_subagent_jsonl` from `tests/conftest.py`; `TestBuildParser._subcommand_flags`; `cli.build_parser()` and `corpus.SUBAGENT_SUBDIR`. No new helper or fixture.
 
 **PR body requirement.** The PR body names the renamed test ID, old and new, so a reviewer comparing CI test lists reads the rename as intended.
 
-Projected diff: about 63 lines. About 25 change in `test_transcript_cli.py` (16 added, 9 deleted) and about 38 in `test_transcript_sessions.py` (37 added, 1 deleted).
+Projected diff: about 70 lines. About 25 change in `test_transcript_cli.py` and about 45 in `test_transcript_sessions.py`.
 
 ## Verification
 
@@ -206,7 +210,7 @@ Run from the worktree root. `<tests>` is `claude/.claude/scripts/tests`.
 4. `git diff origin/main -- <tests>/test_transcript_cli.py <tests>/test_transcript_sessions.py | grep -E '^[+-][[:space:]]*def test_'` prints exactly three lines: the removed `test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions`, the added `test_subcommands_lacking_a_scope_flag_are_exactly_the_expected_set`, and the added `test_sessions_paths_emits_subagent_paths_only_under_include_subagents`.
 5. Scope of the diff:
    - `git diff origin/main --name-only -- claude/` prints exactly the two test files.
-   - `git diff origin/main --numstat -- claude/` totals near 60 changed lines.
+   - `git diff origin/main --numstat -- claude/` totals near 70 changed lines.
    - `git grep -n test_subcommands_with_projects_but_no_this_repo -- ':!.claude/plans/'` prints nothing.
 6. `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. Its stderr names `claude/.claude/scripts/tests` among its targets and does not report the full suite (rows 20, 21). Then:
    - These pass, including their cases for both edited files: `claude/.claude/hooks/tests/test_ticket_reference_discipline.py`'s `test_no_ticket_prefixed_identifier` and `test_no_duplicate_top_level_test_name_within_a_file` (row 22), and `claude/.claude/tests/test_pytest_collection_config.py`'s `TestNoBareSameDirectorySiblingImports`.
