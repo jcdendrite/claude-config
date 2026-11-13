@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime

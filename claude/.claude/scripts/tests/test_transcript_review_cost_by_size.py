@@ -4,7 +4,6 @@ Aggregates are tested over literal records. The command is tested over pr-cost l
 faked so that any `gh` call, and any git call beyond the origin lookup, shows in the recorded argv.
 """
 import argparse
-import math
 import re
 import subprocess
 from pathlib import Path
