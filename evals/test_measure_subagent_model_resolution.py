@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
+import process_test_helpers
 import pytest
 from process_test_helpers import is_running
 
@@ -578,6 +579,75 @@ class TestEnvironmentWithoutGitLocalVars:
         assert "GIT_DIR" not in environment
 
 
+class TestIsRunning:
+    """The shared probe every child-leak test relies on, driven against real children."""
+
+    @staticmethod
+    def _unused_pid() -> int:
+        """A pid no process holds. ps rejects a pid above the platform maximum, so the search starts low."""
+        for candidate in range(99_999, 1_000, -1):
+            try:
+                os.kill(candidate, 0)
+            except ProcessLookupError:
+                return candidate
+            except PermissionError:
+                continue
+        raise AssertionError("no unused pid found")
+
+    @staticmethod
+    def _wait_until_zombie(pid: int) -> None:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+            if stat.startswith("Z"):
+                return
+            time.sleep(0.02)
+        raise AssertionError(f"pid {pid} never became a zombie")
+
+    def test_is_true_for_a_live_child_and_false_once_it_is_killed_and_reaped(self) -> None:
+        child = subprocess.Popen(["sleep", "60"])
+        try:
+            running_while_alive = is_running(child.pid)
+        finally:
+            child.kill()
+            child.wait()
+
+        assert running_while_alive is True
+        assert is_running(child.pid) is False
+
+    def test_is_false_for_a_pid_no_process_holds(self) -> None:
+        assert is_running(self._unused_pid()) is False
+
+    def test_is_false_for_a_zombie_that_exited_and_awaits_its_parents_wait(self) -> None:
+        child = subprocess.Popen(["sh", "-c", "exit 0"])
+        try:
+            self._wait_until_zombie(child.pid)
+
+            assert is_running(child.pid) is False
+        finally:
+            child.wait()
+
+    def test_raises_when_ps_fails_for_a_reason_other_than_no_such_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # process_test_helpers.subprocess is the global subprocess module, so this patch is process-wide.
+        monkeypatch.setattr(
+            process_test_helpers.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, stdout="", stderr="ps: Operation not permitted\n"),
+        )
+
+        with pytest.raises(RuntimeError, match="Operation not permitted"):
+            is_running(1234)
+
+    def test_raises_when_ps_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def missing_ps(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("ps")
+
+        # process_test_helpers.subprocess is the global subprocess module, so this patch is process-wide.
+        monkeypatch.setattr(process_test_helpers.subprocess, "run", missing_ps)
+
+        with pytest.raises(FileNotFoundError):
+            is_running(1234)
+
+
 class TestRunClaudeToCompletion:
     """_run_claude_to_completion's timeout and cancellation contract, driven
     against real `sh` children -- the pipe-read and process-group behavior
@@ -649,12 +719,23 @@ class TestRunClaudeToCompletion:
     @pytest.mark.timing
     def test_timeout_kills_descendants_of_the_child(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "grandchild.pid"
+        result: dict[str, bool] = {}
 
-        # The deadline leaves the shell time to write the pid file before the group is killed. Nothing can write it afterwards.
-        _, timed_out = msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 3)
+        def launch() -> None:
+            # The deadline leaves the shell time to write the pid file before the group is killed.
+            _, result["timed_out"] = msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 3)
 
-        assert timed_out is True
-        self._assert_stops_running(int(pid_file.read_text()))
+        worker = threading.Thread(target=launch)
+        worker.start()
+        try:
+            grandchild_pid = self._wait_for_pid_file(pid_file)
+            assert is_running(grandchild_pid)
+        finally:
+            worker.join(timeout=10)
+
+        assert not worker.is_alive()
+        assert result["timed_out"] is True
+        self._assert_stops_running(grandchild_pid)
 
     @pytest.mark.timing
     def test_keyboard_interrupt_kills_the_childs_process_group_and_propagates(
@@ -663,7 +744,7 @@ class TestRunClaudeToCompletion:
         pid_file = tmp_path / "grandchild.pid"
 
         def interrupt_once_child_is_running(*_args: object, **_kwargs: object) -> None:
-            self._wait_for_pid_file(pid_file)
+            assert is_running(self._wait_for_pid_file(pid_file))
             raise KeyboardInterrupt
 
         monkeypatch.setattr(msmr.select, "select", interrupt_once_child_is_running)
@@ -686,9 +767,13 @@ class TestRunClaudeToCompletion:
 
         worker = threading.Thread(target=launch)
         worker.start()
-        grandchild_pid = self._wait_for_pid_file(pid_file)
-        msmr.abort_launches()
-        worker.join(timeout=10)
+        try:
+            grandchild_pid = self._wait_for_pid_file(pid_file)
+            assert is_running(grandchild_pid)
+        finally:
+            msmr.abort_launches()
+            worker.join(timeout=10)
+            msmr._launches_aborted.clear()
 
         assert not worker.is_alive()
         assert isinstance(outcome["error"], msmr.LaunchAbortedError)
@@ -702,6 +787,29 @@ class TestRunClaudeToCompletion:
             msmr._run_claude_to_completion(["sh", "-c", 'touch "$0"', str(marker)], tmp_path, 10)
 
         assert not marker.exists()
+
+    def test_a_binary_that_cannot_spawn_raises_and_leaves_the_outcome_untouched(self, tmp_path: Path) -> None:
+        """LiveLauncher treats an OSError with exit_status None as a launch fault that spent nothing."""
+        outcome = msmr.LaunchOutcome()
+
+        with pytest.raises(FileNotFoundError):
+            msmr._run_claude_to_completion([str(tmp_path / "no-such-binary")], tmp_path, 5, outcome=outcome)
+
+        assert outcome.exit_status is None
+        assert outcome.stderr_tail == ""
+
+    def test_a_launch_refused_after_abort_leaves_the_outcome_untouched(self, tmp_path: Path) -> None:
+        outcome = msmr.LaunchOutcome()
+        msmr.abort_launches()
+
+        try:
+            with pytest.raises(msmr.LaunchAbortedError):
+                msmr._run_claude_to_completion([str(tmp_path / "no-such-binary")], tmp_path, 5, outcome=outcome)
+        finally:
+            msmr._launches_aborted.clear()
+
+        assert outcome.exit_status is None
+        assert outcome.stderr_tail == ""
 
     def test_outcome_receives_the_exit_status_and_the_stderr_tail(self, tmp_path: Path) -> None:
         outcome = msmr.LaunchOutcome()

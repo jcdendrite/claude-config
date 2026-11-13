@@ -751,7 +751,7 @@ DELIVERY_RECEIPT_MISSING = "receipt-missing"
 # api_error_status values on a `result` event (HTTP status codes of the API error the CLI surfaced).
 API_STATUS_RATE_LIMITED = 429
 API_STATUS_OVERLOADED = (503, 529)
-# The 4xx policy is stated in the fault-handling comment below.
+# Harness policy: a 4xx other than 429 is non-transient and pauses the run.
 API_STATUS_CLIENT_ERRORS = range(400, 500)
 # `status` of a rate_limit_event's rate_limit_info. Only a refused request is a fault: a warning-class status is
 # the server's notice that a window is nearly used, and the request still completed.
@@ -1742,8 +1742,6 @@ class DriftMonitor:
 # src/anthropic/_constants.py, read 2026-11-11): two retries with exponential backoff from 0.5 s to 8 s. They are an
 # analogy for re-running a whole sample, not a measurement for this workload. Anthropic's rate-limits page says a
 # retry before retry-after elapses fails, so a rate limit that resets beyond the ceiling pauses the run instead.
-# The harness treats a 4xx other than 429 as non-transient and pauses.
-# This is harness policy and does not claim the Anthropic SDK classifies those statuses the same way.
 FAULT_MAX_RETRIES = 2
 FAULT_INITIAL_DELAY_S = 0.5
 FAULT_MAX_DELAY_S = 8.0

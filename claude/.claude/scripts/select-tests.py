@@ -102,6 +102,10 @@ MEASURE_MAIN_SESSION_RULE_ADHERENCE = "evals/measure_main_session_rule_adherence
 MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST = "evals/test_measure_main_session_rule_adherence.py"
 MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST = "evals/test_main_session_rule_adherence_fixtures.py"
 MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR = "evals/fixtures/main-session-rule-adherence"
+# The seeded projects the gate copies into every sample and hashes into its run header; its tests assert on their content.
+DISPATCH_PROJECT_FIXTURE_DIR = "evals/fixtures/dispatch-project"
+TEMP_PROJECT_FIXTURE_DIR = "evals/fixtures/temp-project"
+TEMP_PROJECT_STAGED_PATCH = "evals/fixtures/temp-project.staged.patch"
 # Not a test file: a plain module the gate's test and the model-resolution test import, so an edit to it selects
 # every evals test through the review_bench predicate.
 EVALS_PROCESS_TEST_HELPERS = "evals/process_test_helpers.py"
@@ -654,14 +658,22 @@ def _is_review_bench_change(path: str) -> bool:
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
         or _is_under(path, MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR)
+        or _is_under(path, DISPATCH_PROJECT_FIXTURE_DIR)
+        or _is_under(path, TEMP_PROJECT_FIXTURE_DIR)
         or path in (
             REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, MEASURE_EXPLORE_RECALL_FIXTURE, EVALS_CONFTEST,
             MEASURE_MAIN_SESSION_RULE_ADHERENCE, MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
-            MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST, EVALS_PROCESS_TEST_HELPERS,
+            MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST, EVALS_PROCESS_TEST_HELPERS, TEMP_PROJECT_STAGED_PATCH,
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
+
+
+# test_trigger_detector.py reaches these fixtures only through run_skill_evals.seed_temp_project_git, which copies
+# them by path at run time, so the import-based rows cannot see the dependency.
+def _is_temp_project_fixture_change(path: str) -> bool:
+    return _is_under(path, TEMP_PROJECT_FIXTURE_DIR) or path == TEMP_PROJECT_STAGED_PATCH
 
 
 def _is_replay_bench_change(path: str) -> bool:
@@ -894,6 +906,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
     (lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, EVALS_TEST_TARGETS),
     (lambda p: p == SKILL_EVALS_RUNNER, EVALS_TEST_TARGETS),
+    (_is_temp_project_fixture_change, tuple(sorted(SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER))),
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (lambda p: p == MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, (SELECT_TESTS_TEST_PATH,)),
     (lambda p: _is_under(p, REPLAY_BENCH_DIR), (SELECT_TESTS_TEST_PATH,)),

@@ -399,6 +399,26 @@ class TestVerdictsAndEntry:
         assert inconclusive is m.RunVerdict.INCONCLUSIVE
         assert m.run_verdict([result(m.VERDICT_FAIL)], delivery_failed=True, void_reasons=["x"]) is m.RunVerdict.VOID
 
+    @pytest.mark.parametrize(
+        ("observables", "delivery_failed", "expected"),
+        [
+            ([(m.VERDICT_FAIL, False), (m.VERDICT_PASS, True)], False, m.RunVerdict.FAIL),
+            ([(m.VERDICT_PASS, True), (m.VERDICT_INCONCLUSIVE, False)], False, m.RunVerdict.MISS),
+            ([(m.VERDICT_PASS, True)], True, m.RunVerdict.FAIL),
+            ([(m.VERDICT_PASS, False), (m.VERDICT_INCONCLUSIVE, False)], False, m.RunVerdict.INCONCLUSIVE),
+        ],
+        ids=["fail_over_miss", "miss_over_inconclusive", "delivery_failure_over_miss", "inconclusive_among_passes"],
+    )
+    def test_the_run_verdict_resolves_adjacent_conditions_in_precedence_order(
+        self, observables: list[tuple[str, bool]], delivery_failed: bool, expected: m.RunVerdict,
+    ) -> None:
+        tally = m.CellTally()
+        gate_results = [
+            m.GateObservableResult("O1", tally, tally, None, None, verdict, miss, 100, False) for verdict, miss in observables
+        ]
+
+        assert m.run_verdict(gate_results, delivery_failed=delivery_failed, void_reasons=[]) is expected
+
 
 # --- Scorers -----------------------------------------------------------------------------------
 
@@ -3768,6 +3788,26 @@ class TestResume:
         assert launcher.requests == []
         assert (kit.tmp_path / "crashed.jsonl").read_text() == log_before
 
+    def test_a_resume_refuses_while_a_real_child_carries_the_session_id_after_a_real_samples_length_of_argv(
+        self, kit: RunKit,
+    ) -> None:
+        """`build_command` puts --session-id after the prompt and the model flags, hundreds of characters in."""
+        session_id = self._log_with_an_unfinished_attempt(kit)
+        resumed = kit.build(ScriptedLauncher(), log_name="crashed.jsonl", resume=True, stop=300.0, process_lister=None)
+        padding = "x" * 500
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", padding, session_id], start_new_session=True,
+        )
+        try:
+            listing = m.list_process_commands()
+            with pytest.raises(m.ResumeRefused, match=session_id):
+                resumed.harness.run()
+        finally:
+            child.kill()
+            child.wait()
+
+        assert session_id in listing
+
     def test_a_resume_proceeds_when_no_running_process_carries_an_unfinished_attempts_session_id(
         self, kit: RunKit,
     ) -> None:
@@ -3898,11 +3938,32 @@ class TestListProcessCommands:
         assert "claude -p --session-id abc" in m.list_process_commands()
 
 
+class TestInterruptibleSleep:
+    def test_returns_after_the_delay_while_no_abort_was_requested(self) -> None:
+        msmr._launches_aborted.clear()
+
+        m.interruptible_sleep(0.01)
+
+    def test_raises_at_once_instead_of_waiting_out_the_delay_once_an_abort_was_requested(self) -> None:
+        msmr.abort_launches()
+        start = time.monotonic()
+
+        try:
+            with pytest.raises(msmr.LaunchAbortedError):
+                m.interruptible_sleep(60)
+        finally:
+            msmr._launches_aborted.clear()
+
+        assert time.monotonic() - start < 1
+
+
 class TestInterrupts:
     @pytest.mark.timing
     def test_a_sigterm_mid_stage_ends_every_child_and_removes_every_project_and_store(self, kit: RunKit, tmp_path: Path) -> None:
         pid_dir = tmp_path / "pids"
         pid_dir.mkdir()
+        grandchild_pid_dir = tmp_path / "grandchild-pids"
+        grandchild_pid_dir.mkdir()
         projects_root = tmp_path / "projects"
 
         def sleeping_child(request: m.SampleRequest) -> m.RawSample:
@@ -3910,8 +3971,11 @@ class TestInterrupts:
             store_dir.mkdir(parents=True)
             (store_dir / f"{request.session_id}.jsonl").write_text("{}\n")
             pid_file = pid_dir / request.session_id
+            grandchild_pid_file = grandchild_pid_dir / request.session_id
+            # The shell's pid file is written last, so its presence means the grandchild's pid file exists too.
             lines, timed_out = msmr._run_claude_to_completion(
-                ["sh", "-c", f'echo $$ > "{pid_file}"; sleep 60'], request.project_dir, 120,
+                ["sh", "-c", 'sleep 60 & echo $! > "$1"; echo $$ > "$0"; wait', str(pid_file), str(grandchild_pid_file)],
+                request.project_dir, 120,
             )
             return m.RawSample(lines=tuple(lines), timed_out=timed_out)
 
@@ -3919,6 +3983,10 @@ class TestInterrupts:
         m.install_termination_handlers()
 
         cancelled = threading.Event()
+        alive_before_sigterm: dict[int, bool] = {}
+
+        def read_pids(directory: Path) -> list[int]:
+            return [int(path.read_text()) for path in directory.glob("*")]
 
         def terminate_once_two_children_run() -> None:
             deadline = time.monotonic() + 10
@@ -3927,7 +3995,11 @@ class TestInterrupts:
                     return
             if cancelled.wait(0.2):
                 return
-            os.kill(os.getpid(), signal.SIGTERM)
+            try:
+                for pid in read_pids(pid_dir) + read_pids(grandchild_pid_dir):
+                    alive_before_sigterm[pid] = is_running(pid)
+            finally:
+                os.kill(os.getpid(), signal.SIGTERM)
 
         terminator = threading.Thread(target=terminate_once_two_children_run, daemon=True)
         terminator.start()
@@ -3939,8 +4011,9 @@ class TestInterrupts:
             cancelled.set()
             terminator.join(timeout=5)
 
-        pids = [int(path.read_text()) for path in pid_dir.glob("*")]
-        assert len(pids) == 2
+        pids = read_pids(pid_dir) + read_pids(grandchild_pid_dir)
+        assert len(pids) == 4
+        assert alive_before_sigterm == dict.fromkeys(pids, True)
         deadline = time.monotonic() + 5
         while any(is_running(pid) for pid in pids) and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -4786,6 +4859,68 @@ class TestLiveRun:
         store = bench_runner.RunStore(Path(f"{log_path}.d"))
         store.acquire_lock()  # the run released its lock
         store.release_lock()
+
+    def test_a_run_whose_log_is_locked_by_another_holder_is_refused_before_anything_is_created_or_launched(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        launcher = ScriptedLauncher()
+        wire_live_run(monkeypatch, tmp_path, launcher)
+        log_path = tmp_path / "live.jsonl"
+        other_holder = bench_runner.RunStore(Path(f"{log_path}.d"))
+        other_holder.acquire_lock()
+
+        try:
+            code = m.main(["--phase", "calibrate", "--run-log", str(log_path), "--model", "sonnet"])
+        finally:
+            other_holder.release_lock()
+
+        assert code == 2
+        assert "run store lock" in capsys.readouterr().err
+        assert launcher.requests == []
+        assert not log_path.exists()
+        assert list(kit.temp_root.glob("main-session-adherence-*")) == []
+
+    def test_the_run_lock_is_held_while_samples_launch(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log_path = tmp_path / "live.jsonl"
+        second_holder_refusals: list[bool] = []
+
+        def try_to_take_the_lock_during_a_sample(request: m.SampleRequest, count: int) -> None:
+            second_holder = bench_runner.RunStore(Path(f"{log_path}.d"))
+            try:
+                second_holder.acquire_lock()
+            except bench_runner.RunStoreLocked:
+                second_holder_refusals.append(True)
+            else:
+                second_holder.release_lock()
+                second_holder_refusals.append(False)
+
+        wire_live_run(monkeypatch, tmp_path, ScriptedLauncher(on_launch=try_to_take_the_lock_during_a_sample))
+
+        code = m.main(["--phase", "calibrate", "--run-log", str(log_path), "--model", "sonnet"])
+
+        assert code == 0
+        assert second_holder_refusals
+        assert all(second_holder_refusals)
+
+    def test_an_interrupt_ends_the_run_with_130_a_resume_hint_a_released_lock_and_no_scratch_directory(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        def interrupt_on_the_first_launch(request: m.SampleRequest, count: int) -> None:
+            raise KeyboardInterrupt
+
+        wire_live_run(monkeypatch, tmp_path, ScriptedLauncher(on_launch=interrupt_on_the_first_launch))
+        log_path = tmp_path / "live.jsonl"
+
+        code = m.main(["--phase", "calibrate", "--run-log", str(log_path), "--model", "sonnet"])
+
+        assert code == 130
+        assert f"resume with --resume {log_path}" in capsys.readouterr().err
+        successor = bench_runner.RunStore(Path(f"{log_path}.d"))
+        successor.acquire_lock()
+        successor.release_lock()
+        assert list(kit.temp_root.glob("main-session-adherence-*")) == []
 
     def test_the_self_check_answers_reach_the_json_file_and_never_stdout(
         self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,

@@ -804,6 +804,24 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
+    def test_a_dispatch_project_fixture_change_selects_only_the_evals_tests(self):
+        result = _mod.select_pytest_targets([f"{_mod.DISPATCH_PROJECT_FIXTURE_DIR}/page.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
+
+    @pytest.mark.parametrize(
+        "path",
+        [f"{_mod.TEMP_PROJECT_FIXTURE_DIR}/calculator.py", _mod.TEMP_PROJECT_STAGED_PATCH],
+        ids=["temp_project_file", "temp_project_staged_patch"],
+    )
+    def test_a_temp_project_fixture_change_selects_the_evals_tests_and_the_trigger_detector_test(self, path):
+        """test_trigger_detector.py seeds its project from these fixtures through run_skill_evals, an edge
+        no import row models."""
+        result = _mod.select_pytest_targets([path])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER}
+        assert "claude-skills/skills/tests/test_trigger_detector.py" in result.target_paths
+
     def test_config_dir_module_change_selects_the_main_session_adherence_gate_tests(self):
         result = _mod.select_pytest_targets(["claude/.claude/scripts/_config_dir.py"])
         assert _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST in result.target_paths
@@ -2286,6 +2304,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
     _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
     _mod.EVALS_PROCESS_TEST_HELPERS,
+    _mod.TEMP_PROJECT_STAGED_PATCH,
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
     _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
@@ -2580,7 +2599,7 @@ class TestRuleTablePathFidelity:
     def test_review_bench_directory_constants_exist_on_disk(self):
         for constant in (
             _mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR,
-            _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR,
+            _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR, _mod.DISPATCH_PROJECT_FIXTURE_DIR, _mod.TEMP_PROJECT_FIXTURE_DIR,
         ):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 

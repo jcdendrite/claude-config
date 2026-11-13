@@ -520,7 +520,9 @@ the emitter, every arm receives the rules by hook, so the preflight refuses.
   emitter, the two gate hooks, `_lib.sh` and the two content files from the
   candidate ref's `claude/.claude/hooks` directory. It refuses unless the
   candidate ref's `settings.json` carries all six handlers, each of those hook
-  files exists, and each content file has text.
+  files exists, and each content file has text. The candidate ref's hooks
+  execute with the operator's credentials and environment, so name only a ref
+  the operator has reviewed.
 
 ```bash
 # Print the schedule and launch nothing:
@@ -562,13 +564,13 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
     that never finished refuses a temp project directory outside the current
     temp directory.
   - It refuses while `ps -axo command=` lists the `--session-id` of an attempt
-    that started and never finished. A hard kill of the harness can leave that
-    attempt's `claude -p` child running, and the cleanup would delete the
-    directories under it. End the child, then resume. The check sees only a
-    child whose command line carries its session id, so on a system where `ps`
-    may not show full command lines, check for stray `claude -p` children by
-    hand before resuming. It also refuses when the process list is empty or
-    cannot be read.
+    that started and never finished. End the child, then resume. A hard kill
+    of the harness can leave that attempt's `claude -p` child running, and the
+    cleanup would delete the directories under it.
+    - The check sees only a child whose command line carries its session id.
+      On a system where `ps` may not show full command lines, check for stray
+      `claude -p` children by hand before resuming.
+  - It also refuses when the process list is empty or cannot be read.
   - A fresh run refuses an existing `--json` path or a non-empty
     `--keep-artifacts` directory. A resume may reuse both, but refuses a
     `--keep-artifacts` path that is not a directory.
