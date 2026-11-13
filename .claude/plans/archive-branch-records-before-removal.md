@@ -84,7 +84,7 @@ The manifest is built with `_lib_jq -n --arg`, written to `manifest.json.tmp`, t
   - It returns 1 for everything else: an unsearchable config dir or ancestor, a dangling or looping symlink, a non-file at the path, a read failure, or such a line. A skipped line holding `agent_branch_records` as a substring also returns 1.
   - A `= true` line with a malformed duplicate reaches status 0, so it stays `ready`, because the last conforming line wins.
   - A misspelled key name is not detected, and neither is a hyphenated `agent-branch-records`, which this plan judges the likeliest typo. It is a known residual to fix in a separate change, not an accepted one: the engineer said so, and the PR body names it as a follow-up (row 108). [unverified: the likelihood is the plan's own judgment, with no source]
-  - The helper's conclusion that the key is off rests on one read of the file. A transient I/O failure on `_config_enabled`'s own read yields an empty file, because the config reader swallows read failures, and the helper's second read can then succeed and find no skipped line. A stat error under a searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE, ETIMEDOUT) can likewise read as an absent file. Both need an unreliable home volume. The plan documents this as a residual and adds no code for it. [unverified: no deterministic trigger found]
+  - The `disabled` outcome rests on the config reader's own read of the file, which the helper can veto but not contradict. A transient I/O failure on `_config_enabled`'s own read yields an empty file, because the config reader swallows read failures. The helper's second read can then succeed and find no skipped line. A stat error under a searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE, ETIMEDOUT) can likewise read as an absent file. Both need an unreliable home volume. The plan documents this as a residual and adds no code for it. [unverified: no deterministic trigger found]
   - A missing config dir or `claude-config.toml` under a searchable directory stays `disabled` (row 61 and `_config_location_value`'s `[ -f ]` fallback, `_config.sh:626-629`). Row 38 covers only an absent or unreadable state file.
   - An internal resolver failure of the config reader falls back to the schema default `false`, so the key reads as off and removal proceeds unarchived (row 39).
   - Two arms get no test, because nothing but a race reaches them after `_config_enabled` returns:
@@ -547,7 +547,10 @@ Give each `code-writer` dispatch this Approach and its own file list. The ledger
      - `unavailable` keeps every item, for a default-off consumer too, until the install is fixed or the change reverted;
      - a missing config dir, or a missing toml under a searchable directory, reads as off, with an absent `Archive: ready` line as the only sign;
      - an internal failure of the config reader's resolver returns the schema default `false`, so the key reads as off and removal proceeds unarchived, with the same sign;
-     - the off conclusion rests on one read of the file, so a transient I/O failure on the config reader's own read, or a stat error under a searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE, ETIMEDOUT), can still read as off. The doc states this as a residual and not as a guarantee;
+     - the off conclusion rests on the config reader's own read of the file, and can still read as off in two cases:
+       - a transient I/O failure on that read;
+       - a stat error under a searchable parent other than EACCES, ELOOP or ENOTDIR (EIO, ESTALE, ETIMEDOUT);
+     - the doc states that residual as a residual and not as a guarantee;
      - an unreadable `agent-reviews` or an unreadable entry inside it refuses instead of reading as `absent`, with a pointer to the `UNSUPPORTED_ENTRY` and `COPY_FAILED` rows;
      - list mode prints no `Archive:` line, so it gives no sign that the key read as on;
    - removing the key: when the key leaves the schema, delete the `agent_branch_records` line from each account's `claude-config.toml`, because `_config.sh` warns on every read of a line for an unrecognized key (row 67);
