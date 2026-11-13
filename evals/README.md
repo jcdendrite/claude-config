@@ -571,9 +571,7 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
       On a system where `ps` may not show full command lines, check for stray
       `claude -p` children by hand before resuming.
   - It also refuses when the process list is empty or cannot be read.
-  - A fresh run refuses an existing `--json` path or a non-empty
-    `--keep-artifacts` directory. A resume may reuse both, but refuses a
-    `--keep-artifacts` path that is not a directory.
+  - It may reuse the `--json` and `--keep-artifacts` paths.
 - `--dry-run` prints the schedule and runs no preflight, so a clean dry run
   does not predict a refusal.
 - Do not pull or switch branches in the main checkout during a run: the
@@ -622,8 +620,9 @@ subscription auth that is a unit of account, not a charge.
   can go into a PR body. The report also counts faults by class for each arm
   and observable.
 - A delivery failure prints its status class (`sidecar`, `missing`,
-  `receipt-missing` and so on) in the report. Its free-text cause and the
-  self-check answers stay in the run log and `--json`.
+  `receipt-missing` and so on) in the report. Its free-text cause appears only
+  in the halt line on stderr, the run log and `--json`. The self-check answers
+  stay in the run log and `--json`.
 - `--cumulative-stop-usd` ends the run once realized spend reaches it. Samples
   already in flight finish, so spend can overshoot the stop by up to
   `--workers` times the stage's per-sample cap.
@@ -631,11 +630,10 @@ subscription auth that is a unit of account, not a charge.
   stages cap each sample at ten times the largest smoke sample, or keep
   `--budget-cap-usd` when the smoke reports no positive charge.
 - Both take a finite number above zero.
-- The gate phase's projection notice prints the expected figure and, beside it,
-  an attempt-cap ceiling that prices every cell at its attempt cap, extension
-  included. The ceiling is what the stage can spend when reach sits at its
-  lower bound. The planned-look refusal compares the with-extension figure at
-  the calibrated reach against the remaining stop, not the ceiling.
+- The gate phase refuses its planned look (`planned look refused`) when what
+  remains of `--cumulative-stop-usd` is below the with-extension figure at the
+  calibrated reach. A resume skips the refusal once the planned look has
+  started. The attempt-cap ceiling in the notice is not the figure it compares.
 
 **Footprint on the live config dir.** Each sample is a real session, so it
 leaves the following:

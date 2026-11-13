@@ -131,8 +131,8 @@ EXTENSION_FRACTION = 0.5
 # The expected extra samples from the extension, as a share of the planned look's samples, where k is the number of
 # observables that entered the comparison.
 # Each share is the planned look's extend probability for a matching hook at a true rate of 0.8, times
-# EXTENSION_FRACTION, rounded to two decimals, from TestOperatingCharacteristics.planned_look_probabilities.
-# k = 3 uses k = 2's 0.05 instead of the enumerated 0.03.
+# EXTENSION_FRACTION, from TestOperatingCharacteristics.planned_look_probabilities, rounded to two decimals, except that
+# k = 3 takes k = 2's 0.05. No share is more than 0.005 below or 0.02 above the enumerated value.
 EXTENSION_SHARE_BY_K: Mapping[int, float] = {1: 0.10, 2: 0.05, 3: 0.05, 4: 0.03}
 SIZING_TABLE_COUNTS = (30, 29, 27, 24, 20)
 SIZING_TABLE_KS = (1, 2, 4)
@@ -2996,7 +2996,9 @@ def _live_run(args: argparse.Namespace) -> int:
     abort_if_emitter_registered(config_dir)
     claude_path = resolve_claude_binary()
     log_path = Path(args.resume or args.run_log)
-    # Everything that can fail before the first paid sample is checked before any log, store or directory exists.
+    # No file is created until the refusals that read the arguments, the config directory, the claude binary and the
+    # repo's settings.json have passed. The --keep-artifacts directory, scratch directory, <log>.d store and lock come
+    # next, then prepare_run's refusals. The run log opens last, so a fresh run's existing --run-log is refused there.
     if args.resume is not None and not log_path.is_file():
         raise ResumeRefused(f"--resume {log_path}: no such run log")
     if args.json_out and not os.access(Path(args.json_out).resolve().parent, os.W_OK | os.X_OK):

@@ -779,6 +779,38 @@ class TestRunClaudeToCompletion:
         assert isinstance(outcome["error"], msmr.LaunchAbortedError)
         self._assert_stops_running(grandchild_pid)
 
+    @pytest.mark.timing
+    def test_a_child_that_closes_stdout_but_keeps_running_is_killed_after_the_exit_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stdout at EOF skips the first kill, so only the fallback after the exit wait ends a child that lingers."""
+        # The wait must outlast the shell writing the pid file plus one `ps` probe, so the child is still lingering when probed.
+        monkeypatch.setattr(msmr, "_CHILD_EXIT_WAIT_S", 3)
+        pid_file = tmp_path / "grandchild.pid"
+        outcome = msmr.LaunchOutcome()
+        result: dict[str, bool] = {}
+        closes_stdout_then_lingers = ["sh", "-c", 'exec >&-; sleep 60 & echo $! > "$0"; wait', str(pid_file)]
+
+        def launch() -> None:
+            _, result["timed_out"] = msmr._run_claude_to_completion(closes_stdout_then_lingers, tmp_path, 60, outcome=outcome)
+
+        worker = threading.Thread(target=launch)
+        worker.start()
+        grandchild_pid: int | None = None
+        try:
+            grandchild_pid = self._wait_for_pid_file(pid_file)
+            assert is_running(grandchild_pid)
+            worker.join(timeout=10)
+            assert not worker.is_alive()
+            assert result["timed_out"] is False
+            assert outcome.exit_status is not None and outcome.exit_status < 0
+            self._assert_stops_running(grandchild_pid)
+        finally:
+            # Runs after the assertions above, so it only ends a grandchild the production kill left behind.
+            worker.join(timeout=10)
+            if grandchild_pid is not None and is_running(grandchild_pid):
+                os.kill(grandchild_pid, signal.SIGKILL)
+
     def test_launch_after_abort_raises_without_spawning(self, tmp_path: Path) -> None:
         marker = tmp_path / "spawned"
         msmr.abort_launches()

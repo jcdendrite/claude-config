@@ -329,15 +329,14 @@ class TestOperatingCharacteristics:
         assert entry_rate == pytest.approx(expected_entry_rate, abs=0.01)
 
     @pytest.mark.parametrize("entered_count", [1, 2, 3, 4])
-    def test_the_extension_share_is_the_enumerated_extend_probability_times_the_fraction_rounded_up_by_at_most_two_cents(
+    def test_the_extension_share_is_within_half_a_cent_below_and_two_cents_above_the_enumerated_extension_share(
         self, entered_count,
     ) -> None:
         n = m.target_for_sizing_p(0.8, entered_count)
 
         enumerated_share = self.planned_look_probabilities(n, 0.8, 0.8)[m.VERDICT_EXTEND] * m.EXTENSION_FRACTION
 
-        assert m.EXTENSION_SHARE_BY_K[entered_count] >= round(enumerated_share, 2)
-        assert m.EXTENSION_SHARE_BY_K[entered_count] - enumerated_share <= 0.02
+        assert enumerated_share - 0.005 <= m.EXTENSION_SHARE_BY_K[entered_count] <= enumerated_share + 0.02
 
     @pytest.mark.parametrize("memory_count", m.SIZING_TABLE_COUNTS)
     @pytest.mark.parametrize("entered_count", m.SIZING_TABLE_KS)
@@ -3220,6 +3219,10 @@ def gate_rates(**overrides: float) -> dict[tuple[str, str], float]:
     return rates
 
 
+def hook_reach_halved(request: m.SampleRequest) -> float:
+    return 0.5 if (request.arm == m.ARM_HOOK and request.stage == m.STAGE_PLANNED_LOOK) else 1.0
+
+
 class TestGateComparison:
     def test_a_matching_hook_passes_with_the_scored_targets_sized_from_the_calibration(self, kit: RunKit) -> None:
         launcher = ScriptedLauncher(gate_rates())
@@ -3275,9 +3278,6 @@ class TestGateComparison:
         assert not stage_of(launcher, m.STAGE_EXTENSION)
 
     def test_a_hook_arm_that_stops_short_of_its_target_while_memory_reaches_it_is_a_miss(self, kit: RunKit) -> None:
-        def hook_reach_halved(request: m.SampleRequest) -> float:
-            return 0.5 if (request.arm == m.ARM_HOOK and request.stage == m.STAGE_PLANNED_LOOK) else 1.0
-
         built = kit.build(ScriptedLauncher(gate_rates(), reach=hook_reach_halved), phase=m.PHASE_GATE)
 
         result = built.harness.run()
@@ -3939,11 +3939,16 @@ class TestListProcessCommands:
 
 
 class TestInterruptibleSleep:
-    def test_returns_after_the_delay_while_no_abort_was_requested(self) -> None:
+    def test_waits_out_the_whole_delay_while_no_abort_was_requested(self) -> None:
+        delay_s = 0.05
         msmr._launches_aborted.clear()
+        start = time.monotonic()
 
-        m.interruptible_sleep(0.01)
+        m.interruptible_sleep(delay_s)
 
+        assert time.monotonic() - start >= delay_s
+
+    @pytest.mark.timing
     def test_raises_at_once_instead_of_waiting_out_the_delay_once_an_abort_was_requested(self) -> None:
         msmr.abort_launches()
         start = time.monotonic()
@@ -4820,14 +4825,20 @@ class TestLauncherSidecarRead:
 # --- The live-run wiring ---------------------------------------------------------------------------------------
 
 
-def wire_live_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, launcher: ScriptedLauncher) -> None:
-    """Replaces what `_live_run` reaches outside this process: the binary, git, the launcher and the environment record."""
+def wire_live_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, launcher: ScriptedLauncher, *,
+    receipt_last_lines: dict[str, str] | None = None,
+) -> None:
+    """Replaces what `_live_run` reaches outside this process: the binary, git, the launcher and the environment record.
+
+    A gate-phase run passes the candidate's `receipt_last_lines`, which `prepare_run` otherwise derives from git.
+    """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg-label-q"))
     monkeypatch.setattr(m.mer, "_repo_roots_for_containment_check", lambda start_dir=None: ())
     monkeypatch.setattr(m, "resolve_claude_binary", lambda: "claude")
     prepared = m.PreparedRun(
-        arms={}, self_check_arms={}, self_check_spec=SELF_CHECK_SPECS, receipt_last_lines={},
-        inputs={"base_claude_md": "hash-1"},
+        arms={}, self_check_arms={}, self_check_spec=SELF_CHECK_SPECS,
+        receipt_last_lines=receipt_last_lines or {}, inputs={"base_claude_md": "hash-1"},
     )
     monkeypatch.setattr(m, "prepare_run", lambda args, scratch, **kwargs: prepared)
     monkeypatch.setattr(m, "LiveLauncher", lambda **kwargs: launcher)
@@ -4962,6 +4973,39 @@ class TestLiveRun:
         assert "HALTED" in err
         assert "HALTED" not in out
         assert "nominal dollars was reached" not in out
+
+    def test_a_passing_gate_exits_zero_with_the_pass_verdict_and_no_halt(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        wire_live_run(monkeypatch, tmp_path, ScriptedLauncher(gate_rates()), receipt_last_lines=LAST_LINE)
+
+        code = m.main(["--phase", "gate", "--run-log", str(tmp_path / "live.jsonl"), "--model", "sonnet"])
+
+        out, err = capsys.readouterr()
+        assert code == 0
+        assert f"Run verdict: {m.RunVerdict.PASS.value}" in out
+        assert "HALTED" not in err
+
+    @pytest.mark.parametrize(
+        ("adherence", "reach", "verdict"),
+        [
+            pytest.param(gate_rates(hook_o3=0.85), None, m.RunVerdict.FAIL, id="fail"),
+            pytest.param(gate_rates(), hook_reach_halved, m.RunVerdict.MISS, id="miss"),
+            pytest.param(gate_rates(hook_o3=0.9), None, m.RunVerdict.INCONCLUSIVE, id="inconclusive"),
+        ],
+    )
+    def test_a_gate_without_a_pass_verdict_exits_one_from_the_verdict_and_not_from_a_halt(
+        self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+        adherence: dict, reach: Callable[[m.SampleRequest], float] | None, verdict: m.RunVerdict,
+    ) -> None:
+        wire_live_run(monkeypatch, tmp_path, ScriptedLauncher(adherence, reach=reach), receipt_last_lines=LAST_LINE)
+
+        code = m.main(["--phase", "gate", "--run-log", str(tmp_path / "live.jsonl"), "--model", "sonnet"])
+
+        out, err = capsys.readouterr()
+        assert code == 1
+        assert f"Run verdict: {verdict.value}" in out
+        assert "HALTED" not in err
 
     def test_a_resume_of_a_missing_log_is_refused_before_any_directory_exists(
         self, kit: RunKit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
