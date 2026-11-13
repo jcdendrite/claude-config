@@ -613,6 +613,14 @@ def _row(**fields) -> dict:
     return row
 
 
+def _consult_row(**fields) -> dict:
+    """A round-cap verdict row in the shape the CLI stores: no finding, source, lanes or hash."""
+    return _row(**{
+        "disposition": "CONSULT", "finding": "", "source": "n/a", "reviewers": [], "site_hash": "",
+        "rationale": "noise", **fields,
+    })
+
+
 def _defer(id_: str, **fields) -> dict:
     return _row(**{"id": id_, "defer_criterion": _CRITERION, "site_hash": "1" * 12, **fields})
 
@@ -1173,7 +1181,7 @@ class TestCheckRef:
         assert f"reference row {_SUCCESSOR_ID} instead if the decision is being revisited" in rejection.stderr
 
     def test_a_ref_naming_a_round_cap_verdict_row_is_rejected_as_not_a_decision(self, ledger):
-        _write_ledger(ledger, [_row(id=_DECISION_ID, disposition="CONSULT", rationale="noise")])
+        _write_ledger(ledger, [_consult_row(id=_DECISION_ID)])
 
         result = _check_ref(ledger)
 
@@ -1907,7 +1915,7 @@ def _table_rows(output: str) -> list[str]:
 
 class TestRenderBlock:
     def test_a_ledger_holding_only_round_cap_verdict_rows_renders_nothing(self, ledger):
-        _write_ledger(ledger, [_row(id=_DECISION_ID, disposition="CONSULT", rationale="noise")])
+        _write_ledger(ledger, [_consult_row(id=_DECISION_ID)])
 
         result = _render(ledger)
 
@@ -2833,17 +2841,17 @@ class TestTrend:
         assert result.stdout == "round 1: 5, round 2: 1\n"
 
     def test_a_round_holding_only_a_round_cap_verdict_row_is_absent_from_the_series(self):
-        result = _trend(_row_in_round(1, "CONSULT"), _row_in_round(2, "ADDRESS"))
+        result = _trend(_consult_row(round=1), _row_in_round(2, "ADDRESS"))
 
         assert result.stdout == "round 2: 1\n"
 
     def test_a_round_cap_verdict_row_beside_an_address_row_leaves_the_round_at_one(self):
-        result = _trend(_row_in_round(1, "CONSULT"), _row_in_round(1, "ADDRESS"))
+        result = _trend(_consult_row(round=1), _row_in_round(1, "ADDRESS"))
 
         assert result.stdout == "round 1: 1\n"
 
     def test_a_ledger_holding_only_round_cap_verdict_rows_prints_no_series(self):
-        result = _trend(_row_in_round(1, "CONSULT"))
+        result = _trend(_consult_row(round=1))
 
         assert result.returncode == 0, result.stderr
         assert result.stdout == ""

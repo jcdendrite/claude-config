@@ -1437,6 +1437,33 @@ class TestReviewLedgerRoundCapVerdictAppend:
         # order between them is not pinned.
         assert sorted(noise_rounds) == [2, 5]
 
+    def test_the_skills_noise_grep_literal_matches_exactly_the_two_noise_rows_even_when_an_address_row_quotes_it(
+        self, isolated_home, git_repo
+    ):
+        """The stop counts the skill's literal in the `show --out` text, so a finding or rationale quoting
+        the literal must add no match: jq escapes its inner quotes."""
+        literal = _skill_round_cap_grep_literal()
+        assert literal, "SKILL.md names no Grep literal for the noise count"
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
+        for verdict, round_number in (("noise", "2"), ("re-plan", "3"), ("one-defect", "4"), ("noise", "5")):
+            appended = _run(_round_cap_verdict_args(verdict, round_number), cwd=git_repo, home=isolated_home)
+            assert appended.returncode == 0, appended.stderr
+        quoting_row = _run(
+            _append_args(finding=f"the stop greps for {literal}", rationale=f"quotes {literal}", round="5"),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert quoting_row.returncode == 0, quoting_row.stderr
+        out_path = git_repo / "agent-reviews" / "review-history-literal-count.md"
+
+        result = _run(["show", "--out", str(out_path)], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 5, "all five appended rows must be stored"
+        assert out_path.read_text().count(literal) == 2, "only the two noise CONSULT rows may match the literal"
+
 
 class TestReviewLedgerSettledAndDeferAppend:
     """One subprocess case per branch of the new append paths. The flag and
