@@ -80,6 +80,8 @@ EMITTER_FILE = "emit-main-session-rules.sh"
 PROMPT_GATE_FILE = "refuse-prompt-without-main-session-rules.sh"
 DISPATCH_GATE_FILE = "require-main-session-rules.sh"
 LIB_FILE = "_lib.sh"
+# The candidate hook files the gate hashes and its arms execute.
+CANDIDATE_HOOK_FILES = (EMITTER_FILE, PROMPT_GATE_FILE, DISPATCH_GATE_FILE, LIB_FILE)
 HOOKS_COMMAND_PREFIX = "~/.claude/hooks/"
 MARKER_DIR_NAME = ".main-session-rules.d"
 FAILURE_SIDECAR_SUFFIX = ".failed"
@@ -108,6 +110,9 @@ EXPECTED_REGISTRATIONS: tuple[Registration, ...] = (
 # --- Statistics ----------------------------------------------------------------------
 
 MARGIN = 0.15
+# A hook arm whose reach (scored share of attempts) trails the memory arm's by more than this is a miss. The adherence
+# margin applies unchanged, so a delivery loss is held to the same size of regression as an adherence loss.
+REACH_GAP_TOLERANCE = MARGIN
 CALIBRATION_Z = 1.96
 # The 2.5% one-sided error is split across the planned look and the extension (Bonferroni).
 ALPHA_PER_LOOK = 0.0125
@@ -704,7 +709,6 @@ def sha256_file(path: Path) -> str:
 
 
 def sha256_tree(root: Path) -> str:
-    """Hashes every file's path relative to `root` and its bytes, in path order."""
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
         if path.is_file():
@@ -747,7 +751,7 @@ DELIVERY_RECEIPT_MISSING = "receipt-missing"
 # api_error_status values on a `result` event (HTTP status codes of the API error the CLI surfaced).
 API_STATUS_RATE_LIMITED = 429
 API_STATUS_OVERLOADED = (503, 529)
-# The harness treats a 4xx other than 429 as non-transient (see the fault-handling comment below).
+# The 4xx policy is stated in the fault-handling comment below.
 API_STATUS_CLIENT_ERRORS = range(400, 500)
 # `status` of a rate_limit_event's rate_limit_info. Only a refused request is a fault: a warning-class status is
 # the server's notice that a window is nearly used, and the request still completed.
@@ -759,6 +763,10 @@ RATE_LIMIT_HEALTHY = (RATE_LIMIT_ALLOWED, RATE_LIMIT_ALLOWED_WARNING)
 SIDECAR_TEXT_CAP_BYTES = 2000
 # Bounds an unrecognized status value copied into a record.
 UNRECOGNIZED_VALUE_CAP_CHARS = 80
+# Bounds the stderr tail quoted in the detail of a stream with no result event.
+STDERR_DETAIL_TAIL_CHARS = 200
+# Bounds the self-check answer text kept in a record.
+SELF_CHECK_ANSWER_CAP_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -895,7 +903,7 @@ def evaluate_self_check(arm: str, spec: SelfCheckSpec, raw: RawSample, facts: St
         "nonces_found": found,
         "leaked_agent_briefing_bullet": leaked_bullet,
         "named_claude_md_path": _USER_FILE_PATH_RE.search(answer_text) is not None,
-        "answer": answer_text[:2000],
+        "answer": answer_text[:SELF_CHECK_ANSWER_CAP_CHARS],
     }
 
 
@@ -934,7 +942,7 @@ def classify_attempt(request: SampleRequest, raw: RawSample, *, delivery_retried
         return AttemptOutcome(CLS_BLOCKED, charge, source, detail="a hook blocked the prompt", **common)
     result = facts.result
     if result is None:
-        detail = f"no result event; exit status {raw.exit_status}; stderr tail {raw.stderr_tail[-200:]!r}"
+        detail = f"no result event; exit status {raw.exit_status}; stderr tail {raw.stderr_tail[-STDERR_DETAIL_TAIL_CHARS:]!r}"
         return AttemptOutcome(CLS_UNRECOGNIZED, charge, source, detail=detail, **common)
     subtype = result.get("subtype")
     api_status = result.get("api_error_status")
@@ -1165,7 +1173,7 @@ class PreflightError(Exception):
     pass
 
 
-# Local git and tar calls only, so the environment record's bound applies.
+# Local git, tar and ps calls only, so the environment record's bound applies.
 GIT_TIMEOUT_S = bench_runner._ENVIRONMENT_READ_TIMEOUT_S
 
 
@@ -1259,8 +1267,7 @@ def rewrite_handlers_to_frozen_hooks(handlers: Sequence[Handler], frozen_hooks_d
 
 
 def freeze_hooks_dir(repo_root: Path, ref: str, dest: Path, *, nonces: Mapping[str, str] | None = None) -> Path:
-    """Copy the candidate's hooks directory out of git, tests excluded, so a branch switch mid-run cannot change it.
-    Returns the frozen hooks directory."""
+    """Copy the candidate's hooks directory out of git, tests excluded, so a branch switch mid-run cannot change it."""
     dest.mkdir(parents=True, exist_ok=True)
     try:
         archive = subprocess.run(
@@ -1410,8 +1417,6 @@ def build_command(request: SampleRequest, *, claude_path: str, observable: Obser
 
 
 class LiveLauncher:
-    """Runs one real `claude -p` sample in a seeded project and returns its raw outcome."""
-
     def __init__(
         self, *, claude_path: str, arms: Mapping[str, ArmSpec], self_check_arms: Mapping[str, ArmSpec], projects_root: Path,
     ):
@@ -1565,7 +1570,7 @@ def collect_input_hashes(
     if frozen_hooks_dir is not None:
         for part in CONTENT_PARTS:
             hashes[f"content.{part}"] = sha256_file(frozen_hooks_dir / CONTENT_DIR_NAME / f"{part}.md")
-        for name in (EMITTER_FILE, PROMPT_GATE_FILE, DISPATCH_GATE_FILE, LIB_FILE):
+        for name in CANDIDATE_HOOK_FILES:
             hashes[f"hook.{name}"] = sha256_file(frozen_hooks_dir / name)
     hashes["handlers"] = sha256_text(json.dumps([[h.event, h.matcher, h.handler] for h in handlers], sort_keys=True))
     return hashes
@@ -1821,12 +1826,19 @@ def notify_on_stderr(text: str) -> None:
     print(text, file=sys.stderr)
 
 
+def list_process_commands() -> str:
+    """Every process's command line, one per line. `-axo command=` is the form BSD and GNU ps share.
+    Decoded leniently, because the match needs only a session id and an unrelated process's bytes must not fail it."""
+    listing = subprocess.run(["ps", "-axo", "command="], capture_output=True, check=True, timeout=GIT_TIMEOUT_S).stdout
+    return listing.decode("utf-8", errors="replace")
+
+
 class Harness:
     def __init__(
         self, config: RunConfig, launcher: Callable[[SampleRequest], RawSample], log: RunLog, store: bench_runner.RunStore, *,
         environment_reader: Callable[[], bench_runner.EnvironmentRecord], sleep: Callable[[float], None] = interruptible_sleep,
         clock: Callable[[], float] = time.time, notify: Callable[[str], None] = notify_on_stderr,
-        header_inputs: Mapping[str, str] | None = None,
+        header_inputs: Mapping[str, str] | None = None, process_lister: Callable[[], str] = list_process_commands,
     ):
         self.config = config
         self.launcher = launcher
@@ -1836,6 +1848,7 @@ class Harness:
         self._sleep = sleep
         self._clock = clock
         self._notify = notify
+        self._process_lister = process_lister
         self._header_inputs = dict(header_inputs or {})
         self._lock = threading.Lock()
         self._halt: HaltRun | None = None
@@ -1860,6 +1873,7 @@ class Harness:
         self.attempt_records: list[AttemptRecord] = []
         self._smoke_means: dict[str, float | None] = {}
         self._unlocated_session_stores = 0  # samples whose child ran but whose store was not found at cleanup
+        self._undeletable_directories = 0  # project directories and session stores that survived their delete
 
     # -- run ------------------------------------------------------------------------------------
 
@@ -1892,6 +1906,12 @@ class Harness:
                     f"{self._unlocated_session_stores} sample session store(s) were not found at cleanup, so they may remain "
                     f"under {self.config.projects_root}; remove the directories whose names contain {PROJECT_DIR_PREFIX!r}"
                 )
+            if self._undeletable_directories:
+                self._notify(
+                    f"{self._undeletable_directories} sample project or session store director(ies) could not be deleted and "
+                    f"remain; remove the directories whose names contain {PROJECT_DIR_PREFIX!r} by hand, project directories "
+                    f"under {tempfile.gettempdir()} and session stores under {self.config.projects_root}"
+                )
         return RunResult(self.config.phase, verdict, list(self.void_reasons), halt, self.build_report())
 
     def _begin(self) -> None:
@@ -1914,7 +1934,29 @@ class Harness:
             self.drift.observe("environment.ambient_config_commit", logged.get("ambient_config_commit"))
             self._restore_from_log()
 
+    def _refuse_if_unfinished_attempts_still_run(self) -> None:
+        """A hard kill of the harness leaves its `claude -p` children running, and the resume's sweep deletes the
+        directories they run in. An unfinished attempt's session id is on its child's command line."""
+        unfinished = [killed.session_id for killed in killed_attempt_records(self.log.records)]
+        if not unfinished:
+            return
+        try:
+            commands = self._process_lister()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ResumeRefused(
+                f"--resume refused: cannot list processes to check for running children ({type(exc).__name__}: {exc})"
+            ) from exc
+        if not commands.strip():  # a real listing always holds at least the lister's own process
+            raise ResumeRefused("--resume refused: the process listing was empty, so running children cannot be ruled out")
+        running = [session_id for session_id in unfinished if session_id in commands]
+        if running:
+            raise ResumeRefused(
+                f"--resume refused: {len(running)} unfinished attempt(s) still have a running process "
+                f"(session id(s) {', '.join(running)}); end them, then resume"
+            )
+
     def _restore_from_log(self) -> None:
+        self._refuse_if_unfinished_attempts_still_run()
         # Written to the log, so a later resume finds the finish line and charges the attempt once, and added to the
         # loaded records, so this restore counts it.
         for killed in killed_attempt_records(self.log.records):
@@ -2182,7 +2224,7 @@ class Harness:
             record = self._record(request, outcome)
             self.log.append(record.to_log())
         finally:
-            shutil.rmtree(project_dir, ignore_errors=True)
+            self._remove_directory(project_dir)
             self._remove_own_session_store(project_dir, session_id, store_expected=store_expected)
         self._account(record)
         try:
@@ -2216,8 +2258,8 @@ class Harness:
         shared with other sessions is never deleted.
         A store not found for a sample whose child ran is counted and reported at the end of the run, because the
         transcript can trail the child's exit.
-        The count replaces a wait: bench_runner.wait_for_session_flush settles only once a subagent sidecar exists,
-        so a sample with none would poll to its full timeout."""
+        The harness counts instead of waiting because bench_runner.wait_for_session_flush settles only once a subagent
+        sidecar exists, so a sample with none would poll to its full timeout."""
         store_dir = bench_runner.session_store_dir_for(self.config.projects_root, session_id)
         if store_dir is None:
             if store_expected:
@@ -2225,9 +2267,20 @@ class Harness:
                     self._unlocated_session_stores += 1
             return
         if store_dir in {self.config.projects_root / name for name in own_session_store_dir_names(project_dir)}:
-            shutil.rmtree(store_dir, ignore_errors=True)
+            self._remove_directory(store_dir)
         else:
             self._notify(f"left {store_dir} in place: it is not the session store of this sample's project directory")
+
+    def _remove_directory(self, directory: Path) -> None:
+        """A directory that survives the delete is counted, so the run can report what remains on disk."""
+        shutil.rmtree(directory, ignore_errors=True)
+        try:
+            remains = directory.exists()
+        except OSError:
+            remains = True  # an unsearchable parent hides the directory, so it cannot be shown deleted
+        if remains:
+            with self._lock:
+                self._undeletable_directories += 1
 
     @staticmethod
     def _record(request: SampleRequest, outcome: AttemptOutcome) -> AttemptRecord:
@@ -2306,8 +2359,13 @@ class Harness:
             record.charge_usd for record in self._finished.values()
             if record.stage == STAGE_SMOKE and record.cost_source == COST_SOURCE_REPORTED
         ]
-        if smoke_charges:
-            self._stage_cap_usd = round(max(smoke_charges) * msmr.BUDGET_CAP_MULTIPLIER, 2)
+        derived_cap_usd = round(max(smoke_charges) * msmr.BUDGET_CAP_MULTIPLIER, 2) if smoke_charges else 0.0
+        if derived_cap_usd > 0:
+            self._stage_cap_usd = derived_cap_usd
+        else:
+            self._notify(
+                f"smoke reported no positive charge, so later stages keep --budget-cap-usd ({self.config.budget_cap_usd})"
+            )
         self._smoke_means = {name: tally.mean_charge_usd for name, tally in tallies.items()}
 
     def _calibration_cells(self) -> tuple[CellPlan, ...]:
@@ -2318,7 +2376,10 @@ class Harness:
 
     def _calibration(self) -> None:
         cells = self._calibration_cells()
-        projection = calibration_projection(cells, self._smoke_means)
+        try:
+            projection = calibration_projection(cells, self._smoke_means)
+        except UndefinedProjectionPrice as exc:
+            self._void(f"calibration cost projection undefined: {exc}")
         self.projection["calibration"] = projection
         self._notify(format_calibration_notice(projection, self.config.cumulative_stop_usd, self.remaining_usd))
         if projection["high_usd"] > self.remaining_usd and not self._stage_resumed(STAGE_CALIBRATION):
@@ -2360,9 +2421,12 @@ class Harness:
             targets[key] = planned_look_target(memory.adherent, k)
             caps[key] = gate_attempt_cap(targets[key], memory.attempts)
         self.sizing = {"k": k, "targets": targets, "caps": caps}
-        gate_projection_data = gate_projection(
-            [(key, self.calibration[key]["memory"], targets[key]) for key in entered], k,
-        )
+        try:
+            gate_projection_data = gate_projection(
+                [(key, self.calibration[key]["memory"], targets[key]) for key in entered], k,
+            )
+        except UndefinedProjectionPrice as exc:
+            self._void(f"gate cost projection undefined: {exc}")
         self.projection["gate"] = gate_projection_data
         self._notify(format_gate_notice(gate_projection_data, self.config.cumulative_stop_usd, self.remaining_usd))
         projected_high = gate_projection_data["extension_inclusive_usd"]
@@ -2407,7 +2471,7 @@ class Harness:
             hook_reach, memory_reach = hook.reach, memory.reach
             miss = (
                 (hook.scored < target and memory.scored >= target)
-                or (hook_reach is not None and memory_reach is not None and hook_reach < memory_reach - MARGIN)
+                or (hook_reach is not None and memory_reach is not None and hook_reach < memory_reach - REACH_GAP_TOLERANCE)
             )
             if memory.scored < target:
                 self.void_reasons.append(f"{key}: the memory arm stopped short of its target ({memory.scored} of {target})")
@@ -2430,29 +2494,53 @@ class Harness:
 # --- Projection -------------------------------------------------------------------------------------
 
 
+class UndefinedProjectionPrice(ValueError):
+    """A projection has no positive price to multiply attempts by, so every figure it printed would read as free."""
+
+
 def calibration_projection(cells: Sequence[CellPlan], smoke_means: Mapping[str, float | None]) -> dict:
-    """Spend range for the calibration: every cell at its target (reach 1) up to its attempt cap, at the cell's smoke mean."""
-    known = [mean for mean in smoke_means.values() if mean is not None]
-    fallback = sum(known) / len(known) if known else 0.0
+    """Spend range for the calibration: every cell at its target (reach 1) up to its attempt cap, at the cell's smoke mean.
+    A cell whose smoke mean is absent or not positive is priced at the average of the positive ones.
+    Raises UndefinedProjectionPrice where no smoke mean is positive."""
+    positive_means = {name: mean for name, mean in smoke_means.items() if mean is not None and mean > 0}
+    if not positive_means:
+        raise UndefinedProjectionPrice("the smoke produced no positive mean charge to price the calibration at")
+    fallback = sum(positive_means.values()) / len(positive_means)
     low = high = 0.0
+    imputed_cells = 0
     for cell in cells:
-        mean = smoke_means.get(f"{cell.arm}/{cell.key}")
-        mean = fallback if mean is None else mean
+        mean = positive_means.get(f"{cell.arm}/{cell.key}")
+        if mean is None:
+            mean = fallback
+            imputed_cells += 1
         low += cell.target * mean
         high += cell.cap * mean
     return {
         "low_usd": low, "high_usd": high, "samples_low": sum(c.target for c in cells),
-        "samples_high": sum(c.cap for c in cells),
+        "samples_high": sum(c.cap for c in cells), "imputed_cells": imputed_cells,
     }
 
 
 def gate_projection(entered: Sequence[tuple[str, CellTally, int]], k: int) -> dict:
     """Prices both gate arms at the `memory` arm's mean cost per attempt. Each arm's attempts are the target divided by the
-    calibrated reach."""
-    share = EXTENSION_SHARE_BY_K.get(k, max(EXTENSION_SHARE_BY_K.values()))
+    calibrated reach. The ceiling prices the per-cell attempt caps instead, which are the attempts needed if reach equals
+    the Wilson lower bound each cap is derived from. Raises UndefinedProjectionPrice where the projection has no defined price."""
+    if k not in EXTENSION_SHARE_BY_K:
+        raise UndefinedProjectionPrice(f"no extension share for {k} entered observables")
+    share = EXTENSION_SHARE_BY_K[k]
+
+    def mean_charge_usd(tally: CellTally) -> float:
+        if tally.mean_charge_usd is None or tally.mean_charge_usd <= 0:
+            raise UndefinedProjectionPrice("an entered observable has no positive mean charge to price the gate at")
+        return tally.mean_charge_usd
 
     def priced(rows: Iterable[tuple[CellTally, int]]) -> float:
-        return sum(2 * (target / tally.reach) * (tally.mean_charge_usd or 0.0) for tally, target in rows if tally.reach)
+        return sum(2 * (target / tally.reach) * mean_charge_usd(tally) for tally, target in rows if tally.reach)
+
+    def ceiling(rows: Iterable[tuple[CellTally, int]]) -> tuple[int, float]:
+        """Attempts across both arms at each cell's cap, and what they cost."""
+        capped = [(2 * gate_attempt_cap(target, tally.attempts), mean_charge_usd(tally)) for tally, target in rows]
+        return sum(attempts for attempts, _ in capped), sum(attempts * mean for attempts, mean in capped)
 
     base_rows = [(tally, target) for _, tally, target in entered]
     base = priced(base_rows)
@@ -2460,20 +2548,25 @@ def gate_projection(entered: Sequence[tuple[str, CellTally, int]], k: int) -> di
         count: priced((tally, planned_look_target(count, k)) for _, tally, _ in entered)
         for count in SIZING_TABLE_COUNTS
     }
+    planned_attempts, planned_ceiling_usd = ceiling(base_rows)
+    extension_attempts, extension_ceiling_usd = ceiling((tally, extension_target(target)) for tally, target in base_rows)
     return {
         "k": k, "observables": [key for key, _, _ in entered], "targets": {key: target for key, _, target in entered},
         "scored_samples": 2 * sum(target for _, _, target in entered),
         "expected_usd": base * (1 + share), "extension_inclusive_usd": base * (1 + EXTENSION_FRACTION),
         "row_range_low_usd": min(by_row.values()) * (1 + share),
         "row_range_high_usd": max(by_row.values()) * (1 + EXTENSION_FRACTION),
+        "ceiling_attempts": planned_attempts + extension_attempts, "ceiling_usd": planned_ceiling_usd + extension_ceiling_usd,
     }
 
 
 def format_calibration_notice(projection: Mapping, stop_usd: float, remaining_usd: float) -> str:
+    imputed_cells = projection["imputed_cells"]
+    imputed = f"; cells priced at the average of the others, not measured: {imputed_cells}" if imputed_cells else ""
     return (
         "calibration projection (nominal dollars, engineer-only): "
         f"{projection['low_usd']:.2f} to {projection['high_usd']:.2f} over {projection['samples_low']} to "
-        f"{projection['samples_high']} attempts; cumulative stop {stop_usd:.2f}, {remaining_usd:.2f} remaining"
+        f"{projection['samples_high']} attempts{imputed}; cumulative stop {stop_usd:.2f}, {remaining_usd:.2f} remaining"
     )
 
 
@@ -2482,7 +2575,8 @@ def format_gate_notice(projection: Mapping, stop_usd: float, remaining_usd: floa
         "gate projection (nominal dollars, engineer-only): "
         f"expected {projection['expected_usd']:.2f}, with extension {projection['extension_inclusive_usd']:.2f}, "
         f"across sizing rows {projection['row_range_low_usd']:.2f} to {projection['row_range_high_usd']:.2f}; "
-        f"{projection['scored_samples']} scored samples; cumulative stop {stop_usd:.2f}, {remaining_usd:.2f} remaining"
+        f"{projection['scored_samples']} scored samples; attempt-cap ceiling with extension {projection['ceiling_usd']:.2f} "
+        f"over {projection['ceiling_attempts']} attempts; cumulative stop {stop_usd:.2f}, {remaining_usd:.2f} remaining"
     )
 
 
@@ -2809,8 +2903,9 @@ def prepare_run(args: argparse.Namespace, scratch_dir: Path, *, repo_root: Path 
                 + "; ".join(f"{m.event} {m.matcher or '(no matcher)'} {m.command}" for m in missing)
             )
         frozen = freeze_hooks_dir(repo_root, candidate_ref, scratch_dir / "frozen")
-        if not (frozen / EMITTER_FILE).is_file():
-            raise PreflightError(f"the gate phase refuses: the candidate has no {EMITTER_FILE}")
+        for hook_file in CANDIDATE_HOOK_FILES:
+            if not (frozen / hook_file).is_file():
+                raise PreflightError(f"the gate phase refuses: the candidate has no {hook_file}")
         for part in CONTENT_PARTS:
             if not (frozen / CONTENT_DIR_NAME / f"{part}.md").is_file():
                 raise PreflightError(f"the gate phase refuses: the candidate has no {CONTENT_DIR_NAME}/{part}.md")

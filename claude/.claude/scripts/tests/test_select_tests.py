@@ -735,8 +735,8 @@ class TestSelectPytestTargets:
         """evals/fixtures/explore-recall-cases.json is a sibling of
         REVIEW_BENCH_FIXTURES_DIR, not a path under it. It selects the same
         six-member EVALS_TEST_TARGETS set as the review_bench rows above rather
-        than falling open to FULL_SUITE_TARGETS, whose roots don't collect any
-        evals/ test."""
+        than falling open to FULL_SUITE_TARGETS, whose evals/ root runs every
+        evals test."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_FIXTURE])
         assert result.is_full_suite is False
         assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
@@ -780,11 +780,24 @@ class TestSelectPytestTargets:
         ],
     )
     def test_main_session_adherence_gate_tests_are_selected_by_its_module_its_tests_and_its_imports(self, changed_path):
-        """The gate's module imports msmr, the explore-recall gate, run_skill_evals and review_bench.runner."""
+        """The gate's module imports measure_subagent_model_resolution, the explore-recall gate, run_skill_evals and
+        review_bench.runner."""
         result = _mod.select_pytest_targets([getattr(_mod, changed_path)])
         assert result.is_full_suite is False
         assert _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST in result.target_paths
         assert _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST in result.target_paths
+
+    def test_main_session_adherence_module_change_also_selects_test_select_tests(self):
+        """test_select_tests.py reads the gate's module by path in its import-closure test, which
+        TestCrossDomainReadCompleteness cannot see."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {*_mod.EVALS_TEST_TARGETS, _mod.SELECT_TESTS_TEST_PATH}
+
+    def test_evals_process_test_helpers_change_selects_every_evals_test_target(self):
+        result = _mod.select_pytest_targets([_mod.EVALS_PROCESS_TEST_HELPERS])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == set(_mod.EVALS_TEST_TARGETS)
 
     def test_main_session_adherence_fixture_change_selects_the_evals_tests(self):
         result = _mod.select_pytest_targets([f"{_mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR}/o1-adherent.jsonl"])
@@ -2272,6 +2285,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE,
     _mod.MEASURE_MAIN_SESSION_RULE_ADHERENCE_TEST,
     _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_TEST,
+    _mod.EVALS_PROCESS_TEST_HELPERS,
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
     _mod.TRANSCRIPT_ANALYSIS_SCRIPT,
@@ -2564,7 +2578,10 @@ class TestRuleTablePathFidelity:
             assert list(_REPO_ROOT.glob(target)), f"{target} matched no files on disk"
 
     def test_review_bench_directory_constants_exist_on_disk(self):
-        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR):
+        for constant in (
+            _mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR, _mod.REPLAY_BENCH_DIR,
+            _mod.MAIN_SESSION_RULE_ADHERENCE_FIXTURES_DIR,
+        ):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 
     def test_root_scripts_dir_constant_exists_on_disk(self):

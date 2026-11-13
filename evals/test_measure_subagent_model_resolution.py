@@ -29,6 +29,7 @@ from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
 import pytest
+from process_test_helpers import is_running
 
 
 def _write_meta(
@@ -588,11 +589,6 @@ class TestRunClaudeToCompletion:
         msmr._launches_aborted.clear()
 
     @staticmethod
-    def _is_running(pid: int) -> bool:
-        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-        return bool(stat) and not stat.startswith("Z")
-
-    @staticmethod
     def _wait_for_pid_file(pid_file: Path, *, timeout_s: float = 5.0) -> int:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -603,9 +599,9 @@ class TestRunClaudeToCompletion:
 
     def _assert_stops_running(self, pid: int) -> None:
         deadline = time.monotonic() + 5.0
-        while self._is_running(pid) and time.monotonic() < deadline:
+        while is_running(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert not self._is_running(pid), f"pid {pid} is still running"
+        assert not is_running(pid), f"pid {pid} is still running"
 
     @staticmethod
     def _sleeping_grandchild_command(pid_file: Path) -> list[str]:
@@ -750,6 +746,44 @@ class TestRunClaudeToCompletion:
         assert timed_out is True
         assert outcome.exit_status is not None
         assert outcome.exit_status < 0
+
+    @pytest.mark.timing
+    def test_a_group_kill_refused_with_permission_denied_still_reaps_the_child_and_records_its_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """macOS raises PermissionError when signalling the group of an exited but unreaped leader. The harness must
+        read that as "already gone", not as a launch fault that charges nothing for a child that ran."""
+        outcome = msmr.LaunchOutcome()
+        real_killpg = os.killpg
+
+        def killpg_that_kills_then_refuses(pid: int, sig: int) -> None:
+            real_killpg(pid, sig)
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(msmr.os, "killpg", killpg_that_kills_then_refuses)
+
+        _, timed_out = msmr._run_claude_to_completion(["sh", "-c", "sleep 30"], tmp_path, 1, outcome=outcome)
+
+        assert timed_out is True
+        assert outcome.exit_status is not None
+        assert outcome.exit_status < 0
+
+    def test_the_exit_status_is_recorded_even_when_the_wait_raises_after_the_child_is_reaped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        outcome = msmr.LaunchOutcome()
+
+        class PopenWhoseWaitFailsAfterReaping(subprocess.Popen):
+            def wait(self, timeout: float | None = None) -> int:
+                super().wait(timeout)
+                raise OSError("wait failed")
+
+        monkeypatch.setattr(msmr.subprocess, "Popen", PopenWhoseWaitFailsAfterReaping)
+
+        with pytest.raises(OSError, match="wait failed"):
+            msmr._run_claude_to_completion(["sh", "-c", "echo out; exit 3"], tmp_path, 10, outcome=outcome)
+
+        assert outcome.exit_status == 3
 
     def test_the_exit_status_is_recorded_even_when_closing_stdout_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

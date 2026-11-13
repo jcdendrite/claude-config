@@ -494,16 +494,19 @@ instrument — not a skill eval. It measures whether the global `CLAUDE.md`'s
 them instead of the memory block loading them. It launches short headless
 `claude -p` samples in arms and scores four rules mechanically from the
 parent's stream-json tool calls: the explicit-`model` rule and the
-outside-consult rule (the content file
-`claude/.claude/hooks/main-session/dispatch.md`), and the review-before-commit
-rule and the review-ledger rule (the content file
-`claude/.claude/hooks/main-session/conduct.md`). A project `PreToolUse` hook
-denies each sample's scorable tools and every dispatch. No consult or review
-executes, and the CLI still ends the run with its own `result` event.
+outside-consult rule (the `dispatch` content file), and the review-before-commit
+rule and the review-ledger rule (the `conduct` content file). A project
+`PreToolUse` hook denies each sample's scorable tools and every dispatch. No
+consult or review executes, and the CLI still ends the run with its own `result`
+event.
+
+The two content files (`main-session/dispatch.md` and `main-session/conduct.md`)
+and the emitter (`emit-main-session-rules.sh`) are the candidate ref's files
+under `claude/.claude/hooks`. They exist only on a ref that carries the hook
+delivery, and only the gate phase reads them.
 
 It runs in two phases, and it is one-time: once the ambient settings register
-the emitter (`claude/.claude/hooks/emit-main-session-rules.sh`), every arm
-receives the rules by hook, so the preflight refuses.
+the emitter, every arm receives the rules by hook, so the preflight refuses.
 
 - `--phase calibrate` runs the self-check and a calibration on the `memory`
   arm (the project-level `CLAUDE.md` with the Main session text) and the `none`
@@ -514,9 +517,10 @@ receives the rules by hook, so the preflight refuses.
 - `--phase gate` adds the `hook` arm, re-runs the calibration, sizes a
   two-look non-inferiority comparison of `hook` against `memory` from it, and
   prints one verdict: pass, fail, miss, inconclusive or void. It reads the
-  emitter and the two content files from the candidate ref's
-  `claude/.claude/hooks` directory. It refuses unless the candidate ref's
-  `settings.json` carries all six handlers and the emitter file exists.
+  emitter, the two gate hooks, `_lib.sh` and the two content files from the
+  candidate ref's `claude/.claude/hooks` directory. It refuses unless the
+  candidate ref's `settings.json` carries all six handlers, each of those hook
+  files exists, and each content file has text.
 
 ```bash
 # Print the schedule and launch nothing:
@@ -545,8 +549,9 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
     never finished.
   - It starts the cumulative spend from the log's total.
   - It refuses when an arm-input, prompt, scorer, deny-hook, launch-command or
-    seeded-fixture hash, the CLI version, the model, the seed, the phase or the
-    account differs from the log's. A refusal leaves the log untouched.
+    seeded-fixture hash, the CLI version, the ambient config commit, the model,
+    the seed, the phase or the account differs from the log's. A refusal leaves
+    the log untouched.
   - A run already at its cumulative stop launches nothing.
   - A stage refused for its projected cost continues with `--resume` and a
     higher `--cumulative-stop-usd`.
@@ -556,9 +561,14 @@ caffeinate -i python evals/measure_main_session_rule_adherence.py --phase calibr
   - It must run with the original run's `TMPDIR`: the cleanup of an attempt
     that never finished refuses a temp project directory outside the current
     temp directory.
-  - After a hard kill, check for stray `claude -p` children before resuming:
-    the cleanup deletes the project directories of attempts that may still be
-    running.
+  - It refuses while `ps -axo command=` lists the `--session-id` of an attempt
+    that started and never finished. A hard kill of the harness can leave that
+    attempt's `claude -p` child running, and the cleanup would delete the
+    directories under it. End the child, then resume. The check sees only a
+    child whose command line carries its session id, so on a system where `ps`
+    may not show full command lines, check for stray `claude -p` children by
+    hand before resuming. It also refuses when the process list is empty or
+    cannot be read.
   - A fresh run refuses an existing `--json` path or a non-empty
     `--keep-artifacts` directory. A resume may reuse both, but refuses a
     `--keep-artifacts` path that is not a directory.
@@ -615,21 +625,32 @@ subscription auth that is a unit of account, not a charge.
 - `--cumulative-stop-usd` ends the run once realized spend reaches it. Samples
   already in flight finish, so spend can overshoot the stop by up to
   `--workers` times the stage's per-sample cap.
-- `--budget-cap-usd` caps each sample of the self-check and the smoke.
+- `--budget-cap-usd` caps each sample of the self-check and the smoke. Later
+  stages cap each sample at ten times the largest smoke sample, or keep
+  `--budget-cap-usd` when the smoke reports no positive charge.
 - Both take a finite number above zero.
-- Later stages cap each sample at ten times the largest smoke sample.
+- The gate phase's projection notice prints the expected figure and, beside it,
+  an attempt-cap ceiling that prices every cell at its attempt cap, extension
+  included. The ceiling is what the stage can spend when reach sits at its
+  lower bound. The planned-look refusal compares the with-extension figure at
+  the calibrated reach against the remaining stop, not the ceiling.
 
 **Footprint on the live config dir.** Each sample is a real session, so it
-adds a row to `.session-config-keys-log.jsonl` and a file under `sessions/`.
-After a hard kill, leftover temp projects and session stores remain until
-`--resume` removes them. A session store not found when its sample is cleaned
-up, because the transcript can trail the child's exit, may remain. The run
-reports the count of these in a notice at its end, and you remove those
-directories by hand. The gate phase's `hook` samples also create
-`.main-session-rules.d/` markers. The harness deletes the markers it reads,
-which are those of the hook-arm samples outside the self-check, and no others:
-a self-check sample, an aborted sample or a sample whose read failed leaves its
-markers in place.
+leaves the following:
+
+- A row in `.session-config-keys-log.jsonl` and a file under `sessions/`.
+- Temp projects and session stores after a hard kill, until `--resume` removes
+  them.
+- Session stores not found when their sample is cleaned up, because the
+  transcript can trail the child's exit, and directories whose delete failed.
+  The run reports the count of each in a notice at its end, and you remove
+  those directories by hand.
+- `.main-session-rules.d/` markers from the gate phase's `hook` samples. The
+  harness deletes the markers it reads, which are those of the hook-arm samples
+  outside the self-check, and no others. It leaves the markers in place for:
+  - a self-check sample
+  - an aborted sample
+  - a sample whose read failed
 
 Tests: `evals/test_measure_main_session_rule_adherence.py` and
 `evals/test_main_session_rule_adherence_fixtures.py`, scripted launcher and

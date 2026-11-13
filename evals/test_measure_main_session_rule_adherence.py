@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -30,6 +31,7 @@ from pathlib import Path
 import measure_main_session_rule_adherence as m
 import measure_subagent_model_resolution as msmr
 import pytest
+from process_test_helpers import is_running
 from review_bench import runner as bench_runner
 from review_bench.identifiers import InvalidIdentifierError
 from test_review_bench_mining import _commit, _git, _init_repo, _write
@@ -1232,6 +1234,7 @@ class TempRepo:
 def _build_repo(
     tmp_path: Path, *, registrations: tuple[m.Registration, ...] = m.EXPECTED_REGISTRATIONS, emitter: bool = True,
     empty_content_part: str | None = None, omit_content_part: str | None = None, candidate_settings_text: str | None = None,
+    omit_hook_file: str | None = None,
 ) -> TempRepo:
     repo = _init_repo(tmp_path / "repo")
     _write(repo, m.GLOBAL_CLAUDE_MD_RELPATH, BASE_CLAUDE_MD)
@@ -1245,6 +1248,8 @@ def _build_repo(
     )
     hooks = f"{m.HOOKS_RELPATH}/"
     for name in (m.PROMPT_GATE_FILE, m.DISPATCH_GATE_FILE, m.LIB_FILE, *([m.EMITTER_FILE] if emitter else [])):
+        if name == omit_hook_file:
+            continue
         _write(repo, hooks + name, f"#!/bin/bash\n# {name}\n")
     for part in m.CONTENT_PARTS:
         if part == omit_content_part:
@@ -1524,6 +1529,17 @@ class TestArms:
         repo = _build_repo(tmp_path, emitter=False)
 
         with pytest.raises(m.PreflightError, match=m.EMITTER_FILE):
+            m.prepare_run(_prepare_args(repo, m.PHASE_GATE), tmp_path / "scratch", repo_root=repo.path)
+
+    @pytest.mark.parametrize("hook_file", [m.PROMPT_GATE_FILE, m.DISPATCH_GATE_FILE, m.LIB_FILE])
+    def test_the_gate_phase_refuses_when_a_candidate_hook_file_the_gate_hashes_is_absent(
+        self, tmp_path: Path, hook_file: str,
+    ) -> None:
+        """A refusal exits 2 through main(), where a bare FileNotFoundError from the input hashing would exit 1, the
+        code of a failed gate."""
+        repo = _build_repo(tmp_path, omit_hook_file=hook_file)
+
+        with pytest.raises(m.PreflightError, match=hook_file):
             m.prepare_run(_prepare_args(repo, m.PHASE_GATE), tmp_path / "scratch", repo_root=repo.path)
 
     @pytest.mark.parametrize("part", m.CONTENT_PARTS)
@@ -2292,6 +2308,10 @@ def rate_limit_sample(resets_at: float | None = None) -> m.RawSample:
     return m.RawSample(lines=make_stream([], extra_events=[{"type": "rate_limit_event", "rate_limit_info": info}]), exit_status=0)
 
 
+# A real listing holds at least the lister's own process, so an empty one is refused by the resume guard.
+PROCESS_LISTING_WITHOUT_CHILDREN = "/bin/zsh\nps -axo command=\n"
+
+
 @dataclass
 class Built:
     harness: m.Harness
@@ -2317,7 +2337,9 @@ class RunKit:
         environment_reader: Callable[[], bench_runner.EnvironmentRecord] | None = None,
         header_inputs: Mapping[str, str] | None = None,
         keep_artifacts_dir: Path | None = None,
+        process_lister: Callable[[], str] | None = lambda: PROCESS_LISTING_WITHOUT_CHILDREN,
     ) -> Built:
+        """A `process_lister` of None builds the Harness with its production default."""
         log_path = self.tmp_path / log_name
         log = m.RunLog(log_path, resume=resume)
         store = bench_runner.RunStore(self.tmp_path / f"{log_name}.d", fixture_root=self.temp_root.resolve())
@@ -2330,10 +2352,12 @@ class RunKit:
         )
         notices: list[str] = []
         sleeps: list[float] = []
+        lister_option = {} if process_lister is None else {"process_lister": process_lister}
         harness = m.Harness(
             config, launcher, log, store,
             environment_reader=environment_reader or (lambda: bench_runner.EnvironmentRecord("cli 1", "commit-1")),
             sleep=sleeps.append, notify=notices.append, header_inputs=header_inputs or {"base_claude_md": "hash-1"},
+            **lister_option,
         )
         built = Built(harness, log, store, notices, sleeps)
         self.built.append(built)
@@ -2598,6 +2622,28 @@ class TestCostAccounting:
         assert smoke_caps == {4.0}
         assert calibration_caps == {5.0}
 
+    def test_a_smoke_that_reports_a_zero_charge_voids_the_run_before_any_calibration_sample(self, kit: RunKit) -> None:
+        launcher = ScriptedLauncher(cost=0.0)
+        built = kit.build(launcher, budget=4.0, workers=1)
+
+        result = built.harness.run()
+
+        assert result.verdict == "void"
+        assert any("calibration cost projection undefined" in reason for reason in result.void_reasons)
+        assert stage_of(launcher, m.STAGE_CALIBRATION) == []
+        assert not any(text.startswith("calibration projection") for text in built.notices)
+        assert any("smoke reported no positive charge" in notice for notice in built.notices)
+
+    def test_a_smoke_with_no_reported_charge_leaves_the_later_stages_at_the_budget_cap(self, kit: RunKit) -> None:
+        launcher = ScriptedLauncher(cost=None)
+        built = kit.build(launcher, budget=4.0, workers=1, stop=5000.0)
+
+        built.harness.run()
+
+        calibration_caps = {request.budget_cap_usd for request in stage_of(launcher, m.STAGE_CALIBRATION)}
+        assert calibration_caps == {4.0}
+        assert any("smoke reported no positive charge" in notice for notice in built.notices)
+
     def test_every_attempts_charge_counts_toward_the_spend_including_retried_faults(self, kit: RunKit) -> None:
         faulted: set[tuple] = set()
 
@@ -2698,6 +2744,7 @@ class TestCostAccounting:
         assert projection["low_usd"] == pytest.approx(30 * 0.1 + 30 * 0.2)
         assert projection["high_usd"] == pytest.approx(45 * 0.1 + 45 * 0.2)
         assert (projection["samples_low"], projection["samples_high"]) == (60, 90)
+        assert projection["imputed_cells"] == 0
 
     def test_the_gate_projection_prices_both_arms_at_the_memory_mean_with_the_extension_share_and_a_row_range(self) -> None:
         tally = m.CellTally(scored=30, adherent=27, attempts=40, mean_charge_usd=0.2)
@@ -2719,6 +2766,155 @@ class TestCostAccounting:
         projection = m.gate_projection(entered, entered_count)
 
         assert projection["expected_usd"] == pytest.approx(2 * 50 * entered_count * (1 + share) / (30 / 30))
+
+    def test_the_gate_projection_refuses_to_price_a_count_of_entered_observables_with_no_extension_share(self) -> None:
+        tally = m.CellTally(scored=30, adherent=27, attempts=30, mean_charge_usd=1.0)
+
+        with pytest.raises(ValueError, match="no extension share for 5 entered observables"):
+            m.gate_projection([("O1", tally, 50)], 5)
+
+    @pytest.mark.parametrize("mean_charge_usd", [None, 0.0], ids=["no_mean", "zero_mean"])
+    def test_the_gate_projection_refuses_to_price_an_entered_observable_with_no_positive_mean_charge(
+        self, mean_charge_usd: float | None,
+    ) -> None:
+        tally = m.CellTally(scored=30, adherent=27, attempts=30, mean_charge_usd=mean_charge_usd)
+
+        with pytest.raises(m.UndefinedProjectionPrice, match="no positive mean charge"):
+            m.gate_projection([("O1", tally, 50)], 1)
+
+    @pytest.mark.parametrize("mean_charge_usd", [None, 0.0], ids=["no_mean", "zero_mean"])
+    def test_the_calibration_projection_refuses_to_price_a_smoke_with_no_positive_mean_charge(
+        self, mean_charge_usd: float | None,
+    ) -> None:
+        cells = (m.CellPlan(m.ARM_MEMORY, "O1", 30, 45),)
+
+        with pytest.raises(m.UndefinedProjectionPrice, match="no positive mean charge"):
+            m.calibration_projection(cells, {"memory/O1": mean_charge_usd})
+
+    @pytest.mark.parametrize("unpriced_mean", [None, 0.0], ids=["no_mean", "zero_mean"])
+    def test_the_calibration_projection_prices_a_cell_with_no_positive_smoke_mean_at_the_average_of_the_others(
+        self, unpriced_mean: float | None,
+    ) -> None:
+        cells = (
+            m.CellPlan(m.ARM_MEMORY, "O1", 30, 45),
+            m.CellPlan(m.ARM_NONE, "O1", 30, 45),
+            m.CellPlan(m.ARM_MEMORY, "O2", 30, 45),
+        )
+
+        projection = m.calibration_projection(
+            cells, {"memory/O1": unpriced_mean, "none/O1": 0.1, "memory/O2": 0.3},
+        )
+
+        average_of_measured = (0.1 + 0.3) / 2
+        assert projection["low_usd"] == pytest.approx(30 * (average_of_measured + 0.1 + 0.3))
+        assert projection["high_usd"] == pytest.approx(45 * (average_of_measured + 0.1 + 0.3))
+        assert projection["imputed_cells"] == 1
+
+    def test_the_calibration_notice_states_how_many_cells_were_priced_by_substitution(self) -> None:
+        cells = (m.CellPlan(m.ARM_MEMORY, "O1", 30, 45), m.CellPlan(m.ARM_NONE, "O1", 30, 45))
+        projection = m.calibration_projection(cells, {"memory/O1": 0.0, "none/O1": 0.2})
+
+        notice = m.format_calibration_notice(projection, 300.0, 250.0)
+
+        assert "cells priced at the average of the others, not measured: 1" in notice
+
+    def test_the_calibration_notice_claims_no_substitution_when_every_cell_was_measured(self) -> None:
+        cells = (m.CellPlan(m.ARM_MEMORY, "O1", 30, 45), m.CellPlan(m.ARM_NONE, "O1", 30, 45))
+        projection = m.calibration_projection(cells, {"memory/O1": 0.1, "none/O1": 0.2})
+
+        notice = m.format_calibration_notice(projection, 300.0, 250.0)
+
+        assert "average of the others" not in notice
+
+    def test_a_value_error_from_the_sizing_math_is_not_taken_for_an_undefined_price(
+        self, kit: RunKit, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def broken_extension_target(target: int) -> int:
+            raise ValueError("sizing arithmetic broke")
+
+        monkeypatch.setattr(m, "extension_target", broken_extension_target)
+        built = kit.build(ScriptedLauncher(gate_rates()), phase=m.PHASE_GATE)
+
+        with pytest.raises(ValueError, match="sizing arithmetic broke") as raised:
+            built.harness.run()
+
+        assert not isinstance(raised.value, m.UndefinedProjectionPrice)
+        assert built.harness.void_reasons == []
+
+    def test_an_undefined_gate_projection_voids_the_run_before_the_planned_look(
+        self, kit: RunKit, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(m, "EXTENSION_SHARE_BY_K", {})
+        launcher = ScriptedLauncher(gate_rates())
+
+        result = kit.build(launcher, phase=m.PHASE_GATE).harness.run()
+
+        assert result.verdict == "void"
+        assert any("gate cost projection undefined" in reason for reason in result.void_reasons)
+        assert not stage_of(launcher, m.STAGE_PLANNED_LOOK)
+
+    @staticmethod
+    def _attempt_cap_oracle(target: int, calibration_attempts: int) -> int:
+        """Attempts that reach `target` at the Wilson lower bound (z = 1.96) of 30 scored in `calibration_attempts`."""
+        z, reach = 1.96, 30 / calibration_attempts
+        lower = (reach + z * z / (2 * calibration_attempts) - z * math.sqrt(
+            reach * (1 - reach) / calibration_attempts + z * z / (4 * calibration_attempts**2)
+        )) / (1 + z * z / calibration_attempts)
+        return math.ceil(target / lower)
+
+    def test_the_gate_projection_ceiling_prices_the_planned_look_and_extension_at_each_cells_attempt_cap(self) -> None:
+        tally = m.CellTally(scored=30, adherent=27, attempts=40, mean_charge_usd=0.2)
+
+        projection = m.gate_projection([("O1", tally, 100)], 1)
+
+        planned_cap, extension_cap = self._attempt_cap_oracle(100, 40), self._attempt_cap_oracle(50, 40)
+        assert (planned_cap, extension_cap) == (168, 84)
+        assert projection["ceiling_attempts"] == 2 * (planned_cap + extension_cap)
+        assert projection["ceiling_usd"] == pytest.approx(2 * (planned_cap + extension_cap) * 0.2)
+
+    def test_the_gate_projection_ceiling_sums_every_entered_observable_at_its_own_cap_and_mean(self) -> None:
+        first = m.CellTally(scored=30, adherent=27, attempts=40, mean_charge_usd=0.2)
+        second = m.CellTally(scored=30, adherent=24, attempts=45, mean_charge_usd=0.5)
+
+        projection = m.gate_projection([("O1", first, 100), ("O3", second, 86)], 2)
+
+        capped = [
+            (2 * self._attempt_cap_oracle(target, attempts), mean)
+            for attempts, mean, planned in ((40, 0.2, 100), (45, 0.5, 86))
+            for target in (planned, math.ceil(planned * 0.5))
+        ]
+        assert projection["ceiling_attempts"] == sum(attempts for attempts, _ in capped)
+        assert projection["ceiling_usd"] == pytest.approx(sum(attempts * mean for attempts, mean in capped))
+
+    def test_a_run_whose_remaining_stop_falls_between_the_extension_inclusive_projection_and_the_ceiling_is_not_refused(
+        self, kit: RunKit,
+    ) -> None:
+        reference = kit.build(ScriptedLauncher(gate_rates()), phase=m.PHASE_GATE, log_name="reference.jsonl")
+        reference.harness.run()
+        gate = reference.harness.projection["gate"]
+        spent_before_the_planned_look = sum(
+            entry["charge_usd"] for entry in finish_lines(reference)
+            if entry["slot"].split("/")[0] in {m.STAGE_SELF_CHECK, m.STAGE_SMOKE, m.STAGE_CALIBRATION}
+        )
+        stop = spent_before_the_planned_look + (gate["extension_inclusive_usd"] + gate["ceiling_usd"]) / 2
+        launcher = ScriptedLauncher(gate_rates())
+
+        result = kit.build(launcher, phase=m.PHASE_GATE, log_name="between.jsonl", stop=stop).harness.run()
+
+        assert gate["extension_inclusive_usd"] < gate["ceiling_usd"]
+        assert not isinstance(result.halt, m.StageRefused)
+        assert stage_of(launcher, m.STAGE_PLANNED_LOOK)
+
+    def test_the_gate_notice_prints_the_attempt_cap_ceiling_beside_the_expected_figure(self, kit: RunKit) -> None:
+        launcher = ScriptedLauncher(gate_rates())
+        built = kit.build(launcher, phase=m.PHASE_GATE)
+
+        built.harness.run()
+
+        projection = built.harness.projection["gate"]
+        [notice] = [text for text in built.notices if text.startswith("gate projection")]
+        assert f"over {projection['ceiling_attempts']} attempts" in notice
+        assert f"attempt-cap ceiling with extension {projection['ceiling_usd']:.2f}" in notice
 
 
 class TestFaultsAndPauses:
@@ -3084,7 +3280,7 @@ class TestGateComparison:
 
         gate = built.harness.gate_results["O1"]
         assert gate.hook.scored >= gate.target
-        assert gate.hook.reach < gate.memory.reach - m.MARGIN
+        assert gate.hook.reach < gate.memory.reach - m.REACH_GAP_TOLERANCE
         assert gate.miss is True
         assert result.verdict == m.RunVerdict.MISS.value
 
@@ -3102,7 +3298,7 @@ class TestGateComparison:
         gate = built.harness.gate_results["O1"]
         assert gate.hook.scored >= gate.target  # the first disjunct of the miss rule is false
         assert gate.hook.reach < gate.memory.reach  # a bare "hook reach below memory reach" test would flag it
-        assert gate.hook.reach >= gate.memory.reach - m.MARGIN
+        assert gate.hook.reach >= gate.memory.reach - m.REACH_GAP_TOLERANCE
         assert gate.miss is False
         assert result.verdict == m.RunVerdict.PASS.value
 
@@ -3522,6 +3718,119 @@ class TestResume:
         assert not abandoned.exists()
         assert any(entry["fault_class"] == m.FAULT_KILLED for entry in finish_lines(resumed))
 
+    def _log_with_an_unfinished_attempt(self, kit: RunKit) -> str:
+        """Ends a run early, appends a `start` line with no `finish` line, and returns that attempt's session id."""
+        first = kit.build(ScriptedLauncher(), log_name="crashed.jsonl", stop=0.5)
+        first.harness.run()
+        first.release()
+        unfinished = start_line("calibration", m.ARM_MEMORY, "O1", 99, 1, cap_usd=1.0)
+        with open(kit.tmp_path / "crashed.jsonl", "a") as log_file:
+            log_file.write(json.dumps(unfinished) + "\n")
+        return unfinished["session_id"]
+
+    def test_a_resume_refuses_while_the_child_of_an_unfinished_attempt_is_still_running(self, kit: RunKit) -> None:
+        session_id = self._log_with_an_unfinished_attempt(kit)
+        running_childs_directory = kit.temp_root / (m.PROJECT_DIR_PREFIX + "running-child")
+        running_childs_directory.mkdir()
+        store = bench_runner.RunStore(kit.tmp_path / "crashed.jsonl.d", fixture_root=kit.temp_root.resolve())
+        store.record_directory("calibration/memory/O1/99#1", running_childs_directory, "")
+        log_before = (kit.tmp_path / "crashed.jsonl").read_text()
+        launcher = ScriptedLauncher()
+        resumed = kit.build(
+            launcher, log_name="crashed.jsonl", resume=True, stop=300.0,
+            process_lister=lambda: f"/bin/zsh\nclaude -p --session-id {session_id} --max-turns 20\n",
+        )
+
+        with pytest.raises(m.ResumeRefused, match=session_id):
+            resumed.harness.run()
+
+        assert launcher.requests == []
+        assert (kit.tmp_path / "crashed.jsonl").read_text() == log_before
+        assert running_childs_directory.is_dir()
+
+    def test_a_resume_refuses_while_a_real_detached_child_carries_an_unfinished_attempts_session_id_with_the_default_lister(
+        self, kit: RunKit,
+    ) -> None:
+        session_id = self._log_with_an_unfinished_attempt(kit)
+        log_before = (kit.tmp_path / "crashed.jsonl").read_text()
+        launcher = ScriptedLauncher()
+        resumed = kit.build(launcher, log_name="crashed.jsonl", resume=True, stop=300.0, process_lister=None)
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", session_id], start_new_session=True,
+        )
+        try:
+            with pytest.raises(m.ResumeRefused, match=session_id):
+                resumed.harness.run()
+        finally:
+            child.kill()
+            child.wait()
+
+        assert launcher.requests == []
+        assert (kit.tmp_path / "crashed.jsonl").read_text() == log_before
+
+    def test_a_resume_proceeds_when_no_running_process_carries_an_unfinished_attempts_session_id(
+        self, kit: RunKit,
+    ) -> None:
+        self._log_with_an_unfinished_attempt(kit)
+        resumed = kit.build(
+            ScriptedLauncher(), log_name="crashed.jsonl", resume=True, stop=300.0,
+            process_lister=lambda: "/bin/zsh\nclaude -p --session-id some-other-session\n",
+        )
+
+        resumed.harness.run()
+
+        assert any(entry["fault_class"] == m.FAULT_KILLED for entry in finish_lines(resumed))
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            FileNotFoundError("ps"), subprocess.CalledProcessError(1, "ps"), subprocess.TimeoutExpired("ps", 10),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        ],
+        ids=["ps_missing", "ps_exits_nonzero", "ps_times_out", "listing_not_decodable"],
+    )
+    def test_a_resume_refuses_when_the_process_list_cannot_be_read(self, kit: RunKit, failure: Exception) -> None:
+        self._log_with_an_unfinished_attempt(kit)
+        log_before = (kit.tmp_path / "crashed.jsonl").read_text()
+
+        def unreadable_process_list() -> str:
+            raise failure
+
+        resumed = kit.build(
+            ScriptedLauncher(), log_name="crashed.jsonl", resume=True, stop=300.0, process_lister=unreadable_process_list,
+        )
+
+        with pytest.raises(m.ResumeRefused, match="cannot list processes"):
+            resumed.harness.run()
+
+        assert (kit.tmp_path / "crashed.jsonl").read_text() == log_before
+
+    @pytest.mark.parametrize("listing", ["", "\n", "  \n\n"], ids=["empty", "newline", "blank_lines"])
+    def test_a_resume_refuses_when_the_process_list_is_empty_because_that_cannot_rule_out_a_running_child(
+        self, kit: RunKit, listing: str,
+    ) -> None:
+        self._log_with_an_unfinished_attempt(kit)
+        resumed = kit.build(
+            ScriptedLauncher(), log_name="crashed.jsonl", resume=True, stop=300.0, process_lister=lambda: listing,
+        )
+
+        with pytest.raises(m.ResumeRefused, match="listing was empty"):
+            resumed.harness.run()
+
+    def test_a_resume_of_a_log_with_no_unfinished_attempt_does_not_list_processes(self, kit: RunKit) -> None:
+        first = kit.build(ScriptedLauncher(), log_name="clean.jsonl", stop=0.5)
+        first.harness.run()
+        first.release()
+
+        def unexpected_process_list() -> str:
+            raise AssertionError("listed processes with nothing unfinished")
+
+        resumed = kit.build(
+            ScriptedLauncher(), log_name="clean.jsonl", resume=True, stop=300.0, process_lister=unexpected_process_list,
+        )
+
+        resumed.harness.run()
+
     def test_a_resume_that_replays_a_complete_run_launches_nothing(self, kit: RunKit) -> None:
         first = kit.build(ScriptedLauncher(gate_rates()), log_name="done.jsonl")
         first.harness.run()
@@ -3561,6 +3870,32 @@ class TestResume:
 
         with pytest.raises(m.ResumeRefused, match="cli_version"):
             second.harness.run()
+
+
+class TestListProcessCommands:
+    @pytest.mark.parametrize("token_suffix", [b"", b"\xff"], ids=["ascii_argv", "argv_with_undecodable_byte"])
+    def test_lists_the_command_line_of_a_detached_child_until_it_is_reaped(self, token_suffix: bytes) -> None:
+        token = f"listing-contract-{uuid.uuid4()}".encode()
+        child = subprocess.Popen(
+            [os.fsencode(sys.executable), b"-c", b"import time; time.sleep(60)", token + token_suffix], start_new_session=True,
+        )
+        try:
+            listing_while_running = m.list_process_commands()
+        finally:
+            child.kill()
+            child.wait()
+        listing_after_reaping = m.list_process_commands()
+
+        assert token.decode() in listing_while_running
+        assert token.decode() not in listing_after_reaping
+
+    def test_a_listing_with_bytes_that_are_not_utf8_still_decodes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        listing = b"/bin/zsh\nclaude -p --session-id abc\xff\n"
+        monkeypatch.setattr(
+            m.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=listing, stderr=b""),
+        )
+
+        assert "claude -p --session-id abc" in m.list_process_commands()
 
 
 class TestInterrupts:
@@ -3607,9 +3942,9 @@ class TestInterrupts:
         pids = [int(path.read_text()) for path in pid_dir.glob("*")]
         assert len(pids) == 2
         deadline = time.monotonic() + 5
-        while any(_is_running(pid) for pid in pids) and time.monotonic() < deadline:
+        while any(is_running(pid) for pid in pids) and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert not any(_is_running(pid) for pid in pids)
+        assert not any(is_running(pid) for pid in pids)
         assert kit.leftover_projects() == []
         assert list(projects_root.glob("*")) == []
         assert msmr._launches_aborted.is_set()
@@ -3631,11 +3966,6 @@ class TestInterrupts:
 
         with pytest.raises(KeyboardInterrupt):
             signal.raise_signal(signal.SIGHUP)
-
-
-def _is_running(pid: int) -> bool:
-    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    return bool(stat) and not stat.startswith("Z")
 
 
 class TestKeepArtifacts:
@@ -4304,7 +4634,7 @@ class TestSessionStoreCleanup:
         assert notice.startswith("1 sample session store(s)")
         assert str(kit.tmp_path / "projects") in notice
         assert repr(m.PROJECT_DIR_PREFIX) in notice
-        assert built.notices[-1] == notice
+        assert built.notices.count(notice) == 1
 
     def test_reports_nothing_when_the_stores_were_found_and_removed(self, kit: RunKit) -> None:
         projects_root = kit.tmp_path / "projects"
@@ -4314,6 +4644,79 @@ class TestSessionStoreCleanup:
         built.harness.run()
 
         assert self._not_found_notices(built) == []
+
+    @staticmethod
+    def _undeletable_notices(built: Built) -> list[str]:
+        return [notice for notice in built.notices if "could not be deleted" in notice]
+
+    def test_reports_a_project_directory_that_survives_its_delete(
+        self, kit: RunKit, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real_rmtree = shutil.rmtree
+
+        def rmtree_that_leaves_sample_projects(path: Path, *args: object, **kwargs: object) -> None:
+            if Path(path).parent != kit.temp_root.resolve():
+                real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(m.shutil, "rmtree", rmtree_that_leaves_sample_projects)
+        launcher = ScriptedLauncher()
+
+        built = kit.build(launcher, stop=0.05, workers=1)
+        built.harness.run()
+
+        assert len(launcher.requests) == 1
+        [notice] = self._undeletable_notices(built)
+        assert notice.startswith("1 sample project or session store")
+        assert repr(m.PROJECT_DIR_PREFIX) in notice
+        assert str(kit.temp_root) in notice
+        assert str(kit.tmp_path / "projects") in notice
+        assert built.notices.count(notice) == 1
+
+    def test_counts_a_directory_whose_existence_check_raises_as_remaining(
+        self, kit: RunKit, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real_exists = Path.exists
+        sample_project_parent = kit.temp_root.resolve()
+
+        def exists_raising_for_sample_projects(path: Path) -> bool:
+            if path.parent == sample_project_parent:
+                raise PermissionError("parent directory is not searchable")
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", exists_raising_for_sample_projects)
+        launcher = ScriptedLauncher()
+
+        built = kit.build(launcher, stop=0.05, workers=1)
+        built.harness.run()
+
+        assert len(launcher.requests) == 1
+        assert len(self._undeletable_notices(built)) == 1
+
+    def test_reports_a_session_store_that_survives_its_delete(self, kit: RunKit, monkeypatch: pytest.MonkeyPatch) -> None:
+        projects_root = kit.tmp_path / "projects"
+        real_rmtree = shutil.rmtree
+
+        def rmtree_that_leaves_session_stores(path: Path, *args: object, **kwargs: object) -> None:
+            if Path(path).parent != projects_root:
+                real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(m.shutil, "rmtree", rmtree_that_leaves_session_stores)
+        launcher = self._launcher_storing_session(projects_root, lambda request: str(request.project_dir).replace("/", "-"))
+
+        built = kit.build(launcher, stop=0.05, workers=1)
+        built.harness.run()
+
+        assert len(self._undeletable_notices(built)) == 1
+        assert self._not_found_notices(built) == []
+
+    def test_reports_nothing_when_every_directory_was_deleted(self, kit: RunKit) -> None:
+        projects_root = kit.tmp_path / "projects"
+        launcher = self._launcher_storing_session(projects_root, lambda request: str(request.project_dir).replace("/", "-"))
+
+        built = kit.build(launcher, stop=0.05, workers=1)
+        built.harness.run()
+
+        assert self._undeletable_notices(built) == []
 
     def test_does_not_count_samples_whose_child_never_produced_a_transcript(self, kit: RunKit) -> None:
         def launch_fails_then_times_out(request: m.SampleRequest, count: int) -> m.RawSample | None:

@@ -695,8 +695,11 @@ def abort_launches() -> None:
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """The child leads its own session (start_new_session), so its pid is its
-    process group ID and this reaches every descendant it spawned."""
-    with contextlib.suppress(ProcessLookupError):
+    process group ID and this reaches every descendant it spawned.
+
+    A group that is already gone counts as killed. On macOS, signalling the
+    group of an exited but unreaped leader raises PermissionError (EPERM)."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGKILL)
 
 
@@ -781,20 +784,23 @@ def _run_claude_to_completion(
                     line, buf = buf.split(b"\n", 1)
                     all_lines.append(line)
         finally:
-            if timed_out or not reached_eof:
-                _kill_process_group(proc)
             try:
-                proc.wait(timeout=_CHILD_EXIT_WAIT_S)
-            except subprocess.TimeoutExpired:
-                _kill_process_group(proc)
-                proc.wait()
-            if outcome is not None:
-                # Recorded before any other fallible step: a caller treats a None status as "the child never ran".
-                outcome.exit_status = proc.returncode
-                # The tail is diagnostic only, so a failed read must not discard stdout or replace an in-flight exception.
-                with contextlib.suppress(OSError):
-                    outcome.stderr_tail = _read_stderr_tail(stderr_file)
-            proc.stdout.close()
+                if timed_out or not reached_eof:
+                    _kill_process_group(proc)
+                try:
+                    proc.wait(timeout=_CHILD_EXIT_WAIT_S)
+                except subprocess.TimeoutExpired:
+                    _kill_process_group(proc)
+                    proc.wait()
+            finally:
+                if outcome is not None and proc.returncode is not None:
+                    # Recorded as soon as the child is reaped, even when the kill or wait raised: a caller treats a None
+                    # status as "the child never ran".
+                    outcome.exit_status = proc.returncode
+                    # The tail is diagnostic only, so a failed read must not discard stdout or replace an in-flight exception.
+                    with contextlib.suppress(OSError):
+                        outcome.stderr_tail = _read_stderr_tail(stderr_file)
+                proc.stdout.close()
     return all_lines, timed_out
 
 
