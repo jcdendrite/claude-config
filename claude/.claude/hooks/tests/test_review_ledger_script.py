@@ -400,7 +400,9 @@ class TestReviewLedgerAppendHappyPath:
 
         assert result.returncode == 0, result.stderr
         shown_rows = [json.loads(line) for line in out_path.read_text().splitlines()]
-        assert [row["source"] for row in shown_rows] == ["foo.py:12", "foo.py:30-40"]
+        # Both rows can land in the same second, so their event_time may tie and
+        # the order between them is not pinned.
+        assert sorted(row["source"] for row in shown_rows) == ["foo.py:12", "foo.py:30-40"]
 
     def test_repeat_identical_line_is_deduped(self, isolated_home, git_repo):
         """A retried /code-review round re-emitting an unchanged
@@ -1431,7 +1433,9 @@ class TestReviewLedgerRoundCapVerdictAppend:
         noise_rounds = [
             row["round"] for row in shown_rows if row["disposition"] == "CONSULT" and row["rationale"] == "noise"
         ]
-        assert noise_rounds == [2, 5]
+        # Rows can land in the same second, so their event_time may tie and the
+        # order between them is not pinned.
+        assert sorted(noise_rounds) == [2, 5]
 
 
 class TestReviewLedgerSettledAndDeferAppend:
@@ -2579,8 +2583,7 @@ class TestReviewLedgerLanes:
             assert fragment not in render.stdout
         assert show.returncode == 0, show.stderr
         assert "\u202e" not in show.stdout
-        copied = _shown_rows(show)[-1]
-        assert copied["finding"] == "reopened finding"
+        copied = next(row for row in _shown_rows(show) if row["finding"] == "reopened finding")
         assert copied["reviewers"] == [hostile_lane.replace("\u202e", " ")]
 
     def test_a_relog_copy_is_not_rechecked_against_the_roster(self, isolated_home, git_repo):

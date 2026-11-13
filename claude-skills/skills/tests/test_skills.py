@@ -7119,9 +7119,9 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "match uncertain, so that error is over-firing, which stops "
     "for the engineer. The count sees only where findings pointed, so a "
     "fix that landed at another path is not counted, an accepted miss. "
-    "`unchanged` writes no file "
-    "and counts zero only when no earlier round of this session logged a "
-    "row, and is uncertain otherwise, and a non-zero exit makes the match "
+    "`unchanged` writes no file. "
+    "It counts zero only when no earlier round of this session logged a "
+    "row, and is uncertain otherwise. A non-zero exit makes the match "
     "uncertain. That stop names its trigger — a script "
     "rejection (relay its reason), a different failure mode, an "
     "uncertain match, or an invariant-class finding — and quotes the "
@@ -7830,16 +7830,15 @@ class TestRoundCapSecondNoiseVerdictStop:
     @pytest.mark.parametrize(
         "clause",
         [
-            pytest.param("When this round has a finding", id="fires-only-with-a-finding"),
             pytest.param(
-                "two or more `noise` `CONSULT` rows in any rounds, this verdict's own included",
-                id="counts-noise-rows-in-any-round-its-own-included",
+                "When this round has a finding and the ledger holds two or more `noise` `CONSULT` rows in any rounds, "
+                "this verdict's own included, the verdict is also a blocking stop-and-ask",
+                id="fires-with-a-finding-and-two-noise-rows-in-any-round-its-own-included",
             ),
-            pytest.param("the verdict is also a blocking stop-and-ask", id="is-a-blocking-stop"),
             pytest.param(
                 '`"disposition":"CONSULT","rationale":"noise"`', id="greps-the-shown-disposition-and-rationale-run",
             ),
-            pytest.param("treat an uncertain count as two", id="treats-an-uncertain-count-as-two"),
+            pytest.param("Treat an uncertain count as two", id="treats-an-uncertain-count-as-two"),
             pytest.param(
                 "Ask once this round's findings are tagged, before any is logged or fixed",
                 id="asks-once-before-any-finding-is-logged-or-fixed",
@@ -7858,7 +7857,7 @@ class TestRoundCapSecondNoiseVerdictStop:
             ),
             pytest.param("A re-plan does not reset the count", id="a-re-plan-does-not-reset-the-noise-count"),
             pytest.param(
-                "an `unchanged` after the append is uncertain, not zero", id="unchanged-after-the-append-is-uncertain",
+                "An `unchanged` after the append is uncertain, not zero", id="unchanged-after-the-append-is-uncertain",
             ),
             pytest.param(
                 "naming the trigger (the two rows' rounds, or \"ledger read failed, count unknown\")",
@@ -7891,11 +7890,33 @@ class TestRoundCapSecondNoiseVerdictStop:
             "the second-noise-verdict stop must offer ship, re-plan, then continue, in that order"
         )
 
-    def test_ship_applies_the_invariant_rule_before_logging_each_keep(self) -> None:
+    def test_ship_leaves_an_invariant_finding_to_the_invariant_rules_own_stop(self) -> None:
         region_text = self._region_text()
-        invariant_position = region_text.find("apply the enforcement-invariant rule to each finding first")
-        logging_position = region_text.find("then log each finding as that route logs a human keep")
-        assert -1 not in (invariant_position, logging_position) and invariant_position < logging_position
+        ship_label = "*Ship with the live DEFER and SETTLED rows.*"
+        carve_out_sentence = (
+            "A finding the enforcement-invariant rule covers is outside this answer "
+            "and takes that rule's own stop, which names it."
+        )
+        notice_then_log_sentence = (
+            "Give the contradiction route's notice, then log each other finding as that route logs a human keep"
+        )
+        ship_label_position = region_text.find(ship_label)
+        assert ship_label_position != -1, f"the round-cap region no longer carries the Ship label {ship_label!r}"
+        ship_label_end = ship_label_position + len(ship_label)
+        replan_label_start = region_text.find("*Re-plan*", ship_label_end)
+        assert replan_label_start != -1, "the round-cap region carries no *Re-plan* label after the Ship label"
+        ship_segment = region_text[ship_label_end:replan_label_start]
+        carve_out_position = ship_segment.find(carve_out_sentence)
+        assert carve_out_position != -1, (
+            f"the Ship segment no longer carries the carve-out sentence {carve_out_sentence!r}"
+        )
+        notice_then_log_position = ship_segment.find(notice_then_log_sentence)
+        assert notice_then_log_position != -1, (
+            f"the Ship segment no longer carries the notice-then-log sentence {notice_then_log_sentence!r}"
+        )
+        assert carve_out_position < notice_then_log_position, (
+            "the Ship segment must state the carve-out sentence before the notice-then-log sentence"
+        )
 
 
 def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:

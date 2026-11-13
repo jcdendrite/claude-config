@@ -182,6 +182,17 @@ class TestValidateFlagsRejects:
             ),
             pytest.param("CONSULT", {"decided_by": "engineer"}, "(got it on CONSULT)", id="decider on a round-cap verdict row"),
             pytest.param("CONSULT", {"ref": _DECISION_ID}, "--disposition CONSULT", id="--ref on a round-cap verdict row"),
+            pytest.param("CONSULT", {"quote": "q"}, "--engineer-quote", id="quote on a round-cap verdict row"),
+            pytest.param("CONSULT", {"cited_line": "a.py:1"}, "--cited-line", id="cited line on a round-cap verdict row"),
+            pytest.param(
+                "CONSULT", {"criterion": _CRITERION}, "--defer-criterion", id="criterion on a round-cap verdict row",
+            ),
+            pytest.param(
+                "CONSULT", {"invariant": "1"}, "--enforcement-invariant", id="invariant on a round-cap verdict row",
+            ),
+            pytest.param(
+                "CONSULT", {"carry_forward": "1"}, "--carry-forward", id="carry-forward on a round-cap verdict row",
+            ),
             pytest.param(
                 "SETTLED", {"decided_by": "plan-architect", "source": ""}, "--source",
                 id="SETTLED with an empty source",

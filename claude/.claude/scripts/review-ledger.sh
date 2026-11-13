@@ -641,7 +641,7 @@ case "$SUBCOMMAND" in
     # up), and a retired --ref adds a read and a compare. A --ref naming a carry
     # repeats the read and look-up once for its rejection advice.
     # A --relog repeats the read and look-up once to copy the --ref row's lanes.
-    # A range-form source adds one capped awk read for the site hash.
+    # A range-form DEFER or SETTLED source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and the candidate rev-parse probes.
     # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
